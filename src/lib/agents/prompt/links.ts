@@ -1,5 +1,5 @@
-import type { ProjectAgentPrompt, PromptLink } from "../../../stores/agentPrompts";
-import { MAX_PREFACE_COMMANDS, sanitizePrefaceCommand } from "../../agentPrefaces";
+import type { ProjectAgentPrompt, PromptLink } from "../../../stores/agents/agentPrompts";
+import { MAX_PREFACE_COMMANDS, sanitizePrefaceCommand } from "../agentPrefaces";
 
 export type PromptLinkKind = "related" | "after";
 

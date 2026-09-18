@@ -4,7 +4,7 @@
  * tabs store can import it without pulling a component module (and the
  * store→component→store cycle that would make) into its graph.
  */
-import type { TabKind } from "../stores/tabs";
+import type { TabKind } from "../../stores/tabs";
 
 /** Mirrors `commands::git::Worktree` (serde field names). */
 export interface GitWorktree {

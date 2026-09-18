@@ -332,7 +332,7 @@ unchanged; the new agents are additive.
     drop-in, `OLLAMA_IGPU_ENABLE`: a runtime that cannot do those must *say so*
     (the `LocalDriverInfo.available` pattern), never pretend. Note the honest
     cost up front so nobody underestimates it: the settings keys, the command
-    names, `src/lib/localDrivers.ts`, `stores/ollamaAutoload.ts` and the 🧠 menu
+    names, `src/lib/agents/localDrivers.ts`, `stores/agents/ollamaAutoload.ts` and the 🧠 menu
     are all *named* `ollama`, so this is a rename as much as a refactor.
     Persisted keys stay as they are — new fields are additive, or every existing
     `settings.json` needs a migration for a feature nobody asked for yet.
@@ -592,7 +592,7 @@ unchanged; the new agents are additive.
   - **A composer under each agent tab**: prefix chips, the agent's own model
     pick, a message, and Send — aimed at the tab it is rendered under, so
     nothing has to be targeted first. The chips and the model are that CLI's own
-    slash commands (`lib/agentPrefaces`), submitted **one at a time, in order,
+    slash commands (`lib/agents/agentPrefaces`), submitted **one at a time, in order,
     ahead of the prompt** rather than as extra lines of it — `/clear` and
     `/model` take a whole line and would otherwise swallow the prompt appended
     to them. `ScheduledAgentPrompt.preface` carries them (Rust + TS), and
@@ -741,7 +741,7 @@ unchanged; the new agents are additive.
       says so in its tooltip.
     Frontend: `components/agents/AgentSchedulesView.tsx`, `lib/listReorder.ts`,
     `lib/agents/prompt/filter.ts`, `hooks/useListReorder.ts` (moved),
-    `stores/agentPrompts.ts`, `styles/projects-tabs.css`.
+    `stores/agents/agentPrompts.ts`, `styles/projects-tabs.css`.
     Backend: `services/agent_prompts.rs`, `commands/agent_prompts.rs` — so the
     reorder command needs a restart before the drag can persist.
     Implemented 2026-09-02, **not live-tested**.
@@ -795,7 +795,7 @@ unchanged; the new agents are additive.
       one click. A delivered row without files yet says so.
     Frontend: `components/agents/AgentSchedulesView.tsx`,
     `components/layout/AgentScheduleHost.tsx`, `lib/agents/prompt/tags.ts` (new),
-    `lib/agents/prompt/filter.ts`, `stores/agentPrompts.ts`,
+    `lib/agents/prompt/filter.ts`, `stores/agents/agentPrompts.ts`,
     `styles/projects-tabs.css`, `lib/i18n.ts` + the four dictionaries.
     Backend: `services/prompt_blame.rs` (new), `services/agent_prompts.rs`,
     `schema/agent_prompts.rs`, `commands/agent_prompts.rs`, `lib.rs` — so tags
@@ -882,7 +882,7 @@ unchanged; the new agents are additive.
       The *armed time* is deliberately live-only: a stored one would fire against
       a window that had already turned over while Eldrun was closed.
     - **It chooses nothing about the agent.** One word, submitted through
-      `lib/scheduledAgentInput` — the same path a scheduled prompt takes — so the
+      `lib/agents/scheduledAgentInput` — the same path a scheduled prompt takes — so the
       permission mode stays the agent's own and the idle/decision/settle gate
       applies. The one deliberate loosening is in `deliverable`: a tab whose
       output the activity store has never seen (an ordinary restored agent tab)
@@ -899,8 +899,8 @@ unchanged; the new agents are additive.
     - The usage parser moved `mobile-web/src/terminal/usageReport.ts` →
       `shared/usageReport.ts`, so the phone's bars and the desktop's countdown
       read one panel the same way.
-    Frontend: `components/layout/AgentContinueHost.tsx`, `stores/agentContinue.ts`,
-    `lib/agentUsage.ts`, `shared/usageReport.ts`, `stores/tabs.ts`
+    Frontend: `components/layout/AgentContinueHost.tsx`, `stores/agents/agentContinue.ts`,
+    `lib/agents/agentUsage.ts`, `shared/usageReport.ts`, `stores/tabs.ts`
     (`autoContinue` + `setAutoContinueInScope`), `components/agents/AgentSchedulesView.tsx`,
     `lib/i18n.ts` + the four dictionaries. No backend change.
     Implemented 2026-09-02, **not live-tested**.

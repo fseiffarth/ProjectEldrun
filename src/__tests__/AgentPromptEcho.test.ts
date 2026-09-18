@@ -9,7 +9,7 @@ import { lastPromptEcho } from "../lib/agents/prompt/echo";
 import { registerTerminal, unregisterTerminal } from "../lib/terminalRegistry";
 import type { ReadableBufferLike } from "../../mobile-web/src/terminal/readableScreen";
 import { useActivityStore } from "../stores/activity";
-import { useAgentModelsStore } from "../stores/agentModels";
+import { useAgentModelsStore } from "../stores/agents/agentModels";
 import { useTabsStore, type TabEntry } from "../stores/tabs";
 
 function plainBuffer(rows: string[]): ReadableBufferLike {

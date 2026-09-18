@@ -14,7 +14,7 @@ import {
   prefaceCommandsFor,
   sanitizePrefaceCommand,
   splitPreface,
-} from "../lib/agentPrefaces";
+} from "../lib/agents/agentPrefaces";
 import { buildSendNowSchedule } from "../lib/agents/prompt/send";
 
 describe("preface command sanitizing", () => {

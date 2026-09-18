@@ -2,7 +2,7 @@ import {
   MAX_AGENT_MESSAGE_BYTES,
   agentMessageBytes,
   sanitizeAgentMessage,
-} from "../../shared/agentComposer";
+} from "../../../shared/agentComposer";
 import { MAX_PREFACE_COMMANDS, sanitizePrefaceCommand } from "./agentPrefaces";
 
 export const MAX_SCHEDULES_PER_TAB = 32;
@@ -27,7 +27,7 @@ export interface ScheduledAgentPrompt {
   message: string;
   rule: ScheduleRule;
   /** Slash commands submitted one at a time, in order, before `message` — the
-   *  composer's prefix chips and its `/model` pick. See `lib/agentPrefaces`. */
+   *  composer's prefix chips and its `/model` pick. See `lib/agents/agentPrefaces`. */
   preface?: string[];
   last?: ScheduleLastRun;
 }

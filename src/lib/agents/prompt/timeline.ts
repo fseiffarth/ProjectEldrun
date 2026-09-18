@@ -3,7 +3,7 @@ import {
   latestScheduleOccurrence,
   localOccurrenceKey,
   nextScheduleOccurrence,
-} from "../../agentSchedule";
+} from "../agentSchedule";
 import { queueOrderTimes, snapPromptTime, type PromptChartCard } from "./chart";
 
 /**

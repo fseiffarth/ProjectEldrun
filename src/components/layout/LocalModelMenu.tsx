@@ -3,8 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useSettingsStore } from "../../stores/settings";
 import { useQuiesce, saverInterval } from "../../stores/power";
-import { useOllamaAutoloadStore } from "../../stores/ollamaAutoload";
-import { useOllamaUpgradeStore } from "../../stores/ollamaUpgrade";
+import { useOllamaAutoloadStore } from "../../stores/agents/ollamaAutoload";
+import { useOllamaUpgradeStore } from "../../stores/agents/ollamaUpgrade";
 import { useOllamaStatus } from "../../lib/ollamaStatus";
 import { UntestedTag } from "../common/UntestedTag";
 import {
@@ -16,7 +16,7 @@ import {
   type OllamaGpuStatus,
   type OllamaModelUpdate,
   type OllamaVersionStatus,
-} from "../../lib/localDrivers";
+} from "../../lib/agents/localDrivers";
 import { runInstallInTab, type InstallShellKind } from "../../lib/installCommand";
 import {
   formatBytes,
@@ -903,7 +903,7 @@ export function LocalModelMenu() {
   }, [models, settings, updateSettings]);
 
   // "Load on Eldrun start": which models are warmed into memory at launch
-  // (`settings.ollama_autoload_models`, honoured by `stores/ollamaAutoload`).
+  // (`settings.ollama_autoload_models`, honoured by `stores/agents/ollamaAutoload`).
   // A chip per model rather than one global switch, because the whole point is
   // that different jobs want different models resident.
   const autoload = settings?.ollama_autoload_models ?? [];
@@ -958,7 +958,7 @@ export function LocalModelMenu() {
     });
   };
 
-  // Putting the models back after an upgrade (`stores/ollamaUpgrade`). Reported
+  // Putting the models back after an upgrade (`stores/agents/ollamaUpgrade`). Reported
   // for the same reason the autoload below is: nobody is watching a restart
   // that takes minutes, and a load that starts by itself must say that it did.
   const beginUpgradeRestore = useOllamaUpgradeStore((s) => s.begin);

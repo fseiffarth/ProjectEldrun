@@ -1,4 +1,4 @@
-import { useAgentPromptsStore, type SentAgentPrompt } from "../../../stores/agentPrompts";
+import { useAgentPromptsStore, type SentAgentPrompt } from "../../../stores/agents/agentPrompts";
 import { isSessionCommand } from "./chart";
 import type { TabEntry } from "../../../stores/tabs";
 
@@ -9,7 +9,7 @@ import type { TabEntry } from "../../../stores/tabs";
  * Eldrun sees a prompt go by only when it sends one itself (the composer, a
  * schedule): keystrokes into the terminal reach the PTY, the TUI's input box
  * edits them, and what was finally submitted is known to the agent alone —
- * and written to its transcript. `stores/agentModels` reads that transcript's
+ * and written to its transcript. `stores/agents/agentModels` reads that transcript's
  * last prompt when a turn starts, and hands a *changed* one here. A prompt
  * Eldrun sent is already on the history (the composer archives at send time,
  * the scheduler records at delivery, both before the agent's first output

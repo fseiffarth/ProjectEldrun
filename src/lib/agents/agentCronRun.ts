@@ -3,7 +3,7 @@ import { AGENT_CRON_MESSAGE } from "./agentCron";
 
 /**
  * The agent warm-up cron's impure half: actually send the message. The schedule
- * that decides *when* is `lib/agentCron.ts`; the timer that asks is
+ * that decides *when* is `lib/agents/agentCron.ts`; the timer that asks is
  * `components/layout/AgentCronHost.tsx`.
  *
  * A run is one backend call, `agent_warmup`, which starts the agent CLI in its

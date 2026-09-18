@@ -5,7 +5,7 @@ import {
   buildPreface,
   prefaceCommandsFor,
   splitPreface,
-} from "../../lib/agentPrefaces";
+} from "../../lib/agents/agentPrefaces";
 import { isFinishedOneTime } from "../../lib/agents/prompt/send";
 import {
   desktopTimeZone,
@@ -20,11 +20,11 @@ import {
   type ScheduleRule,
   type ScheduleStatusKind,
   type ScheduledAgentPrompt,
-} from "../../lib/agentSchedule";
+} from "../../lib/agents/agentSchedule";
 import { formatTime, todayStr } from "../../lib/calendar/calendarTime";
 import { useI18nStore, useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
-import { scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agentSchedules";
+import { scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agents/agentSchedules";
 import { useSettingsStore } from "../../stores/settings";
 import { isResumableAgentTab, type TabEntry } from "../../stores/tabs";
 import { DateTimeField } from "../common/DateTimeField";
@@ -95,7 +95,7 @@ export function AgentScheduleDialog({ scope, tab, onClose, initialMessage, initi
   // side panel composer's chips and model pick, on the schedule form, because a
   // prompt that needs `/clear` and a model at 9:00 needs them every 9:00. They
   // are the agent's own slash commands, submitted one at a time before the
-  // message; Eldrun still chooses nothing (see `lib/agentPrefaces`).
+  // message; Eldrun still chooses nothing (see `lib/agents/agentPrefaces`).
   const [selected, setSelected] = useState<string[]>([]);
   const [model, setModel] = useState("");
   // Commands a saved rule carries that this agent no longer offers. Kept as

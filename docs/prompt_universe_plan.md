@@ -130,8 +130,8 @@ export interface UniverseInput {
   projects: ProjectEntry[]; boxes: ProjectBox[];
   tabsByScope: Record<string, TabEntry[]>;
   busyByTab; attentionByTab; lastDoneByTab;           // stores/activity, pty-id keyed
-  promptsByProject; historyByProject; linksByProject; // stores/agentPrompts
-  schedulesByTarget;                                  // stores/agentSchedules
+  promptsByProject; historyByProject; linksByProject; // stores/agents/agentPrompts
+  schedulesByTarget;                                  // stores/agents/agentSchedules
   now: Date;
 }
 

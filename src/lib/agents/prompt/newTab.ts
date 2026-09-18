@@ -1,4 +1,4 @@
-import { buildPreface } from "../../agentPrefaces";
+import { buildPreface } from "../agentPrefaces";
 import type { TabEntry } from "../../../stores/tabs";
 import type { CustomAgent, Settings } from "../../../types";
 import { AGENT_ITEMS, buildStaticTabSpec, customAgentToItem, type StaticMenuItem } from "../../../components/tabs/newTabItems";
@@ -32,7 +32,7 @@ export function agentItemFor(cmd: string, customAgents: readonly CustomAgent[] =
  * `ELDRUN_TAB_UID` set — plus a schedule target id minted HERE, so the prompt
  * can be queued at the tab before the store has assigned one. The model is
  * typed as the agent's own `/model` ahead of the prompt, never a launch flag
- * (see `lib/agentPrefaces`).
+ * (see `lib/agents/agentPrefaces`).
  */
 export function newAgentTabForDraft(input: {
   agent: string;

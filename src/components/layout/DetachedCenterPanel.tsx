@@ -41,7 +41,7 @@ import {
 } from "../files/SubwindowFilesSidebar";
 import { useWindowFocused } from "../../hooks/useWindowFocused";
 import { TabHoverCard } from "../tabs/TabHoverCard";
-import { useFastMode } from "../../lib/fastMode";
+import { useFastMode } from "../../lib/agents/fastMode";
 import { WindowControls } from "../header/WindowControls";
 import { DragGhost, SplitPreviewOverlay } from "./CenterPanel";
 import { TRASH_PROJECT_ID } from "../../lib/trashProject";
@@ -93,9 +93,9 @@ import { texPdfPartner } from "../../lib/texPdfLink";
 import { useT } from "../../lib/i18n";
 import { StarIcon } from "./StarIcon";
 import { AgentScheduleDialog } from "../agents/AgentScheduleDialog";
-import { scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agentSchedules";
+import { scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agents/agentSchedules";
 import { UntestedTag } from "../common/UntestedTag";
-import { nextScheduleOccurrence } from "../../lib/agentSchedule";
+import { nextScheduleOccurrence } from "../../lib/agents/agentSchedule";
 
 /** Pixel coordinates of a group body, relative to the detached center panel. */
 interface Rect {

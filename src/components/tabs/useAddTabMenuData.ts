@@ -11,8 +11,8 @@ import {
   rootAllowedAgentBins,
   type BuiltInAgentStatus,
 } from "./newTabItems";
-import { listLocalDrivers, type LocalDriverInfo } from "../../lib/localDrivers";
-import { AGENT_REGISTRY_CHANGED_EVENT } from "../../lib/agentRegistry";
+import { listLocalDrivers, type LocalDriverInfo } from "../../lib/agents/localDrivers";
+import { AGENT_REGISTRY_CHANGED_EVENT } from "../../lib/agents/agentRegistry";
 import { ROOT_SCOPE } from "../../stores/tabs";
 
 /** The data behind an add-tab ("+") menu — see {@link useAddTabMenuData}. */
@@ -33,7 +33,7 @@ export interface AddTabMenuData {
    *  drive any of them and they're withheld rather than offered as a tab that
    *  dies on its first request. Passing the gate isn't a promise the model is
    *  *good* at it — `ollama launch` has its own opinion and may greet the tab
-   *  with a "Launch anyway?" prompt (see lib/localDrivers.ts). */
+   *  with a "Launch anyway?" prompt (see lib/agents/localDrivers.ts). */
   localDrivers: LocalDriverInfo[];
   /** Installed agent CLIs (id == cmd) minus the built-ins the user turned off
    *  in "Manage Agents" — the set the Agents group should use. `null` until

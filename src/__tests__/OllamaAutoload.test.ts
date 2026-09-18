@@ -1,5 +1,5 @@
 /**
- * Loading a local (Ollama) model at Eldrun start (`stores/ollamaAutoload`).
+ * Loading a local (Ollama) model at Eldrun start (`stores/agents/ollamaAutoload`).
  *
  * The rules worth pinning are the ones a user would experience as a bug if they
  * broke silently: Energy Saver **suppresses** the launch load and says so
@@ -13,7 +13,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invoke(...a) }));
 
-import { useOllamaAutoloadStore, resetOllamaAutoload } from "../stores/ollamaAutoload";
+import { useOllamaAutoloadStore, resetOllamaAutoload } from "../stores/agents/ollamaAutoload";
 import { useSettingsStore } from "../stores/settings";
 import { usePowerStore } from "../stores/power";
 import type { Settings } from "../types";

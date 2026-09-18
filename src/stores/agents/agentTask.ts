@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { splitPtyId } from "./activity";
+import { splitPtyId } from "../activity";
 
 /**
  * Per-tab agent task summary, captured from the terminal title an agent CLI sets

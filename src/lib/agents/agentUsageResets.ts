@@ -1,4 +1,4 @@
-import { resolveResetAt, type UsageReport } from "../../shared/usageReport";
+import { resolveResetAt, type UsageReport } from "../../../shared/usageReport";
 
 /**
  * Where an agent's own rate-limit windows roll over, as marks on the prompt

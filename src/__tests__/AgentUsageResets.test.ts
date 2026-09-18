@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseUsageReport } from "../../shared/usageReport";
-import { usageResetMarks, usageWindowKind } from "../lib/agentUsageResets";
+import { usageResetMarks, usageWindowKind } from "../lib/agents/agentUsageResets";
 
 /** A fixed Tuesday, 14:00 local. */
 const TUE_1400 = new Date(2026, 8, 1, 14, 0, 0, 0);

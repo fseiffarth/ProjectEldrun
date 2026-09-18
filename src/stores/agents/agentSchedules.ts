@@ -1,8 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
-import type { ScheduledAgentPrompt } from "../lib/agentSchedule";
-import { useProjectsStore } from "./projects";
-import { ROOT_SCOPE, useTabsStore } from "./tabs";
+import type { ScheduledAgentPrompt } from "../../lib/agents/agentSchedule";
+import { useProjectsStore } from "../projects";
+import { ROOT_SCOPE, useTabsStore } from "../tabs";
 
 /**
  * Write one scope's tab layout to disk now, resolving the project.json it

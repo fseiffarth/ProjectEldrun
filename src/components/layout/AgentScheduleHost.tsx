@@ -9,14 +9,14 @@ import {
   sortSchedules,
   type ScheduleResult,
   type ScheduledAgentPrompt,
-} from "../../lib/agentSchedule";
+} from "../../lib/agents/agentSchedule";
 import {
   scheduledAgentInput,
   submitScheduledAgentMessage,
-} from "../../lib/scheduledAgentInput";
+} from "../../lib/agents/scheduledAgentInput";
 import { agentDeliveryReady, agentDeliveryTurn, lastPtyOutputAt, useActivityStore } from "../../stores/activity";
-import { recordScheduledDelivery, sendCollectedPrompt, useAgentPromptsStore } from "../../stores/agentPrompts";
-import { useAgentSchedulesStore } from "../../stores/agentSchedules";
+import { recordScheduledDelivery, sendCollectedPrompt, useAgentPromptsStore } from "../../stores/agents/agentPrompts";
+import { useAgentSchedulesStore } from "../../stores/agents/agentSchedules";
 import { useTabsStore, type TabEntry } from "../../stores/tabs";
 
 const TICK_MS = 15_000;

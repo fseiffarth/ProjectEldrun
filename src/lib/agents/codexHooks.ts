@@ -1,7 +1,7 @@
-import { useTabsStore } from "../stores/tabs";
-import { useProjectsStore } from "../stores/projects";
-import { AGENT_ITEMS, buildStaticTabSpec } from "../components/tabs/newTabItems";
-import { translate, useI18nStore } from "./i18n";
+import { useTabsStore } from "../../stores/tabs";
+import { useProjectsStore } from "../../stores/projects";
+import { AGENT_ITEMS, buildStaticTabSpec } from "../../components/tabs/newTabItems";
+import { translate, useI18nStore } from "../i18n";
 
 /**
  * Whether Codex is actually running Eldrun's `SessionStart` hook — the precise

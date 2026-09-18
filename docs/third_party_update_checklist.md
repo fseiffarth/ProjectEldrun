@@ -80,7 +80,7 @@ Build, not the third-party `@vibe-kit/grok-cli` it used to.
   say the same thing; they have drifted before.
 - `src/stores/tabs.ts` (`RESUME_ARGS` near the bottom) — per-agent "continue
   last session" flags used on relaunch/restore.
-- `src/lib/agentPrefaces.ts` — default slash commands offered per agent
+- `src/lib/agents/agentPrefaces.ts` — default slash commands offered per agent
   (`/clear`, `/compact`, `/new`, `/status`, …) and `DEFAULT_AGENT_MODELS`.
 - `src/lib/agents/prompt/prompt.ts` — `looksLikeDecisionPrompt`: the regexes that turn a
   tab's output tail into the "needs a decision" lamp (pointer glyphs, numbered
@@ -133,7 +133,7 @@ resumes.
 
 **Where** `services/agent_session.rs`, `services/agent_usage.rs`,
 `commands/terminal.rs` (`--remote-control`), `commands/ollama.rs`
-(`LOCAL_DRIVERS`), `src/lib/agentPrefaces.ts`, `src/lib/fastMode.ts` is *not*
+(`LOCAL_DRIVERS`), `src/lib/agents/agentPrefaces.ts`, `src/lib/agents/fastMode.ts` is *not*
 Claude's `/fast` — different thing.
 
 **Assumes**
@@ -253,7 +253,7 @@ aliases, and anything about where or how credentials are stored.
 
 **Where** `services/agent_session.rs` (`resolve_codex_session`,
 `register_codex_hook`, `codex_hook_state`), `services/codex_bind.rs`,
-`src/lib/codexHooks.ts`, `commands/ollama.rs` (`non_thinking_args`,
+`src/lib/agents/codexHooks.ts`, `commands/ollama.rs` (`non_thinking_args`,
 `write_local_catalog`), `mobile-web/src/terminal/agentModes.ts`,
 `src/lib/agents/prompt/prompt.ts` + `src/stores/activity.ts` (the decision lamp).
 
@@ -428,7 +428,7 @@ tabs via `ollama launch <agent>`).
 ## 2. Ollama
 
 **Where** `commands/ollama.rs` (everything), `services/mail_ai.rs`,
-`src/lib/ollamaStatus.ts`, `src/lib/localDrivers.ts`, `src/lib/gpu.ts`.
+`src/lib/ollamaStatus.ts`, `src/lib/agents/localDrivers.ts`, `src/lib/gpu.ts`.
 Headless probe: `cargo run --example ollama_probe --manifest-path src-tauri/Cargo.toml`.
 
 **Assumes**
@@ -621,7 +621,7 @@ resolves; the package names above still resolve (`apt-cache policy <pkg>`,
 
 ## 7. bubblewrap (agent fence)
 
-**Where** `services/agent_fence.rs`, `src/lib/agentFence.ts`,
+**Where** `services/agent_fence.rs`, `src/lib/agents/agentFence.ts`,
 `docs/agent_fence_plan.md`.
 
 **Assumes** `bwrap` flags `--ro-bind --ro-bind-try --bind --bind-try --dev
@@ -852,7 +852,7 @@ restructure or a `spellbook` bump.
 
 ## 18. Agent Skills
 
-**Where** `services/skills.rs`, `commands/skills.rs`, `src/lib/skills.ts`,
+**Where** `services/skills.rs`, `commands/skills.rs`, `src/lib/agents/skills.ts`,
 `docs/skills_plan.md`.
 
 **Assumes** the `SKILL.md` frontmatter (`name`, `description`), install

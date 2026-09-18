@@ -1,5 +1,5 @@
 /**
- * Putting the models back after an Ollama upgrade (`stores/ollamaUpgrade`).
+ * Putting the models back after an Ollama upgrade (`stores/agents/ollamaUpgrade`).
  *
  * The upgrade runs in a terminal tab, so there is no completion callback to
  * hang this on — the restart is *observed*, by polling the local version. That
@@ -16,11 +16,11 @@ const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invoke(...a) }));
 
 const versionStatus = vi.fn();
-vi.mock("../lib/localDrivers", () => ({
+vi.mock("../lib/agents/localDrivers", () => ({
   ollamaVersionStatus: (...a: unknown[]) => versionStatus(...a),
 }));
 
-import { useOllamaUpgradeStore, resetOllamaUpgrade } from "../stores/ollamaUpgrade";
+import { useOllamaUpgradeStore, resetOllamaUpgrade } from "../stores/agents/ollamaUpgrade";
 
 const phase = () => useOllamaUpgradeStore.getState().phase;
 const begin = (from: string, models: string[]) =>

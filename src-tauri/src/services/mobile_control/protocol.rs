@@ -838,7 +838,7 @@ pub struct AgentTabStatus {
     /// `working`, `question`, or `done`.
     pub status: String,
     /// The model this tab last answered with, already shortened for display
-    /// by the desktop (`lib/agentModel`), when its transcript names one.
+    /// by the desktop (`lib/agents/agentModel`), when its transcript names one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// Desktop wall clock (ms since the epoch) of the tab's last output while

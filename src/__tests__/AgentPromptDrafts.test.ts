@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildPromptChart } from "../lib/agents/prompt/chart";
 import { draftSequence } from "../lib/agents/prompt/drafts";
 import { timelineItems, timelineWindow } from "../lib/agents/prompt/timeline";
-import type { PromptLink } from "../stores/agentPrompts";
+import type { PromptLink } from "../stores/agents/agentPrompts";
 
 const now = new Date(2026, 8, 15, 10);
 const prompts = ["a", "b", "c", "other"].map((id) => ({ id, message: id, created_at: "x", updated_at: "x" }));

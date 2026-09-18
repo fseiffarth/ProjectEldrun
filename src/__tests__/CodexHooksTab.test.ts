@@ -5,13 +5,13 @@
  * Codex's own `/hooks` list, and until then Codex tabs resume off a heuristic
  * fallback rather than the exact recorded session. Per Eldrun's install-via-tab
  * policy, the remedy must be a click that *opens Codex on that list* — never a
- * command handed to the user to run themselves. See lib/codexHooks.ts.
+ * command handed to the user to run themselves. See lib/agents/codexHooks.ts.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn().mockResolvedValue(undefined) }));
 
-import { codexHookNeedsTrust, openCodexHooksTab } from "../lib/codexHooks";
+import { codexHookNeedsTrust, openCodexHooksTab } from "../lib/agents/codexHooks";
 import { useTabsStore } from "../stores/tabs";
 import { useProjectsStore } from "../stores/projects";
 

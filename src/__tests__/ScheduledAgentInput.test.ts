@@ -9,7 +9,7 @@ import {
   _clearScheduledAgentInputsForTest,
   registerScheduledAgentInput,
   submitScheduledAgentMessage,
-} from "../lib/scheduledAgentInput";
+} from "../lib/agents/scheduledAgentInput";
 
 const writeMock = vi.mocked(writePtyInput);
 const decode = (value: Uint8Array) => new TextDecoder().decode(value);

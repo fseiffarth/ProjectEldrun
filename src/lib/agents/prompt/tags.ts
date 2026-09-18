@@ -11,7 +11,7 @@
  * Pure, like `lib/agents/prompt/filter`: the view holds the filter state and this
  * decides what it means.
  */
-import type { ProjectAgentPrompt } from "../../../stores/agentPrompts";
+import type { ProjectAgentPrompt } from "../../../stores/agents/agentPrompts";
 
 /** Mirrors the backend's caps: 16 tags per prompt, and a tag is a token. */
 export const MAX_TAGS = 16;

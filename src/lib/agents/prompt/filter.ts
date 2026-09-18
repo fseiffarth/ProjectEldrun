@@ -12,7 +12,7 @@
  * holds the filter state and this decides what it means, so the meaning is what
  * gets unit-tested rather than a rendered list.
  */
-import type { SentAgentPrompt } from "../../../stores/agentPrompts";
+import type { SentAgentPrompt } from "../../../stores/agents/agentPrompts";
 import { matchesTagsOrText } from "./tags";
 
 /** The time windows the picker offers, in the order it offers them. */

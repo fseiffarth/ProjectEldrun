@@ -1016,7 +1016,7 @@ export function SettingsDialog({
             {/* Beside Energy Saver rather than folded into it: that one widens
                 timers off a live battery reading, this removes features off a
                 standing preference, and "plugged in, still want it lean" is the
-                case a merged control could not express. `lib/fastMode` holds the
+                case a merged control could not express. `lib/agents/fastMode` holds the
                 list of what goes — the help string above mirrors it. */}
             <ToggleCard
               label={

@@ -11,7 +11,7 @@ import {
   type PromptChartStrand,
   type PromptChartWindow,
 } from "../../lib/agents/prompt/chart";
-import { agentModelsFor, prefaceCommandsFor } from "../../lib/agentPrefaces";
+import { agentModelsFor, prefaceCommandsFor } from "../../lib/agents/agentPrefaces";
 import { afterLinkRefusal } from "../../lib/agents/prompt/links";
 import { agentItemFor, newAgentTabForDraft, promptChartNewTabAgent } from "../../lib/agents/prompt/newTab";
 import { useUse24h } from "../../lib/timeFormat";
@@ -32,7 +32,7 @@ import {
   type TimelineView,
   type TimelineZone,
 } from "../../lib/agents/prompt/timeline";
-import { localOccurrenceKey, localWallClock } from "../../lib/agentSchedule";
+import { localOccurrenceKey, localWallClock } from "../../lib/agents/agentSchedule";
 import { tagCounts } from "../../lib/agents/prompt/tags";
 import { formatLongDate, monthName, toDateStr, todayStr } from "../../lib/calendar/calendarTime";
 import { useI18nStore, useT } from "../../lib/i18n";
@@ -44,9 +44,9 @@ import {
   type ProjectAgentPrompt,
   type PromptLink,
   type SentAgentPrompt,
-} from "../../stores/agentPrompts";
-import { useAgentModelsStore } from "../../stores/agentModels";
-import { SCHEDULE_BUSY_ERROR, SCHEDULE_GONE_ERROR, scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agentSchedules";
+} from "../../stores/agents/agentPrompts";
+import { useAgentModelsStore } from "../../stores/agents/agentModels";
+import { SCHEDULE_BUSY_ERROR, SCHEDULE_GONE_ERROR, scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agents/agentSchedules";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { useTabsStore, type TabEntry } from "../../stores/tabs";

@@ -17,7 +17,7 @@ import {
   codexHookNeedsTrust,
   openCodexHooksTab,
   type CodexHookState,
-} from "../../lib/codexHooks";
+} from "../../lib/agents/codexHooks";
 import { HintBubble } from "../common/HintBubble";
 import { useT } from "../../lib/i18n";
 

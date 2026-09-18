@@ -233,7 +233,7 @@ correctness/UX work atop the same layout model #42 detaches.*
     missed while the app was closed is skipped, not sent at launch; the chips read in the user's 12/24-hour setting; the panel's warnings
     render for "armed with no times" and "master switch off". Settings ride the
     backend `extra` catch-all, so **no backend restart is needed**.
-    *Files: `src/lib/agentCron.ts`, `src/lib/agentCronRun.ts`,
+    *Files: `src/lib/agents/agentCron.ts`, `src/lib/agents/agentCronRun.ts`,
     `src/components/layout/AgentCronHost.tsx`,
     `src/components/layout/SettingsSubPanels.tsx`, `src/styles/header-menus.css`,
     `src/types/index.ts`, `src/lib/i18n.ts` (+ the four dictionaries).*

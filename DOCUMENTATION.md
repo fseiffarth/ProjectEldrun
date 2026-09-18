@@ -1066,7 +1066,7 @@ remote git at all.
 - `keyboard_shortcuts` holds per-action chord overrides (Settings → Shortcuts).
 - `fast_mode` is the Fast Mode switch (see above). **Unset and `false` both
   mean off** — the mode is never inferred; only an explicit `true` engages it.
-  Read entirely on the frontend (`src/lib/fastMode.ts`), which also holds the
+  Read entirely on the frontend (`src/lib/agents/fastMode.ts`), which also holds the
   list of what it withdraws; the backend only round-trips the value.
 - `window_state` holds monitor, position, size, and maximized for startup
   restore; experimental flags are stored as plain booleans keyed by flag name.

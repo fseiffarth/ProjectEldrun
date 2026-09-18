@@ -5,7 +5,7 @@
  * its tab label, which is "Claude" for every one of them. The reading that
  * tells them apart is the prompt the session was given, and the desktop already
  * has it: the same transcript tail the model tag is read from
- * (`stores/agentModels`, `agent_tab_recent_prompts`).
+ * (`stores/agents/agentModels`, `agent_tab_recent_prompts`).
  *
  * Two things are load-bearing here and are what this file pins:
  *
@@ -27,7 +27,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(), emit: vi.fn() }));
 
 import { MobileBridgeHost } from "../components/mobile/MobileBridgeHost";
 import { useActivityStore } from "../stores/activity";
-import { clearAgentModelFloorForTest, useAgentModelsStore } from "../stores/agentModels";
+import { clearAgentModelFloorForTest, useAgentModelsStore } from "../stores/agents/agentModels";
 import { useProjectsStore } from "../stores/projects";
 import { useSettingsStore } from "../stores/settings";
 import { useTabsStore, type TabEntry } from "../stores/tabs";

@@ -11,12 +11,12 @@ import {
 import { useSettingsStore } from "../../stores/settings";
 import { calendarColor, useCalendarStore, visibleCalendarIds } from "../../stores/calendar/calendar";
 import { lastTabReadAt, noteUserInput, useActivityStore } from "../../stores/activity";
-import { useAgentModelsStore } from "../../stores/agentModels";
-import { persistScopeLayout } from "../../stores/agentSchedules";
-import { sendCollectedPrompt, useAgentPromptsStore, type ProjectAgentPrompt } from "../../stores/agentPrompts";
+import { useAgentModelsStore } from "../../stores/agents/agentModels";
+import { persistScopeLayout } from "../../stores/agents/agentSchedules";
+import { sendCollectedPrompt, useAgentPromptsStore, type ProjectAgentPrompt } from "../../stores/agents/agentPrompts";
 import { isTrashProject } from "../../lib/trashProject";
 import { isTabColor } from "../../lib/tabColors";
-import type { AgentUsageReport } from "../../lib/agentUsage";
+import type { AgentUsageReport } from "../../lib/agents/agentUsage";
 import { METRIC, agentLabel, agentPromptLeaf, sub } from "../../lib/usageMetrics";
 import { dayKey } from "../../lib/usageRollup";
 import { resolveProjectDirectory } from "../../types";
@@ -56,7 +56,7 @@ import {
   scheduleSummary,
   type ScheduleRule,
   type ScheduledAgentPrompt,
-} from "../../lib/agentSchedule";
+} from "../../lib/agents/agentSchedule";
 
 const MOBILE_DESKTOP_EVENT = "eldrun-mobile-desktop-request";
 

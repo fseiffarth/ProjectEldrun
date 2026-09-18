@@ -3,7 +3,7 @@ import { formatTime, weekdayLabel } from "../../lib/calendar/calendarTime";
 import { useI18nStore, useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
 import type { PromptChartCard } from "../../lib/agents/prompt/chart";
-import type { UsageResetMark } from "../../lib/agentUsageResets";
+import type { UsageResetMark } from "../../lib/agents/agentUsageResets";
 import {
   TIMELINE_CARD_WIDTH,
   TIMELINE_LANE_HEIGHT,

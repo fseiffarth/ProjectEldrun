@@ -643,7 +643,7 @@ pub struct Settings {
     /// merged control could not express "plugged in, still want it lean", which
     /// is the case that asks for this.
     ///
-    /// Read entirely on the frontend (`src/lib/fastMode.ts`, which names the
+    /// Read entirely on the frontend (`src/lib/agents/fastMode.ts`, which names the
     /// exact list); kept here only so it round-trips.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fast_mode: Option<bool>,

@@ -1,6 +1,6 @@
 import type { LinkOpenTarget } from "./browser";
 import type { PyMainVerdict } from "../lib/pythonMainCache";
-import type { AgentCron } from "../lib/agentCron";
+import type { AgentCron } from "../lib/agents/agentCron";
 import type { CursorPack } from "../lib/cursorPacks";
 import type { TranslationKey } from "../lib/i18n";
 
@@ -376,7 +376,7 @@ export interface Settings {
    *  spawn by the backend (`services::root_mcp`). */
   ollama_mcp_models?: string[];
   /** Prefix chips per agent command for the side panel's agent composer; unset
-   *  falls back to `lib/agentPrefaces`' defaults, `[]` means none. */
+   *  falls back to `lib/agents/agentPrefaces`' defaults, `[]` means none. */
   agent_preface_commands?: Record<string, string[]>;
   /** Model names per agent command, typed as that CLI's own `/model <name>`. */
   agent_models?: Record<string, string[]>;
@@ -401,7 +401,7 @@ export interface Settings {
    *  configured local time, one short message is sent to that agent in the Trash
    *  project, so its usage window starts *then* rather than whenever the first
    *  real prompt happens to be typed. A global time list with per-agent
-   *  participation and per-agent overrides; read through `lib/agentCron.ts`,
+   *  participation and per-agent overrides; read through `lib/agents/agentCron.ts`,
    *  which is also where the semantics of every field live. Round-trips through
    *  the backend settings `extra` catch-all — no Rust field needed, since
    *  nothing in the backend reads it. Unset = nothing scheduled. */
@@ -607,7 +607,7 @@ export interface Settings {
    *  widens always-on UI timers to reduce CPU/battery drain. */
   energy_saver?: "off" | "battery" | "always";
   /** Fast mode: drop the display aids that cost a directory walk, a standing
-   *  poll or a per-file read. **Default false.** Read through `lib/fastMode`
+   *  poll or a per-file read. **Default false.** Read through `lib/agents/fastMode`
    *  (`useFastMode` / `fastModeActive`), which is also where the exact list of
    *  what it withdraws lives — never off this key directly, so the list has one
    *  home and every surface withdraws the same things.

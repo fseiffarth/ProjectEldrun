@@ -43,7 +43,7 @@ import { useAgentWorktreePicker } from "./agentWorktrees";
 import { CustomAgentDialog } from "./CustomAgentDialog";
 import { reseedDetached, startDetachedDropSession } from "./detachedDropTargets";
 import { TabHoverCard } from "./TabHoverCard";
-import { useFastMode } from "../../lib/fastMode";
+import { useFastMode } from "../../lib/agents/fastMode";
 import {
   TabSourceBadge,
   TabStatusMark,
@@ -68,8 +68,8 @@ import { useT } from "../../lib/i18n";
 import { useChordHint } from "../../lib/shortcutHint";
 import { TRASH_PROJECT_ID } from "../../lib/trashProject";
 import { AgentScheduleDialog } from "../agents/AgentScheduleDialog";
-import { scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agentSchedules";
-import { nextScheduleOccurrence } from "../../lib/agentSchedule";
+import { scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agents/agentSchedules";
+import { nextScheduleOccurrence } from "../../lib/agents/agentSchedule";
 
 /** Default fly-out card size when no live pane thumbnail is available (group
  *  detach via the bar drag carries no preview). */
@@ -1562,7 +1562,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                         : []),
                       // Other agents drive the same model via `ollama launch` / fallback.
                       // `heavy_harness` cautions, it never withholds — see
-                      // lib/localDrivers.ts. The row stays pickable because
+                      // lib/agents/localDrivers.ts. The row stays pickable because
                       // which local models cope is not something the backend
                       // can probe.
                       ...localDrivers.filter((d) => d.available).map((d) => ({

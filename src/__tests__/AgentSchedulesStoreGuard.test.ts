@@ -13,9 +13,9 @@ import { invoke } from "@tauri-apps/api/core";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) }));
 
-import type { ScheduledAgentPrompt } from "../lib/agentSchedule";
-import { queuePromptForTab } from "../stores/agentPrompts";
-import { SCHEDULE_BUSY_ERROR, SCHEDULE_GONE_ERROR, useAgentSchedulesStore } from "../stores/agentSchedules";
+import type { ScheduledAgentPrompt } from "../lib/agents/agentSchedule";
+import { queuePromptForTab } from "../stores/agents/agentPrompts";
+import { SCHEDULE_BUSY_ERROR, SCHEDULE_GONE_ERROR, useAgentSchedulesStore } from "../stores/agents/agentSchedules";
 
 const invokeMock = vi.mocked(invoke);
 const once: ScheduledAgentPrompt = { id: "prompt-1", enabled: true, message: "go", rule: { type: "once", at: "2026-09-04T13:00" } };

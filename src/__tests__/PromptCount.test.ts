@@ -14,7 +14,7 @@ import {
   hasContent,
   hasSubmit,
   noteInput,
-} from "../lib/promptCount";
+} from "../lib/agents/promptCount";
 
 const PTY = "proj-a:agent-1";
 

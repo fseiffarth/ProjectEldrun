@@ -12,7 +12,7 @@ import {
   type TabKind,
 } from "../../stores/tabs";
 import { lastPtyOutputAt, useActivityStore } from "../../stores/activity";
-import { useAgentTaskStore } from "../../stores/agentTask";
+import { useAgentTaskStore } from "../../stores/agents/agentTask";
 import { useFileSourcesStore } from "../../stores/fileSources";
 import type { InternalViewer } from "../../lib/viewers/fileUtils";
 import { TAB_ACCENT } from "./newTabItems";

@@ -6,9 +6,9 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve([])
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(() => Promise.resolve(() => {})) }));
 
 import { PromptChart } from "../components/agents/PromptChart";
-import { localOccurrenceKey } from "../lib/agentSchedule";
-import { useAgentPromptsStore } from "../stores/agentPrompts";
-import { scheduleCacheKey, useAgentSchedulesStore } from "../stores/agentSchedules";
+import { localOccurrenceKey } from "../lib/agents/agentSchedule";
+import { useAgentPromptsStore } from "../stores/agents/agentPrompts";
+import { scheduleCacheKey, useAgentSchedulesStore } from "../stores/agents/agentSchedules";
 import { useSettingsStore } from "../stores/settings";
 import type { TabEntry } from "../stores/tabs";
 

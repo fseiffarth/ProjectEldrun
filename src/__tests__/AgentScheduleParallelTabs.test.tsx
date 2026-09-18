@@ -20,10 +20,10 @@ import { writePtyInput } from "../lib/terminalInput";
 import {
   _clearScheduledAgentInputsForTest,
   registerScheduledAgentInput,
-} from "../lib/scheduledAgentInput";
+} from "../lib/agents/scheduledAgentInput";
 import { _clearPtyActivityForTest, noteAgentTurn, notePtyOutput, noteUserInput, useActivityStore } from "../stores/activity";
-import { useAgentPromptsStore } from "../stores/agentPrompts";
-import { useAgentSchedulesStore } from "../stores/agentSchedules";
+import { useAgentPromptsStore } from "../stores/agents/agentPrompts";
+import { useAgentSchedulesStore } from "../stores/agents/agentSchedules";
 import { useTabsStore, type TabEntry } from "../stores/tabs";
 
 const invokeMock = vi.mocked(invoke);

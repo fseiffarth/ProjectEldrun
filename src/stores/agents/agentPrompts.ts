@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
-import { buildSendNowSchedule, schedulesToPruneForSend } from "../lib/agents/prompt/send";
+import { buildSendNowSchedule, schedulesToPruneForSend } from "../../lib/agents/prompt/send";
 import { useAgentSchedulesStore } from "./agentSchedules";
 
 /**

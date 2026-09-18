@@ -11,7 +11,7 @@ import {
   schedulesToPruneForSend,
   sendNowRule,
 } from "../lib/agents/prompt/send";
-import { scheduleVerdict, type ScheduledAgentPrompt } from "../lib/agentSchedule";
+import { scheduleVerdict, type ScheduledAgentPrompt } from "../lib/agents/agentSchedule";
 
 const now = new Date(2026, 8, 2, 14, 37, 42);
 

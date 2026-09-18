@@ -5,7 +5,7 @@ import {
   agentFenceLabelKey,
   agentFenceReasonKey,
   parseAgentFencePaths,
-} from "../lib/agentFence";
+} from "../lib/agents/agentFence";
 
 describe("agent fence project-pill states", () => {
   it("maps inherit/off/on to their distinct labels", () => {

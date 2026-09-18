@@ -1340,7 +1340,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     only, so a close in a project the desktop is not showing would never be
     written and the phone's own catalog — which is read out of
     `sessions/<id>/terminals.json` — would list the closed tab for ever. The
-    bridge writes the scope itself (`persistScopeLayout`, `stores/agentSchedules`'
+    bridge writes the scope itself (`persistScopeLayout`, `stores/agents/agentSchedules`'
     `persistScheduleBinding` renamed to what it always did, since a rename from
     the phone needed the same write and never made it). A project the desktop
     has not restored this session is restored first through
@@ -1644,7 +1644,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   list carries the last one under its label. No disclosure control: an expander
   answers "which tab did I set on the docs" one tap at a time, which is the work
   the line exists to save.
-  - The reading is the desktop's own and costs no new read. `stores/agentModels`
+  - The reading is the desktop's own and costs no new read. `stores/agents/agentModels`
     already tails each agent's transcript for the model pill and the Agents
     view's "last prompt:" line (`agent_tab_recent_prompts` →
     `agent_session_recent_prompts`), so the tail is simply kept

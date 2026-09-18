@@ -1,6 +1,6 @@
 ## Group U — Interface Cost & Responsiveness
 
-*Created 2026-08-26. Files: `src/lib/fastMode.ts`, `src/stores/power.ts`,
+*Created 2026-08-26. Files: `src/lib/agents/fastMode.ts`, `src/stores/power.ts`,
 `src/styles/themes.css`, plus the surfaces each item names.*
 
 *The group exists because none of the others fit and the subject is real: what
@@ -21,7 +21,7 @@ screen is not.*
 210. **Fast mode.** ✅ Done 2026-08-26, code-complete and **live-unverified**.
     One global toggle (Settings → Fast mode, default off) that withdraws the
     display aids whose cost is a directory walk, a standing poll, or a read of
-    every file in view. The list lives in `src/lib/fastMode.ts` — one home, so
+    every file in view. The list lives in `src/lib/agents/fastMode.ts` — one home, so
     the help text and the code cannot drift — and everything on it has to share
     three properties: it costs work nobody asked for, its absence is *legible*
     (no spinner, no "…" that never resolves), and nothing is lost but the aid.

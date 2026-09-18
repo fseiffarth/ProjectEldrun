@@ -14,7 +14,7 @@ import {
   parseTags,
   tagCounts,
 } from "../lib/agents/prompt/tags";
-import type { ProjectAgentPrompt } from "../stores/agentPrompts";
+import type { ProjectAgentPrompt } from "../stores/agents/agentPrompts";
 
 function prompt(id: string, message: string, tags?: string[]): ProjectAgentPrompt {
   return { id, message, created_at: "2026-09-02T10:00:00Z", updated_at: "2026-09-02T10:00:00Z", tags };

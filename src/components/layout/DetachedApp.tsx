@@ -61,7 +61,7 @@ import { PLATFORM } from "../../lib/platform";
 import { useTabLandStore } from "../../stores/tabLand";
 import { startFocusTracking, useQuiesce } from "../../stores/power";
 import { clearStrayFullscreen } from "../../lib/strayFullscreen";
-import { applyFastModeAttribute, useFastMode } from "../../lib/fastMode";
+import { applyFastModeAttribute, useFastMode } from "../../lib/agents/fastMode";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { useProjectsStore } from "../../stores/projects";
 import { useBoxesStore } from "../../stores/boxes";

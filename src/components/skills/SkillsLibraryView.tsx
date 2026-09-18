@@ -13,7 +13,7 @@ import {
   refreshSkillSource,
   removeSkillSource,
   uninstallSkill,
-} from "../../lib/skills";
+} from "../../lib/agents/skills";
 import type {
   InstalledSkill,
   SkillCatalogEntry,

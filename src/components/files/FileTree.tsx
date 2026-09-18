@@ -48,7 +48,7 @@ import {
 } from "../../lib/fileMove";
 import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
 import { DirSizeUnavailable, guardedDirSize, isHostTimeout } from "../../lib/dirSizeGuard";
-import { useFastMode } from "../../lib/fastMode";
+import { useFastMode } from "../../lib/agents/fastMode";
 import { isPythonPath } from "../../lib/viewers/python";
 import {
   checkMainScripts,
@@ -1219,7 +1219,7 @@ export function FileTree({
   const renderGroupTotal = (bytes: number, partial: boolean, title: string) => (
     // Fast mode: no folder walk means every sum is a permanent lower bound, so
     // the header would read "\u2265 1.2 MB" for the rest of the session. A
-    // figure that can never resolve is worse than none — see `lib/fastMode`'s
+    // figure that can never resolve is worse than none — see `lib/agents/fastMode`'s
     // rule that an absence must be legible rather than look stuck.
     fastMode ? null : <span
       className={`file-tree-path-total${partial ? " partial" : ""}`}

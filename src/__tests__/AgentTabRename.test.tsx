@@ -17,8 +17,8 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import { AgentSchedulesView } from "../components/agents/AgentSchedulesView";
-import { useAgentPromptsStore } from "../stores/agentPrompts";
-import { useAgentSchedulesStore } from "../stores/agentSchedules";
+import { useAgentPromptsStore } from "../stores/agents/agentPrompts";
+import { useAgentSchedulesStore } from "../stores/agents/agentSchedules";
 import { useTabsStore, type TabEntry } from "../stores/tabs";
 
 const AGENT_TAB: TabEntry = {

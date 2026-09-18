@@ -1,8 +1,8 @@
 import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
-import { useSettingsStore } from "./settings";
-import { energySaverActive, usePowerStore } from "./power";
+import { useSettingsStore } from "../settings";
+import { energySaverActive, usePowerStore } from "../power";
 
 /**
  * **Load a local (Ollama) model into memory when Eldrun starts.**
@@ -75,7 +75,7 @@ async function residentModels(): Promise<string[]> {
 /**
  * Warm a given list of models into memory, **one at a time**, reporting after
  * each. Shared by the launch-time autoload and the post-upgrade restore
- * (`stores/ollamaUpgrade`) so the two cannot disagree about what loading a set
+ * (`stores/agents/ollamaUpgrade`) so the two cannot disagree about what loading a set
  * of models means: same sequencing (two models at once contend for the same
  * VRAM and can push each other back out to CPU), same `not_running` retry (a
  * server that has just been started, or just been *replaced*, accepts requests

@@ -172,7 +172,7 @@ stale after a project move — except for cwds the scope *derives*: a linked
 worktree under the root (`<root>/.eldrun/worktrees/<name>`) and, for a box
 scope, a member project's root (or a worktree under one), which is where the
 "+" menu's per-member Claude tab is deliberately started. `restoredAgentCwd`
-in `src/lib/agentWorktrees.ts` is the rule; the box restore passes its member
+in `src/lib/agents/agentWorktrees.ts` is the rule; the box restore passes its member
 roots as `agentRoots`. (On the current Claude CLI `--resume <id>` finds a
 session from any cwd — verified live — so the cwd decides where the agent
 *works*, not whether the conversation comes back.)

@@ -3,7 +3,7 @@
  * task summary) from a composed `<scope>:<key>` PTY id.
  */
 import { describe, it, expect, beforeEach } from "vitest";
-import { useAgentTaskStore } from "../stores/agentTask";
+import { useAgentTaskStore } from "../stores/agents/agentTask";
 
 describe("useAgentTaskStore", () => {
   beforeEach(() => {

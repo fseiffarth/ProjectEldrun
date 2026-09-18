@@ -25,7 +25,7 @@ import { useGitDirtyStore } from "../../stores/gitDirty";
 import { providerName, gitTypeLabel } from "./projectTypeTags";
 import { GitTokenScopes, tokenPageUrl } from "../common/GitTokenScopes";
 import { ProjectHoverCard, projectDescription, useProjectHoverCard } from "./ProjectHoverCard";
-import { useFastMode } from "../../lib/fastMode";
+import { useFastMode } from "../../lib/agents/fastMode";
 import { ActivityCalendar } from "./ActivityCalendar";
 import { CategoryEditor } from "./CategoryEditor";
 import { ExtendToRemoteDialog } from "./ExtendToRemoteDialog";
@@ -53,7 +53,7 @@ import {
   agentFenceLabelKey,
   agentFenceReasonKey,
   type AgentFenceStatus,
-} from "../../lib/agentFence";
+} from "../../lib/agents/agentFence";
 
 interface Props {
   project: ProjectEntry;
@@ -1366,7 +1366,7 @@ export function ProjectPill({
   // Shared hover card (identical popup in the right file-viewer). Owns the
   // popup position, today's time, CPU% and the scaffold-missing flag.
   const hover = useProjectHoverCard(project);
-  // Fast mode withdraws the card (see `lib/fastMode`) — the hook stays
+  // Fast mode withdraws the card (see `lib/agents/fastMode`) — the hook stays
   // mounted and simply never opens, since it arms nothing until `open`.
   const fastMode = useFastMode();
   const [contextMenu, setContextMenu] = useState<ContextMenuPos | null>(null);

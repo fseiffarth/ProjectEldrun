@@ -287,7 +287,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                       }]
                     : []),
                   // `heavy_harness` cautions, it never withholds — see
-                  // lib/localDrivers.ts. The row stays pickable because which
+                  // lib/agents/localDrivers.ts. The row stays pickable because which
                   // local models cope is not something the backend can probe.
                   ...localDrivers.filter((d) => d.available).map((d) => ({
                     key: d.id,

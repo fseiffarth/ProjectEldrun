@@ -31,7 +31,7 @@ import {
   listInstalledSkills,
   projectSkills,
   uninstallSkill,
-} from "../lib/skills";
+} from "../lib/agents/skills";
 
 beforeEach(() => {
   invoked.length = 0;

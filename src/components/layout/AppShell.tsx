@@ -22,8 +22,8 @@ import {
   saverInterval,
   startFocusTracking,
 } from "../../stores/power";
-import { applyFastModeAttribute, useFastMode } from "../../lib/fastMode";
-import { useOllamaAutoloadOnLaunch } from "../../stores/ollamaAutoload";
+import { applyFastModeAttribute, useFastMode } from "../../lib/agents/fastMode";
+import { useOllamaAutoloadOnLaunch } from "../../stores/agents/ollamaAutoload";
 import { useRendererWatchdog } from "../../lib/rendererWatchdog";
 import { livePanelToggleKey } from "../../lib/shortcuts";
 import { CenterPanel } from "./CenterPanel";
@@ -317,7 +317,7 @@ export function AppShell() {
   const quiesce = useQuiesce();
   const fastMode = useFastMode();
   // Load the armed local (Ollama) models into memory at launch — main window
-  // only, and skipped (loudly) while Energy Saver is on. See stores/ollamaAutoload.
+  // only, and skipped (loudly) while Energy Saver is on. See stores/agents/ollamaAutoload.
   useOllamaAutoloadOnLaunch();
   // Reload the renderer if its JS heap runs away, before it OOM-crashes the
   // webview (a 44 GB leak was observed 2026-07-31). See lib/rendererWatchdog.

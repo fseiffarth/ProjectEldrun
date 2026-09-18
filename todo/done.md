@@ -631,7 +631,7 @@ Design notes worth keeping in mind before extending it:
   backend spawn fires again for every resumable agent tab respawned on relaunch,
   which would report a fresh "agent tab opened" each morning.
 
-86. **Prompt counting is a keystroke heuristic.** `lib/promptCount.ts` counts a
+86. **Prompt counting is a keystroke heuristic.** `lib/agents/promptCount.ts` counts a
     submit as "Enter with content typed since the last Enter". It covers all
     eleven agents and every local model without reading another app's data dir,
     but an Enter inside an agent's multi-line editor buffer over-counts. If Claude

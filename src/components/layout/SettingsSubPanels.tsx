@@ -15,13 +15,13 @@ import {
   codexHookNeedsTrust,
   openCodexHooksTab,
   type CodexHookState,
-} from "../../lib/codexHooks";
+} from "../../lib/agents/codexHooks";
 import type { GlobalAppEntry } from "../../types";
 import { parseSshAddress } from "../projects/scaffold";
 import { useProjectsStore } from "../../stores/projects";
 import { useGlobalMachinesStore } from "../../stores/globalMachines";
 import { useT, type TranslationKey } from "../../lib/i18n";
-import { notifyAgentRegistryChanged } from "../../lib/agentRegistry";
+import { notifyAgentRegistryChanged } from "../../lib/agents/agentRegistry";
 import {
   DEFAULT_PREFACE_COMMANDS,
   MAX_PREFACE_COMMANDS,
@@ -29,7 +29,7 @@ import {
   agentModelsFor,
   prefaceCommandsFor,
   sanitizePrefaceCommand,
-} from "../../lib/agentPrefaces";
+} from "../../lib/agents/agentPrefaces";
 import {
   AGENT_CRON_MESSAGE,
   addTime,
@@ -44,10 +44,10 @@ import {
   withCronEnabled,
   withGlobalTimes,
   type AgentCron,
-} from "../../lib/agentCron";
+} from "../../lib/agents/agentCron";
 import { formatTime } from "../../lib/calendar/calendarTime";
 import { useUse24h } from "../../lib/timeFormat";
-import { AGENT_FENCE_DEFAULT_PATHS, parseAgentFencePaths } from "../../lib/agentFence";
+import { AGENT_FENCE_DEFAULT_PATHS, parseAgentFencePaths } from "../../lib/agents/agentFence";
 
 interface OllamaModelInfo {
   name: string;
@@ -965,7 +965,7 @@ function NextRunLabel({ cron, cmd }: { cron: AgentCron | undefined; cmd: string 
  * ships: a CLI adds a slash command in a point release and renames its models
  * more often than that. What is NOT offered here is a permission or plan mode —
  * an agent's authority is set through the agent's own CLI, and every entry in
- * these lists is literally typed into it (see `lib/agentPrefaces`).
+ * these lists is literally typed into it (see `lib/agents/agentPrefaces`).
  *
  * An agent the user has never touched carries no stored entry at all and falls
  * back to the defaults; "Use defaults" deletes the key rather than writing the
@@ -2482,7 +2482,7 @@ export function OllamaPanel({ onBack, onClose }: SubPanelProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shownRegistry]);
 
-  // "Load on Eldrun start" — which models `stores/ollamaAutoload` warms into
+  // "Load on Eldrun start" — which models `stores/agents/ollamaAutoload` warms into
   // memory at launch. The per-model switches write straight through (the same
   // setting the 🧠 menu's chip toggles, so the two surfaces cannot disagree);
   // the Energy Saver opt-out is *staged* behind a Save button, because it is the
@@ -2989,7 +2989,7 @@ export function OllamaPanel({ onBack, onClose }: SubPanelProps) {
       )}
 
       {/* Load-on-start: the models Eldrun warms into memory at launch, plus the
-          Energy Saver opt-out. See `stores/ollamaAutoload` for the rules. */}
+          Energy Saver opt-out. See `stores/agents/ollamaAutoload` for the rules. */}
       <div className="settings-section-title">
         {t("ollama.autostartTitle")} <UntestedTag />
       </div>

@@ -11,8 +11,8 @@ import { useT } from "../../lib/i18n";
 import { useExperimental } from "../../lib/experimental";
 import { cmdToKind, isDetachedPtyId, type TabKind } from "../../stores/tabs";
 import { isInterruptInput, lastPtyOutputAt, notePtySpawn, noteUserInput, splitPtyId, useActivityStore } from "../../stores/activity";
-import { useAgentTaskStore } from "../../stores/agentTask";
-import { noteInput } from "../../lib/promptCount";
+import { useAgentTaskStore } from "../../stores/agents/agentTask";
+import { noteInput } from "../../lib/agents/promptCount";
 import { METRIC, agentPromptLeaf, sub } from "../../lib/usageMetrics";
 import { ROOT_SCOPE, bumpUsage, markAgentActive } from "../../stores/usage";
 import {
@@ -27,7 +27,7 @@ import { useHpcGuardStore } from "../../stores/remote/hpc/hpcGuardPrompt";
 import { CSI_U_SHIFT_TAB, FORCE_SELECTION_MODIFIER, SILENT_START_MS, agentMouseDownAction, bufferTail, claimInitialInput, decodeOsc52Clipboard, initialInputForPty, claudeLaunchName, isClaudeCommand, isCodexCommand, isTerminalAutoReply, isTerminalIdentityResponse, isTerminalReport, showsAgentTrustDialog, silentStartNotice, stripTerminalQueries, suppressNativeContextMenu, terminalProgramLabel, type SilentStartNotice } from "../../lib/terminalControl";
 import { registerTerminal, unregisterTerminal } from "../../lib/terminalRegistry";
 import { clearPtyInput, writePtyInput } from "../../lib/terminalInput";
-import { registerScheduledAgentInput } from "../../lib/scheduledAgentInput";
+import { registerScheduledAgentInput } from "../../lib/agents/scheduledAgentInput";
 import "@xterm/xterm/css/xterm.css";
 
 // Hoisted to module scope: keystroke input fires this on every key, so we reuse
@@ -790,7 +790,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     //
     // This is also the one place Eldrun sees everything the user asks an agent,
     // so the usage recap's "you asked them N things" is counted here (see
-    // lib/promptCount): Enter with content pending = one submit.
+    // lib/agents/promptCount): Enter with content pending = one submit.
     term.onData((data) => {
       if (staleParse > 0 && isTerminalReport(data)) {
         return; // an answer to a query xterm only just parsed out of replayed output

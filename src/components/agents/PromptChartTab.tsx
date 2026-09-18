@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo } from "react";
 import { useT } from "../../lib/i18n";
 import { useActivityStore } from "../../stores/activity";
-import { scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agentSchedules";
+import { scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agents/agentSchedules";
 import { useTabsStore, type TabEntry } from "../../stores/tabs";
 import { PromptChart } from "./PromptChart";
 

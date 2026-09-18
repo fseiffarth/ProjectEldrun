@@ -41,7 +41,7 @@ import {
   isAgentMenuKind,
   worktreeName,
   type GitWorktree,
-} from "../../lib/agentWorktrees";
+} from "../../lib/agents/agentWorktrees";
 
 /**
  * The "+" menus' worktree question, shared by `TabBar` and the popout's

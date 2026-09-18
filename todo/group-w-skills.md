@@ -9,7 +9,7 @@ scope: [`docs/skills_plan.md`](../docs/skills_plan.md).*
 *Files: new `src/components/skills/SkillsLibraryTab.tsx` +
 `SkillsLibraryView.tsx` + `SkillsOverlay.tsx`, new `src/stores/skills.ts`,
 `src/components/layout/{AppShell,LocalModelMenu}.tsx`,
-`src/components/tabs/{NewTabMenu,TabBar}.tsx`, new `src/lib/skills.ts`;
+`src/components/tabs/{NewTabMenu,TabBar}.tsx`, new `src/lib/agents/skills.ts`;
 backend new `src-tauri/src/services/skills.rs` +
 `src-tauri/src/commands/skills.rs` + `src-tauri/src/schema/skills.rs`,
 `src-tauri/src/services/sandbox.rs` (`CLAUDE_UNMOUNTED`),

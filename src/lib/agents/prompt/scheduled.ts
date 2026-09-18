@@ -20,7 +20,7 @@
  */
 import { sanitizeAgentMessage } from "../../../../shared/agentComposer";
 import { isFinishedOneTime } from "./send";
-import { nextScheduleOccurrence, type ScheduledAgentPrompt } from "../../agentSchedule";
+import { nextScheduleOccurrence, type ScheduledAgentPrompt } from "../agentSchedule";
 
 /** One agent tab's rules, named the way the row will name it. */
 export interface ScheduleTargetRules {

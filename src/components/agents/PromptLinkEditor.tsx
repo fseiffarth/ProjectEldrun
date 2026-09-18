@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { edgeCommandChoices, toggleEdgeCommand } from "../../lib/agents/prompt/links";
 import { useT } from "../../lib/i18n";
-import type { PromptLink } from "../../stores/agentPrompts";
+import type { PromptLink } from "../../stores/agents/agentPrompts";
 import { ContextMenuPortal } from "../common/ContextMenuPortal";
 
 interface Props {
@@ -11,7 +11,7 @@ interface Props {
   toLabel: string;
   /** The tab an `after` edge queues its target on, when it is open. */
   tabLabel?: string;
-  /** That tab's agent's own prefix commands (`lib/agentPrefaces`). */
+  /** That tab's agent's own prefix commands (`lib/agents/agentPrefaces`). */
   offered: string[];
   x: number;
   y: number;

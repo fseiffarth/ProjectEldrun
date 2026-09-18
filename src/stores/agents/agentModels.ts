@@ -1,13 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
-import { shortModelName } from "../lib/agentModel";
-import { adoptTranscriptPrompts, adoptTypedPrompt, type TranscriptPrompt } from "../lib/agents/prompt/adopt";
-import { lastPromptEcho } from "../lib/agents/prompt/echo";
-import { terminalFor } from "../lib/terminalRegistry";
-import { splitPtyId } from "../lib/ptyId";
-import { useActivityStore } from "./activity";
-import { isDetachedWindow } from "./detachedContext";
-import { useTabsStore, type TabEntry } from "./tabs";
+import { shortModelName } from "../../lib/agents/agentModel";
+import { adoptTranscriptPrompts, adoptTypedPrompt, type TranscriptPrompt } from "../../lib/agents/prompt/adopt";
+import { lastPromptEcho } from "../../lib/agents/prompt/echo";
+import { terminalFor } from "../../lib/terminalRegistry";
+import { splitPtyId } from "../../lib/ptyId";
+import { useActivityStore } from "../activity";
+import { isDetachedWindow } from "../detachedContext";
+import { useTabsStore, type TabEntry } from "../tabs";
 
 /**
  * Which model each agent tab last answered with, and the last prompt it was
@@ -42,7 +42,7 @@ export function clearAgentModelFloorForTest(): void {
 }
 
 interface AgentModelsStore {
-  /** Composed PTY id → display label (`lib/agentModel.shortModelName`). Absent
+  /** Composed PTY id → display label (`lib/agents/agentModel.shortModelName`). Absent
    *  when the transcript names no model yet or the agent keeps none. */
   byTab: Record<string, string>;
   /** Composed PTY id → the last prompt the tab was given, one cleaned line,

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { parseUsageReport, type UsageReport } from "../../../shared/usageReport";
-import { readAgentUsage } from "../../lib/agentUsage";
-import { usageResetMarks, type UsageResetMark } from "../../lib/agentUsageResets";
+import { readAgentUsage } from "../../lib/agents/agentUsage";
+import { usageResetMarks, type UsageResetMark } from "../../lib/agents/agentUsageResets";
 
 /** How often the chart re-reads a panel while it is on screen. The backend
  *  reuses a read for a minute and the run spends no quota, but a reset moves

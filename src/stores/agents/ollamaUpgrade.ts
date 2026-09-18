@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { ollamaVersionStatus } from "../lib/localDrivers";
+import { ollamaVersionStatus } from "../../lib/agents/localDrivers";
 import { loadModelsSequentially } from "./ollamaAutoload";
 
 /**

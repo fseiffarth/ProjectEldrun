@@ -38,7 +38,7 @@
  * clock is ambient.
  *
  * The impure half — asking the backend to run the agent's one-shot print mode
- * as a background process, with no terminal or tab — is `lib/agentCronRun.ts`.
+ * as a background process, with no terminal or tab — is `lib/agents/agentCronRun.ts`.
  * The scheduler that calls it is `components/layout/AgentCronHost.tsx`.
  */
 

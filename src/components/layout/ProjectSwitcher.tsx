@@ -21,7 +21,7 @@ import { useRootOverlayStore } from "../../stores/rootOverlay";
 import { useGitDirtyStore } from "../../stores/gitDirty";
 import { projectStations, useKeyboardSteeringStore } from "../../stores/keyboardSteering";
 import { useQuiesce, saverInterval } from "../../stores/power";
-import { useFastMode } from "../../lib/fastMode";
+import { useFastMode } from "../../lib/agents/fastMode";
 import { resolveProjectDirectory, type ProjectEntry } from "../../types";
 import { useT } from "../../lib/i18n";
 

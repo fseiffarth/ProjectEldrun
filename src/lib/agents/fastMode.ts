@@ -1,4 +1,4 @@
-import { useSettingsStore } from "../stores/settings";
+import { useSettingsStore } from "../../stores/settings";
 
 /**
  * **Fast mode** — one switch that withdraws the display aids whose cost is a

@@ -22,7 +22,7 @@ import type {
   SkillDetail,
   SkillSource,
   SkillTarget,
-} from "../types/skills";
+} from "../../types/skills";
 
 /** `~/.claude/skills/` — read by every project on this machine, and by no
  *  other machine. */

@@ -8,7 +8,7 @@ import {
   scheduleSummary,
   scheduleVerdict,
   type ScheduledAgentPrompt,
-} from "../lib/agentSchedule";
+} from "../lib/agents/agentSchedule";
 
 function prompt(rule: ScheduledAgentPrompt["rule"], last?: ScheduledAgentPrompt["last"]): ScheduledAgentPrompt {
   return { id: "schedule-1", enabled: true, message: "Continue", rule, last };

@@ -7,10 +7,10 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(() => Promise.resolve(()
 
 import { AgentSchedulesView } from "../components/agents/AgentSchedulesView";
 import { PromptChartTab } from "../components/agents/PromptChartTab";
-import { localOccurrenceKey } from "../lib/agentSchedule";
+import { localOccurrenceKey } from "../lib/agents/agentSchedule";
 import { useActivityStore } from "../stores/activity";
-import { useAgentPromptsStore } from "../stores/agentPrompts";
-import { useAgentSchedulesStore } from "../stores/agentSchedules";
+import { useAgentPromptsStore } from "../stores/agents/agentPrompts";
+import { useAgentSchedulesStore } from "../stores/agents/agentSchedules";
 import { useTabsStore, type TabEntry } from "../stores/tabs";
 
 const agent: TabEntry = { key: "agent-1", label: "Claude", cmd: "claude", cwd: "/project", kind: "agent", sessionId: "session-abc", scheduleTargetId: "target-1" };

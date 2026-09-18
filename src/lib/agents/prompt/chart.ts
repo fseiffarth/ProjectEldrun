@@ -4,16 +4,16 @@ import {
   nextScheduleOccurrence,
   scheduleStatus,
   type ScheduledAgentPrompt,
-} from "../../agentSchedule";
+} from "../agentSchedule";
 import { promptOfSchedule } from "./scheduled";
-import { shortModelName } from "../../agentModel";
+import { shortModelName } from "../agentModel";
 import { agentPromptAutoTags } from "./autoTags";
 import { matchesTagsOrText } from "./tags";
 import type {
   ProjectAgentPrompt,
   PromptLink,
   SentAgentPrompt,
-} from "../../../stores/agentPrompts";
+} from "../../../stores/agents/agentPrompts";
 
 export type PromptCardState = "draft" | "scheduled" | "queued" | "sent" | "chained";
 
@@ -31,7 +31,7 @@ export interface PromptChartStrand {
    *  after a `/clear` still belong to the one strand. */
   tabId?: string;
   agent?: string;
-  /** The model a live tab last answered with (`stores/agentModels`), as the
+  /** The model a live tab last answered with (`stores/agents/agentModels`), as the
    *  pill beside the tab shows it. Absent on a closed strand: its rows carry
    *  their own. */
   model?: string;

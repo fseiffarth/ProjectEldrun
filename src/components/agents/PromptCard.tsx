@@ -2,10 +2,10 @@ import { useEffect, useState, type PointerEvent as ReactPointerEvent } from "rea
 import { formatTags, parseTags } from "../../lib/agents/prompt/tags";
 import { useI18nStore, useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
-import { localWallClock } from "../../lib/agentSchedule";
+import { localWallClock } from "../../lib/agents/agentSchedule";
 import type { PromptChartCard } from "../../lib/agents/prompt/chart";
 import { formatTimelineInstant } from "../../lib/agents/prompt/timeline";
-import type { PromptLink } from "../../stores/agentPrompts";
+import type { PromptLink } from "../../stores/agents/agentPrompts";
 import { Dropdown } from "../common/Dropdown";
 import { MarkdownPromptField } from "../common/MarkdownPromptField";
 

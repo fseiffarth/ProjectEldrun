@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type MutableRefObject, type RefObject } from "react";
-import type { PromptLink } from "../../stores/agentPrompts";
+import type { PromptLink } from "../../stores/agents/agentPrompts";
 
 export interface Line { link: PromptLink; x1: number; y1: number; x2: number; y2: number }
 

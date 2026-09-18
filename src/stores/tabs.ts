@@ -1,11 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
-import { restoredAgentCwd } from "../lib/agentWorktrees";
+import { restoredAgentCwd } from "../lib/agents/agentWorktrees";
 import { isTabColor, type TabColor } from "../lib/tabColors";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import type { InternalViewer } from "../lib/viewers/fileUtils";
 import type { AutocompleteMode } from "../types";
-import { forgetPty } from "../lib/promptCount";
+import { forgetPty } from "../lib/agents/promptCount";
 import { BOX_SCOPE_PREFIX, splitPtyId } from "../lib/ptyId";
 import { METRIC, agentMetricLeaf, sub } from "../lib/usageMetrics";
 import { useLinkRoutingStore } from "./linkRouting";
@@ -677,7 +677,7 @@ export interface TabEntry {
   // create one without a click behind them: a Mobile create (a keyed hash — it
   // contains no client token) whose timed-out retry must resolve to this exact
   // saved tab instead of duplicating it, and the agent warm-up cron, whose slot
-  // id (`lib/agentCron`'s `agentCronKey`) does the same job for two ticks racing
+  // id (`lib/agents/agentCron`'s `agentCronKey`) does the same job for two ticks racing
   // inside the grace window. Named for its first caller; read only by
   // `hydrateThenCreateInScope`, which is what both go through.
   mobileRequestHash?: string;
