@@ -217,12 +217,22 @@ intent. What is left is listed here.
       - [ ] ❌ Doesn't work
 
 144. **Per-window capability split for `present-*` / `detached-*`.**
-    **Stale premise:** `capabilities/browser.json` now exists and scopes
-    `browser-*` to *zero* permissions — so the "verify first whether Tauri v2's
-    ACL gates `generate_handler!` commands at all" question is already answered
-    in the affirmative by that file plus `tests/capability_scope.rs`. Scoping is
-    also by **webview**, not window (`capabilities/default.json:5`
-    `"webviews": [...]`). The work is now just doing the `present-*` split.
+    **Re-evaluated 2026-09-18 — the "verify first" question below is answered,
+    and the answer is *no*.** `capabilities/browser.json`'s own description
+    says it: `build.rs` defines no app ACL manifest, and Tauri 2 checks an app
+    (`generate_handler!`) command's ACL only for a **remote** origin — a
+    capability file governs plugin permissions only. So a local-origin
+    `present-*` webview can invoke every app command whatever
+    `capabilities/*.json` says, and splitting `default.json` would narrow
+    plugin permissions and nothing else. (An earlier note here claimed the
+    opposite; it was wrong.) The two real shapes: declare the commands in
+    `build.rs` (`tauri_build::AppManifest::commands(...)`), which puts app
+    commands under the ACL for every window and needs the full allowlist for
+    `main`/`detached-*` up front; or a runtime `webview.label()` guard that
+    refuses everything but the presenter's handful for `present-*` — the
+    smaller change, and none exists today. Scoping is by **webview**, not
+    window (`capabilities/default.json:5`). Severity unchanged (low): the
+    audience window only ever loads the app's own bundle.
     Original text: `capabilities/default.json` was the only capability file and applies to
     `windows: ["main", "detached-*", "present-*"]`, so every one of the ~300
     application commands is reachable from the deck presenter's audience window
@@ -249,7 +259,10 @@ intent. What is left is listed here.
     instead of decoding Claude's lossy directory name, with
     `transcript_name_matches` only as a fallback — which removes the
     "replicate an undocumented encoding, drift fails silently" objection this
-    entry was blocked on. **Still open: cross-project *read*.** Reassess the
+    entry was blocked on. **Still open: cross-project *read*** — and not only in
+    containers: the bubblewrap fence plans its transcript mounts with the same
+    function (`agent_fence.rs:717`), so a fenced agent tab can read every other
+    project's conversation history too (re-checked 2026-09-18). Reassess the
     cost note below before doing more; it no longer describes the work.
     Original text: The
     container's `~/.claude` mount is now per-entry with an exclusion list
@@ -283,6 +296,15 @@ intent. What is left is listed here.
     on a project's first open instead of picking. (`python.rs:177` also runs
     `poetry env info -p` with the untrusted project as cwd.) Low severity: when
     the project's container toggle is on, the run tab is contained anyway.
+    **Re-evaluated 2026-09-18 — still open, and now the odd one out.**
+    `services::exec_trust` has since put every other project-supplied program
+    Eldrun runs on the host (git hooks, `latexmkrc`, the project's prettier)
+    behind an ask-once fingerprint; nothing in `python.rs` touches it, so an
+    in-tree `.venv/bin/python` still wins auto-select unprompted and
+    `poetry env info -p` still runs with the project as cwd (`python.rs:230`).
+    Preferred fix is now a fourth `TrustKind` (the in-tree interpreter +
+    `pyvenv.cfg`, and `pyproject.toml` before the poetry probe) rather than the
+    bespoke first-open prompt described above.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
       - [ ] ✅ Works
@@ -425,7 +447,22 @@ intent. What is left is listed here.
       for every local git call this codebase makes — there is no way to keep
       "some filters, but not attacker-chosen ones" here, since the command
       name *is* the filter's entire configuration surface.
-    - **Still residual, deliberately**: `.git/hooks/*` and `core.sshCommand`/
+    - **Re-evaluated 2026-09-18 — most of the residual below is closed.**
+      `services::exec_trust` (`TrustKind::GitHooks`) fingerprints the hook
+      files plus `core.hooksPath`, `core.sshCommand` and `credential*.helper`
+      and asks once before Commit / Push / Reword / Publish
+      (`git.rs` `require_hook_trust` + `push_local`, `git_publish.rs`
+      `local_publish`); `git_checkout` and the worktree verbs pin
+      `core.hooksPath=` (`NO_HOOKS_CONFIG`); #158 mounts `.git/config` and
+      `.git/hooks` read-only for fenced and contained agents. The
+      "unhardened" line is stale too: `git_peer` runs local git through
+      `hookless_git_command_in`, `git_publish` through
+      `hardened_git_command_in`, and no bare `Command::new("git")` is left
+      outside tests. **What is actually still open:** remote git calls are not
+      sanitized, the Git LFS cost above, and #158's create-a-`commondir`
+      residual for a plain `git` in the user's own terminal.
+    - **Residual as written on 2026-07-28 (superseded, kept for the
+      reasoning)**: `.git/hooks/*` and `core.sshCommand`/
       `credential.helper` fire only on **user-initiated** writes (Commit,
       Push, Checkout) — a repo's own hooks are a feature there, and a config
       denylist can't reach a hook anyway (a file in a well-known directory,

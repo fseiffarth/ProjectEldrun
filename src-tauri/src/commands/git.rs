@@ -95,13 +95,17 @@ const DIFF_DRIVER_CMDS: &[&str] = &["diff", "log", "show", "blame"];
 ///   git call goes through this function, `git_commit` included, and a user's own
 ///   `pre-commit`/`commit-msg` hooks are the point of that one. It is pinned per
 ///   command instead, on the verbs that check out a tree without authoring
-///   anything — see [`NO_HOOKS_CONFIG`]. The residual is every *other* command
-///   that can fire a hook (`git_checkout`'s `post-checkout`, a push's
-///   `pre-push`), which for a container-toggled project means a contained agent
-///   writing a hook file gets execution on the **host**. Still open — a config
-///   denylist doesn't reach it, since a hook is a file in a well-known
-///   directory, not a config key naming one; deliberately out of scope for the
-///   #151 pass that closed the filter/diff residual above.
+///   anything — see [`NO_HOOKS_CONFIG`] (`git_checkout` and the worktree
+///   verbs). The verbs where the user's hooks *are* the point — Commit, Push,
+///   Reword, Publish — are gated by `services::exec_trust`
+///   (`TrustKind::GitHooks`, see [`require_hook_trust`]): the hook files and
+///   the repo-scope keys that name programs (`core.hooksPath`,
+///   `core.sshCommand`, `credential*.helper`) are fingerprinted and approved
+///   once, and any change asks again. `services::git_guard` additionally
+///   mounts `.git/config` and `.git/hooks` read-only for fenced and contained
+///   agents. What stays open is `git_guard`'s own residual (an agent can
+///   still *create* a `commondir`), which bites a plain `git` in the user's
+///   terminal, not the calls made here.
 pub(crate) fn hardened_git_args<S: AsRef<str>>(args: &[S]) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(args.len() + HARDENED_CONFIG.len() * 2 + 2);
     for kv in HARDENED_CONFIG {
@@ -207,8 +211,8 @@ struct DenylistedConfigKey {
 /// rather than oversights:
 /// - `.git/hooks/*` — files, not config keys; `core.hooksPath` is left live
 ///   for `git_commit`/push, where a user's own hooks are the point (see this
-///   module's header). A contained agent's planted hook is a residual this
-///   pass does not close.
+///   module's header). A planted hook is not this sanitizer's job: the
+///   ask-once `services::exec_trust` gate on those verbs covers it.
 /// - `alias.*` — not a vector against this codebase at all: every subcommand
 ///   here is a live builtin, and `git help config` states an alias hiding an
 ///   existing command "is ignored except for deprecated commands."
@@ -216,7 +220,8 @@ struct DenylistedConfigKey {
 ///   blocking the *key* also breaks the legitimate case (a credential helper
 ///   set from inside a container, meant to carry to the host's later push);
 ///   closing it without that cost needs value-level judgment (an allowlist of
-///   known-safe helper names) this pass doesn't attempt.
+///   known-safe helper names) this pass doesn't attempt. Covered instead by
+///   the `services::exec_trust` fingerprint, which includes these keys.
 const CONFIG_DENYLIST: &[DenylistedConfigKey] = &[
     DenylistedConfigKey {
         prefix: "filter.",
