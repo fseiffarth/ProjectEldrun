@@ -2948,7 +2948,7 @@ mod tests {
     /// the path or add a parameter is refused before a message is built.
     #[test]
     fn a_recipient_must_be_a_plain_address() {
-        for good in ["a@example.com", "first.last+tag@sub.example.org", "jörg@exämple.de"] {
+        for good in ["a@example.com", "first.last+tag@sub.example.org", "jörg@exämple.de"] { // privacy-check: ok — IDN fixture, not a real address
             assert!(validate_recipient(good).is_ok(), "{good}");
         }
         for bad in [
@@ -2959,7 +2959,7 @@ mod tests {
             "<a@example.com>",
             ".a@example.com",
             "a..b@example.com",
-            "a@-example.com",
+            "a@-example.com", // privacy-check: ok — deliberately invalid fixture
             "a@example..com",
             "a@",
             "@example.com",

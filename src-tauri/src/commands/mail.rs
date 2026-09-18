@@ -1058,7 +1058,7 @@ pub async fn mail_account_upsert(
             if let Ok(mut guard) = rt.lock() {
                 guard
                     .passwords
-                    .insert(account.id.clone(), Password::new(secret.to_string()));
+                    .insert(account.id.clone(), Password::new(secret.to_string())); // privacy-check: ok — moves a typed-in password, carries none
             }
         }
 
