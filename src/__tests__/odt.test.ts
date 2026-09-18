@@ -148,3 +148,27 @@ describe("extractOdt", () => {
     expect(() => extractOdt({ "styles.xml": enc("<y/>") })).toThrow(/content\.xml/);
   });
 });
+
+describe("renderOdtDocument — hostile documents", () => {
+  it("caps a document-supplied space run", () => {
+    const html = renderOdtDocument(odt(`<text:p>a<text:s text:c="1000000000"/>b</text:p>`));
+    expect(html.length).toBeLessThan(2000);
+  });
+
+  it("never passes markup, handlers or script hrefs through", () => {
+    const html = renderOdtDocument(
+      odt(
+        `<text:p>&lt;script&gt;alert(1)&lt;/script&gt;</text:p>` +
+          `<text:p><text:a xlink:href="javascript:alert(1)">x</text:a></text:p>` +
+          `<text:p><text:a xlink:href="https://e.invalid/&quot; onclick=&quot;x">y</text:a></text:p>` +
+          `<text:h text:outline-level="9&quot; onclick=&quot;x">z</text:h>`,
+      ),
+    );
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    expect(doc.querySelector("script")).toBeNull();
+    for (const el of Array.from(doc.body.querySelectorAll("*"))) {
+      for (const a of Array.from(el.attributes)) expect(a.name.startsWith("on")).toBe(false);
+    }
+    expect(doc.querySelector('a[href^="javascript"]')).toBeNull();
+  });
+});
