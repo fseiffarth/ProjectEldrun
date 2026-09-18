@@ -13,6 +13,8 @@ export const dict: Dict = {
   "mobile.outbox.from": "Dall’agente",
   "mobile.outbox.untested": "Non testato",
   "mobile.composer.clear": "Svuota il messaggio",
+  "mobile.composer.clearChat": "Svuota la conversazione (/clear)",
+  "mobile.composer.clearChatConfirm": "Iniziare una nuova conversazione? Invia /clear e l’agente dimentica questa chat. (Non testato)",
   "mobile.voice.dictate": "Detta",
   "mobile.voice.stop": "Interrompi la dettatura",
   "mobile.voice.preparing": "Preparazione della dettatura",

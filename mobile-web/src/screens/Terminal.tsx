@@ -1283,6 +1283,12 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     setDraft("");
     forgetDictation();
   };
+  /** The field's /clear button: the fresh conversation typing `/clear` gives, asked
+   * first because the agent forgets the chat. The draft is left alone. */
+  const clearConversation = () => {
+    if (!window.confirm(t("mobile.composer.clearChatConfirm"))) return;
+    sendAgentText("/clear");
+  };
   /** The composer's ✕: an empty draft, and the dictation transcript with it. */
   const clearDraft = () => {
     setDraft("");
@@ -1831,7 +1837,11 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
             event.preventDefault();
             submitDraft();
           }} />
-          {draft && <button className="composer-clear" onClick={clearDraft} aria-label={t("mobile.composer.clear")} title={t("mobile.composer.clear")}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg></button>}
+          {/* One slot: with a draft it empties the draft; empty, an agent tab's
+              field offers /clear there instead, which costs the chip row nothing. */}
+          {draft
+            ? <button className="composer-clear" onClick={clearDraft} aria-label={t("mobile.composer.clear")} title={t("mobile.composer.clear")}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg></button>
+            : tab.kind === "agent" && <button className="composer-clear" disabled={!connected} onClick={clearConversation} aria-label={t("mobile.composer.clearChat")} title={t("mobile.composer.clearChat")}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4V5Z" /><path d="m10 8.5 4 4M14 8.5l-4 4" /></svg></button>}
         </div>
         <div className="composer-bar">
           {tab.kind === "agent" && <>
