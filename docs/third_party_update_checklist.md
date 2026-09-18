@@ -754,7 +754,7 @@ against a test account, then the `docs/mail_qa_gmail.md` checklist;
 
 ## 13. CalDAV servers
 
-**Where** `services/caldav.rs`, `commands/caldav.rs`, `src/lib/caldav*.ts`,
+**Where** `services/caldav.rs`, `commands/caldav.rs`, `src/lib/calendar/caldav*.ts`,
 `docs/context/caldav.md`.
 
 **Assumes** RFC 4791/6578 REPORT bodies, `/.well-known/caldav` discovery,

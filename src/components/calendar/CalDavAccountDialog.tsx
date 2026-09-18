@@ -13,8 +13,8 @@ import {
   caldavDiscover,
   caldavForgetPassword,
   caldavPasswordState,
-} from "../../lib/caldav";
-import { useCalDavStore } from "../../stores/caldav";
+} from "../../lib/calendar/caldav";
+import { useCalDavStore } from "../../stores/calendar/caldav";
 import { useT } from "../../lib/i18n";
 import type { CalDavAccount, CalDavCollection } from "../../types/caldav";
 

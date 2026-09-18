@@ -5,7 +5,7 @@
  *
  * It also owns the one piece of real work this side of the boundary does:
  * [`parseChanges`] runs each fetched resource's iCalendar text through
- * `lib/ics.ts`. That is deliberate and is the whole reason a sync is two
+ * `lib/calendar/ics.ts`. That is deliberate and is the whole reason a sync is two
  * commands rather than one — `ics.ts` is the only parser in this codebase that
  * understands folding, escaping, `RRULE` and `VALARM`, and it is the one with
  * tests for all four. A second parser in Rust would be two implementations that
@@ -17,7 +17,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { parseIcs } from "./ics";
 import { toStamp } from "./calendarTime";
-import type { CalendarData, CalendarEvent, CalendarTask } from "../types";
+import type { CalendarData, CalendarEvent, CalendarTask } from "../../types";
 import type {
   CalDavAccount,
   CalDavAccountSaved,
@@ -26,7 +26,7 @@ import type {
   CalDavParsed,
   CalDavPasswordState,
   CalDavWrite,
-} from "../types/caldav";
+} from "../../types/caldav";
 
 /**
  * Minutes between background syncs when an account has never been given one.

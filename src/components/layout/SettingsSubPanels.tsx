@@ -45,7 +45,7 @@ import {
   withGlobalTimes,
   type AgentCron,
 } from "../../lib/agentCron";
-import { formatTime } from "../../lib/calendarTime";
+import { formatTime } from "../../lib/calendar/calendarTime";
 import { useUse24h } from "../../lib/timeFormat";
 import { AGENT_FENCE_DEFAULT_PATHS, parseAgentFencePaths } from "../../lib/agentFence";
 

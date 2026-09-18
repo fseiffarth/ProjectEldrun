@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import type { Calendar, CalendarTask } from "../../types";
-import { datePart, formatLongDate, formatTime, timePart, toStamp } from "../../lib/calendarTime";
-import { calendarColor } from "../../stores/calendar";
+import { datePart, formatLongDate, formatTime, timePart, toStamp } from "../../lib/calendar/calendarTime";
+import { calendarColor } from "../../stores/calendar/calendar";
 import { useI18nStore, useT, type TranslationKey } from "../../lib/i18n";
 
 interface Props {

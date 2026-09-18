@@ -1,5 +1,5 @@
 /**
- * Edge cases for `lib/ics.ts` beyond `Ics.test.ts`: empty and BOM-prefixed
+ * Edge cases for `lib/calendar/ics.ts` beyond `Ics.test.ts`: empty and BOM-prefixed
  * files, CR-only line endings, unicode through fold/unfold and the full
  * round-trip, malformed content lines and values (no `=` in a parameter, a
  * lone trailing backslash, weeks in a TRIGGER, out-of-range BYMONTHDAY /
@@ -22,7 +22,7 @@ import {
   serializeIcs,
   unescapeText,
   unfold,
-} from "../lib/ics";
+} from "../lib/calendar/ics";
 import type { CalendarEvent } from "../types";
 
 function event(over: Partial<CalendarEvent> = {}): CalendarEvent {

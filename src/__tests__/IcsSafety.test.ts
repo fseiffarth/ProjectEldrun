@@ -1,5 +1,5 @@
 /**
- * The pre-import report on an `.ics` file (`lib/icsSafety.ts`).
+ * The pre-import report on an `.ics` file (`lib/calendar/icsSafety.ts`).
  *
  * Two failure modes are worth pinning, and they pull in opposite directions:
  *
@@ -16,7 +16,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { inspectIcs, uriScheme } from "../lib/icsSafety";
+import { inspectIcs, uriScheme } from "../lib/calendar/icsSafety";
 
 const ORDINARY = `BEGIN:VCALENDAR
 VERSION:2.0

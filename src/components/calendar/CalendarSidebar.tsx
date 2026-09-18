@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Calendar } from "../../types";
-import { calendarSyncStatus, useCalDavStore } from "../../stores/caldav";
-import { addMonths, datePart, monthGrid, monthName, todayStr, weekdayLabel } from "../../lib/calendarTime";
+import { calendarSyncStatus, useCalDavStore } from "../../stores/calendar/caldav";
+import { addMonths, datePart, monthGrid, monthName, todayStr, weekdayLabel } from "../../lib/calendar/calendarTime";
 import { useI18nStore, useT } from "../../lib/i18n";
 
 /** The palette a new calendar picks from. */

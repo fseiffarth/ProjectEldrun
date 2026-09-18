@@ -22,7 +22,7 @@ import {
   weekdayOf,
   weekDates,
   MINUTES_PER_DAY,
-} from "../lib/calendarTime";
+} from "../lib/calendar/calendarTime";
 
 describe("parseStamp", () => {
   it("parses a bare date as date-only", () => {

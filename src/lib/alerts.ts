@@ -1,6 +1,6 @@
 import type { CalendarEvent, CalendarTask } from "../types";
 import type { MailHeader } from "../types/mail";
-import { conferenceLink } from "./conference";
+import { conferenceLink } from "./calendar/conference";
 import {
   MINUTES_PER_DAY,
   addDays,
@@ -9,7 +9,7 @@ import {
   minutesBetween,
   parseStamp,
   toStamp,
-} from "./calendarTime";
+} from "./calendar/calendarTime";
 import { formatAddress } from "./mail";
 import { stripFormatControls } from "./textSafety";
 import { selectUrgentMail } from "./todoBoard";
@@ -96,7 +96,7 @@ export interface AlertSource {
   eventId?: string;
   /**
    * `kind === "event"`: the event's video-call link and the service behind it,
-   * when it has one. Computed once here through `lib/conference`'s
+   * when it has one. Computed once here through `lib/calendar/conference`'s
    * `conferenceLink` — the same verdict the header's 🗓 dropdown and the event
    * dialog reach — so the row's Join button cannot disagree with theirs about
    * the same meeting. Absent when the event has no joinable link.
@@ -293,7 +293,7 @@ function normalizeNow(now: string): string | null {
  * real instant with an offset attached, so converting it to the user's local
  * civil time is exactly what `new Date(...)` + `toStamp` do. The calendar's own
  * stamps are already local wall clock and must never go through `Date.parse` —
- * see `lib/calendarTime`.
+ * see `lib/calendar/calendarTime`.
  */
 function mailStamp(date: string): string | null {
   if (!date) return null;

@@ -21,7 +21,7 @@ import {
   type ScheduleStatusKind,
   type ScheduledAgentPrompt,
 } from "../../lib/agentSchedule";
-import { formatTime, todayStr } from "../../lib/calendarTime";
+import { formatTime, todayStr } from "../../lib/calendar/calendarTime";
 import { useI18nStore, useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
 import { scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agentSchedules";

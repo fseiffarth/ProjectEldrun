@@ -35,7 +35,7 @@ pub mod big_folders;
 // registry, and download quarantine. See docs/browser_plan_{b,c}.md.
 pub mod browser_engine;
 // CalDAV accounts (docs/caldav_plan.md): the WebDAV transport half. Hand-rolled
-// on reqwest + roxmltree; iCalendar itself is still parsed by src/lib/ics.ts.
+// on reqwest + roxmltree; iCalendar itself is still parsed by src/lib/calendar/ics.ts.
 pub mod caldav;
 // What the phone's composer may attach from the desktop: recent screenshots and
 // pictures by opaque id, copied into the project inbox on request.

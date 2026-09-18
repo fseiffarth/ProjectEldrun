@@ -26,9 +26,9 @@ import type {
   EventStatus,
   Freq,
   Rrule,
-} from "../types";
+} from "../../types";
 import { addDays, addMinutes, datePart, minutesBetween, parseStamp } from "./calendarTime";
-import { stripFormatControls } from "./textSafety";
+import { stripFormatControls } from "../textSafety";
 
 const ICS_WEEKDAYS = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
 

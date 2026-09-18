@@ -888,7 +888,7 @@ pub(crate) fn set_caldav_identity_at(
 // The guards are the door's width — an extension allowlist (so the path cannot
 // name a key, a config, or a document) and a size cap (so a "calendar" cannot be
 // used to slurp a huge file into the renderer). Parsing itself stays in the
-// frontend (`src/lib/ics.ts`), where it is unit-tested; these only move bytes.
+// frontend (`src/lib/calendar/ics.ts`), where it is unit-tested; these only move bytes.
 
 /// Extensions an ICS path may carry. Anything else is refused outright.
 const ICS_EXTENSIONS: [&str; 3] = ["ics", "ical", "ifb"];

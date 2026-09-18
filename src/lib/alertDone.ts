@@ -1,6 +1,6 @@
 import type { AlertItem } from "./alerts";
 import { boardColumns, toggleTaskDone } from "./todoBoard";
-import { useCalendarStore } from "../stores/calendar";
+import { useCalendarStore } from "../stores/calendar/calendar";
 import { useMailStore } from "../stores/mail";
 import { useTodoStore } from "../stores/todo";
 

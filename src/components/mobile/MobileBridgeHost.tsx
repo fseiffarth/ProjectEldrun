@@ -9,7 +9,7 @@ import {
   type TabEntry,
 } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
-import { calendarColor, useCalendarStore, visibleCalendarIds } from "../../stores/calendar";
+import { calendarColor, useCalendarStore, visibleCalendarIds } from "../../stores/calendar/calendar";
 import { lastTabReadAt, noteUserInput, useActivityStore } from "../../stores/activity";
 import { useAgentModelsStore } from "../../stores/agentModels";
 import { persistScopeLayout } from "../../stores/agentSchedules";
@@ -23,9 +23,9 @@ import { resolveProjectDirectory } from "../../types";
 import type { CalendarEvent, CalendarTask, ProjectEntry, Subtask, TaskColumn } from "../../types";
 import type { MailFolder, MailHeader } from "../../types/mail";
 import { addSubtask, boardColumns, columnOf, dropAccepted, fallbackColumnId, provisionalRank, toggleTaskDone } from "../../lib/todoBoard";
-import { addDays, monthGrid, toStamp } from "../../lib/calendarTime";
-import { eventColor } from "../../lib/calendarCategories";
-import { expandEvents } from "../../lib/recurrence";
+import { addDays, monthGrid, toStamp } from "../../lib/calendar/calendarTime";
+import { eventColor } from "../../lib/calendar/calendarCategories";
+import { expandEvents } from "../../lib/calendar/recurrence";
 import {
   formatAddress,
   formatMailDate,

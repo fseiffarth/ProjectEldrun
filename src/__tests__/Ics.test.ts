@@ -13,7 +13,7 @@ import {
   serializeIcs,
   unescapeText,
   unfold,
-} from "../lib/ics";
+} from "../lib/calendar/ics";
 import type { CalendarEvent, CalendarTask } from "../types";
 
 function event(over: Partial<CalendarEvent> = {}): CalendarEvent {

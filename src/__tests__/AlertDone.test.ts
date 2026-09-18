@@ -12,7 +12,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) 
 
 import { finishAlert } from "../lib/alertDone";
 import type { AlertItem } from "../lib/alerts";
-import { useCalendarStore } from "../stores/calendar";
+import { useCalendarStore } from "../stores/calendar/calendar";
 import { useMailStore } from "../stores/mail";
 import { useTodoStore } from "../stores/todo";
 import type { CalendarTask } from "../types";

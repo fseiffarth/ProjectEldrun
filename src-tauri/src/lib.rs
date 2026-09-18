@@ -1474,7 +1474,7 @@ pub fn run() {
             // CalDAV accounts (docs/caldav_plan.md, Phases 1-3).
             // A sync is deliberately two commands: `caldav_fetch` speaks the
             // protocol and hands back iCalendar text unparsed, the frontend
-            // parses it with `src/lib/ics.ts` (the one parser that understands
+            // parses it with `src/lib/calendar/ics.ts` (the one parser that understands
             // folding/RRULE/VALARM), and `caldav_apply` reconciles the result
             // into calendar.json by `caldav_href` — a field-level merge, never
             // the delete-and-reinsert `calendar_replace_events` does, because

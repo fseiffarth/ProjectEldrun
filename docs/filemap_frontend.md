@@ -68,12 +68,12 @@ only when breaking it does damage. The *why* goes in code comments or
 | `calendar/TimeGrid.tsx` | Day/week hour grid: positioned blocks, drag-create/move/resize, now-line. |
 | `calendar/MonthView.tsx` | Month + multiweek grid, with multi-day spanning bars. |
 | `calendar/AgendaView.tsx` / `calendar/TasksView.tsx` | Flat upcoming list; to-do (VTODO) list. |
-| `calendar/EventDialog.tsx` | Event editor (repeat, reminders, category, this-vs-all occurrences) + video-call field (`lib/conference.ts`). A link derived from location/notes is only hinted, never written into the field. |
+| `calendar/EventDialog.tsx` | Event editor (repeat, reminders, category, this-vs-all occurrences) + video-call field (`lib/calendar/conference.ts`). A link derived from location/notes is only hinted, never written into the field. |
 | `calendar/CalendarSidebar.tsx` | Mini-month + calendar list (color, visibility); CalDAV calendars carry their own sync affordance (⇅ / … / amber ! with the backend's error as tooltip). |
 | `calendar/CalDavAccountDialog.tsx` | CalDAV account editor (`docs/caldav_plan.md`), `MailAccountDialog`'s twin (`SavePasswordRow`, `true \| null` never `false`) plus server discovery → pick collections. No server presets. |
 | `calendar/CalDavSyncHost.tsx` | Scheduled CalDAV sync (renders nothing), mounted once at the shell. Mail's rules: free with no account, first tick one interval away, `0` = never. |
 | `calendar/CalDavConflictDialog.tsx` | The one answer to a CalDAV 412, mounted at the shell: keep mine (conditional overwrite on fresh ETag), use the server's, or decide later. No merge. |
-| `calendar/IcsImportReviewDialog.tsx` | Shows what a picked `.ics` contains before import (`lib/icsSafety.ts`) and what Eldrun does about each finding; not raised for a clean file. Not a quarantine gate. |
+| `calendar/IcsImportReviewDialog.tsx` | Shows what a picked `.ics` contains before import (`lib/calendar/icsSafety.ts`) and what Eldrun does about each finding; not raised for a clean file. Not a quarantine gate. |
 | `calendar/CalendarOverlay.tsx` | Calendar as a global app (`calendar_global_app`): header 🗓 overlay (`CalendarOverlayHost`) rendering the same `CalendarPane` a tab does. Twin of `MailOverlay`. |
 | `calendar/AlarmPopup.tsx` | In-app reminder popup (snooze/dismiss); mounted in `AppShell`. |
 | `todo/TodoOverlay.tsx` | Global to-do board overlay (`todo_board`), header ☑ (`TodoOverlayHost`), mounted last of the three overlay hosts (DOM order = z tie-break). No todo tab; not in popouts. |
@@ -270,17 +270,17 @@ only when breaking it does damage. The *why* goes in code comments or
 | `lib/gpu.ts` | GPU-memory arithmetic (pure) for header, monitor and model menu: memory = dedicated VRAM + shared pool; `gpuTone` tones by ratio. |
 | `lib/usageMetrics.ts` | The metric keys (mirrors `schema::usage_stats::metric`) + how a tab maps to an agent or a local model. |
 | `lib/promptCount.ts` | "Enter with content pending = one submit" — the prompt/command heuristic, fed from `TerminalView`'s `onData`. |
-| `lib/conference.ts` | The video-call link verdict every Join button reads: explicit field exact; derived only from a recognized meeting host or a URL-only location. |
-| `lib/caldavPush.ts` | What bytes a CalDAV resource holds (pure): a resource groups a master + overrides by `caldav_href` (`resourceRows`, master first via `orderComponents`, `resourceIcs`). |
-| `lib/calendarWriteHook.ts` | One-slot seam between calendar edits and CalDAV push (avoids a store import cycle). Upsert announced after the local write; delete before it, and a rejection stops the delete. |
-| `lib/icsSafety.ts` | Lists what's in an `.ics` before import (alarms with actions, `ATTACH`, app-scheme links, …) — pure. Not a scanner. |
-| `lib/calendarTime.ts` | Calendar date math (local stamps, exclusive ends, overlap layout). `formatTime`/`formatStampTime` are the two clock renderers (via `lib/timeFormat`). |
+| `lib/calendar/conference.ts` | The video-call link verdict every Join button reads: explicit field exact; derived only from a recognized meeting host or a URL-only location. |
+| `lib/calendar/caldavPush.ts` | What bytes a CalDAV resource holds (pure): a resource groups a master + overrides by `caldav_href` (`resourceRows`, master first via `orderComponents`, `resourceIcs`). |
+| `lib/calendar/calendarWriteHook.ts` | One-slot seam between calendar edits and CalDAV push (avoids a store import cycle). Upsert announced after the local write; delete before it, and a rejection stops the delete. |
+| `lib/calendar/icsSafety.ts` | Lists what's in an `.ics` before import (alarms with actions, `ATTACH`, app-scheme links, …) — pure. Not a scanner. |
+| `lib/calendar/calendarTime.ts` | Calendar date math (local stamps, exclusive ends, overlap layout). `formatTime`/`formatStampTime` are the two clock renderers (via `lib/timeFormat`). |
 | `lib/timeFormat.ts` | The one 12h/24h answer (`Settings.time_format_24h`), read by every surface that prints a wall clock. |
 | `lib/todoBoard.ts` | To-do board pure logic: bucketing, ordering, filters, badge + `urgentTodos`/`daysLate`, rails, drag geometry, deadline chip (`dueDelta`); whole-day vs timed `due`. |
-| `lib/recurrence.ts` | Recurrence expansion (`expandEvents`) + exdate/override editing. |
-| `lib/caldav.ts` | Typed invoke surface for CalDAV (`caldav_*`), no path args. `parseChanges` parses fetched resources with `lib/ics.ts` (one iCal parser), grouped by resource href. |
-| `lib/ics.ts` | iCalendar parse/serialize (VEVENT/VTODO/VALARM/RRULE). Video call as RFC 7986 `CONFERENCE` (+ `X-GOOGLE-CONFERENCE` on read); `UID` round-trips for CalDAV push. |
-| `lib/alarms.ts` | Pure alarm logic: which reminders are due, fire-once keys, snooze. |
+| `lib/calendar/recurrence.ts` | Recurrence expansion (`expandEvents`) + exdate/override editing. |
+| `lib/calendar/caldav.ts` | Typed invoke surface for CalDAV (`caldav_*`), no path args. `parseChanges` parses fetched resources with `lib/calendar/ics.ts` (one iCal parser), grouped by resource href. |
+| `lib/calendar/ics.ts` | iCalendar parse/serialize (VEVENT/VTODO/VALARM/RRULE). Video call as RFC 7986 `CONFERENCE` (+ `X-GOOGLE-CONFERENCE` on read); `UID` round-trips for CalDAV push. |
+| `lib/calendar/alarms.ts` | Pure alarm logic: which reminders are due, fire-once keys, snooze. |
 | `lib/alertDone.ts` | What the Alerts ✓ does (side panel + phone): card → `toggleTaskDone`, mail → clear local priority mark, … Nothing is ever deleted. |
 | `lib/alerts.ts` | Alerts selectors (pure): merge mail/events/tasks, severity then time. `now` is a parameter; lookahead in whole days, no backward limit. |
-| `lib/calendarCategories.ts` | Event category → color palette. |
+| `lib/calendar/calendarCategories.ts` | Event category → color palette. |

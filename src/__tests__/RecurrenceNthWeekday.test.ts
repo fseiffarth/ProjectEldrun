@@ -4,8 +4,8 @@
  * the model cannot hold all of it (todo/group-x-caldav.md #2318).
  */
 import { describe, expect, it } from "vitest";
-import { formatRrule, parseIcs, parseRrule, sameRule, serializeIcs } from "../lib/ics";
-import { describeRrule, expandEvent, nthWeekdayOfMonth } from "../lib/recurrence";
+import { formatRrule, parseIcs, parseRrule, sameRule, serializeIcs } from "../lib/calendar/ics";
+import { describeRrule, expandEvent, nthWeekdayOfMonth } from "../lib/calendar/recurrence";
 import { translate, type TranslationKey } from "../lib/i18n";
 // Registers the lazy dictionaries, so `translate("de", …)` answers in German.
 import "../lib/i18nDicts/all";

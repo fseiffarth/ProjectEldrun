@@ -173,7 +173,7 @@ window could not push it.
 `calendar_move_events` (a list of ids, or every event in one calendar) and
 `calendar_update_event`'s `calendar` share one path,
 `commands::calendar::relocate_event`. The event dialog's calendar picker takes
-the same path through `stores/calendar`'s `updateEvent`. Locally the event
+the same path through `stores/calendar/calendar`'s `updateEvent`. Locally the event
 keeps its id, so
 anything that links to it keeps working. A row synced from a CalDAV server is a
 resource inside one collection, though, and its address cannot come along.

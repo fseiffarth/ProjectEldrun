@@ -445,7 +445,7 @@ list. Where a link still needs an app, `src/lib/linkTarget.ts::routeUri` decides
 | Surface | Frontend | Backend | Notes |
 |---------|----------|---------|-------|
 | Mail | `components/mail/`, `stores/mail.ts` | `commands/mail.rs`, `services/mail_{engine,store,crypt,crypto,pgp,sanitize,filters,authres,ai}.rs` | IMAP/SMTP. Behind `mail_client`. |
-| Calendar | `components/calendar/`, `stores/calendar.ts` | `commands/calendar.rs`, `commands/caldav.rs`, `services/caldav.rs` | Month / time-grid / agenda, alarms, `.ics` import+export, CalDAV accounts. |
+| Calendar | `components/calendar/`, `stores/calendar/calendar.ts` | `commands/calendar.rs`, `commands/caldav.rs`, `services/caldav.rs` | Month / time-grid / agenda, alarms, `.ics` import+export, CalDAV accounts. |
 | To-do board | `components/todo/`, `stores/todo.ts` | shares `calendar.json` | Cards **are** calendar tasks — one store, not a second one. |
 | Browser | `components/browser/`, `stores/browser.ts` | `commands/browser.rs`, `services/browser_engine.rs`, `services/web_safety.rs` | Reader mode, no scripts. Behind `web_browser`. |
 | Print manager | `components/printing/PrintManagerPane.tsx` | `commands/printing.rs` | CUPS on Linux/macOS, PowerShell on Windows. |

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { useCalendarStore, visibleCalendarIds } from "../../stores/calendar";
+import { useCalendarStore, visibleCalendarIds } from "../../stores/calendar/calendar";
 import { useSettingsStore } from "../../stores/settings";
 import type {
   CalendarEvent,
@@ -20,10 +20,10 @@ import {
   startOfWeek,
   todayStr,
   weekDates,
-} from "../../lib/calendarTime";
-import { expandEvents } from "../../lib/recurrence";
-import { parseIcs, serializeIcs } from "../../lib/ics";
-import { inspectIcs, type IcsReport } from "../../lib/icsSafety";
+} from "../../lib/calendar/calendarTime";
+import { expandEvents } from "../../lib/calendar/recurrence";
+import { parseIcs, serializeIcs } from "../../lib/calendar/ics";
+import { inspectIcs, type IcsReport } from "../../lib/calendar/icsSafety";
 import { IcsImportReviewDialog } from "./IcsImportReviewDialog";
 import { MonthView } from "./MonthView";
 import { TimeGrid } from "./TimeGrid";
@@ -32,7 +32,7 @@ import { TasksView } from "./TasksView";
 import { CalendarSidebar } from "./CalendarSidebar";
 import { CalDavAccountDialog } from "./CalDavAccountDialog";
 import { EventDialog, type EditScope, type EventDialogTarget } from "./EventDialog";
-import { isCalDavConflict, useCalDavStore } from "../../stores/caldav";
+import { isCalDavConflict, useCalDavStore } from "../../stores/calendar/caldav";
 import type { CalDavAccount } from "../../types/caldav";
 import { useI18nStore, useT, type TranslationKey } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
@@ -505,7 +505,7 @@ export function CalendarPane({ visible }: Props) {
   //
   // Deliberately thin: everything about a sync — the ctag check, the protocol,
   // the identity-based merge that keeps a card's board column — lives in
-  // `stores/caldav` and the backend. This is the button and the sentence.
+  // `stores/calendar/caldav` and the backend. This is the button and the sentence.
 
   function openCaldavDialog() {
     // Accounts are one local file; loading them is what lets the dialog open on

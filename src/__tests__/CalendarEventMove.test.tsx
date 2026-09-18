@@ -16,8 +16,8 @@ const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => invoke(...args) }));
 
 import { EventDialog } from "../components/calendar/EventDialog";
-import { setCalendarWriteHandler, type CalendarWriteEvent } from "../lib/calendarWriteHook";
-import { useCalendarStore } from "../stores/calendar";
+import { setCalendarWriteHandler, type CalendarWriteEvent } from "../lib/calendar/calendarWriteHook";
+import { useCalendarStore } from "../stores/calendar/calendar";
 import type { Calendar, CalendarEvent } from "../types";
 
 const SYNCED: CalendarEvent = {

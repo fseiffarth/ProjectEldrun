@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
-import { installCalDavPush, useCalDavStore } from "../../stores/caldav";
-import { DEFAULT_CALDAV_SYNC_MIN } from "../../lib/caldav";
+import { installCalDavPush, useCalDavStore } from "../../stores/calendar/caldav";
+import { DEFAULT_CALDAV_SYNC_MIN } from "../../lib/calendar/caldav";
 import { useVpnTunnelUp, vpnGateAllows, vpnTunnelUp } from "../../lib/remote/vpn/vpnGate";
 
 /** How often the scheduler wakes up. Each account is still synced on its own

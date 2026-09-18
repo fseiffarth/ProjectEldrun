@@ -5,10 +5,10 @@ import {
   findMeetingUrl,
   isJoinableUrl,
   isKnownConferenceUrl,
-} from "../lib/conference";
+} from "../lib/calendar/conference";
 
 /**
- * The video-call link (`lib/conference.ts`).
+ * The video-call link (`lib/calendar/conference.ts`).
  *
  * Two properties are worth more than the rest and most of this file is about
  * them: a Join button must never send anyone somewhere that is not the meeting

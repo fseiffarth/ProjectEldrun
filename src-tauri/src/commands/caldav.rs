@@ -14,7 +14,7 @@
 //! 1. [`caldav_fetch`] does the protocol — ctag check, then either an
 //!    incremental `sync-collection` or a full `calendar-query` — and hands back
 //!    each resource's iCalendar text *unparsed*.
-//! 2. The frontend runs that text through `src/lib/ics.ts`, the one parser here
+//! 2. The frontend runs that text through `src/lib/calendar/ics.ts`, the one parser here
 //!    that understands folding, escaping, `RRULE` and `VALARM`.
 //! 3. [`caldav_apply`] reconciles the parsed rows into `calendar.json` through
 //!    `commands::calendar::merge_caldav_calendar_at` — one atomic write —
@@ -506,7 +506,7 @@ pub async fn caldav_apply(
 
 // ── Commands: push (Phase 3) ────────────────────────────────────────────────
 //
-// The seam is the fetch path's, mirrored: `src/lib/ics.ts` serializes the row (it
+// The seam is the fetch path's, mirrored: `src/lib/calendar/ics.ts` serializes the row (it
 // is the one iCalendar writer here, and the one with tests for folding, escaping,
 // `RRULE`, `RECURRENCE-ID` and `VALARM`), and the backend does the protocol. What
 // this side owns is the part a serializer cannot know about — **whether the write

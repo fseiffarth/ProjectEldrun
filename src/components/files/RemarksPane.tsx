@@ -4,7 +4,7 @@ import { jumpToSource } from "../embed/FileViewerPane";
 import { resolvePath } from "../../lib/paths";
 import { REMARKS_FILE, resolveRemarkAbsPath, type ProjectRemark } from "../../lib/projectRemarks";
 import { useProjectRemarksStore } from "../../stores/projectRemarks";
-import { useCalendarStore } from "../../stores/calendar";
+import { useCalendarStore } from "../../stores/calendar/calendar";
 import { boardColumns, fallbackColumnId, taskFromRemark } from "../../lib/todoBoard";
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";

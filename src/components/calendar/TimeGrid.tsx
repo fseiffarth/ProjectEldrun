@@ -11,9 +11,9 @@ import {
   minutesIntoDay,
   todayStr,
   toStamp,
-} from "../../lib/calendarTime";
-import { eventColor } from "../../lib/calendarCategories";
-import { calendarColor } from "../../stores/calendar";
+} from "../../lib/calendar/calendarTime";
+import { eventColor } from "../../lib/calendar/calendarCategories";
+import { calendarColor } from "../../stores/calendar/calendar";
 import { useT } from "../../lib/i18n";
 
 /** Pixel height of one hour row. The whole grid's geometry derives from this. */

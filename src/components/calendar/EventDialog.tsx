@@ -10,7 +10,7 @@ import type {
   Occurrence,
   Rrule,
 } from "../../types";
-import { CATEGORIES, categoryLabel } from "../../lib/calendarCategories";
+import { CATEGORIES, categoryLabel } from "../../lib/calendar/calendarCategories";
 import {
   addMinutes,
   allDayEndToLastDay,
@@ -22,11 +22,11 @@ import {
   timePart,
   weekdayLabel,
   weekdayOf,
-} from "../../lib/calendarTime";
-import { conferenceLink, isJoinableUrl } from "../../lib/conference";
+} from "../../lib/calendar/calendarTime";
+import { conferenceLink, isJoinableUrl } from "../../lib/calendar/conference";
 import { joinConference } from "../../lib/linkTarget";
-import { sameRule } from "../../lib/ics";
-import { describeNthWeekdays, describeRrule } from "../../lib/recurrence";
+import { sameRule } from "../../lib/calendar/ics";
+import { describeNthWeekdays, describeRrule } from "../../lib/calendar/recurrence";
 import { useI18nStore, useT, type TranslationKey } from "../../lib/i18n";
 import { TimeField } from "../common/TimeField";
 import { UntestedTag } from "../common/UntestedTag";
@@ -81,7 +81,7 @@ interface Form {
   title: string;
   location: string;
   notes: string;
-  /** The video call's join URL — see `lib/conference.ts`. */
+  /** The video call's join URL — see `lib/calendar/conference.ts`. */
   conference: string;
   category: string;
   status: EventStatus;

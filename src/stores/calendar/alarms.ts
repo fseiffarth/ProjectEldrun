@@ -4,18 +4,18 @@ import {
   requestPermission,
   sendNotification,
 } from "@tauri-apps/plugin-notification";
-import type { DueAlarm, Snoozed } from "../lib/alarms";
+import type { DueAlarm, Snoozed } from "../../lib/calendar/alarms";
 import {
   alarmWindow,
   describeLead,
   dueAlarms,
   snooze as makeSnooze,
   wokenSnoozes,
-} from "../lib/alarms";
-import { expandEvents } from "../lib/recurrence";
-import { formatStampTime } from "../lib/calendarTime";
-import { readUse24h } from "../lib/timeFormat";
-import { translate, useI18nStore } from "../lib/i18n";
+} from "../../lib/calendar/alarms";
+import { expandEvents } from "../../lib/calendar/recurrence";
+import { formatStampTime } from "../../lib/calendar/calendarTime";
+import { readUse24h } from "../../lib/timeFormat";
+import { translate, useI18nStore } from "../../lib/i18n";
 import { useCalendarStore } from "./calendar";
 
 /** How often the ticker looks for due reminders. */

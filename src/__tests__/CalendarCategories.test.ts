@@ -1,11 +1,11 @@
 /**
- * Event categories (`lib/calendarCategories`): the palette lives in code so an
+ * Event categories (`lib/calendar/calendarCategories`): the palette lives in code so an
  * imported ICS with an unknown `CATEGORIES:` still round-trips — it renders in
  * its calendar's colour instead of gaining a swatch.
  */
 import { describe, expect, it } from "vitest";
 
-import { CATEGORIES, categoryFor, categoryLabel, eventColor } from "../lib/calendarCategories";
+import { CATEGORIES, categoryFor, categoryLabel, eventColor } from "../lib/calendar/calendarCategories";
 
 describe("CATEGORIES", () => {
   it("has unique keys, each with its own theme token", () => {

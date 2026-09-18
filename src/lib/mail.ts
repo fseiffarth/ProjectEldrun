@@ -984,7 +984,7 @@ export function formatAddress(addr: { name?: string; address: string }): string 
  *
  *  Re-exported from `lib/textSafety`, not defined here. It moved because this
  *  module imports the Tauri invoke surface, which made one regex unreachable
- *  from the pure layers that need it just as much (`lib/ics.ts` renders event
+ *  from the pure layers that need it just as much (`lib/calendar/ics.ts` renders event
  *  titles somebody else wrote). Same function, same behaviour, one definition \u2014
  *  every mail call site below still imports it from here. */
 export { stripFormatControls };

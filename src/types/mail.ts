@@ -607,7 +607,7 @@ export interface MailPreviewBlob {
  * A calendar event the model read out of a message (#207).
  *
  * `start`/`end` are **local wall-clock ISO** with no zone (`2026-08-04T15:00`),
- * matching `lib/calendarTime`'s stamps, so they prefill `EventDialog` directly.
+ * matching `lib/calendar/calendarTime`'s stamps, so they prefill `EventDialog` directly.
  * `confidence` is the model's own 0..1 estimate; the backend has already applied
  * its floor (a value below it yields `null` rather than a low-confidence event),
  * and the field is carried only so the review UI can note it.

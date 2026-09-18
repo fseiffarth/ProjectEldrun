@@ -316,7 +316,7 @@ export function performLinkTarget(target: LinkTarget, hooks: DispatchHooks = {})
  * "open in the desktop app" handoff all live in the user's real browser. An
  * inert sanitized copy of Zoom's launch page is a Join button that does not
  * join. The routing is still asked (rather than calling the OS directly), so the
- * scheme gate applies here like everywhere else: `lib/conference.ts` has already
+ * scheme gate applies here like everywhere else: `lib/calendar/conference.ts` has already
  * refused anything that is not `http(s)`, and this is the independent second
  * check that a `zoommtg:`-style URL never reaches the OS handler.
  */

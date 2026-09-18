@@ -6,7 +6,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, fireEvent, cleanup, screen } from "@testing-library/react";
 import { EventDialog } from "../components/calendar/EventDialog";
-import { parseRrule } from "../lib/ics";
+import { parseRrule } from "../lib/calendar/ics";
 import type { Calendar, CalendarEvent, Rrule } from "../types";
 
 afterEach(cleanup);

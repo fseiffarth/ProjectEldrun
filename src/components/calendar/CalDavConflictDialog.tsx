@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { UntestedTag } from "../common/UntestedTag";
-import { useCalDavStore } from "../../stores/caldav";
+import { useCalDavStore } from "../../stores/calendar/caldav";
 import { useT } from "../../lib/i18n";
 
 /**

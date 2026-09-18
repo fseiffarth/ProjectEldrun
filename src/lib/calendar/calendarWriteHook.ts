@@ -2,8 +2,8 @@
  * The seam between a calendar edit and CalDAV push (`docs/caldav_plan.md`
  * Phase 3) — one registered handler, and nothing else.
  *
- * It exists to keep the dependency pointing one way. `stores/caldav` already
- * imports `stores/calendar` (a sync writes what the calendar surfaces read), so
+ * It exists to keep the dependency pointing one way. `stores/calendar/caldav` already
+ * imports `stores/calendar/calendar` (a sync writes what the calendar surfaces read), so
  * having the calendar store import the CalDAV store back would be a cycle
  * between two module-scope `create()` calls — the shape that resolves to
  * `undefined` at import time depending on which file the bundler reaches first.
@@ -23,7 +23,7 @@
  *   for everyone else.
  */
 
-import type { CalendarEvent, CalendarTask } from "../types";
+import type { CalendarEvent, CalendarTask } from "../../types";
 
 /** What happened to a row. */
 export type CalendarWriteOp = "upsert" | "delete";

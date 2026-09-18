@@ -1,5 +1,5 @@
 /**
- * The seam between a calendar edit and CalDAV push (`lib/calendarWriteHook`).
+ * The seam between a calendar edit and CalDAV push (`lib/calendar/calendarWriteHook`).
  *
  * One slot, last writer wins — two handlers would be two pushes of one edit —
  * and an uninstaller that only drops its OWN handler, so an unmount racing a
@@ -13,7 +13,7 @@ import {
   notifyCalendarWrite,
   setCalendarWriteHandler,
   type CalendarWriteEvent,
-} from "../lib/calendarWriteHook";
+} from "../lib/calendar/calendarWriteHook";
 import type { CalendarEvent } from "../types";
 
 const row = { id: "e1", title: "Standup" } as unknown as CalendarEvent;

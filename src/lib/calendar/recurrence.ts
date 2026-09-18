@@ -18,7 +18,7 @@
  * Pure — no React, no Tauri. Unit-tested in `src/__tests__/Recurrence.test.ts`.
  */
 
-import type { CalendarEvent, EventStatus, Occurrence, Rrule } from "../types";
+import type { CalendarEvent, EventStatus, Occurrence, Rrule } from "../../types";
 import {
   addDays,
   addMonths,
@@ -33,7 +33,7 @@ import {
   weekdayLabel,
   weekdayOf,
 } from "./calendarTime";
-import type { TranslationKey } from "./i18n";
+import type { TranslationKey } from "../i18n";
 
 /**
  * Hard ceiling on occurrences generated for one event in one window. A window is

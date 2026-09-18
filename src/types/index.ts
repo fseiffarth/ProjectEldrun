@@ -1183,7 +1183,7 @@ export interface ProjectBox {
  *
  * All timestamps are **local wall-clock**: `"YYYY-MM-DDTHH:MM"` when timed,
  * `"YYYY-MM-DD"` when all-day. Ends are **exclusive** (an all-day event on the
- * 8th ends `"2026-07-09"`). See `src/lib/calendarTime.ts` for the math.
+ * 8th ends `"2026-07-09"`). See `src/lib/calendar/calendarTime.ts` for the math.
  */
 
 /** The views a calendar tab can show. */
@@ -1299,7 +1299,7 @@ export interface CalendarEvent {
   notes?: string;
   /** The video call's join URL (`http(s)` only). Its own field rather than a
    *  convention on `location`, because a Join button must not be a guess about
-   *  what a room name means — see `lib/conference.ts`, which still *derives* one
+   *  what a room name means — see `lib/calendar/conference.ts`, which still *derives* one
    *  from `location`/`notes` for the imported invitations that carry it there. */
   conference?: string;
   category?: string;
@@ -1316,7 +1316,7 @@ export interface CalendarEvent {
   caldav_etag?: string;
   /** The iCalendar `UID` this row arrived with — the calendar object's identity
    *  everywhere outside this app. Empty for a row written here, which serializes
-   *  under a stable synthetic uid instead (`lib/ics.ts`'s `icsUid`). Never
+   *  under a stable synthetic uid instead (`lib/calendar/ics.ts`'s `icsUid`). Never
    *  displayed; it exists so a row can go *back* to the server as the object it
    *  came from rather than as a second copy of it. */
   uid?: string;

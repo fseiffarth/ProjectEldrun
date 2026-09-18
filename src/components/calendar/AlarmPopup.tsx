@@ -1,9 +1,9 @@
 import { useEffect } from "react";
 import { createPortal } from "react-dom";
-import { useAlarmStore } from "../../stores/alarms";
-import { useCalendarStore } from "../../stores/calendar";
-import { describeLead } from "../../lib/alarms";
-import { formatLongDate, formatStampTime } from "../../lib/calendarTime";
+import { useAlarmStore } from "../../stores/calendar/alarms";
+import { useCalendarStore } from "../../stores/calendar/calendar";
+import { describeLead } from "../../lib/calendar/alarms";
+import { formatLongDate, formatStampTime } from "../../lib/calendar/calendarTime";
 import { useUse24h } from "../../lib/timeFormat";
 import { useI18nStore, useT, type TranslationKey } from "../../lib/i18n";
 

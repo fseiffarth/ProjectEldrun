@@ -34,7 +34,7 @@ import {
 } from "../../lib/agentPromptTimeline";
 import { localOccurrenceKey, localWallClock } from "../../lib/agentSchedule";
 import { tagCounts } from "../../lib/agentPromptTags";
-import { formatLongDate, monthName, toDateStr, todayStr } from "../../lib/calendarTime";
+import { formatLongDate, monthName, toDateStr, todayStr } from "../../lib/calendar/calendarTime";
 import { useI18nStore, useT } from "../../lib/i18n";
 import { jumpToTab } from "../../lib/tabJump";
 import {

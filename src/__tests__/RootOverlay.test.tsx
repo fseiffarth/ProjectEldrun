@@ -53,7 +53,7 @@ vi.mock("../components/tabs/NewTabMenu", () => ({
 
 import { allGroups, useTabsStore } from "../stores/tabs";
 import { useProjectsStore } from "../stores/projects";
-import { useCalendarStore } from "../stores/calendar";
+import { useCalendarStore } from "../stores/calendar/calendar";
 import { useMailStore } from "../stores/mail";
 import { useTodoStore } from "../stores/todo";
 import {
@@ -65,7 +65,7 @@ import {
   MIN_ROOT_OVERLAY_HEIGHT,
   MIN_ROOT_OVERLAY_WIDTH,
 } from "../stores/rootOverlay";
-import { setCalendarWriteHandler } from "../lib/calendarWriteHook";
+import { setCalendarWriteHandler } from "../lib/calendar/calendarWriteHook";
 import { RootOverlayHost } from "../components/layout/RootOverlay";
 import { SHORTCUT_DEFS, chordMatches, resolveChord } from "../lib/shortcuts";
 

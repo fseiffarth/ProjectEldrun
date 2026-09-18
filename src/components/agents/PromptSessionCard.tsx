@@ -1,5 +1,5 @@
 import { useState, type PointerEvent as ReactPointerEvent } from "react";
-import { toDateStr } from "../../lib/calendarTime";
+import { toDateStr } from "../../lib/calendar/calendarTime";
 import { useI18nStore, useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
 import type { PromptChartCard } from "../../lib/agentPromptChart";

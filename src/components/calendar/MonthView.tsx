@@ -7,9 +7,9 @@ import {
   spanCoversDate,
   todayStr,
   weekdayLabel,
-} from "../../lib/calendarTime";
-import { eventColor } from "../../lib/calendarCategories";
-import { calendarColor } from "../../stores/calendar";
+} from "../../lib/calendar/calendarTime";
+import { eventColor } from "../../lib/calendar/calendarCategories";
+import { calendarColor } from "../../stores/calendar/calendar";
 import { useI18nStore, useT } from "../../lib/i18n";
 
 /** Rows of chips a cell shows before collapsing the rest into "+N more". */

@@ -17,13 +17,13 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { icsUid, parseIcs, serializeIcs } from "../lib/ics";
+import { icsUid, parseIcs, serializeIcs } from "../lib/calendar/ics";
 import {
   orderComponents,
   resourceIcs,
   resourceRows,
   resourceUid,
-} from "../lib/caldavPush";
+} from "../lib/calendar/caldavPush";
 import type { CalendarEvent, CalendarTask } from "../types";
 
 const AT = new Date("2026-08-01T12:00:00Z");

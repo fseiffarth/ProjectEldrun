@@ -12,7 +12,7 @@ import {
 } from "../../stores/rootOverlay";
 import { useProjectsStore } from "../../stores/projects";
 import { useActivityStore } from "../../stores/activity";
-import { useCalendarStore } from "../../stores/calendar";
+import { useCalendarStore } from "../../stores/calendar/calendar";
 import { useMailStore } from "../../stores/mail";
 import { useTodoStore } from "../../stores/todo";
 import { useSettingsStore } from "../../stores/settings";
@@ -34,7 +34,7 @@ import {
   DEFAULT_GROUP_FILES_WIDTH,
   SubwindowFilesSidebar,
 } from "../files/SubwindowFilesSidebar";
-import { notifyCalendarWrite } from "../../lib/calendarWriteHook";
+import { notifyCalendarWrite } from "../../lib/calendar/calendarWriteHook";
 import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
 import type { Calendar, CalendarEvent, CalendarTask } from "../../types";
 import { useT } from "../../lib/i18n";

@@ -3,14 +3,14 @@
 //! `docs/caldav_plan.md` §"Dependency decision" is why there is no CalDAV crate
 //! here: the whole protocol surface this feature needs is six fixed XML request
 //! bodies and one response document shape. The bodies are string templates (the
-//! way `src/lib/ics.ts` builds ICS text); the responses go through `roxmltree`,
+//! way `src/lib/calendar/ics.ts` builds ICS text); the responses go through `roxmltree`,
 //! the one new dependency, because a `multistatus` is real XML with namespaces
 //! and parsing it by hand is how a client starts believing `<D:href>` and
 //! `<d:href>` are different elements.
 //!
 //! **What this module does not do is understand iCalendar.** A `multistatus`
 //! carries `calendar-data` as opaque text; that text is handed to the frontend
-//! and parsed by `src/lib/ics.ts`, which is the one parser in this codebase that
+//! and parsed by `src/lib/calendar/ics.ts`, which is the one parser in this codebase that
 //! knows about folding, escaping, `RRULE` and `VALARM`, and the one with tests
 //! for all four. This module's entire job is "speak WebDAV, hand back text".
 //!
@@ -1201,7 +1201,7 @@ pub async fn fetch_changes(
 //    that arrived from an *imported* ICS file is text somebody else wrote, and it
 //    would otherwise be a path-traversal primitive aimed at the server.
 // 4. **The body is `text/calendar`.** Sent verbatim, exactly as the frontend's
-//    `lib/ics.ts` serialized it, so the one iCalendar writer in this codebase is
+//    `lib/calendar/ics.ts` serialized it, so the one iCalendar writer in this codebase is
 //    the one whose output reaches the server.
 
 /// What a `PUT` is conditional on.

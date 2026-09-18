@@ -307,7 +307,7 @@ engine's correctness arguments all assume one human.*
 
 181. **The timezone detector.** Every stamp is floating local wall-clock
     (`schema/calendar.rs:11-13`) and `parseIcsDate` **ignores `TZID` entirely**
-    (`src/lib/ics.ts:133-159`), so `DTSTART;TZID=Europe/Berlin:20260801T140000`
+    (`src/lib/calendar/ics.ts:133-159`), so `DTSTART;TZID=Europe/Berlin:20260801T140000`
     already lands as floating `14:00` regardless of the reader's zone. Invisibly
     correct for one person in one zone; **silently wrong across zones** — Alice in
     Berlin creates 14:00, Bob in Boston sees 14:00 and arrives six hours late, and

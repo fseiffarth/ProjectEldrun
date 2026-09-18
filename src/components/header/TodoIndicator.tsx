@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { CalendarTask } from "../../types";
-import { calendarColor, useCalendarStore } from "../../stores/calendar";
+import { calendarColor, useCalendarStore } from "../../stores/calendar/calendar";
 import { useSettingsStore } from "../../stores/settings";
 import { useTodoStore } from "../../stores/todo";
 import {
@@ -13,7 +13,7 @@ import {
   todosOverdue,
   urgentTodos,
 } from "../../lib/todoBoard";
-import { formatTime, timePart } from "../../lib/calendarTime";
+import { formatTime, timePart } from "../../lib/calendar/calendarTime";
 import { useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";

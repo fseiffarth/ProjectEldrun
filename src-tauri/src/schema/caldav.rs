@@ -196,7 +196,7 @@ pub struct CalDavCollection {
 /// One resource (one VEVENT or VTODO, by universal convention) as the server
 /// handed it over: its URL, its ETag, and its iCalendar text **unparsed**.
 ///
-/// The text goes to the frontend and through `src/lib/ics.ts`, which is the one
+/// The text goes to the frontend and through `src/lib/calendar/ics.ts`, which is the one
 /// parser here that understands folding, escaping, `RRULE` and `VALARM` — the
 /// same handoff `calendar_fetch_ics` already makes.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -211,7 +211,7 @@ pub struct CalDavResource {
 /// One resource **after** the frontend has parsed its iCalendar text.
 ///
 /// The round trip is deliberate and mirrors the ICS path exactly: the backend
-/// fetches ([`CalDavResource`]), `src/lib/ics.ts` parses, and the parsed rows
+/// fetches ([`CalDavResource`]), `src/lib/calendar/ics.ts` parses, and the parsed rows
 /// come back here to be reconciled and written. The alternative — a second
 /// iCalendar parser in Rust — would mean two implementations of folding,
 /// escaping, `RRULE` and `VALARM` that could disagree about the same feed.

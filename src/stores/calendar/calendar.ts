@@ -8,7 +8,7 @@ import type {
   Occurrence,
   TaskColumn,
   TaskPlacement,
-} from "../types";
+} from "../../types";
 // `CalendarData` is the shape `calendar_load` returns; the store flattens it.
 import {
   excludeOccurrence,
@@ -16,11 +16,11 @@ import {
   occurrencesOn,
   overrideOccurrence,
   sortOccurrences,
-} from "../lib/recurrence";
-import { addDays, toStamp, todayStr } from "../lib/calendarTime";
-import { parseIcs } from "../lib/ics";
-import { notifyCalendarWrite } from "../lib/calendarWriteHook";
-import { translate, useI18nStore } from "../lib/i18n";
+} from "../../lib/calendar/recurrence";
+import { addDays, toStamp, todayStr } from "../../lib/calendar/calendarTime";
+import { parseIcs } from "../../lib/calendar/ics";
+import { notifyCalendarWrite } from "../../lib/calendar/calendarWriteHook";
+import { translate, useI18nStore } from "../../lib/i18n";
 
 /**
  * The native calendar's store: one global set of calendars, events and tasks,
@@ -31,7 +31,7 @@ import { translate, useI18nStore } from "../lib/i18n";
  * others (see `CALENDAR_TAB_CMD` in `stores/tabs.ts`).
  *
  * It holds only stored state. Recurrence expansion, alarm evaluation and ICS
- * parsing are pure functions in `src/lib/{recurrence,ics,calendarTime}.ts`;
+ * parsing are pure functions in `src/lib/calendar/{recurrence,ics,calendarTime}.ts`;
  * components call those on the state they select here.
  *
  * Every mutation writes through to the backend and then patches local state with
@@ -147,7 +147,7 @@ export const useCalendarStore = create<CalendarStore>((set, get) => ({
   // Every mutation below announces itself through `notifyCalendarWrite`. With no
   // CalDAV account that is a resolved promise and nothing else; with one, it is
   // where a local edit becomes a `PUT`. The *ordering* is the part that matters
-  // and is asymmetric on purpose — see `lib/calendarWriteHook.ts`: an upsert is
+  // and is asymmetric on purpose — see `lib/calendar/calendarWriteHook.ts`: an upsert is
   // announced after the local write (an edit made offline is still an edit), a
   // delete before it (a refusal must be able to stop it).
 

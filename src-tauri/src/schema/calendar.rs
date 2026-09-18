@@ -216,7 +216,7 @@ pub struct CalendarEvent {
     pub location: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub notes: String,
-    /// The video call's join URL (`http(s)`; the frontend's `lib/conference.ts`
+    /// The video call's join URL (`http(s)`; the frontend's `lib/calendar/conference.ts`
     /// is the one place that decides what is joinable). Its own field rather
     /// than a convention on `location`, so a **Join** button is never a guess
     /// about what a room name meant.
@@ -1066,7 +1066,7 @@ pub fn migrate_legacy(events: Vec<LegacyEvent>) -> CalendarData {
 // ── Date math ───────────────────────────────────────────────────────────────
 //
 // Just enough civil-date arithmetic to migrate and validate. The frontend owns
-// the real calendar math (`src/lib/calendarTime.ts`); this exists so the backend
+// the real calendar math (`src/lib/calendar/calendarTime.ts`); this exists so the backend
 // never has to parse a date to serve a request.
 
 fn is_leap(y: i32) -> bool {

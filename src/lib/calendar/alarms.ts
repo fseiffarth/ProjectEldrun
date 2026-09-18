@@ -2,7 +2,7 @@
  * Which reminders are due, and which have already been shown.
  *
  * Pure logic, kept out of the store so it can be tested without a clock or a
- * notification backend. `stores/alarms.ts` drives it on a ticker.
+ * notification backend. `stores/calendar/alarms.ts` drives it on a ticker.
  *
  * The invariant that matters: **an alarm fires exactly once.** Every fired alarm
  * is recorded under a stable key — the event, the specific occurrence, and the
@@ -11,9 +11,9 @@
  * *rule-generated* start, so moving one does not resurrect its alarm.
  */
 
-import type { Alarm, Occurrence } from "../types";
+import type { Alarm, Occurrence } from "../../types";
 import { addDays, addMinutes, minutesBetween, toStamp } from "./calendarTime";
-import type { TranslationKey } from "./i18n";
+import type { TranslationKey } from "../i18n";
 
 /** A reminder that has come due and wants showing. */
 export interface DueAlarm {

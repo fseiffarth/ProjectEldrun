@@ -12,7 +12,7 @@ the invariants that make it worth having: [`docs/context/caldav.md`](../docs/con
 `src-tauri/src/commands/calendar.rs`, `caldav_account` in
 `src-tauri/src/services/remote_credentials.rs`, `src-tauri/src/lib.rs`
 (`generate_handler!` + managed state), `roxmltree` in `Cargo.toml`; frontend new
-`src/types/caldav.ts`, `src/lib/caldav.ts`, `src/stores/caldav.ts`,
+`src/types/caldav.ts`, `src/lib/calendar/caldav.ts`, `src/stores/calendar/caldav.ts`,
 `src/components/calendar/CalDavAccountDialog.tsx` + `CalDavSyncHost.tsx`,
 `src/components/calendar/{CalendarPane,CalendarSidebar}.tsx`,
 `src/components/layout/AppShell.tsx`, `src/lib/i18n.ts`, `src/styles/themes.css`.*
@@ -106,7 +106,7 @@ the invariants that make it worth having: [`docs/context/caldav.md`](../docs/con
     server's answer, now re-askable via `caldav_refresh_access`.
 
     Two things push forced elsewhere: `UID` and `RECURRENCE-ID` now round-trip
-    through `lib/ics.ts` (without the first a push creates a second copy of every
+    through `lib/calendar/ics.ts` (without the first a push creates a second copy of every
     appointment; without the second a series pushes back as two masters), and
     `serializeIcs` writes a locally-authored series' `overrides[]` — which fixes
     the **file export**, silently dropping occurrence edits since it was written.
@@ -127,7 +127,7 @@ the invariants that make it worth having: [`docs/context/caldav.md`](../docs/con
       - [ ] ❌ Doesn't work
 
 161. **Look at an `.ics` before importing it — built, never live-tested.**
-    `lib/icsSafety.ts` reports what a picked file contains (`PROCEDURE`/`EMAIL`/
+    `lib/calendar/icsSafety.ts` reports what a picked file contains (`PROCEDURE`/`EMAIL`/
     `AUDIO` alarms, `ATTACH`, non-`http(s)` links, `METHOD:REQUEST`, bidi-disguised
     titles, endless sub-daily `RRULE`s, never-imported component kinds) and
     `IcsImportReviewDialog` shows it before anything is written. Explicitly **not**

@@ -11,18 +11,18 @@ import {
   caldavResourceEtag,
   parseChanges,
   syncStamp,
-} from "../lib/caldav";
-import { resourceIcs, resourceRows, resourceUid } from "../lib/caldavPush";
-import { setCalendarWriteHandler } from "../lib/calendarWriteHook";
-import type { CalendarWriteEvent } from "../lib/calendarWriteHook";
+} from "../../lib/calendar/caldav";
+import { resourceIcs, resourceRows, resourceUid } from "../../lib/calendar/caldavPush";
+import { setCalendarWriteHandler } from "../../lib/calendar/calendarWriteHook";
+import type { CalendarWriteEvent } from "../../lib/calendar/calendarWriteHook";
 import { useCalendarStore } from "./calendar";
-import type { CalendarEvent, CalendarTask } from "../types";
-import type { CalDavAccount, CalDavAccountSaved, CalDavCollection } from "../types/caldav";
+import type { CalendarEvent, CalendarTask } from "../../types";
+import type { CalDavAccount, CalDavAccountSaved, CalDavCollection } from "../../types/caldav";
 
 /**
  * CalDAV accounts, and the sync that keeps their calendars current.
  *
- * Deliberately a **second** store next to `stores/calendar`, mirroring the
+ * Deliberately a **second** store next to `stores/calendar/calendar`, mirroring the
  * backend's own split: an account carries a login, a per-collection cursor and
  * a keychain credential, none of which is calendar-display state. What a sync
  * *produces* lands in the calendar store, where every existing surface already
@@ -153,7 +153,7 @@ interface CalDavStore {
   /**
    * Send one row's whole **resource** to the server, or delete it.
    *
-   * Called from the calendar store's write path via `lib/calendarWriteHook`, and
+   * Called from the calendar store's write path via `lib/calendar/calendarWriteHook`, and
    * directly by the conflict dialog. Never throws for a conflict — that comes
    * back as an outcome and lands in `conflicts`.
    */

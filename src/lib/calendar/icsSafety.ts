@@ -7,9 +7,9 @@
  * ## What this is, and what it is not
  *
  * It is **not** a malware scanner, and an `.ics` file cannot carry code that this
- * app would run: `lib/ics.ts` reads a fixed set of properties into plain data,
+ * app would run: `lib/calendar/ics.ts` reads a fixed set of properties into plain data,
  * every text field goes through `stripFormatControls`, no calendar surface
- * renders HTML, and a link is only ever handed to the OS after `lib/conference.ts`
+ * renders HTML, and a link is only ever handed to the OS after `lib/calendar/conference.ts`
  * has refused everything that is not `http(s)`. Those defences are the reason a
  * hostile `.ics` is not an execution risk, and none of them is replaced here.
  *
@@ -31,7 +31,7 @@
  */
 
 import { parseLine, unfold } from "./ics";
-import { hasFormatControls, stripFormatControls } from "./textSafety";
+import { hasFormatControls, stripFormatControls } from "../textSafety";
 
 /** The things worth telling someone about before an import. */
 export type IcsFindingKind =

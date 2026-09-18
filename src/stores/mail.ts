@@ -35,7 +35,7 @@ import type {
  * selected message and its body — one global set, backed by
  * `~/.local/share/eldrun/mail/`.
  *
- * Modeled on `stores/calendar.ts`, and deliberately **global** — one mailbox, no
+ * Modeled on `stores/calendar/calendar.ts`, and deliberately **global** — one mailbox, no
  * matter which project is active. That is also what retired the mail *tab*: a tab
  * belongs to a scope, so a mail tab could only ever show the same mailbox this
  * store already holds while behaving as though it belonged to a project you then
@@ -509,7 +509,7 @@ export const useMailStore = create<MailStore>((set, get) => ({
     // is stale, and the optimistic patch above just told the user otherwise.
     if (ok === false) {
       // Outside React, so the imperative translator — the pattern
-      // `stores/alarms` and `stores/projects` already use for a store-built
+      // `stores/calendar/alarms` and `stores/projects` already use for a store-built
       // sentence.
       set({ error: translate(useI18nStore.getState().lang, "mail.messageGone") });
     }

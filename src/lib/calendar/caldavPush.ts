@@ -1,8 +1,8 @@
 /**
  * What a local edit looks like on the wire (`docs/caldav_plan.md` Phase 3).
  *
- * Pure, and deliberately separate from `lib/caldav.ts` (the invoke surface) and
- * from `stores/caldav.ts` (the orchestration): everything here is a decision
+ * Pure, and deliberately separate from `lib/calendar/caldav.ts` (the invoke surface) and
+ * from `stores/calendar/caldav.ts` (the orchestration): everything here is a decision
  * about *what bytes a resource should contain*, which is the half worth testing
  * without a backend.
  *
@@ -27,7 +27,7 @@
  */
 
 import { icsUid, serializeIcs } from "./ics";
-import type { CalendarEvent, CalendarTask } from "../types";
+import type { CalendarEvent, CalendarTask } from "../../types";
 
 /** What kind of row a push is about — the backend's `kind` argument. */
 export type CalDavRowKind = "event" | "task";

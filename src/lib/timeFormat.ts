@@ -75,7 +75,7 @@ export function useUse24h(): boolean {
 
 /**
  * The same answer for a caller with no hooks — a store action, a notification
- * built outside React (`stores/alarms`). A read, not a subscription: those
+ * built outside React (`stores/calendar/alarms`). A read, not a subscription: those
  * callers format one string and are done, so there is nothing to re-render.
  *
  * Deliberately **not** named `use…`: React's rules-of-hooks lint goes by the

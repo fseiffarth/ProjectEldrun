@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { useCalendarStore } from "../../stores/calendar";
+import { useCalendarStore } from "../../stores/calendar/calendar";
 import { useSettingsStore } from "../../stores/settings";
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";

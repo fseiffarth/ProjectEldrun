@@ -41,7 +41,7 @@ only when breaking it does damage. The *why* goes in code comments or
 | `synctex.rs` | Native SyncTeX reverse search from `.synctex(.gz)` (the CLI picks the wrong `.tex` file on margin clicks). |
 | `boxes.rs` | Project-box CRUD + the `box:<id>` scope's allowed-roots (`box_allowed_roots`, fail-closed) + the box folder's agent-doc link blocks and per-member symlink farm (`.eldrun-box-links.json` ownership manifest — only Eldrun-created links are ever removed). Membership is N:M via `member_ids` only. |
 | `browser.rs` | In-app browser (#61, `docs/browser_plan_{a,b,c}.md`): reader tab fetched + sanitized in Rust (ammonia, no JS runs) and a separate hardened live-page window. Path-free command surface. |
-| `caldav.rs` | CalDAV account commands (`docs/context/caldav.md`), mirroring mail's. Sync = `caldav_fetch` (raw iCal) → frontend parses with `lib/ics.ts` → `caldav_apply` merges atomically. |
+| `caldav.rs` | CalDAV account commands (`docs/context/caldav.md`), mirroring mail's. Sync = `caldav_fetch` (raw iCal) → frontend parses with `lib/calendar/ics.ts` → `caldav_apply` merges atomically. |
 | `calendar.rs` | Calendar/event/task CRUD over `calendar.json` + guarded ICS read/write. `merge_caldav_calendar_at` merges CalDAV rows by `caldav_href` field by field (never re-mints ids). |
 | `mail.rs` (priority marks) | `mail_priority_{set,page,counts,clear}`: Important/Urgent marks, local-only (`schema::mail::MailPriority`), no network. |
 | `mail.rs` (deleting) | `mail_move` (delete = move to Trash) and `mail_purge` (`\Deleted` + `UID EXPUNGE`). Requires UIDPLUS or refuses (`NO_UIDPLUS`) — never plain `EXPUNGE`. |

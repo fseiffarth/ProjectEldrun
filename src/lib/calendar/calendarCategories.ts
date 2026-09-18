@@ -7,7 +7,7 @@
  * falls back to the calendar's own color instead of gaining a swatch.
  */
 
-import type { TranslationKey } from "./i18n";
+import type { TranslationKey } from "../i18n";
 
 export interface Category {
   key: string;

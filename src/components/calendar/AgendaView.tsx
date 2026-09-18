@@ -1,8 +1,8 @@
 import { useMemo } from "react";
 import type { Calendar, Occurrence } from "../../types";
-import { datePart, formatLongDate, formatTime, spanDates, todayStr } from "../../lib/calendarTime";
-import { eventColor } from "../../lib/calendarCategories";
-import { calendarColor } from "../../stores/calendar";
+import { datePart, formatLongDate, formatTime, spanDates, todayStr } from "../../lib/calendar/calendarTime";
+import { eventColor } from "../../lib/calendar/calendarCategories";
+import { calendarColor } from "../../stores/calendar/calendar";
 import { useI18nStore, useT } from "../../lib/i18n";
 
 interface Props {

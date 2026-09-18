@@ -20,8 +20,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => invoke(...args) }));
 
-import { CALDAV_CONFLICT_ERROR, isCalDavConflict, useCalDavStore } from "../stores/caldav";
-import { useCalendarStore } from "../stores/calendar";
+import { CALDAV_CONFLICT_ERROR, isCalDavConflict, useCalDavStore } from "../stores/calendar/caldav";
+import { useCalendarStore } from "../stores/calendar/calendar";
 import type { CalendarEvent } from "../types";
 import type { CalDavAccount } from "../types/caldav";
 

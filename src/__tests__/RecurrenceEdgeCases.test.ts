@@ -1,5 +1,5 @@
 /**
- * Edge cases for `lib/recurrence.ts` beyond `Recurrence.test.ts`: weekday
+ * Edge cases for `lib/calendar/recurrence.ts` beyond `Recurrence.test.ts`: weekday
  * lists the wild produces (duplicates, out-of-range, a list that skips the
  * master's own day), rule ends that fall before or on the master, the
  * month-pinning and leap-year corners, an occurrence that straddles midnight
@@ -16,7 +16,7 @@ import {
   occurrencesOn,
   overrideOccurrence,
   sortOccurrences,
-} from "../lib/recurrence";
+} from "../lib/calendar/recurrence";
 import { translate, type TranslationKey } from "../lib/i18n";
 import type { CalendarEvent, Rrule } from "../types";
 

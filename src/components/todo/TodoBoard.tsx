@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef } from "react";
 
 import type { CalendarTask, TaskColumn } from "../../types";
-import { useCalendarStore } from "../../stores/calendar";
+import { useCalendarStore } from "../../stores/calendar/calendar";
 import { useTodoStore } from "../../stores/todo";
 import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
-import { toStamp, todayStr } from "../../lib/calendarTime";
+import { toStamp, todayStr } from "../../lib/calendar/calendarTime";
 import {
   autoscrollDelta,
   bucketByColumn,

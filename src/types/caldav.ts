@@ -123,7 +123,7 @@ export interface CalDavChanges {
   unchanged: boolean;
 }
 
-/** One resource after `lib/ics.ts` has parsed it — what `caldav_apply` takes. */
+/** One resource after `lib/calendar/ics.ts` has parsed it — what `caldav_apply` takes. */
 export interface CalDavParsed {
   href: string;
   etag: string;
