@@ -98,6 +98,13 @@ Security / data loss:
 - Remote/VPN auto-connect must never prompt; never `pkexec` a connect that
   can't succeed silently.
 - Destructive background git/sync moves record through `services::local_loss`.
+- Local git verbs that can run repo-configured programs (status, diff, add,
+  commit, checkout, merge, push, …) never run bare: use
+  `commands::git::hardened_git_command_in` (the `hookless_` variant for
+  background work). Project code Eldrun runs on the
+  host (git hooks, `latexmkrc`, a project's prettier) is gated by
+  `services::exec_trust`; what runs or where comes from `projects.json`, never
+  the in-folder `project.json`.
 - `services::agent_fence` fails closed: missing/unusable bubblewrap never
   falls back to launching unfenced.
 - `services::mobile_control`: raw project ids, paths, commands, tmux targets
