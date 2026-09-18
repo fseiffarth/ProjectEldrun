@@ -199,6 +199,23 @@ pub fn load_terminal_session(project_id: &str) -> TerminalSession {
     session
 }
 
+/// Re-point the saved tab layout's paths after the project folder moved from
+/// `old` to `new` (see [`storage::rewrite_path_prefix`]). Read and written as
+/// plain JSON so fields this build does not model survive. A project with no
+/// saved layout is fine; returns whether the file changed.
+pub fn rewrite_session_paths(project_id: &str, old: &str, new: &str) -> Result<bool, String> {
+    let path = storage::project_session_dir(project_id).join(TERMINALS_FILE);
+    if !path.exists() {
+        return Ok(false);
+    }
+    let mut session: Value = storage::read_json(&path).map_err(|e| e.to_string())?;
+    if !storage::rewrite_path_prefix(&mut session, old, new) {
+        return Ok(false);
+    }
+    storage::write_json_atomic(&path, &session).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
 /// Read the state-dir session file verbatim (no sanitizing, no fallback).
 fn read_state_session(project_id: &str) -> Option<TerminalSession> {
     let path = storage::project_session_dir(project_id).join(TERMINALS_FILE);

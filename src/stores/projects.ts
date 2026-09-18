@@ -846,6 +846,10 @@ interface ProjectsStore {
   archiveProject: (id: string) => Promise<void>;
   updateProjectDescription: (id: string, description: string) => Promise<void>;
   renameProject: (id: string, name: string) => Promise<void>;
+  /** Rename a local project's folder to `<same parent>/<leaf>`. The backend
+   * refuses an existing target and an open project, so an open one is closed
+   * first (its stop prompt may be cancelled → throws) and reopened after. */
+  renameProjectFolder: (id: string, leaf: string) => Promise<void>;
   /** Relocate a remote (SSH) project's local mirror folder into `parentDir`
    * (the folder is moved to `<parentDir>/<name>`). Returns the new mirror path. */
   moveRemoteMirror: (id: string, name: string, parentDir: string) => Promise<string>;
@@ -1554,6 +1558,34 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       name,
     });
     patchProject(id, (project) => ({ ...project, name: cleaned }));
+  },
+
+  renameProjectFolder: async (id, leaf) => {
+    const before = get().projects.find((project) => project.id === id);
+    if (!before) return;
+    const wasOpen = before.status !== "inactive";
+    const wasCurrent = get().activeId === id;
+    // Open shells and agents hold the old path and would write back into a
+    // folder that no longer exists, so the folder only moves while closed.
+    if (wasOpen) {
+      await get().deactivateProject(id);
+      if (get().projects.find((project) => project.id === id)?.status !== "inactive") {
+        throw new Error(
+          translate(useI18nStore.getState().lang, "pill.folderRenameStillOpen"),
+        );
+      }
+    }
+    try {
+      // The backend re-points `directory`/`local_file` and the saved layout, so
+      // the reopen below restores the tabs under the new folder.
+      const updated = await invoke<ProjectEntry>("rename_project_dir", { projectId: id, leaf });
+      patchProject(id, (project) => ({ ...project, ...updated }));
+    } finally {
+      if (wasOpen) {
+        await get().activateProject(id);
+        if (wasCurrent) await get().setActive(id);
+      }
+    }
   },
 
   moveRemoteMirror: async (id, name, parentDir) => {

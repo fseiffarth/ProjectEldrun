@@ -1254,6 +1254,297 @@ pub fn set_project_name(project_id: String, name: String) -> Result<String, Stri
     Ok(cleaned)
 }
 
+// ── Project folder rename ─────────────────────────────────────────────────
+
+/// What renaming a local project's folder to a new leaf name would do, checked
+/// without touching anything. The rename dialog shows it live; the rename
+/// itself re-plans and refuses anything but `ok`.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectDirRenamePlan {
+    pub current_dir: String,
+    /// `<parent of current_dir>/<leaf>`; empty when the leaf is invalid.
+    pub target_dir: String,
+    pub leaf: String,
+    /// Machine token the frontend words: `ok`, `same` (already that name),
+    /// `exists` (something is already there — never overwritten or merged),
+    /// `registered` (another project claims that path), `nested` (another
+    /// project lives inside this folder and would lose its path), `invalid`
+    /// (not a usable folder name), `missing` (the folder is not on disk, or is a
+    /// link), `unsupported` (remote, VM or the Trash — no local folder to own).
+    pub status: String,
+}
+
+/// A single folder name that is valid on every OS Eldrun ships to: no
+/// separators, no `.`/`..`, none of Windows' reserved characters, no trailing
+/// dot or space, no control characters.
+fn is_valid_folder_leaf(leaf: &str) -> bool {
+    !leaf.is_empty()
+        && leaf.len() <= 255
+        && leaf != "."
+        && leaf != ".."
+        && !leaf.ends_with('.')
+        && !leaf.ends_with(' ')
+        && !leaf
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '/' | '\\' | '<' | '>' | ':' | '"' | '|' | '?' | '*'))
+}
+
+/// Whether two paths are the same directory entry — true for a case-only
+/// rename on a case-insensitive filesystem, where the "new" name already
+/// resolves to the folder being renamed.
+fn is_same_file(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (fs::symlink_metadata(a), fs::symlink_metadata(b)) {
+            (Ok(x), Ok(y)) => x.dev() == y.dev() && x.ino() == y.ino(),
+            _ => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (a, b);
+        false
+    }
+}
+
+/// Plan renaming `project_id`'s folder to `leaf` (trimmed) within its current
+/// parent. Pure over the registry snapshot plus `stat`s; `is_remote` comes from
+/// `services::remote` so remoteness is never inferred here.
+fn plan_dir_rename(
+    list: &ProjectsList,
+    project_id: &str,
+    is_remote: bool,
+    leaf: &str,
+) -> Result<ProjectDirRenamePlan, String> {
+    let entry = list
+        .iter()
+        .find(|e| e.id == project_id)
+        .ok_or_else(|| format!("project '{project_id}' not found"))?;
+    let leaf = leaf.trim().to_string();
+    let current = entry_directory(entry)
+        .map(|d| d.trim().trim_end_matches(['/', '\\']).to_string())
+        .unwrap_or_default();
+    let plan = |target_dir: String, status: &str| ProjectDirRenamePlan {
+        current_dir: current.clone(),
+        target_dir,
+        leaf: leaf.clone(),
+        status: status.to_string(),
+    };
+    let is_vm = entry
+        .extra
+        .get("vm")
+        .and_then(|v| v.get("enabled"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if paths::is_trash_project_id(project_id) || is_remote || is_vm || current.is_empty() {
+        return Ok(plan(String::new(), "unsupported"));
+    }
+    let old = PathBuf::from(&current);
+    let Some(parent) = old.parent().filter(|p| !p.as_os_str().is_empty()) else {
+        return Ok(plan(String::new(), "unsupported"));
+    };
+    // A link is renamed as the link, leaving the real folder where it was —
+    // not what "rename the project folder" means.
+    if !fs::symlink_metadata(&old).is_ok_and(|m| m.is_dir()) {
+        return Ok(plan(String::new(), "missing"));
+    }
+    if !is_valid_folder_leaf(&leaf) {
+        return Ok(plan(String::new(), "invalid"));
+    }
+    let target = parent.join(&leaf);
+    let target_str = target.to_string_lossy().to_string();
+    if old.file_name().is_some_and(|n| n == leaf.as_str()) {
+        return Ok(plan(target_str, "same"));
+    }
+    // `symlink_metadata`, so a dangling link or a stray file counts as taken.
+    if fs::symlink_metadata(&target).is_ok() && !is_same_file(&old, &target) {
+        return Ok(plan(target_str, "exists"));
+    }
+    if find_project_conflict(list, &ProjectSite::Local { dir: &target_str }, Some(project_id))
+        .is_some()
+    {
+        return Ok(plan(target_str, "registered"));
+    }
+    let old_key = local_dir_key(&current);
+    let under_old = |p: &str| {
+        let key = local_dir_key(p);
+        key.strip_prefix(&old_key)
+            .is_some_and(|rest| rest.starts_with('/') || rest.starts_with('\\'))
+    };
+    let nested = list.iter().filter(|e| e.id != project_id).any(|e| {
+        entry_directory(e).is_some_and(|d| under_old(&d))
+            || entry_mirror(e).is_some_and(|m| under_old(&m))
+    });
+    if nested {
+        return Ok(plan(target_str, "nested"));
+    }
+    Ok(plan(target_str, "ok"))
+}
+
+/// Check what renaming a local project's folder to `leaf` would do (see
+/// [`ProjectDirRenamePlan`]). Read-only; backs the rename dialog's live line.
+#[tauri::command]
+pub fn plan_project_dir_rename(
+    project_id: String,
+    leaf: String,
+) -> Result<ProjectDirRenamePlan, String> {
+    let list = read_projects_list()?;
+    let is_remote = crate::services::remote::remote_target_for(&project_id).is_some();
+    plan_dir_rename(&list, &project_id, is_remote, &leaf)
+}
+
+/// Rename `old` to `new` without ever replacing or merging into something at
+/// `new`. On Unix the free name is claimed first with an exclusive `mkdir`, and
+/// `rename(2)` then atomically swaps our own empty placeholder for the folder —
+/// so a folder that appears at `new` between the check and the move makes
+/// `mkdir` fail instead of being overwritten (plain `rename` would silently
+/// replace an empty directory). Windows' move never replaces a directory.
+fn rename_dir_no_replace(old: &Path, new: &Path) -> Result<(), String> {
+    if is_same_file(old, new) {
+        // Case-only change on a case-insensitive filesystem: same entry.
+        return fs::rename(old, new).map_err(|e| e.to_string());
+    }
+    #[cfg(unix)]
+    {
+        fs::create_dir(new).map_err(|e| match e.kind() {
+            std::io::ErrorKind::AlreadyExists => {
+                format!("{} already exists; nothing was renamed", new.display())
+            }
+            _ => e.to_string(),
+        })?;
+        if let Err(e) = fs::rename(old, new) {
+            // Only ever removes the placeholder while it is still empty.
+            let _ = fs::remove_dir(new);
+            return Err(e.to_string());
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        if fs::symlink_metadata(new).is_ok() {
+            return Err(format!("{} already exists; nothing was renamed", new.display()));
+        }
+        fs::rename(old, new).map_err(|e| e.to_string())
+    }
+}
+
+/// Rename a **closed** local project's folder to `<same parent>/<leaf>`, then
+/// re-point everything Eldrun stores under the old path: the registry entry
+/// (`directory`, `local_file`, a pinned venv interpreter…), the moved
+/// `project.json`, and the saved tab layout. Refuses anything the plan does not
+/// call `ok`, and refuses an open project — its shells and agents hold the old
+/// path and would write back into a folder that no longer exists. Linked git
+/// worktrees are re-pointed with `git worktree repair`. Returns the new entry.
+#[tauri::command]
+pub async fn rename_project_dir(project_id: String, leaf: String) -> Result<ProjectEntry, String> {
+    run_off_thread(move || rename_project_dir_blocking(&project_id, &leaf)).await
+}
+
+fn rename_project_dir_blocking(project_id: &str, leaf: &str) -> Result<ProjectEntry, String> {
+    let list = read_projects_list()?;
+    let is_remote = crate::services::remote::remote_target_for(project_id).is_some();
+    let plan = plan_dir_rename(&list, project_id, is_remote, leaf)?;
+    if plan.status != "ok" {
+        return Err(format!("The project folder can't be renamed ({}).", plan.status));
+    }
+    let is_closed = |e: &ProjectEntry| e.status == "inactive";
+    if !list.iter().any(|e| e.id == project_id && is_closed(e)) {
+        return Err("Close the project before renaming its folder.".to_string());
+    }
+    let old = PathBuf::from(&plan.current_dir);
+    let new = PathBuf::from(&plan.target_dir);
+    rename_dir_no_replace(&old, &new)?;
+
+    let (old_s, new_s) = (plan.current_dir.as_str(), plan.target_dir.as_str());
+    let patched = patch_project_entry(project_id, |entry| {
+        if !is_closed(entry) {
+            return Err("The project was reopened while its folder was renamed.".to_string());
+        }
+        let mut value = serde_json::to_value(&*entry).map_err(|e| e.to_string())?;
+        storage::rewrite_path_prefix(&mut value, old_s, new_s);
+        *entry = serde_json::from_value(value).map_err(|e| e.to_string())?;
+        Ok(entry.clone())
+    });
+    let updated = match patched {
+        Ok(entry) => entry,
+        Err(e) => {
+            // Nothing points at the new name yet: put the folder back.
+            return match fs::rename(&new, &old) {
+                Ok(()) => Err(e),
+                Err(back) => Err(format!(
+                    "{e} — and the folder could not be moved back from {} ({back})",
+                    new.display()
+                )),
+            };
+        }
+    };
+
+    // The registry is the source of truth; the rest is best effort, reported.
+    let project_file = PathBuf::from(&updated.local_file);
+    if project_file.exists() {
+        let rewritten = storage::read_json::<Value>(&project_file)
+            .map_err(|e| e.to_string())
+            .and_then(|mut v| {
+                if storage::rewrite_path_prefix(&mut v, old_s, new_s) {
+                    storage::write_json_atomic(&project_file, &v).map_err(|e| e.to_string())
+                } else {
+                    Ok(())
+                }
+            });
+        if let Err(e) = rewritten {
+            eprintln!("rename_project_dir: project.json not updated: {e}");
+        }
+    }
+    if let Err(e) =
+        crate::services::terminal_service::rewrite_session_paths(project_id, old_s, new_s)
+    {
+        eprintln!("rename_project_dir: saved tab layout not updated: {e}");
+    }
+    if new.join(".git").exists() {
+        // Linked worktrees record absolute paths both ways. The ones that lived
+        // inside the folder (`.eldrun/worktrees/…`) moved with it, and repair can
+        // only find them when told where they went.
+        let moved_worktrees = moved_linked_worktrees(&new, old_s, new_s);
+        match paths::command_no_window("git")
+            .arg("-C")
+            .arg(&new)
+            .args(["worktree", "repair"])
+            .args(&moved_worktrees)
+            .output()
+        {
+            Ok(out) if !out.status.success() => eprintln!(
+                "rename_project_dir: git worktree repair: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+            Err(e) => eprintln!("rename_project_dir: git worktree repair: {e}"),
+            Ok(_) => {}
+        }
+    }
+    Ok(updated)
+}
+
+/// The new locations of a repo's linked worktrees that sat under the renamed
+/// folder: each `.git/worktrees/<n>/gitdir` still names `<old>/…/<wt>/.git`.
+fn moved_linked_worktrees(repo: &Path, old: &str, new: &str) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(repo.join(".git").join("worktrees")) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|e| fs::read_to_string(e.path().join("gitdir")).ok())
+        .filter_map(|gitdir| {
+            let mut v = Value::String(gitdir.trim().to_string());
+            if !storage::rewrite_path_prefix(&mut v, old, new) {
+                return None;
+            }
+            let moved = PathBuf::from(v.as_str()?);
+            moved.parent().map(Path::to_path_buf)
+        })
+        .collect()
+}
+
 /// Whether a currently-detected repo source still needs a user decision:
 /// either nothing is configured yet, or what *is* configured textually
 /// matches the detected value (so it was very likely adopted from an earlier
@@ -4506,6 +4797,99 @@ mod tests {
             name,
             vec![("directory", Value::String(dir.to_string()))],
         )
+    }
+
+    // ── Project folder rename ──────────────────────────────────────────────
+
+    fn dir_rename_status(list: &ProjectsList, id: &str, leaf: &str) -> String {
+        plan_dir_rename(list, id, false, leaf).unwrap().status
+    }
+
+    #[test]
+    fn dir_rename_plan_refuses_anything_already_at_the_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join("alpha");
+        fs::create_dir(&old).unwrap();
+        fs::create_dir(tmp.path().join("taken")).unwrap();
+        fs::write(tmp.path().join("afile"), "x").unwrap();
+        let list = vec![local_entry("a", "Alpha", &old.to_string_lossy())];
+
+        assert_eq!(dir_rename_status(&list, "a", "beta"), "ok");
+        assert_eq!(dir_rename_status(&list, "a", "  beta "), "ok");
+        assert_eq!(dir_rename_status(&list, "a", "alpha"), "same");
+        assert_eq!(dir_rename_status(&list, "a", "taken"), "exists");
+        assert_eq!(dir_rename_status(&list, "a", "afile"), "exists");
+        let plan = plan_dir_rename(&list, "a", false, "beta").unwrap();
+        assert_eq!(plan.target_dir, tmp.path().join("beta").to_string_lossy());
+    }
+
+    #[test]
+    fn dir_rename_plan_rejects_bad_leaves_and_unsupported_projects() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join("alpha");
+        fs::create_dir(&old).unwrap();
+        let dir = old.to_string_lossy().to_string();
+        let mut vm = local_entry("v", "Vm", &dir);
+        vm.extra
+            .insert("vm".into(), serde_json::json!({ "enabled": true }));
+        let list = vec![
+            local_entry("a", "Alpha", &dir),
+            vm,
+            local_entry("gone", "Gone", &tmp.path().join("nope").to_string_lossy()),
+        ];
+        for bad in ["", "..", "a/b", "a\\b", "x:", "trail.", "a\tb"] {
+            assert_eq!(dir_rename_status(&list, "a", bad), "invalid", "{bad:?}");
+        }
+        assert_eq!(plan_dir_rename(&list, "a", true, "b").unwrap().status, "unsupported");
+        assert_eq!(dir_rename_status(&list, "v", "b"), "unsupported");
+        assert_eq!(dir_rename_status(&list, "gone", "b"), "missing");
+        assert!(plan_dir_rename(&list, "nobody", false, "b").is_err());
+    }
+
+    #[test]
+    fn dir_rename_plan_guards_other_projects_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join("alpha");
+        fs::create_dir(&old).unwrap();
+        let dir = old.to_string_lossy().to_string();
+        // A registered project whose folder was deleted still owns its path.
+        let registered = local_entry("r", "R", &tmp.path().join("beta").to_string_lossy());
+        let list = vec![local_entry("a", "Alpha", &dir), registered];
+        assert_eq!(dir_rename_status(&list, "a", "beta"), "registered");
+
+        // Another project living inside this folder would lose its path.
+        let inner = local_entry("i", "Inner", &format!("{dir}/sub"));
+        let list = vec![local_entry("a", "Alpha", &dir), inner];
+        assert_eq!(dir_rename_status(&list, "a", "gamma"), "nested");
+        // …but a sibling that merely shares the prefix does not.
+        let sibling = local_entry("s", "S", &format!("{dir}x"));
+        let list = vec![local_entry("a", "Alpha", &dir), sibling];
+        assert_eq!(dir_rename_status(&list, "a", "gamma"), "ok");
+    }
+
+    #[test]
+    fn rename_dir_no_replace_never_touches_an_existing_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join("alpha");
+        fs::create_dir(&old).unwrap();
+        fs::write(old.join("keep.txt"), "mine").unwrap();
+        // An EMPTY directory is exactly what plain `rename(2)` would replace.
+        let empty = tmp.path().join("empty");
+        fs::create_dir(&empty).unwrap();
+        assert!(rename_dir_no_replace(&old, &empty).is_err());
+        assert!(old.join("keep.txt").exists());
+        assert!(empty.is_dir());
+
+        let full = tmp.path().join("full");
+        fs::create_dir(&full).unwrap();
+        fs::write(full.join("theirs.txt"), "theirs").unwrap();
+        assert!(rename_dir_no_replace(&old, &full).is_err());
+        assert!(!full.join("keep.txt").exists());
+
+        let free = tmp.path().join("beta");
+        rename_dir_no_replace(&old, &free).unwrap();
+        assert!(!old.exists());
+        assert_eq!(fs::read_to_string(free.join("keep.txt")).unwrap(), "mine");
     }
 
     fn spec(user: Option<&str>, host: &str, port: Option<u16>, path: &str) -> RemoteSpec {

@@ -1363,6 +1363,8 @@ pub fn run() {
             commands::projects::save_project,
             commands::projects::set_project_description,
             commands::projects::set_project_name,
+            commands::projects::plan_project_dir_rename,
+            commands::projects::rename_project_dir,
             commands::projects::set_project_sandbox,
             commands::projects::set_project_sandbox_spec,
             commands::vm::vm_doctor,

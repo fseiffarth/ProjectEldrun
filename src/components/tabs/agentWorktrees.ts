@@ -19,7 +19,7 @@
  * *derived from* the project root rather than remembered from an old one —
  * `<root>/.eldrun/worktrees/<name>`, the single place a worktree may live
  * (`commands::git::WorktreeCtx::worktrees_root`) — and resets everything else
- * exactly as before. A moved project is still safe: `renameProjectDir` rewrites
+ * exactly as before. A moved project is still safe: `rename_project_dir` rewrites
  * the prefix, and a cwd under a *different* root fails the check and resets.
  *
  * The listing is always taken from the **mirror side** (`site: "mirror"`): for

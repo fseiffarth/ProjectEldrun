@@ -30,7 +30,7 @@ import { ActivityCalendar } from "./ActivityCalendar";
 import { CategoryEditor } from "./CategoryEditor";
 import { ExtendToRemoteDialog } from "./ExtendToRemoteDialog";
 import { autoConnectEligibility } from "./autoConnectEligibility";
-import { describeDetectedSpecSource } from "./scaffold";
+import { describeDetectedSpecSource, sanitizeName } from "./scaffold";
 import { useSavedCredential } from "./useSavedCredential";
 import { isHpcHost, targetOfSpec } from "../../lib/hpcHost";
 import { useRemoteMachinesStore, type DroppedGlobalMachine } from "../../stores/remoteMachines";
@@ -192,34 +192,91 @@ function EditDescriptionWindow({
   );
 }
 
+/** `plan_project_dir_rename`'s answer (see `ProjectDirRenamePlan` in
+ *  commands/projects.rs); `status` is worded by `pill.folderStatus.*`. */
+interface DirRenamePlan {
+  currentDir: string;
+  targetDir: string;
+  leaf: string;
+  status: "ok" | "same" | "exists" | "registered" | "nested" | "invalid" | "missing" | "unsupported";
+}
+
+const FOLDER_STATUS_KEY = {
+  same: "pill.folderStatus.same",
+  exists: "pill.folderStatus.exists",
+  registered: "pill.folderStatus.registered",
+  nested: "pill.folderStatus.nested",
+  invalid: "pill.folderStatus.invalid",
+  missing: "pill.folderStatus.missing",
+  unsupported: "pill.folderStatus.unsupported",
+} as const satisfies Record<Exclude<DirRenamePlan["status"], "ok">, string>;
+
+function folderLeaf(dir: string) {
+  return dir.split(/[/\\]/).filter(Boolean).pop() ?? "";
+}
+
 function RenameWindow({
   project,
   onSave,
+  onRenameFolder,
   onClose,
 }: {
   project: ProjectEntry;
   onSave: (name: string) => Promise<void>;
+  onRenameFolder: (leaf: string) => Promise<void>;
   onClose: () => void;
 }) {
   const t = useT();
   const [value, setValue] = useState(project.name);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  // Folder rename is opt-in. The leaf follows the name (the same slug a new
+  // project's folder gets) until the user edits it by hand.
+  const [renameFolder, setRenameFolder] = useState(false);
+  const [leaf, setLeaf] = useState(() => sanitizeName(project.name));
+  const [leafEdited, setLeafEdited] = useState(false);
+  const [plan, setPlan] = useState<DirRenamePlan | null>(null);
+  const planSeq = useRef(0);
+
+  useEffect(() => {
+    const seq = ++planSeq.current;
+    invoke<DirRenamePlan>("plan_project_dir_rename", { projectId: project.id, leaf })
+      .then((next) => {
+        if (seq === planSeq.current) setPlan(next);
+      })
+      .catch(() => {
+        if (seq === planSeq.current) setPlan(null);
+      });
+  }, [project.id, leaf]);
+
+  const folderSupported = !!plan && plan.status !== "unsupported" && plan.status !== "missing";
+  const folderBlocked = renameFolder && plan?.status !== "ok" && plan?.status !== "same";
 
   const save = async () => {
     if (!value.trim()) {
       setError(t("pill.nameEmpty"));
       return;
     }
+    if (folderBlocked) return;
     setSaving(true);
     setError("");
     try {
-      await onSave(value);
-      onClose();
+      if (value.trim() !== project.name) await onSave(value);
     } catch (err) {
       setError(String(err));
       setSaving(false);
+      return;
     }
+    if (renameFolder && plan?.status === "ok") {
+      try {
+        await onRenameFolder(plan.leaf);
+      } catch (err) {
+        setError(t("pill.folderRenameFailed", { error: String(err) }));
+        setSaving(false);
+        return;
+      }
+    }
+    onClose();
   };
 
   return createPortal(
@@ -237,16 +294,66 @@ function RenameWindow({
           value={value}
           autoFocus
           placeholder={t("pill.namePlaceholder")}
-          onChange={(e) => setValue(e.target.value)}
+          onChange={(e) => {
+            setValue(e.target.value);
+            if (!leafEdited) setLeaf(sanitizeName(e.target.value));
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter") void save();
             if (e.key === "Escape") onClose();
           }}
         />
+        {folderSupported && plan && (
+          <>
+            <label className="settings-switch-row">
+              <span>
+                {t("pill.alsoRenameFolder")} <UntestedTag />
+              </span>
+              <Toggle
+                checked={renameFolder}
+                onChange={(e) => setRenameFolder(e.target.checked)}
+              />
+            </label>
+            {renameFolder && (
+              <>
+                <input
+                  type="text"
+                  value={leaf}
+                  placeholder={folderLeaf(plan.currentDir)}
+                  spellCheck={false}
+                  aria-label={t("pill.folderNameLabel")}
+                  onChange={(e) => {
+                    setLeaf(e.target.value);
+                    setLeafEdited(true);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void save();
+                    if (e.key === "Escape") onClose();
+                  }}
+                />
+                <div className="project-dialog-path">
+                  {plan.currentDir}
+                  {plan.targetDir && plan.status !== "same" ? ` → ${plan.targetDir}` : ""}
+                </div>
+                {plan.status === "ok" ? (
+                  <div className="project-dialog-path">
+                    {project.status !== "inactive"
+                      ? t("pill.folderRenameClosesProject")
+                      : t("pill.folderRenameAgentNote")}
+                  </div>
+                ) : (
+                  <div className={plan.status === "same" ? "project-dialog-path" : "project-dialog-error"}>
+                    {t(FOLDER_STATUS_KEY[plan.status])}
+                  </div>
+                )}
+              </>
+            )}
+          </>
+        )}
         {error && <div className="project-dialog-error">{error}</div>}
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose} disabled={saving}>{t("common.cancel")}</button>
-          <button type="button" onClick={() => void save()} disabled={saving}>
+          <button type="button" onClick={() => void save()} disabled={saving || folderBlocked}>
             {saving ? t("common.saving") : t("common.save")}
           </button>
         </div>
@@ -1308,6 +1415,7 @@ export function ProjectPill({
   const gitDirty = useGitDirtyStore((s) => s.byId[project.id]);
   const updateProjectDescription = useProjectsStore((s) => s.updateProjectDescription);
   const renameProject = useProjectsStore((s) => s.renameProject);
+  const renameProjectFolder = useProjectsStore((s) => s.renameProjectFolder);
   const moveRemoteMirror = useProjectsStore((s) => s.moveRemoteMirror);
   const setProjectSandbox = useProjectsStore((s) => s.setProjectSandbox);
   const setProjectRemoteControl = useProjectsStore((s) => s.setProjectRemoteControl);
@@ -2391,6 +2499,7 @@ export function ProjectPill({
         <RenameWindow
           project={project}
           onSave={(name) => renameProject(project.id, name)}
+          onRenameFolder={(leaf) => renameProjectFolder(project.id, leaf)}
           onClose={() => setRenaming(false)}
         />
       )}
