@@ -1,7 +1,7 @@
 use std::{
     io,
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, PoisonError},
 };
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -56,18 +56,18 @@ fn admin_response(
             origin,
             version: Some(env!("CARGO_PKG_VERSION").into()),
         },
-        Ok(AdminRequest::PairingCode) => match auth.lock().unwrap().create_pairing_code() {
+        Ok(AdminRequest::PairingCode) => match auth.lock().unwrap_or_else(PoisonError::into_inner).create_pairing_code() {
             Ok((code, expires_at)) => AdminResponse::PairingCode { code, expires_at },
             Err(message) => AdminResponse::Error { message },
         },
         Ok(AdminRequest::Devices) => AdminResponse::Devices {
-            devices: auth.lock().unwrap().devices(),
+            devices: auth.lock().unwrap_or_else(PoisonError::into_inner).devices(),
         },
-        Ok(AdminRequest::Revoke { device_id }) => match auth.lock().unwrap().revoke(&device_id) {
+        Ok(AdminRequest::Revoke { device_id }) => match auth.lock().unwrap_or_else(PoisonError::into_inner).revoke(&device_id) {
             Ok(()) => AdminResponse::Ok,
             Err(message) => AdminResponse::Error { message },
         },
-        Ok(AdminRequest::ForgetAll) => match auth.lock().unwrap().forget_all() {
+        Ok(AdminRequest::ForgetAll) => match auth.lock().unwrap_or_else(PoisonError::into_inner).forget_all() {
             Ok(()) => AdminResponse::Ok,
             Err(message) => AdminResponse::Error { message },
         },

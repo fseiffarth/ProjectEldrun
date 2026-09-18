@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, PoisonError},
     time::Duration,
 };
 
@@ -157,17 +157,17 @@ fn authenticate(
     state
         .auth
         .lock()
-        .unwrap()
+        .unwrap_or_else(PoisonError::into_inner)
         .authenticate(token)
         .ok_or_else(|| api_error(StatusCode::UNAUTHORIZED, "authentication_required"))
 }
 
 fn catalog(state: &HostState) -> Result<Catalog, (StatusCode, Json<serde_json::Value>)> {
-    let key = state.auth.lock().unwrap().host_key().to_vec();
+    let key = state.auth.lock().unwrap_or_else(PoisonError::into_inner).host_key().to_vec();
     state
         .catalog
         .lock()
-        .unwrap()
+        .unwrap_or_else(PoisonError::into_inner)
         .load(&state.config.state_dir, &key)
         .map_err(|_| api_error(StatusCode::SERVICE_UNAVAILABLE, "catalog_unavailable"))
 }
@@ -175,11 +175,11 @@ fn catalog(state: &HostState) -> Result<Catalog, (StatusCode, Json<serde_json::V
 /// The create-tab poll is waiting for a tab the desktop has just been asked to
 /// open, so by definition it is not in the cached snapshot yet.
 fn catalog_fresh(state: &HostState) -> Result<Catalog, (StatusCode, Json<serde_json::Value>)> {
-    let key = state.auth.lock().unwrap().host_key().to_vec();
+    let key = state.auth.lock().unwrap_or_else(PoisonError::into_inner).host_key().to_vec();
     state
         .catalog
         .lock()
-        .unwrap()
+        .unwrap_or_else(PoisonError::into_inner)
         .load_fresh(&state.config.state_dir, &key)
         .map_err(|_| api_error(StatusCode::SERVICE_UNAVAILABLE, "catalog_unavailable"))
 }
@@ -223,7 +223,7 @@ async fn pair(
     match state
         .auth
         .lock()
-        .unwrap()
+        .unwrap_or_else(PoisonError::into_inner)
         .pair(&body.code, &body.device_name, &body.public_key)
     {
         Ok(device_id) => (StatusCode::CREATED, Json(json!({ "device_id": device_id }))),
@@ -239,7 +239,7 @@ async fn challenge(
     if !exact_origin(&headers, &state) {
         return api_error(StatusCode::FORBIDDEN, "invalid_origin");
     }
-    match state.auth.lock().unwrap().challenge(&body.device_id) {
+    match state.auth.lock().unwrap_or_else(PoisonError::into_inner).challenge(&body.device_id) {
         Ok((nonce, payload, expires_at)) => (
             StatusCode::OK,
             Json(json!({ "nonce": nonce, "payload": payload, "expires_at": expires_at })),
@@ -259,7 +259,7 @@ async fn login(
     match state
         .auth
         .lock()
-        .unwrap()
+        .unwrap_or_else(PoisonError::into_inner)
         .login(&body.device_id, &body.nonce, &body.signature)
     {
         Ok((token, expires_at)) => {
@@ -280,7 +280,7 @@ async fn logout(State(state): State<HostState>, headers: HeaderMap) -> Response<
         return api_error(StatusCode::FORBIDDEN, "invalid_origin").into_response();
     }
     if let Some(token) = cookie_token(&headers) {
-        state.auth.lock().unwrap().logout(token);
+        state.auth.lock().unwrap_or_else(PoisonError::into_inner).logout(token);
     }
     let mut response = Json(json!({ "ok": true })).into_response();
     response.headers_mut().insert(
@@ -2549,7 +2549,7 @@ pub async fn run(state_dir: PathBuf) -> Result<(), String> {
         loop {
             interval.tick().await;
             if let Err(error) = verify_tailscale_serve(&publisher_origin, port) {
-                *publisher_failure.lock().unwrap() = Some(error);
+                *publisher_failure.lock().unwrap_or_else(PoisonError::into_inner) = Some(error);
                 let _ = publisher_shutdown.send(true);
                 break;
             }
@@ -2570,7 +2570,7 @@ pub async fn run(state_dir: PathBuf) -> Result<(), String> {
         })
         .await
         .map_err(|e| e.to_string())?;
-    if let Some(error) = serve_failure.lock().unwrap().take() {
+    if let Some(error) = serve_failure.lock().unwrap_or_else(PoisonError::into_inner).take() {
         return Err(format!("Tailscale Serve verification failed: {error}"));
     }
     Ok(())

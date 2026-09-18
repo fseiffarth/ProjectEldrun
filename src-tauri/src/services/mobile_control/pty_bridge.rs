@@ -5,7 +5,7 @@ use std::{
     process::Command,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, PoisonError,
     },
 };
 
@@ -37,7 +37,7 @@ impl BusyGuard {
 }
 impl Drop for BusyGuard {
     fn drop(&mut self) {
-        let mut busy = self.busy.lock().unwrap();
+        let mut busy = self.busy.lock().unwrap_or_else(PoisonError::into_inner);
         // Only clear the slot if it is still ours: an evicting acquire may
         // already have installed its own flag under this name.
         if busy
@@ -55,7 +55,7 @@ const EVICTION_WAIT: std::time::Duration = std::time::Duration::from_millis(2_50
 
 impl TerminalRegistry {
     pub fn is_busy(&self, name: &str) -> bool {
-        self.busy.lock().unwrap().contains_key(name)
+        self.busy.lock().unwrap_or_else(PoisonError::into_inner).contains_key(name)
     }
 
     /// Claims the tab, displacing an existing viewer if there is one.
@@ -68,7 +68,7 @@ impl TerminalRegistry {
         let deadline = tokio::time::Instant::now() + EVICTION_WAIT;
         loop {
             {
-                let mut busy = self.busy.lock().unwrap();
+                let mut busy = self.busy.lock().unwrap_or_else(PoisonError::into_inner);
                 match busy.get(name) {
                     None => {
                         let evicted = Arc::new(AtomicBool::new(false));
@@ -428,10 +428,10 @@ pub async fn attach(
                 // per-viewer fork rate.
                 if tick.is_multiple_of(5) {
                     let (authorized, key) = {
-                        let mut auth = auth.lock().unwrap();
+                        let mut auth = auth.lock().unwrap_or_else(PoisonError::into_inner);
                         (auth.authenticate(&token).is_some(), auth.host_key().to_vec())
                     };
-                    let still_allowed = authorized && catalog.lock().unwrap().load(&state_dir, &key).ok()
+                    let still_allowed = authorized && catalog.lock().unwrap_or_else(PoisonError::into_inner).load(&state_dir, &key).ok()
                         .and_then(|catalog| catalog.tab(&tab_id).map(|(_, tab)| tab.public.available && tab.tmux_name == tmux_name))
                         .unwrap_or(false);
                     if !still_allowed { break Err("access_revoked".into()); }
