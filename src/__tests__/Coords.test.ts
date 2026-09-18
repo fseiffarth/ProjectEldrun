@@ -19,7 +19,7 @@ import {
   clientToPhys,
   pointInOuter,
   type WindowFrame,
-} from "../lib/coords";
+} from "../lib/window/coords";
 
 /** A frame with deliberately DIFFERENT inner vs outer origins, so a test can prove
  *  the client mapping uses `innerPhys` only (Windows invisible frame / macOS title
@@ -131,7 +131,7 @@ describe("dragPlatform — per-platform event flags", () => {
   async function loadFor(platform: string) {
     Object.defineProperty(navigator, "platform", { value: platform, configurable: true });
     vi.resetModules();
-    return (await import("../lib/dragPlatform")).dragPlatform;
+    return (await import("../lib/window/dragPlatform")).dragPlatform;
   }
   beforeEach(() => vi.resetModules());
   afterEach(() => {
@@ -178,7 +178,7 @@ describe("bindDragRelease — Shift survives a modifier-less pointercancel", () 
   async function loadFor(platform: string) {
     Object.defineProperty(navigator, "platform", { value: platform, configurable: true });
     vi.resetModules();
-    return (await import("../lib/dragPlatform")).bindDragRelease;
+    return (await import("../lib/window/dragPlatform")).bindDragRelease;
   }
   afterEach(() => {
     if (original) Object.defineProperty(navigator, "platform", original);

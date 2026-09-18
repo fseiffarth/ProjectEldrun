@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { detachedWindowVisible } from "../lib/detachedVisibility";
+import { detachedWindowVisible } from "../lib/window/detachedVisibility";
 
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));

@@ -130,7 +130,7 @@ export const DETACHED_ZOOM = "detached-zoom";
  * popout drags at a time, so MOVE/END carry no id.
  *
  * The streamed coords are OS-level desktop CURSOR coords in PHYSICAL desktop px
- * (the canonical cross-window space — see `lib/coords`), polled from
+ * (the canonical cross-window space — see `lib/window/coords`), polled from
  * `cursorPosition()` — NOT DOM pointer-event coords. DOM `screenX/Y` units diverge
  * across engines under DPI scaling, and on WebKitGTK (esp. Wayland) DOM
  * pointermove/up don't cross the OS window boundary, so the DOM stream would die at
@@ -236,7 +236,7 @@ export const detachedDropPreviewEvent = (label: string) =>
 export interface DetachedDropPreview {
   active: boolean;
   target?: { groupId: string; edge: DropEdge } | null;
-  // OS cursor in PHYSICAL desktop px (see lib/coords) so the popout can position
+  // OS cursor in PHYSICAL desktop px (see lib/window/coords) so the popout can position
   // its own drag ghost while the main-window item hovers (the main's ghost lives in
   // the main window and isn't visible over the popout). Cosmetic — the target
   // drives the drop.
@@ -291,14 +291,14 @@ export interface DetachedDragStart {
   tabKey?: string;
   paneId?: string;
 }
-/** Detached → main: the OS cursor moved (physical desktop px — see lib/coords). */
+/** Detached → main: the OS cursor moved (physical desktop px — see lib/window/coords). */
 export interface DetachedDragMove {
   cursorPhysX: number;
   cursorPhysY: number;
 }
 /**
  * Detached → main: the drag ended; `cancelled` skips docking. `cursorPhysX/Y` carry
- * the LAST OS-level cursor position (physical desktop px — see lib/coords), so the
+ * the LAST OS-level cursor position (physical desktop px — see lib/window/coords), so the
  * main window resolves the drop against where the cursor actually is — not the
  * stale DOM coordinates of the release event, which on WebKitGTK fire inside the
  * popout even when the cursor is released over the main window. Absent only on a

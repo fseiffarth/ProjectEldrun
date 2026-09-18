@@ -38,8 +38,8 @@
  */
 
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { PLATFORM } from "./platform";
-import { usePresentationStore } from "../stores/presentation";
+import { PLATFORM } from "../platform";
+import { usePresentationStore } from "../../stores/presentation";
 
 /**
  * Is a fullscreen on this window "stray" — nobody's on purpose — and therefore

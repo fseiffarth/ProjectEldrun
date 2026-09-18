@@ -1,5 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { PLATFORM } from "../../lib/dragPlatform";
+import { PLATFORM } from "../../lib/window/dragPlatform";
 import { IS_MAC } from "../../lib/platform";
 import { trackWindowMove } from "../../stores/windowMove";
 import { Clock } from "../header/Clock";

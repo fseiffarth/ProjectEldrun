@@ -11,8 +11,8 @@ import {
   desktopCursor,
   type PhysPoint,
   type WindowFrame,
-} from "../../lib/coords";
-import { bindDragRelease, dragPlatform, PLATFORM } from "../../lib/dragPlatform";
+} from "../../lib/window/coords";
+import { bindDragRelease, dragPlatform, PLATFORM } from "../../lib/window/dragPlatform";
 import {
   DETACHED_DRAG_END,
   DETACHED_DRAG_MOVE,
@@ -30,7 +30,7 @@ import {
   type PaneRect,
   type TitlebarPress,
 } from "../../stores/detached";
-import { clearStrayFullscreen, windowFillsScreen } from "../../lib/strayFullscreen";
+import { clearStrayFullscreen, windowFillsScreen } from "../../lib/window/strayFullscreen";
 import { FileDropContext, type FileDropController } from "../files/fileDropContext";
 import { fileDropPayloads } from "../tabs/commitFileDrop";
 import { TabPane } from "../tabs/TabPane";
@@ -949,7 +949,7 @@ export function DetachedCenterPanel({
   };
 
   // #42: drag-to-dock. We stream the gesture's OS-LEVEL CURSOR position (PHYSICAL
-  // desktop px — the canonical cross-window space, see lib/coords) to the main
+  // desktop px — the canonical cross-window space, see lib/window/coords) to the main
   // window, which maps it into its own client space and renders the dock preview /
   // docks on release. We do NOT rely on DOM pointer events crossing into the main
   // window: on WebKitGTK (esp. Wayland) DOM pointermove/up don't cross the OS
@@ -1318,7 +1318,7 @@ export function DetachedCenterPanel({
     // the WM in the order they were sent, and the worst case left is a stuck
     // window that takes a second press: by then the fullscreen is gone for good.
     // `windowFillsScreen()` is free and synchronous, so a normally-sized popout
-    // does not even pay the IPC (see `lib/strayFullscreen` for why the state
+    // does not even pay the IPC (see `lib/window/strayFullscreen` for why the state
     // cannot simply be read back and tested instead).
     if (windowFillsScreen()) void clearStrayFullscreen();
     void win.startDragging().catch(() => {});

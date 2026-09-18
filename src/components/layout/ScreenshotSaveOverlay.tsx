@@ -6,7 +6,7 @@ import { useProjectsStore } from "../../stores/projects";
 import { useScreenshotPendingStore } from "../../stores/screenshotPending";
 import { resolveProjectDirectory } from "../../types";
 import { useT } from "../../lib/i18n";
-import { ELDRUN_SCREENSHOTS_DIR } from "../../lib/screenshot";
+import { ELDRUN_SCREENSHOTS_DIR } from "../../lib/window/screenshot";
 import { UntestedTag } from "../common/UntestedTag";
 
 /**

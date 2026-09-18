@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useRendererWatchdog } from "../../lib/rendererWatchdog";
+import { useRendererWatchdog } from "../../lib/window/rendererWatchdog";
 import { emit, listen } from "@tauri-apps/api/event";
-import { detachedWindowVisible } from "../../lib/detachedVisibility";
+import { detachedWindowVisible } from "../../lib/window/detachedVisibility";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   useSettingsStore,
@@ -60,7 +60,7 @@ import { withdrawnTabKinds } from "../../lib/experimental";
 import { PLATFORM } from "../../lib/platform";
 import { useTabLandStore } from "../../stores/tabLand";
 import { startFocusTracking, useQuiesce } from "../../stores/power";
-import { clearStrayFullscreen } from "../../lib/strayFullscreen";
+import { clearStrayFullscreen } from "../../lib/window/strayFullscreen";
 import { applyFastModeAttribute, useFastMode } from "../../lib/agents/fastMode";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { useProjectsStore } from "../../stores/projects";
@@ -163,7 +163,7 @@ export function DetachedApp({ param }: Props) {
   // reloads ITSELF when that renderer runs away (a reload re-seeds the group
   // from the main window, like the crash reporter's reload does). The main
   // window's watchdog cannot do this for it: reloading the main window frees
-  // nothing in this process — the 2026-09-01 reload loop. See lib/rendererWatchdog.
+  // nothing in this process — the 2026-09-01 reload loop. See lib/window/rendererWatchdog.
   useRendererWatchdog();
   // A popout hosts the docked file column → its Apps view needs the same
   // app-windows-changed subscription the main window installs.
@@ -222,7 +222,7 @@ export function DetachedApp({ param }: Props) {
   // onto `gtk_window_unfullscreen()` unconditionally and is a no-op otherwise,
   // which is why the backend clears the main window's the same read-free way.
   // What is deliberately NOT cleared — a talk in progress, the page's own DOM
-  // fullscreen — is the pure `mayClearStrayFullscreen`; see `lib/strayFullscreen`.
+  // fullscreen — is the pure `mayClearStrayFullscreen`; see `lib/window/strayFullscreen`.
   useEffect(() => {
     if (PLATFORM === "macos") return;
     const win = getCurrentWindow();

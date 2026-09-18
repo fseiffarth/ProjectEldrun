@@ -16,7 +16,7 @@ import {
   printerStateKey,
   printerStateLabelKey,
   printerTone,
-} from "../../lib/printing";
+} from "../../lib/window/printing";
 import type { PrintJob, PrintSnapshot, PrinterInfo } from "../../types/printing";
 
 /**

@@ -123,7 +123,7 @@ pub fn release_detached_entry(reg: &mut WindowRegistry, label: &str) -> Option<u
 /// optional restore-geometry args, or `None` to let the WM place it.
 ///
 /// The frontend's bounds are PHYSICAL desktop px (the canonical cross-window
-/// space — `src/lib/coords.ts`), so they MUST be applied via the `Physical`
+/// space — `src/lib/window/coords.ts`), so they MUST be applied via the `Physical`
 /// dpi variant. The builder's `.position()` takes LOGICAL px; feeding physical
 /// numbers to it multiplied them by the display scale, placing the window
 /// off-screen on every scale != 1.0 display — invisible on a scaled Windows
@@ -218,7 +218,7 @@ pub async fn detach_subwindow(
         builder = builder.visible(false);
     }
     // Default LOGICAL size only. Any caller-supplied geometry is PHYSICAL px
-    // (frontend canonical space, `src/lib/coords.ts`) and is applied AFTER build
+    // (frontend canonical space, `src/lib/window/coords.ts`) and is applied AFTER build
     // via the physical setters below — routing it through the builder's LOGICAL
     // `.position()`/`.inner_size()` placed/sized the window wrong on every
     // scale != 1.0 display, which is why detach worked on the scale-1.0 Linux dev
@@ -931,7 +931,7 @@ mod tests {
 
     #[test]
     fn restore_geometry_is_applied_as_physical_pixels() {
-        // The frontend ships PHYSICAL desktop px (`src/lib/coords.ts`); a detached
+        // The frontend ships PHYSICAL desktop px (`src/lib/window/coords.ts`); a detached
         // window MUST apply them via the `Physical` dpi variant, NOT the builder's
         // LOGICAL setters — otherwise it lands off-screen on any scale != 1.0
         // display (the #42 Windows regression). Pin both the variant and value so a

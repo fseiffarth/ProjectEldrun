@@ -10,7 +10,7 @@
  */
 // OS detection lives in the dependency-free `platform.ts` single source of
 // truth; re-exported here so existing `dragPlatform` importers keep working.
-import { PLATFORM } from "./platform";
+import { PLATFORM } from "../platform";
 
 export { PLATFORM };
 

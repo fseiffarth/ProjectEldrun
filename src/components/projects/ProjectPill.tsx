@@ -44,7 +44,7 @@ import { usePillDragStore } from "../../stores/pillDrag";
 import { usePillSelectionStore } from "../../stores/pillSelection";
 import { useBoxEditorStore } from "../../stores/boxEditor";
 import { useBoxesStore } from "../../stores/boxes";
-import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
+import { bindDragRelease, dragPlatform } from "../../lib/window/dragPlatform";
 import { useT } from "../../lib/i18n";
 import { isTrashProject } from "../../lib/trashProject";
 import { TrashProjectIcon } from "./TrashProjectIcon";

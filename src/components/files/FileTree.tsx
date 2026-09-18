@@ -18,8 +18,8 @@ import {
   physToClient,
   type PhysPoint,
   type WindowFrame,
-} from "../../lib/coords";
-import { bindDragRelease, dragPlatform, PLATFORM } from "../../lib/dragPlatform";
+} from "../../lib/window/coords";
+import { bindDragRelease, dragPlatform, PLATFORM } from "../../lib/window/dragPlatform";
 import { useSettingsStore } from "../../stores/settings";
 import { useExperimental } from "../../lib/experimental";
 import { GIT_STATE_COLOR } from "../../lib/gitColors";
@@ -1944,7 +1944,7 @@ export function FileTree({
     const detached = startDetachedDropSession();
 
     // Latest in-window client coords ("outside this window" test) and the latest
-    // physical desktop cursor (cross-window hit-test, poll-driven — see lib/coords;
+    // physical desktop cursor (cross-window hit-test, poll-driven — see lib/window/coords;
     // DOM screenX/Y units diverge across WebKitGTK/WebView2/WKWebView).
     let lastClient = { x: startX, y: startY };
     let lastPhys: PhysPoint | null = null;

@@ -4,11 +4,11 @@
  * `_NET_WM_MOVERESIZE` is refused and the title-bar drag no-ops with nothing on
  * screen to say why. These cover the two pure halves of the rescue — who is
  * allowed to clear it, and the free viewport test that stands in for the
- * `isFullscreen()` read that lies (see `lib/strayFullscreen`).
+ * `isFullscreen()` read that lies (see `lib/window/strayFullscreen`).
  */
 
 import { describe, expect, it } from "vitest";
-import { fillsScreen, mayClearStrayFullscreen } from "../lib/strayFullscreen";
+import { fillsScreen, mayClearStrayFullscreen } from "../lib/window/strayFullscreen";
 
 describe("mayClearStrayFullscreen", () => {
   it("clears an unexplained fullscreen — the state that makes a popout immovable", () => {

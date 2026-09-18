@@ -1,7 +1,7 @@
 /**
  * **The** typed invoke surface for the Skills Library (`docs/skills_plan.md`) —
  * one wrapper per `skills_*` command, the convention `lib/mail.ts`/
- * `lib/printing.ts` established: no component calls `invoke("skills_*")`
+ * `lib/window/printing.ts` established: no component calls `invoke("skills_*")`
  * directly.
  *
  * There is deliberately no manifest and no install-state tracking on this

@@ -24,7 +24,7 @@ import {
   readRendererRss,
   rendererName,
   type RendererRss,
-} from "../../lib/rendererWatchdog";
+} from "../../lib/window/rendererWatchdog";
 // Single source of truth for the displayed version: package.json is kept in
 // lockstep with the Tauri manifests on each version bump.
 import { version as APP_VERSION } from "../../../package.json";

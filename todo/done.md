@@ -680,7 +680,7 @@ Design notes worth keeping in mind before extending it:
 
 ## Group W — Native Print Manager ✅ Done · 🧪 Untested
 
-*Files: `src-tauri/src/commands/printing.rs`, `src/lib/printing.ts`,
+*Files: `src-tauri/src/commands/printing.rs`, `src/lib/window/printing.ts`,
 `src/types/printing.ts`, `src/components/printing/PrintManagerPane.tsx`, plus the
 tab wiring (`stores/tabs.ts`'s `PRINTING_TAB_CMD` / `printing` kind,
 `components/tabs/{TabPane,TabBar,NewTabMenu,newTabItems,TabHoverCard}`) and the

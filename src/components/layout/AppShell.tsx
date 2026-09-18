@@ -12,8 +12,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { message } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { PLATFORM } from "../../lib/dragPlatform";
-import { nextWindowState } from "../../lib/windowState";
+import { PLATFORM } from "../../lib/window/dragPlatform";
+import { nextWindowState } from "../../lib/window/windowState";
 import { noteAgentTurn, notePtyOutput, useActivityStore } from "../../stores/activity";
 import type { AgentTurnState } from "../../stores/activity";
 import {
@@ -24,7 +24,7 @@ import {
 } from "../../stores/power";
 import { applyFastModeAttribute, useFastMode } from "../../lib/agents/fastMode";
 import { useOllamaAutoloadOnLaunch } from "../../stores/agents/ollamaAutoload";
-import { useRendererWatchdog } from "../../lib/rendererWatchdog";
+import { useRendererWatchdog } from "../../lib/window/rendererWatchdog";
 import { livePanelToggleKey } from "../../lib/shortcuts";
 import { CenterPanel } from "./CenterPanel";
 import { HeaderBar } from "./HeaderBar";
@@ -261,7 +261,7 @@ async function saveWindowGeometry(): Promise<void> {
     win.isMaximized(),
   ]);
   // outerPosition/outerSize are already PHYSICAL px, which is what the backend
-  // consumes — nothing is converted anywhere along this path (src/lib/coords.ts).
+  // consumes — nothing is converted anywhere along this path (src/lib/window/coords.ts).
   const store = useSettingsStore.getState();
   const next = nextWindowState(
     store.settings?.window_state,
@@ -320,7 +320,7 @@ export function AppShell() {
   // only, and skipped (loudly) while Energy Saver is on. See stores/agents/ollamaAutoload.
   useOllamaAutoloadOnLaunch();
   // Reload the renderer if its JS heap runs away, before it OOM-crashes the
-  // webview (a 44 GB leak was observed 2026-07-31). See lib/rendererWatchdog.
+  // webview (a 44 GB leak was observed 2026-07-31). See lib/window/rendererWatchdog.
   useRendererWatchdog();
   const [panelsHidden, setPanelsHidden] = useState(false);
   const [panelOpen, setPanelOpen] = useState(false);

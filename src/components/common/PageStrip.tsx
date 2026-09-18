@@ -28,7 +28,7 @@ import {
   type PageRef,
 } from "../../lib/viewers/pageModel";
 import { nextSelection } from "../../lib/viewers/fileUtils";
-import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
+import { bindDragRelease, dragPlatform } from "../../lib/window/dragPlatform";
 import { useClampToViewport } from "../../hooks/useClampToViewport";
 import {
   registerPageStrip,
@@ -52,7 +52,7 @@ import {
   physToClient,
   type PhysPoint,
   type WindowFrame,
-} from "../../lib/coords";
+} from "../../lib/window/coords";
 import { useT } from "../../lib/i18n";
 
 /** Below this many px of pointer travel a press is a click, not a drag. */

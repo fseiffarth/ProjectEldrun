@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { PLATFORM } from "../lib/dragPlatform";
+import { PLATFORM } from "../lib/window/dragPlatform";
 import { IS_MAC } from "../lib/platform";
 import { desktopOwnsSuperKey, probeSuperKeyOwnership } from "../lib/superKey";
 import { allGroups, findGroup, useTabsStore } from "../stores/tabs";

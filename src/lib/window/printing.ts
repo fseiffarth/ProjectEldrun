@@ -23,11 +23,11 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import type { PrintJob, PrintJobState, PrintSnapshot, PrinterInfo, PrinterState } from "../types/printing";
-import type { TranslationKey } from "./i18n";
+import type { PrintJob, PrintJobState, PrintSnapshot, PrinterInfo, PrinterState } from "../../types/printing";
+import type { TranslationKey } from "../i18n";
 // One byte formatter, not two: a queued job's size reads exactly like a mail
 // attachment's, and the mail module is where that definition already lives.
-import { formatSize } from "./mail";
+import { formatSize } from "../mail";
 
 export { formatSize };
 

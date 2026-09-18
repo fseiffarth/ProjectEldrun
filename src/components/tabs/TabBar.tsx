@@ -55,8 +55,8 @@ import {
 } from "./TabLocalityBadges";
 import { texPdfPartner, useTexPdfCandidates } from "../../lib/texPdfLink";
 import { useClampToViewport } from "../../hooks/useClampToViewport";
-import { startCursorPoll, desktopCursor, type PhysPoint } from "../../lib/coords";
-import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
+import { startCursorPoll, desktopCursor, type PhysPoint } from "../../lib/window/coords";
+import { bindDragRelease, dragPlatform } from "../../lib/window/dragPlatform";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { useExperimental } from "../../lib/experimental";

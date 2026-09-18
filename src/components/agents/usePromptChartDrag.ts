@@ -1,5 +1,5 @@
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
+import { bindDragRelease, dragPlatform } from "../../lib/window/dragPlatform";
 import type { PromptChartCard } from "../../lib/agents/prompt/chart";
 import {
   timelineHitZone,

@@ -56,7 +56,7 @@ import { CenterPanel } from "../components/layout/CenterPanel";
 import { useTabsStore, type GroupNode, type SplitNode } from "../stores/tabs";
 import { useDragStore } from "../stores/drag";
 import { useProjectsStore } from "../stores/projects";
-import * as coords from "../lib/coords";
+import * as coords from "../lib/window/coords";
 
 // Panel geometry the stubs project onto. Body sits below a 28px tab bar.
 const PANEL = { left: 0, top: 0, width: 800, height: 600 };

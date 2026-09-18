@@ -718,7 +718,7 @@ pub struct Settings {
 }
 
 /// Last-known geometry of the MAIN window, in PHYSICAL desktop pixels — the
-/// canonical cross-window coordinate space (see `src/lib/coords.ts`). Tauri's
+/// canonical cross-window coordinate space (see `src/lib/window/coords.ts`). Tauri's
 /// `outerPosition`/`outerSize`/`set_position`/`set_size` are all physical; only a
 /// *builder*'s `.position()`/`.inner_size()` are logical, which is the trap
 /// `commands::subwindow::detached_position` exists to document.

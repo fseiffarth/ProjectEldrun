@@ -703,7 +703,7 @@ export interface Settings {
 
 /**
  * The main window's geometry in PHYSICAL desktop px — the canonical cross-window
- * space (`src/lib/coords.ts`), which is also what `outerPosition`/`outerSize`
+ * space (`src/lib/window/coords.ts`), which is also what `outerPosition`/`outerSize`
  * report and what `setPosition`/`setSize` consume.
  *
  * `x`/`y`/`w`/`h` is the *restore* (non-maximized) rect: while the window is

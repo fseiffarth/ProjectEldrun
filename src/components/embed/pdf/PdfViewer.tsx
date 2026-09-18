@@ -123,7 +123,7 @@ import {
   SCREENSHOT_CAPTURE_EVENT,
   screenshotFilename,
   type ScreenshotCaptureDetail,
-} from "../../../lib/screenshot";
+} from "../../../lib/window/screenshot";
 import { useSettingsStore } from "../../../stores/settings";
 import { PageStrip } from "../../common/PageStrip";
 import { PrinterIcon } from "../../common/PrinterIcon";
@@ -1794,7 +1794,7 @@ function PdfCanvas({
     [t, pdfProjectDir],
   );
   // The global Screenshot app offers the shot to visible viewers before it
-  // spawns the OS region tool (see `lib/screenshot`). Claim it while this pane
+  // spawns the OS region tool (see `lib/window/screenshot`). Claim it while this pane
   // is the one on screen: `paneVisible` is false for every hidden tab, so of
   // the many mounted viewers only the visible one(s) even listen, and the
   // `claimed` flag keeps two side-by-side PDFs from both arming.

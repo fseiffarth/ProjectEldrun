@@ -57,8 +57,8 @@ import {
   physToClient,
   type PhysPoint,
   type WindowFrame,
-} from "../../lib/coords";
-import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
+} from "../../lib/window/coords";
+import { bindDragRelease, dragPlatform } from "../../lib/window/dragPlatform";
 import { shouldPersistTab, shouldPersistLocalTab } from "../../lib/terminal/tmuxSession";
 import { isTrashProject } from "../../lib/trashProject";
 import { IS_WINDOWS } from "../../lib/platform";
@@ -587,7 +587,7 @@ function CenterPanelImpl() {
 
   // ── Cross-window drag-to-dock (#42) ───────────────────────────────────────
   // A popped-out window dragged back streams its OS cursor (PHYSICAL desktop px —
-  // the canonical cross-window space, see lib/coords) to this main window. We map
+  // the canonical cross-window space, see lib/window/coords) to this main window. We map
   // it into OUR client px via our own frame (innerPhys/scale — the only DPI-correct
   // conversion), drive the SAME drop preview as an in-window tab drag (via
   // `resolveTarget` + the drag store), and dock the group on release.

@@ -541,7 +541,7 @@ screen is not.*
     Codex `already has an active writer` error was the restore churn's
     symptom, not the cause.
 
-    Frontend (`lib/rendererWatchdog.ts`): mounted in `AppShell` *and*
+    Frontend (`lib/window/rendererWatchdog.ts`): mounted in `AppShell` *and*
     `DetachedApp`, each window acts on its own renderer and reloads only
     itself (a popout re-seeds from main, as it does after a crash-reload).
     Which renderer is "ours" is **probed**, since no engine we ship on says
@@ -857,7 +857,7 @@ screen is not.*
     report now prints `/proc/<pid>/status`'s `Threads:` (Linux only), which is
     what tells a leaked Worker from a canvas. Files: `lib/viewers/pdfLoad.ts`,
     `components/embed/{pdf,deck}/…`, `lib/viewers/texPreview.ts`,
-    `lib/rendererWatchdog.ts`, `sysstat.rs`, `commands/debug.rs`. Implemented
+    `lib/window/rendererWatchdog.ts`, `sysstat.rs`, `commands/debug.rs`. Implemented
     2026-09-08 (`7c06db6`, `a3b5b58`), **not live-tested; thread count needs a
     backend restart.**
     - [x] 🤖 Automated test — `PdfLoad` (destroy on rejection),

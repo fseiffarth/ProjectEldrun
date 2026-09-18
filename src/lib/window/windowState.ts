@@ -5,14 +5,14 @@
  * Kept out of `AppShell` so the one genuinely subtle rule below — what to store
  * while the window is MAXIMIZED — is unit-tested rather than reasoned about.
  *
- * All rects are PHYSICAL desktop px (`src/lib/coords.ts`): `outerPosition()` and
+ * All rects are PHYSICAL desktop px (`src/lib/window/coords.ts`): `outerPosition()` and
  * `outerSize()` already report physical, and the backend's `set_position` /
  * `set_size` consume physical, so nothing is ever converted.
  *
  * The consumer is `services::window_state::resolve_startup_geometry` on the Rust
  * side, which decides at startup whether a saved rect is still placeable.
  */
-import type { WindowState } from "../types";
+import type { WindowState } from "../../types";
 
 /** A window's outer rect, physical desktop px. */
 export interface OuterRect {

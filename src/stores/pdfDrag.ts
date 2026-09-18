@@ -13,7 +13,7 @@
  *  2. **The position.** DOM pointer events do NOT cross an OS window boundary on
  *     WebKitGTK, and their units diverge across engines under DPI scaling. So once a
  *     drag leaves its own window the position comes from polling the OS cursor in
- *     physical desktop px (`lib/coords`), exactly as the tab drag-dock does, and each
+ *     physical desktop px (`lib/window/coords`), exactly as the tab drag-dock does, and each
  *     window converts to its OWN client px at the leaf (`physToClient`).
  *
  * On release the origin window streams a single END carrying the LAST POLLED cursor
@@ -33,7 +33,7 @@ import {
   type ClientPoint,
   type PhysPoint,
   type WindowFrame,
-} from "../lib/coords";
+} from "../lib/window/coords";
 
 /** The dragged pages, as parked in the backend page clipboard. */
 export interface PageTransfer {

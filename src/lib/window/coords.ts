@@ -21,7 +21,7 @@
 import { cursorPosition, getCurrentWindow } from "@tauri-apps/api/window";
 import type { Window } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
-import { IS_LINUX } from "./platform";
+import { IS_LINUX } from "../platform";
 
 // A native Wayland window has no global origin, and tao's cursorPosition returns
 // a successful dummy (0, 0). Never feed those values into cross-window hit tests.

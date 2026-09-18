@@ -444,7 +444,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       windows are separate WebViews with separate JS heaps, so the pages are built
       into a small PDF, parked in a backend slot, and only the *token* rides the
       event. Position comes from polling the OS cursor in physical desktop px
-      (`lib/coords`), because DOM pointer events don't cross an OS window boundary on
+      (`lib/window/coords`), because DOM pointer events don't cross an OS window boundary on
       WebKitGTK — the same reason the tab drag-dock does it. On release every window
       gets the END carrying the last polled cursor; only the one whose rect contains
       it claims the drop and acks. Copy is the default; **Shift moves**, and the
@@ -1335,7 +1335,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     same region capture is now armed by the header's global Screenshot button
     instead. Pressing Screenshot while a PDF viewer is visible offers the shot
     to it first (claimable `eldrun:screenshot-capture` window event,
-    `lib/screenshot.ts`; first visible viewer claims, so the OS region tool is
+    `lib/window/screenshot.ts`; first visible viewer claims, so the OS region tool is
     only spawned when no PDF is on screen). The drag captures from the rendered
     page canvas (document-sharp, pending blackouts burned in), copies the PNG
     to the clipboard AND files it as `eldrun-screenshots/Screenshot-….png` (was `screenshots/`, see #835) in the
@@ -2377,7 +2377,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     data is not un-ignored). Scaffold repair runs only on request, so the write
     paths call `ensure_generated_dir_ignored` — append the one pattern (or write
     a minimal `.gitignore`) before the first file lands, refusing any other
-    folder. Files: `commands/{projects,mail,screenshot}.rs`, `lib/screenshot.ts`,
+    folder. Files: `commands/{projects,mail,screenshot}.rs`, `lib/window/screenshot.ts`,
     `lib/mail.ts`, `components/layout/ScreenshotSaveOverlay.tsx`,
     `components/mail/MailMessageView.tsx`, `components/embed/pdf/PdfViewer.tsx`.
     Implemented 2026-09-14 (`296c396`), **not live-tested; backend change.**

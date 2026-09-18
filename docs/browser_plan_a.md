@@ -582,7 +582,7 @@ Phase 5+ and engine-gated.**
 
 What #53 is today (`todo/group-m-viewers.md` #53, automated test already ✅): images and
 image/text *tabs* are OS-level drag sources via `tauri-plugin-drag`
-(`drag:default` is in `capabilities/default.json`; `src/lib/dragPlatform.ts` owns
+(`drag:default` is in `capabilities/default.json`; `src/lib/window/dragPlatform.ts` owns
 the per-platform gesture semantics). Dropping onto an **external** browser's
 upload field works because the OS drag carries a real file path and the external
 browser is a normal drop target. Nothing in this plan changes that.

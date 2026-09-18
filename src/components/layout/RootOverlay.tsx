@@ -35,7 +35,7 @@ import {
   SubwindowFilesSidebar,
 } from "../files/SubwindowFilesSidebar";
 import { notifyCalendarWrite } from "../../lib/calendar/calendarWriteHook";
-import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
+import { bindDragRelease, dragPlatform } from "../../lib/window/dragPlatform";
 import type { Calendar, CalendarEvent, CalendarTask } from "../../types";
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";

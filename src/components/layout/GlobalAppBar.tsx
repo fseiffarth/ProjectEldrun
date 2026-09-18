@@ -10,7 +10,7 @@ import {
   requestInAppCapture,
   SCREENSHOT_DELAY_MS,
   startDelayedCapture,
-} from "../../lib/screenshot";
+} from "../../lib/window/screenshot";
 import { useT, type TranslationKey } from "../../lib/i18n";
 
 // A platform-appropriate example path for the executable-picker placeholder
@@ -146,7 +146,7 @@ export function GlobalAppBar() {
       // A visible PDF viewer claims the shot first: the region is then captured
       // from the rendered document itself (sharper than a screen grab, pending
       // blackouts burned in) and goes to the clipboard + the save overlay — no
-      // OS tool involved. See `lib/screenshot`.
+      // OS tool involved. See `lib/window/screenshot`.
       if (requestInAppCapture()) return;
       captureScreenshot(exec);
       return;

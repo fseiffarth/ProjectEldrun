@@ -754,7 +754,7 @@ writes are now forwarded rather than dropped.
      unconditionally and is a no-op otherwise — which is how the backend has
      always cleared the main window's (`restore_main_window`: `let _ =
      win.set_fullscreen(false)`, no read, no branch). What must not be cleared
-     is now the pure `mayClearStrayFullscreen` (`lib/strayFullscreen`): the
+     is now the pure `mayClearStrayFullscreen` (`lib/window/strayFullscreen`): the
      page's own DOM fullscreen and a talk in progress hold it, macOS is
      excluded. And the title-bar press self-heals, because the guard fires on
      resize and focus-regain and a window already stuck *and* already focused

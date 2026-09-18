@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect } from "react";
-import { isPtyTabKind, useTabsStore } from "../stores/tabs";
+import { isPtyTabKind, useTabsStore } from "../../stores/tabs";
 
 /**
  * Renderer memory watchdog.
