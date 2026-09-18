@@ -653,3 +653,43 @@ intent. What is left is listed here.
       verify macOS startup and skill/plugin update behavior.
     - [ ] Manual: install missing bubblewrap, then open a tab without restarting;
       confirm Cargo publish credentials require the opt-in for a new tab.
+
+158. **A `.git` *file* skips the repo-config sanitizer — and nothing sandboxed
+    is kept out of `.git/` (OPEN ❌).** `sanitize_repo_git_config` reads only
+    `<project>/.git/config` and returns early when that is not a file, so a
+    project whose `.git` is a pointer (`gitdir: .notgit`) keeps any
+    `filter.*`/`diff.*` driver in the redirected config. Reproduced 2026-09-18
+    with Eldrun's exact flags (`-c core.fsmonitor=false -c protocol.ext.allow=never`,
+    `--no-ext-diff --no-textconv`): the clean filter executes on `git diff` and
+    on `git status` after a same-size edit, i.e. from the file-tree poll with no
+    click. Reachable by a downloaded folder added as a project, or by a fenced/
+    containerised agent that swaps `.git` for a pointer (the published
+    "trust handoff" class — Pillar Security, CSA 2026). Eldrun's own agent
+    worktrees use the pointer layout, so the sanitizer is a no-op there too.
+    Fix shapes: resolve the real git dir (and `commondir` + `config.worktree`)
+    from the pointer file before sanitizing, without invoking git in the repo;
+    or read attributes from the empty tree (`--attr-source` /
+    `GIT_ATTR_SOURCE`, git ≥ 2.40) on unattended calls so no in-tree
+    `.gitattributes` can bind a filter. Separately: mount `.git/hooks`,
+    `.git/config` and `config.worktree` read-only in the agent fence and
+    project containers, which is what closes hooks too (#151 residual). See
+    `docs/threat_model.md` tiers 0 and 3.
+    - [ ] 🤖 Automated test — pointer-file repo with a `filter.*.clean` driver:
+      `hardened_git_command_in` + `status`/`diff` must not execute it.
+    - [ ] 🖐️ Manual test — fenced agent tab: `echo x > .git/hooks/post-checkout`
+      must fail.
+
+159. **Freeze the JS prototype for the IPC bridge (hardening).** Set
+    `app.security.freezePrototype: true` in `tauri.conf.json` so a
+    prototype-pollution bug in any bundled library cannot hijack the IPC
+    bridge. Not a vulnerability today (no known script-execution path, CSP
+    blocks inline/eval); check viewers and libraries still run after flipping it.
+    - [ ] 🖐️ Manual test — smoke every viewer, terminal, mail and the deck
+      presenter with the flag on.
+
+160. **Sign release artifacts the updater installs.** `services::app_update`
+    pins asset URLs to this repo's GitHub releases but checks no signature or
+    checksum, so a compromised GitHub account or CI run ships code straight
+    to every user who clicks Install. Sign in CI (minisign or the Tauri
+    updater key) and verify before `install` runs the staged file.
+    - [ ] 🤖 Automated test — a tampered staged file is refused.
