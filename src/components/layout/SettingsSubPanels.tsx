@@ -2117,10 +2117,19 @@ export function OllamaPanel({ onBack, onClose }: SubPanelProps) {
       .catch(() => {});
   }, [installed]);
 
-  // Delete an orphaned partial layer to reclaim its disk space.
+  // Delete an orphaned partial layer to reclaim its disk space. The list is
+  // re-read afterwards rather than trimmed optimistically: a delete the OS
+  // refused (the system service's cache, authorization declined) must leave the
+  // row in place next to its error, not vanish and reappear on the next open.
   const deleteOrphan = (path: string) => {
-    setOrphans((p) => p.filter((o) => o.path !== path));
-    void invoke("delete_partial_blob", { path }).catch((e) => setError(String(e)));
+    setError("");
+    void invoke("delete_partial_blob", { path })
+      .catch((e) => setError(String(e)))
+      .finally(() => {
+        invoke<{ digest: string; size: number; path: string }[]>("list_orphan_partial_blobs")
+          .then(setOrphans)
+          .catch(() => {});
+      });
   };
 
   // Reconcile interrupted entries against what's actually installed: any model

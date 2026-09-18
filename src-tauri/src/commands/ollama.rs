@@ -1034,7 +1034,8 @@ pub async fn list_orphan_partial_blobs() -> Vec<PartialBlob> {
 
 /// Delete an orphaned partial layer (the main `-partial` file plus its per-chunk
 /// `-partial-<N>` siblings) to reclaim disk. Validated to a file named `*-partial`
-/// inside a `blobs` directory so it can't be used to remove anything else.
+/// inside one of the known Ollama blob directories, so it can't be used to remove
+/// anything else — the check matters because the removal may run elevated.
 #[tauri::command]
 pub async fn delete_partial_blob(path: String) -> Result<(), String> {
     let p = std::path::Path::new(&path);
@@ -1047,27 +1048,86 @@ pub async fn delete_partial_blob(path: String) -> Result<(), String> {
         return Err("not a partial blob".into());
     }
     let dir = p.parent().ok_or("no parent directory")?;
-    if dir.file_name().and_then(|n| n.to_str()) != Some("blobs") {
-        return Err("not inside a blobs directory".into());
+    let canon = |d: &std::path::Path| std::fs::canonicalize(d).unwrap_or_else(|_| d.to_path_buf());
+    let dir_canon = canon(dir);
+    if !ollama_blob_dirs().iter().any(|d| canon(d) == dir_canon) {
+        return Err("not inside an Ollama blobs directory".into());
     }
-    let mut removed = false;
+    let files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir_canon)
+        .map_err(|e| e.to_string())?
+        .flatten()
+        .filter(|entry| is_partial_file_of(&entry.file_name().to_string_lossy(), &name))
+        .map(|entry| entry.path())
+        .collect();
+    if files.is_empty() {
+        return Err("nothing to remove".into());
+    }
+    remove_blob_files(&files)
+}
+
+/// `fname` is the main `<stem>-partial` file or one of its `-partial-<N>` chunk
+/// records.
+fn is_partial_file_of(fname: &str, partial_name: &str) -> bool {
+    fname == partial_name
+        || fname
+            .strip_prefix(partial_name)
+            .and_then(|rest| rest.strip_prefix('-'))
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Remove Ollama blob files, escalating once for the ones this user may not
+/// delete. The system service (`ollama.service`) keeps its cache under
+/// `/usr/share/ollama`, owned by the `ollama` user with a `755` blobs dir, so a
+/// plain unlink gets EACCES and the partial reappears on every listing. Only
+/// ever reached from an explicit Delete click, so the one `pkexec` prompt is
+/// the user's own action, never a background one.
+fn remove_blob_files(files: &[std::path::PathBuf]) -> Result<(), String> {
+    let mut denied: Vec<&std::path::PathBuf> = Vec::new();
     let mut last_err: Option<String> = None;
-    if let Ok(rd) = std::fs::read_dir(dir) {
-        for entry in rd.flatten() {
-            let fname = entry.file_name().to_string_lossy().to_string();
-            if fname == name || fname.starts_with(&format!("{name}-")) {
-                match std::fs::remove_file(entry.path()) {
-                    Ok(()) => removed = true,
-                    Err(e) => last_err = Some(e.to_string()),
-                }
-            }
+    for f in files {
+        match std::fs::remove_file(f) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => denied.push(f),
+            Err(e) => last_err = Some(e.to_string()),
         }
     }
-    if removed {
-        Ok(())
-    } else {
-        Err(last_err.unwrap_or_else(|| "nothing to remove".into()))
+    if !denied.is_empty() {
+        remove_blob_files_elevated(&denied)?;
     }
+    match last_err {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn remove_blob_files_elevated(files: &[&std::path::PathBuf]) -> Result<(), String> {
+    if !crate::paths::binary_on_path("pkexec") {
+        return Err(
+            "permission denied: these files belong to the Ollama system service, and pkexec is not available to remove them".into(),
+        );
+    }
+    let status = std::process::Command::new("pkexec")
+        .arg("rm")
+        .arg("-f")
+        .arg("--")
+        .args(files)
+        .status()
+        .map_err(|e| format!("pkexec: {e}"))?;
+    match status.code() {
+        Some(0) => Ok(()),
+        // pkexec: 126 = the auth dialog was dismissed, 127 = not authorized.
+        Some(126) | Some(127) => Err(
+            "permission denied: these files belong to the Ollama system service, and authorization was not granted".into(),
+        ),
+        _ => Err(format!("removing the partial layer failed ({status})")),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn remove_blob_files_elevated(_files: &[&std::path::PathBuf]) -> Result<(), String> {
+    Err("permission denied: these files belong to another user (the Ollama service)".into())
 }
 
 /// Forget an interrupted pull (e.g. the user dismisses it, or it finished).
@@ -1145,11 +1205,14 @@ fn registry_layer_digests(model: &str) -> Result<Vec<String>, String> {
 }
 
 /// Delete the `*-partial` (and per-chunk `*-partial-<N>`) files matching any of
-/// the given `sha256:<hex>` digests, across all known blob directories.
+/// the given `sha256:<hex>` digests, across all known blob directories. Files the
+/// system service owns go through [`remove_blob_files`]'s one elevated retry —
+/// this runs only from the user's Delete on a paused download.
 fn delete_partials_for_digests(digests: &[String]) {
     // Blob files are named `sha256-<hex>`; the manifest gives `sha256:<hex>`.
     let stems: std::collections::HashSet<String> =
         digests.iter().map(|d| d.replace(':', "-")).collect();
+    let mut files = Vec::new();
     for dir in ollama_blob_dirs() {
         let Ok(rd) = std::fs::read_dir(&dir) else {
             continue;
@@ -1163,9 +1226,12 @@ fn delete_partials_for_digests(digests: &[String]) {
                 continue;
             };
             if stems.contains(rest) {
-                let _ = std::fs::remove_file(entry.path());
+                files.push(entry.path());
             }
         }
+    }
+    if !files.is_empty() {
+        let _ = remove_blob_files(&files);
     }
 }
 
@@ -4116,6 +4182,28 @@ mod owned_server_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn partial_file_match_takes_the_layer_and_its_chunks_only() {
+        let main = "sha256-ab12-partial";
+        assert!(is_partial_file_of("sha256-ab12-partial", main));
+        assert!(is_partial_file_of("sha256-ab12-partial-0", main));
+        assert!(is_partial_file_of("sha256-ab12-partial-15", main));
+        assert!(!is_partial_file_of("sha256-ab12-partial-", main));
+        assert!(!is_partial_file_of("sha256-ab12-partial-x", main));
+        assert!(!is_partial_file_of("sha256-ab12", main));
+        assert!(!is_partial_file_of("sha256-ab123-partial", main));
+    }
+
+    #[test]
+    fn remove_blob_files_ignores_already_gone_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let kept = dir.path().join("sha256-ab12-partial");
+        std::fs::write(&kept, b"x").unwrap();
+        let gone = dir.path().join("sha256-ab12-partial-0");
+        assert!(remove_blob_files(&[kept.clone(), gone]).is_ok());
+        assert!(!kept.exists());
+    }
     use std::io::Write;
 
     // ── Helper: simulate prepare_local_agent using a tmp base dir ─────────────
