@@ -87,7 +87,9 @@
    the middle — so every glyph carries its own size and nudge, measured in
    WebKitGTK (offscreen probe, dark theme, bundled Inter): at 30px the inks ran
    ✉ 21.5×15.5, 🗓 22×29.5, ☑ 22×22, ▦ 23×23.5 (3.2px low), ⚙ 21.5×22.5. A
-   changed glyph or icon font means re-measuring, not eyeballing. */
+   changed glyph or icon font means re-measuring, not eyeballing.
+   Exception: ✉ and 🗓 fill an 18px square, not 22px — they are busier shapes
+   than the rest and read as oversized at full size (user call, 2026-09-18). */
 .mail-indicator-icon,
 .calendar-indicator-icon,
 .todo-indicator-icon,
@@ -96,8 +98,8 @@
   display: inline-block;
   line-height: 1;
 }
-.mail-indicator-icon { font-size: 30.7px; }
-.calendar-indicator-icon { font-size: 22.4px; transform: translateY(0.6px); }
+.mail-indicator-icon { font-size: 25.1px; }
+.calendar-indicator-icon { font-size: 18.3px; transform: translateY(-0.5px); }
 .todo-indicator-icon { font-size: 30px; }
 .global-apps-menu-icon { font-size: 28.1px; transform: translateY(-3px); }
 .settings-menu-icon { font-size: 29.3px; }
