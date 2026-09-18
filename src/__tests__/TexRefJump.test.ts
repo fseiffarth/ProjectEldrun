@@ -21,7 +21,7 @@ import {
   findTexKeyRefAt,
   texKeyRefRanges,
   resolveTexKeyRef,
-} from "../lib/viewers/tex";
+} from "../lib/viewers/tex/tex";
 
 const MAIN = "/home/u/proj/main.tex";
 

@@ -89,7 +89,7 @@ import {
   tabLocation,
   type LocalityMenuState,
 } from "../tabs/TabLocalityBadges";
-import { texPdfPartner } from "../../lib/viewers/texPdfLink";
+import { texPdfPartner } from "../../lib/viewers/tex/texPdfLink";
 import { useT } from "../../lib/i18n";
 import { StarIcon } from "./StarIcon";
 import { AgentScheduleDialog } from "../agents/AgentScheduleDialog";

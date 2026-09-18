@@ -210,7 +210,7 @@ async function rasterize(
 ): Promise<{ url: string; width: number; height: number } | null> {
   // The loader module brings pdf.js and its worker script in with it, so the
   // import is deferred to the first preview.
-  const { loadPdf } = await import("./pdfLoad");
+  const { loadPdf } = await import("../pdfLoad");
   const doc = await loadPdf(bytes);
   try {
     const page = await doc.getPage(1);

@@ -262,7 +262,7 @@ correctness/UX work atop the same layout model #42 detaches.*
     PDF (`notes.pdf` next to `paper.tex`) is never marked; the badge is muted on
     an inactive tab and full-strength on the hovered/active one; a popout's
     strip shows the same badge for a pair that is fully inside that window.
-    *Files: `src/lib/viewers/texPdfLink.ts`,
+    *Files: `src/lib/viewers/tex/texPdfLink.ts`,
     `src/components/tabs/TabLocalityBadges.tsx`,
     `src/components/tabs/TabBar.tsx`,
     `src/components/layout/DetachedCenterPanel.tsx`,

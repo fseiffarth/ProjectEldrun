@@ -1,5 +1,5 @@
 /**
- * Edge cases for `lib/viewers/bib.ts` beyond `BibViewer.test.ts`: empty and
+ * Edge cases for `lib/viewers/tex/bib.ts` beyond `BibViewer.test.ts`: empty and
  * CRLF files, unicode keys and names, case-insensitive types and field names,
  * the record kinds the cards render raw (`@comment`, `@preamble`), values the
  * grammar half-allows (empty, concatenated with quotes, escaped braces,
@@ -20,7 +20,7 @@ import {
   parseBib,
   setBibFieldValue,
   setBibType,
-} from "../lib/viewers/bib";
+} from "../lib/viewers/tex/bib";
 
 /** True when every LF in `s` is preceded by a CR and no CR stands alone. */
 const strictlyCrlf = (s: string) => !/(^|[^\r])\n/.test(s) && !/\r(?!\n)/.test(s);

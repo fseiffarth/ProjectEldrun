@@ -149,7 +149,7 @@ import {
   type SyncSource,
   type TextItemBox,
   type CaretPhrase,
-} from "../../../lib/viewers/tex";
+} from "../../../lib/viewers/tex/tex";
 import { useT, type TranslationKey } from "../../../lib/i18n";
 
 /** How often the open PDF re-checks its file's mtime for an on-disk change (a

@@ -10,8 +10,8 @@
  * formula that was already typeset.
  */
 import { describe, it, expect } from "vitest";
-import { texSnippetRanges, texSnippetAt, texPreamble, isPreviewableTexEnv } from "../lib/viewers/tex";
-import { texPreviewKey, firstTexErrorLine } from "../lib/viewers/texPreview";
+import { texSnippetRanges, texSnippetAt, texPreamble, isPreviewableTexEnv } from "../lib/viewers/tex/tex";
+import { texPreviewKey, firstTexErrorLine } from "../lib/viewers/tex/texPreview";
 
 /** The source text of every range found, which is what actually gets typeset. */
 function bodies(src: string): string[] {

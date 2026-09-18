@@ -100,7 +100,7 @@ import {
   texPathForDeck,
   titleFromPath,
 } from "../../../lib/viewers/deck/template";
-import { getTexCapability, type TexCompileResult } from "../../../lib/viewers/tex";
+import { getTexCapability, type TexCompileResult } from "../../../lib/viewers/tex/tex";
 import { loadBase, renderPage, renderPdfPageToPng } from "./deckBase";
 import {
   dirOf,

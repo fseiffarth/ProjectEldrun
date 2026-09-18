@@ -38,7 +38,7 @@ only `src-tauri/` changes need a rebuild/restart.
 | Per-project download routing | | | | `commands/downloads.rs` |
 | In-app viewers: PDF, image, markdown, code | | | | `FileViewerPane` + `lib/viewers/*` |
 | In-app TeX viewer with bidirectional SyncTeX | | | | `commands/tex.rs`, `stores/viewers/pdfSync` |
-| LaTeX `\ref`/`\cite` completion (labels + .bib) | | | | `lib/viewers/tex`, `TexComplete.test` |
+| LaTeX `\ref`/`\cite` completion (labels + .bib) | | | | `lib/viewers/tex/tex`, `TexComplete.test` |
 | In-editor find / find-and-replace | | | | `Ctrl+F`/`Ctrl+R`; `EditorSearch.test` |
 | Viewer reader-position persistence (scroll/zoom/pan) | | | | `ViewerState`; `ViewerStatePersist.test` |
 | Tiling subwindows (split/group tree, DnD) | | | | `CenterPanel`/`Subwindow`/`TabBar` |

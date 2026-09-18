@@ -99,7 +99,7 @@ export function TabSourceBadge({ tabKey }: { tabKey: string }) {
  *
  * Renders nothing when the partner is not open, so an ordinary PDF tab and a
  * `.tex` with no build are untouched. `partner` is computed by the host from the
- * tab list it owns (`lib/viewers/texPdfLink`'s `texPdfPartner`), keeping this leaf pure
+ * tab list it owns (`lib/viewers/tex/texPdfLink`'s `texPdfPartner`), keeping this leaf pure
  * and usable from both the main-window bar and a popout's strip.
  */
 export function TabTexLinkBadge({

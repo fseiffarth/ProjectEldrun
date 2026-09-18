@@ -13,7 +13,7 @@ import {
   TEX_STANDARD_COMMANDS,
   TEX_STANDARD_ENVIRONMENTS,
   type TexComplContext,
-} from "../lib/viewers/tex";
+} from "../lib/viewers/tex/tex";
 
 /** The context the editor would build with the caret at `|` in `src`. */
 function ctxAt(src: string): { text: string; ctx: TexComplContext | null } {

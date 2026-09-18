@@ -25,7 +25,7 @@
  * what lets the viewer's existing undo/redo stack cover redaction for free.
  */
 import type { PageList, RedactRect } from "./pageModel";
-import type { SyncRect, TextItemBox } from "./tex";
+import type { SyncRect, TextItemBox } from "./tex/tex";
 
 /** A plain rectangle in a sheet's big-point space, before it becomes a mark. */
 export interface Rect {

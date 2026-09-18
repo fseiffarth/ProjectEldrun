@@ -20,7 +20,7 @@ import {
   type SyncRect,
   type SyncTexStatus,
   type TextItemBox,
-} from "../lib/viewers/tex";
+} from "../lib/viewers/tex/tex";
 import {
   compileTexWorkspace,
   hasTexCompiler,

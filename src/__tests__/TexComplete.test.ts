@@ -15,7 +15,7 @@ import {
   parseTexLabels,
   parseBibEntries,
   gatherTexCompletions,
-} from "../lib/viewers/tex";
+} from "../lib/viewers/tex/tex";
 
 describe("findTexComplAt", () => {
   it("detects a partial \\cite key (unclosed brace)", () => {

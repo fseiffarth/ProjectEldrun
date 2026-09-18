@@ -1,5 +1,5 @@
 import { useShallow } from "zustand/react/shallow";
-import { useTabsStore, type TabEntry } from "../../stores/tabs";
+import { useTabsStore, type TabEntry } from "../../../stores/tabs";
 
 /**
  * The TeX ⇄ PDF tab coupling, DERIVED rather than stored.

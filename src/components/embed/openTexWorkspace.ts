@@ -6,7 +6,7 @@ import {
   requestTexCenter,
   requestTexCompile,
 } from "../../stores/viewers/texCenter";
-import { resolveTexRoot } from "../../lib/viewers/tex";
+import { resolveTexRoot } from "../../lib/viewers/tex/tex";
 import { basename, dirname } from "../../lib/paths";
 
 /**

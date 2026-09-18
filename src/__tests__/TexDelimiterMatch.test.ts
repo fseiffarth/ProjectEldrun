@@ -15,7 +15,7 @@ import {
   texEnvNameRangeAt,
   texCommandAt,
   texCommandOccurrences,
-} from "../lib/viewers/tex";
+} from "../lib/viewers/tex/tex";
 
 function at(i: number, len = 1) {
   return { start: i, end: i + len };

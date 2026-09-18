@@ -400,7 +400,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     case toggle, and `Esc` to close. Each page's text is extracted lazily on first
     use via `getTextContent()` (shared `pageTextItemBoxes`, the same boxes SyncTeX
     word-refinement uses) and cached per document; the pure `pdfPageMatches`
-    (`lib/viewers/tex.ts`) slices matches into big-point boxes (one per text run a
+    (`lib/viewers/tex/tex.ts`) slices matches into big-point boxes (one per text run a
     match straddles). Matches paint as translucent overlays over the page canvases
     (`.file-viewer-pdf-search-hit`), the current one brighter and scrolled into
     view. Pure helper `pdfPageMatches`.
@@ -814,7 +814,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     a `.bib` keeps everything it had (highlighting, find/replace, blame, compare,
     autocomplete, the save/undo path).
 
-    - **The cards edit the TEXT** (`lib/viewers/bib.ts`), the #88 bargain applied
+    - **The cards edit the TEXT** (`lib/viewers/tex/bib.ts`), the #88 bargain applied
       to a second format: every action is a splice, so field order, the alignment
       somebody sorted by hand, brace-protected `{LaTeX}` capitalization, an older
       file's `"…"` quoting and the `%` comments all survive an edit, and a card
@@ -1164,7 +1164,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     page.
 
     - **A break is now read, not ignored** (`pageHaystack` in
-      `lib/viewers/tex.ts`): a trailing hyphen at a line end is dropped, joining
+      `lib/viewers/tex/tex.ts`): a trailing hyphen at a line end is dropped, joining
       the halves into the word the typesetter split; any other break becomes a
       space, which is what it means to a reader — unless one of the two sides
       already carries whitespace.
@@ -1771,7 +1771,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     never "is *this* formula right" — the question actually asked while writing
     one, and asked dozens of times per page. Resting the pointer on a fragment
     now typesets that fragment alone and shows it over the source.
-    - **What counts as a snippet** (`texSnippetRanges`, `lib/viewers/tex.ts`):
+    - **What counts as a snippet** (`texSnippetRanges`, `lib/viewers/tex/tex.ts`):
       inline math, display math, and a **whitelist** of self-contained
       environments (`equation`/`align`/`gather`/`multline`/`cases`/the matrix
       family/`array`/`tabular`/`tikzpicture`/…) **plus `figure` and `table`
@@ -2134,7 +2134,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       selection when focus moves to the bar's number field; the live selection
       wins when there is one, the remembered one is used only while the draft
       still holds exactly that text there.
-    - Pure half in `src/lib/viewers/beamer.ts`; tests in
+    - Pure half in `src/lib/viewers/tex/beamer.ts`; tests in
       `src/__tests__/Beamer.test.ts`, `Highlight.test.ts` (the token) and
       `TexViewer.test.tsx` (toggle → bar → Wrap; a beamer document opens with
       the bar on). Frontend only, hot-reloads.
@@ -2171,7 +2171,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       elsewhere can never leave a mark painted over moved text.
     - A new transparent overlay layer (`.file-viewer-occurrence-layer`), the
       same scroll-synced, metric-matched stack as the search/link/bracket
-      layers. Pure half in `src/lib/viewers/tex.ts` (`texCommandAt`,
+      layers. Pure half in `src/lib/viewers/tex/tex.ts` (`texCommandAt`,
       `texCommandOccurrences`); tests in `TexDelimiterMatch.test.ts` and
       `TexCommandOccurrences.test.tsx`. Frontend only, hot-reloads.
     - [ ] 🖐️ Manual test — open a `.tex` with a macro used several times.
@@ -2281,7 +2281,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     `Collected error summary` and `Latexmk:` cause lines — titling a real
     failure and standing beside a forgiven one. Files: `commands/tex.rs`,
     `components/embed/FileViewerPane.tsx`, `components/files/FileTree.tsx`,
-    `lib/viewers/tex.ts`. Implemented 2026-09-08 (`d81f579`), **not live-tested;
+    `lib/viewers/tex/tex.ts`. Implemented 2026-09-08 (`d81f579`), **not live-tested;
     backend change.**
     - [x] 🤖 Automated test — cargo `commands::tex` (verdict + driver note),
       `TexViewer`
@@ -2329,7 +2329,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     `block`/`alertblock`/`exampleblock` join environments with a `{}` title
     seed. Accepting an environment after an unclosed `\begin{`/`\end{` writes
     the missing `}` and, for `\begin`, opens the block. Frontend:
-    `lib/viewers/tex.ts`. Implemented 2026-09-09 (`e7f36e6`), **not live-tested**.
+    `lib/viewers/tex/tex.ts`. Implemented 2026-09-09 (`e7f36e6`), **not live-tested**.
     - [x] 🤖 Automated test — `TexCompletions`
     - [ ] 🖐️ Manual test — in a beamer deck type `\frame` → `\frametitle` is
       offered; in an article it is not. Type `\begin{ali`, accept `align` → the
@@ -2399,7 +2399,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     deleteBibField` on a CRLF file eats the LF of the *previous* line's CRLF
     while keeping the deleted field's own, leaving a bare `\r`. (3) `addBibField`
     and (4) `addBibEntry` hardcode `\n`, so one card edit gives a CRLF file mixed
-    endings. Files: `lib/viewers/table.ts`, `lib/viewers/bib.ts`. Fixed the
+    endings. Files: `lib/viewers/table.ts`, `lib/viewers/tex/bib.ts`. Fixed the
     same day: a quote opens a quoted region only at the start of a field; the
     delete takes the field's own line ending; add-field and add-entry write
     the file's line ending. **Not live-tested.**

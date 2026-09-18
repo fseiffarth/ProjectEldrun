@@ -90,7 +90,7 @@ import {
   wrapBeamerOverlay,
   type BeamerOverlayCommand,
   type RememberedSelection,
-} from "../../lib/viewers/beamer";
+} from "../../lib/viewers/tex/beamer";
 import { internalViewerFor, disabledViewers, relFromAbs, lineEndingOf, applyLineEnding, type InternalViewer, type FileEntry } from "../../lib/viewers/fileUtils";
 import {
   isPythonPath,
@@ -233,14 +233,14 @@ import {
   texPreamble,
   type TexSnippetRange,
   compileWasNoop,
-} from "../../lib/viewers/tex";
+} from "../../lib/viewers/tex/tex";
 import { chordLabel, chordMatches, resolveChord, type ShortcutMap } from "../../lib/shortcuts/shortcuts";
 import { useChordHint, useShortcutOverrides } from "../../lib/shortcuts/shortcutHint";
 import {
   renderTexPreview,
   cachedTexPreview,
   type TexPreview,
-} from "../../lib/viewers/texPreview";
+} from "../../lib/viewers/tex/texPreview";
 import { TexStructureRail, TexStructureSidebar } from "./tex/TexStructureSidebar";
 import { useDialogs } from "../common/PromptDialogs";
 import { focusTexWorkspaceForSource } from "./openTexWorkspace";
@@ -255,7 +255,7 @@ import { YamlTree } from "./YamlTree";
 import { YamlGrid } from "./YamlGrid";
 import { BibCards } from "./BibCards";
 import { isTreePath, isJsonPath } from "../../lib/viewers/yaml";
-import { isBibPath } from "../../lib/viewers/bib";
+import { isBibPath } from "../../lib/viewers/tex/bib";
 import { hasCards } from "../../lib/viewers/yamlGrid";
 import { useI18nStore, useT, type TranslationKey } from "../../lib/i18n";
 import { defaultSpellLanguage, dictionaryLabel } from "../../lib/spellDictionaries";
@@ -2216,7 +2216,7 @@ export interface BracketSide {
 /** A matched delimiter pair (`open` earlier in the source than `close`), for
  *  the "highlight the matching bracket" overlay. Ranges rather than single
  *  offsets so the same type/overlay serves both the plain single-char
- *  ()[]{} matcher below and `lib/viewers/tex.ts`'s LaTeX-aware math/environment
+ *  ()[]{} matcher below and `lib/viewers/tex/tex.ts`'s LaTeX-aware math/environment
  *  matcher (`$`/`$$`/`\(`/`\)`/`\[`/`\]`/`\begin{…}`/`\end{…}`), which the two
  *  share structurally without either module importing the other's type. */
 export interface BracketMatch {
@@ -2291,7 +2291,7 @@ export function findMatchingBracket(text: string, caret: number): BracketMatch |
 
 /**
  * Build the transparent bracket-match overlay: the two paired delimiter
- * ranges found by {@link findMatchingBracket} (or `lib/viewers/tex.ts`'s
+ * ranges found by {@link findMatchingBracket} (or `lib/viewers/tex/tex.ts`'s
  * math/environment matcher) are each wrapped in
  * `<span class="file-viewer-bracket-match">`, the rest emitted plain — mirrors
  * `decorateSearchRanges`. SECURITY: every run of source text is HTML-escaped.
@@ -3413,7 +3413,7 @@ function CodeEditor({
   // Bracket-match highlight: whichever bracket the caret sits just before/after
   // gets its partner highlighted too (`findMatchingBracket`/`decorateBracketMatch`
   // — mirrors the search overlay). For a `.tex` file, when the plain ()[]{}
-  // matcher finds nothing, fall back to `lib/viewers/tex.ts`'s LaTeX-aware
+  // matcher finds nothing, fall back to `lib/viewers/tex/tex.ts`'s LaTeX-aware
   // extras: math-mode toggles (`$…$`, `$$…$$`, `\(…\)`, `\[…\]`) and
   // `\begin{env}…\end{env}` structure blocks — LaTeX syntax the generic
   // matcher doesn't (and shouldn't, for every other file type) know about.
@@ -6145,7 +6145,7 @@ function useTexBeamerMode(
  * The beamer overlay bar (#tex-beamer): a command, a slide range, and three
  * actions over the editor's selection — Wrap (`\only<2->{…}` around it), Items
  * (`<n>` on each `\item` in the lines, counting up), Pause. The bar is chrome;
- * every edit is `lib/viewers/beamer`'s and goes through the editor's `applyEdit`
+ * every edit is `lib/viewers/tex/beamer`'s and goes through the editor's `applyEdit`
  * so undo, the syntax overlay and the caret behave as for any other edit.
  *
  * The **from** field is empty by default and means "the next unused number in
@@ -9470,7 +9470,7 @@ function TexView({
   );
 
   // ── #tex-hover-preview ────────────────────────────────────────────────────
-  // Hovering a formula typesets it. The compile itself is `lib/viewers/texPreview`;
+  // Hovering a formula typesets it. The compile itself is `lib/viewers/tex/texPreview`;
   // what lives here is the two things only this viewer knows — WHICH preamble the
   // fragment is typeset with, and WHERE the engine has to run for that preamble's
   // own `\usepackage{mystyle}` / `\input{macros}` to resolve.

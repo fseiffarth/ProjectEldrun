@@ -1,6 +1,6 @@
 /**
  * Tests for the TeX editor's beamer mode (#tex-beamer), the pure half
- * (`lib/viewers/beamer.ts`):
+ * (`lib/viewers/tex/beamer.ts`):
  *  - overlay spec recognition and the from/to/onward builder;
  *  - beamer-class detection (comments ignored);
  *  - wrapping a selection, re-targeting an already wrapped one, the
@@ -23,7 +23,7 @@ import {
   overlaySpecsIn,
   parseOverlayCommandAt,
   wrapBeamerOverlay,
-} from "../lib/viewers/beamer";
+} from "../lib/viewers/tex/beamer";
 
 describe("overlay specs", () => {
   it("accepts the beamer grammar and refuses what cannot be a spec", () => {

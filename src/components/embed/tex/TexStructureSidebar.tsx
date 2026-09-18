@@ -6,7 +6,7 @@ import type {
   TexFileNode,
   TexGraphicNode,
   TexStructure,
-} from "../../../lib/viewers/tex";
+} from "../../../lib/viewers/tex/tex";
 import { useT } from "../../../lib/i18n";
 import { UntestedTag } from "../../common/UntestedTag";
 

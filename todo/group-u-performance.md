@@ -856,7 +856,7 @@ screen is not.*
     (viewer, deck, present window, TeX hover preview). The renderer memory
     report now prints `/proc/<pid>/status`'s `Threads:` (Linux only), which is
     what tells a leaked Worker from a canvas. Files: `lib/viewers/pdfLoad.ts`,
-    `components/embed/{pdf,deck}/…`, `lib/viewers/texPreview.ts`,
+    `components/embed/{pdf,deck}/…`, `lib/viewers/tex/texPreview.ts`,
     `lib/window/rendererWatchdog.ts`, `sysstat.rs`, `commands/debug.rs`. Implemented
     2026-09-08 (`7c06db6`, `a3b5b58`), **not live-tested; thread count needs a
     backend restart.**

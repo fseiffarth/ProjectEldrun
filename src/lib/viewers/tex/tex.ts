@@ -1,9 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
-import { internalViewerFor, type FileEntry, type InternalViewer } from "./fileUtils";
+import { internalViewerFor, type FileEntry, type InternalViewer } from "../fileUtils";
 import { bibPlainValue, parseBib } from "./bib";
 import { isBeamerDocument } from "./beamer";
-import { basename, dirname, isAbsolute, normalizePath, resolvePath } from "../paths";
-import { fileMtime, writeFileBytes, writeFileText } from "../../components/embed/fileAccess";
+import { basename, dirname, isAbsolute, normalizePath, resolvePath } from "../../paths";
+import { fileMtime, writeFileBytes, writeFileText } from "../../../components/embed/fileAccess";
 
 /** Which TeX tools are on PATH; mirrors the backend `TexCapability`. */
 export type TexCapability = {
@@ -2624,7 +2624,7 @@ export interface BibEntry {
  * The `.bib` entries of a bibliography, for the `\cite` dropdown: the citation
  * key plus the three fields it displays.
  *
- * A thin adapter over `lib/viewers/bib`'s parser rather than a second reading of
+ * A thin adapter over `lib/viewers/tex/bib`'s parser rather than a second reading of
  * the format — the bibliography card view and this dropdown must not be able to
  * disagree about what is in a `.bib` (which entries exist, what a field's value
  * is), and the parser that has to survive being *edited* through is the stricter

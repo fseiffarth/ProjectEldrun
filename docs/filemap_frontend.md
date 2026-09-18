@@ -237,10 +237,10 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `lib/viewers/completion/ollamaCompletionProvider.ts` | Ollama adapter: model selection, cancellable streaming IPC and bounded provider-keyed cache, extracted from the editor. |
 | `lib/viewers/mdGraph.ts` | Pure markdown-graph logic (#101): fence-aware link extraction, bounded BFS crawl, radial layout. Tests: `MdGraph.test.ts`. |
 | `lib/projects/projectRemarks.ts` / `stores/projectRemarks.ts` | Defensive REMARKS.md parser/splicer plus local-or-SFTP I/O. Conforming bullets are editable; all other bytes are parked verbatim. |
-| `lib/viewers/{fileUtils,markdown,highlight,tex}.ts` | Pure viewer logic (XSS-safe markdown/highlight, TeX, file utils). `tex.ts` also resolves `\ref`/`\cite` keys to their `\label`/`.bib` entry via the editor-jump channel. |
+| `lib/viewers/{fileUtils,markdown,highlight}.ts`, `lib/viewers/tex/tex.ts` | Pure viewer logic (XSS-safe markdown/highlight, TeX, file utils). `tex.ts` also resolves `\ref`/`\cite` keys to their `\label`/`.bib` entry via the editor-jump channel. |
 | `lib/viewers/pdfLoad.ts` | `loadPdf`: the only way to open a PDF with pdf.js (sets the worker). Destroys the loading task on failure — a rejected load otherwise leaks a Worker. |
-| `lib/viewers/texPreview.ts` | TeX hover preview (frontend half): typesets a hovered formula via `tex_preview_snippet`; cache keyed by preamble + snippet text, not position. |
-| `lib/viewers/beamer.ts` | Beamer mode for the TeX editor (pure): overlay-spec recognition, wrap/re-target (never nest), `insertPause`, `nextOverlayNumber`, `beamerEditRange`. |
+| `lib/viewers/tex/texPreview.ts` | TeX hover preview (frontend half): typesets a hovered formula via `tex_preview_snippet`; cache keyed by preamble + snippet text, not position. |
+| `lib/viewers/tex/beamer.ts` | Beamer mode for the TeX editor (pure): overlay-spec recognition, wrap/re-target (never nest), `insertPause`, `nextOverlayNumber`, `beamerEditRange`. |
 | `lib/projects/fileViewSnapshots.ts` | Side panel's last-known data in module scope so a reveal's first frame is populated (the panel unmounts when closed). Tests need `clearFileViewSnapshots()`. |
 | `lib/viewers/python.ts` | Python editor intelligence (#87), pure: breakpoints snap to executable lines and remap on edit; go-to-definition is a lexical import-graph walk (only followable names underlined). |
 | `lib/browser.ts` | Typed invoke surface for the browser (`browser_*`); no component invokes directly (`BrowserTripwire.test.ts`), no wrapper takes a path. `READER_FRAME_CSP` is `MAIL_FRAME_CSP` imported. |
@@ -264,7 +264,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `lib/agents/agentFence.ts` | Pure frontend contract for the agent fence: the settings allowlist defaults/parser and project-pill inherit/on/off + backend-status reason keys. `AgentFence.test.ts` keeps its default paths aligned with the Rust schema. Enforcement and root authority remain backend-only in `services::agent_fence`. |
 | `lib/remote/closeRemoteTab.ts` | Tab close for persistent tabs (#85) is non-destructive: kills only the client, the tmux session lives on. Clean quit reaps local `eldrun-*` sessions only; remote sessions die only via the Sessions view's ×. |
 | `lib/viewers/yaml.ts` | YAML/JSON tree model + edit ops (pure): every edit is a surgical splice, never re-serialization; block and flow (JSON) syntax both first-class and preserved. |
-| `lib/viewers/bib.ts` | BibTeX model + edit ops (pure), the one `.bib` reader (`tex.ts`'s `parseBibEntries` adapts it). All ops splice by source offsets, never re-serialize. |
+| `lib/viewers/tex/bib.ts` | BibTeX model + edit ops (pure), the one `.bib` reader (`tex.ts`'s `parseBibEntries` adapts it). All ops splice by source offsets, never re-serialize. |
 | `lib/viewers/yamlGrid.ts` | YAML/JSON card-grid helpers (pure): `hasCards`, node classification; edits delegate to `yaml.ts` splices. Also the tabular model (`gridModelFor`/`hasGrid`). |
 | `lib/viewers/table.ts` | CSV/TSV model + edit ops (pure): separator sniffed by parse rectangularity (`sniffDelimiter`); table is a view on the text (cells carry source spans). |
 | `lib/viewers/gif.ts` | Pure GIF decoder (LZW, interlace, disposal): full-canvas RGBA per frame (bounded by `maxPixelBytes`), delays stored as authored, <20 ms played as 100 ms. |

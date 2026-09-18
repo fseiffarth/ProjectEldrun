@@ -32,7 +32,7 @@ import {
   applyIndent,
   advanceTexBraceTabStop,
 } from "../components/embed/FileViewerPane";
-import { lineStartOffset, offsetToLineCol } from "../lib/viewers/tex";
+import { lineStartOffset, offsetToLineCol } from "../lib/viewers/tex/tex";
 
 // --- vertical caret/glyph drift model ---------------------------------------
 //

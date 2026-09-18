@@ -25,7 +25,7 @@
  *   (braces, backslashes, a second `<`), because a wrong guess at the grammar
  *   would refuse a valid deck.
  */
-import type { EditResult } from "./markdownEdit";
+import type { EditResult } from "../markdownEdit";
 
 /** The overlay-aware commands the bar offers, in menu order. `alt` and
  *  `temporal` take more than one brace argument (see {@link BEAMER_ARITY}). */

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { texPdfPartner } from "../lib/viewers/texPdfLink";
+import { texPdfPartner } from "../lib/viewers/tex/texPdfLink";
 import type { TabEntry } from "../stores/tabs";
 
 /** A minimal viewer tab; only the fields the coupling reads are meaningful. */

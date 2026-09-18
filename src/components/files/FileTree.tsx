@@ -37,7 +37,7 @@ import {
   readFileTreeSnapshot,
   writeFileTreeSnapshot,
 } from "../../lib/projects/fileViewSnapshots";
-import { type TexCapability, type TexCompileResult, getTexCapability, lastLogLine } from "../../lib/viewers/tex";
+import { type TexCapability, type TexCompileResult, getTexCapability, lastLogLine } from "../../lib/viewers/tex/tex";
 import { basename, dirname, relativePathWithin, resolvePath } from "../../lib/paths";
 import {
   moveDestRel,
