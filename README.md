@@ -608,6 +608,22 @@ follows debug mode, so they are all on in a development build.
   Claude-only.
 - **Deck presenter**: lay slides over a PDF or a LaTeX base, then present with
   speaker notes, a timer, and a second audience display or window.
+- **Agent tools for the calendar and the board (MCP)**: an agent opened in the
+  root console (`Ctrl+Shift+R`) — a cloud CLI, or a **local Ollama model**
+  behind a tool-capable CLI — gets Eldrun's own tools and can manage these
+  surfaces for you: "add a calendar entry on Friday at 14:00, one hour",
+  "move every event of that calendar into the other one", "put a card on the
+  board for project X", "what did I finish this week?". The calendar tools list,
+  add, edit, move, and delete events (a CalDAV-backed calendar pushes them as it
+  would a dialog edit); the board tools add, edit, complete, reopen, move, and
+  delete cards through the same gestures a drag uses; plus read-only sweeps —
+  which projects have uncommitted work, what is out of sync with its host, last
+  week's time and usage — and "show me" tools that open the mail, calendar, and
+  board overlays. **Mail tools are next**; today an agent can only open the
+  client. The tools live on a loopback endpoint behind a per-run bearer token
+  that is never written to disk, and **no project's agents ever get them**. One
+  switch in Settings turns it all off without a restart: new root agents are
+  handed nothing and the ones already running are refused.
 - **Daily recap**: a private, local-only summary of your day — which agents and
   models you used, prompts asked, shell commands, file churn, commits, and time
   per project. It opens once on the first launch of each day. Nothing leaves the
@@ -697,6 +713,16 @@ resume arguments; agents without a supported resume path are not restored.
 resume, Eldrun reapplies the mode its hook recorded to preserve that choice.
 Claude/Codex turn hooks also drive working, decision-needed, and finished states;
 agents without a hook verdict use terminal-output heuristics.
+
+**Eldrun's tools (MCP).** Agents opened in the root console are the one kind
+that get Eldrun's own tools: calendar, to-do board, project sweeps, and the
+"open this overlay" verbs (see [Workspace apps](#workspace-apps)). Claude gets
+an inline `--mcp-config`, Codex a `-c mcp_servers.eldrun.*` override, and every
+other CLI the `ELDRUN_ROOT_MCP_URL`/`ELDRUN_ROOT_MCP_TOKEN` environment — on
+the command line, never in the CLI's own config files. Reads are annotated
+read-only and writes destructive, so a CLI that asks before tools asks for the
+right ones; approval itself stays the CLI's own. Settings has the single
+switch, on by default.
 
 **Custom agents.** Any other agent CLI can be registered from "＋ Add agent…" in
 the tab menu and then appears in the Agents group like the built-ins.
