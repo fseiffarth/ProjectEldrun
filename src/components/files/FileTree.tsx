@@ -303,17 +303,6 @@ function warmDragIcon(): Promise<string> {
   return dragIconPromise;
 }
 
-// TEMPORARY (Windows drag QA — remove together with every dragDbg call): mirror
-// the drag/selection gesture lifecycle into crash.log via report_frontend_error
-// so a failing gesture can be read back without devtools open.
-function dragDbg(message: string) {
-  try {
-    void invoke("report_frontend_error", { kind: "drag-debug", message, stack: null }).catch(() => {});
-  } catch {
-    /* diagnostics must never affect the gesture */
-  }
-}
-
 /** Turn a raw `list_dir` failure into a sentence a user can act on. The common
  *  case, by far, is switching a remote project's file view to "Remote" while
  *  sitting in a folder that only exists in the local mirror (never synced to the
@@ -1273,12 +1262,7 @@ export function FileTree({
     // by the time the user starts a Ctrl-drag. Only the plugin path (Win/mac)
     // needs it — the Linux `start_file_drag` embeds the icon backend-side.
     if (PLATFORM !== "linux") void warmDragIcon();
-    let lastCtrl = false; // TEMPORARY drag QA: log transitions only, not every repeat
     const sync = (e: KeyboardEvent) => {
-      if (e.ctrlKey !== lastCtrl) {
-        lastCtrl = e.ctrlKey;
-        dragDbg(`ctrlHeld=${e.ctrlKey} (${e.type})`);
-      }
       setCtrlHeld(e.ctrlKey);
     };
     const clear = () => setCtrlHeld(false);
@@ -1732,7 +1716,6 @@ export function FileTree({
   // folder — drives the multi-selection instead (shift = range, ctrl/cmd =
   // toggle). Opening a file stays a double-click (onDoubleClick → handleOpen).
   function handleRowClick(ev: React.MouseEvent, entry: FileEntry) {
-    dragDbg(`rowClick ${entry.name} shift=${ev.shiftKey} ctrl=${ev.ctrlKey}`); // TEMPORARY drag QA
     const hasMod = ev.shiftKey || ev.ctrlKey || ev.metaKey;
     if (entry.is_dir && !hasMod) {
       clearSelection();
@@ -1875,9 +1858,7 @@ export function FileTree({
     }
     const begin = (icon: string) =>
       startDrag({ item: paths, icon, mode: "copy" })
-        .then(() => dragDbg("startDrag resolved")) // TEMPORARY drag QA
         .catch((err) => {
-          dragDbg(`startDrag FAILED: ${String(err)}`); // TEMPORARY drag QA
           // Same visibility for the plugin path (`plugin:drag|start_drag` and
           // `drag_preview_icon` only exist after a backend rebuild).
           console.error("[eldrun] native file drag-out failed:", err);
@@ -1892,7 +1873,6 @@ export function FileTree({
     // doesn't reliably export the file to other apps, so suppress it and hand
     // off to the native OS drag.
     e.preventDefault();
-    dragDbg(`dragstart fired ${entry.name} iconWarm=${!!dragIconDataUrl}`); // TEMPORARY drag QA
     // Dragging a row that belongs to a >1 selection exports the whole
     // selection, mirroring the pointer drag-to-tab's multi-drag.
     const paths =
@@ -1920,8 +1900,6 @@ export function FileTree({
     dragTarget: InternalViewer | "embed" | null,
   ) {
     if (e.button !== 0 || entry.is_dir) return;
-    // TEMPORARY drag QA
-    dragDbg(`pdown ${entry.name} ctrl=${e.ctrlKey} shift=${e.shiftKey} target=${dragTarget ?? "none"}`);
     // A built-in viewer drives the in-app drop; "embed" means an external
     // handler, so no viewer. `canTab` is whether this file can land on a tab bar
     // / new window at all — only such files take the commitFileDrop path on
@@ -1949,10 +1927,7 @@ export function FileTree({
     // WebKitGTK drag and hands off to the native OS drag (handleEntryDragStart).
     // Bail out here without preventDefault so that gesture takes over instead of
     // the pointer drag-to-tab.
-    if (e.ctrlKey) {
-      dragDbg("pdown: ctrl bail → native dnd expected (a 'dragstart fired' line should follow)"); // TEMPORARY drag QA
-      return;
-    }
+    if (e.ctrlKey) return;
     // Let the inline run (▶) button own its own clicks — don't seed a drag or
     // swallow the click when the press lands on it.
     if ((e.target as HTMLElement).closest(".file-run-btn")) return;
@@ -2041,7 +2016,6 @@ export function FileTree({
       if (!dragging) {
         if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 5) return;
         dragging = true;
-        dragDbg(`drag engaged ${entry.name}`); // TEMPORARY drag QA
         useDragStore.getState().startFileDrag({
           label: isMultiDrag ? `${dragEntries.length} items` : entry.name,
           pointerX: ev.clientX,
@@ -2067,9 +2041,7 @@ export function FileTree({
         if (dragPlatform.needsPointerCapture) {
           try {
             captureEl.setPointerCapture(pointerId);
-            dragDbg("pointer capture ok"); // TEMPORARY drag QA
-          } catch (err) {
-            dragDbg(`pointer capture FAILED: ${String(err)}`); // TEMPORARY drag QA
+          } catch {
             /* capture is best-effort; the OS-cursor poll does not depend on it */
           }
         }
@@ -2167,7 +2139,6 @@ export function FileTree({
       delayMs: SPRING_LOAD_MS,
       onOpen: (rel) => {
         if (gestureOver || nativeActive) return;
-        dragDbg(`spring-load → ${rel || "/"}`); // TEMPORARY drag QA
         void load(rel).then(() => {
           // The listing under the (unmoved) cursor changed: re-resolve the drop
           // target against the new rows once React has painted them, so the
@@ -2216,10 +2187,6 @@ export function FileTree({
       // file just stayed put). See git dfcb6e0, which introduced the read below
       // the cleanup() call.
       const moveTarget = moveTargetRef.current;
-      // TEMPORARY drag QA
-      dragDbg(
-        `commit shift=${shiftKey} dragging=${dragging} moveRel=${moveTarget?.rel ?? "null"} cross=${moveTarget?.crossRoot ?? false} canDrop=${canDrop}`,
-      );
       cleanup();
       if (!dragging) {
         // Never moved → a plain click does NOT open. Opening a file is a
@@ -2319,10 +2286,6 @@ export function FileTree({
               h: 640,
             }
           : null;
-      // TEMPORARY drag QA
-      dragDbg(
-        `commitFileDrop outside=${outside} reorder=${d.reorderGroup ?? "-"}@${d.reorderIndex ?? "-"} over=${d.overGroup ?? "-"} edge=${d.edge ?? "-"}`,
-      );
       commitFileDrop(d, projectId, projectDir, detachBounds);
       useDragStore.getState().end();
     };
@@ -2330,7 +2293,6 @@ export function FileTree({
     // Escape / blur / a genuine pointercancel (Win/mac) aborts: tear down and drop
     // any in-flight drag without committing.
     const onAbort = () => {
-      dragDbg(`file drag abort (dragging=${dragging})`); // TEMPORARY drag QA
       cleanup();
       if (dragging) useDragStore.getState().end();
     };
