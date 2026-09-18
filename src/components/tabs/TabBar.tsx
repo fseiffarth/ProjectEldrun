@@ -245,6 +245,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
     localModelOffInRoot,
     localDrivers,
     enabledAgents,
+    vibeForLocalModel,
     compactAgentBins,
     customAgents,
     installedCustom,
@@ -1542,7 +1543,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   }]
                 : []),
               // Only offer agents whose binary is actually installed: Mistral/vibe
-              // (checked against `enabledAgents`) and the drivers the backend
+              // (checked against `vibeForLocalModel`) and the drivers the backend
               // already marks `available` (which now includes an installed check).
               ...(!trashScope ? [{
                 label: localModel
@@ -1551,7 +1552,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                 entries: localModel
                   ? [
                       // Mistral/vibe keeps its bespoke per-model VIBE_HOME path.
-                      ...(enabledAgents?.has("vibe")
+                      ...(vibeForLocalModel
                         ? [{
                             key: "vibe",
                             label: "Mistral",

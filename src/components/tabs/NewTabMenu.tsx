@@ -75,6 +75,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
     localModelOffInRoot,
     localDrivers,
     enabledAgents,
+    vibeForLocalModel,
     compactAgentBins,
     customAgents,
     installedCustom,
@@ -277,7 +278,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
               : t("newTabMenu.groupLocalModel"),
             entries: localModel
               ? [
-                  ...(enabledAgents?.has("vibe")
+                  ...(vibeForLocalModel
                     ? [{
                         key: "vibe",
                         label: "Mistral",

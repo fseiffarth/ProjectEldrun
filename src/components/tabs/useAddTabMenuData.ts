@@ -36,13 +36,18 @@ export interface AddTabMenuData {
    *  with a "Launch anyway?" prompt (see lib/localDrivers.ts). */
   localDrivers: LocalDriverInfo[];
   /** Installed agent CLIs (id == cmd) minus the built-ins the user turned off
-   *  in "Manage Agents" — the set every tab-choice consumer (Agents group,
-   *  Mistral/vibe local-model driver) should use. `null` until the probe
-   *  resolves, so the Agents list renders nothing (not a flash of the full
-   *  list) until we know. Re-probed after Manage Agents changes the registry.
+   *  in "Manage Agents" — the set the Agents group should use. `null` until
+   *  the probe resolves, so the Agents list renders nothing (not a flash of
+   *  the full list) until we know. Re-probed after Manage Agents changes the registry.
    *  In the root scope, further narrowed to the agents whose 🧠 "Root" chip is
    *  on (`rootAllowedAgentBins`). */
   enabledAgents: Set<string> | null;
+  /** Mistral/vibe is installed and not turned off in "Manage Agents" — the
+   *  gate for the local-model group's Mistral row. Deliberately NOT narrowed
+   *  by the root "Root" agent chips: local models are opt-out in the root
+   *  console (`localModelOffInRoot`), agents opt-in, and the Mistral local
+   *  row is a local model, not the Mistral agent. */
+  vibeForLocalModel: boolean;
   /** Installed agent bins the user marked "compact" (icon-only row). */
   compactAgentBins: Set<string>;
   /** User-defined custom agents (Settings.custom_agents). */
@@ -113,11 +118,17 @@ export function useAddTabMenuData(scope: string): AddTabMenuData {
     (s) => s.settings?.compact_tab_agents ?? DEFAULT_COMPACT_AGENT_IDS,
   );
   const rootAgentIds = useSettingsStore((s) => s.settings?.root_agents);
+  const installedEnabled = useMemo(
+    () => (agentStatuses ? enabledInstalledAgentBins(agentStatuses, disabledAgents) : null),
+    [agentStatuses, disabledAgents],
+  );
   const enabledAgents = useMemo(() => {
-    if (!agentStatuses) return null;
-    const enabled = enabledInstalledAgentBins(agentStatuses, disabledAgents);
-    return isRoot ? rootAllowedAgentBins(enabled, agentStatuses, rootAgentIds) : enabled;
-  }, [agentStatuses, disabledAgents, isRoot, rootAgentIds]);
+    if (!installedEnabled || !agentStatuses) return installedEnabled;
+    return isRoot
+      ? rootAllowedAgentBins(installedEnabled, agentStatuses, rootAgentIds)
+      : installedEnabled;
+  }, [installedEnabled, agentStatuses, isRoot, rootAgentIds]);
+  const vibeForLocalModel = installedEnabled?.has("vibe") ?? false;
   const compactAgentBins = useMemo(() => {
     if (!agentStatuses) return new Set<string>();
     const compactIds = new Set(compactAgentIds);
@@ -156,6 +167,7 @@ export function useAddTabMenuData(scope: string): AddTabMenuData {
     localModelOffInRoot,
     localDrivers,
     enabledAgents,
+    vibeForLocalModel,
     compactAgentBins,
     customAgents,
     installedCustom,
