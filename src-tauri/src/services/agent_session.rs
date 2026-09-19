@@ -373,12 +373,16 @@ pub fn agent_session_model(cmd: &str, project_id: Option<&str>, launch_id: &str)
 /// none Eldrun reads. Codex 0.153.4's thread store records no messages at all
 /// (only the thread's first one), so a Codex tab on that release has no answer
 /// here — nothing is guessed from the tab's output instead.
+///
+/// Never read off the launch id's file once a live id is recorded: right after
+/// a `/clear` that file is the cleared conversation, and its prompts are not
+/// what this session was asked.
 pub fn agent_session_last_prompt(
     cmd: &str,
     project_id: Option<&str>,
     launch_id: &str,
 ) -> Option<String> {
-    read_agent_transcript(cmd, project_id, launch_id, last_prompt_in_transcript, |_, _| None)
+    read_agent_transcript_from(cmd, project_id, launch_id, false, last_prompt_in_transcript, |_, _| None)
 }
 
 /// Resolve the transcript behind a tab and read one fact out of it. The
@@ -388,6 +392,9 @@ pub fn agent_session_last_prompt(
 ///   the live id (after a `/clear`) first and the launch id as the fallback —
 ///   the same preference the resume path has. `read_file` is tried on each in
 ///   turn, so a live transcript that holds no answer yet still falls back.
+///   That suits a fact that outlives a `/clear` (the model); what the session
+///   was *asked* does not, and reads with [`read_agent_transcript_from`]
+///   without the fallback.
 /// - Codex: the rollout transcript when this release still writes one, else
 ///   its SQLite thread store through `read_store` — the same fact by the only
 ///   route left since 0.153.4, for the facts that store holds.
@@ -402,9 +409,8 @@ pub(crate) fn read_agent_transcript<T>(
 }
 
 /// [`read_agent_transcript`], choosing whether a Claude tab whose live id has
-/// no file yet falls back to the launch id's. The facts read off a transcript
-/// (model, last prompt) want that fallback; the conversation itself must not
-/// take it — right after a `/clear` the hook has recorded the new id but
+/// no file yet falls back to the launch id's. The model wants that fallback;
+/// the conversation and the prompts it was given must not take it — right after a `/clear` the hook has recorded the new id but
 /// Claude writes its file only with the first turn, and the launch id's file
 /// is the conversation that was just cleared.
 pub(crate) fn read_agent_transcript_from<T>(
@@ -425,9 +431,7 @@ pub(crate) fn read_agent_transcript_from<T>(
             if let Some(pid) = project_id {
                 roots.push(crate::services::sandbox::claude_projects_stage(pid));
             }
-            let launch = (fall_back_to_launch || live.is_none()).then(|| launch_id.to_string());
-            let ids = [live, launch];
-            ids.iter().flatten().find_map(|id| {
+            claude_transcript_ids(live, launch_id, fall_back_to_launch).iter().find_map(|id| {
                 roots
                     .iter()
                     .find_map(|root| claude_session_log(root, id))
@@ -447,6 +451,15 @@ pub(crate) fn read_agent_transcript_from<T>(
         }
         _ => None,
     }
+}
+
+/// The Claude session ids whose transcripts are tried, in order: the live one
+/// the hook recorded, then the launch id — which is left out when a live id is
+/// recorded and `fall_back_to_launch` is off (after a `/clear`, the launch id's
+/// file is the cleared conversation, or an older one still after two).
+fn claude_transcript_ids(live: Option<String>, launch_id: &str, fall_back_to_launch: bool) -> Vec<String> {
+    let launch = (fall_back_to_launch || live.is_none()).then(|| launch_id.to_string());
+    live.into_iter().chain(launch).collect()
 }
 
 /// The model named by the last answer in the transcript at `path`, reading only
@@ -520,19 +533,19 @@ pub struct TranscriptPrompt {
 
 /// The newest prompts (oldest first) the tab launched as `cmd` with launch id
 /// `launch_id` was given, however they were submitted. Empty when there is no
-/// transcript Eldrun reads (Codex's thread store keeps no messages).
+/// transcript Eldrun reads (Codex's thread store keeps no messages), and right
+/// after a `/clear` — the same no-fallback rule as [`agent_session_last_prompt`].
 pub fn agent_session_recent_prompts(
     cmd: &str,
     project_id: Option<&str>,
     launch_id: &str,
 ) -> Vec<TranscriptPrompt> {
-    read_agent_transcript(cmd, project_id, launch_id, recent_prompts_in_transcript, |_, _| None)
+    read_agent_transcript_from(cmd, project_id, launch_id, false, recent_prompts_in_transcript, |_, _| None)
         .unwrap_or_default()
 }
 
 /// The prompts in the tail of the transcript at `path`, oldest first, at most
-/// [`MAX_RECENT_PROMPTS`]. `None` when it holds none, so the resolver still
-/// falls back from a fresh live transcript to the launch one.
+/// [`MAX_RECENT_PROMPTS`]. `None` when it holds none.
 pub fn recent_prompts_in_transcript(
     path: &std::path::Path,
     kind: TranscriptKind,
@@ -1920,6 +1933,22 @@ mod tests {
             Some(launch)
         );
         let _ = std::fs::remove_dir_all(&projects);
+    }
+
+    #[test]
+    fn transcript_ids_skip_the_cleared_launch_only_when_asked() {
+        let launch = "00000000-0000-0000-0000-000000000000";
+        let live = "99999999-8888-7777-6666-555555555555";
+        // Before any `/clear` no live id is recorded: the launch id either way.
+        assert_eq!(claude_transcript_ids(None, launch, false), vec![launch.to_string()]);
+        assert_eq!(claude_transcript_ids(None, launch, true), vec![launch.to_string()]);
+        // After one, the prompt reads see only the new session — whose file
+        // Claude writes with its first turn, so until then they see nothing.
+        assert_eq!(claude_transcript_ids(Some(live.to_string()), launch, false), vec![live.to_string()]);
+        assert_eq!(
+            claude_transcript_ids(Some(live.to_string()), launch, true),
+            vec![live.to_string(), launch.to_string()]
+        );
     }
 
     #[test]
