@@ -4,13 +4,13 @@
  *
  * A shell/script tab can run inside a **tmux** session — remote (on the SSH host)
  * or local (on this machine) — so the run survives an SSH drop / laptop sleep /
- * Eldrun crash. Closing a tab is therefore **non-destructive**: it detaches
- * (unmounts the pane, killing only the ssh/PTY client) and leaves the session alive
- * under its tmux daemon, reattachable from the Sessions view. The *only* way to
- * terminate a session is its × (kill) in the Sessions view (`remote_tmux_kill` /
- * `local_tmux_kill`). A clean Eldrun quit additionally reaps Eldrun-owned LOCAL
- * sessions; remote sessions always stay running across quit, disconnect, and crash
- * unless the user explicitly ends them.
+ * Eldrun crash. What closing the tab does depends on where that session lives:
+ * a **remote** session is only detached (the pane unmounts, killing the ssh/PTY
+ * client) and stays alive under its host's tmux daemon, reattachable from the
+ * Sessions view and ended only by its × there (`remote_tmux_kill`); a **local**
+ * session the tab minted is ended with the tab (`local_tmux_kill`), the same as
+ * closing the project or quitting Eldrun does — local sessions exist to survive
+ * a crash, not a close.
  *
  * `persistentSessionOf` / `localPersistentSessionOf` classify the tab (used by the
  * Sessions view to mark which rows an open tab owns). They live outside the stores
@@ -26,7 +26,9 @@ import {
 } from "../../stores/tabs";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
-import { shouldPersistTab } from "../terminal/tmuxSession";
+import { invoke } from "@tauri-apps/api/core";
+import { isResumableAgentTab } from "../../stores/tabs";
+import { shouldPersistLocalTab, shouldPersistTab } from "../terminal/tmuxSession";
 import { IS_WINDOWS } from "../platform";
 
 /**
@@ -83,17 +85,51 @@ export function localPersistentSessionOf(scope: string, tab: TabEntry): string |
 }
 
 /**
- * Close a tab from an explicit user action (the × button, the tab context menu).
- *
- * Closing a tab **detaches** — it never terminates the underlying tmux session.
- * `removeTab` unmounts the pane (killing only the ssh/PTY *client*), so a persistent
- * session — remote (on an SSH host) or local (on this machine) — keeps running under
- * its tmux daemon and stays discoverable + reattachable in the Sessions view. A tab
- * close and a crash leave it alive; a clean quit reaps only Eldrun-owned LOCAL
- * sessions, while remote sessions remain until their × is clicked. (This function stays a
- * seam — rather than inlining `removeTab` at the call sites — so a future confirm/hook
- * has one home, and so `persistentSessionOf` keeps a co-located reader.)
+ * The local tmux session a tab MINTED and therefore ends when it is closed, or
+ * `null`. The spawn-side rule itself (`shouldPersistLocalTab`), so it covers the
+ * Mobile-access agent tabs `localPersistentSessionOf` leaves out. An attach tab
+ * (`tmuxAttach`, opened from the Sessions view) is never one: it looks at a
+ * session it did not create — possibly one made outside Eldrun — and closing the
+ * window onto it must not take it down.
  */
+export function mintedLocalSessionOf(scope: string, tab: TabEntry): string | null {
+  if (IS_WINDOWS || tab.tmuxAttach || !tab.tmuxSession) return null;
+  const project = useProjectsStore.getState().projects.find((p) => p.id === scope);
+  const localRunning =
+    !project?.remote ||
+    effectiveTabLocation(tab, { vmProject: !!project?.vm?.enabled }) === "local";
+  const enabled = useSettingsStore.getState().settings?.persist_local_sessions !== false;
+  return shouldPersistLocalTab(
+    tab.kind,
+    scope,
+    localRunning,
+    enabled,
+    !!project?.eldrun_mobile_access,
+    isResumableAgentTab(tab),
+  )
+    ? tab.tmuxSession
+    : null;
+}
+
+/**
+ * Close a tab from an explicit user action — the ×, the tab context menu, the
+ * close chord, a bulk close, or the phone's ✕ (`MobileBridgeHost`), which is why
+ * it takes a scope: the phone closes a tab in whichever project it is looking at.
+ *
+ * The tab leaves the layout (its pane unmounts, killing the PTY client) and the
+ * local tmux session it minted is ended with it. A remote session is left
+ * running; see the file header. Programmatic removals (a re-run replacing its
+ * prior tab, a file tab following its file) keep calling `removeTab` directly.
+ */
+export function closeTabInScope(scope: string, key: string): void {
+  const store = useTabsStore.getState();
+  const tab = (store.tabsByScope[scope] ?? []).find((t) => t.key === key);
+  const session = tab ? mintedLocalSessionOf(scope, tab) : null;
+  store.removeTabInScope(scope, key);
+  if (session) void invoke<void>("local_tmux_kill", { session }).catch(() => {});
+}
+
+/** `closeTabInScope` for the active scope — the desktop's own close. */
 export function closeTabWithConfirm(key: string): void {
-  useTabsStore.getState().removeTab(key);
+  closeTabInScope(useTabsStore.getState().scope, key);
 }

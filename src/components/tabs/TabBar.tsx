@@ -179,7 +179,6 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   const addTab = useTabsStore((s) => s.addTab);
   const duplicateTab = useTabsStore((s) => s.duplicateTab);
   const ensureTab = useTabsStore((s) => s.ensureTab);
-  const removeTab = useTabsStore((s) => s.removeTab);
   const setTabLocation = useTabsStore((s) => s.setTabLocation);
   // Experimental — off for users, on in debug: the in-app browser (#61). This is
   // the entry-point half of the gate; the other half is the withdrawal
@@ -746,17 +745,17 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
     setTabMenu({ x: event.clientX, y: event.clientY, key, index });
   }
 
-  // Bulk-close helpers built on the tested `removeTab` action over this group's
-  // ordered `tabs`. Each removeTab reads fresh store state and repicks the active
+  // Bulk-close helpers built on `closeTabWithConfirm` (`removeTab` plus the
+  // tab's local tmux session) over this group's ordered `tabs`. Each close reads fresh store state and repicks the active
   // tab / collapses empty groups, so looping over a render-time snapshot is safe.
   function closeToLeft(index: number) {
-    tabs.slice(0, index).forEach((tb) => removeTab(tb.key));
+    tabs.slice(0, index).forEach((tb) => closeTabWithConfirm(tb.key));
   }
   function closeToRight(index: number) {
-    tabs.slice(index + 1).forEach((tb) => removeTab(tb.key));
+    tabs.slice(index + 1).forEach((tb) => closeTabWithConfirm(tb.key));
   }
   function closeOthers(key: string) {
-    tabs.filter((tb) => tb.key !== key).forEach((tb) => removeTab(tb.key));
+    tabs.filter((tb) => tb.key !== key).forEach((tb) => closeTabWithConfirm(tb.key));
   }
 
   // Start a pointer-based tab drag once the pointer crosses a 5px threshold.

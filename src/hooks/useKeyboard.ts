@@ -4,6 +4,7 @@ import { PLATFORM } from "../lib/window/dragPlatform";
 import { IS_MAC } from "../lib/platform";
 import { desktopOwnsSuperKey, probeSuperKeyOwnership } from "../lib/shortcuts/superKey";
 import { allGroups, findGroup, useTabsStore } from "../stores/tabs";
+import { closeTabWithConfirm } from "../lib/remote/closeRemoteTab";
 import { useProjectsStore } from "../stores/projects";
 import { useSettingsStore, stepZoom } from "../stores/settings";
 import { useSubwindowNavStore } from "../stores/subwindowNav";
@@ -236,7 +237,7 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
           onTogglePanels();
           return;
         case "w": // close the active tab
-          if (tabs.activeKey) tabs.removeTab(tabs.activeKey);
+          if (tabs.activeKey) closeTabWithConfirm(tabs.activeKey);
           return;
         case "s": // open settings — same door the header ⚙ menu fires
           steering.exit();
@@ -426,7 +427,7 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
       if (is("closeTab")) {
         if (tabs.activeKey) {
           e.preventDefault();
-          tabs.removeTab(tabs.activeKey);
+          closeTabWithConfirm(tabs.activeKey);
         }
         return;
       }

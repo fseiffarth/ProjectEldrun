@@ -84,11 +84,14 @@ tick and succeeds on the next — a Sessions view that blanks and comes back.
 rather than folding them into the reading; a host that answers with nothing
 still empties, or a killed session would never leave the list. This is the same
 rule `release` already kept the last reading for.
-**Kill vs. detach**: closing a tab **always detaches** —
-`lib/remote/closeRemoteTab.ts`'s `closeTabWithConfirm` just `removeTab`s, killing only the
-ssh/PTY client, so the session lives on under its tmux daemon; a crash or a
-respawn likewise **leaves the session alive**, and so does an app exit for a
-**remote** session. A **clean quit ends every local `eldrun-*` session** —
+**Kill vs. detach**: closing a tab **detaches a remote session and ends a
+local one**. `lib/remote/closeRemoteTab.ts`'s `closeTabInScope` (the desktop ×,
+context menu, close chord, bulk closes, and the phone's ✕ all go through it)
+`removeTab`s — killing the ssh/PTY client — and then `local_tmux_kill`s the
+local session the tab minted (`mintedLocalSessionOf`; never an attach tab's,
+which may be a session made outside Eldrun). A remote session lives on under
+its host's tmux daemon; a crash or a respawn **leaves any session alive**, and
+so does an app exit for a **remote** session. A **clean quit ends every local `eldrun-*` session** —
 the window's × runs `local_tmux_kill_eldrun_sessions` before `destroy()`, and
 `RunEvent::Exit` runs the same `tmux_local::kill_eldrun_sessions` as the net for
 exits that never reach frontend code (the dev launcher's Ctrl+C: SIGTERM/SIGINT

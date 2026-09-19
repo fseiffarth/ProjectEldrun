@@ -8,6 +8,7 @@ import {
   useTabsStore,
   type TabEntry,
 } from "../../stores/tabs";
+import { closeTabInScope } from "../../lib/remote/closeRemoteTab";
 import { useSettingsStore } from "../../stores/settings";
 import { calendarColor, useCalendarStore, visibleCalendarIds } from "../../stores/calendar/calendar";
 import { lastTabReadAt, noteUserInput, useActivityStore } from "../../stores/activity";
@@ -593,10 +594,10 @@ function mobileTargetTab(scope: string, tmuxSession: string) {
 }
 
 /** Close one tab from the phone. Closing means here what it means on the
- * desktop (`lib/remote/closeRemoteTab`): the tab leaves the layout and its viewer
- * dies, while the tmux session behind it keeps running and stays reattachable
- * from the Sessions view — a tap on a phone must not be able to end a running
- * agent.
+ * desktop (`lib/remote/closeRemoteTab`'s `closeTabInScope`, the one seam both
+ * use): the tab leaves the layout, its viewer dies, and the local tmux session it
+ * minted ends with it; a session on a remote host keeps running and stays
+ * reattachable from the Sessions view.
  *
  * The scope is restored first when the desktop has not opened that project this
  * session: the phone lists tabs from the saved session file, which outlives the
@@ -612,7 +613,7 @@ async function closeMobileTab(projectId: string, tmuxSession: string): Promise<D
   if (scope.project) await restoreProjectScope(scope.project).catch(() => {});
   const tab = mobileTargetTab(scope.id, tmuxSession);
   if (!tab) return { status: "error", code: "tab_not_found", message: "Tab is unavailable" };
-  useTabsStore.getState().removeTabInScope(scope.id, tab.key);
+  closeTabInScope(scope.id, tab.key);
   // CenterPanel's debounce persists the ACTIVE scope only, and the phone closes
   // a tab in whichever project it is looking at. Without this write the catalog
   // — which reads that same session file — keeps listing the closed tab, and a

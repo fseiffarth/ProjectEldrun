@@ -1140,8 +1140,8 @@ interface TabsStore {
   // which need not be the one the desktop is showing — and `removeTab` writes
   // to the active scope, so without the scope said out loud a close from the
   // phone would drop a tab out of the project on the user's screen. Closing
-  // stays what it is on the desktop (`lib/remote/closeRemoteTab`): the pane unmounts
-  // and its PTY dies, while a tmux session behind the tab keeps running. A tab
+  // stays what it is on the desktop (`lib/remote/closeRemoteTab`, which also
+  // ends the tab's local tmux session): the pane unmounts and its PTY dies. A tab
   // living in a popout is closed through that window's own teardown, since its
   // pane is mounted there and nothing here would otherwise kill its PTY.
   // Non-current scopes are dropped in memory only; persist at the call site.
