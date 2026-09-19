@@ -950,24 +950,36 @@ pub(crate) fn bwrap_args(
     args
 }
 
-/// State directories holding private data that the `$HOME` tmpfs does not hide,
-/// because `ELDRUN_STATE_DIR` put them somewhere else.
-///
-/// The fence hides the user's data by shadowing `$HOME`, and the default state
-/// dir lives there. Moved outside it, the mail store (`mail/`: the database,
-/// attachments, and on an unencrypted store everything in the clear) would sit
-/// under the read-only `/` bind, readable by every fenced agent.
-#[cfg(any(target_os = "linux", test))]
-pub(crate) fn private_state_outside_home(home: &Path, state_dir: &Path) -> Vec<String> {
-    if state_dir.starts_with(home) {
-        return Vec::new();
+/// Shadow the whole Eldrun state tree, including its canonical alias. Explicit
+/// tool mounts are restored afterwards; future private files stay hidden too.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+pub(crate) fn private_state_paths(state_dir: &Path) -> Vec<PathBuf> {
+    let mut paths = vec![state_dir.to_path_buf()];
+    if let Ok(real) = state_dir.canonicalize() { paths.push(real); }
+    // A private store may itself be a symlink outside the state tree.
+    for name in ["calendar.json", "projects.json", "settings.json", "boxes.json", "root_mcp", "mail",
+        "time_summary.json", "usage_stats.json", "remote-projects", "sessions"] {
+        paths.push(state_dir.join(name));
+        if let Ok(real) = state_dir.join(name).canonicalize() { paths.push(real); }
     }
-    ["mail"]
-        .iter()
-        .map(|name| state_dir.join(name))
-        .filter(|dir| dir.is_dir())
-        .map(|dir| dir.to_string_lossy().into_owned())
-        .collect()
+    paths.sort(); paths.dedup();
+    paths
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn mask_private_state(args: &mut Vec<String>, state_dir: &Path, mounts: &[BindMount]) {
+    let mut mask = Vec::new();
+    for path in private_state_paths(state_dir) {
+        if path.is_dir() { mask.extend(["--tmpfs".into(), path.to_string_lossy().into_owned()]); }
+        else if path.exists() { mask.extend(["--ro-bind".into(), "/dev/null".into(), path.to_string_lossy().into_owned()]); }
+    }
+    // Only Eldrun's explicit agent support mounts may pierce the state mask.
+    // Project roots and user allowlists are intentionally never restored here.
+    for m in mounts.iter().filter(|m| Path::new(&m.dst).starts_with(state_dir)) {
+        mask.extend([if m.read_only { "--ro-bind" } else { "--bind" }.into(), m.src.clone(), m.dst.clone()]);
+    }
+    let separator = args.iter().position(|s| s == "--").unwrap_or(args.len());
+    args.splice(separator..separator, mask);
 }
 
 /// Rewrite a local agent spawn into its outer bubblewrap boundary.
@@ -989,6 +1001,7 @@ pub fn wrap_pty_options_bwrap(
         return Err(fence_unavailable_message());
     }
     let (mut mounts, symlinks) = agent_state_mounts(scope_id, roots);
+    let support_mounts = mounts.clone();
     let protected = codex_content_paths(&paths::home_dir());
     mounts.retain(|m| !protected.contains(&m.dst));
     let (content_shadow, content_mounts) = private_codex_content(
@@ -1031,19 +1044,8 @@ pub fn wrap_pty_options_bwrap(
         &mut args,
         crate::services::git_guard::guard_paths(roots, Some(Path::new(&opts.cwd))),
     );
-    // Right after the home tmpfs, before any bind that could need to show
-    // through it.
-    let home = paths::home_dir_string();
-    if let Some(i) = args
-        .windows(2)
-        .position(|w| w[0] == "--tmpfs" && w[1] == home)
-    {
-        let hidden = private_state_outside_home(&paths::home_dir(), &storage::state_dir());
-        for (n, dir) in hidden.into_iter().enumerate() {
-            let at = i + 2 + 2 * n;
-            args.splice(at..at, ["--tmpfs".to_string(), dir]);
-        }
-    }
+    // Last: overlapping roots and allowlists must not reopen private stores.
+    mask_private_state(&mut args, &storage::state_dir(), &support_mounts);
     opts.cmd = "bwrap".to_string();
     opts.args = args;
     opts.env
@@ -1222,7 +1224,13 @@ fn sandbox_exec_inputs(opts: &PtyOptions, roots: &[PathBuf], scope_id: &str) -> 
         writable,
         readable,
         protected,
-        hidden: hidden_cargo_credentials(opts),
+        hidden: hidden_cargo_credentials(opts).into_iter().chain(
+            private_state_paths(&state_dir).into_iter().filter(|p| {
+                // Deny private children on macOS: Seatbelt cannot restore a
+                // tool mount through a final deny of the whole state directory.
+                p != &state_dir && state_dir.canonicalize().as_ref().ok() != Some(p)
+            }).map(|p| p.to_string_lossy().into_owned())
+        ).collect(),
     }
 }
 
@@ -1616,18 +1624,19 @@ mod tests {
     }
 
     #[test]
-    fn a_state_dir_outside_home_has_its_mail_store_hidden() {
-        let home = tempfile::tempdir().unwrap();
-        let elsewhere = tempfile::tempdir().unwrap();
-        std::fs::create_dir(elsewhere.path().join("mail")).unwrap();
-        assert_eq!(
-            private_state_outside_home(home.path(), elsewhere.path()),
-            vec![elsewhere.path().join("mail").to_string_lossy().into_owned()]
-        );
-        // Under home the home tmpfs already covers it.
-        let inside = home.path().join(".local/share/eldrun");
-        std::fs::create_dir_all(inside.join("mail")).unwrap();
-        assert!(private_state_outside_home(home.path(), &inside).is_empty());
+    fn state_is_masked_after_overlapping_project_grants() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        std::fs::create_dir_all(state.join("hooks")).unwrap();
+        std::fs::write(state.join("calendar.json"), "secret").unwrap();
+        let mut args = vec!["--bind".into(), dir.path().display().to_string(), dir.path().display().to_string(), "--".into(), "agent".into()];
+        let hook = state.join("hooks").display().to_string();
+        mask_private_state(&mut args, &state, &[BindMount { src: hook.clone(), dst: hook.clone(), read_only: true }]);
+        let mask = args.iter().position(|a| a == "--tmpfs").unwrap();
+        assert!(mask > 2);
+        assert!(args.iter().rposition(|a| a == &hook).unwrap() > mask);
+        assert!(args.iter().position(|a| a == "--").unwrap() > mask);
+        assert!(private_state_paths(&state).contains(&state.join("calendar.json")));
     }
 
     fn project(id: &str, dir: &str) -> ProjectEntry {
