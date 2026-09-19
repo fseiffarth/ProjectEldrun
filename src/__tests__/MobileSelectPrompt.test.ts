@@ -165,6 +165,106 @@ describe("Eldrun Mobile select dialog", () => {
     expect(prompt?.options[1].description).toBe("Mid");
   });
 
+  it("reads a question whose notes sit on the rows under each label", () => {
+    // Claude Code 2.1.278's AskUserQuestion dialog (`compact-vertical`): the
+    // note is its own row, indented to the label, wrapping at the same indent.
+    const prompt = readSelectPrompt(lines(
+      "←  ☐ Color  ☐ Size  ✔ Submit  →",
+      "",
+      "Which color should the banner use?",
+      "",
+      "❯ 1. Red",
+      "     Warm and loud",
+      "  2. Green",
+      "     Calm, and it matches the logo we",
+      "     already ship",
+      "  3. Blue",
+      "  4. Type something.",
+      "",
+      "  5. Chat about this",
+      "",
+      "Enter to select · Tab/Arrow keys to navigate · Esc to cancel",
+    ));
+    expect(prompt?.title).toBe("Which color should the banner use?");
+    expect(prompt?.current).toBe(0);
+    expect(prompt?.options).toEqual([
+      { index: 0, number: 1, label: "Red", description: "Warm and loud" },
+      { index: 1, number: 2, label: "Green", description: "Calm, and it matches the logo we already ship" },
+      { index: 2, number: 3, label: "Blue", description: undefined },
+      { index: 3, number: 4, label: "Type something.", description: undefined },
+    ]);
+    // The highlight walked down: the same dialog, read the same way.
+    expect(readSelectPrompt(lines("  1. Red", "     Warm and loud", "❯ 2. Green", "     Calm"))?.current).toBe(1);
+  });
+
+  it("keeps reading a Codex question whose label wraps beside its note", () => {
+    // codex-rs request_user_input `long_option_text` snapshot, narrowed: the
+    // label wraps at its own column while the note wraps at the note's.
+    const prompt = readSelectPrompt(lines(
+      "  Question 1/1 (1 unanswered)",
+      "  Choose one option.",
+      "",
+      "  › 1. Job: running/completed/failed/    Keep async job statuses",
+      "       expired (Recommended)             for progress tracking.",
+      "    2. Add a short status model          Simpler labels.",
+      "",
+      "  tab to add notes | enter to submit answer | esc to interrupt",
+    ));
+    expect(prompt?.title).toBe("Question 1/1 (1 unanswered)");
+    expect(prompt?.options).toEqual([
+      { index: 0, number: 1, label: "Job: running/completed/failed/ expired (Recommended)", description: "Keep async job statuses for progress tracking." },
+      { index: 1, number: 2, label: "Add a short status model", description: "Simpler labels." },
+    ]);
+  });
+
+  it("reads a Codex list too narrow for two columns, its notes stacked under the rows", () => {
+    // codex-rs list_selection_view `narrow_width_preserves_rows` snapshot.
+    const prompt = readSelectPrompt(lines(
+      "  Debug",
+      "",
+      "› 1. Item 1",
+      "             xxxxxxxxx",
+      "             x",
+      "  2. Item 2",
+      "             xxxxxxxxx",
+    ));
+    expect(prompt?.options.map((option) => [option.label, option.description])).toEqual([
+      ["Item 1", "xxxxxxxxx x"],
+      ["Item 2", "xxxxxxxxx"],
+    ]);
+  });
+
+  it("reads Gemini CLI's radio dot as the highlight, on a Gemini or Qwen tab only", () => {
+    // gemini-cli 0.56 BaseSelectionList: the dot, the number, then the label
+    // with its note (AskUser's description, a sublabel) on the row under it.
+    const screen = lines(
+      "Which color should the banner use?",
+      "",
+      "  1.  Red",
+      "      Warm and loud",
+      "● 2.  Green",
+      "  3.  Enter a custom value",
+    );
+    for (const agent of ["Gemini", "Qwen Code"]) {
+      const prompt = readSelectPrompt(screen, agent);
+      expect(prompt?.current).toBe(1);
+      expect(prompt?.options.map((option) => option.label)).toEqual(["Red", "Green", "Enter a custom value"]);
+      expect(prompt?.options[0].description).toBe("Warm and loud");
+    }
+    // On Claude Code (Linux) and Kimi Code `●` opens an answer, and an answer
+    // opening with a numbered list is no dialog.
+    const answer = lines("● 1. Read the file", "  2. Change the function");
+    expect(readSelectPrompt(answer, "Claude")).toBeNull();
+    expect(readSelectPrompt(answer)).toBeNull();
+    expect(readSelectPrompt(answer, "Gemini")?.current).toBe(0);
+  });
+
+  it("does not take text shallower than the label for its note", () => {
+    const prompt = readSelectPrompt(lines("❯ 1. Red", "  2. Green", "    not a note", "  3. Blue"));
+    expect(prompt?.options.map((option) => option.label)).toEqual(["Red", "Green"]);
+    expect(prompt?.options[1].description).toBeUndefined();
+  });
+
   it("leaves a dialog untitled rather than titling it with the output above it", () => {
     const prompt = readSelectPrompt(lines(
       "I read the three files and they agree on the shape of the fix,",

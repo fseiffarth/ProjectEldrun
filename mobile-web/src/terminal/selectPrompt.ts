@@ -56,6 +56,20 @@ const MAX_OPTIONS = 12;
 /** `❯ 1. Label   Description` once `readableScreen` stripped the box frame.
  * The marker is optional per row: exactly one row carries it. */
 const OPTION = /^\s*([❯▸▶›>→])?\s*(\d{1,2})[.)]\s+(\S.*)$/u;
+/** Gemini CLI's selection list — and Qwen Code's, forked from it — marks the
+ * highlighted row with a radio dot instead (`● 1.  Allow once`, read out of
+ * the 0.56 bundle's `BaseSelectionList`). The same `●` opens every Claude Code
+ * answer on Linux and every Kimi Code one, so an answer that starts with a
+ * numbered list would read as a dialog: the dot is a marker only on a tab
+ * whose agent draws it (`radioMarkerAgent`). */
+const RADIO_OPTION = /^\s*([❯▸▶›>→●])?\s*(\d{1,2})[.)]\s+(\S.*)$/u;
+const RADIO_AGENT = /gemini|qwen/iu;
+
+/** Whether the tab's agent marks a dialog's highlighted row with `●` — and so
+ * never opens a message with one. */
+export function radioMarkerAgent(agentLabel?: string): boolean {
+  return agentLabel !== undefined && RADIO_AGENT.test(agentLabel);
+}
 /** Two or more spaces — what both CLIs put between a row's label and its
  * note. A single space is inside the label. */
 const COLUMN_SPLIT = /\s{2,}/u;
@@ -71,8 +85,12 @@ const MAX_TITLE = 60;
 interface ReadRow {
   marked: boolean;
   option: Omit<SelectOption, "index">;
-  /** Screen column the row's note starts at, when it has one. */
-  descriptionColumn?: number;
+  /** Screen column the label starts at. */
+  labelColumn: number;
+  /** Screen column the row's note starts at: beside the label when the row
+   * carries it in a second column, else the label's own column, under which
+   * the note is printed on rows of its own. */
+  descriptionColumn: number;
 }
 
 /** At phone width both CLIs wrap a row's note onto the lines below it, each
@@ -81,12 +99,34 @@ interface ReadRow {
  *     1. gpt-5.6-sol (default)  Latest frontier
  *                               agentic coding model.
  *
- * A line that is not a row and starts at or past that column continues the
- * row above; anything shallower is ordinary text and ends the run. */
-function readContinuation(text: string, column: number | undefined): string | null {
-  if (column === undefined) return null;
+ * A label too long for its column wraps the same way, indented to the label's
+ * column, beside the note's own wrapped lines (Codex's question dialog):
+ *
+ *   › 1. Job: running/completed/failed/  Keep async job statuses
+ *        expired (Recommended)           for progress tracking.
+ *
+ * And some dialogs never put the note beside the label at all: Claude Code's
+ * question dialog (AskUserQuestion, its `compact-vertical` layout), Gemini
+ * CLI's and a Codex list too narrow for two columns print it on the rows under
+ * it, at or past the label's column —
+ *
+ *     ❯ 1. Red
+ *          Warm and loud
+ *       2. Green
+ *
+ * — so for a row without a second column the note's column is the label's.
+ * A line that is not a row and starts at or past the label's column continues
+ * the row above: what sits left of the note's column is more label, the rest
+ * more note. Anything shallower is ordinary text and ends the run. */
+function readContinuation(
+  text: string,
+  labelColumn: number,
+  descriptionColumn: number,
+): { label: string; description: string } | null {
   const indent = text.length - text.trimStart().length;
-  return indent >= column ? text.trim() : null;
+  if (indent < labelColumn) return null;
+  if (descriptionColumn <= labelColumn || indent >= descriptionColumn) return { label: "", description: text.trim() };
+  return { label: text.slice(0, descriptionColumn).trim(), description: text.slice(descriptionColumn).trim() };
 }
 
 /** The dialog's heading, read upwards from its first row: past the blank the
@@ -104,12 +144,12 @@ function readTitle(lines: readonly SelectLineLike[], start: number): string | un
   const title = block[0];
   if (!title || title.length > MAX_TITLE) return undefined;
   // A numbered row above the run belongs to some other list, not to a heading.
-  if (OPTION.test(title)) return undefined;
+  if (RADIO_OPTION.test(title)) return undefined;
   return /\p{L}/u.test(title) ? title : undefined;
 }
 
-function readRow(text: string): ReadRow | null {
-  const match = OPTION.exec(text);
+function readRow(text: string, option: RegExp): ReadRow | null {
+  const match = option.exec(text);
   if (!match) return null;
   const [, marker, digits, rest] = match;
   const columns = rest.split(COLUMN_SPLIT);
@@ -124,17 +164,20 @@ function readRow(text: string): ReadRow | null {
       label: label.slice(0, MAX_LABEL),
       description: description ? description.slice(0, MAX_DESCRIPTION) : undefined,
     },
-    descriptionColumn: split ? text.length - rest.length + split.index + split[0].length : undefined,
+    labelColumn: text.length - rest.length,
+    descriptionColumn: text.length - rest.length + (split ? split.index + split[0].length : 0),
   };
 }
 
 /**
  * The select dialog the session is showing right now, or `null` when the bottom
- * of the screen does not hold one in the recognized shape.
+ * of the screen does not hold one in the recognized shape. `agentLabel` is the
+ * tab's agent, which says whether `●` marks a row (`radioMarkerAgent`).
  */
-export function readSelectPrompt(lines: readonly SelectLineLike[]): SelectPrompt | null {
+export function readSelectPrompt(lines: readonly SelectLineLike[], agentLabel?: string): SelectPrompt | null {
+  const option = radioMarkerAgent(agentLabel) ? RADIO_OPTION : OPTION;
   const first = Math.max(0, lines.length - SEARCH_WINDOW);
-  type Run = { start: number; options: SelectOption[]; marked: number[]; column?: number };
+  type Run = { start: number; options: SelectOption[]; marked: number[]; labelColumn: number; column: number };
   const runs: Run[] = [];
   let run: Run | undefined;
 
@@ -146,12 +189,16 @@ export function readSelectPrompt(lines: readonly SelectLineLike[]): SelectPrompt
       run = undefined;
       continue;
     }
-    const row = readRow(text);
+    const row = readRow(text, option);
     if (!row) {
-      const more = run ? readContinuation(text, run.column) : null;
+      const more = run ? readContinuation(text, run.labelColumn, run.column) : null;
       const last = run?.options[run.options.length - 1];
-      if (more && last?.description) {
-        last.description = `${last.description} ${more}`.slice(0, MAX_DESCRIPTION);
+      if (more && last) {
+        if (more.label) last.label = `${last.label} ${more.label}`.slice(0, MAX_LABEL);
+        if (more.description) {
+          last.description = (last.description ? `${last.description} ${more.description}` : more.description)
+            .slice(0, MAX_DESCRIPTION);
+        }
         continue;
       }
       run = undefined;
@@ -163,12 +210,13 @@ export function readSelectPrompt(lines: readonly SelectLineLike[]): SelectPrompt
     if (!continues) {
       run = undefined;
       if (row.option.number !== 1) continue;
-      run = { start: index, options: [], marked: [] };
+      run = { start: index, options: [], marked: [], labelColumn: row.labelColumn, column: row.descriptionColumn };
       runs.push(run);
     }
     if (!run) continue;
     if (row.marked) run.marked.push(run.options.length);
     run.options.push({ index: run.options.length, ...row.option });
+    run.labelColumn = row.labelColumn;
     run.column = row.descriptionColumn;
   }
 

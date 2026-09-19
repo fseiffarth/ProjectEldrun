@@ -211,6 +211,23 @@ describe("Eldrun Mobile chat turns", () => {
     expect(turns[1].answer?.map((row) => row.text)).toEqual(["The panel shared the rows.", "It is cut off now."]);
   });
 
+  it("keeps Gemini's radio dot on the dialog row instead of reading a message bullet", () => {
+    const screen = () => lines(
+      "✦ Which color?",
+      "",
+      "● 1.  Red",
+      "  2.  Green",
+    );
+    const gemini = chatTurns(screen(), "Gemini");
+    expect(gemini).toHaveLength(2);
+    expect(gemini[0].answer?.map((row) => row.text)).toEqual(["Which color?"]);
+    // The highlight stays on screen as printed: a plain turn, dot included.
+    expect(gemini[1].answer).toBeUndefined();
+    expect(gemini[1].lines.map((row) => row.text)).toEqual(["● 1.  Red", "  2.  Green"]);
+    // On any other tab `●` is still a message bullet.
+    expect(chatTurns(screen(), "Claude")[1].answer?.[0].text).toBe("1.  Red");
+  });
+
   it("leaves another TUI's output as one plain agent turn", () => {
     const turns = chatTurns(lines("› explain", "", "• Sure, this repo is a phone app.", "  It has two screens."));
     expect(turns.map((turn) => turn.role)).toEqual(["user", "agent"]);

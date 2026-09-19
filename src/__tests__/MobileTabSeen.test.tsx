@@ -76,7 +76,7 @@ describe("Mobile bridge — a phone that looked at an agent tab", () => {
     cleanup();
     vi.mocked(invoke).mockReset();
     vi.mocked(listen).mockReset();
-    useActivityStore.setState({ attentionByTab: {}, attentionByScope: {} });
+    useActivityStore.setState({ attentionByTab: {}, attentionByScope: {}, lastDoneByTab: {}, lastWorkingByTab: {} });
   });
 
   it("retires the finished-turn flag the catalog reports as `done`", async () => {
@@ -89,6 +89,21 @@ describe("Mobile bridge — a phone that looked at an agent tab", () => {
     // And the catalog the phone polls next stops publishing the tag.
     const catalog = await ask({ type: "catalog", request_id: "r2", project_id: project.id });
     expect((catalog as unknown as { statuses: unknown[] }).statuses).toEqual([]);
+  });
+
+  it("keeps a read turn's timings, so the phone does not re-sort it to its tab-bar place", async () => {
+    useActivityStore.setState({
+      attentionByTab: { "p-mobile:agent-1": "done" },
+      lastWorkingByTab: { "p-mobile:agent-1": 1_700_000_000_000 },
+      lastDoneByTab: { "p-mobile:agent-1": 1_700_000_000_000 },
+    });
+    await ask({ type: "tab_seen", request_id: "r5", project_id: project.id, tmux_session: TMUX });
+
+    const catalog = await ask({ type: "catalog", request_id: "r6", project_id: project.id }) as unknown as {
+      statuses: unknown[]; timings: unknown[];
+    };
+    expect(catalog.statuses).toEqual([]);
+    expect(catalog.timings).toEqual([{ tmux_session: TMUX, working_at: 1_700_000_000_000, done_at: 1_700_000_000_000 }]);
   });
 
   it("keeps a live decision prompt, which being looked at does not answer", async () => {

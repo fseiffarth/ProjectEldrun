@@ -14,6 +14,7 @@ import {
   listOutbox,
   MAX_INBOX_FILE,
   outboxFileUrl,
+  reportSentPrompt,
   uploadToInbox,
   type DesktopImage,
   type OutboxFile,
@@ -33,7 +34,8 @@ import {
 import { type TerminalEvent } from "../terminal/protocol";
 import { installTerminalTouchScroll } from "../terminal/touchScroll";
 import { installWideOutputHint, type WideOutputHint } from "../terminal/wideOutput";
-import { inputFrameStart, sessionStatus, shortenPath, statusFrameLines, type SessionStatus } from "../terminal/statusLine";
+import { inputFrameStart, sessionStatus, statusFrameLines, type SessionStatus } from "../terminal/statusLine";
+import { sessionLimits } from "../terminal/sessionUsage";
 import { installFocusSwipe } from "../terminal/focusSwipe";
 import { readSelectPrompt, selectKeys, selectSignature } from "../terminal/selectPrompt";
 import {
@@ -1394,6 +1396,10 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     } else {
       const sent = pendingPrompt(++pendingId.current, draft, transcript?.entries ?? []);
       setPending((current) => [...current, sent].slice(-MAX_PENDING));
+      // The phone knows the words before they leave; the desktop records them
+      // as this tab's prompt — the only record of it for an agent whose
+      // transcript is not read (OpenCode's cards list these).
+      void reportSentPrompt(tab.id, draft).catch(() => {});
     }
     setDraft("");
     forgetDictation();
@@ -1422,13 +1428,20 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   );
   // The mode walk reads the status between two presses, outside React's render.
   useEffect(() => { statusRef.current = status; }, [status]);
+  /** Codex draws neither its context nor its limits on screen and has no
+   * usage panel the desktop can run, but writes both into its rollout: the
+   * stored session's figures fill in what the screen and the panel leave out,
+   * so its facts row reads like Claude's. */
+  const storedUsage = transcript?.usage;
+  const contextLeft = status?.context ?? (storedUsage?.contextLeft != null ? `${storedUsage.contextLeft}%` : undefined);
+  const shownLimits = limits.session || limits.week ? limits : sessionLimits(storedUsage, new Date(Date.now()));
   /** The picker the model chip opened, read off the screen while the sheet is
    * up — a list of the session's own rows, not a list of models Eldrun
    * believes in. OpenCode's is not the numbered dialog the others draw, so it
    * is read by its own shape (`openCodeMini`). */
   const picker = useMemo(
-    () => (modelSheet ? (openCode ? readOpenCodePicker(lines) : readSelectPrompt(lines)) : null),
-    [modelSheet, openCode, lines],
+    () => (modelSheet ? (openCode ? readOpenCodePicker(lines) : readSelectPrompt(lines, agentLabel)) : null),
+    [modelSheet, openCode, lines, agentLabel],
   );
   /** The step the sheet is showing: the picker on screen, unless it is the one
    * a tap just answered and the session has not redrawn yet. */
@@ -1717,7 +1730,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     painted.forEach((line, index) => { if (isPromptEcho(line, agentLabel)) start = index + 1; });
     return painted.slice(start);
   }, [sessionShown, altScreen, painted, agentLabel]);
-  const liveQuestion = useMemo(() => liveTail.length > 0 && readSelectPrompt(liveTail) != null, [liveTail]);
+  const liveQuestion = useMemo(() => liveTail.length > 0 && readSelectPrompt(liveTail, agentLabel) != null, [liveTail, agentLabel]);
   /** The stored session only grows at message boundaries, so a turn busy in
    * tool calls looked finished. The live screen's interrupt hint says it is
    * not; a choice on screen is waiting on the reader instead. */
@@ -1964,7 +1977,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       {uploads.map((upload) => upload.failure
         ? <div key={upload.id} className="inbox-upload error" role="alert"><strong>{upload.name}</strong><span>{upload.failure}</span><button onClick={() => dismissUpload(upload.id)} aria-label={`Dismiss ${upload.name}`}>✕</button></div>
         : <div key={upload.id} className="inbox-upload" role="status"><strong>{upload.name}</strong><span>{upload.source === "desktop" ? "Copying from the desktop…" : "Sending to the project inbox…"}</span></div>)}
-      {(tab.kind === "agent" || status?.path || status?.branch || status?.context || limits.session || limits.week) && <div className="session-facts" title={status?.path}>
+      {(tab.kind === "agent" || status?.branch || contextLeft || shownLimits.session || shownLimits.week) && <div className="session-facts">
         {/* An agent tab's model, mode and status lead the row as tappable facts:
             the composer keeps the whole bar for the draft and its buttons. */}
         {tab.kind === "agent" && <>
@@ -1972,11 +1985,10 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
           <button className="fact-action" disabled={!connected} onClick={selectModel} aria-haspopup="dialog" aria-expanded={modelSheet} title="Choose the model (/model)"><span className="fact-action-label">{status?.model ?? "Model"}</span></button>
           <button className="fact-action" disabled={!connected} onClick={openModeSheet} aria-haspopup={modes.length > 0 ? "dialog" : undefined} aria-expanded={modes.length > 0 ? modeSheet : undefined} title={modes.length > 0 ? "Choose the permission mode" : "Switch mode (Shift+Tab)"}><span className="fact-action-label">{status?.mode ?? activeMode ?? "Mode"}</span></button>
         </>}
-        {status?.path && <span className="fact-path">{shortenPath(status.path)}</span>}
         {status?.branch && <span className="fact-branch">⎇ {status.branch}</span>}
-        {status?.context && <span className="fact-context">{status.context} context left</span>}
-        {limits.session && <span className={`fact-limit${limits.session.percent >= 90 ? " high" : ""}`} title={limits.session.resets ? resetText(limits.session.resets, new Date()) : undefined}>{t("mobile.facts.session", { percent: Math.round(100 - limits.session.percent) })}</span>}
-        {limits.week && <span className={`fact-limit${limits.week.percent >= 90 ? " high" : ""}`} title={limits.week.resets ? resetText(limits.week.resets, new Date()) : undefined}>{t("mobile.facts.week", { percent: Math.round(100 - limits.week.percent) })}</span>}
+        {contextLeft && <span className="fact-context">{contextLeft} context</span>}
+        {shownLimits.session && <span className={`fact-limit${shownLimits.session.percent >= 90 ? " high" : ""}`} title={shownLimits.session.resets ? resetText(shownLimits.session.resets, new Date()) : undefined}>{t("mobile.facts.session", { percent: Math.round(100 - shownLimits.session.percent) })}</span>}
+        {shownLimits.week && <span className={`fact-limit${shownLimits.week.percent >= 90 ? " high" : ""}`} title={shownLimits.week.resets ? resetText(shownLimits.week.resets, new Date()) : undefined}>{t("mobile.facts.week", { percent: Math.round(100 - shownLimits.week.percent) })}</span>}
       </div>}
       <div className="prompt-composer">
         <div className="composer-field">

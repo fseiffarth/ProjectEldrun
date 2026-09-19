@@ -1792,4 +1792,38 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   - [ ] ✅ Works
   - [ ] ❌ Doesn't work
 
+- [~] **31al — Codex and Claude read alike on the phone** (2026-09-19; ✅
+  code-complete, automated tests passing, ⚠️ not verified on a phone).
+  - Claude Code 2.1.278 dropped "esc to interrupt" from its spinner
+    (`✶ Cascading… (36s · ↓ 2.1k tokens)`), so the Session view's "working"
+    row never showed for Claude; `agentBusy` now reads that row by its shape.
+  - Codex 0.155 animates one-dot braille sparkles over its composer; one next
+    to `›` hid the input box, so Focus's frame cut and the facts flipped every
+    repaint (the flicker). `readableScreen` reads those eight cells as blank.
+  - Codex's facts row now matches Claude's: context left and the 5h/week
+    windows come from its rollout's `token_count` events
+    (`agent_transcript::TranscriptUsage`), and no fact row shows the project
+    path any more.
+  - Codex's "Last prompts" on the tab cards: the prompt reads looked only at
+    the last 512 KB, and a Codex turn writes each tool result twice, so a busy
+    session's prompt fell out of it. The prompt reads now widen to 16 MB.
+  - OpenCode cards showed their TUI's panels as "prompts" (the screen-echo
+    fallback misreads its full-screen frame); that fallback is gone for
+    OpenCode. Instead the phone reports each composer prompt as it sends it
+    (`POST /api/v1/tabs/{id}/prompt` → `DesktopRequest::TabPrompt`), the desktop
+    records it in the tab's prompt history, and a tab whose transcript is not
+    read lists its history rows. Empty, the card says prompts sent from Eldrun
+    show there. Claude/Codex rows dedupe against transcript adoption.
+  - Needs a rebuild **and** a desktop restart (backend + embedded PWA).
+  - [ ] 🖐️ Manual phone QA — prompt a Claude tab, open it in Focus → Session:
+    the "Working" dots show until the turn ends. Open a Codex tab in Focus
+    while it works: no flicker, the composer frame stays cut, and the row
+    under the output shows model · mode · `NN% context` · `5h NN%` ·
+    `week NN%`, no path. Back on the project screen, the Codex card's "Last
+    prompts" names the prompt it is working on. Send a prompt to an OpenCode
+    tab from the phone: its card lists it (with the time) after the next poll,
+    and the desktop prompt chart shows it once — also for a Claude tab.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+
 ---

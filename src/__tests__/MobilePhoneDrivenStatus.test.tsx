@@ -29,6 +29,8 @@ import { _clearPtyActivityForTest, notePtyOutput, useActivityStore } from "../st
 import { useProjectsStore } from "../stores/projects";
 import { useSettingsStore } from "../stores/settings";
 import { useTabsStore } from "../stores/tabs";
+import { useAgentPromptsStore, type SentAgentPrompt } from "../stores/agents/agentPrompts";
+import { useAgentModelsStore } from "../stores/agents/agentModels";
 import type { TabEntry } from "../stores/tabs";
 import type { ProjectEntry, Settings } from "../types";
 
@@ -120,6 +122,53 @@ describe("Mobile bridge — the status of a tab the phone is driving", () => {
     vi.mocked(listen).mockReset();
     _clearPtyActivityForTest();
     vi.useRealTimers();
+  });
+
+  it("records a prompt the phone's composer sent in the tab's history, but not a /command", async () => {
+    useTabsStore.setState((state) => ({
+      tabsByScope: { [project.id]: state.tabsByScope[project.id].map((tab) => ({ ...tab, sessionId: "0f0e0d0c-0b0a-4908-8706-050403020100" })) },
+    }));
+    expect(await ask({ type: "tab_prompt", request_id: "p1", project_id: project.id, tmux_session: TMUX, message: "  fix the tests  " }))
+      .toEqual({ status: "seen" });
+    const recorded = vi.mocked(invoke).mock.calls.filter(([command]) => command === "agent_prompt_record");
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0][1]).toMatchObject({
+      projectId: project.id,
+      entry: { message: "fix the tests", sent: { tab_label: "Claude", session_id: "0f0e0d0c-0b0a-4908-8706-050403020100", agent: "claude", result: "delivered" } },
+    });
+
+    expect(await ask({ type: "tab_prompt", request_id: "p2", project_id: project.id, tmux_session: TMUX, message: "/model" }))
+      .toEqual({ status: "seen" });
+    expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "agent_prompt_record")).toBe(false);
+
+    expect((await ask({ type: "tab_prompt", request_id: "p3", project_id: project.id, tmux_session: "eldrun-nope", message: "x" })).status)
+      .toBe("error");
+  });
+
+  it("lists an OpenCode tab's prompts from the history Eldrun wrote, never off its screen", async () => {
+    const sessionId = "1a2b3c4d-0b0a-4908-8706-050403020100";
+    useTabsStore.setState((state) => ({
+      tabsByScope: { [project.id]: state.tabsByScope[project.id].map((tab) => ({ ...tab, label: "OpenCode", cmd: "opencode", sessionId })) },
+    }));
+    // What the screen-echo reader made of OpenCode's full-screen frame.
+    useAgentModelsStore.setState({ promptByTab: { [PTY]: "┃ Build  Claude Opus 4.1" }, recentByTab: {} });
+    const row = (id: string, message: string, sent_at: string, tab_id = sessionId): SentAgentPrompt =>
+      ({ id, message, created_at: sent_at, sent_at, tab_label: "OpenCode", tab_id, result: "delivered" });
+    useAgentPromptsStore.setState({ historyByProject: { [project.id]: [
+      row("b", "then the docs", "2026-09-19T11:00:00Z"),
+      row("a", "fix the tests", "2026-09-19T10:00:00Z"),
+      row("c", "another OpenCode tab's", "2026-09-19T12:00:00Z", "99999999-0b0a-4908-8706-050403020100"),
+    ] } });
+    const catalog = await ask({ type: "catalog", request_id: "c-oc", project_id: project.id }) as unknown as { prompts: { prompts: { text: string; at?: string }[] }[] };
+    expect(catalog.prompts[0].prompts).toEqual([
+      { text: "fix the tests", at: "2026-09-19T10:00:00Z" },
+      { text: "then the docs", at: "2026-09-19T11:00:00Z" },
+    ]);
+
+    // With nothing sent from Eldrun, the card gets no rows — not the echo.
+    useAgentPromptsStore.setState({ historyByProject: { [project.id]: [] } });
+    const empty = await ask({ type: "catalog", request_id: "c-oc2", project_id: project.id }) as unknown as { prompts: unknown[] };
+    expect(empty.prompts).toEqual([]);
   });
 
   it("goes working, then done, once the phone's typing is relayed", async () => {

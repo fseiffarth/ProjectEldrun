@@ -473,7 +473,7 @@ pub fn last_model_in_transcript(path: &std::path::Path, kind: TranscriptKind) ->
 /// The last prompt the user submitted in the transcript at `path`, reading
 /// only its tail — see [`agent_session_last_prompt`] for what counts as one.
 pub fn last_prompt_in_transcript(path: &std::path::Path, kind: TranscriptKind) -> Option<String> {
-    last_in_transcript_tail(path, |line| prompt_in_record(line, kind))
+    with_prompt_tail(path, |lines| lines.iter().rev().find_map(|line| prompt_in_record(line, kind)))
 }
 
 /// Read the last `MODEL_TAIL_BYTES` of `path` and return `pick`'s answer for
@@ -482,20 +482,46 @@ fn last_in_transcript_tail<T>(
     path: &std::path::Path,
     pick: impl Fn(&str) -> Option<T>,
 ) -> Option<T> {
-    with_transcript_tail(path, |lines| lines.iter().rev().find_map(|line| pick(line)))
+    with_transcript_tail(path, MODEL_TAIL_BYTES, |lines| lines.iter().rev().find_map(|line| pick(line)))
 }
 
-/// Hand `read` the whole lines of the last `MODEL_TAIL_BYTES` of `path`, in
-/// file order. A line cut by the tail boundary is dropped rather than parsed —
-/// it would parse as garbage, or worse, as a record.
+/// The widest tail a prompt read reaches back through. A prompt is followed by
+/// its whole turn, and Codex (0.155) writes every tool result twice — the
+/// output record and an `item_completed` event carrying it again — so one turn
+/// of large reads pushed the prompt that started it a megabyte back, out of
+/// the model's window: the phone's tab list said "nothing read" for a Codex
+/// session in the middle of its work.
+const PROMPT_TAIL_MAX: u64 = 16 * 1024 * 1024;
+
+/// [`with_transcript_tail`] for the prompt reads: the model's window first,
+/// then a window four times wider, while `read` finds nothing and the file
+/// reaches further back — up to [`PROMPT_TAIL_MAX`]. Prompt records are
+/// recognized before they are parsed (`may_be_prompt`), so a wide read costs
+/// a scan, not a JSON parse per tool result.
+fn with_prompt_tail<T>(path: &std::path::Path, read: impl Fn(&[&str]) -> Option<T>) -> Option<T> {
+    let len = std::fs::metadata(path).ok()?.len();
+    let mut tail = MODEL_TAIL_BYTES;
+    loop {
+        let found = with_transcript_tail(path, tail, &read);
+        if found.is_some() || tail >= len || tail >= PROMPT_TAIL_MAX {
+            return found;
+        }
+        tail = (tail * 4).min(PROMPT_TAIL_MAX);
+    }
+}
+
+/// Hand `read` the whole lines of the last `tail` bytes of `path`, in file
+/// order. A line cut by the tail boundary is dropped rather than parsed — it
+/// would parse as garbage, or worse, as a record.
 fn with_transcript_tail<T>(
     path: &std::path::Path,
+    tail: u64,
     read: impl FnOnce(&[&str]) -> Option<T>,
 ) -> Option<T> {
     use std::io::{Read, Seek, SeekFrom};
     let mut file = std::fs::File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
-    let start = len.saturating_sub(MODEL_TAIL_BYTES);
+    let start = len.saturating_sub(tail);
     file.seek(SeekFrom::Start(start)).ok()?;
     let mut buf = Vec::with_capacity((len - start) as usize);
     file.read_to_end(&mut buf).ok()?;
@@ -550,7 +576,7 @@ pub fn recent_prompts_in_transcript(
     path: &std::path::Path,
     kind: TranscriptKind,
 ) -> Option<Vec<TranscriptPrompt>> {
-    with_transcript_tail(path, |lines| {
+    with_prompt_tail(path, |lines| {
         let mut prompts: Vec<TranscriptPrompt> = Vec::new();
         for line in lines {
             let Some(prompt) = timed_prompt_in_record(line, kind) else { continue };
@@ -578,7 +604,7 @@ pub fn recent_prompts_in_transcript(
 /// the chart places a prompt by its time, and a guessed one would misplace it.
 fn timed_prompt_in_record(line: &str, kind: TranscriptKind) -> Option<TranscriptPrompt> {
     let line = line.trim();
-    if line.is_empty() {
+    if !may_be_prompt(line) {
         return None;
     }
     let value: serde_json::Value = serde_json::from_str(line).ok()?;
@@ -594,6 +620,15 @@ fn timed_prompt_in_record(line: &str, kind: TranscriptKind) -> Option<Transcript
         text: clean_prompt_text(&raw)?,
         at: at.to_string(),
     })
+}
+
+/// Whether a transcript line can hold a prompt at all, checked before it is
+/// parsed: every prompt record names the user as a JSON value — Claude's
+/// `"type":"user"`, Codex's `"role":"user"` and `"user_message"` — or is
+/// Claude's `queued_command`. Most of a busy transcript is tool output, and
+/// the prompt reads now reach back through megabytes of it.
+fn may_be_prompt(line: &str) -> bool {
+    line.contains("\"user") || line.contains("queued_command")
 }
 
 /// A message the user sent while Claude was working: a `queued_command`
@@ -847,7 +882,7 @@ fn strip_trailing_blocks(text: &str) -> &str {
 /// The prompt a transcript record holds, if it is a prompt at all.
 fn prompt_in_record(line: &str, kind: TranscriptKind) -> Option<String> {
     let line = line.trim();
-    if line.is_empty() {
+    if !may_be_prompt(line) {
         return None;
     }
     let value: serde_json::Value = serde_json::from_str(line).ok()?;
@@ -3093,6 +3128,29 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(codex_prompt_in_record(&injected).as_deref(), Some("rename it"));
+    }
+
+    #[test]
+    fn a_prompt_behind_a_megabyte_of_tool_output_is_still_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout.jsonl");
+        // Codex 0.155's shape: the prompt, then a turn of tool results each
+        // written twice, far past the model's window.
+        let prompt = r#"{"timestamp":"2026-09-19T17:25:01.000Z","type":"response_item","payload":{"type":"message","role":"assistant_x","content":[]}}
+{"timestamp":"2026-09-19T17:25:02.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Implement these"}]}}
+"#;
+        let output = "o".repeat(40 * 1024);
+        let mut body = prompt.to_string();
+        for _ in 0..40 {
+            body.push_str(&format!(
+                "{{\"type\":\"response_item\",\"payload\":{{\"type\":\"custom_tool_call_output\",\"output\":\"{output}\"}}}}\n{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"item_completed\",\"output\":\"{output}\"}}}}\n"
+            ));
+        }
+        std::fs::write(&path, body).unwrap();
+        assert!(std::fs::metadata(&path).unwrap().len() > 3 * MODEL_TAIL_BYTES);
+        assert_eq!(last_prompt_in_transcript(&path, TranscriptKind::Codex).as_deref(), Some("Implement these"));
+        let recent = recent_prompts_in_transcript(&path, TranscriptKind::Codex).unwrap();
+        assert_eq!(recent.iter().map(|p| p.text.as_str()).collect::<Vec<_>>(), ["Implement these"]);
     }
 
     #[test]

@@ -92,11 +92,17 @@ nav button,.keys button { flex:1; }
 .tab-card.drop-before { box-shadow:inset 0 3px 0 0 #7c6cff; }
 .tab-card.drop-after { box-shadow:inset 0 -3px 0 0 #7c6cff; }
 .reorder-hint { margin:-4px 0 12px; color:#9aa0b4; font-size:.84rem; }
-.tab-card-foot { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; padding:0 16px 14px; }
+.tab-card-foot { display:flex; align-items:center; gap:4px; padding:0 16px 8px 8px; }
 .tab-card-when { min-width:0; flex:1 1 auto; }
-.tab-card-actions { display:flex; flex:1 1 auto; flex-wrap:wrap; justify-content:flex-end; gap:8px; min-width:0; }
-.card-action { padding:8px 12px; background:rgba(56,60,80,.8); font-size:.9rem; white-space:nowrap; }
-.card-action.accent { background:#3b326e; border-color:#7c6cff; }
+/* The card's icon-only controls: the ✕ in its top-right corner and the ◷ that
+   leads the schedule line. A 36px hit box around a small glyph, borderless
+   like `.sheet-close`, so they read as controls without shouting over the tab. */
+.tab-card-icon { flex:0 0 auto; display:grid; place-items:center; width:36px; height:36px; padding:0; border:0; border-radius:9px; background:transparent; color:#9498aa; font-size:1rem; line-height:1; }
+.tab-card-icon:active { background:rgba(56,60,80,.8); color:#d3d6e4; }
+.tab-card-icon.accent { color:#a99cff; font-size:1.15rem; }
+.tab-card-close { align-self:flex-start; margin:6px 6px 0 0; font-size:.9rem; }
+.tab-card-close:active { color:#ff9aa6; }
+.tab-card-head .tab-card-main { padding-right:4px; }
 /* The same pill the sheets' headings wear (`.option-sheet h2 small`), as a
    class, for the places that mark an unverified feature outside a heading. */
 .untested { margin-left:6px; color:#8fb8ff; font-size:.62rem; text-transform:uppercase; }
@@ -360,12 +366,17 @@ body.terminal-open { min-height:0; overflow:hidden; }
    because terminal/touchScroll.ts drives both itself. Sharing the gesture with
    the browser (`pan-x`) did not work: it arbitrates over the same first pixels
    the drag handler was already scrolling. Without the scroller the right of
-   every long line was simply cut off. */
-.terminal { position:absolute; inset:0; min-height:0; padding:5px; overflow-x:auto; overflow-y:hidden; overscroll-behavior:contain; touch-action:none; -webkit-overflow-scrolling:touch; scrollbar-color:#454b62 #0b0d13; scrollbar-width:thin; }
-.terminal::-webkit-scrollbar { height:7px; }
-.terminal::-webkit-scrollbar-track { background:#0b0d13; }
-.terminal::-webkit-scrollbar-thumb { border-radius:0; background:#454b62; }
-.terminal.focus-source { visibility:hidden; pointer-events:none; }
+   every long line was simply cut off.
+   Scoped to the host box: xterm's own root element is `class="terminal xterm"`,
+   and a bare `.terminal` made it an `inset:0`, `overflow-y:hidden` box too —
+   clipped to the phone's height, so the rows below the fold (the live prompt)
+   added nothing to the host's scroll extent and stayed under the composer
+   (measured: scrollHeight 578 = clientHeight for a 768px-tall screen). */
+.terminal-body > .terminal { position:absolute; inset:0; min-height:0; padding:5px; overflow-x:auto; overflow-y:hidden; overscroll-behavior:contain; touch-action:none; -webkit-overflow-scrolling:touch; scrollbar-color:#454b62 #0b0d13; scrollbar-width:thin; }
+.terminal-body > .terminal::-webkit-scrollbar { height:7px; }
+.terminal-body > .terminal::-webkit-scrollbar-track { background:#0b0d13; }
+.terminal-body > .terminal::-webkit-scrollbar-thumb { border-radius:0; background:#454b62; }
+.terminal-body > .terminal.focus-source { visibility:hidden; pointer-events:none; }
 .terminal .xterm,.terminal .xterm-viewport { height:100%; overscroll-behavior:contain; }
 /* xterm gives `.xterm-screen` an explicit cols-wide pixel width. Letting the
    terminal element grow to it is what gives the scroller something to
@@ -384,7 +395,7 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .terminal-wide-hint::before { left:0; background:linear-gradient(270deg,rgba(11,13,19,0),rgba(11,13,19,.94)); }
 .terminal-wide-hint::after { right:0; background:linear-gradient(90deg,rgba(11,13,19,0),rgba(11,13,19,.94)); }
 .terminal-wide-hint.wide-left::before,.terminal-wide-hint.wide-right::after { opacity:1; }
-.terminal.focus-source ~ .terminal-wide-hint { display:none; }
+.terminal-body > .terminal.focus-source ~ .terminal-wide-hint { display:none; }
 .alt-screen-notice { position:absolute; inset:0; display:grid; align-content:center; justify-items:center; gap:9px; padding:26px; text-align:center; background:linear-gradient(180deg,#10131b,#0b0d13); }
 .alt-screen-notice strong { color:#e7e9f2; font-size:1rem; }
 .alt-screen-notice span { max-width:30ch; color:#9298aa; font-size:.85rem; line-height:1.5; }
@@ -527,7 +538,6 @@ body.terminal-open { min-height:0; overflow:hidden; }
    The path gives way first, down to a stub, before the row scrolls. */
 .session-facts { display:flex; align-items:center; gap:10px; margin:2px 10px 0; padding:0 4px; color:#8b90a5; font-size:.72rem; font-family:ui-monospace,SFMono-Regular,monospace; white-space:nowrap; overflow-x:auto; overflow-y:hidden; scrollbar-width:none; }
 .session-facts::-webkit-scrollbar { display:none; }
-.session-facts .fact-path { flex:0 1 auto; min-width:4em; overflow:hidden; text-overflow:ellipsis; }
 .session-facts .fact-branch,.session-facts .fact-context,.session-facts .fact-limit { flex:0 0 auto; }
 .session-facts .fact-limit.high { color:#f0a35e; }
 /* A fact you can tap: the row's own type and colour, a shade brighter, with a

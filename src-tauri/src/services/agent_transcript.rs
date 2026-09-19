@@ -87,6 +87,39 @@ pub struct AgentTranscript {
     /// read, or beyond the entry limit. A larger `limit` reaches the latter.
     #[serde(default)]
     pub truncated: bool,
+    /// The session's own usage figures, where its transcript records them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<TranscriptUsage>,
+}
+
+/// What Claude's status line shows beside the model — context left, the
+/// 5-hour and the weekly window — for a CLI that draws none of it on screen
+/// but writes it down: Codex puts its rate limits and the context it used
+/// into every `token_count` event of its rollout. Only figures the record
+/// carried are set.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptUsage {
+    /// Percent of the context window left, counted as Codex's own footer does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_left: Option<u8>,
+    /// The rolling session window (Codex's 5-hour one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<UsageWindow>,
+    /// The weekly window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub week: Option<UsageWindow>,
+}
+
+/// One rate-limit window: how much of it is used, and when it rolls over.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageWindow {
+    /// Percent used, 0–100.
+    pub used: u8,
+    /// Unix seconds of the reset, when the record gives one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<u64>,
 }
 
 impl AgentTranscript {
@@ -237,14 +270,18 @@ pub fn read_transcript(
     let mut buf = Vec::with_capacity((len - start) as usize);
     file.read_to_end(&mut buf).ok()?;
     let text = String::from_utf8_lossy(&buf);
-    let mut lines = text.lines();
+    let mut lines: Vec<&str> = text.lines().collect();
     let mut truncated = false;
     if start > 0 {
         // Whatever came before the seek point is missing from the first line.
-        lines.next();
+        lines.remove(0);
         truncated = true;
     }
-    let mut entries = parse_entries(lines, kind);
+    let usage = match kind {
+        TranscriptKind::Codex => codex_usage(&lines),
+        TranscriptKind::Claude => None,
+    };
+    let mut entries = parse_entries(lines.into_iter(), kind);
     if entries.len() > limit {
         let drop = entries.len() - limit;
         entries.drain(..drop);
@@ -257,7 +294,80 @@ pub fn read_transcript(
         unchanged: false,
         entries,
         truncated,
+        usage,
     })
+}
+
+/// Tokens Codex counts as the fixed cost of any conversation (instructions,
+/// tools) and leaves out of its "context left" — the footer's own baseline.
+const CODEX_BASELINE_TOKENS: i64 = 12_000;
+/// A window this long or shorter is the session one; longer is the week.
+const SESSION_WINDOW_MAX_MINUTES: i64 = 24 * 60;
+
+/// The newest context and rate-limit figures in a Codex rollout's `lines`.
+/// Each comes from the newest `token_count` event that carries it: an event
+/// can hold the limits without the token counts, or the other way round.
+fn codex_usage(lines: &[&str]) -> Option<TranscriptUsage> {
+    let mut usage = TranscriptUsage::default();
+    let mut limits_read = false;
+    for line in lines.iter().rev() {
+        if usage.context_left.is_some() && limits_read {
+            break;
+        }
+        if !line.contains("\"token_count\"") {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(payload) = value
+            .get("payload")
+            .filter(|p| p.get("type").and_then(Value::as_str) == Some("token_count"))
+        else {
+            continue;
+        };
+        if usage.context_left.is_none() {
+            usage.context_left = payload.get("info").and_then(codex_context_left);
+        }
+        if !limits_read {
+            if let Some(limits) = payload.get("rate_limits").filter(|l| l.is_object()) {
+                limits_read = true;
+                for (key, fallback_session) in [("primary", true), ("secondary", false)] {
+                    let Some(window) = limits.get(key).filter(|w| w.is_object()) else {
+                        continue;
+                    };
+                    let Some(used) = window.get("used_percent").and_then(Value::as_f64) else {
+                        continue;
+                    };
+                    let reading = UsageWindow {
+                        used: used.clamp(0.0, 100.0).round() as u8,
+                        resets_at: window.get("resets_at").and_then(Value::as_u64),
+                    };
+                    let session = window
+                        .get("window_minutes")
+                        .and_then(Value::as_i64)
+                        .map_or(fallback_session, |minutes| minutes <= SESSION_WINDOW_MAX_MINUTES);
+                    let slot = if session { &mut usage.session } else { &mut usage.week };
+                    slot.get_or_insert(reading);
+                }
+            }
+        }
+    }
+    (usage != TranscriptUsage::default()).then_some(usage)
+}
+
+/// Codex's "context left": the last request's tokens against the model's
+/// window, both less the baseline every conversation carries.
+fn codex_context_left(info: &Value) -> Option<u8> {
+    let window = info.get("model_context_window")?.as_i64()?;
+    let used = info.get("last_token_usage")?.get("total_tokens")?.as_i64()?;
+    if window <= CODEX_BASELINE_TOKENS {
+        return None;
+    }
+    let effective = window - CODEX_BASELINE_TOKENS;
+    let used = (used - CODEX_BASELINE_TOKENS).max(0);
+    let left = (effective - used).max(0) as f64 / effective as f64 * 100.0;
+    Some(left.clamp(0.0, 100.0).round() as u8)
 }
 
 /// The turns in `lines`, in order. Each answer record is an entry of its own:
@@ -511,6 +621,36 @@ mod tests {
         let read = read_transcript(&path, TranscriptKind::Codex, None, DEFAULT_LIMIT).unwrap();
         assert_eq!(kinds(&read), vec![("prompt", "add a test"), ("answer", "done")]);
         assert_eq!(read.entries[0].at.as_deref(), Some("2026-09-15T06:00:00Z"));
+        assert_eq!(read.usage, None);
+    }
+
+    #[test]
+    fn a_codex_rollout_carries_its_context_and_limits() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":null,\"rate_limits\":{\"primary\":{\"used_percent\":10.0,\"window_minutes\":300,\"resets_at\":1}}}}\n",
+                // Codex 0.155's shape, the limits and the counts in one event.
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"total_tokens\":90259},\"model_context_window\":258400},\"rate_limits\":{\"primary\":{\"used_percent\":15.0,\"window_minutes\":300,\"resets_at\":1789856635},\"secondary\":{\"used_percent\":89.4,\"window_minutes\":10080,\"resets_at\":1790243849}}}}\n",
+                // A later event without figures does not blank them.
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":null,\"rate_limits\":null}}\n",
+            ),
+        )
+        .unwrap();
+        let read = read_transcript(&path, TranscriptKind::Codex, None, DEFAULT_LIMIT).unwrap();
+        assert_eq!(
+            read.usage,
+            Some(TranscriptUsage {
+                context_left: Some(68),
+                session: Some(UsageWindow { used: 15, resets_at: Some(1789856635) }),
+                week: Some(UsageWindow { used: 89, resets_at: Some(1790243849) }),
+            })
+        );
+        let wire = serde_json::to_value(&read).unwrap();
+        assert_eq!(wire["usage"]["contextLeft"], 68);
+        assert_eq!(wire["usage"]["week"]["resetsAt"], 1790243849u64);
     }
 
     #[test]

@@ -105,6 +105,7 @@ pub fn session_transcript(
         unchanged: false,
         entries,
         truncated,
+        usage: None,
     })
 }
 

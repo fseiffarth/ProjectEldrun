@@ -195,6 +195,16 @@ function pushSpan(spans: ReadableSpan[], span: ReadableSpan) {
   else spans.push(span);
 }
 
+/** The eight one-dot braille cells. Codex (0.155) scatters them around its
+ * composer as an animated sparkle, a new pattern every repaint — over the
+ * blank rows, and on the input line itself (`›⠁Ask Codex…`), where one next to
+ * the marker hid the input box from `statusLine`, so the frame cut and the
+ * facts flipped with every frame. No spinner or text is made of lone dots, so
+ * each is read as the blank cell it decorates; denser braille (spinners,
+ * plots) is kept. */
+const SPARKLE = /[\u2801\u2802\u2804\u2808\u2810\u2820\u2840\u2880]/gu;
+const SPARKLE_CELL = /^[\u2801\u2802\u2804\u2808\u2810\u2820\u2840\u2880]$/u;
+
 /** One buffer row as styled spans, padding included.
  *
  * Trailing blanks are *not* dropped here: a row that continues on the next one
@@ -204,7 +214,7 @@ function pushSpan(spans: ReadableSpan[], span: ReadableSpan) {
  */
 function rowSpans(line: ReadableLineLike): ReadableSpan[] {
   if (typeof line.getCell !== "function") {
-    const plain = line.translateToString();
+    const plain = line.translateToString().replace(SPARKLE, " ");
     return plain ? [{ text: plain }] : [];
   }
   const spans: ReadableSpan[] = [];
@@ -217,6 +227,11 @@ function rowSpans(line: ReadableLineLike): ReadableSpan[] {
     // cell before it.
     if (cell.getWidth() === 0) continue;
     const chars = cell.isInvisible() ? " ".repeat(cell.getChars().length || 1) : cell.getChars() || " ";
+    // A sparkle takes no style either: a coloured blank would still be a span.
+    if (SPARKLE_CELL.test(chars)) {
+      pushSpan(spans, { text: " " });
+      continue;
+    }
     pushSpan(spans, { text: chars, ...styleOf(cell) });
   }
   return spans;

@@ -60,6 +60,7 @@ import {
   openCodeBlockEnd,
   openCodeTurnFooter,
 } from "./openCodeMini";
+import { radioMarkerAgent } from "./selectPrompt";
 
 export interface ChatTurn {
   /** The key of the turn's first line — stable across frames the same way. */
@@ -148,6 +149,10 @@ const MARKER_WIDTH = 2;
  * Codex's `•` is deliberately not one: it opens tool calls and progress lines
  * as well as answers, and nothing on the row tells them apart. */
 const AGENT_MESSAGE = /^ ?(?:[⏺●✦]|◆︎?) (?=\S)/u;
+/** The same, for Gemini CLI and Qwen Code, whose `●` is no message bullet but
+ * the radio dot on a dialog's highlighted row (`● 1.  Allow once`). Taken for
+ * a bullet, the dot was cut off the question and the highlight went with it. */
+const RADIO_AGENT_MESSAGE = /^ ?(?:✦|◆︎?) (?=\S)/u;
 /** A Claude Code tool call: the bullet, then either a capitalised built-in
  * tool name (`Bash`, `Update`, `Web Search`) with its argument in parentheses,
  * or an MCP tool, which Claude Code names `server - tool (MCP)` (`mcp__…
@@ -243,7 +248,7 @@ function trimBlank(lines: ReadableLine[]): ReadableLine[] {
  * is keyed by its first row, so a bubble keeps its identity while the agent
  * goes on below it.
  */
-function agentTurns(lines: readonly ReadableLine[]): ChatTurn[] {
+function agentTurns(lines: readonly ReadableLine[], bullet: RegExp): ChatTurn[] {
   const turns: ChatTurn[] = [];
   let plain: ReadableLine[] = [];
   const flushPlain = () => {
@@ -257,10 +262,10 @@ function agentTurns(lines: readonly ReadableLine[]): ChatTurn[] {
     if (isToolCall(line)) {
       flushPlain();
       index += 1;
-      while (index < lines.length && !AGENT_MESSAGE.test(lines[index].text) && TOOL_ROW.test(lines[index].text)) index += 1;
+      while (index < lines.length && !bullet.test(lines[index].text) && TOOL_ROW.test(lines[index].text)) index += 1;
       continue;
     }
-    if (!AGENT_MESSAGE.test(line.text)) {
+    if (!bullet.test(line.text)) {
       plain.push(line);
       index += 1;
       continue;
@@ -273,13 +278,13 @@ function agentTurns(lines: readonly ReadableLine[]): ChatTurn[] {
     // is the TUI's and not the message's: taken in, a ticking spinner changed
     // a bubble already shown every second.
     while (index < lines.length
-      && !AGENT_MESSAGE.test(lines[index].text)
+      && !bullet.test(lines[index].text)
       && (lines[index].text === "" || CONTINUATION.test(lines[index].text))) {
       message.push(lines[index]);
       index += 1;
     }
     const kept = trimBlank(message);
-    turns.push({ key: kept[0].key, role: "agent", lines: kept, answer: unmark(kept, AGENT_MESSAGE) });
+    turns.push({ key: kept[0].key, role: "agent", lines: kept, answer: unmark(kept, bullet) });
   }
   flushPlain();
   return turns;
@@ -296,6 +301,7 @@ export function chatTurns(
   columns = 0,
 ): ChatTurn[] {
   const echo = echoPattern(agentLabel);
+  const bullet = radioMarkerAgent(agentLabel) ? RADIO_AGENT_MESSAGE : AGENT_MESSAGE;
   // OpenCode's minimal interface wraps its own rows at the pane width, with no
   // marker and no indent on the continuation, so a block is held together by
   // the blank row that ends it rather than by an indent (`openCodeMini.ts`).
@@ -307,7 +313,7 @@ export function chatTurns(
   const turns: ChatTurn[] = [];
   let agent: ReadableLine[] = [];
   const flushAgent = () => {
-    turns.push(...agentTurns(agent));
+    turns.push(...agentTurns(agent, bullet));
     agent = [];
   };
   let index = 0;

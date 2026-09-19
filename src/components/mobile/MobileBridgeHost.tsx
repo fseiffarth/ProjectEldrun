@@ -14,8 +14,9 @@ import { calendarColor, useCalendarStore, visibleCalendarIds } from "../../store
 import { lastTabReadAt, noteUserInput, useActivityStore } from "../../stores/activity";
 import { useAgentModelsStore } from "../../stores/agents/agentModels";
 import { persistScopeLayout } from "../../stores/agents/agentSchedules";
-import { sendCollectedPrompt, useAgentPromptsStore, type ProjectAgentPrompt } from "../../stores/agents/agentPrompts";
+import { sendCollectedPrompt, useAgentPromptsStore, type ProjectAgentPrompt, type SentAgentPrompt } from "../../stores/agents/agentPrompts";
 import { isTrashProject } from "../../lib/projects/trashProject";
+import { isSessionCommand } from "../../lib/agents/prompt/chart";
 import { isTabColor } from "../../lib/theme/tabColors";
 import type { AgentUsageReport } from "../../lib/agents/agentUsage";
 import { METRIC, agentLabel, agentPromptLeaf, sub } from "../../lib/usageMetrics";
@@ -64,6 +65,9 @@ const MOBILE_DESKTOP_EVENT = "eldrun-mobile-desktop-request";
 interface AgentInfo { bin: string; installed: boolean }
 interface CatalogAgent { id: string; label: string; modes: string[] }
 interface AgentTabStatus { tmux_session: string; status: "working" | "question" | "done"; model?: string; working_at?: number; done_at?: number }
+/** The same readings for an agent tab with no status: a finished turn stays
+ * sorted among the finished ones on the phone after it has been read. */
+interface AgentTabTiming { tmux_session: string; working_at?: number; done_at?: number }
 interface AgentTabSchedules { tmux_session: string; total: number; enabled: number; next?: string }
 interface AgentTabPrompt { text: string; at?: string }
 interface AgentTabPrompts { tmux_session: string; prompts: AgentTabPrompt[] }
@@ -168,6 +172,8 @@ interface MobileAgentTranscript {
   unchanged?: boolean;
   entries: { kind: string; text: string; at?: string; cut?: boolean }[];
   truncated: boolean;
+  /** Codex's context and rate-limit figures, passed through untouched. */
+  usage?: { contextLeft?: number; session?: { used: number; resetsAt?: number }; week?: { used: number; resetsAt?: number } };
 }
 interface MobileScheduleInput { enabled: boolean; message: string; rule: ScheduleRule }
 type ScheduleMutation =
@@ -208,10 +214,11 @@ type DesktopRequest =
   | { type: "agent_transcript"; request_id: string; project_id: string; tmux_session: string; version?: string | null; limit?: number | null }
   | { type: "tab_seen"; request_id: string; project_id: string; tmux_session: string }
   | { type: "tab_input"; request_id: string; project_id: string; tmux_session: string }
+  | { type: "tab_prompt"; request_id: string; project_id: string; tmux_session: string; message: string }
   | { type: "desktop_images"; request_id: string; project_id: string }
   | { type: "attach_desktop_image"; request_id: string; project_id: string; image_id: string };
 type DesktopResponse =
-| { status: "catalog"; agents: CatalogAgent[]; statuses: AgentTabStatus[]; schedules: AgentTabSchedules[]; prompts: AgentTabPrompts[] }
+| { status: "catalog"; agents: CatalogAgent[]; statuses: AgentTabStatus[]; schedules: AgentTabSchedules[]; prompts: AgentTabPrompts[]; timings: AgentTabTiming[] }
   | { status: "activity"; statuses: AgentTabStatus[]; prompts: AgentTabPrompts[] }
   | { status: "activated" }
   | { status: "created"; tmux_session: string }
@@ -399,6 +406,29 @@ function projectAgentStatuses(projectId: string): AgentTabStatus[] {
   });
 }
 
+/** Timings of the agent tabs `projectAgentStatuses` leaves out (a quiet or
+ * already-read tab), so the phone's "last working" sort keeps a read turn in
+ * its place among the finished ones instead of dropping it to its tab-bar spot. */
+function projectAgentTimings(projectId: string): AgentTabTiming[] {
+  const activity = useActivityStore.getState();
+  return (useTabsStore.getState().tabsByScope[projectId] ?? []).flatMap((tab) => {
+    if (tab.kind !== "agent" || !tab.tmuxSession) return [];
+    const ptyId = `${projectId}:${tab.key}`;
+    if (mobileAgentState(ptyId) !== "idle") return [];
+    const row: AgentTabTiming = { tmux_session: tab.tmuxSession };
+    const workingAt = activity.lastWorkingByTab[ptyId];
+    if (workingAt !== undefined) row.working_at = workingAt;
+    const doneAt = activity.lastDoneByTab[ptyId];
+    if (doneAt !== undefined) row.done_at = doneAt;
+    return row.working_at === undefined && row.done_at === undefined ? [] : [row];
+  });
+}
+
+function agentTimings(projectId?: string): AgentTabTiming[] {
+  const scope = mobileScope(projectId);
+  return scope ? projectAgentTimings(scope.id) : [];
+}
+
 /** The same facts for *every* scope the phone may reach — projects and boxes
  * alike — for its flat activity list. */
 function allAgentStatuses(): AgentTabStatus[] {
@@ -410,6 +440,33 @@ function allAgentStatuses(): AgentTabStatus[] {
  * what makes the desktop send a readable list rather than a transcript. */
 const MOBILE_PROMPT_TAIL = 5;
 const MOBILE_PROMPT_CHARS = 240;
+
+/** Agents whose own transcript the backend reads prompts from
+ * (`agent_session::read_agent_transcript_from`). */
+const TRANSCRIPT_AGENTS = new Set(["claude", "codex"]);
+
+/** The prompt history rows that went to `tab`, newest last, as card lines.
+ * Matched by the tab's launch id only: a label ("OpenCode") is shared by every
+ * tab of that agent the project ever had. The history is loaded on first use;
+ * until it arrives the tab shows what it would have without it. */
+function historyPromptsOf(projectId: string, tab: TabEntry): AgentTabPrompt[] {
+  if (!tab.sessionId) return [];
+  const store = useAgentPromptsStore.getState();
+  const history = store.historyByProject[projectId];
+  if (!history) {
+    if (!historyAsked.has(projectId)) {
+      historyAsked.add(projectId);
+      void store.loadHistory(projectId).catch(() => historyAsked.delete(projectId));
+    }
+    return [];
+  }
+  return history
+    .filter((row: SentAgentPrompt) => (row.tab_id ?? row.session_id) === tab.sessionId && row.result !== "missed" && row.result !== "failed")
+    .sort((a, b) => a.sent_at.localeCompare(b.sent_at))
+    .slice(-MOBILE_PROMPT_TAIL)
+    .map((row) => ({ text: row.message.slice(0, MOBILE_PROMPT_CHARS), at: row.sent_at }));
+}
+const historyAsked = new Set<string>();
 
 /**
  * What each agent tab of a scope was last asked — the tail the model tag is
@@ -430,18 +487,25 @@ function projectAgentPrompts(projectId: string): AgentTabPrompts[] {
     void models.refresh(projectId, tab);
     const ptyId = `${projectId}:${tab.key}`;
     const recent = models.recentByTab[ptyId] ?? [];
-    // With no readable transcript the store still knows the last prompt off the
-    // pane's own screen (`lib/agents/prompt/echo`); it carries no time, and a row
-    // without one is honest about that rather than inventing the read's.
-    const fallback = models.promptByTab[ptyId];
+    // An agent whose transcript is not read (OpenCode, Gemini, …) is known to
+    // have been asked what Eldrun itself sent it: the composers here and on the
+    // phone and the schedules all record into the prompt history.
+    const sent = TRANSCRIPT_AGENTS.has(tab.cmd) ? [] : historyPromptsOf(projectId, tab);
+    // Last, the prompt off the pane's own screen (`lib/agents/prompt/echo`); it
+    // carries no time, and a row without one is honest about that rather than
+    // inventing the read's. Not for OpenCode: its full-screen TUI has no prompt
+    // echo, and the reader took its panels for prompts.
+    const fallback = tab.cmd === "opencode" ? undefined : models.promptByTab[ptyId];
     const prompts: AgentTabPrompt[] = recent.length
       ? recent.slice(-MOBILE_PROMPT_TAIL).map((prompt) => ({
         text: prompt.text.slice(0, MOBILE_PROMPT_CHARS),
         at: prompt.at,
       }))
-      : fallback
-        ? [{ text: fallback.slice(0, MOBILE_PROMPT_CHARS) }]
-        : [];
+      : sent.length
+        ? sent
+        : fallback
+          ? [{ text: fallback.slice(0, MOBILE_PROMPT_CHARS) }]
+          : [];
     return prompts.length ? [{ tmux_session: tab.tmuxSession, prompts }] : [];
   });
 }
@@ -1503,6 +1567,30 @@ function markTabSeen(projectId: string, tmuxSession: string): DesktopResponse {
   return { status: "seen" };
 }
 
+/** The phone's composer sent `message` to this agent tab: recorded in the
+ * prompt history as delivered, the way the desktop composer records its own
+ * sends — the words never pass through this window, so this is the only way
+ * they reach the history. A session command (`/clear`, `/model`) is the CLI's,
+ * not a prompt, and is not recorded. A Claude or Codex prompt recorded here is
+ * not recorded again when its transcript is adopted (same words, near in time:
+ * `lib/agents/prompt/adopt`). */
+async function recordTabPrompt(projectId: string, tmuxSession: string, message: string): Promise<DesktopResponse> {
+  const scope = mobileScope(projectId);
+  if (!scope) {
+    return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
+  }
+  const tab = scheduleTargetTab(scope.id, tmuxSession);
+  if (!tab) return { status: "error", code: "tab_not_found", message: "Tab not found" };
+  const text = message.trim();
+  if (!text || isSessionCommand(text)) return { status: "seen" };
+  await useAgentPromptsStore.getState().record(scope.id, {
+    id: crypto.randomUUID(),
+    message: text,
+    sent: { tabLabel: tab.label, sessionId: tab.sessionId, agent: tab.cmd, result: "delivered" },
+  }).catch(() => []);
+  return { status: "seen" };
+}
+
 /** The phone typed into this agent tab. It types into a tmux client of its own,
  * so not one byte of it passes through this window — and the classifier only
  * ever calls output "working" or "done" when the session was COMMANDED this
@@ -1600,6 +1688,7 @@ async function handleRequest(
       statuses: agentStatuses(request.project_id),
       schedules: await agentScheduleSummaries(request.project_id),
       prompts: agentPrompts(request.project_id),
+      timings: agentTimings(request.project_id),
     };
     case "activity": return { status: "activity", statuses: allAgentStatuses(), prompts: allAgentPrompts() };
     case "activate": return activate(request.project_id);
@@ -1627,6 +1716,7 @@ async function handleRequest(
     case "agent_transcript": return agentTranscriptFor(request.project_id, request.tmux_session, request.version, request.limit);
     case "tab_seen": return markTabSeen(request.project_id, request.tmux_session);
     case "tab_input": return markTabInput(request.project_id, request.tmux_session);
+    case "tab_prompt": return recordTabPrompt(request.project_id, request.tmux_session, request.message);
     case "desktop_images": return desktopImagesFor(request.project_id);
     case "attach_desktop_image": return attachDesktopImage(request.project_id, request.image_id);
   }

@@ -711,6 +711,17 @@ pub enum DesktopRequest {
         project_id: String,
         tmux_session: String,
     },
+    /// The phone's composer sent `message` to this agent tab. Keystrokes reach
+    /// tmux through the sidecar's own client, so the desktop never sees the
+    /// words; the phone knows them before they leave, and the desktop records
+    /// them in the tab's prompt history — the one list of what a session was
+    /// asked for an agent whose transcript Eldrun does not read (OpenCode).
+    TabPrompt {
+        request_id: String,
+        project_id: String,
+        tmux_session: String,
+        message: String,
+    },
     /// What one agent tab is doing, and what its CLI says about its own quota.
     /// Addressed by the same `project_id` + `tmux_session` pair the schedule and
     /// rename requests use, so no key, path or command crosses the boundary.
@@ -785,6 +796,7 @@ impl DesktopRequest {
             | Self::PromptMutate { request_id, .. }
             | Self::TabSeen { request_id, .. }
             | Self::TabInput { request_id, .. }
+            | Self::TabPrompt { request_id, .. }
             | Self::AgentStatus { request_id, .. }
             | Self::AgentTranscript { request_id, .. }
             | Self::DesktopImages { request_id, .. }
@@ -844,6 +856,20 @@ pub struct AgentTabStatus {
     /// Desktop wall clock (ms since the epoch) of the tab's last output while
     /// working, and of the last turn it finished. Both are session-only on the
     /// desktop and absent until the tab has done the thing they name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done_at: Option<u64>,
+}
+
+/// The same two readings for an agent tab with no status to report — one whose
+/// finished turn has since been read. Without them the phone's "last working"
+/// sort had nothing to order that tab by, and a turn just opened fell back to
+/// its tab-bar place instead of keeping its spot among the finished ones.
+/// Another internal desktop-control row keyed by tmux name.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentTabTiming {
+    pub tmux_session: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -995,6 +1021,10 @@ pub enum DesktopResponse {
         /// the phone's cards simply carry no prompt line.
         #[serde(default)]
         prompts: Vec<AgentTabPrompts>,
+        /// Timings of the agent tabs `statuses` leaves out, so the phone keeps
+        /// ordering them. Defaulted like the rest.
+        #[serde(default)]
+        timings: Vec<AgentTabTiming>,
     },
     /// Answer to [`DesktopRequest::Activity`]: the agent tabs of every eligible
     /// project that are working, waiting on a decision, or done. Keyed by tmux
@@ -1059,7 +1089,8 @@ pub enum DesktopResponse {
     AgentTranscript {
         transcript: crate::services::agent_transcript::AgentTranscript,
     },
-    /// Acknowledges a [`DesktopRequest::TabSeen`] or [`DesktopRequest::TabInput`].
+    /// Acknowledges a [`DesktopRequest::TabSeen`], [`DesktopRequest::TabInput`]
+    /// or [`DesktopRequest::TabPrompt`].
     /// Carries nothing: the phone never waits on either, and the sidecar only
     /// needs to know the desktop took the report.
     Seen,
@@ -1153,7 +1184,7 @@ impl TerminalEvent {
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentTabPrompt, AgentTabPrompts, AgentTabSchedules, AgentTabStatus, DesktopRequest,
+        AgentTabPrompt, AgentTabPrompts, AgentTabSchedules, AgentTabStatus, AgentTabTiming, DesktopRequest,
         DesktopResponse, MobileAlertItem,
         MobileAlertsSnapshot,
         MobileMailView, MobilePromptInput, MobileScheduleInput, PromptMutation, ScheduleMutation,
@@ -1191,6 +1222,11 @@ mod tests {
                     at: Some("2026-09-17T08:12:00Z".into()),
                 }],
             }],
+            timings: vec![AgentTabTiming {
+                tmux_session: "eldrun-project-0--agent-987654321".into(),
+                working_at: None,
+                done_at: Some(1_700_000_100_000),
+            }],
         };
         let response_json = serde_json::to_value(response).expect("serialize catalog response");
         assert_eq!(response_json["statuses"][0]["status"], "question");
@@ -1209,6 +1245,8 @@ mod tests {
             response_json["prompts"][0]["prompts"][0]["text"],
             "fix the failing tests"
         );
+        assert_eq!(response_json["timings"][0]["done_at"], 1_700_000_100_000u64);
+        assert!(response_json["timings"][0].get("working_at").is_none());
     }
 
     /// A desktop one build ahead of this sidecar must cost the phone the field
@@ -1278,6 +1316,23 @@ mod tests {
         let response = serde_json::to_value(DesktopResponse::Activated)
             .expect("serialize activation response");
         assert_eq!(response["status"], "activated");
+    }
+
+    #[test]
+    fn a_sent_prompt_carries_the_tab_pair_and_the_words() {
+        let request = DesktopRequest::TabPrompt {
+            request_id: "request-prompt".into(),
+            project_id: "raw-project".into(),
+            tmux_session: "eldrun-project-0--agent-123456789".into(),
+            message: "fix the tests".into(),
+        };
+        assert_eq!(request.request_id(), "request-prompt");
+        let json = serde_json::to_value(&request).expect("serialize prompt report");
+        assert_eq!(json["type"], "tab_prompt");
+        assert_eq!(json["message"], "fix the tests");
+        let restored: DesktopRequest =
+            serde_json::from_value(json).expect("deserialize prompt report");
+        assert!(matches!(restored, DesktopRequest::TabPrompt { .. }));
     }
 
     #[test]

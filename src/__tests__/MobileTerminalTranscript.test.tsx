@@ -237,12 +237,16 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
   it("shows a sent prompt as the reader's bubble at once, and never changes it", async () => {
     localStorage.setItem("eldrun.mobile.view.claude-code", "focus");
     let stored = STORED;
-    vi.stubGlobal("fetch", sidecarFetch(() => stored));
+    const fetchMock = sidecarFetch(() => stored);
+    vi.stubGlobal("fetch", fetchMock);
     render(<Terminal tab={TAB} back={() => {}} />);
     await settle();
     fireEvent.change(screen.getByRole("textbox", { name: "Message agent" }), { target: { value: "also the tests" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await settle();
+    // The desktop is told the words, for the tab's prompt history.
+    const report = fetchMock.mock.calls.find(([url]) => (url as string).endsWith(`/tabs/${TAB.id}/prompt`)) as unknown[] | undefined;
+    expect(report?.[1]).toMatchObject({ method: "POST", body: JSON.stringify({ message: "also the tests" }) });
     // In the chat at once, as any prompt, not a "Sent" strip under it.
     const chat = screen.getByTestId("session-transcript");
     const prompts = () => [...chat.querySelectorAll(".readable-turn.user")];

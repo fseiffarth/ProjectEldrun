@@ -45,6 +45,10 @@ use super::{
 /// agent card on a 5s poll, so this is a list to read at a glance, not a
 /// transcript — the Focus view is where the whole conversation lives.
 const MAX_TAB_PROMPTS: usize = 5;
+/// Longest composer prompt a phone reports as sent, in bytes. A prompt is typed
+/// or dictated; a pasted log beyond this is still sent to the session, only
+/// not recorded in its history.
+const MAX_SENT_PROMPT: usize = 16 * 1024;
 const MAX_TAB_PROMPT_CHARS: usize = 240;
 
 const MOBILE_PERMISSIONS_POLICY: &str =
@@ -472,7 +476,7 @@ async fn project(
     // and on Windows the nominal path is never a file, so it was never told.
     // A closed desktop refuses the connect at once, on both.
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
-    let (desktop_available, agents, statuses, schedules, prompts) = match admin::desktop_call(
+    let (desktop_available, agents, statuses, schedules, prompts, timings) = match admin::desktop_call(
         &desktop_socket,
         &DesktopRequest::Catalog {
             request_id,
@@ -486,9 +490,14 @@ async fn project(
             statuses,
             schedules,
             prompts,
-        }) => (true, agents, statuses, schedules, prompts),
-        _ => (false, vec![], vec![], vec![], vec![]),
+            timings,
+        }) => (true, agents, statuses, schedules, prompts, timings),
+        _ => (false, vec![], vec![], vec![], vec![], vec![]),
     };
+    let mut timings = timings
+        .into_iter()
+        .map(|timing| (timing.tmux_session.clone(), timing))
+        .collect::<HashMap<_, _>>();
     let statuses = statuses
         .into_iter()
         .map(|status| (status.tmux_session.clone(), status))
@@ -514,6 +523,10 @@ async fn project(
                 tab.agent_model = status.model.clone();
                 tab.working_at = status.working_at;
                 tab.done_at = status.done_at;
+            } else if let Some(timing) = timings.remove(&resolved.tmux_name) {
+                // A read turn has no status, but it still sorts by when it ran.
+                tab.working_at = timing.working_at;
+                tab.done_at = timing.done_at;
             }
             tab.schedules = schedules.remove(&resolved.tmux_name);
             // Published whether or not the tab has a status: a quiet session's
@@ -1339,6 +1352,65 @@ async fn color_tab(
                 None => (StatusCode::OK, Json(json!({ "color": color }))),
             }
         }
+        Ok(DesktopResponse::Error { code, .. }) => api_error(
+            match code.as_str() {
+                "desktop_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
+                "tab_not_found" => StatusCode::NOT_FOUND,
+                _ => StatusCode::BAD_REQUEST,
+            },
+            &code,
+        ),
+        _ => api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable"),
+    }
+}
+
+/// `POST /api/v1/tabs/{id}/prompt` — the phone's composer sent `message` to
+/// this agent tab. The words went to tmux through the terminal socket; this
+/// hands them to the desktop, which records them in the tab's prompt history
+/// (`DesktopRequest::TabPrompt`). The phone does not wait on it for anything:
+/// a failed report costs a row in a list, never the prompt.
+async fn sent_prompt(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(tab_id): Path<String>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    if !exact_origin(&headers, &state) {
+        return api_error(StatusCode::FORBIDDEN, "invalid_origin");
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct PromptBody {
+        message: String,
+    }
+    let Ok(request) = serde_json::from_slice::<PromptBody>(&body) else {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    let message = request.message.trim();
+    if message.is_empty() || message.len() > MAX_SENT_PROMPT {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_prompt");
+    }
+    let (project_id, tmux_session) = match agent_tab_target(&state, &tab_id) {
+        Ok(target) => target,
+        Err(error) => return error,
+    };
+    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    let request_id = Base64UrlUnpadded::encode_string(&random_16());
+    match admin::desktop_call(
+        &desktop_socket,
+        &DesktopRequest::TabPrompt {
+            request_id,
+            project_id,
+            tmux_session,
+            message: message.to_string(),
+        },
+    )
+    .await
+    {
+        Ok(DesktopResponse::Seen) => (StatusCode::OK, Json(json!({ "recorded": true }))),
         Ok(DesktopResponse::Error { code, .. }) => api_error(
             match code.as_str() {
                 "desktop_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
@@ -2483,6 +2555,7 @@ fn router(state: HostState) -> Router {
         )
         .route("/api/v1/tabs/{tab_id}/color", put(color_tab))
         .route("/api/v1/tabs/{tab_id}/order", put(order_tab))
+        .route("/api/v1/tabs/{tab_id}/prompt", post(sent_prompt))
         .route(
             "/api/v1/tabs/{tab_id}/schedules",
             get(schedules).post(schedule_create),
@@ -2944,6 +3017,7 @@ mod tests {
             "/api/v1/tabs/anything/schedules",
             "/api/v1/tabs/anything/inbox",
             "/api/v1/tabs/anything/desktop-images",
+            "/api/v1/tabs/anything/prompt",
             "/api/v1/projects/anything/prompts",
             "/api/v1/projects/anything/prompts/anything/send",
             "/api/v1/mail/folders/anything/messages/anything/mark",

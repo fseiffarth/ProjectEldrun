@@ -1,4 +1,15 @@
 import type { TabPrompt, TabRow } from "./api";
+import { isOpenCodeTab } from "./terminal/openCodeMini";
+
+/**
+ * Whether the session's own transcript says what it was asked. OpenCode keeps
+ * its conversation in a store the prompt reader does not open yet, so its
+ * card lists only the prompts Eldrun sent it (the phone's and the desktop's
+ * composers, schedules) — and says so while there are none.
+ */
+export function promptsFromTranscript(tab: TabRow): boolean {
+  return !isOpenCodeTab(tab.agent_label ?? tab.label);
+}
 
 /**
  * The prompt lines a session card shows, newest first.

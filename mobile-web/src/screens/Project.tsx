@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AGENT_SORTS, DEFAULT_AGENT_SORT, isAgentSort, sortAgentTabs, type AgentSort } from "../../../shared/agentSort";
-import { promptClock, promptLines } from "../agentPrompts";
+import { promptClock, promptLines, promptsFromTranscript } from "../agentPrompts";
 import { ApiError, api, closeTab, reorderTab, type AgentRow, type ProjectDetail, type TabPlace, type TabRow, type TabSchedules } from "../api";
 import { readChoice, writeChoice } from "../prefs";
 import { applyServerOrder, dropSlot, placeBeside, type RowBox } from "../tabReorder";
@@ -58,7 +58,9 @@ function PromptLines({ tab }: { tab: TabRow }) {
   return <div className="tab-card-prompts">
     <small className="tab-card-prompts-label">Last prompts <span className="untested">Untested</span></small>
     {lines.length === 0
-      ? <p className="tab-card-prompt empty">Nothing read from this session's transcript yet.</p>
+      ? <p className="tab-card-prompt empty">{promptsFromTranscript(tab)
+        ? "Nothing read from this session's transcript yet."
+        : "OpenCode's own history is not read yet — prompts sent from Eldrun show here."}</p>
       : lines.map((prompt, index) => {
         const when = promptClock(prompt.at);
         return <p className={index === 0 ? "tab-card-prompt latest" : "tab-card-prompt"} key={`${prompt.at ?? ""}-${index}`}>
@@ -322,6 +324,9 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
         <span className="card-trailing">{tab.agent_status && <AgentStatusPill status={tab.agent_status} />}<span>›</span></span>
         <button className="tab-card-open" disabled={!tab.available} onClick={() => terminal(tab)} aria-label={`Open ${tab.label}`} />
       </div>
+      {/* Close is the card's top-right ✕, where a phone looks for it; every tab
+          the phone lists offers it, shell included. */}
+      <button className="tab-card-icon tab-card-close" disabled={closingId !== null} onClick={() => void close(tab)} aria-label={`Close ${tab.label}`} title="Close"><span aria-hidden="true">✕</span></button>
       {/* The grip, under the manual order only. It is also the keyboard's way
           in: the arrows move the tab one place, which a drag cannot be asked
           for without a finger. */}
@@ -340,22 +345,12 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
       {tab.kind === "agent" && <PromptLines tab={tab} />}
       {/* Scheduling lives out here beside the tab, not inside the session:
           reaching a schedule must not mean attaching a terminal, and this is
-          the same place — and the same summary line — the desktop puts it. */}
-      {/* Closing is offered on every tab the phone lists, shell included; the
-          schedule line and its two sheets stay agent-only, so a shell card's
-          foot is the actions alone (the empty spacer keeps them right-aligned
-          under both kinds of card). */}
-      <div className="tab-card-foot">
-        {tab.kind === "agent"
-          ? <small className="tab-card-when" title={tab.schedules?.next ? `Next run ${tab.schedules.next.replace("T", " ")} (desktop time)` : undefined}>◷ {scheduleLine(tab.schedules)}</small>
-          : <small className="tab-card-when" aria-hidden="true" />}
-        <div className="tab-card-actions">
-          {tab.kind === "agent" && <>
-            <button className="card-action accent" onClick={() => setScheduleTab({ tab })} aria-haspopup="dialog" aria-expanded={scheduleTab?.tab.id === tab.id} aria-label={`Scheduled prompts for ${tab.label}`}>◷ Schedules</button>
-          </>}
-          <button className="card-action danger" disabled={closingId !== null} onClick={() => void close(tab)} aria-label={`Close ${tab.label}`}>✕ Close</button>
-        </div>
-      </div>
+          the same place — and the same summary line — the desktop puts it.
+          The ◷ leading the line opens the tab's schedules; agent tabs only. */}
+      {tab.kind === "agent" && <div className="tab-card-foot">
+        <button className="tab-card-icon accent" onClick={() => setScheduleTab({ tab })} aria-haspopup="dialog" aria-expanded={scheduleTab?.tab.id === tab.id} aria-label={`Scheduled prompts for ${tab.label}`} title="Scheduled prompts"><span aria-hidden="true">◷</span></button>
+        <small className="tab-card-when" title={tab.schedules?.next ? `Next run ${tab.schedules.next.replace("T", " ")} (desktop time)` : undefined}>{scheduleLine(tab.schedules)}</small>
+      </div>}
     </div>)}</section>
     {detail?.project.status === "inactive" && <section className="create"><button className="primary" disabled={activating || !detail.desktop_available} onClick={() => void activate()}>Activate project</button></section>}
     <section className="create"><button disabled={!detail} onClick={() => setPromptsOpen(true)} aria-haspopup="dialog" aria-expanded={promptsOpen}>◷ Collected prompts</button></section>

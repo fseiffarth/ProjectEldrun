@@ -83,7 +83,7 @@ describe("Eldrun Mobile facts row shows the account's 5h and weekly windows", ()
 
     expect(fetchMock.mock.calls.some(([url]) => url === "/api/v1/tabs/tab-7/status")).toBe(true);
     const limits = [...container.querySelectorAll(".session-facts .fact-limit")];
-    expect(limits.map((node) => node.textContent)).toEqual(["5h 29% left", "week 6% left"]);
+    expect(limits.map((node) => node.textContent)).toEqual(["5h 29%", "week 6%"]);
     // Nearly spent is called out; the session window is not there yet.
     expect(limits.map((node) => node.classList.contains("high"))).toEqual([false, true]);
   });
@@ -103,5 +103,40 @@ describe("Eldrun Mobile facts row shows the account's 5h and weekly windows", ()
     await settle();
 
     expect(fetchMock.mock.calls.some(([url]) => url.endsWith("/status"))).toBe(false);
+  });
+
+  it("takes a Codex tab's context and windows from its stored session", async () => {
+    const transcript = {
+      available: true, version: "1:1", entries: [], truncated: false,
+      usage: {
+        contextLeft: 68,
+        session: { used: 15, resetsAt: NOW + 3_600 },
+        week: { used: 95, resetsAt: NOW + 86_400 },
+      },
+    };
+    vi.stubGlobal("fetch", vi.fn((url: string) => url.endsWith("/status")
+      ? Promise.resolve(jsonResponse(200, {
+        report: { state: "idle", label: "Codex", project: "p", today: { prompts: 0, worked_s: 0, decisions: 0, done: 0 }, usage: { label: "Codex", supported: false, cached: false } },
+      }))
+      : url.includes("/transcript")
+        ? Promise.resolve(jsonResponse(200, { transcript }))
+        : Promise.resolve(jsonResponse(404, { error: "not_found" }))));
+    const { container } = render(<Terminal tab={{ ...TAB, label: "Codex" }} back={() => {}} />);
+    await settle();
+
+    const facts = container.querySelector(".session-facts");
+    expect(facts?.querySelector(".fact-context")?.textContent).toBe("68% context");
+    expect([...container.querySelectorAll(".session-facts .fact-limit")].map((node) => node.textContent)).toEqual(["5h 85%", "week 5%"]);
+    expect(facts?.querySelector(".fact-path")).toBeNull();
+  });
+
+  it("drops a stored window that has already rolled over", async () => {
+    const { sessionLimits, resetPhrase } = await import("../../mobile-web/src/terminal/sessionUsage");
+    const { resolveResetAt } = await import("../../shared/usageReport");
+    const now = new Date(NOW * 1000);
+    expect(sessionLimits({ session: { used: 40, resetsAt: NOW - 1 }, week: { used: 10 } }, now))
+      .toEqual({ session: undefined, week: { label: "Current week", percent: 10 } });
+    const at = new Date((NOW + 5_400) * 1000);
+    expect(resolveResetAt(resetPhrase(at), now)?.getTime()).toBe(at.getTime());
   });
 });

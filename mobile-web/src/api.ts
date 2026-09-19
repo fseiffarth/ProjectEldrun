@@ -296,6 +296,14 @@ export function setTabColor(tabId: string, color: string | null): Promise<{ tab?
   return api(`/api/v1/tabs/${encodeURIComponent(tabId)}/color`, { method: "PUT", body: JSON.stringify({ color }) });
 }
 
+/** `POST /api/v1/tabs/{id}/prompt` — tell the desktop what the composer just
+ * sent to this agent tab, for its prompt history: the words went to tmux over
+ * the terminal socket, where the desktop never sees them. Fire-and-forget —
+ * the prompt is already on its way, and a lost report costs a list row. */
+export function reportSentPrompt(tabId: string, message: string): Promise<unknown> {
+  return api(`/api/v1/tabs/${encodeURIComponent(tabId)}/prompt`, { method: "POST", body: JSON.stringify({ message }) });
+}
+
 /** Which side of the anchor tab a dragged row lands on — the desktop's own
  * `reorderTabInScope` vocabulary, so both surfaces mean one thing by a drop. */
 export type TabPlace = "before" | "after";
@@ -391,6 +399,19 @@ export interface SessionTranscript {
   entries: TranscriptEntry[];
   /** Earlier turns exist that this answer does not carry. */
   truncated: boolean;
+  /** The session's own usage figures, where its transcript records them
+   *  (Codex's rollout does; Claude's does not). */
+  usage?: SessionUsage;
+}
+
+/** One rate-limit window of a stored session: percent used, and the reset in
+ *  Unix seconds. */
+export interface SessionUsageWindow { used: number; resetsAt?: number }
+export interface SessionUsage {
+  /** Percent of the context window left. */
+  contextLeft?: number;
+  session?: SessionUsageWindow;
+  week?: SessionUsageWindow;
 }
 
 /** `GET /api/v1/tabs/{id}/transcript` — the Focus view's stored-session feed.

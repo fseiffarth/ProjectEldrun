@@ -332,3 +332,31 @@ describe("Eldrun Mobile side panel", () => {
     expect(lines).toEqual([split("● One rule is not a panel.", rule), split("A long answer line runs", "straight past the column.")]);
   });
 });
+
+describe("Eldrun Mobile Codex sparkle", () => {
+  it("reads Codex's scattered one-dot braille as blank, so its input box stays found", () => {
+    const rows = [
+      "• Working (35s • esc to interrupt)",
+      "",
+      "                    ⢀     ⠁          ⠐     ⠐⠂ ⠄",
+      "›⠁Ask Codex to do anything   ⠈             ⢀",
+      "      ⠠⢀⠐                 ⠄         ⠠",
+      "  gpt-6-astra high · ~/eldrun/projects/projecteldrun",
+    ];
+    const lines = readableScreen(plainBuffer(rows)).lines;
+    expect(lines.map((row) => row.text)).toEqual([
+      "• Working (35s • esc to interrupt)",
+      "",
+      "› Ask Codex to do anything",
+      "",
+      "  gpt-6-astra high · ~/eldrun/projects/projecteldrun",
+    ]);
+    // The frame (with Codex's padding row above the box) is cut; the work stays.
+    expect(lines.slice(0, inputFrameStart(lines, "Codex")).map((row) => row.text)).toEqual(["• Working (35s • esc to interrupt)"]);
+  });
+
+  it("keeps denser braille: spinners and plots are not sparkle", () => {
+    const lines = readableScreen(plainBuffer(["⠋ Thinking", "⣿⣶⣤⣀ load"])).lines.map((row) => row.text);
+    expect(lines).toEqual(["⠋ Thinking", "⣿⣶⣤⣀ load"]);
+  });
+});

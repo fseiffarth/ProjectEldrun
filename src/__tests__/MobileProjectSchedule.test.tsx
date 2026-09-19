@@ -60,7 +60,7 @@ describe("Mobile project tab list — scheduled prompts", () => {
 
   it("says what the tab has scheduled without opening the sheet", async () => {
     render(<Project id="p1" back={() => {}} terminal={vi.fn()} />);
-    expect(await screen.findByText("◷ 2 of 3 scheduled · next 09-03 09:00")).toBeTruthy();
+    expect(await screen.findByText("2 of 3 scheduled · next 09-03 09:00")).toBeTruthy();
   });
 
   it("stops polling the sheet while the app is hidden and catches up on return", async () => {
