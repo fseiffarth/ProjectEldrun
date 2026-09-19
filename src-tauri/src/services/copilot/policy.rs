@@ -73,6 +73,8 @@ mod tests {
     use serde_json::json;
 
     fn settings(directory: &Path) -> Settings {
+        // Opt-in records the canonical path (macOS /private/var, Windows \\?\).
+        let directory = directory.canonicalize().unwrap();
         serde_json::from_value(json!({
             "code_completion_provider":"copilot", "copilot_completion":true,
             "completion_project_policies":{"one":{"directory":directory,"copilot":true}}

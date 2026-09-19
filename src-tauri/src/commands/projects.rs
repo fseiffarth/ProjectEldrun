@@ -179,16 +179,29 @@ fn lexical_normalize(path: &Path) -> PathBuf {
 ///
 /// `canonicalize` is the real answer (it resolves symlinks against the actual
 /// filesystem) but only works on a path that exists — a copy/move import's
-/// destination does not yet — so `lexical_normalize` is the fallback. Its
-/// `\\?\` verbatim prefix is stripped so the two halves produce comparable keys
-/// on Windows, where the comparison is also case-insensitive.
+/// destination does not yet — so the fallback canonicalizes the deepest
+/// existing ancestor of the `lexical_normalize`d path and re-appends the rest;
+/// otherwise a missing folder under a symlinked or 8.3-short-named parent
+/// (macOS `/var`, Windows `RUNNER~1`) would never prefix-match its existing
+/// siblings. The `\\?\` verbatim prefix is stripped so the halves produce
+/// comparable keys on Windows, where the comparison is also case-insensitive.
 fn local_dir_key(dir: &str) -> String {
     let trimmed = dir.trim();
     if trimmed.is_empty() {
         return String::new();
     }
     let path = PathBuf::from(trimmed);
-    let resolved = fs::canonicalize(&path).unwrap_or_else(|_| lexical_normalize(&path));
+    let resolved = fs::canonicalize(&path).unwrap_or_else(|_| {
+        let normal = lexical_normalize(&path);
+        normal
+            .ancestors()
+            .skip(1)
+            .find_map(|base| {
+                let real = fs::canonicalize(base).ok()?;
+                Some(real.join(normal.strip_prefix(base).ok()?))
+            })
+            .unwrap_or(normal)
+    });
     let key = resolved.to_string_lossy().to_string();
     let key = key.strip_prefix(r"\\?\").unwrap_or(&key).to_string();
     if cfg!(windows) {

@@ -171,7 +171,9 @@ mod tests {
     fn an_eldrun_worktree_guards_its_pointer_and_its_git_dir() {
         let (_tmp, root) = repo();
         let wt = root.join(WORKTREES_DIR[0]).join(WORKTREES_DIR[1]).join("feat");
-        git(&root, &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "feat"]);
+        // Relative: git can't parse the `\\?\` verbatim root Windows canonicalizes to.
+        let rel = format!("{}/{}/feat", WORKTREES_DIR[0], WORKTREES_DIR[1]);
+        git(&root, &["worktree", "add", "-q", &rel, "-b", "feat"]);
         let g = guard_paths(std::slice::from_ref(&root), None);
         assert!(g.read_only.contains(&wt.join(".git")), "pointer file");
         let wt_git = root.join(".git").join("worktrees").join("feat");

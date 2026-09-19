@@ -209,12 +209,15 @@ mod tests {
                 .await
                 .unwrap();
             ready_tx.send(()).unwrap();
-            // A canceled future must release the live response connection.
-            let n = tokio::time::timeout(Duration::from_secs(3), socket.read(&mut [0]))
+            // A canceled future must release the live response connection:
+            // EOF, or a reset where the OS (macOS) aborts it instead of FIN.
+            let read = tokio::time::timeout(Duration::from_secs(3), socket.read(&mut [0]))
                 .await
-                .unwrap()
                 .unwrap();
-            assert_eq!(n, 0);
+            match read {
+                Ok(n) => assert_eq!(n, 0),
+                Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::ConnectionReset),
+            }
         });
         let id = reserve().unwrap();
         let worker_id = id.clone();
