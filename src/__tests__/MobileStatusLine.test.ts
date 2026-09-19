@@ -83,15 +83,17 @@ describe("Eldrun Mobile session status line", () => {
       .toBe("yolo");
   });
 
-  it("reads a decimal context percentage and Gemini's bare '% used'", () => {
+  it("reads a decimal context percentage and Gemini's bare '% used', as remaining", () => {
     // Qwen prints "45.2% context used"; the old integer-only match read the
-    // trailing "2%" out of it.
-    expect(sessionStatus(lines(">", "45.2% context used"))?.context).toBe("45.2%");
+    // trailing "2%" out of it. A "used" figure is flipped to what is left.
+    expect(sessionStatus(lines(">", "45.2% context used"))?.context).toBe("54.8%");
+    expect(sessionStatus(lines(">", "ctx 30% used"))?.context).toBe("70%");
+    expect(sessionStatus(lines(">", "ctx 30%"))?.context).toBe("30%");
     // Gemini's footer column says "25% used" with no word "context" at all.
     expect(sessionStatus(lines(">", "~/proj  main  gemini-2.5-pro  25% used"))).toMatchObject({
       path: "~/proj",
       model: "gemini-2.5-pro",
-      context: "25%",
+      context: "75%",
     });
     // A percentage inside a sentence is not a context readout.
     expect(sessionStatus(lines(">", "Downloading 50% done"))?.context).toBeUndefined();

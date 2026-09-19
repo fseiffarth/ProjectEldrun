@@ -53,7 +53,7 @@ const tab = (agent_status?: AgentStatus): TabRow =>
   ({ id: "tab-9", label: "Claude", kind: "agent", agent_status, available: true, viewer_busy: false });
 
 const lampClass = () =>
-  screen.getByRole("button", { name: "Status" }).querySelector(".composer-chip-lamp")?.className;
+  screen.getByRole("button", { name: "Status" }).querySelector(".fact-lamp")?.className;
 
 describe("Eldrun Mobile — the composer's status lamp", () => {
   beforeEach(() => {
@@ -70,12 +70,12 @@ describe("Eldrun Mobile — the composer's status lamp", () => {
   it("drops a finished-turn flag on the tab being read, and keeps the others", async () => {
     const { rerender } = render(<Terminal tab={tab("done")} back={() => {}} />);
     await act(async () => {});
-    expect(lampClass()).toBe("composer-chip-lamp idle");
+    expect(lampClass()).toBe("fact-lamp idle");
 
     rerender(<Terminal tab={tab("question")} back={() => {}} />);
-    expect(lampClass()).toBe("composer-chip-lamp question");
+    expect(lampClass()).toBe("fact-lamp question");
 
     rerender(<Terminal tab={tab()} back={() => {}} />);
-    expect(lampClass()).toBe("composer-chip-lamp idle");
+    expect(lampClass()).toBe("fact-lamp idle");
   });
 });

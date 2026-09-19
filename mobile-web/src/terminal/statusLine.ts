@@ -34,7 +34,7 @@ export interface SessionStatus {
   model?: string;
   /** Permission/approval mode (plan, accept edits, bypass permissions, …). */
   mode?: string;
-  /** Remaining context, e.g. `85%`. */
+  /** Remaining context, e.g. `85%` — a CLI that prints "used" is flipped. */
   context?: string;
 }
 
@@ -120,12 +120,20 @@ const PAREN_BRANCH = /\(([^()\s]*[A-Za-z][^()\s]*)\)/u;
 /** A branch named by a git glyph or prefix: `⎇ main`, `🌿 main`, `git:main`. */
 const MARKED_BRANCH = /(?:[⎇]|🌿|\bgit:)\s*([\w./-]+)/u;
 
+/** A "used" figure as the remaining one, `25` → `75%`, keeping one decimal
+ * where the CLI printed one. */
+function remainingPercent(used: string): string {
+  const left = Math.min(100, Math.max(0, 100 - Number.parseFloat(used)));
+  return `${Math.round(left * 10) / 10}%`;
+}
+
 function classify(segment: string, status: SessionStatus) {
   // "ctx" is the short label Grok Build and many custom statuslines print.
+  // A figure followed by "used" is flipped, so the chip always reads remaining.
   if (!status.context && /context|\bctx\b/iu.test(segment)) {
-    const percent = /(\d{1,3}(?:\.\d+)?)\s?%/u.exec(segment);
+    const percent = /(\d{1,3}(?:\.\d+)?)\s?%(\s+(?:context\s+)?used\b)?/iu.exec(segment);
     if (percent) {
-      status.context = `${percent[1]}%`;
+      status.context = percent[2] ? remainingPercent(percent[1]) : `${percent[1]}%`;
       return;
     }
   }
@@ -135,7 +143,7 @@ function classify(segment: string, status: SessionStatus) {
   if (!status.context) {
     const used = /^(\d{1,3}(?:\.\d+)?)\s?%\s+(?:context\s+)?used$/iu.exec(segment);
     if (used) {
-      status.context = `${used[1]}%`;
+      status.context = remainingPercent(used[1]);
       return;
     }
   }

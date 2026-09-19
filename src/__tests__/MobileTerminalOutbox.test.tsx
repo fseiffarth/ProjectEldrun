@@ -59,6 +59,9 @@ describe("Eldrun Mobile Focus shows the pictures the agent left in the project's
   beforeEach(() => {
     FakeWebSocket.instances = [];
     vi.stubGlobal("WebSocket", FakeWebSocket);
+    // The strip is Terminal view's; Focus shows the pictures in the chat
+    // (MobileFocusOutboxMessages), and an agent tab opens in Focus by default.
+    localStorage.setItem("eldrun.mobile.view.agent", "terminal");
     vi.spyOn(Date, "now").mockReturnValue(NOW * 1000);
     Object.defineProperty(HTMLElement.prototype, "scrollTo", { configurable: true, value: vi.fn() });
   });

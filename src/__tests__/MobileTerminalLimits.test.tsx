@@ -83,7 +83,7 @@ describe("Eldrun Mobile facts row shows the account's 5h and weekly windows", ()
 
     expect(fetchMock.mock.calls.some(([url]) => url === "/api/v1/tabs/tab-7/status")).toBe(true);
     const limits = [...container.querySelectorAll(".session-facts .fact-limit")];
-    expect(limits.map((node) => node.textContent)).toEqual(["5h 71%", "week 94%"]);
+    expect(limits.map((node) => node.textContent)).toEqual(["5h 29% left", "week 6% left"]);
     // Nearly spent is called out; the session window is not there yet.
     expect(limits.map((node) => node.classList.contains("high"))).toEqual([false, true]);
   });
@@ -93,7 +93,7 @@ describe("Eldrun Mobile facts row shows the account's 5h and weekly windows", ()
     const { container } = render(<Terminal tab={TAB} back={() => {}} />);
     await settle();
 
-    expect(container.querySelector(".session-facts")).toBeNull();
+    expect(container.querySelector(".session-facts .fact-limit")).toBeNull();
   });
 
   it("asks nothing for a shell tab", async () => {

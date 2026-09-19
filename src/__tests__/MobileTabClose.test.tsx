@@ -129,10 +129,29 @@ describe("Mobile bridge — closing a tab", () => {
     expect(payload.tabs.map((tab) => tab.label)).toEqual(["Shell"]);
   });
 
+  it("ends a resumable agent's local session, and leaves an attach tab's session alone", async () => {
+    useTabsStore.setState((state) => ({
+      tabsByScope: {
+        ...state.tabsByScope,
+        [project.id]: [
+          { ...TABS[0], sessionId: "s-1" },
+          { ...TABS[1], tmuxSession: undefined, tmuxAttach: SHELL_TMUX },
+        ],
+      },
+    }));
+    await ask({ type: "close_tab", request_id: "r5", project_id: project.id, tmux_session: AGENT_TMUX });
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("local_tmux_kill", { session: AGENT_TMUX });
+    // Opened from the Sessions view onto a session it did not create.
+    await ask({ type: "close_tab", request_id: "r6", project_id: project.id, tmux_session: SHELL_TMUX });
+    expect(vi.mocked(invoke)).not.toHaveBeenCalledWith("local_tmux_kill", { session: SHELL_TMUX });
+  });
+
   it("closes a shell tab too — the kind the rename and schedule routes refuse", async () => {
     expect(await ask({ type: "close_tab", request_id: "r2", project_id: project.id, tmux_session: SHELL_TMUX }))
       .toEqual({ status: "closed" });
     expect(useTabsStore.getState().tabsByScope[project.id]?.map((t) => t.key)).toEqual(["agent-1"]);
+    // The session the tab minted ends with it, as the desktop's × ends it.
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("local_tmux_kill", { session: SHELL_TMUX });
   });
 
   it("refuses a tmux name this scope does not hold, and a project with Mobile off", async () => {
@@ -185,27 +204,16 @@ describe("Mobile project screen — the row's ✕", () => {
   it("closes either kind of tab through its opaque id and drops the row", async () => {
     render(<Project id="p1" back={() => {}} terminal={() => {}} />);
 
+    // One tap, as on the desktop's × — no sheet asks first.
     fireEvent.click(await screen.findByRole("button", { name: "Close Shell" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Close tab" }));
     await waitFor(() => expect(closed).toEqual(["/api/v1/tabs/t-shell"]));
     // Dropped locally rather than re-read: the next poll still lists it.
     await waitFor(() => expect(screen.queryByRole("button", { name: "Close Shell" })).toBeNull());
     expect(screen.queryByRole("dialog")).toBeNull();
 
+    await waitFor(() => expect((screen.getByRole("button", { name: "Close Claude" }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(screen.getByRole("button", { name: "Close Claude" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Close tab" }));
     await waitFor(() => expect(closed).toEqual(["/api/v1/tabs/t-shell", "/api/v1/tabs/t-agent"]));
-  });
-
-  it("asks first, and closes nothing when the sheet is cancelled", async () => {
-    render(<Project id="p1" back={() => {}} terminal={() => {}} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Close Claude" }));
-    // The sheet names the tab and says what closing does not do.
-    expect(screen.getByRole("dialog", { name: "Close Claude" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(closed).toEqual([]);
-    expect(screen.queryByRole("dialog")).toBeNull();
-    expect(screen.getByRole("button", { name: "Close Claude" })).toBeTruthy();
   });
 
   it("says the desktop is needed rather than 'request failed'", async () => {
@@ -214,11 +222,11 @@ describe("Mobile project screen — the row's ✕", () => {
       desktop_available: true, agents: [], tabs: rows,
     }), { status: 200 }));
     render(<Project id="p1" back={() => {}} terminal={() => {}} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Close Claude" }));
+    const button = await screen.findByRole("button", { name: "Close Claude" });
     fetchMock.mockImplementationOnce(async () => new Response(JSON.stringify({ error: "desktop_unavailable" }), { status: 503 }));
-    fireEvent.click(screen.getByRole("button", { name: "Close tab" }));
-    expect((await screen.findByRole("alert")).textContent).toBe("Open desktop Eldrun to close a tab.");
-    // The sheet stays up with the tab still listed behind it.
-    expect(screen.getByRole("dialog", { name: "Close Claude" })).toBeTruthy();
+    fireEvent.click(button);
+    expect(await screen.findByText("Open desktop Eldrun to close a tab.")).toBeTruthy();
+    // The tab is still listed, and its ✕ works again.
+    await waitFor(() => expect((screen.getByRole("button", { name: "Close Claude" }) as HTMLButtonElement).disabled).toBe(false));
   });
 });

@@ -68,7 +68,7 @@ describe("Eldrun Mobile agent status sheet", () => {
     // The phone's own status-line facts sit next to the account-wide figures;
     // they are about different things and both belong on the headline.
     expect(screen.getByText("opus")).toBeTruthy();
-    expect(screen.getByText("62% context")).toBeTruthy();
+    expect(screen.getByText("62% context left")).toBeTruthy();
     expect(screen.getByText("Current session")).toBeTruthy();
     expect(screen.getByLabelText("Current session: 71% used")).toBeTruthy();
     // The reset is placed in time; the CLI's own words stay one hover away.

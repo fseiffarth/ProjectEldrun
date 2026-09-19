@@ -124,7 +124,7 @@ export function StatusSheet({ tab, live, onLimits, onClose }: {
         {report.agent && <span>{report.agent}</span>}
         {live?.model && <span>{live.model}</span>}
         {live?.mode && <span>{live.mode}</span>}
-        {live?.context && <span>{live.context} context</span>}
+        {live?.context && <span>{live.context} context left</span>}
       </p>}
 
       {error && <p className="sheet-note error" role="alert">{error}</p>}

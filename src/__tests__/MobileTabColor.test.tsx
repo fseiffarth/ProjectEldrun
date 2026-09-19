@@ -155,7 +155,7 @@ describe("Mobile bridge — colouring a tab", () => {
   });
 });
 
-describe("Mobile project screen — the row's ✻ Colour", () => {
+describe("Mobile project screen — the row's colour dot", () => {
   const rows = [
     { id: "t-agent", label: "Claude", kind: "agent", available: true, viewer_busy: false },
     { id: "t-shell", label: "Shell", kind: "shell", available: true, viewer_busy: false, color: "red" },

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { AGENT_SORTS, DEFAULT_AGENT_SORT, isAgentSort, sortAgentTabs, type AgentSort } from "../../../shared/agentSort";
 import { lastPrompt } from "../agentPrompts";
 import { getActivity, type ActivityTab } from "../api";
+import { AgentStatusPill } from "../components/AgentStatusPill";
 import { tabColorCss } from "../tabColors";
 import { classifyUnavailable, describeUnavailable, type UnavailableReason } from "../connection";
 import { readChoice, writeChoice } from "../prefs";
@@ -149,7 +150,7 @@ export function Activity({ open, onConnection }: {
         onClick={() => open(tab.project_id, tab)}
       >
         <span><strong>{tab.label}</strong><small>{tab.project_label}{tab.agent_model ? ` · ${tab.agent_model}` : ""}{when ? ` · ${when}` : ""}{tab.viewer_busy ? " · open elsewhere" : tab.available ? "" : " · gone"}</small>{asked && <small className="activity-prompt" title={asked.text}>{asked.text}</small>}</span>
-        <span className="card-trailing">{tab.agent_status && <small className={`agent-status ${tab.agent_status}`}>{tab.agent_status}</small>}<span>›</span></span>
+        <span className="card-trailing">{tab.agent_status && <AgentStatusPill status={tab.agent_status} />}<span>›</span></span>
       </button>;
     })}</section>
   </>;

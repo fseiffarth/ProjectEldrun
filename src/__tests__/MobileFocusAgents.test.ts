@@ -78,7 +78,7 @@ describe("Eldrun Mobile Gemini CLI approval mode", () => {
       "auto-accept edits Shift+Tab to plan",
       "> ",
       "~/proj  main  gemini-2.5-pro  25% used",
-    ))).toMatchObject({ mode: "accept edits", context: "25%" });
+    ))).toMatchObject({ mode: "accept edits", context: "75%" });
     expect(sessionStatus(rows("auto-accept edits Shift+Tab to manual", "> "))?.mode).toBe("accept edits");
     expect(sessionStatus(rows("plan Shift+Tab to manual", "", "> "))?.mode).toBe("plan");
   });

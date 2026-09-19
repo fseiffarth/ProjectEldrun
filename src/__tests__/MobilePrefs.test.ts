@@ -91,13 +91,16 @@ describe("Eldrun Mobile prefs — choices", () => {
 });
 
 describe("Eldrun Mobile prefs — terminal view per agent", () => {
-  it("opens on Terminal until the reader picks Focus, keyed by the agent", () => {
+  it("holds no choice until the reader picks one, keyed by the agent", () => {
     const storage = memoryStorage();
+    expect(readTerminalView("Claude Code", storage)).toBeNull();
+    writeTerminalView("Claude Code", "terminal", storage);
     expect(readTerminalView("Claude Code", storage)).toBe("terminal");
     writeTerminalView("Claude Code", "focus", storage);
     expect(readTerminalView("Claude Code", storage)).toBe("focus");
     // Another agent keeps its own answer.
-    expect(readTerminalView("Codex", storage)).toBe("terminal");
+    expect(readTerminalView("Codex", storage)).toBeNull();
+    expect(readTerminalView("Codex", throwingStorage)).toBeNull();
   });
 
   it("normalises the agent name into one key, so casing and spacing do not split a preference", () => {
@@ -115,10 +118,10 @@ describe("Eldrun Mobile prefs — terminal view per agent", () => {
     expect(readTerminalView("   ", storage)).toBe("focus");
   });
 
-  it("reads anything but the literal 'focus' as Terminal, and survives a blocked store", () => {
+  it("reads anything but the literal 'focus' or 'terminal' as no choice, and survives a blocked store", () => {
     const storage = memoryStorage({ "eldrun.mobile.view.codex": "Focus" });
-    expect(readTerminalView("Codex", storage)).toBe("terminal");
-    expect(readTerminalView("Codex", throwingStorage)).toBe("terminal");
+    expect(readTerminalView("Codex", storage)).toBeNull();
+    expect(readTerminalView("Codex", throwingStorage)).toBeNull();
     expect(() => writeTerminalView("Codex", "focus", throwingStorage)).not.toThrow();
   });
 });

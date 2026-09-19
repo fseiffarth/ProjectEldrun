@@ -43,7 +43,8 @@ import {
   OPENCODE_MODEL_KEYS,
 } from "../terminal/openCodeMini";
 import { currentMode, modeChoices, modeFixed, shiftTabKey } from "../terminal/agentModes";
-import { agentInputWrites } from "../terminal/composer";
+import { agentInputWrites, bracketsAgentMessage } from "../terminal/composer";
+import { agentWorking } from "../terminal/agentBusy";
 import { chatTurns, isPromptEcho } from "../terminal/chatTurns";
 import { answerHtml } from "../terminal/answerMarkdown";
 import { transcriptTurns } from "../terminal/transcriptTurns";
@@ -343,6 +344,14 @@ function viewAgentOf(tab: TabRow): string {
   return tab.kind === "agent" ? (tab.agent_label ?? "agent") : "shell";
 }
 
+/** The view a tab opens in: the reader's last choice for its agent, else Focus
+ * on an agent tab — the stored session is the one reading of it that holds
+ * whole turns — and Terminal on a shell. A Focus nobody chose hands over to
+ * Terminal once the session turns out not to read (see `viewChosen`). */
+function initialView(tab: TabRow): TerminalViewChoice {
+  return readTerminalView(viewAgentOf(tab)) ?? (tab.kind === "agent" ? "focus" : "terminal");
+}
+
 interface SheetOption {
   key: string;
   label: string;
@@ -354,7 +363,7 @@ interface SheetOption {
 }
 
 /**
- * A choice the session offers, as a phone list: the sheet the composer chips
+ * A choice the session offers, as a phone list: the sheet the facts row's buttons
  * open instead of leaving the reader to walk a TUI dialog with the arrow keys.
  * It renders what the caller resolved — the dialog's own rows, or the modes a
  * session's status line says it has — and reports taps back. No parsing, no
@@ -431,10 +440,15 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   const [altScreen, setAltScreen] = useState(false);
   const [ctrl, setCtrl] = useState(false);
   const [sendFailed, setSendFailed] = useState(false);
-  /** Terminal by default; whatever the reader last chose for this agent
-   * afterwards (`prefs.readTerminalView`). */
-  const [view, setView] = useState<TerminalViewChoice>(() => readTerminalView(viewAgentOf(tab)));
+  /** `initialView`: the reader's choice for this agent, else Focus on an
+   * agent tab and Terminal on a shell. */
+  const [view, setView] = useState<TerminalViewChoice>(() => initialView(tab));
+  /** Whether `view` is the reader's own choice. Only a default Focus falls
+   * back to Terminal when the stored session does not read; a Focus the
+   * reader picked stays, reading the screen instead. */
+  const viewChosen = useRef(readTerminalView(viewAgentOf(tab)) !== null);
   const chooseView = (next: TerminalViewChoice) => {
+    viewChosen.current = true;
     setView(next);
     writeTerminalView(viewAgentOf(tab), next);
   };
@@ -565,7 +579,8 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   const statusRef = useRef<SessionStatus | null>(null);
 
   useEffect(() => {
-    setView(readTerminalView(viewAgentOf(tab)));
+    setView(initialView(tab));
+    viewChosen.current = readTerminalView(viewAgentOf(tab)) !== null;
     setDraft("");
     setTranscript(null);
     setPending([]);
@@ -711,7 +726,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       const stream = readableHost.current;
       // The reading view is unmounted in Terminal view. A shell tab has no
       // other reader of these lines, so re-reading the screen there is pure
-      // waste on a phone battery — but an agent tab's composer chips still do:
+      // waste on a phone battery — but an agent tab's model and mode facts still do:
       // the mode walk confirms every Shift+Tab against the redrawn status line
       // and the model sheet lists the picker, both from `lines`. Left stale in
       // Terminal view, a walk pressed its full lap and reported a failure on a
@@ -1106,7 +1121,15 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       cancelAnimationFrame(frame);
       observer.disconnect();
     };
-  }, [view, altScreen]);
+    // The stored session mounts the reading view over a full-screen program
+    // too, so its availability re-runs this as well.
+  }, [view, altScreen, focusSource, transcript?.available]);
+  // A default Focus on a session that does not read (no session id yet, an
+  // agent whose transcript is not read, no desktop) would only re-read the
+  // screen: open Terminal instead, without writing that as the reader's choice.
+  useEffect(() => {
+    if (!viewChosen.current && view === "focus" && transcript?.available === false) setView("terminal");
+  }, [view, transcript]);
   /** Whether Focus is reading the stored session rather than the screen. */
   const sessionFocus = tab.kind === "agent" && view === "focus" && focusSource === "session";
   const transcriptVersion = useRef<string | undefined>();
@@ -1335,10 +1358,12 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   };
   /** One message into the agent's line editor: reset its line, deliver the
    * text, submit — inside bracketed paste markers where the pane has the mode
-   * on. Shared by the composer's Send and the composer chips' slash commands. */
+   * on and the family wants them (`bracketsAgentMessage`). Shared by the
+   * composer's Send and the composer chips' slash commands. */
   const sendAgentText = (text: string) => {
     clearPending();
-    return deliver(agentInputWrites(text, bracketedPaste.current()));
+    const bracketed = bracketsAgentMessage(tab.agent_label ?? tab.label, bracketedPaste.current());
+    return deliver(agentInputWrites(text, bracketed));
   };
   /** Once dictated words have left the composer — sent or cleared — "Heard:"
    * stops quoting them. They stay counted as inserted: a recognizer that is
@@ -1373,10 +1398,9 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     setDraft("");
     forgetDictation();
   };
-  /** The field's /clear button: the fresh conversation typing `/clear` gives, asked
-   * first because the agent forgets the chat. The draft is left alone. */
+  /** The field's /clear button: the fresh conversation typing `/clear` gives,
+   * sent at once — no confirm dialog. The draft is left alone. */
   const clearConversation = () => {
-    if (!window.confirm(t("mobile.composer.clearChatConfirm"))) return;
     if (sendAgentText("/clear")) setPending([]);
   };
   /** The composer's ✕: an empty draft, and the dictation transcript with it. */
@@ -1390,8 +1414,8 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
    * of OpenCode's mini interface, whose frame has no marker to be found by. */
   const agentLabel = tab.agent_label ?? tab.label;
   const openCode = tab.kind === "agent" && isOpenCodeTab(agentLabel);
-  /** The facts the session prints below its own input box — the composer
-   * chips' labels. Absent fields leave the chip on its generic label. */
+  /** The facts the session prints below its own input box — the facts row's
+   * labels. Absent fields leave a button on its generic label. */
   const status = useMemo(
     () => (tab.kind === "agent" ? sessionStatus(lines, agentLabel) : null),
     [tab.kind, lines, agentLabel],
@@ -1686,12 +1710,18 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
    * drawing right now. Shown under the stored session while it holds a
    * choice the session is waiting on, which the transcript cannot carry. */
   const liveTail = useMemo(() => {
-    if (!sessionShown) return [];
+    // A full-screen program's frame has no prompt echo to cut at, and its
+    // rows are not a question the transcript is missing.
+    if (!sessionShown || altScreen) return [];
     let start = 0;
     painted.forEach((line, index) => { if (isPromptEcho(line, agentLabel)) start = index + 1; });
     return painted.slice(start);
-  }, [sessionShown, painted, agentLabel]);
+  }, [sessionShown, altScreen, painted, agentLabel]);
   const liveQuestion = useMemo(() => liveTail.length > 0 && readSelectPrompt(liveTail) != null, [liveTail]);
+  /** The stored session only grows at message boundaries, so a turn busy in
+   * tool calls looked finished. The live screen's interrupt hint says it is
+   * not; a choice on screen is waiting on the reader instead. */
+  const sessionBusy = useMemo(() => sessionShown && !liveQuestion && agentWorking(lines), [sessionShown, liveQuestion, lines]);
   /** The screen's lines as the reading view shows them: the revealed history,
    * the open chunk, then the live tail. */
   const screenStream = useMemo(
@@ -1839,15 +1869,17 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     <div className="terminal-body">
       <div ref={host} className={`terminal${view === "focus" ? " focus-source" : ""}`} />
       <div ref={wideHint} className="terminal-wide-hint" aria-hidden="true" />
-      {view === "focus" && altScreen && <div className="alt-screen-notice"><strong>Full-screen program</strong><span>This session is drawing its own screen, which has no scrollback to read. Switch to Terminal to see it.</span>{openCode && <span>{t("mobile.focus.openCodeMini")}</span>}<button className="primary" onClick={() => chooseView("terminal")}>Open Terminal view</button></div>}
-      {view === "focus" && !altScreen && <>
+      {/* The stored session does not depend on the screen, so a full-screen
+          agent (OpenCode's TUI) still reads as a chat in Focus. */}
+      {view === "focus" && altScreen && !sessionShown && <div className="alt-screen-notice"><strong>Full-screen program</strong><span>This session is drawing its own screen, which has no scrollback to read. Switch to Terminal to see it.</span>{openCode && !transcript?.available && <span>{t("mobile.focus.openCodeMini")}</span>}{tab.kind === "agent" && transcript?.available && <button onClick={() => setFocusSource("session")}>{t("mobile.focus.sessionHint")}</button>}<button className="primary" onClick={() => chooseView("terminal")}>Open Terminal view</button></div>}
+      {view === "focus" && (!altScreen || sessionShown) && <>
         <section ref={readableHost} className="readable-output" aria-label="Session output" aria-live="polite"
           onScroll={(event) => {
             const stream = event.currentTarget;
             followReadable(stream.scrollHeight - stream.scrollTop - stream.clientHeight < 120);
           }}>
           {sessionShown
-            ? (transcript && sessionEntries.length === 0 && !liveQuestion && outbox.length === 0
+            ? (transcript && sessionEntries.length === 0 && !liveQuestion && !sessionBusy && outbox.length === 0
               ? <div className="readable-empty"><strong>{t("mobile.transcript.empty")}</strong><span>{t("mobile.transcript.emptyHint")}</span></div>
               : <div className="readable-lines chat transcript" data-testid="session-transcript">
                   {transcript?.truncated && <button className="readable-earlier" onClick={() => setTranscriptLimit((limit) => limit + TRANSCRIPT_STEP)}>{t("mobile.transcript.earlier")}</button>}
@@ -1855,6 +1887,10 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
                   {liveQuestion && <div className="transcript-screen" role="group" aria-label={t("mobile.transcript.onScreen")}>
                     <small>{t("mobile.transcript.onScreen")}</small>
                     <ReadableTurns lines={liveTail} chat={chat} agent={agentLabel} promptLabel={t("mobile.transcript.prompt")} columns={paneColumns.current} />
+                  </div>}
+                  {sessionBusy && <div className="transcript-working" role="status">
+                    <span className="transcript-working-dots" aria-hidden="true"><i /><i /><i /></span>
+                    {t("mobile.focus.working")} <small>{t("mobile.focus.untested")}</small>
                   </div>}
                 </div>)
             : painted.length === 0 && visibleChunks.length === 0 && earlier.open.length === 0 && outbox.length === 0
@@ -1904,7 +1940,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       {sendFailed && !stoppedReason && <div className="voice-feedback error" role="alert">That did not reach the desktop — the connection dropped. It will retry on its own.</div>}
       {/* Focus posts the files into its chat instead (`OutboxMessage`); the
           strip is for the Terminal view, and a full-screen program's notice. */}
-      {outboxShown.length > 0 && !(view === "focus" && !altScreen) && <div className="outbox-strip" role="region" aria-label={t("mobile.outbox.region")}>
+      {outboxShown.length > 0 && !(view === "focus" && (!altScreen || sessionShown)) && <div className="outbox-strip" role="region" aria-label={t("mobile.outbox.region")}>
         <div className="outbox-strip-head"><strong>{t("mobile.outbox.from")} <small>{t("mobile.outbox.untested")}</small></strong><span>{t(outboxShown.length === 1 ? "mobile.outbox.countOne" : "mobile.outbox.count", { count: outboxShown.length })}</span><button onClick={hideOutbox} aria-label={t("mobile.outbox.hide")}>✕</button></div>
         <div className="outbox-thumbs">
           {outboxShown.map((file) => {
@@ -1928,12 +1964,19 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       {uploads.map((upload) => upload.failure
         ? <div key={upload.id} className="inbox-upload error" role="alert"><strong>{upload.name}</strong><span>{upload.failure}</span><button onClick={() => dismissUpload(upload.id)} aria-label={`Dismiss ${upload.name}`}>✕</button></div>
         : <div key={upload.id} className="inbox-upload" role="status"><strong>{upload.name}</strong><span>{upload.source === "desktop" ? "Copying from the desktop…" : "Sending to the project inbox…"}</span></div>)}
-      {(status?.path || status?.branch || status?.context || limits.session || limits.week) && <div className="session-facts" title={status?.path}>
+      {(tab.kind === "agent" || status?.path || status?.branch || status?.context || limits.session || limits.week) && <div className="session-facts" title={status?.path}>
+        {/* An agent tab's model, mode and status lead the row as tappable facts:
+            the composer keeps the whole bar for the draft and its buttons. */}
+        {tab.kind === "agent" && <>
+          <button className="fact-action" onClick={() => setStatusSheet(true)} aria-haspopup="dialog" aria-expanded={statusSheet} title="Session status and the agent's own usage"><span className={`fact-lamp ${lamp}`} aria-hidden="true" /><span className="fact-action-label">Status</span></button>
+          <button className="fact-action" disabled={!connected} onClick={selectModel} aria-haspopup="dialog" aria-expanded={modelSheet} title="Choose the model (/model)"><span className="fact-action-label">{status?.model ?? "Model"}</span></button>
+          <button className="fact-action" disabled={!connected} onClick={openModeSheet} aria-haspopup={modes.length > 0 ? "dialog" : undefined} aria-expanded={modes.length > 0 ? modeSheet : undefined} title={modes.length > 0 ? "Choose the permission mode" : "Switch mode (Shift+Tab)"}><span className="fact-action-label">{status?.mode ?? activeMode ?? "Mode"}</span></button>
+        </>}
         {status?.path && <span className="fact-path">{shortenPath(status.path)}</span>}
         {status?.branch && <span className="fact-branch">⎇ {status.branch}</span>}
-        {status?.context && <span className="fact-context">{status.context} context</span>}
-        {limits.session && <span className={`fact-limit${limits.session.percent >= 90 ? " high" : ""}`} title={limits.session.resets ? resetText(limits.session.resets, new Date()) : undefined}>{t("mobile.facts.session", { percent: Math.round(limits.session.percent) })}</span>}
-        {limits.week && <span className={`fact-limit${limits.week.percent >= 90 ? " high" : ""}`} title={limits.week.resets ? resetText(limits.week.resets, new Date()) : undefined}>{t("mobile.facts.week", { percent: Math.round(limits.week.percent) })}</span>}
+        {status?.context && <span className="fact-context">{status.context} context left</span>}
+        {limits.session && <span className={`fact-limit${limits.session.percent >= 90 ? " high" : ""}`} title={limits.session.resets ? resetText(limits.session.resets, new Date()) : undefined}>{t("mobile.facts.session", { percent: Math.round(100 - limits.session.percent) })}</span>}
+        {limits.week && <span className={`fact-limit${limits.week.percent >= 90 ? " high" : ""}`} title={limits.week.resets ? resetText(limits.week.resets, new Date()) : undefined}>{t("mobile.facts.week", { percent: Math.round(100 - limits.week.percent) })}</span>}
       </div>}
       <div className="prompt-composer">
         <div className="composer-field">
@@ -1957,13 +2000,8 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
             <input ref={fileInput} type="file" multiple hidden aria-hidden="true" tabIndex={-1} data-testid="inbox-file-input" onChange={(event) => { attachFromPhone(event.target.files); event.target.value = ""; }} />
             <input ref={galleryInput} type="file" accept="image/*,video/*" multiple hidden aria-hidden="true" tabIndex={-1} data-testid="inbox-gallery-input" onChange={(event) => { attachFromPhone(event.target.files); event.target.value = ""; }} />
             <button className="composer-add" disabled={!connected} onClick={() => setAddSheet(true)} aria-label="Add to the message" aria-haspopup="dialog" aria-expanded={addSheet} title="Add a photo or file from this phone, pictures from its gallery, an image from the desktop, or a project file (@)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg></button>
-            <div className="composer-chips">
-              <button className="composer-chip" disabled={!connected} onClick={selectModel} aria-haspopup="dialog" aria-expanded={modelSheet} title="Choose the model (/model)"><span className="composer-chip-label">{status?.model ?? "Model"}</span></button>
-              <button className="composer-chip" disabled={!connected} onClick={openModeSheet} aria-haspopup={modes.length > 0 ? "dialog" : undefined} aria-expanded={modes.length > 0 ? modeSheet : undefined} title={modes.length > 0 ? "Choose the permission mode" : "Switch mode (Shift+Tab)"}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H12L13 2Z" /></svg><span className="composer-chip-label">{status?.mode ?? activeMode ?? "Mode"}</span></button>
-              <button className="composer-chip" onClick={() => setStatusSheet(true)} aria-haspopup="dialog" aria-expanded={statusSheet} title="Session status and the agent's own usage"><span className={`composer-chip-lamp ${lamp}`} aria-hidden="true" /><span className="composer-chip-label">Status</span></button>
-            </div>
           </>}
-          {tab.kind !== "agent" && <span className="composer-spacer" />}
+          <span className="composer-spacer" />
           {tab.kind === "agent" && <button className={`composer-dictate${listening ? " listening" : ""}`} disabled={!connected || !voiceAvailable || preparingVoice} title={t(voiceAvailable ? "mobile.voice.hint" : "mobile.voice.hintUnavailable")} aria-label={dictateLabel} aria-pressed={listening} onClick={listening ? stopVoice : () => void startVoice()}>{listening ? <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1" /></svg> : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M6 11a6 6 0 0 0 12 0M12 17v4M8 21h8" /></svg>}</button>}
           <button className="send-icon" disabled={!connected || !draft.trim()} onClick={submitDraft} aria-label="Send" title="Send"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 16 8-16 8 3-8-3-8Z" /><path d="M7 12h13" /></svg></button>
         </div>

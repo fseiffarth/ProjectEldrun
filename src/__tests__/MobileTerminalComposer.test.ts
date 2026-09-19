@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { AGENT_LINE_RESET, PASTE_END, PASTE_START, agentInputWrites } from "../../mobile-web/src/terminal/composer";
+import {
+  AGENT_LINE_RESET,
+  PASTE_END,
+  PASTE_START,
+  agentInputWrites,
+  bracketsAgentMessage,
+} from "../../mobile-web/src/terminal/composer";
 
 describe("Eldrun Mobile agent composer writes", () => {
   it("keeps the line reset, the text and the submit in separate writes", () => {
@@ -42,6 +48,16 @@ describe("Eldrun Mobile agent composer writes", () => {
       `${PASTE_START}first line\nsecond line${PASTE_END}`,
       "\r",
     ]);
+  });
+
+  it("types a Claude Code message instead of pasting it", () => {
+    // Claude Code shows any bracketed paste as a `[Pasted text]` block and the
+    // model receives it as pasted content, not as the user's own words.
+    expect(bracketsAgentMessage("Claude", true)).toBe(false);
+    expect(bracketsAgentMessage("claude code", true)).toBe(false);
+    expect(bracketsAgentMessage("Codex", true)).toBe(true);
+    expect(bracketsAgentMessage(undefined, true)).toBe(true);
+    expect(bracketsAgentMessage("Codex", false)).toBe(false);
   });
 
   it("drops control bytes so a draft cannot close the paste or press keys of its own", () => {

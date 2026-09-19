@@ -35,9 +35,9 @@ nav button,.keys button { flex:1; }
 .card { width:100%; text-align:left; justify-content:space-between; padding:16px; background:rgba(28,31,43,.92); }
 .card span:first-child { display:grid; gap:4px; }
 .card-trailing { flex:0 0 auto; gap:10px; }
-/* An agent tab reads as one block: the card opens the session, and under it a
-   foot says what is scheduled and carries the two controls that need no
-   session — rename, and the scheduled prompts. It is the desktop Agents view's
+/* An agent tab reads as one block: the card opens the session (its name
+   renames it), and under it a foot says what is scheduled and carries the
+   controls that need no session — the scheduled prompts, and close. It is the desktop Agents view's
    tab row, stacked for a 360px phone: a bare ◷ in the row's gutter never said
    that scheduling had moved out here. */
 .tab-card { display:grid; border:1px solid #383c4d; border-radius:11px; background:rgba(28,31,43,.92); }
@@ -67,6 +67,22 @@ nav button,.keys button { flex:1; }
    keeps it once it has started. */
 .tab-card-head { display:flex; align-items:stretch; min-width:0; }
 .tab-card-head .card { flex:1 1 auto; min-width:0; }
+/* The colour chooser: a small dot in the card's upper-left corner. The button
+   is wider than the dot so a thumb can hit it, and the card's own left padding
+   closes up so the label does not drift right. */
+.tab-card-dot { flex:0 0 auto; align-self:flex-start; width:34px; padding:21px 0 12px 8px; border:0; border-radius:11px 0 0 0; background:transparent; line-height:0; }
+.tab-card-dot span { display:block; width:11px; height:11px; margin:0 auto; border:1px solid #6f7488; border-radius:50%; }
+.tab-card.has-tab-color .tab-card-dot span { border-color:var(--tab-color); background:var(--tab-color); }
+.tab-card-head .tab-card-dot + .card { padding-left:6px; }
+/* The card body: the opener is stretched over it, and an agent tab's name —
+   which renames it — sits above the opener. The dotted rule is the one hint
+   that the name is its own control. */
+.tab-card-main { position:relative; }
+.tab-card-main.unavailable > span { opacity:.45; }
+.tab-card-open { position:absolute; inset:0; padding:0; border:0; border-radius:11px; background:transparent; }
+.tab-card-open:disabled { opacity:1; }
+.tab-card-name { position:relative; z-index:1; justify-self:start; min-width:0; margin:-4px -6px; padding:4px 6px; border:0; border-radius:6px; background:transparent; text-align:left; }
+.tab-card-name strong { text-decoration:underline dotted #6f7488; text-underline-offset:4px; overflow-wrap:anywhere; }
 .tab-card-grip { flex:0 0 auto; width:44px; padding:0; border:0; border-left:1px solid #2d3040; border-radius:0 11px 0 0; background:transparent; color:#6f7488; font-size:1.05rem; touch-action:none; cursor:grab; }
 .tab-card-grip:active { cursor:grabbing; color:#d3d6e4; }
 .tab-card.dragging { opacity:.65; }
@@ -99,10 +115,14 @@ nav button,.keys button { flex:1; }
 /* The same reading on the flat Agents list, where a row is one tap tall: two
    lines, then ellipsis. */
 .activity-prompt { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; color:#b6bacb; overflow-wrap:anywhere; }
-.agent-status { padding:4px 8px; border:1px solid currentColor; border-radius:0; font-weight:700; text-transform:capitalize; }
+.agent-status { display:inline-flex; align-items:center; gap:5px; padding:4px 8px; border:1px solid currentColor; border-radius:0; font-weight:700; text-transform:capitalize; }
 .agent-status.working { color:#6fe29c; background:#173827; }
 .agent-status.question { color:#ffd36b; background:#493b1d; }
 .agent-status.done { color:#91e6a9; background:#193a29; }
+/* The desktop tab strip's status glyph, leading the word. ▶ runs large beside
+   ? and ✓, so it is set smaller — the same correction the desktop makes. */
+.agent-status-glyph { font-size:.85em; line-height:1; }
+.agent-status.working .agent-status-glyph { font-size:.7em; }
 small { color:#9498aa; }
 .count { min-width:34px; text-align:center; padding:6px; border-radius:0; background:#312a57; }
 .notice,.error { padding:12px; border-radius:10px; }
@@ -463,6 +483,15 @@ body.terminal-open { min-height:0; overflow:hidden; }
    while it holds a choice the session is waiting on. */
 .transcript-screen { display:grid; gap:6px; padding:8px 10px; border-left:3px solid #8fb8ff; border-radius:8px; background:#14161e; }
 .transcript-screen small { color:#8fb8ff; font-size:.62rem; text-transform:uppercase; letter-spacing:.05em; }
+/* Under the stored session while the live screen shows the agent mid-turn. */
+.transcript-working { display:flex; align-items:center; gap:8px; padding:6px 10px; color:#9da3b6; font:500 .78rem/1.4 Inter,ui-sans-serif,system-ui,sans-serif; }
+.transcript-working small { color:#747b90; font-size:.62rem; text-transform:uppercase; letter-spacing:.05em; }
+.transcript-working-dots { display:inline-flex; gap:3px; }
+.transcript-working-dots i { width:5px; height:5px; border-radius:50%; background:#8fb8ff; animation:transcript-working 1.2s ease-in-out infinite; }
+.transcript-working-dots i:nth-child(2) { animation-delay:.2s; }
+.transcript-working-dots i:nth-child(3) { animation-delay:.4s; }
+@keyframes transcript-working { 0%, 80%, 100% { opacity:.25; } 40% { opacity:1; } }
+@media (prefers-reduced-motion: reduce) { .transcript-working-dots i { animation:none; opacity:.7; } }
 .readable-tools button[aria-pressed="true"] { border-color:#6c5ce7; color:#dcd6ff; }
 .readable-tools button.unavailable { opacity:.55; }
 .readable-notice { margin-bottom:10px; padding:8px 10px; border-left:3px solid #747b90; border-radius:8px; background:#14161e; color:#9298aa; font:400 .78rem/1.45 Inter,ui-sans-serif,system-ui,sans-serif; }
@@ -493,10 +522,28 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .last-sent { display:grid; grid-template-columns:auto minmax(0,1fr); gap:8px; align-items:start; margin:6px 7px 0; padding:8px 10px; border-radius:9px; background:#211d35; color:#dcd6ff; font-size:.78rem; }
 .last-sent span { color:#9e91e9; font-weight:750; text-transform:uppercase; letter-spacing:.06em; }
 .last-sent p { margin:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; unicode-bidi:plaintext; }
-.session-facts { display:flex; align-items:center; gap:10px; margin:6px 14px 0; color:#8b90a5; font-size:.72rem; font-family:ui-monospace,SFMono-Regular,monospace; white-space:nowrap; overflow:hidden; }
-.session-facts .fact-path { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+/* Scrolls sideways rather than clipping: an agent tab's row leads with its
+   model / mode / status buttons, and a phone can't fit them beside every fact.
+   The path gives way first, down to a stub, before the row scrolls. */
+.session-facts { display:flex; align-items:center; gap:10px; margin:2px 10px 0; padding:0 4px; color:#8b90a5; font-size:.72rem; font-family:ui-monospace,SFMono-Regular,monospace; white-space:nowrap; overflow-x:auto; overflow-y:hidden; scrollbar-width:none; }
+.session-facts::-webkit-scrollbar { display:none; }
+.session-facts .fact-path { flex:0 1 auto; min-width:4em; overflow:hidden; text-overflow:ellipsis; }
 .session-facts .fact-branch,.session-facts .fact-context,.session-facts .fact-limit { flex:0 0 auto; }
 .session-facts .fact-limit.high { color:#f0a35e; }
+/* A fact you can tap: the row's own type and colour, a shade brighter, with a
+   hit area padded out past the glyphs. The row's own padding and trimmed
+   margin absorb it, so plain facts sit where they did; a negative margin
+   would only have been clipped by the row's overflow. */
+.fact-action { display:flex; align-items:center; gap:5px; flex:0 0 auto; max-width:14em; margin:0 -4px; padding:5px 4px; border:0; border-radius:6px; background:transparent; color:#b9bed0; font:inherit; }
+.fact-action:active { background:rgba(255,255,255,.08); }
+.fact-action:disabled { color:#8b90a5; opacity:.6; }
+.fact-action-label { min-width:0; overflow:hidden; text-overflow:ellipsis; text-decoration:underline dotted rgba(185,190,208,.45); text-underline-offset:3px; }
+/* The same lamp the tab row shows, so the state reads without opening the
+   sheet. `idle` is dim rather than absent: a missing lamp reads as broken. */
+.fact-lamp { width:7px; height:7px; flex:0 0 auto; border-radius:50%; background:#5a6178; }
+.fact-lamp.working { background:#6fe29c; box-shadow:0 0 6px #6fe29c; }
+.fact-lamp.question { background:#ffd36b; box-shadow:0 0 6px #ffd36b; }
+.fact-lamp.done { background:#91e6a9; }
 .prompt-composer { display:flex; flex-direction:column; gap:2px; margin:7px 7px 2px; padding:6px 8px 8px 12px; border:1px solid #454a60; border-radius:16px; background:#171a24; box-shadow:0 6px 20px rgba(0,0,0,.18); }
 .prompt-composer:focus-within { border-color:#8c7df4; box-shadow:0 0 0 2px rgba(120,104,217,.4),0 6px 20px rgba(0,0,0,.18); }
 .prompt-composer textarea { width:100%; min-height:42px; max-height:116px; resize:none; border:0; padding:8px 0; appearance:none; -webkit-appearance:none; background-color:#171a24 !important; color:#fff !important; -webkit-text-fill-color:#fff; caret-color:#fff; line-height:1.35; }
@@ -506,29 +553,6 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .composer-bar svg { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:1.9; stroke-linecap:round; stroke-linejoin:round; }
 .composer-bar .composer-dictate,.composer-bar .send-icon { display:grid; place-items:center; width:40px; min-width:40px; height:40px; padding:0; border:0; border-radius:10px; }
 .composer-add { display:grid; place-items:center; flex:0 0 auto; width:36px; height:36px; padding:0; border:0; border-radius:50%; background:transparent; color:#c8cdda; }
-/* Model / mode / status. The chips share one shrinkable group that owns the
-   whole gap between the + button and the dictate/send cluster, so they sit
-   centred in it instead of being shoved against the right-hand buttons: on a
-   phone the three chips at their natural width overflow the bar, and loose
-   chips filled the row edge to edge with the flex gap as their only margin.
-   `max-width` is a share of the group rather than a slice of the viewport for
-   the same reason — the viewport also has to hold three buttons. */
-.composer-chips { display:flex; align-items:center; justify-content:center; flex:1 1 auto; gap:6px; min-width:0; padding:0 5px; }
-/* `justify-content` is load-bearing: a chip is a flex container, so without it
-   the label sits against the left edge as soon as the bar shrinks the chip
-   below its content width. The label is wrapped in its own element for the same
-   reason — `text-overflow` has no effect on a flex container's anonymous text,
-   so a clipped label was cut mid-glyph. */
-.composer-chip { display:flex; align-items:center; justify-content:center; flex:0 1 auto; gap:5px; min-width:0; max-width:40%; overflow:hidden; padding:8px 13px; border:0; border-radius:999px; background:#232735; color:#e2e5f0; font-size:.82rem; }
-.composer-chip svg { width:15px; height:15px; flex:0 0 auto; }
-.composer-chip-label { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
-/* The status chip carries the same lamp the tab row shows, so the state is
-   readable without opening the sheet. `idle` is deliberately dim rather than
-   absent: a chip whose lamp disappears reads as broken. */
-.composer-chip-lamp { width:8px; height:8px; flex:0 0 auto; border-radius:50%; background:#5a6178; }
-.composer-chip-lamp.working { background:#6fe29c; box-shadow:0 0 7px #6fe29c; }
-.composer-chip-lamp.question { background:#ffd36b; box-shadow:0 0 7px #ffd36b; }
-.composer-chip-lamp.done { background:#91e6a9; }
 .composer-spacer { flex:1 0 0; }
 /* The draft row: the textarea and, while there is a draft, a ✕ that empties
    it — a phone keyboard has no select-all, and a long dictated draft was
@@ -551,7 +575,7 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .voice-feedback { margin:6px 6px 0; padding:9px 11px; border-radius:9px; background:#29253d; color:#e8e3ff; font-size:.86rem; overflow-wrap:anywhere; }
 .voice-feedback.error { background:#3b2027; color:#ffb4c0; }
 .danger { color:#ff9aa6; }
-/* The composer chips' bottom sheet: a phone list in place of walking a TUI
+/* The facts row buttons' bottom sheet: a phone list in place of walking a TUI
    dialog with the arrow keys. */
 .sheet-backdrop { position:fixed; inset:0; z-index:12; display:flex; align-items:flex-end; background:rgba(4,5,9,.7); }
 .option-sheet { display:grid; gap:11px; width:100%; max-height:82dvh; padding:8px 10px calc(16px + env(safe-area-inset-bottom)); border-top:1px solid #383c4d; border-radius:20px 20px 0 0; background:#171a24; overflow:auto; overscroll-behavior:contain; }

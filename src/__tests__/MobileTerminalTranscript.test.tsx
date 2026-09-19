@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const terminalState = vi.hoisted(() => ({ lines: [] as string[] }));
+const terminalState = vi.hoisted(() => ({ lines: [] as string[], alternate: false }));
 
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
@@ -11,6 +11,7 @@ vi.mock("@xterm/xterm", () => ({
     textarea = document.createElement("textarea");
     buffer = {
       active: {
+        get type() { return terminalState.alternate ? "alternate" : "normal"; },
         get length() { return terminalState.lines.length; },
         getLine(row: number) {
           const value = terminalState.lines[row];
@@ -86,6 +87,7 @@ const STORED = {
 describe("Eldrun Mobile Focus reads the stored session", () => {
   beforeEach(() => {
     terminalState.lines = [];
+    terminalState.alternate = false;
     FakeWebSocket.instances = [];
     localStorage.clear();
     vi.stubGlobal("WebSocket", FakeWebSocket);
@@ -98,23 +100,40 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     vi.restoreAllMocks();
   });
 
-  it("opens on Terminal, and remembers Focus for the agent once chosen", async () => {
+  it("opens an agent tab on its stored session, and remembers Terminal for the agent once chosen", async () => {
     vi.stubGlobal("fetch", sidecarFetch(() => STORED));
     const { unmount } = render(<Terminal tab={TAB} back={() => {}} />);
     await settle();
-    expect(screen.getByRole("button", { name: "Terminal" }).getAttribute("aria-pressed")).toBe("true");
-    expect(screen.queryByTestId("session-transcript")).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: "Focus" }));
-    await settle();
-    expect(localStorage.getItem("eldrun.mobile.view.claude-code")).toBe("focus");
-    unmount();
-
-    // Another Claude tab opens where this one was left; a Codex tab does not.
-    render(<Terminal tab={{ ...TAB, id: "tab-8" }} back={() => {}} />);
-    await settle();
     expect(screen.getByRole("button", { name: "Focus" }).getAttribute("aria-pressed")).toBe("true");
     screen.getByTestId("session-transcript");
+    // The default is not written down as the reader's choice.
+    expect(localStorage.getItem("eldrun.mobile.view.claude-code")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Terminal" }));
+    await settle();
+    expect(localStorage.getItem("eldrun.mobile.view.claude-code")).toBe("terminal");
+    unmount();
+
+    // Another Claude tab opens where this one was left.
+    render(<Terminal tab={{ ...TAB, id: "tab-8" }} back={() => {}} />);
+    await settle();
+    expect(screen.getByRole("button", { name: "Terminal" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.queryByTestId("session-transcript")).toBeNull();
+  });
+
+  it("opens on Terminal when no stored session reads and Focus was never chosen", async () => {
+    vi.stubGlobal("fetch", sidecarFetch(() => ({ available: false, reason: "unsupported", entries: [], truncated: false })));
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+    expect(screen.getByRole("button", { name: "Terminal" }).getAttribute("aria-pressed")).toBe("true");
+    expect(localStorage.getItem("eldrun.mobile.view.claude-code")).toBeNull();
+  });
+
+  it("opens a shell tab on Terminal", async () => {
+    vi.stubGlobal("fetch", sidecarFetch(() => STORED));
+    render(<Terminal tab={{ ...TAB, id: "tab-9", kind: "shell", agent_label: undefined }} back={() => {}} />);
+    await settle();
+    expect(screen.getByRole("button", { name: "Terminal" }).getAttribute("aria-pressed")).toBe("true");
   });
 
   it("lays the stored prompts and answers out as a chat and polls with the last version", async () => {
@@ -179,6 +198,40 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     expect(screen.getByText("Hi there.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Session" }));
     screen.getByTestId("session-transcript");
+  });
+
+  it("reads a full-screen agent's stored session in Focus instead of the full-screen notice", async () => {
+    const openCode = { ...TAB, id: "tab-oc", label: "OpenCode", agent_label: "OpenCode" };
+    localStorage.setItem("eldrun.mobile.view.opencode", "focus");
+    let stored: unknown = STORED;
+    vi.stubGlobal("fetch", sidecarFetch(() => stored));
+    render(<Terminal tab={openCode} back={() => {}} />);
+    await settle();
+    // OpenCode's TUI draws on the alternate screen.
+    terminalState.alternate = true;
+    const bytes = new TextEncoder().encode("┃ Build  grok-4.5\n┃ > 1. Yes\n┃   2. No");
+    const payload = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(payload).set(bytes);
+    act(() => { FakeWebSocket.instances[0].onmessage?.({ data: payload } as MessageEvent); });
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 200)); });
+    screen.getByTestId("session-transcript");
+    expect(screen.queryByText("Full-screen program")).toBeNull();
+    // The frame is not read as a question the stored session lacks.
+    expect(screen.queryByRole("group", { name: "On screen now" })).toBeNull();
+
+    // Switched to the screen, the full-screen program says so, as before.
+    fireEvent.click(screen.getByRole("button", { name: "Screen" }));
+    screen.getByText("Full-screen program");
+    expect(screen.queryByTestId("session-transcript")).toBeNull();
+
+    // The notice leads back to the stored session; with none, it is only the notice.
+    fireEvent.click(screen.getByRole("button", { name: "Read the agent's stored conversation" }));
+    screen.getByTestId("session-transcript");
+    stored = { available: false, reason: "unsupported", entries: [], truncated: false };
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    await settle();
+    screen.getByText("Full-screen program");
+    expect(screen.queryByRole("button", { name: "Read the agent's stored conversation" })).toBeNull();
   });
 
   it("shows a sent prompt as the reader's bubble at once, and never changes it", async () => {

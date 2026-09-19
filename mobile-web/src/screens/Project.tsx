@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AGENT_SORTS, DEFAULT_AGENT_SORT, isAgentSort, sortAgentTabs, type AgentSort } from "../../../shared/agentSort";
 import { promptClock, promptLines } from "../agentPrompts";
-import { ApiError, api, reorderTab, type AgentRow, type ProjectDetail, type TabPlace, type TabRow, type TabSchedules } from "../api";
+import { ApiError, api, closeTab, reorderTab, type AgentRow, type ProjectDetail, type TabPlace, type TabRow, type TabSchedules } from "../api";
 import { readChoice, writeChoice } from "../prefs";
 import { applyServerOrder, dropSlot, placeBeside, type RowBox } from "../tabReorder";
-import { CloseSheet } from "./CloseSheet";
 import { ColorSheet } from "./ColorSheet";
 import { PromptsSheet } from "./PromptsSheet";
 import { RenameSheet } from "./RenameSheet";
 import { ScheduleSheet } from "./ScheduleSheet";
+import { AgentStatusPill } from "../components/AgentStatusPill";
 import { tabColorCss } from "../tabColors";
 
 /** The orders this list offers, in the words this screen can use for them. The
@@ -90,7 +90,8 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
   /** The tab whose ✕ was pressed. The sheet asks before anything is closed: the
    *  button sits a thumb-width from the one that opens the terminal, and the
    *  answer is worth reading — closing leaves the session running. */
-  const [closeTab, setCloseTab] = useState<TabRow | null>(null);
+  /** The tab whose close is in flight — its ✕ is held until the desktop answers. */
+  const [closingId, setClosingId] = useState<string | null>(null);
   /** The reader's order for this project's tabs, kept on the phone. The
    * default is the desktop Agents view's, by the same shared function: a tab
    * asking something, then the ones working now, then the rest by their last
@@ -157,8 +158,25 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
    *  layout asynchronously, so the next catalog read can still be carrying the
    *  tab that was just closed, and the row would flicker back. */
   const dropTab = (id: string) => {
-    setCloseTab(null);
     setDetail((prev) => prev ? { ...prev, tabs: prev.tabs.filter((row) => row.id !== id) } : prev);
+  };
+  /** Close on the tap, as the desktop's × does — no sheet in between. It is the
+   *  same act on both surfaces, through the same desktop seam: the tab leaves
+   *  the Eldrun window and the local tmux session it minted ends with it (a
+   *  session on a remote host keeps running). */
+  const close = async (tab: TabRow) => {
+    setClosingId(tab.id);
+    setError("");
+    try {
+      await closeTab(tab.id);
+      dropTab(tab.id);
+    } catch (cause) {
+      setError(cause instanceof ApiError && (cause.status === 503 || cause.code === "desktop_unavailable")
+        ? "Open desktop Eldrun to close a tab."
+        : "The tab could not be closed.");
+    } finally {
+      setClosingId(null);
+    }
   };
   /** The cards' rectangles, in the order they are listed — what a drop position
    * is read off. Taken at the moment it is needed rather than kept, because the
@@ -285,7 +303,25 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
       style={tabColorCss(tab.color) ? { ["--tab-color" as string]: tabColorCss(tab.color) } : undefined}
     >
       <div className="tab-card-head">
-      <button className="card" disabled={!tab.available} onClick={() => terminal(tab)}><span><strong>{tab.label}</strong><small>{tab.kind}{tab.agent_model ? ` · ${tab.agent_model}` : ""}{tab.viewer_busy ? " · open elsewhere" : tab.available ? " · live" : " · gone"}</small></span><span className="card-trailing">{tab.agent_status && <small className={`agent-status ${tab.agent_status}`}>{tab.agent_status}</small>}<span>›</span></span></button>
+      {/* The colour chooser is the dot in the card's upper-left corner: it
+          shows the tab's colour (a hollow ring when it has none) and opens the
+          sheet, so the foot keeps its width for the worded actions. */}
+      <button className="tab-card-dot" onClick={() => setColorTab(tab)} aria-haspopup="dialog" aria-expanded={colorTab?.id === tab.id} aria-label={`Colour ${tab.label}`}><span aria-hidden="true" /></button>
+      {/* The card opens the session; on an agent tab its name renames it.
+          A button cannot hold a button, so the opener is a sibling stretched
+          over the whole card and the name sits above it. The line under the
+          name says which agent runs here — the registry's name for its CLI,
+          which a renamed tab's label no longer does. */}
+      <div className={`card tab-card-main${tab.available ? "" : " unavailable"}`}>
+        <span>
+          {tab.kind === "agent"
+            ? <button className="tab-card-name" onClick={() => setRenameTab(tab)} aria-haspopup="dialog" aria-expanded={renameTab?.id === tab.id} aria-label={`Rename ${tab.label}`} title="Rename"><strong>{tab.label}</strong></button>
+            : <strong>{tab.label}</strong>}
+          <small>{tab.kind === "agent" ? tab.agent_label ?? "agent" : tab.kind}{tab.agent_model ? ` · ${tab.agent_model}` : ""}{tab.viewer_busy ? " · open elsewhere" : tab.available ? " · live" : " · gone"}</small>
+        </span>
+        <span className="card-trailing">{tab.agent_status && <AgentStatusPill status={tab.agent_status} />}<span>›</span></span>
+        <button className="tab-card-open" disabled={!tab.available} onClick={() => terminal(tab)} aria-label={`Open ${tab.label}`} />
+      </div>
       {/* The grip, under the manual order only. It is also the keyboard's way
           in: the arrows move the tab one place, which a drag cannot be asked
           for without a finger. */}
@@ -315,11 +351,9 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
           : <small className="tab-card-when" aria-hidden="true" />}
         <div className="tab-card-actions">
           {tab.kind === "agent" && <>
-            <button className="card-action" onClick={() => setRenameTab(tab)} aria-haspopup="dialog" aria-expanded={renameTab?.id === tab.id} aria-label={`Rename ${tab.label}`}>✎ Rename</button>
             <button className="card-action accent" onClick={() => setScheduleTab({ tab })} aria-haspopup="dialog" aria-expanded={scheduleTab?.tab.id === tab.id} aria-label={`Scheduled prompts for ${tab.label}`}>◷ Schedules</button>
           </>}
-          <button className="card-action" onClick={() => setColorTab(tab)} aria-haspopup="dialog" aria-expanded={colorTab?.id === tab.id} aria-label={`Colour ${tab.label}`}>✻ Colour</button>
-          <button className="card-action danger" onClick={() => setCloseTab(tab)} aria-haspopup="dialog" aria-expanded={closeTab?.id === tab.id} aria-label={`Close ${tab.label}`}>✕ Close</button>
+          <button className="card-action danger" disabled={closingId !== null} onClick={() => void close(tab)} aria-label={`Close ${tab.label}`}>✕ Close</button>
         </div>
       </div>
     </div>)}</section>
@@ -329,7 +363,6 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
       {detail?.agents.map((agent) => <div className="agent-create" key={agent.id}><button disabled={creating || !detail.desktop_available} onClick={() => void create("agent", agent)}>{agent.label}</button>{agent.modes.map((mode) => <button className="mode" disabled={creating || !detail.desktop_available} key={mode} onClick={() => void create("agent", agent, mode)}>{mode}</button>)}</div>)}
     </section>
     {promptsOpen && detail && <PromptsSheet projectId={id} tabs={detail.tabs} onClose={() => setPromptsOpen(false)} onSchedule={(tab, initialMessage) => { setPromptsOpen(false); setScheduleTab({ tab, initialMessage }); }} />}
-    {closeTab && <CloseSheet tab={closeTab} onClose={() => setCloseTab(null)} onClosed={() => dropTab(closeTab.id)} />}
     {colorTab && <ColorSheet
       tab={colorTab}
       onClose={() => setColorTab(null)}
