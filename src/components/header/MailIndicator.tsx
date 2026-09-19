@@ -12,6 +12,7 @@ import { DEFAULT_MAIL_CHECK_MIN, onMailNew } from "../../lib/mail";
 import { useVpnTunnelUp, vpnGateAllows, vpnTunnelUp } from "../../lib/remote/vpn/vpnGate";
 import { useT } from "../../lib/i18n";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
+import { MailGlyph } from "./HeaderGlyphs";
 
 const MENU_ID = "mail";
 
@@ -296,9 +297,7 @@ export function MailIndicator() {
         // pointer will ever open, and Escape is its way back out.
         onFocus={reveal}
       >
-        <span className="mail-indicator-icon" aria-hidden="true">
-          ✉
-        </span>
+        <MailGlyph className="mail-indicator-icon" />
         {unread > 0 && (
           <span
             /* `fresh` only *emphasises* — the number is the same either way.

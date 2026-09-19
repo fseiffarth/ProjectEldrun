@@ -14,6 +14,7 @@ import { conferenceLink } from "../../lib/calendar/conference";
 import { joinConference } from "../../lib/linkTarget";
 import { useT } from "../../lib/i18n";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
+import { CalendarGlyph } from "./HeaderGlyphs";
 
 const MENU_ID = "calendar";
 
@@ -196,9 +197,7 @@ export function CalendarIndicator() {
         // pointer will ever open, and Escape is its way back out.
         onFocus={reveal}
       >
-        <span className="calendar-indicator-icon" aria-hidden="true">
-          🗓
-        </span>
+        <CalendarGlyph className="calendar-indicator-icon" />
         {count > 0 && (
           <span className="calendar-indicator-badge" aria-hidden="true">
             {count > 99 ? "99+" : count}

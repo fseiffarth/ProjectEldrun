@@ -1120,7 +1120,7 @@ export function LocalModelMenu() {
           xmlns="http://www.w3.org/2000/svg"
           aria-hidden="true"
         >
-          <g stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+          <g stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
             <rect x="6" y="6" width="12" height="12" rx="2" />
             <rect x="9.5" y="9.5" width="5" height="5" rx="0.8" />
             <path d="M9 2.5V6M12 2.5V6M15 2.5V6M9 18v3.5M12 18v3.5M15 18v3.5M2.5 9H6M2.5 12H6M2.5 15H6M18 9h3.5M18 12h3.5M18 15h3.5" />

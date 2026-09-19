@@ -1,6 +1,7 @@
 import { useRef } from "react";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { useT } from "../../lib/i18n";
+import { SettingsGlyph } from "./HeaderGlyphs";
 
 const MENU_ID = "settings";
 
@@ -77,9 +78,7 @@ export function SettingsMenu() {
         onClick={reveal}
         onFocus={reveal}
       >
-        <span className="settings-menu-icon" aria-hidden="true">
-          ⚙
-        </span>
+        <SettingsGlyph className="settings-menu-icon" />
       </button>
       {open && (
         // The app's canonical dropdown-list chrome, shared with the switcher's

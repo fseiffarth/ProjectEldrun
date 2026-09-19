@@ -17,6 +17,7 @@ import { formatTime, timePart } from "../../lib/calendar/calendarTime";
 import { useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
+import { TodoGlyph } from "./HeaderGlyphs";
 
 const MENU_ID = "todo";
 
@@ -278,9 +279,7 @@ export function TodoIndicator() {
         // ever open, and Escape is its way back out.
         onFocus={reveal}
       >
-        <span className="todo-indicator-icon" aria-hidden="true">
-          ☑
-        </span>
+        <TodoGlyph className="todo-indicator-icon" />
         {count > 0 && (
           <span
             className={"todo-indicator-badge" + (overdue ? " overdue" : "")}
