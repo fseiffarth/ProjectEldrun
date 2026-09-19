@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
-import { formatTime, weekdayLabel } from "../../lib/calendarTime";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
+import { formatTime, weekdayLabel } from "../../lib/calendar/calendarTime";
 import { useI18nStore, useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
-import type { PromptChartCard } from "../../lib/agentPromptChart";
-import type { UsageResetMark } from "../../lib/agentUsageResets";
+import type { PromptChartCard } from "../../lib/agents/prompt/chart";
+import type { UsageResetMark } from "../../lib/agents/agentUsageResets";
 import {
   TIMELINE_CARD_WIDTH,
   TIMELINE_LANE_HEIGHT,
@@ -20,7 +20,7 @@ import {
   timelineX,
   type SessionSpan,
   type TimelineWindow,
-} from "../../lib/agentPromptTimeline";
+} from "../../lib/agents/prompt/timeline";
 import type { ChartDrag } from "./usePromptChartDrag";
 
 interface Props {
@@ -33,12 +33,17 @@ interface Props {
   /** The now band — the "send now" drop zone, measured the same way. */
   nowBandRef: RefObject<HTMLDivElement>;
   /** Draws one card; `session` is set when the card stands for a whole
-   *  session's sent prompts. */
-  renderCard: (card: PromptChartCard, occurrence?: string, session?: SessionSpan) => ReactNode;
+   *  session's sent prompts, `drawnAt` is the instant the card sits at. */
+  renderCard: (card: PromptChartCard, occurrence?: string, session?: SessionSpan, drawnAt?: Date) => ReactNode;
   /** Month view: a day's cluster asks to be looked at up close. */
   onRefine: (date: string) => void;
   /** The badge text for the card being carried, decided by the chart. */
   dropLabel: string | null;
+  /** The badge names a refusal (a zone that means something, but not for
+   *  this card): drawn in the blocked style, like a drop over nothing. */
+  dropBlocked?: boolean;
+  /** One line of guidance in an empty timeline, where there is nothing to drop on. */
+  emptyHint?: string;
   /** Ctrl + wheel over the axis: one view finer or coarser, around the
    *  instant under the pointer. */
   onZoom?: (direction: "in" | "out", at: Date) => void;
@@ -55,6 +60,8 @@ const BODY_PADDING = 8;
 const NOW_BAND_WIDTH = 22;
 /** The queue's caption above its first card. */
 const QUEUE_LABEL_HEIGHT = 16;
+/** A card's width while it is edited on the timeline (the CSS `is-editing` rule). */
+export const TIMELINE_EDIT_WIDTH = 460;
 
 function hhmm(at: Date): string {
   return `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
@@ -73,7 +80,7 @@ function hhmm(at: Date): string {
  * that scrolled the body took the now line away with it. The axis, with the
  * NOW label, is sticky, so scrolling the tab keeps the clock in view too.
  */
-export function PromptTimeline({ win, cards, now, drag, bodyRef, nowBandRef, renderCard, onRefine, dropLabel, onZoom, lifts, resets = [], onBodyPointerDown }: Props) {
+export function PromptTimeline({ win, cards, now, drag, bodyRef, nowBandRef, renderCard, onRefine, dropLabel, dropBlocked, emptyHint, onZoom, lifts, resets = [], onBodyPointerDown }: Props) {
   const t = useT();
   const lang = useI18nStore((s) => s.lang);
   const use24h = useUse24h();
@@ -162,16 +169,24 @@ export function PromptTimeline({ win, cards, now, drag, bodyRef, nowBandRef, ren
   });
 
   const dropAt = drag?.kind === "card" && drag.zone.kind === "time" ? drag.zone.at : null;
-  const dropNow = drag?.kind === "card" && drag.zone.kind === "now";
+  // The band lights for every drop that sends now: the band itself, and the
+  // past body for a single card — not for a refused one (a selection, a
+  // queued card), whose badge is blocked instead.
+  const dropNow = drag?.kind === "card" && (drag.zone.kind === "now" || (drag.zone.kind === "past" && !dropBlocked));
   // Inside one day, the date is the range label's to say.
   const dropDate = (at: Date) => formatTimelineInstant(at, lang, use24h, win.view !== "day" && win.view !== "hour");
+  /** How far left a card edited at `x` must grow to keep its editor inside
+   *  the body, which clips sideways; 0 where it fits as it is. */
+  const editShift = (x: number) => Math.max(-x, Math.min(0, width - x - TIMELINE_EDIT_WIDTH));
 
   return (
     <div className={`agent-prompt-timeline is-${win.view}`} data-testid="prompt-timeline" ref={rootRef}>
       <div className="agent-prompt-timeline-axis" aria-hidden="true">
-        {ticks.filter((tick) => tick.major || win.view === "day" || win.view === "hour").map((tick) => (
-          <span key={tick.at.getTime()} className={`agent-prompt-timeline-tick${tick.major ? " is-major" : ""}`} style={{ left: tick.x }}>
-            {tick.major || win.view !== "day" ? tickLabel(tick.at, tick.label, tick.major) : ""}
+        {/* Keyed by position, not instant: on a spring-forward day two wall
+            hours are one instant, and the key would repeat. */}
+        {ticks.filter((tick) => tick.major || win.view === "day" || win.view === "hour").map((tick, index) => (
+          <span key={index} className={`agent-prompt-timeline-tick${tick.major ? " is-major" : ""}`} style={{ left: tick.x }}>
+            {tick.labelled ? tickLabel(tick.at, tick.label, tick.major) : ""}
           </span>
         ))}
         {visibleResets.map((mark) => (
@@ -186,8 +201,8 @@ export function PromptTimeline({ win, cards, now, drag, bodyRef, nowBandRef, ren
       <div className="agent-prompt-timeline-stage">
         <div className="agent-prompt-timeline-underlay" aria-hidden="true">
           {(nowInside || now >= win.end) && <div className="agent-prompt-timeline-past" style={{ width: nowInside ? nowX : width }} />}
-          {ticks.map((tick) => (
-            <span key={`line:${tick.at.getTime()}`} className={`agent-prompt-timeline-line${tick.major ? " is-major" : ""}`} style={{ left: tick.x }} />
+          {ticks.map((tick, index) => (
+            <span key={`line:${index}`} className={`agent-prompt-timeline-line${tick.major ? " is-major" : ""}`} style={{ left: tick.x }} />
           ))}
           {visibleResets.map((mark) => (
             <span key={`reset:${mark.key}`} className={`agent-prompt-timeline-reset is-${mark.kind}`} style={{ left: timelineX(mark.at, win, width) }} />
@@ -203,6 +218,7 @@ export function PromptTimeline({ win, cards, now, drag, bodyRef, nowBandRef, ren
             if (event.target === event.currentTarget) onBodyPointerDown(event);
           }}
         >
+          {emptyHint && <div className="file-tree-empty" data-testid="prompt-timeline-empty">{emptyHint}</div>}
           {win.view === "month"
             ? clusters.map((cluster) => (
               <button
@@ -226,15 +242,15 @@ export function PromptTimeline({ win, cards, now, drag, bodyRef, nowBandRef, ren
             : packed.items.map((item) => (
               <div
                 key={item.key}
-                className={`agent-prompt-timeline-item${lifting(item.key) ? " is-lifting" : ""}`}
-                style={{ left: item.x, top: itemTop(item), width: item.width }}
+                className={`agent-prompt-timeline-item${lifting(item.key) ? " is-lifting" : ""}${editShift(item.x) < 0 ? " is-edit-flip" : ""}`}
+                style={{ left: item.x, top: itemTop(item), width: item.width, ...(editShift(item.x) < 0 ? { "--edit-shift": `${editShift(item.x)}px` } as CSSProperties : {}) }}
                 data-lane-top={laneTop(item)}
                 data-item-key={item.key}
               >
                 {renderCard(item.card, item.occurrence, item.members && {
                   cards: item.members.map((member) => member.card),
                   offsets: item.members.map((member) => timelineX(member.at, win, width) - item.x),
-                })}
+                }, item.at)}
               </div>
             ))}
           {queued.length > 0 && (
@@ -254,7 +270,7 @@ export function PromptTimeline({ win, cards, now, drag, bodyRef, nowBandRef, ren
           />
           {dropAt && (
             <div className="agent-prompt-timeline-indicator" style={{ left: timelineX(dropAt, win, width) }}>
-              <span className="agent-prompt-timeline-badge">{dropLabel ? `${dropLabel} · ` : ""}{dropDate(dropAt)}</span>
+              <span className={`agent-prompt-timeline-badge${dropBlocked ? " is-blocked" : ""}`}>{dropLabel ? `${dropLabel} · ` : ""}{dropDate(dropAt)}</span>
             </div>
           )}
         </div>
@@ -280,7 +296,7 @@ export function PromptTimeline({ win, cards, now, drag, bodyRef, nowBandRef, ren
         >
           <span className="agent-prompt-card-message">{drag.card.message}</span>
           {drag.zone.kind !== "time" && dropLabel && (
-            <span className={`agent-prompt-timeline-badge${drag.zone.kind === "none" ? " is-blocked" : ""}`}>{dropLabel}</span>
+            <span className={`agent-prompt-timeline-badge${drag.zone.kind === "none" || dropBlocked ? " is-blocked" : ""}`}>{dropLabel}</span>
           )}
         </div>
       )}

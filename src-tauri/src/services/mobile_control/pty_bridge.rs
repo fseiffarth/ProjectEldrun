@@ -5,7 +5,7 @@ use std::{
     process::Command,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, PoisonError,
     },
 };
 
@@ -37,7 +37,7 @@ impl BusyGuard {
 }
 impl Drop for BusyGuard {
     fn drop(&mut self) {
-        let mut busy = self.busy.lock().unwrap();
+        let mut busy = self.busy.lock().unwrap_or_else(PoisonError::into_inner);
         // Only clear the slot if it is still ours: an evicting acquire may
         // already have installed its own flag under this name.
         if busy
@@ -55,7 +55,7 @@ const EVICTION_WAIT: std::time::Duration = std::time::Duration::from_millis(2_50
 
 impl TerminalRegistry {
     pub fn is_busy(&self, name: &str) -> bool {
-        self.busy.lock().unwrap().contains_key(name)
+        self.busy.lock().unwrap_or_else(PoisonError::into_inner).contains_key(name)
     }
 
     /// Claims the tab, displacing an existing viewer if there is one.
@@ -68,7 +68,7 @@ impl TerminalRegistry {
         let deadline = tokio::time::Instant::now() + EVICTION_WAIT;
         loop {
             {
-                let mut busy = self.busy.lock().unwrap();
+                let mut busy = self.busy.lock().unwrap_or_else(PoisonError::into_inner);
                 match busy.get(name) {
                     None => {
                         let evicted = Arc::new(AtomicBool::new(false));
@@ -91,7 +91,19 @@ impl TerminalRegistry {
 }
 
 fn tmux_attach_command(tmux_name: &str) -> CommandBuilder {
-    let mut command = CommandBuilder::new("tmux");
+    // The sidecar is a headless service with a bare inherited PATH, so tmux is
+    // resolved on Eldrun's effective PATH (Homebrew's on a Mac, `~/.local/bin`)
+    // and the child gets that PATH too — the same tmux the desktop's sessions
+    // were started by, since tmux refuses a client of another protocol version.
+    // Absolute, so neither std's nor portable-pty's PATH lookup semantics matter.
+    // Deliberately NOT `command_no_window`: this is a ConPTY child on Windows,
+    // and CREATE_NO_WINDOW would detach it from its pseudo-console.
+    let tmux = crate::paths::resolve_executable("tmux")
+        .unwrap_or_else(|| std::path::PathBuf::from("tmux"));
+    let mut command = CommandBuilder::new(tmux);
+    if let Some(path) = crate::paths::effective_path() {
+        command.env("PATH", path);
+    }
     // `-u` forces UTF-8. The sidecar is a headless systemd user service with no
     // guaranteed LANG/LC_CTYPE, and a non-UTF-8 tmux client replaces every
     // `✓ ✗ ⚠ ● ⏺ └ ❯` — the exact glyphs the reading view classifies on — so the
@@ -116,7 +128,8 @@ fn tmux_attach_command(tmux_name: &str) -> CommandBuilder {
 const MOBILE_SCROLLBACK_LINES: usize = crate::services::ssh_exec::TMUX_HISTORY_LINES as usize;
 
 fn tmux_capture_command(tmux_name: &str) -> Command {
-    let mut command = Command::new("tmux");
+    // Eldrun's effective PATH, as for the attach (see `tmux_attach_command`).
+    let mut command = crate::paths::command_no_window("tmux");
     command.args([
         "-u",
         "capture-pane",
@@ -140,7 +153,7 @@ fn tmux_capture_command(tmux_name: &str) -> Command {
 
 /// The tmux *window* geometry, which is what the pane is actually rendered at.
 fn tmux_window_size_command(tmux_name: &str) -> Command {
-    let mut command = Command::new("tmux");
+    let mut command = crate::paths::command_no_window("tmux");
     command.args([
         "-u",
         "display-message",
@@ -415,10 +428,10 @@ pub async fn attach(
                 // per-viewer fork rate.
                 if tick.is_multiple_of(5) {
                     let (authorized, key) = {
-                        let mut auth = auth.lock().unwrap();
+                        let mut auth = auth.lock().unwrap_or_else(PoisonError::into_inner);
                         (auth.authenticate(&token).is_some(), auth.host_key().to_vec())
                     };
-                    let still_allowed = authorized && catalog.lock().unwrap().load(&state_dir, &key).ok()
+                    let still_allowed = authorized && catalog.lock().unwrap_or_else(PoisonError::into_inner).load(&state_dir, &key).ok()
                         .and_then(|catalog| catalog.tab(&tab_id).map(|(_, tab)| tab.public.available && tab.tmux_name == tmux_name))
                         .unwrap_or(false);
                     if !still_allowed { break Err("access_revoked".into()); }
@@ -564,10 +577,43 @@ mod tests {
         let command = tmux_attach_command("eldrun-project--shell-test");
         assert_eq!(command.get_env("TERM"), Some(OsStr::new("vt100")));
         assert_eq!(command.get_env("COLORTERM"), Some(OsStr::new("truecolor")));
+        let argv = command.get_argv();
+        // The program is tmux resolved on Eldrun's PATH (absolute when installed).
+        let program = std::path::Path::new(&argv[0]);
         assert_eq!(
-            command.get_argv(),
-            &["tmux", "-u", "attach-session", "-t", "eldrun-project--shell-test"].map(OsStr::new)
+            program.file_stem().and_then(OsStr::to_str),
+            Some("tmux"),
+            "attach runs tmux: {argv:?}"
         );
+        assert_eq!(
+            &argv[1..],
+            &["-u", "attach-session", "-t", "eldrun-project--shell-test"].map(OsStr::new)
+        );
+    }
+
+    fn first_path_dir(path: &OsStr) -> std::path::PathBuf {
+        std::env::split_paths(path).next().expect("non-empty PATH")
+    }
+
+    #[test]
+    fn sidecar_tmux_spawns_use_eldrun_path() {
+        let expected = crate::paths::extra_path_dirs()[0].clone();
+
+        let attach = tmux_attach_command("eldrun-project--shell-test");
+        let attach_path = attach.get_env("PATH").expect("attach carries PATH");
+        assert_eq!(first_path_dir(attach_path), expected);
+
+        for command in [
+            tmux_capture_command("eldrun-project--shell-test"),
+            tmux_window_size_command("eldrun-project--shell-test"),
+        ] {
+            let path = command
+                .get_envs()
+                .find(|(key, _)| *key == "PATH")
+                .and_then(|(_, value)| value)
+                .expect("tmux spawn carries PATH");
+            assert_eq!(first_path_dir(path), expected);
+        }
     }
 
     #[test]

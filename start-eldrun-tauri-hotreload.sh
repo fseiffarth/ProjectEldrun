@@ -101,4 +101,16 @@ npm --version
 cargo --version
 rustc --version
 
+# The one directory this binary may serve a newer phone bundle from
+# (src-tauri/src/services/mobile_control/live_pwa.rs). Exported here rather than
+# in package.json because an inline assignment in an npm script is not portable
+# to the Windows shell CI runs, and this launcher is Linux-only anyway. Without
+# it the dev window's sidecar has no overlay path compiled in and keeps serving
+# the bundle `beforeDevCommand` built at session start — fine for an hour, stale
+# by the end of a long session.
+export ELDRUN_MOBILE_LIVE_DIR="$ROOT/target/mobile-pwa"
+# The checkout the header's dev-build chip reads HEAD from (services::dev_build).
+# Unset — CI, a release — means no chip.
+export ELDRUN_DEV_SOURCE_ROOT="$ROOT"
+
 exec npm run tauri:dev

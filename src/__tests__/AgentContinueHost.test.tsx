@@ -23,10 +23,10 @@ import { AgentContinueHost } from "../components/layout/AgentContinueHost";
 import {
   _clearScheduledAgentInputsForTest,
   registerScheduledAgentInput,
-} from "../lib/scheduledAgentInput";
+} from "../lib/agents/scheduledAgentInput";
 import { useActivityStore } from "../stores/activity";
-import { _resetAgentContinueForTest, continueKey, useAgentContinueStore } from "../stores/agentContinue";
-import { useAgentPromptsStore } from "../stores/agentPrompts";
+import { _resetAgentContinueForTest, continueKey, useAgentContinueStore } from "../stores/agents/agentContinue";
+import { useAgentPromptsStore } from "../stores/agents/agentPrompts";
 import { useTabsStore, type TabEntry } from "../stores/tabs";
 
 const invokeMock = vi.mocked(invoke);
@@ -174,7 +174,7 @@ describe("auto-continue", () => {
     vi.setSystemTime(new Date(2026, 8, 1, 18, 22));
     await act(async () => {
       // The tick that fires the send, then the composer's own inter-write gaps
-      // (`lib/scheduledAgentInput`), which are scheduled during that tick.
+      // (`lib/agents/scheduledAgentInput`), which are scheduled during that tick.
       await vi.advanceTimersByTimeAsync(30_000);
       await vi.advanceTimersByTimeAsync(1_000);
     });

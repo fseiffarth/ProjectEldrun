@@ -3,8 +3,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invoke(...a) }));
 
-import { classifyWarmupError, runAgentCronWarmup } from "../lib/agentCronRun";
-import { AGENT_CRON_MESSAGE } from "../lib/agentCron";
+import { classifyWarmupError, runAgentCronWarmup } from "../lib/agents/agentCronRun";
+import { AGENT_CRON_MESSAGE } from "../lib/agents/agentCron";
 
 describe("agent cron — the send", () => {
   beforeEach(() => {

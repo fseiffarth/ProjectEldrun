@@ -86,3 +86,104 @@ pub struct AgentScheduleTargetBinding {
     pub project_id: String,
     pub schedule_target_id: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn json<T: Serialize>(value: &T) -> serde_json::Value {
+        serde_json::to_value(value).expect("serialize")
+    }
+
+    /// Rules are tagged by `type` in snake_case and reject a field they do not
+    /// know — a typo in the composer's payload fails loudly instead of
+    /// scheduling something subtly different.
+    #[test]
+    fn schedule_rules_are_type_tagged_and_strict() {
+        let daily: AgentScheduleRule = serde_json::from_str(r#"{"type":"daily","time":"09:00"}"#).unwrap();
+        assert_eq!(daily, AgentScheduleRule::Daily { time: "09:00".into() });
+        assert_eq!(json(&daily), serde_json::json!({"type":"daily","time":"09:00"}));
+
+        let weekdays: AgentScheduleRule =
+            serde_json::from_str(r#"{"type":"weekdays","weekdays":[1,3,5],"time":"07:30"}"#).unwrap();
+        assert_eq!(
+            weekdays,
+            AgentScheduleRule::Weekdays { weekdays: vec![1, 3, 5], time: "07:30".into() }
+        );
+        let once = AgentScheduleRule::Once { at: "2026-09-16T08:00".into() };
+        assert_eq!(json(&once)["type"], "once");
+
+        assert!(serde_json::from_str::<AgentScheduleRule>(r#"{"type":"once","at":"x","time":"y"}"#).is_err());
+        assert!(serde_json::from_str::<AgentScheduleRule>(r#"{"type":"hourly"}"#).is_err());
+        assert!(serde_json::from_str::<AgentScheduleRule>(r#"{"type":"Daily","time":"09:00"}"#).is_err());
+    }
+
+    /// A schedule written before the composer existed has no `preface`; it
+    /// loads as empty and the empty list is not written back. `last` likewise.
+    #[test]
+    fn a_pre_composer_schedule_loads_and_writes_back_without_preface_or_last() {
+        let raw = r#"{"id":"s1","enabled":true,"message":"run tests",
+                      "rule":{"type":"daily","time":"09:00"}}"#;
+        let s: ScheduledAgentPrompt = serde_json::from_str(raw).unwrap();
+        assert!(s.preface.is_empty());
+        assert!(s.last.is_none());
+        let out = json(&s);
+        assert!(out.get("preface").is_none());
+        assert!(out.get("last").is_none());
+
+        let with: ScheduledAgentPrompt = serde_json::from_str(
+            r#"{"id":"s2","enabled":false,"message":"m","rule":{"type":"once","at":"t"},
+                "preface":["/clear","/model opus"],
+                "last":{"occurrence":"2026-09-15T09:00","result":"missed","at":"2026-09-15T09:01"}}"#,
+        )
+        .unwrap();
+        assert_eq!(with.preface, vec!["/clear", "/model opus"]);
+        assert_eq!(with.last.as_ref().unwrap().result, AgentScheduleResult::Missed);
+        assert_eq!(json(&AgentScheduleResult::Delivered), "delivered");
+        assert_eq!(json(&AgentScheduleResult::Failed), "failed");
+        assert!(serde_json::from_str::<ScheduledAgentPrompt>(
+            r#"{"id":"s","enabled":true,"message":"m","rule":{"type":"once","at":"t"},"nope":1}"#
+        )
+        .is_err());
+    }
+
+    /// An empty file is a valid file: version 1, no projects. Claims are only
+    /// written once one exists, and they survive the round trip (they must —
+    /// a claim that vanished on reload would retry an occurrence).
+    #[test]
+    fn the_tasks_file_defaults_to_version_one_and_keeps_claims() {
+        let empty: AgentTasksFile = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty.version, 1);
+        assert!(empty.projects.is_empty());
+        assert_eq!(json(&AgentTasksFile::default()), serde_json::json!({"version":1,"projects":{}}));
+
+        let target: AgentPromptTarget = serde_json::from_str(r#"{"schedules":[]}"#).unwrap();
+        assert!(json(&target).get("claims").is_none());
+        let claimed: AgentPromptTarget = serde_json::from_str(
+            r#"{"schedules":[],"claims":{"s1":"2026-09-15T09:00"}}"#,
+        )
+        .unwrap();
+        let back: AgentPromptTarget = serde_json::from_value(json(&claimed)).unwrap();
+        assert_eq!(back.claims["s1"], "2026-09-15T09:00");
+
+        assert!(serde_json::from_str::<AgentTasksFile>(r#"{"version":1,"projects":{},"extra":1}"#).is_err());
+        let nested: AgentTasksFile = serde_json::from_str(
+            r#"{"projects":{"p1":{"tab-a":{"schedules":[]}}}}"#,
+        )
+        .unwrap();
+        assert!(nested.projects["p1"]["tab-a"].schedules.is_empty());
+    }
+
+    /// The binding crosses the wire in camelCase and is strict too.
+    #[test]
+    fn the_target_binding_is_camel_case_and_strict() {
+        let b: AgentScheduleTargetBinding =
+            serde_json::from_str(r#"{"projectId":"p","scheduleTargetId":"t"}"#).unwrap();
+        assert_eq!(b.project_id, "p");
+        assert_eq!(json(&b)["scheduleTargetId"], "t");
+        assert!(serde_json::from_str::<AgentScheduleTargetBinding>(
+            r#"{"project_id":"p","schedule_target_id":"t"}"#
+        )
+        .is_err());
+    }
+}

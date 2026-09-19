@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   AGENT_FENCE_DEFAULT_PATHS,
+  agentFenceInstallCommand,
   agentFenceLabelKey,
   agentFenceReasonKey,
   parseAgentFencePaths,
-} from "../lib/agentFence";
+} from "../lib/agents/agentFence";
 
 describe("agent fence project-pill states", () => {
   it("maps inherit/off/on to their distinct labels", () => {
@@ -20,6 +21,33 @@ describe("agent fence project-pill states", () => {
       "pill.agentFenceReasonBwrap",
     );
     expect(agentFenceReasonKey("enforced")).toBeNull();
+    expect(agentFenceReasonKey("sandbox-exec unavailable")).toBe("pill.agentFenceReasonSeatbelt");
+  });
+});
+
+describe("agent fence install button", () => {
+  const base = { enforced: false, reason: "bubblewrap unavailable", roots: [] };
+
+  it("uses the backend's distro command when the tool is missing", () => {
+    expect(
+      agentFenceInstallCommand({
+        ...base,
+        bwrap_available: false,
+        install_cmd: "sudo dnf install -y bubblewrap",
+      }),
+    ).toBe("sudo dnf install -y bubblewrap");
+  });
+
+  it("offers nothing for an unknown distribution or an older backend", () => {
+    expect(agentFenceInstallCommand({ ...base, bwrap_available: false, install_cmd: null })).toBeNull();
+    expect(agentFenceInstallCommand({ ...base, bwrap_available: false })).toBeNull();
+  });
+
+  it("offers nothing while the tool works", () => {
+    expect(
+      agentFenceInstallCommand({ ...base, bwrap_available: true, install_cmd: "sudo apt install -y bubblewrap" }),
+    ).toBeNull();
+    expect(agentFenceInstallCommand(null)).toBeNull();
   });
 });
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { nextWindowState, sameWindowState } from "../lib/windowState";
+import { nextWindowState, sameWindowState } from "../lib/window/windowState";
 import type { WindowState } from "../types";
 
 const floating: WindowState = { x: 2200, y: 100, w: 1400, h: 900, maximized: false };

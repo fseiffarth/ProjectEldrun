@@ -37,6 +37,77 @@ BINARY_DEST="$APP_DIR/eldrun-dev"
 DESKTOP_DEST="$DESKTOP_DIR/EldrunDev.desktop"
 LAUNCHER="$ROOT/start-eldrun-dev-build.sh"
 FREEZE_TREE="$ROOT/target/freeze-tree"
+LIVE_PWA_DIR="$ROOT/target/mobile-pwa"
+
+# The phone's bundle, published where a RUNNING sidecar can find it.
+#
+# The PWA is compiled into the binary, and the running window keeps its old
+# inode across an install, so freezing a commit never reached the phone until
+# the user relaunched — that is how a bundle days behind kept being served with
+# nothing saying so. A published copy costs the sidecar one stat per request and
+# closes the gap without a relaunch: the phone reloads over HTTP, so a
+# pull-to-refresh is the whole update path (src-tauri/.../live_pwa.rs).
+#
+# Published from the tree that was just BUILT, before cargo starts: the bundle
+# takes two seconds and the compile takes two minutes, and the phone has no
+# reason to wait for the second.
+#
+# Written to target/ rather than under $HOME on purpose — commits come from
+# agent tabs, where `services::agent_fence` has replaced $HOME with a tmpfs that
+# dies with the tab (see the install guard below), while target/ is inside the
+# bound project and is real.
+publish_live_pwa() {
+  local src="$1/mobile-dist" commit="$2"
+  [ -d "$src" ] || { echo "package-dev: no $src to publish for the phone" >&2; return 0; }
+
+  local tmp="$LIVE_PWA_DIR.tmp.$$"
+  rm -rf "$tmp"
+  mkdir -p "$tmp"
+  cp -a "$src/." "$tmp/"
+
+  # The non-English dictionary chunks the phone can never request. Dropping them
+  # keeps the published set identical to the embedded one, which build.rs filters
+  # the same way (is_unreachable_dict_chunk) — a bundle that answers 200 through
+  # the overlay and 404 through the binary is a difference that only shows up on
+  # one of them. If the phone ever gains a language switcher, delete both.
+  find "$tmp/assets" -maxdepth 1 -regextype posix-extended \
+    -regex '.*/(de|es|fr|it)-[A-Za-z0-9_-]{8}\.js' -delete 2>/dev/null || true
+
+  # The stamp is the whole contract: `built` is what stops an overlay from
+  # shadowing a NEWER binary, and `entry` is what lets the loader refuse half a
+  # bundle rather than serve a shell pointing at a script it does not have.
+  local entry
+  entry="$(cd "$tmp" && ls -1 assets/index-*.js 2>/dev/null | head -n1 || true)"
+  if [ -z "$entry" ] || [ ! -f "$tmp/index.html" ]; then
+    echo "package-dev: $src is not a whole bundle; the phone keeps the embedded one" >&2
+    rm -rf "$tmp"
+    return 0
+  fi
+  {
+    printf 'built=%s\n' "$(date +%s)"
+    printf 'commit=%s\n' "$commit"
+    printf 'entry=/%s\n' "$entry"
+  } >"$tmp/.stamp"
+
+  # Swap rather than overwrite: the sidecar reads these files while this runs,
+  # and a half-copied directory is a white screen. The gap between the two
+  # renames is a few milliseconds during which the loader finds no stamp and the
+  # binary answers from its embedded bundle, which is the safe direction.
+  rm -rf "$LIVE_PWA_DIR.old"
+  [ -d "$LIVE_PWA_DIR" ] && mv "$LIVE_PWA_DIR" "$LIVE_PWA_DIR.old"
+  mv "$tmp" "$LIVE_PWA_DIR"
+  rm -rf "$LIVE_PWA_DIR.old"
+  echo "package-dev: published the phone bundle ($commit) to $LIVE_PWA_DIR"
+}
+
+# Compiled into the binary as the one directory it may serve a newer bundle
+# from. Unset in CI and in every release build, where the overlay does not exist
+# at all.
+export ELDRUN_MOBILE_LIVE_DIR="$LIVE_PWA_DIR"
+# The checkout the header's dev-build chip compares the installed snapshot with
+# (services::dev_build) — the main one even in --head mode, whose freeze tree
+# is a detached copy that never moves. Unset in CI and every release: no chip.
+export ELDRUN_DEV_SOURCE_ROOT="$ROOT"
 
 MODE=tree
 for arg in "$@"; do
@@ -89,6 +160,7 @@ if [ "$MODE" = head ]; then
   # exhausted them (see the --tree branch), and a detached background build is
   # the last place to want that.
   ( cd "$SRC" && npm run build )
+  publish_live_pwa "$SRC" "$(git -C "$SRC" rev-parse --short HEAD 2>/dev/null || echo unknown)"
   cargo build --release --features custom-protocol --manifest-path "$SRC/src-tauri/Cargo.toml"
 else
   SRC="$ROOT"
@@ -146,6 +218,13 @@ VERSION="$(node -p "require('$SRC/package.json').version")"
 COMMIT="$(git -C "$SRC" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 DIRTY=""
 if [ "$MODE" = tree ] && ! git -C "$ROOT" diff --quiet HEAD -- 2>/dev/null; then DIRTY="+local"; fi
+
+# --head published the phone bundle before cargo started, so a commit reaches the
+# phone in seconds rather than after the compile. --tree has no such hurry and
+# publishes here, once the build it is freezing has actually succeeded.
+if [ "$MODE" = tree ]; then
+  publish_live_pwa "$SRC" "$COMMIT$DIRTY"
+fi
 
 # Record that THIS artifact passed that check. The launcher adopts on this
 # record rather than re-running the check at launch time against a dist/ that

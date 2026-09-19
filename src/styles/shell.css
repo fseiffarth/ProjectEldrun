@@ -354,14 +354,6 @@ select option {
    title bar. Nothing sizes it here any more — each host does. */
 
 /* ── Version / debug / conn-type ─────────────────────────────────────── */
-.app-version-stack {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 1px;
-  line-height: 1;
-}
-
 /* The release label lives at the bottom of the docked file viewer rather than
    competing with project controls in the top frame. */
 .side-panel-frame-footer {
@@ -513,6 +505,21 @@ select option {
 }
 .clock-menu-popover {
   min-width: 104px;
+}
+/* The "Today's stats" heading opens the usage recap: the shared accent group
+   label, stripped of button chrome. */
+.clock-menu-stats-link {
+  display: block;
+  width: 100%;
+  background: none;
+  border: none;
+  text-align: left;
+  font-family: inherit;
+  cursor: var(--cur-pointer, pointer);
+}
+.clock-menu-stats-link:hover,
+.clock-menu-stats-link:focus-visible {
+  text-decoration: underline;
 }
 
 /* ── App timer ───────────────────────────────────────────────────────── */

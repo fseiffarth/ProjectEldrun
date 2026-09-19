@@ -157,7 +157,7 @@ describe("Eldrun Mobile composer sheets", () => {
     fireEvent.click(screen.getByTitle("Choose the permission mode"));
     const modes = screen.getAllByRole("button").filter((button) => button.querySelector("strong"));
     expect(modes.map((row) => row.querySelector("strong")?.textContent))
-      .toEqual(["Default", "Accept edits", "Plan", "Bypass permissions"]);
+      .toEqual(["Default", "Accept edits", "Plan", "Auto", "Bypass permissions"]);
     expect(modes[1].getAttribute("aria-current")).toBe("true");
 
     FakeWebSocket.keys = [];
@@ -182,7 +182,7 @@ describe("Eldrun Mobile composer sheets", () => {
     fireEvent.click(screen.getByTitle("Choose the permission mode"));
     const modes = screen.getAllByRole("button").filter((button) => button.querySelector("strong"));
     expect(modes.map((row) => row.querySelector("strong")?.textContent))
-      .toEqual(["Default", "Accept edits", "Plan", "Bypass permissions"]);
+      .toEqual(["Default", "Accept edits", "Plan", "Auto", "Bypass permissions"]);
     expect(modes[0].getAttribute("aria-current")).toBe("true");
 
     FakeWebSocket.keys = [];
@@ -196,13 +196,37 @@ describe("Eldrun Mobile composer sheets", () => {
   });
 
   it("keeps cycling as before for a session no mode family claims", async () => {
-    // Gemini draws no readable mode text in any mode, so no family lists it.
-    render(<Terminal tab={{ ...TAB, id: "tab-g", label: "Google Gemini" }} back={() => {}} />);
+    // Goose switches modes with a slash command, not Shift+Tab, so no family
+    // lists it and the chip only presses the key.
+    render(<Terminal tab={{ ...TAB, id: "tab-g", label: "Goose" }} back={() => {}} />);
     await act(async () => {});
     await paint("> \n? for shortcuts");
 
     FakeWebSocket.keys = [];
     fireEvent.click(screen.getByTitle("Switch mode (Shift+Tab)"));
+    expect(FakeWebSocket.keys).toEqual([`${ESC}[Z`]);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("offers Gemini CLI's modes, read from the row above its box", async () => {
+    // Gemini draws its mode over the input box, and in default mode only the
+    // hint — the family's silent default.
+    render(<Terminal tab={{ ...TAB, id: "tab-gm", label: "Google Gemini" }} back={() => {}} />);
+    await act(async () => {});
+    await paint("Shift+Tab to accept edits\n> \n~/proj  25% used");
+
+    fireEvent.click(screen.getByTitle("Choose the permission mode"));
+    const modes = screen.getAllByRole("button").filter((button) => button.querySelector("strong"));
+    expect(modes.map((row) => row.querySelector("strong")?.textContent))
+      .toEqual(["Default", "Accept edits", "Plan", "YOLO"]);
+    expect(modes[0].getAttribute("aria-current")).toBe("true");
+
+    FakeWebSocket.keys = [];
+    fireEvent.click(modes[1]);
+    await settle(100);
+    expect(FakeWebSocket.keys).toEqual([`${ESC}[Z`]);
+    await paint("auto-accept edits Shift+Tab to plan\n> \n~/proj  25% used");
+    await settle(500);
     expect(FakeWebSocket.keys).toEqual([`${ESC}[Z`]);
     expect(screen.queryByRole("dialog")).toBeNull();
   });

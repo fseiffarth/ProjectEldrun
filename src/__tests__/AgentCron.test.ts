@@ -20,7 +20,7 @@ import {
   withCronEnabled,
   withGlobalTimes,
   type AgentCron,
-} from "../lib/agentCron";
+} from "../lib/agents/agentCron";
 
 /** A local moment. Every case here is a wall-clock case, so the fixtures are
  *  built the way the schedule is read — in local time, never from an ISO Z. */

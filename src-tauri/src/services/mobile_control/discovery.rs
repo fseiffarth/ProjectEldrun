@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::Sha256;
 
+use super::protocol::TAB_COLORS;
+
 type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -73,6 +75,9 @@ struct SavedTab {
     tmux_attach: Option<String>,
     #[serde(default)]
     ephemeral: bool,
+    /// The user's tab colour, a palette id (see `protocol::TAB_COLORS`).
+    #[serde(default)]
+    color: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -113,6 +118,16 @@ pub struct TabSchedules {
     pub next: Option<String>,
 }
 
+/// One prompt an agent tab was given, as the desktop read it off the agent's
+/// own transcript. `at` is the record's ISO instant; the phone formats it in
+/// its own zone, and a record that carried none arrives without one.
+#[derive(Debug, Clone, Serialize)]
+pub struct TabPrompt {
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct PublicTab {
     pub id: String,
@@ -139,9 +154,22 @@ pub struct PublicTab {
     /// Absent for a shell tab and while the desktop is closed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schedules: Option<TabSchedules>,
+    /// The newest prompts this agent tab was given, oldest first, as the
+    /// desktop read them off the agent's transcript. Unlike `agent_status` this
+    /// is published for a quiet tab as well: "what was this session last asked"
+    /// is the line the phone's lists are opened for, and a session nobody has
+    /// prompted in an hour is exactly the one whose answer is worth showing.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub prompts: Vec<TabPrompt>,
     pub available: bool,
     pub viewer_busy: bool,
     pub last_activity: Option<u64>,
+    /// The tab's user-set colour as a palette id, absent when it has none. The
+    /// phone resolves the id to the same hex the desktop does, so a tab reads
+    /// as one colour on both surfaces; an id this build does not know is
+    /// dropped here rather than published for the phone to guess at.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -266,6 +294,11 @@ pub fn opaque_control_id(state_dir: &Path, domain: &str, value: &str) -> Result<
     Ok(key_id(&key, domain, &[value]))
 }
 
+/// The root scope's id, or anything that maps onto its session directory.
+fn is_root_scope_id(id: &str) -> bool {
+    project_key(id) == "root"
+}
+
 fn project_key(id: &str) -> String {
     let out: String = id
         .chars()
@@ -305,10 +338,22 @@ fn resumable(tab: &SavedTab) -> bool {
         "gemini",
         "agy",
         "vibe",
+        "droid",
     ];
     tab.session_id.is_some()
         && (BUILTIN.contains(&tab.cmd.as_str())
             || tab.resume_args.as_ref().is_some_and(|v| !v.is_empty()))
+}
+
+/// Which agent an agent tab runs, as the phone names it: the registry's name
+/// for the tab's CLI, so a tab renamed to "release review" still says it is
+/// Claude — and the phone's per-agent readers (mode walk, paste, prompt echo)
+/// still recognise it. The command itself never crosses the browser API; an
+/// agent the registry does not list keeps its tab label, as before.
+fn agent_label_of(tab: &SavedTab) -> String {
+    crate::commands::agents::agent_label_for_bin(&tab.cmd)
+        .map(str::to_string)
+        .unwrap_or_else(|| tab.label.chars().take(120).collect())
 }
 
 fn canonical_below_any(path: &Path, roots: &[PathBuf]) -> bool {
@@ -326,9 +371,28 @@ fn mobile_local(project: &ProjectRecord) -> bool {
         && !enabled(&project.vm)
 }
 
+/// `tmux ls` through Eldrun's effective PATH, the one the desktop's own tmux
+/// spawns use (`services::tmux_local`). A headless sidecar (launchd/systemd
+/// user service) inherits a bare PATH, so a bare `tmux` misses Homebrew's on a
+/// Mac, or picks `/usr/bin/tmux` against a server a `~/.local/bin/tmux` started
+/// — and tmux refuses a client of another protocol version.
+fn tmux_ls_command(format: &str) -> Command {
+    let mut command = crate::paths::command_no_window("tmux");
+    command.args(["ls", "-F", format]);
+    command
+}
+
 fn live_tmux() -> HashMap<String, LiveTmux> {
-    let format = "#{session_name}\t#{session_activity}\t#{pane_current_path}";
-    let Ok(out) = Command::new("tmux").args(["ls", "-F", format]).output() else {
+    // Windows has no tmux, and local tabs there are never wrapped in one
+    // (`CenterPanel` disables local persistence on Windows), so there is nothing
+    // to list — and a spawn per catalog read would only ever fail. The desktop's
+    // Mobile settings say so rather than leaving an empty terminal list to explain
+    // itself.
+    if cfg!(target_os = "windows") {
+        return HashMap::new();
+    }
+    let format ="#{session_name}\t#{session_activity}\t#{pane_current_path}";
+    let Ok(out) = tmux_ls_command(format).output() else {
         return HashMap::new();
     };
     if !out.status.success() {
@@ -363,6 +427,13 @@ impl Catalog {
         let mut sources = Vec::new();
         for project in &projects {
             if !project.eldrun_mobile_access || !mobile_local(project) {
+                continue;
+            }
+            // The root console is never the phone's (`services::root_mcp`): its
+            // agents hold rights no project agent has. It is not a project, so
+            // it cannot be listed honestly — this refuses a hand-edited record
+            // that borrows its session directory by taking its id.
+            if is_root_scope_id(&project.id) {
                 continue;
             }
             let Some(root_raw) = project.directory.as_deref() else {
@@ -489,15 +560,21 @@ fn resolve_scope(
             id: key_id(host_key, "tab", &[&source.raw_id, tmux]),
             label: tab.label.chars().take(120).collect(),
             kind: tab.kind.clone(),
-            agent_label: (tab.kind == "agent").then(|| tab.label.chars().take(120).collect()),
+            agent_label: (tab.kind == "agent").then(|| agent_label_of(&tab)),
             agent_status: None,
             agent_model: None,
             working_at: None,
             done_at: None,
             schedules: None,
+            prompts: Vec::new(),
             available: live_row.is_some(),
             viewer_busy: false,
             last_activity: live_row.map(|r| r.activity),
+            color: tab
+                .color
+                .as_deref()
+                .filter(|id| TAB_COLORS.contains(id))
+                .map(str::to_string),
         };
         tabs.push(ResolvedTab {
             public,
@@ -525,6 +602,18 @@ fn resolve_scope(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tmux_ls_runs_through_eldrun_path() {
+        let command = tmux_ls_command("#{session_name}");
+        let path = command
+            .get_envs()
+            .find(|(key, _)| *key == "PATH")
+            .and_then(|(_, value)| value)
+            .expect("PATH is set on the tmux ls spawn");
+        let first = std::env::split_paths(path).next().expect("non-empty PATH");
+        assert_eq!(first, crate::paths::extra_path_dirs()[0]);
+    }
 
     #[test]
     fn opaque_ids_are_domain_separated_and_stable() {
@@ -606,6 +695,128 @@ mod tests {
         let b = catalog.projects.iter().find(|p| p.raw_id == "p-b").expect("B");
         assert_eq!(a.tabs.len(), 1, "the healthy project keeps its tabs");
         assert!(b.tabs.is_empty(), "the corrupt one has none, and is still listed");
+    }
+
+    /// A tab colour (#264) is published as the palette id the desktop stored, so
+    /// the phone resolves it to the same hex — and an id this build does not have
+    /// is dropped rather than passed on for the phone to guess at, which is the
+    /// same posture `clean_tab_color` takes on the way in.
+    #[test]
+    fn a_tab_publishes_a_palette_colour_and_drops_anything_else() {
+        let dir = tempfile::tempdir().expect("state dir");
+        let state = dir.path();
+        let root = state.join("p");
+        fs::create_dir_all(&root).expect("root dir");
+        fs::write(
+            state.join("projects.json"),
+            serde_json::to_vec(&serde_json::json!([{
+                "id": "p-1",
+                "name": "P",
+                "status": "active",
+                "directory": root.to_string_lossy(),
+                "eldrun_mobile_access": true,
+            }]))
+            .expect("projects"),
+        )
+        .expect("write projects");
+        let sessions = state.join("sessions").join("p-1");
+        fs::create_dir_all(&sessions).expect("session dir");
+        let tab = |suffix: &str, color: serde_json::Value| {
+            serde_json::json!({
+                "label": format!("Shell {suffix}"),
+                "cmd": "bash",
+                "cwd": root.to_string_lossy(),
+                "kind": "shell",
+                "tmuxSession": format!("eldrun-p-1--shell-10000000{suffix}"),
+                "color": color,
+            })
+        };
+        fs::write(
+            sessions.join("terminals.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "tabLayout": [
+                    tab("1", serde_json::json!("teal")),
+                    tab("2", serde_json::json!("chartreuse")),
+                    tab("3", serde_json::Value::Null),
+                ]
+            }))
+            .expect("session"),
+        )
+        .expect("write session");
+
+        let catalog = Catalog::load(state, &[7; 32]).expect("catalog");
+        let project = catalog.projects.first().expect("project");
+        let colors: Vec<Option<&str>> = project
+            .tabs
+            .iter()
+            .map(|t| t.public.color.as_deref())
+            .collect();
+        assert_eq!(colors, vec![Some("teal"), None, None]);
+    }
+
+    /// The root console never reaches the phone — not even through a
+    /// `projects.json` record hand-edited to take the root scope's id (and with
+    /// it `sessions/root/`, the root console's own tab layout).
+    #[test]
+    fn the_root_scope_is_never_in_the_catalog() {
+        let dir = tempfile::tempdir().expect("state dir");
+        let state = dir.path();
+        let root = state.join("root");
+        fs::create_dir_all(&root).expect("root dir");
+        fs::write(
+            state.join("projects.json"),
+            serde_json::to_vec(&serde_json::json!([{
+                "id": "root",
+                "name": "Root",
+                "status": "active",
+                "directory": root.to_string_lossy(),
+                "eldrun_mobile_access": true,
+            }]))
+            .expect("projects"),
+        )
+        .expect("write projects");
+        fs::create_dir_all(state.join("sessions").join("root")).expect("session dir");
+        fs::write(
+            state.join("sessions").join("root").join("terminals.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "tabLayout": [{
+                    "label": "Claude",
+                    "cmd": "claude",
+                    "cwd": root.to_string_lossy(),
+                    "kind": "agent",
+                    "tmuxSession": "eldrun-root--agent-123456789",
+                }]
+            }))
+            .expect("session"),
+        )
+        .expect("write session");
+
+        let catalog = Catalog::load(state, &[7; 32]).expect("catalog");
+        assert!(catalog.projects.is_empty());
+        assert!(is_root_scope_id("root"));
+        assert!(!is_root_scope_id("rooted"));
+    }
+
+    /// The phone learns which agent a tab runs from the registry, not from the
+    /// tab's label, so a renamed tab still says "Claude"; an unlisted agent
+    /// keeps its label, and the command itself is never what is published.
+    #[test]
+    fn agent_label_names_the_cli_not_the_tab() {
+        let tab = |label: &str, cmd: &str| SavedTab {
+            label: label.to_string(),
+            cmd: cmd.to_string(),
+            cwd: String::new(),
+            kind: "agent".to_string(),
+            session_id: None,
+            resume_args: None,
+            tmux_session: None,
+            tmux_attach: None,
+            ephemeral: false,
+            color: None,
+        };
+        assert_eq!(agent_label_of(&tab("release review", "claude")), "Claude");
+        assert_eq!(agent_label_of(&tab("Codex", "codex")), "Codex");
+        assert_eq!(agent_label_of(&tab("My bot", "/opt/bot --x")), "My bot");
     }
 
     /// A mobile-enabled box is a scope of its own (#31aa): listed as `kind:

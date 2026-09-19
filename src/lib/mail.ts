@@ -1,7 +1,7 @@
 /**
  * **The** typed invoke surface for the embedded mail client — one wrapper per
  * `mail_*` command, and nothing else in the frontend calls `invoke("mail_*")`
- * directly (the convention `lib/slurm.ts` and `lib/hpcWorkspace.ts` follow).
+ * directly (the convention `lib/remote/hpc/slurm.ts` and `lib/remote/hpc/hpcWorkspace.ts` follow).
  *
  * Two properties of this module are load-bearing rather than stylistic:
  *
@@ -175,8 +175,17 @@ export function mailHeaders(
   query: string | null,
   sort: MailSort = "date",
   desc = true,
+  unreadOnly = false,
 ): Promise<MailHeaderPage> {
-  return invoke<MailHeaderPage>("mail_headers", { folderId, offset, limit, query, sort, desc });
+  return invoke<MailHeaderPage>("mail_headers", {
+    folderId,
+    offset,
+    limit,
+    query,
+    sort,
+    desc,
+    unreadOnly,
+  });
 }
 
 /**
@@ -210,6 +219,68 @@ export function mailMove(messageIds: string[], destFolderId: string): Promise<vo
   return invoke("mail_move", { messageIds, destFolderId });
 }
 
+/**
+ * Delete messages **off the server** — `\Deleted` + `UID EXPUNGE` — and out of
+ * the local index. Resolves with how many rows the index lost.
+ *
+ * The irreversible half of deleting, and deliberately not the *whole* of it:
+ * ordinary deleting moves to the account's Trash (`mailMove`, which the server
+ * can undo for the user), and this is the path only where there is nowhere left
+ * to move to — the Trash folder itself, or an account whose server offers none.
+ * `planMailDelete` is what decides which of the two a given set of rows needs.
+ */
+export function mailPurge(messageIds: string[]): Promise<number> {
+  return invoke<number>("mail_purge", { messageIds });
+}
+
+/** One folder's worth of a delete: the rows, and where they are going. */
+export interface MailDeleteGroup {
+  accountId: string;
+  folderId: string;
+  messageIds: string[];
+  /** The Trash folder to move into, or `null` when the delete is permanent. */
+  trashFolderId: string | null;
+}
+
+/**
+ * Work out how a set of rows has to be deleted — pure, so the confirmation the
+ * user reads and the commands that run are computed from one function rather
+ * than two that can disagree about which mail is about to be destroyed.
+ *
+ * Grouped **per folder**, because that is what the server takes: `mail_move` and
+ * `mail_purge` both select one mailbox and address one UID set, and a UID means
+ * nothing outside its own folder. A cross-account Important list is exactly the
+ * case that makes this more than bookkeeping — one delete there can be four
+ * groups across two accounts, two of them permanent.
+ *
+ * A message already *in* its account's Trash has nowhere left to go and is
+ * deleted for good; so is one whose account has no Trash folder at all.
+ * Everything else moves — including mail in Junk, which is a classification and
+ * not a deletion, so emptying the spam folder stays as recoverable as any other
+ * delete.
+ */
+export function planMailDelete(
+  headers: { id: string; account_id: string; folder_id: string }[],
+  foldersByAccount: Record<string, MailFolder[] | undefined>,
+): MailDeleteGroup[] {
+  const groups = new Map<string, MailDeleteGroup>();
+  for (const h of headers) {
+    const folders = foldersByAccount[h.account_id] ?? [];
+    const trash = folders.find((f) => f.kind === "trash");
+    // An unknown Trash folder, or a row already in it: nowhere left to move to.
+    const trashFolderId = trash && trash.id !== h.folder_id ? trash.id : null;
+    const group = groups.get(h.folder_id) ?? {
+      accountId: h.account_id,
+      folderId: h.folder_id,
+      messageIds: [],
+      trashFolderId,
+    };
+    group.messageIds.push(h.id);
+    groups.set(h.folder_id, group);
+  }
+  return [...groups.values()];
+}
+
 // ── Priority marks (Important / Urgent) ──────────────────────────────────────
 //
 // The only four wrappers here that reach no network in either direction, and
@@ -240,6 +311,7 @@ export function mailPriorityPage(
   query: string | null,
   sort: MailSort = "date",
   desc = true,
+  unreadOnly = false,
 ): Promise<MailHeaderPage> {
   return invoke<MailHeaderPage>("mail_priority_page", {
     priority,
@@ -248,6 +320,7 @@ export function mailPriorityPage(
     query,
     sort,
     desc,
+    unreadOnly,
   });
 }
 
@@ -475,6 +548,16 @@ export function mailAiErrorKey(err: unknown): TranslationKey | null {
 
 export function mailDraftSave(draft: MailDraft): Promise<MailDraft> {
   return invoke<MailDraft>("mail_draft_save", { draft });
+}
+
+/** The drafts an agent wrote through the root MCP that the user has not yet
+ *  sent, discarded or edited. */
+export function mailAgentDrafts(): Promise<MailDraft[]> {
+  return invoke<MailDraft[]>("mail_agent_drafts");
+}
+
+export function mailDraftDiscard(draftId: string): Promise<void> {
+  return invoke<void>("mail_draft_discard", { draftId });
 }
 
 /**
@@ -911,7 +994,7 @@ export function formatAddress(addr: { name?: string; address: string }): string 
  *
  *  Re-exported from `lib/textSafety`, not defined here. It moved because this
  *  module imports the Tauri invoke surface, which made one regex unreachable
- *  from the pure layers that need it just as much (`lib/ics.ts` renders event
+ *  from the pure layers that need it just as much (`lib/calendar/ics.ts` renders event
  *  titles somebody else wrote). Same function, same behaviour, one definition \u2014
  *  every mail call site below still imports it from here. */
 export { stripFormatControls };
@@ -950,6 +1033,35 @@ export function formatMailDate(iso: string, locale?: string, use24h?: boolean): 
         ...(use24h === undefined ? {} : { hour12: !use24h }),
       })
     : d.toLocaleDateString(locale, { year: "numeric", month: "short", day: "numeric" });
+}
+
+/**
+ * The list's date column: like `formatMailDate`, but an older message keeps its
+ * arrival time (`hh:mm`) beside the day, so two mails from the same day are
+ * told apart without opening them. The year is dropped inside the current one,
+ * which is what buys the time its room in a fixed-width column.
+ */
+export function formatMailListDate(iso: string, locale?: string, use24h?: boolean): string {
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return iso;
+  const d = new Date(ms);
+  const today = new Date();
+  const time: Intl.DateTimeFormatOptions = {
+    hour: "2-digit",
+    minute: "2-digit",
+    ...(use24h === undefined ? {} : { hour12: !use24h }),
+  };
+  const sameDay =
+    d.getFullYear() === today.getFullYear() &&
+    d.getMonth() === today.getMonth() &&
+    d.getDate() === today.getDate();
+  if (sameDay) return d.toLocaleTimeString(locale, time);
+  return d.toLocaleString(locale, {
+    ...(d.getFullYear() === today.getFullYear() ? {} : { year: "numeric" }),
+    month: "short",
+    day: "numeric",
+    ...time,
+  });
 }
 
 /** Only `http`/`https` may ever be handed to `open_external_url` (which refuses

@@ -6,14 +6,15 @@ import {
   occurrenceEnded,
   occurrenceStale,
   useCalendarStore,
-} from "../../stores/calendar";
+} from "../../stores/calendar/calendar";
 import { useSettingsStore } from "../../stores/settings";
-import { formatTime, timePart } from "../../lib/calendarTime";
+import { formatTime, timePart } from "../../lib/calendar/calendarTime";
 import { useUse24h } from "../../lib/timeFormat";
-import { conferenceLink } from "../../lib/conference";
+import { conferenceLink } from "../../lib/calendar/conference";
 import { joinConference } from "../../lib/linkTarget";
 import { useT } from "../../lib/i18n";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
+import { CalendarGlyph } from "./HeaderGlyphs";
 
 const MENU_ID = "calendar";
 
@@ -196,9 +197,7 @@ export function CalendarIndicator() {
         // pointer will ever open, and Escape is its way back out.
         onFocus={reveal}
       >
-        <span className="calendar-indicator-icon" aria-hidden="true">
-          🗓
-        </span>
+        <CalendarGlyph className="calendar-indicator-icon" />
         {count > 0 && (
           <span className="calendar-indicator-badge" aria-hidden="true">
             {count > 99 ? "99+" : count}
@@ -282,7 +281,7 @@ export function CalendarIndicator() {
                             want is the door, not the grid. It **names the
                             service** in its tooltip rather than saying "join",
                             because the link may have been derived from the
-                            event's location or notes (`lib/conference.ts`), and
+                            event's location or notes (`lib/calendar/conference.ts`), and
                             where a click is about to send you is exactly the
                             fact a one-word button hides. */}
                         {call && (

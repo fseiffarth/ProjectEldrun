@@ -11,7 +11,7 @@
  */
 import * as pdfjs from "pdfjs-dist";
 import type { PDFDocumentProxy, PDFPageProxy, PageViewport } from "pdfjs-dist";
-import type { TextItemBox } from "../../../lib/viewers/tex";
+import type { TextItemBox } from "../../../lib/viewers/tex/tex";
 
 /**
  * Extract a PDF page's positioned text runs as {@link TextItemBox}es in big

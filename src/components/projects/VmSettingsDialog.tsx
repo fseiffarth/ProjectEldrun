@@ -34,6 +34,7 @@ export function VmSettingsDialog({
   const [egress, setEgress] = useState<VmEgress>(spec?.egress ?? "proxy");
   const [allowGithub, setAllowGithub] = useState(spec?.allow_github ?? false);
   const [allowHosts, setAllowHosts] = useState((spec?.allow_hosts ?? []).join("\n"));
+  const [mailReader, setMailReader] = useState(spec?.mail_reader ?? false);
   const [status, setStatus] = useState<VmStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -116,6 +117,7 @@ export function VmSettingsDialog({
         .split("\n")
         .map((h) => h.trim())
         .filter(Boolean),
+      ...(mailReader ? { mail_reader: true } : {}),
     };
     try {
       await invoke("vm_set_spec", { projectId: project.id, spec: next });
@@ -214,6 +216,20 @@ export function VmSettingsDialog({
           </>
         )}
         {egress === "off" && <p className="settings-help">{t("pill.vmEgressOffNote")}</p>}
+
+        {/* The contained mail reader (`services::mail_reader`). The backend is
+            the gate — it refuses a save that is wider than the default proxy
+            box — and this line says why before the click does. */}
+        <label className="container-settings-toggle">
+          <span>
+            {t("pill.vmMailReader")} <UntestedTag />
+          </span>
+          <Toggle checked={mailReader} onChange={(e) => setMailReader(e.target.checked)} size="sm" />
+        </label>
+        <p className="settings-help">{t("pill.vmMailReaderHelp")}</p>
+        {mailReader && (egress !== "proxy" || allowGithub || allowHosts.trim() !== "") && (
+          <p className="settings-help project-dialog-error">{t("pill.vmMailReaderWide")}</p>
+        )}
 
         {status && status.blocked.total > 0 && (
           <>

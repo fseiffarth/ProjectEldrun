@@ -10,11 +10,11 @@ import {
   type VpnAuthNeeds,
 } from "../../types";
 import { IS_WINDOWS } from "../../lib/platform";
-import { forgetConnection, markConnectionOpened } from "../../lib/remoteConnect";
+import { forgetConnection, markConnectionOpened } from "../../lib/remote/remoteConnect";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
-import { useRemoteStatusStore, type ConnState } from "../../stores/remoteStatus";
-import { isHpcHost, targetOfSpec } from "../../lib/hpcHost";
+import { useRemoteStatusStore, type ConnState } from "../../stores/remote/remoteStatus";
+import { isHpcHost, targetOfSpec } from "../../lib/remote/hpc/hpcHost";
 import { autoConnectEligibility } from "./autoConnectEligibility";
 import { useSavedCredential, type SshConnectOutcome } from "./useSavedCredential";
 import {
@@ -22,9 +22,9 @@ import {
   markVpnConnecting,
   markVpnError,
   releaseVpn,
-} from "../../stores/vpnStatus";
+} from "../../stores/remote/vpn/vpnStatus";
 import type { LogLine } from "../common/ConnectionLog";
-import { withHostKeyConfirm } from "../../lib/hostKey";
+import { withHostKeyConfirm } from "../../lib/remote/hostKey";
 
 // OpenVPN prints this once the tunnel is fully up (mirrors the backend's
 // READY_MARKER in services/openvpn.rs). The embedded VPN login terminal is

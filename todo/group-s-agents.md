@@ -332,7 +332,7 @@ unchanged; the new agents are additive.
     drop-in, `OLLAMA_IGPU_ENABLE`: a runtime that cannot do those must *say so*
     (the `LocalDriverInfo.available` pattern), never pretend. Note the honest
     cost up front so nobody underestimates it: the settings keys, the command
-    names, `src/lib/localDrivers.ts`, `stores/ollamaAutoload.ts` and the 🧠 menu
+    names, `src/lib/agents/localDrivers.ts`, `stores/agents/ollamaAutoload.ts` and the 🧠 menu
     are all *named* `ollama`, so this is a rename as much as a refactor.
     Persisted keys stay as they are — new fields are additive, or every existing
     `settings.json` needs a migration for a feature nobody asked for yet.
@@ -592,7 +592,7 @@ unchanged; the new agents are additive.
   - **A composer under each agent tab**: prefix chips, the agent's own model
     pick, a message, and Send — aimed at the tab it is rendered under, so
     nothing has to be targeted first. The chips and the model are that CLI's own
-    slash commands (`lib/agentPrefaces`), submitted **one at a time, in order,
+    slash commands (`lib/agents/agentPrefaces`), submitted **one at a time, in order,
     ahead of the prompt** rather than as extra lines of it — `/clear` and
     `/model` take a whole line and would otherwise swallow the prompt appended
     to them. `ScheduledAgentPrompt.preface` carries them (Rust + TS), and
@@ -740,8 +740,8 @@ unchanged; the new agents are additive.
       foot says `Showing n of m`, and Clear (which still deletes *everything*)
       says so in its tooltip.
     Frontend: `components/agents/AgentSchedulesView.tsx`, `lib/listReorder.ts`,
-    `lib/agentPromptFilter.ts`, `hooks/useListReorder.ts` (moved),
-    `stores/agentPrompts.ts`, `styles/projects-tabs.css`.
+    `lib/agents/prompt/filter.ts`, `hooks/useListReorder.ts` (moved),
+    `stores/agents/agentPrompts.ts`, `styles/projects-tabs.css`.
     Backend: `services/agent_prompts.rs`, `commands/agent_prompts.rs` — so the
     reorder command needs a restart before the drag can persist.
     Implemented 2026-09-02, **not live-tested**.
@@ -763,7 +763,7 @@ unchanged; the new agents are additive.
     - **Tags.** A collected prompt carries short lowercase tokens
       (`refactor, tests, paper`) typed as one line beside the text, in the add
       form and in the row editor. Stored on the row (`ProjectAgentPrompt.tags`),
-      normalized identically on both sides (`lib/agentPromptTags` ↔
+      normalized identically on both sides (`lib/agents/prompt/tags` ↔
       `services::agent_prompts::normalize_tag`: trimmed, `#` stripped,
       lowercase, inner whitespace folded to `-`), capped at 16 per prompt. The
       phone edits text only and its `tags: None` **keeps** a prompt's tags; an
@@ -794,8 +794,8 @@ unchanged; the new agents are additive.
       button that sets the text filter — "which prompts touched this file" in
       one click. A delivered row without files yet says so.
     Frontend: `components/agents/AgentSchedulesView.tsx`,
-    `components/layout/AgentScheduleHost.tsx`, `lib/agentPromptTags.ts` (new),
-    `lib/agentPromptFilter.ts`, `stores/agentPrompts.ts`,
+    `components/layout/AgentScheduleHost.tsx`, `lib/agents/prompt/tags.ts` (new),
+    `lib/agents/prompt/filter.ts`, `stores/agents/agentPrompts.ts`,
     `styles/projects-tabs.css`, `lib/i18n.ts` + the four dictionaries.
     Backend: `services/prompt_blame.rs` (new), `services/agent_prompts.rs`,
     `schema/agent_prompts.rs`, `commands/agent_prompts.rs`, `lib.rs` — so tags
@@ -829,7 +829,7 @@ unchanged; the new agents are additive.
     - **A new Scheduled prompts section** between the library and Sent prompts.
       A prompt with a live rule leaves the library and reads here with what it
       is waiting for (which tabs carry it, when it next fires). The link is
-      still `lib/agentPromptScheduled`'s key — the prompt's own text — so
+      still `lib/agents/prompt/scheduled`'s key — the prompt's own text — so
       deleting the rule brings the prompt back to the library rather than
       needing anything kept in step.
     - **A one-time delivery retires the prompt.** `AgentScheduleHost`'s retire
@@ -882,7 +882,7 @@ unchanged; the new agents are additive.
       The *armed time* is deliberately live-only: a stored one would fire against
       a window that had already turned over while Eldrun was closed.
     - **It chooses nothing about the agent.** One word, submitted through
-      `lib/scheduledAgentInput` — the same path a scheduled prompt takes — so the
+      `lib/agents/scheduledAgentInput` — the same path a scheduled prompt takes — so the
       permission mode stays the agent's own and the idle/decision/settle gate
       applies. The one deliberate loosening is in `deliverable`: a tab whose
       output the activity store has never seen (an ordinary restored agent tab)
@@ -899,8 +899,8 @@ unchanged; the new agents are additive.
     - The usage parser moved `mobile-web/src/terminal/usageReport.ts` →
       `shared/usageReport.ts`, so the phone's bars and the desktop's countdown
       read one panel the same way.
-    Frontend: `components/layout/AgentContinueHost.tsx`, `stores/agentContinue.ts`,
-    `lib/agentUsage.ts`, `shared/usageReport.ts`, `stores/tabs.ts`
+    Frontend: `components/layout/AgentContinueHost.tsx`, `stores/agents/agentContinue.ts`,
+    `lib/agents/agentUsage.ts`, `shared/usageReport.ts`, `stores/tabs.ts`
     (`autoContinue` + `setAutoContinueInScope`), `components/agents/AgentSchedulesView.tsx`,
     `lib/i18n.ts` + the four dictionaries. No backend change.
     Implemented 2026-09-02, **not live-tested**.
@@ -953,7 +953,7 @@ unchanged; the new agents are additive.
     row's other actions for when a hover is not discoverable enough. Both take
     the same jump the project pill's status bars take — `revealTabInScope`
     first, so the tab is already the visible one when the scope arrives —
-    extracted from `PillStatusBars` into `lib/tabJump.ts` so the two surfaces
+    extracted from `PillStatusBars` into `lib/shortcuts/tabJump.ts` so the two surfaces
     cannot drift into two answers to the same question; the shared helper also
     covers a box scope and falls back to `setActive` in a popout, where the
     layout lives in another window.
@@ -966,7 +966,7 @@ unchanged; the new agents are additive.
     around the tab are one statement. Precedence matches `TabBar` and the pill
     bars: decision over working over done.
     Frontend only: `components/agents/AgentSchedulesView.tsx`,
-    `components/projects/PillStatusBars.tsx`, new `lib/tabJump.ts`,
+    `components/projects/PillStatusBars.tsx`, new `lib/shortcuts/tabJump.ts`,
     `styles/projects-tabs.css`, three new strings in `lib/i18n.ts` + the four
     dictionaries. Implemented 2026-09-02, **not live-tested**.
     - [x] 🤖 Automated test — `AgentSchedulesView` (all four states and their
@@ -1191,7 +1191,7 @@ unchanged; the new agents are additive.
       live rule is not offered to a draft — picker, timeline drop, Send and
       Schedule all point at linking After it instead; a rule keeps its own tab;
       the ◷ Schedules dialog only warns. `occupiedTargets` in
-      `lib/agentPromptChart`; plan §12.
+      `lib/agents/prompt/chart`; plan §12.
       - [ ] 🖐️ Manual test — with a rule on the Claude tab, a draft's picker
         must list only the other tabs; drop the draft on the timeline and it
         lands on a free tab; aim a draft at the Claude tab first (before the
@@ -1199,6 +1199,131 @@ unchanged; the new agents are additive.
         refuse the drop with the error line, and accept an After link.
         - [ ] ✅ Works
         - [ ] ❌ Doesn't work
+    - **Nothing is sent that nobody asked to send (2026-09-15), not
+      live-tested.** A two-coder pass over the chart's review findings; see
+      `docs/prompt_chart_plan.md` §13. The **backend guards need a restart**
+      (frozen build: `npm run package:dev`, then relaunch); the frontend half
+      hot-reloads.
+      - [x] 🤖 Automated tests — `PromptChart`, `PromptChartSelect`,
+        `PromptChartLift`, `PromptCardKeyboard`, `PromptSessionCard`,
+        `AgentPromptTimeline`, `AgentPromptTimelineGroup`,
+        `AgentPromptTimelineDst`, `AgentPromptLinks`, `AgentPromptChart`,
+        `AgentSchedulesStoreGuard`, cargo `agent_tasks` / `agent_prompts`.
+      - [ ] 🖐️ Manual test — **selections and the past** (after restarting):
+        Ctrl+click two future rules, drag them left of the now line but off
+        the band: the badge reads "A selection is sent only from the now
+        band", nothing is sent. Drop them on the band: both go. A single draft
+        dropped left of the now line is still sent.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+      - [ ] 🖐️ Manual test — **the scheduler got there first** (after
+        restarting): schedule a prompt one minute out, start dragging it and
+        hold it past its minute until it is delivered, then drop it later on
+        the axis: nothing is re-created and the line says "already delivered
+        or removed". Press "+ 5 min" on a card rendered before its delivery
+        landed: the same. No prompt arrives twice.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+      - [ ] 🖐️ Manual test — **Send on a daily rule**: expand a daily card and
+        press Send: the prompt goes once, and the daily rule is still in the
+        tab's ◷ Schedules afterwards.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+      - [ ] 🖐️ Manual test — **badge, − 5 min, queued picker, ↑/↓**: carry an
+        unaimed draft over the axis with two tabs open: "Schedule on <first
+        tab> · time". With no agent tab: the blocked "No agent tab open — use
+        Send". A card due in 3 min has "− 5 min earlier" greyed out. A queued
+        card's agent picker refuses another tab with a message. With three
+        queued prompts on one tab (Agents view composer), ↑/↓ move a card one
+        place in the order the queue column shows.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+      - [ ] 🖐️ Manual test — **links** (after restarting): with A → B (After),
+        drag B's port onto A: refused, "That link would make a loop". Add a
+        related edge C — B and switch it to After in its editor: "That prompt
+        already follows another". Type `/clear` in a Claude tab between two
+        sends: its edge is still drawn.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+      - [ ] 🖐️ Manual test — **errors and deletes**: trigger "already has a
+        scheduled prompt", then retime any card: the line disappears; trigger
+        it again and press Dismiss. Delete a scheduled card that has one link:
+        a dialog names the prompt and "1 link"; Cancel keeps it, Delete removes
+        it. A session row's Delete asks too; a draft's × does not.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+      - [ ] 🖐️ Manual test — **keyboard**: Tab onto a card (a focus ring),
+        Enter opens it, its Link arms linking, Tab to another card's port and
+        press Enter: the link is drawn. Arm a link with a selection present and
+        press Escape: link mode ends, the selection stays; Escape again clears
+        it. Escape inside a card editor cancels the edit and keeps the
+        selection.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+      - [ ] 🖐️ Manual test — **drawing and performance**: before 08:00, a daily
+        08:00 card in tomorrow's Day view reads tomorrow's date, and When
+        "Today" dims it. A session running past midnight in Week view shows
+        both dates. On a wide pane the Day axis labels every hour. Edit a
+        scheduled card on the timeline: the Markdown toolbar fits (460 px) and
+        the lanes do not move. Hide the chart tab while an agent works, show
+        it again: its cards are current. Drag a card across the timeline with
+        several links on screen: no stutter compared with a lift.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+      - [ ] 🖐️ Manual test — **drafts board and empty states**: in row layout
+        the hint does not say "Move cards freely" and carrying a draft over the
+        strip shows the blocked "Turn on Free layout…"; in Free layout it says
+        "Move here" and moves. ＋ (tooltip "New draft") opens the board's own
+        composer, Escape / Ctrl+Enter work. A project with no agent tabs and no
+        history shows the empty-timeline hint. Type in the timeline search:
+        "N of M" and Clear appear, Clear leaves the drafts search alone. Lift a
+        card: "Reset positions" appears and puts it back.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+      - [ ] 🖐️ Manual test — **± 5 min and the wide editor**: in Week and in
+        Month view, "+ 5 min later" on a card due in 8 min moves it (no "That
+        minute has passed" line); "+ 5 min later" on a queued card moves it 5
+        min past now. "− 5 min earlier" on a card due in 30 min is enabled the
+        same in Day and Month view. Edit a scheduled card in the right part of
+        the axis: the editor grows leftward and its whole Markdown toolbar is
+        visible. Carry one draft left of the now line: the now band lights; a
+        two-card selection there leaves it dark. Drop a selection on a future
+        minute where its earlier card would land in the past: "A card in the
+        selection would land in the past".
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+      - [ ] 🖐️ Manual test — **closed strands** (after restarting): send a
+        prompt from a Claude tab, close that tab, open a new Claude tab and
+        send another: the old rows sit on a greyed closed strand of their own,
+        not on the new tab's strand. Relaunch Eldrun with a resumed Claude tab
+        and type `/clear` in it: its rows before and after stay on that tab's
+        strand.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+      - [ ] 🖐️ Manual test — **snapping in a :30 zone**: start Eldrun with
+        `TZ=Asia/Kolkata`, drop a draft on the Month view (60-min snap): it is
+        scheduled on a local whole hour (e.g. 14:00, not 14:30).
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+      - [ ] 🖐️ Manual test — **DST** (twice a year, Europe/Berlin): on the
+        spring-forward and fall-back days, Hour view ◀/▶ step past 02:00 and
+        the Day axis draws each hour once.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+      - Open questions: should yesterday's axis still be a send-now zone for
+        a single card? Should a dropped unaimed draft get the new-tab
+        `/model` preface? Offer compact Week cards after QA?
+      - Follow-up (accessibility, spans the mail list too): a prompt card's
+        `<article role="button">` holds real buttons and a dropdown, and ARIA
+        makes a button's children presentational, so a screen reader flattens
+        Send/Schedule/Link into the card's name. `mail/MailList.tsx` rows do
+        the same with their star and actions. Move the role onto a toggle
+        element (the card head, or a visually hidden button) on both surfaces
+        together, so they do not drift; keyboard access already works.
+      - Pending doc: update the `docs/filemap_frontend.md` prompt-chart and
+        `PromptDraftBoard` rows once the other session's file-map WIP
+        has landed (the rows still say bottom port → top port, and that
+        cycles and joins are refused only at schedule time).
 
 263. **Agent panes: double-click pastes, and a drag still selects while the TUI
     holds the mouse.** Two gestures the terminal owed an agent tab. A
@@ -1218,7 +1343,7 @@ unchanged; the new agents are additive.
     also flushes on mouse-up instead of waiting out its 60 ms debounce, and holds
     the text it captured, so a repaint under the selection can no longer eat it.
     Agent panes only — a shell tab keeps xterm's word-select and its clicks.
-    Frontend only: `lib/terminalControl.ts`, `components/terminal/TerminalView.tsx`.
+    Frontend only: `lib/terminal/terminalControl.ts`, `components/terminal/TerminalView.tsx`.
     Built 2026-09-07, **not live-tested**.
     - [x] 🤖 Automated test — `TerminalControl` (the gesture decision: paste on a
       double-click, force-select only while the program holds the mouse, never on
@@ -1247,14 +1372,14 @@ unchanged; the new agents are additive.
     captured `/command` output, Codex's injected context — and reading a slash
     command as `/model opus` and a `!` line with its `!`. Re-read when a tab
     turns busy (a prompt was just submitted) and when it finishes. A prompt that
-    *changed* at a turn's start was typed, and `lib/agentPromptAdopt` records it
+    *changed* at a turn's start was typed, and `lib/agents/prompt/adopt` records it
     on the prompt history as delivered to that tab — the row the chart draws a
     sent card from — unless the tab's newest history row already says it, so a
     composer or scheduled send is never recorded twice; the first read of a tab
     is a baseline, never a record. An agent whose transcript Eldrun cannot read
     (Gemini, Qwen, Codex 0.153.4 whose thread store keeps no messages, a custom
     command) gets the prompt echoed on the pane's own screen instead
-    (`lib/agentPromptEcho` over `lib/terminalRegistry`, parsed by the phone's
+    (`lib/agents/prompt/echo` over `lib/terminal/terminalRegistry`, parsed by the phone's
     own `readableScreen`/`inputFrameStart`/`chatTurns`, so a draft still being
     typed is never taken for a prompt). Built 2026-09-07, **not live-tested**; the Rust side is uncompiled on
     the GNOME host (no toolchain) — CI compiles it.
@@ -1452,7 +1577,7 @@ unchanged; the new agents are additive.
       key holds nothing; and a tab whose agent fires no hooks (Gemini, Qwen,
       custom) falls back to its bytes — after a keystroke's grace before a
       delivery, and after 30 s of quiet (`HOOKLESS_DONE_QUIET_MS`) after one —
-      instead of never being deliverable again. Files: `lib/terminalControl.ts`,
+      instead of never being deliverable again. Files: `lib/terminal/terminalControl.ts`,
       `TerminalView.tsx`, `stores/activity.ts`, `AgentScheduleHost.tsx`.
       Frontend only, hot-reloads; **not live-tested**.
       - [x] 🤖 Automated test — `AgentScheduleParallelTabs` (two tabs, a
@@ -1468,3 +1593,58 @@ unchanged; the new agents are additive.
         the chart: the second arrives ~30 s after the first answer goes quiet.
         - [ ] ✅ Works
         - [ ] ❌ Doesn't work
+    - **Feature (2026-09-16): a background job keeps the tab working.** A Claude
+      turn that ends with a `run_in_background` shell still running (or a Codex
+      exec left open) used to light "finished" while the job ran on.
+      `services::agent_turn` now holds that `done` back as `working` while a tool
+      shell carrying the tab's `ELDRUN_TAB_UID` is alive (read from
+      `/proc/<pid>/environ` — the agent sits under the tmux server, not the PTY),
+      re-sends it every 8 s so the store's 20 s silence rule does not retire it,
+      and sends `done` within ~2 s of the last one exiting. Scheduled prompts wait
+      for it too. Linux only; container and remote agents keep the plain verdict.
+      A job that never ends (a dev server) keeps the tab working for as long as it
+      runs. File: `services/agent_turn.rs`. Backend change, **restart needed; not
+      live-tested**.
+      - [x] 🤖 Automated test — `agent_turn::tests` (`a_live_tool_shell_carrying_the_uid_holds_the_done`,
+        `only_the_agents_own_tool_shells_count_as_background_jobs`, …)
+      - [ ] 🖐️ Manual test — after a restart, in a Claude tab: "run `sleep 60` in
+        the background and stop". The turn ends, yet the tab stays working
+        (ring/bar) for the minute, then shows finished within a few seconds of
+        the sleep ending. A normal turn with no background job still finishes at
+        once. Kill the background shell from Claude early → finished follows.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+
+    - **Feature (2026-09-18): six CLIs joined the registry, four rows were
+      corrected, three were retired.** Added Droid (Factory), Auggie (Augment),
+      Kilo Code, Continue.dev (`cn`), JetBrains Junie and CodeBuddy (Tencent);
+      fixed the `grok` row (it installed the third-party `@vibe-kit/grok-cli`,
+      not xAI's own Grok Build), Kiro's executable (`kiro-cli`), Kimi's
+      installer path and Amp's npm package; retired Mentat, gpt-engineer and
+      the OpenHands CLI, all archived or unmaintained upstream. Files:
+      `commands/agents.rs`, `components/tabs/newTabItems.ts`,
+      `stores/tabs.ts`, `services/sandbox.rs`,
+      `services/mobile_control/discovery.rs`, `lib/usageMetrics.ts`. Backend
+      change, **restart needed; nothing was run live** — every flag, package
+      name and install path was read from the vendor's own installer, docs or
+      changelog.
+      - [x] 🤖 Automated test — `commands::agents::tests`
+        (`expanded_agent_registry_keeps_official_commands_and_binaries`,
+        `every_warmup_recipe_names_a_registry_agent_and_puts_the_message_last`),
+        `src/__tests__/CustomAgents.test.ts`
+      - [ ] 🖐️ Manual test — Settings → Agents lists the six new cards and no
+        longer lists Mentat/GPT Engineer/OpenHands; an installed Kiro finally
+        reports as installed; installing Grok yields `grok --version` 1.0.x
+        (xAI), not 0.0.34. Open a Droid tab, send a prompt, restart Eldrun: the
+        tab comes back on `droid --resume` with its conversation.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+      - [ ] **Open follow-ups.** The five launch-only newcomers have verified
+        `--continue`/`--resume` flags but unmapped session stores — wiring one
+        means finding its store, mounting it in
+        `sandbox::CONTINUE_AGENT_SESSION_STORES` and only then adding it to
+        `RESUMABLE_AGENTS`, or a restored tab exits on "no conversation to
+        continue". None of the six is in `services::remote_agents::RECIPES`
+        (no auto-install on a remote spawn) or in the phone's Focus parsers
+        (`docs/mobile_focus_cli_survey.md`), and only Droid passes the mobile
+        `discovery::resumable` gate.

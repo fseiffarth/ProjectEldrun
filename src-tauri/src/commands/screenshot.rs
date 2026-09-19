@@ -464,10 +464,7 @@ mod platform {
             .unwrap_or_default()
     }
 
-    /// Minimal single-quote shell escaping for a path embedded in `sh -c`.
-    pub fn shell_quote(s: &str) -> String {
-        format!("'{}'", s.replace('\'', r"'\''"))
-    }
+    pub(crate) use crate::services::ssh_exec::shell_quote;
 
     /// The desktop portal's interactive screenshot
     /// (`org.freedesktop.portal.Screenshot.Screenshot`, `interactive: true`),

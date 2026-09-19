@@ -605,7 +605,7 @@ N5. **Multiple calendars, categories, tasks, ICS.** Named/colored/toggle-visible
 
 N6. **Deferred.** Timezone support (everything is floating local time; a `TZID`
     we do not understand is dropped rather than guessed at), CalDAV/URL
-    subscriptions, ordinal BYDAY ("2nd Monday" degrades to plain Monday), and
+    subscriptions, ordinal BYDAY (since done: X#2318), and
     per-occurrence category/status overrides.
 
 ---
@@ -631,7 +631,7 @@ Design notes worth keeping in mind before extending it:
   backend spawn fires again for every resumable agent tab respawned on relaunch,
   which would report a fresh "agent tab opened" each morning.
 
-86. **Prompt counting is a keystroke heuristic.** `lib/promptCount.ts` counts a
+86. **Prompt counting is a keystroke heuristic.** `lib/agents/promptCount.ts` counts a
     submit as "Enter with content typed since the last Enter". It covers all
     eleven agents and every local model without reading another app's data dir,
     but an Enter inside an agent's multi-line editor buffer over-counts. If Claude
@@ -680,7 +680,7 @@ Design notes worth keeping in mind before extending it:
 
 ## Group W — Native Print Manager ✅ Done · 🧪 Untested
 
-*Files: `src-tauri/src/commands/printing.rs`, `src/lib/printing.ts`,
+*Files: `src-tauri/src/commands/printing.rs`, `src/lib/window/printing.ts`,
 `src/types/printing.ts`, `src/components/printing/PrintManagerPane.tsx`, plus the
 tab wiring (`stores/tabs.ts`'s `PRINTING_TAB_CMD` / `printing` kind,
 `components/tabs/{TabPane,TabBar,NewTabMenu,newTabItems,TabHoverCard}`) and the

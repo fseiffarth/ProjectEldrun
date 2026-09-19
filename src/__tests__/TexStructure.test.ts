@@ -15,7 +15,7 @@ import {
   isTexDocumentRoot,
   texStructureParent,
   type TexFileNode,
-} from "../lib/viewers/tex";
+} from "../lib/viewers/tex/tex";
 
 /** Drive `read_file_text` off a fixed file map; `list_dir` is unused here since
  *  every graphic below carries an explicit extension (resolved synchronously). */

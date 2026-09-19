@@ -13,6 +13,7 @@ import {
   buildStaticTabSpec,
   customAgentToItem,
   enabledInstalledAgentBins,
+  rootAllowedAgentBins,
   installedAgentBins,
 } from "../components/tabs/newTabItems";
 import { isResumableAgentTab } from "../stores/tabs";
@@ -131,13 +132,35 @@ describe("Google Antigravity built-in", () => {
   });
 });
 
+describe("rootAllowedAgentBins", () => {
+  const agents = [
+    { id: "claude", bin: "claude", installed: true },
+    { id: "antigravity", bin: "agy", installed: true },
+    { id: "codex", bin: "codex", installed: true },
+  ];
+  const enabled = new Set(["claude", "agy", "codex"]);
+
+  it("offers no agent in the root console until one is switched on", () => {
+    expect([...rootAllowedAgentBins(enabled, agents, undefined)]).toEqual([]);
+    expect([...rootAllowedAgentBins(enabled, agents, [])]).toEqual([]);
+  });
+
+  it("maps registry ids to executable names and never re-adds a disabled agent", () => {
+    expect([...rootAllowedAgentBins(enabled, agents, ["antigravity", "codex"])]).toEqual([
+      "agy",
+      "codex",
+    ]);
+    expect([...rootAllowedAgentBins(new Set(["claude"]), agents, ["codex"])]).toEqual([]);
+  });
+});
+
 describe("expanded built-in agents", () => {
   it("offers each newly managed agent under its executable name", () => {
     const cmds = new Set(AGENT_ITEMS.map((item) => item.cmd));
     expect([
-      "kiro", "cline", "goose", "openhands", "pi", "plandex", "sweagent",
-      "mini", "mentat", "gpte", "crush", "amp", "kimi", "qoder",
-      "muse",
+      "kiro-cli", "cline", "goose", "pi", "plandex", "sweagent",
+      "mini", "crush", "amp", "kimi", "qoder", "muse",
+      "droid", "auggie", "kilo", "cn", "junie", "codebuddy",
     ].every((cmd) => cmds.has(cmd))).toBe(true);
   });
 });

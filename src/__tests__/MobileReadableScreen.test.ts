@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { inputFrameStart } from "../../mobile-web/src/terminal/statusLine";
 import {
   MAX_LINES,
   readableRange,
@@ -134,6 +135,44 @@ describe("Eldrun Mobile readable terminal view", () => {
     ]))).toEqual(["> run the tests"]);
   });
 
+  it("removes Codex's labelled divider strokes even across wrapped rows", () => {
+    const screen = readableScreen(plainBuffer([
+      "• The change is ready.",
+      `─ Worked for 2m 10s ${"─".repeat(60)}`,
+      `${WRAP}${"─".repeat(80)}`,
+      `${WRAP}${"─".repeat(80)}`,
+      "› Next task",
+    ]));
+    expect(readableText(screen.lines)).toBe("• The change is ready.\nWorked for 2m 10s\n› Next task");
+    expect(screen.lines[1].spans.map((span) => span.text).join("")).toBe("Worked for 2m 10s");
+  });
+
+  it("keeps a divider label's style without its bright border spans", () => {
+    const [line] = readableScreen(styledBuffer([
+      { text: "─ ", fg: 15 },
+      { text: "Worked for 2m", dim: true },
+      { text: ` ${"─".repeat(200)}`, fg: 15 },
+    ])).lines;
+    expect(line.text).toBe("Worked for 2m");
+    expect(line.spans).toEqual([{ text: "Worked for 2m", className: "d", color: undefined, background: undefined }]);
+  });
+
+  it("still excludes a labelled input frame after its strokes are removed", () => {
+    const lines = readableScreen(plainBuffer([
+      "Answer text",
+      "──────── ProjectEldrun ─",
+      "› ",
+      "85% context left",
+    ])).lines;
+    expect(lines[1].text).toBe("ProjectEldrun");
+    expect(lines.slice(0, inputFrameStart(lines)).map((line) => line.text)).toEqual(["Answer text"]);
+  });
+
+  it("preserves prose dashes, command flags and inline box drawings", () => {
+    const rows = ["— keep this aside —", "git diff --check", "  ├── src", "text ─── text", "─ label without a closing rule"];
+    expect(texts(plainBuffer(rows))).toEqual(rows);
+  });
+
   it("keeps a numbered list as text instead of an answerable prompt", () => {
     // The old parser turned any run of numbered lines into an approval dialog
     // whose buttons typed those digits into the agent.
@@ -259,5 +298,37 @@ describe("Eldrun Mobile lazy terminal history", () => {
     // Keys are unique across chunks and the open tail (React keys).
     const keys = [...history.chunks.flatMap((chunk) => chunk.lines), ...history.open].map((line) => line.key);
     expect(new Set(keys).size).toBe(keys.length);
+  });
+});
+
+describe("Eldrun Mobile side panel", () => {
+  /** A row split at column 40: the conversation left, a panel right. */
+  const split = (left: string, right = "") => `${left.padEnd(40)}${right}`;
+  const rule = "─".repeat(30);
+
+  it("cuts a panel drawn beside the conversation off every row it shares", () => {
+    // Claude Code's diff view: the AGENTS.md diff sat in the row of the prompt.
+    const rows = [
+      split("● Done.", "3 files changed          ✕"),
+      split("", "AGENTS.md                +7"),
+      split("", rule),
+      split("❯ why is this shown", "238  git config core.hooksPath"),
+      split("", "239  .githooks"),
+      split("", rule),
+      split("● Because the panel shares rows."),
+      "─".repeat(70),
+      "❯ ",
+    ];
+    const lines = readableScreen(plainBuffer(rows)).lines.map((row) => row.text);
+    expect(lines).toEqual(["● Done.", "", "❯ why is this shown", "", "● Because the panel shares rows.", "❯"]);
+  });
+
+  it("leaves rows whole without two rules at one column", () => {
+    const rows = [
+      split("● One rule is not a panel.", rule),
+      split("A long answer line runs", "straight past the column."),
+    ];
+    const lines = readableScreen(plainBuffer(rows)).lines.map((row) => row.text);
+    expect(lines).toEqual([split("● One rule is not a panel.", rule), split("A long answer line runs", "straight past the column.")]);
   });
 });

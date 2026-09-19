@@ -1,9 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
-import { looksLikeDecisionPromptStripped, stripAnsi } from "../lib/agentPrompt";
+import { looksLikeDecisionPromptStripped, stripAnsi } from "../lib/agents/prompt/prompt";
 import { METRIC, agentPromptLeaf } from "../lib/usageMetrics";
-import { splitPtyId } from "../lib/ptyId";
+import { splitPtyId } from "../lib/terminal/ptyId";
 import { allGroups, isPtyTabKind, useTabsStore } from "./tabs";
 import type { TabEntry } from "./tabs";
 import { bumpUsage } from "./usage";
@@ -191,7 +191,9 @@ export function notePtyOutput(ptyId: string, data = "") {
   // a tab stuck on "working": the quiet never reached DECISION_QUIET_MS, so its
   // tail was never classified and the decision lamp never lit. Its idle dot
   // animation is dropped the same way (see `BRAILLE_CELLS`).
-  if (data && !text.trim()) return;
+  // `/\S/` rather than `!text.trim()`: same whitespace set, but it asks the
+  // question without copying the chunk (this runs on every PTY batch).
+  if (data && !/\S/.test(text)) return;
   const appendTail = () => {
     if (!text) return;
     const tail = (tailByPty[ptyId] ?? "") + text;
@@ -417,7 +419,7 @@ export function notePtySpawn(ptyId: string) {
   decisionMemo.delete(ptyId);
 }
 
-// The parser lives in `lib/ptyId` — one cut for every consumer, and one that
+// The parser lives in `lib/terminal/ptyId` — one cut for every consumer, and one that
 // knows a box scope carries a colon of its own. Re-exported so the call sites
 // that have always imported it from here keep working.
 export { splitPtyId };
@@ -513,9 +515,13 @@ function attentionFor(
   // permission notice) AND from the screen regardless: Codex has no such hook,
   // so its approval menu sitting in a quiet tail is still the only sign — even
   // under a "working" verdict, which its tool-use hook left standing while
-  // the tool waits on the user.
+  // the tool waits on the user. Not after a Stop, though: a finished turn is
+  // back at its input box, so nothing on screen can be a pending approval —
+  // and what IS on screen is the agent's own reply, which quotes menus (a
+  // diff of this very classifier, a report on a prompt) often enough to light
+  // a finished tab as a question.
   if (turn?.state === "decision") return "decision";
-  if (quiet >= DECISION_QUIET_MS && tailLooksLikeDecision(ptyId)) {
+  if (turn?.state !== "done" && quiet >= DECISION_QUIET_MS && tailLooksLikeDecision(ptyId)) {
     return "decision";
   }
   // Past here everything is inferred from silence, which a watched tab's own
@@ -586,11 +592,14 @@ export interface StatusTab {
   /** The tab's key within its scope (not the composed PTY id). */
   key: string;
   state: "working" | "needs-decision" | "finished";
+  /** A working SHELL tab — running a command, not an agent working a turn. The
+   *  bar paints it in its own colour (`--status-shell-working`). */
+  shell?: boolean;
 }
 
 function sameTabs(a: StatusTab[], b: StatusTab[]): boolean {
   if (a.length !== b.length) return false;
-  return a.every((t, i) => t.key === b[i].key && t.state === b[i].state);
+  return a.every((t, i) => t.key === b[i].key && t.state === b[i].state && t.shell === b[i].shell);
 }
 
 /** True when two per-tab status maps hold the same tabs in the same states.
@@ -650,7 +659,9 @@ function computeStatusScopes(
       const ptyId = `${scope}:${t.key}`;
       if (isPtyTabKind(t.kind) && busyByTab[ptyId]) {
         tally.working++;
-        working.push({ key: t.key, state: "working" });
+        working.push(
+          t.kind === "shell" ? { key: t.key, state: "working", shell: true } : { key: t.key, state: "working" },
+        );
       } else if (attentionByTab[ptyId] === "decision") {
         tally.decision++;
         decision.push({ key: t.key, state: "needs-decision" });
@@ -741,8 +752,9 @@ interface ActivityStore {
    *  path uses `runningScripts` instead). */
   runningRunFiles: Set<string>;
   /** Spawn a `.sh` script detached and track it so the run button can show a
-   *  spinner until the backend emits `script-finished`. */
-  runScript: (scriptPath: string, cwd: string, projectId?: string | null) => void;
+   *  spinner until the backend emits `script-finished`. `args` is the per-file
+   *  argument string from the ▶ popover, parsed by the backend's shell. */
+  runScript: (scriptPath: string, cwd: string, projectId?: string | null, args?: string) => void;
 }
 
 export const useActivityStore = create<ActivityStore>((set, get) => ({
@@ -800,12 +812,18 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
     });
   },
 
-  runScript: (scriptPath, cwd, projectId) => {
+  runScript: (scriptPath, cwd, projectId, args) => {
     set((s) => ({ runningScripts: new Set(s.runningScripts).add(scriptPath) }));
     // `projectId` scopes the backend's path confinement (`run_script_detached`) to
     // the owning project rather than whichever one happens to be current — a file
     // tree in a detached popout is not necessarily showing the active project.
-    void invoke("run_script_detached", { scriptPath, cwd, runId: scriptPath, projectId: projectId ?? null })
+    void invoke("run_script_detached", {
+      scriptPath,
+      cwd,
+      runId: scriptPath,
+      projectId: projectId ?? null,
+      args: args?.trim() || null,
+    })
       .catch(() => {
         set((s) => ({ runningScripts: withoutScript(s.runningScripts, scriptPath) }));
       });

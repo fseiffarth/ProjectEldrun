@@ -1,6 +1,6 @@
 ## Group U — Interface Cost & Responsiveness
 
-*Created 2026-08-26. Files: `src/lib/fastMode.ts`, `src/stores/power.ts`,
+*Created 2026-08-26. Files: `src/lib/agents/fastMode.ts`, `src/stores/power.ts`,
 `src/styles/themes.css`, plus the surfaces each item names.*
 
 *The group exists because none of the others fit and the subject is real: what
@@ -21,7 +21,7 @@ screen is not.*
 210. **Fast mode.** ✅ Done 2026-08-26, code-complete and **live-unverified**.
     One global toggle (Settings → Fast mode, default off) that withdraws the
     display aids whose cost is a directory walk, a standing poll, or a read of
-    every file in view. The list lives in `src/lib/fastMode.ts` — one home, so
+    every file in view. The list lives in `src/lib/agents/fastMode.ts` — one home, so
     the help text and the code cannot drift — and everything on it has to share
     three properties: it costs work nobody asked for, its absence is *legible*
     (no spinner, no "…" that never resolves), and nothing is lost but the aid.
@@ -92,7 +92,7 @@ screen is not.*
     SSH round trip, so the wait was the *point* at which the panel was least
     usable.
 
-    `src/lib/fileViewSnapshots.ts` keeps the last state of each (project, root
+    `src/lib/projects/fileViewSnapshots.ts` keeps the last state of each (project, root
     dir, folder) — entries, per-file git statuses, folder sizes and their
     ignored split — plus the git bar's counts per repo, in module scope, where
     they outlive the components. A reveal seeds every one of those from the
@@ -250,7 +250,7 @@ screen is not.*
       riding the backend's `extra` catch-all — **no Rust field, so no backend
       restart**. Cross-theme like the accent and applied *after* it, so a
       hand-picked `--accent-hover` beats the one derived from the accent.
-    - Safety: `lib/themeTokens` is an allow-list and
+    - Safety: `lib/theme/themeTokens` is an allow-list and
       `stores/settings.normalizeThemeVars` the gate — these values are written
       as inline custom properties, so an unvalidated pair from a hand-edited
       settings.json would be an arbitrary-CSS write. `--accent` is rejected
@@ -541,7 +541,7 @@ screen is not.*
     Codex `already has an active writer` error was the restore churn's
     symptom, not the cause.
 
-    Frontend (`lib/rendererWatchdog.ts`): mounted in `AppShell` *and*
+    Frontend (`lib/window/rendererWatchdog.ts`): mounted in `AppShell` *and*
     `DetachedApp`, each window acts on its own renderer and reloads only
     itself (a popout re-seeds from main, as it does after a crash-reload).
     Which renderer is "ours" is **probed**, since no engine we ship on says
@@ -798,7 +798,7 @@ screen is not.*
     (accent body, contrast outline, soft halo), **Pixel** (the same shapes on a
     16-pixel grid, upscaled with smoothing off) and **Ink** (monochrome, text
     colour on the window's own ground); unset is the system cursors.
-    - **The art is drawn at runtime, not shipped.** `lib/cursorPacks.ts`
+    - **The art is drawn at runtime, not shipped.** `lib/theme/cursorPacks.ts`
       rasterises twelve shapes (arrow, hand, I-beam, open hand, fist, move, the
       two resize axes and their `col`/`row` twins, crosshair, deny) onto a
       canvas and emits `data:image/png` URLs, so the pointer takes the live
@@ -856,8 +856,8 @@ screen is not.*
     (viewer, deck, present window, TeX hover preview). The renderer memory
     report now prints `/proc/<pid>/status`'s `Threads:` (Linux only), which is
     what tells a leaked Worker from a canvas. Files: `lib/viewers/pdfLoad.ts`,
-    `components/embed/{pdf,deck}/…`, `lib/viewers/texPreview.ts`,
-    `lib/rendererWatchdog.ts`, `sysstat.rs`, `commands/debug.rs`. Implemented
+    `components/embed/{pdf,deck}/…`, `lib/viewers/tex/texPreview.ts`,
+    `lib/window/rendererWatchdog.ts`, `sysstat.rs`, `commands/debug.rs`. Implemented
     2026-09-08 (`7c06db6`, `a3b5b58`), **not live-tested; thread count needs a
     backend restart.**
     - [x] 🤖 Automated test — `PdfLoad` (destroy on rejection),
@@ -865,5 +865,38 @@ screen is not.*
     - [ ] 🖐️ Manual test — open a TeX document's PDF and compile ten times while
       it is visible; the renderer memory report's thread count stays flat
       (compare `grep Threads /proc/<renderer pid>/status` before and after).
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+859. **A screen reader killed the renderer: Eldrun opts out of WebKit's AT-SPI
+    bridge.** Clicking the Downloads section's `→` (file a download into the
+    project) blanked the window twice on 2026-09-17 and copied nothing. The
+    copy path was never the problem: the apport core shows `WebKitWebProcess`
+    aborting in WebKit 2.48's `org.a11y.atspi.Text` handler — it remaps the
+    requested offset through a table whose bounds check is a `CRASH()`, not a
+    clamp, so an offset that went stale between an assistive client's cache and
+    its query takes the whole renderer down. Eldrun is the worst case for it
+    (terminals, lamps and trees rewrite text continuously), GNOME's Orca was
+    running — it binds Super+Alt+S, and it crash-loops against the same bridge —
+    and the same path's `g_utf8_substring: assertion 'end_pos >= start_pos'`
+    criticals had been in `eldrun-dev.log` for days. `services::webkit_a11y`
+    now exports `WEBKIT_A11Y_BUS_ADDRESS` empty at the top of `run()`, before
+    the first webview exists; `ELDRUN_ENABLE_A11Y=1` hands the bridge back, and
+    an address the environment already carries always wins. The variable is
+    process-wide, so `terminal::build_command` and `commands::apps::
+    launch_command` strip it again when Eldrun was the one that set it — no
+    *other* WebKitGTK app launched from a tab loses its own accessibility.
+    Files: `services/webkit_a11y.rs`, `lib.rs`, `terminal/mod.rs`,
+    `commands/apps.rs`. Implemented 2026-09-17, **not live-verified; needs a
+    backend rebuild and a relaunch.**
+    - [x] 🤖 Automated test — `webkit_a11y` (install precedence: inherited
+      address wins, opt-in wins, an off-looking opt-in is not an opt-in)
+    - [ ] 🖐️ Manual test — turn the screen reader on (Super+Alt+S, or
+      `systemctl --user start orca`), then work the UI that crashed before:
+      open the side panel's Downloads section and click `→` on a file. The file
+      lands in the project and the window stays up. Confirm the bridge is
+      really off — `tr '\0' '\n' < /proc/<eldrun pid>/environ | grep A11Y`
+      prints `WEBKIT_A11Y_BUS_ADDRESS=` — and that a GUI app launched from a
+      terminal tab does *not* inherit it.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work

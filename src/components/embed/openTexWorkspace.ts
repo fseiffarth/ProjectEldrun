@@ -5,8 +5,8 @@ import {
   hasTexCompiler,
   requestTexCenter,
   requestTexCompile,
-} from "../../stores/texCenter";
-import { resolveTexRoot } from "../../lib/viewers/tex";
+} from "../../stores/viewers/texCenter";
+import { resolveTexRoot } from "../../lib/viewers/tex/tex";
 import { basename, dirname } from "../../lib/paths";
 
 /**

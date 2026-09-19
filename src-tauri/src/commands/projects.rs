@@ -179,16 +179,29 @@ fn lexical_normalize(path: &Path) -> PathBuf {
 ///
 /// `canonicalize` is the real answer (it resolves symlinks against the actual
 /// filesystem) but only works on a path that exists — a copy/move import's
-/// destination does not yet — so `lexical_normalize` is the fallback. Its
-/// `\\?\` verbatim prefix is stripped so the two halves produce comparable keys
-/// on Windows, where the comparison is also case-insensitive.
+/// destination does not yet — so the fallback canonicalizes the deepest
+/// existing ancestor of the `lexical_normalize`d path and re-appends the rest;
+/// otherwise a missing folder under a symlinked or 8.3-short-named parent
+/// (macOS `/var`, Windows `RUNNER~1`) would never prefix-match its existing
+/// siblings. The `\\?\` verbatim prefix is stripped so the halves produce
+/// comparable keys on Windows, where the comparison is also case-insensitive.
 fn local_dir_key(dir: &str) -> String {
     let trimmed = dir.trim();
     if trimmed.is_empty() {
         return String::new();
     }
     let path = PathBuf::from(trimmed);
-    let resolved = fs::canonicalize(&path).unwrap_or_else(|_| lexical_normalize(&path));
+    let resolved = fs::canonicalize(&path).unwrap_or_else(|_| {
+        let normal = lexical_normalize(&path);
+        normal
+            .ancestors()
+            .skip(1)
+            .find_map(|base| {
+                let real = fs::canonicalize(base).ok()?;
+                Some(real.join(normal.strip_prefix(base).ok()?))
+            })
+            .unwrap_or(normal)
+    });
     let key = resolved.to_string_lossy().to_string();
     let key = key.strip_prefix(r"\\?\").unwrap_or(&key).to_string();
     if cfg!(windows) {
@@ -380,6 +393,104 @@ pub(crate) fn patch_project_entry<R>(
             .ok_or_else(|| format!("project '{project_id}' not found"))?;
         patch(entry)
     })
+}
+
+/// The side panel's per-project view settings. They live on the trusted
+/// `projects.json` entry: the in-folder `project.json` copy is writable by
+/// anything working in the tree, and a list read from there could hide files
+/// from the tree or from scans. `project.json` keeps a display/export mirror.
+pub const PANEL_PREF_KEYS: &[&str] = &[
+    "panel_hidden_endings",
+    "panel_hidden_paths",
+    "panel_shown_paths",
+    "scan_excluded_paths",
+    "panel_separate_scaffold",
+    "panel_separate_gitignored",
+];
+
+/// The id of the registry entry whose `project.json` is `local_file` — the key
+/// the side panel's filter hook holds.
+fn project_id_for_local_file(local_file: &str) -> Result<String, String> {
+    read_projects_list()?
+        .into_iter()
+        .find(|e| e.local_file == local_file)
+        .map(|e| e.id)
+        .ok_or_else(|| format!("no project is registered for '{local_file}'"))
+}
+
+/// The panel settings, from the trusted entry (see [`PANEL_PREF_KEYS`]).
+#[tauri::command]
+pub fn get_project_panel_prefs(local_file: String) -> Result<serde_json::Map<String, Value>, String> {
+    let list = read_projects_list()?;
+    let entry = list
+        .iter()
+        .find(|e| e.local_file == local_file)
+        .ok_or_else(|| format!("no project is registered for '{local_file}'"))?;
+    Ok(PANEL_PREF_KEYS
+        .iter()
+        .filter_map(|k| entry.extra.get(*k).map(|v| ((*k).to_string(), v.clone())))
+        .collect())
+}
+
+/// Set (or, with `null`, clear) panel settings on the trusted entry and its
+/// mirror. Keys outside [`PANEL_PREF_KEYS`] are ignored.
+#[tauri::command]
+pub fn set_project_panel_prefs(
+    local_file: String,
+    prefs: serde_json::Map<String, Value>,
+) -> Result<(), String> {
+    let project_id = project_id_for_local_file(&local_file)?;
+    let prefs: Vec<(String, Value)> = prefs
+        .into_iter()
+        .filter(|(k, _)| PANEL_PREF_KEYS.contains(&k.as_str()))
+        .collect();
+    let apply = |extra: &mut HashMap<String, Value>| {
+        for (k, v) in &prefs {
+            if v.is_null() {
+                extra.remove(k);
+            } else {
+                extra.insert(k.clone(), v.clone());
+            }
+        }
+    };
+    patch_project_entry_mirrored(
+        &project_id,
+        |entry| {
+            apply(&mut entry.extra);
+            Ok(())
+        },
+        |project, ()| apply(&mut project.extra),
+    )
+}
+
+/// One-shot copy of the panel settings from each project's `project.json` into
+/// its `projects.json` entry, for projects registered before the settings moved.
+/// Once per installation (like `migrate_project_sessions_once`): a project
+/// registered afterwards is never read from its folder.
+pub fn migrate_panel_prefs_once() {
+    let marker = storage::state_dir().join(".panel_prefs_migrated");
+    if marker.exists() {
+        return;
+    }
+    let result = patch_projects_list(|list| {
+        for entry in list.iter_mut() {
+            let Ok(project) = storage::read_json::<Value>(Path::new(&entry.local_file)) else {
+                continue;
+            };
+            for key in PANEL_PREF_KEYS {
+                if let Some(v) = project.get(*key).filter(|v| !v.is_null()) {
+                    entry.extra.entry((*key).to_string()).or_insert_with(|| v.clone());
+                }
+            }
+        }
+        Ok(())
+    });
+    match result {
+        Ok(()) => {
+            let _ = std::fs::write(&marker, b"");
+        }
+        Err(e) => eprintln!("migrate_panel_prefs_once: {e}"),
+    }
 }
 
 /// [`patch_project_entry`] plus the mirror write every per-field setter used to
@@ -710,10 +821,15 @@ fn entry_is_remote(entry: &ProjectEntry) -> bool {
 }
 
 /// Move a directory tree from `src` to `dst`, creating `dst`'s parent. Tries a
-/// fast `rename` first and falls back to recursive copy + remove when that fails
-/// (e.g. a cross-filesystem move). No-op when `src` does not exist. `src` is
-/// only removed after the whole copy succeeded, so a failed fallback leaves the
-/// source intact and the move retryable.
+/// fast `rename` first and falls back to recursive copy + remove in exactly two
+/// cases: a cross-filesystem move, and a `dst` that already exists. The second is
+/// deliberate — `archive_project` resumes an interrupted archive *into* the
+/// partial destination it left, and `rename` onto a non-empty directory fails
+/// with `ENOTEMPTY` (Linux) or its per-OS twin, not with a cross-device error.
+/// Any other rename failure (a file held open, a permission refusal) is returned
+/// as it is rather than papered over with a copy. No-op when `src` does not
+/// exist. `src` is only removed after the whole copy succeeded, so a failed
+/// fallback leaves the source intact and the move retryable.
 fn move_tree(src: &Path, dst: &Path) -> Result<(), String> {
     if !src.exists() {
         return Ok(());
@@ -721,8 +837,10 @@ fn move_tree(src: &Path, dst: &Path) -> Result<(), String> {
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    if fs::rename(src, dst).is_ok() {
-        return Ok(());
+    match fs::rename(src, dst) {
+        Ok(()) => return Ok(()),
+        Err(e) if crate::paths::is_cross_device(&e) || dst.exists() => {}
+        Err(e) => return Err(format!("could not move {}: {e}", src.display())),
     }
     copy_tree_core(src, dst, true)?;
     fs::remove_dir_all(src).map_err(|e| e.to_string())?;
@@ -1067,7 +1185,12 @@ fn git_in(dir: &Path, args: &[&str]) -> String {
 /// Inspect an archived remote project's mirror for commits that were never synced
 /// to its host, so the UI can warn before an irreversible permanent delete.
 /// Non-remote projects (and those without a mirror repo) report nothing to lose.
-#[tauri::command]
+// `(async)` on a sync fn: tauri runs the body on its blocking pool rather than
+// the main thread. It forks 3 + one `rev-list --count` per branch against the
+// mirror, which as a plain command stalled the window while the archive list's
+// delete warning loaded. Read-only and self-contained (no State/AppHandle), so
+// nothing depends on it running on the main thread; the body is unchanged.
+#[tauri::command(async)]
 pub fn archived_mirror_unsynced(project_id: String) -> Result<UnsyncedReport, String> {
     validate_project_id(&project_id)?;
     let none = UnsyncedReport {
@@ -1240,6 +1363,297 @@ pub fn set_project_name(project_id: String, name: String) -> Result<String, Stri
     )?;
 
     Ok(cleaned)
+}
+
+// ── Project folder rename ─────────────────────────────────────────────────
+
+/// What renaming a local project's folder to a new leaf name would do, checked
+/// without touching anything. The rename dialog shows it live; the rename
+/// itself re-plans and refuses anything but `ok`.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectDirRenamePlan {
+    pub current_dir: String,
+    /// `<parent of current_dir>/<leaf>`; empty when the leaf is invalid.
+    pub target_dir: String,
+    pub leaf: String,
+    /// Machine token the frontend words: `ok`, `same` (already that name),
+    /// `exists` (something is already there — never overwritten or merged),
+    /// `registered` (another project claims that path), `nested` (another
+    /// project lives inside this folder and would lose its path), `invalid`
+    /// (not a usable folder name), `missing` (the folder is not on disk, or is a
+    /// link), `unsupported` (remote, VM or the Trash — no local folder to own).
+    pub status: String,
+}
+
+/// A single folder name that is valid on every OS Eldrun ships to: no
+/// separators, no `.`/`..`, none of Windows' reserved characters, no trailing
+/// dot or space, no control characters.
+fn is_valid_folder_leaf(leaf: &str) -> bool {
+    !leaf.is_empty()
+        && leaf.len() <= 255
+        && leaf != "."
+        && leaf != ".."
+        && !leaf.ends_with('.')
+        && !leaf.ends_with(' ')
+        && !leaf
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '/' | '\\' | '<' | '>' | ':' | '"' | '|' | '?' | '*'))
+}
+
+/// Whether two paths are the same directory entry — true for a case-only
+/// rename on a case-insensitive filesystem, where the "new" name already
+/// resolves to the folder being renamed.
+fn is_same_file(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (fs::symlink_metadata(a), fs::symlink_metadata(b)) {
+            (Ok(x), Ok(y)) => x.dev() == y.dev() && x.ino() == y.ino(),
+            _ => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (a, b);
+        false
+    }
+}
+
+/// Plan renaming `project_id`'s folder to `leaf` (trimmed) within its current
+/// parent. Pure over the registry snapshot plus `stat`s; `is_remote` comes from
+/// `services::remote` so remoteness is never inferred here.
+fn plan_dir_rename(
+    list: &ProjectsList,
+    project_id: &str,
+    is_remote: bool,
+    leaf: &str,
+) -> Result<ProjectDirRenamePlan, String> {
+    let entry = list
+        .iter()
+        .find(|e| e.id == project_id)
+        .ok_or_else(|| format!("project '{project_id}' not found"))?;
+    let leaf = leaf.trim().to_string();
+    let current = entry_directory(entry)
+        .map(|d| d.trim().trim_end_matches(['/', '\\']).to_string())
+        .unwrap_or_default();
+    let plan = |target_dir: String, status: &str| ProjectDirRenamePlan {
+        current_dir: current.clone(),
+        target_dir,
+        leaf: leaf.clone(),
+        status: status.to_string(),
+    };
+    let is_vm = entry
+        .extra
+        .get("vm")
+        .and_then(|v| v.get("enabled"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if paths::is_trash_project_id(project_id) || is_remote || is_vm || current.is_empty() {
+        return Ok(plan(String::new(), "unsupported"));
+    }
+    let old = PathBuf::from(&current);
+    let Some(parent) = old.parent().filter(|p| !p.as_os_str().is_empty()) else {
+        return Ok(plan(String::new(), "unsupported"));
+    };
+    // A link is renamed as the link, leaving the real folder where it was —
+    // not what "rename the project folder" means.
+    if !fs::symlink_metadata(&old).is_ok_and(|m| m.is_dir()) {
+        return Ok(plan(String::new(), "missing"));
+    }
+    if !is_valid_folder_leaf(&leaf) {
+        return Ok(plan(String::new(), "invalid"));
+    }
+    let target = parent.join(&leaf);
+    let target_str = target.to_string_lossy().to_string();
+    if old.file_name().is_some_and(|n| n == leaf.as_str()) {
+        return Ok(plan(target_str, "same"));
+    }
+    // `symlink_metadata`, so a dangling link or a stray file counts as taken.
+    if fs::symlink_metadata(&target).is_ok() && !is_same_file(&old, &target) {
+        return Ok(plan(target_str, "exists"));
+    }
+    if find_project_conflict(list, &ProjectSite::Local { dir: &target_str }, Some(project_id))
+        .is_some()
+    {
+        return Ok(plan(target_str, "registered"));
+    }
+    let old_key = local_dir_key(&current);
+    let under_old = |p: &str| {
+        let key = local_dir_key(p);
+        key.strip_prefix(&old_key)
+            .is_some_and(|rest| rest.starts_with('/') || rest.starts_with('\\'))
+    };
+    let nested = list.iter().filter(|e| e.id != project_id).any(|e| {
+        entry_directory(e).is_some_and(|d| under_old(&d))
+            || entry_mirror(e).is_some_and(|m| under_old(&m))
+    });
+    if nested {
+        return Ok(plan(target_str, "nested"));
+    }
+    Ok(plan(target_str, "ok"))
+}
+
+/// Check what renaming a local project's folder to `leaf` would do (see
+/// [`ProjectDirRenamePlan`]). Read-only; backs the rename dialog's live line.
+#[tauri::command]
+pub fn plan_project_dir_rename(
+    project_id: String,
+    leaf: String,
+) -> Result<ProjectDirRenamePlan, String> {
+    let list = read_projects_list()?;
+    let is_remote = crate::services::remote::remote_target_for(&project_id).is_some();
+    plan_dir_rename(&list, &project_id, is_remote, &leaf)
+}
+
+/// Rename `old` to `new` without ever replacing or merging into something at
+/// `new`. On Unix the free name is claimed first with an exclusive `mkdir`, and
+/// `rename(2)` then atomically swaps our own empty placeholder for the folder —
+/// so a folder that appears at `new` between the check and the move makes
+/// `mkdir` fail instead of being overwritten (plain `rename` would silently
+/// replace an empty directory). Windows' move never replaces a directory.
+fn rename_dir_no_replace(old: &Path, new: &Path) -> Result<(), String> {
+    if is_same_file(old, new) {
+        // Case-only change on a case-insensitive filesystem: same entry.
+        return fs::rename(old, new).map_err(|e| e.to_string());
+    }
+    #[cfg(unix)]
+    {
+        fs::create_dir(new).map_err(|e| match e.kind() {
+            std::io::ErrorKind::AlreadyExists => {
+                format!("{} already exists; nothing was renamed", new.display())
+            }
+            _ => e.to_string(),
+        })?;
+        if let Err(e) = fs::rename(old, new) {
+            // Only ever removes the placeholder while it is still empty.
+            let _ = fs::remove_dir(new);
+            return Err(e.to_string());
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        if fs::symlink_metadata(new).is_ok() {
+            return Err(format!("{} already exists; nothing was renamed", new.display()));
+        }
+        fs::rename(old, new).map_err(|e| e.to_string())
+    }
+}
+
+/// Rename a **closed** local project's folder to `<same parent>/<leaf>`, then
+/// re-point everything Eldrun stores under the old path: the registry entry
+/// (`directory`, `local_file`, a pinned venv interpreter…), the moved
+/// `project.json`, and the saved tab layout. Refuses anything the plan does not
+/// call `ok`, and refuses an open project — its shells and agents hold the old
+/// path and would write back into a folder that no longer exists. Linked git
+/// worktrees are re-pointed with `git worktree repair`. Returns the new entry.
+#[tauri::command]
+pub async fn rename_project_dir(project_id: String, leaf: String) -> Result<ProjectEntry, String> {
+    run_off_thread(move || rename_project_dir_blocking(&project_id, &leaf)).await
+}
+
+fn rename_project_dir_blocking(project_id: &str, leaf: &str) -> Result<ProjectEntry, String> {
+    let list = read_projects_list()?;
+    let is_remote = crate::services::remote::remote_target_for(project_id).is_some();
+    let plan = plan_dir_rename(&list, project_id, is_remote, leaf)?;
+    if plan.status != "ok" {
+        return Err(format!("The project folder can't be renamed ({}).", plan.status));
+    }
+    let is_closed = |e: &ProjectEntry| e.status == "inactive";
+    if !list.iter().any(|e| e.id == project_id && is_closed(e)) {
+        return Err("Close the project before renaming its folder.".to_string());
+    }
+    let old = PathBuf::from(&plan.current_dir);
+    let new = PathBuf::from(&plan.target_dir);
+    rename_dir_no_replace(&old, &new)?;
+
+    let (old_s, new_s) = (plan.current_dir.as_str(), plan.target_dir.as_str());
+    let patched = patch_project_entry(project_id, |entry| {
+        if !is_closed(entry) {
+            return Err("The project was reopened while its folder was renamed.".to_string());
+        }
+        let mut value = serde_json::to_value(&*entry).map_err(|e| e.to_string())?;
+        storage::rewrite_path_prefix(&mut value, old_s, new_s);
+        *entry = serde_json::from_value(value).map_err(|e| e.to_string())?;
+        Ok(entry.clone())
+    });
+    let updated = match patched {
+        Ok(entry) => entry,
+        Err(e) => {
+            // Nothing points at the new name yet: put the folder back.
+            return match fs::rename(&new, &old) {
+                Ok(()) => Err(e),
+                Err(back) => Err(format!(
+                    "{e} — and the folder could not be moved back from {} ({back})",
+                    new.display()
+                )),
+            };
+        }
+    };
+
+    // The registry is the source of truth; the rest is best effort, reported.
+    let project_file = PathBuf::from(&updated.local_file);
+    if project_file.exists() {
+        let rewritten = storage::read_json::<Value>(&project_file)
+            .map_err(|e| e.to_string())
+            .and_then(|mut v| {
+                if storage::rewrite_path_prefix(&mut v, old_s, new_s) {
+                    storage::write_json_atomic(&project_file, &v).map_err(|e| e.to_string())
+                } else {
+                    Ok(())
+                }
+            });
+        if let Err(e) = rewritten {
+            eprintln!("rename_project_dir: project.json not updated: {e}");
+        }
+    }
+    if let Err(e) =
+        crate::services::terminal_service::rewrite_session_paths(project_id, old_s, new_s)
+    {
+        eprintln!("rename_project_dir: saved tab layout not updated: {e}");
+    }
+    if new.join(".git").exists() {
+        // Linked worktrees record absolute paths both ways. The ones that lived
+        // inside the folder (`.eldrun/worktrees/…`) moved with it, and repair can
+        // only find them when told where they went.
+        let moved_worktrees = moved_linked_worktrees(&new, old_s, new_s);
+        match paths::command_no_window("git")
+            .arg("-C")
+            .arg(&new)
+            .args(["worktree", "repair"])
+            .args(&moved_worktrees)
+            .output()
+        {
+            Ok(out) if !out.status.success() => eprintln!(
+                "rename_project_dir: git worktree repair: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+            Err(e) => eprintln!("rename_project_dir: git worktree repair: {e}"),
+            Ok(_) => {}
+        }
+    }
+    Ok(updated)
+}
+
+/// The new locations of a repo's linked worktrees that sat under the renamed
+/// folder: each `.git/worktrees/<n>/gitdir` still names `<old>/…/<wt>/.git`.
+fn moved_linked_worktrees(repo: &Path, old: &str, new: &str) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(repo.join(".git").join("worktrees")) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|e| fs::read_to_string(e.path().join("gitdir")).ok())
+        .filter_map(|gitdir| {
+            let mut v = Value::String(gitdir.trim().to_string());
+            if !storage::rewrite_path_prefix(&mut v, old, new) {
+                return None;
+            }
+            let moved = PathBuf::from(v.as_str()?);
+            moved.parent().map(Path::to_path_buf)
+        })
+        .collect()
 }
 
 /// Whether a currently-detected repo source still needs a user decision:
@@ -1505,7 +1919,12 @@ fn write_project_sandbox_spec(project_id: &str, spec: &SandboxSpec) -> Result<()
 /// the image exist? For a missing image the report carries the shell command
 /// that provides it, so the frontend can run it in a fresh terminal tab
 /// (one-click, per house convention) instead of telling the user to do it.
-#[tauri::command]
+// `(async)` on a sync fn: the three docker probes (`docker --version`,
+// `docker info`, `docker image inspect`) run on tauri's blocking pool instead of
+// the main thread — `docker info` against a wedged daemon hangs rather than
+// failing, and froze the whole window with it. The probes themselves stay
+// unbounded, exactly as before; only the thread they block moved.
+#[tauri::command(async)]
 pub fn sandbox_preflight(project_id: String) -> crate::services::sandbox::PreflightReport {
     crate::services::sandbox::preflight_report(&project_id)
 }
@@ -2336,11 +2755,17 @@ pub fn move_remote_mirror_blocking(
 
     let old = crate::services::remote_sync::mirror_dir(&project_id);
     if old.exists() && old != new_root {
-        // A plain rename fails across drives/filesystems (EXDEV on Unix). Fall
-        // back to copy-then-remove so a cross-volume move still works.
-        if fs::rename(&old, &new_root).is_err() {
-            copy_dir_all(&old, &new_root)?;
-            fs::remove_dir_all(&old).map_err(|e| e.to_string())?;
+        // A plain rename fails across drives/filesystems. Fall back to
+        // copy-then-remove for that case only; `new_root` is a free name, so any
+        // other failure (a file held open, a permission refusal) is reported
+        // rather than turned into a duplicate tree.
+        match fs::rename(&old, &new_root) {
+            Ok(()) => {}
+            Err(e) if crate::paths::is_cross_device(&e) => {
+                copy_dir_all(&old, &new_root)?;
+                fs::remove_dir_all(&old).map_err(|e| e.to_string())?;
+            }
+            Err(e) => return Err(format!("could not move the mirror: {e}")),
         }
     } else {
         fs::create_dir_all(&new_root).map_err(|e| e.to_string())?;
@@ -2564,20 +2989,19 @@ pub fn scaffold_project(dir: &Path, with_git: bool) -> std::io::Result<()> {
 /// git can't resolve one (fresh machine, no global `user.name`/`user.email`) so the
 /// commit never silently fails for lack of a committer and leaves HEAD unborn.
 fn git_scaffold_commit(dir: &Path) {
-    let _ = crate::paths::command_no_window("git")
-        .args(["add", "-A"])
-        .current_dir(dir)
-        .output();
+    // Hardened, hooks off: "extend to remote" seeds this commit in an existing
+    // local repo, whose `.git/config` and hooks a fenced agent may have written.
+    use crate::commands::git::hookless_git_command_in;
+    let _ = hookless_git_command_in(dir, &["add", "-A"]).output();
     const MSG: &str = "Initial Eldrun scaffold";
-    let committed = crate::paths::command_no_window("git")
-        .args(["commit", "-m", MSG])
-        .current_dir(dir)
+    let committed = hookless_git_command_in(dir, &["commit", "-m", MSG])
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false);
     if !committed {
-        let _ = crate::paths::command_no_window("git")
-            .args([
+        let _ = hookless_git_command_in(
+            dir,
+            &[
                 "-c",
                 "user.name=Eldrun",
                 "-c",
@@ -2585,9 +3009,9 @@ fn git_scaffold_commit(dir: &Path) {
                 "commit",
                 "-m",
                 MSG,
-            ])
-            .current_dir(dir)
-            .output();
+            ],
+        )
+        .output();
     }
 }
 
@@ -2671,9 +3095,20 @@ pub fn ensure_generated_dir_ignored(dir: &Path, folder: &str) -> std::io::Result
     }
     let pattern = format!("{folder}/");
     let path = dir.join(".gitignore");
-    if !path.exists() {
-        fs::write(&path, format!("{pattern}\n"))?;
-        return Ok(true);
+    // A project tree is attacker-controlled (AGENTS.md), and a committed
+    // `.gitignore -> ~/.bashrc` would otherwise have this append a line to
+    // whatever file the link names. Only a real file, or no file, is ours to
+    // touch.
+    match fs::symlink_metadata(&path) {
+        Ok(meta) if !meta.file_type().is_file() => {
+            return Err(std::io::Error::other(".gitignore is not a regular file"));
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            write_no_follow(&path, format!("{pattern}\n").as_bytes(), true)?;
+            return Ok(true);
+        }
+        Err(e) => return Err(e),
     }
     let existing = fs::read_to_string(&path)?;
     if existing.lines().any(|line| line.trim() == pattern) {
@@ -2685,8 +3120,28 @@ pub fn ensure_generated_dir_ignored(dir: &Path, folder: &str) -> std::io::Result
     }
     updated.push_str(&pattern);
     updated.push('\n');
-    fs::write(&path, updated)?;
+    write_no_follow(&path, updated.as_bytes(), false)?;
     Ok(true)
+}
+
+/// Write `bytes` to `path` without following a symlink at the final component:
+/// `create_new` refuses anything already there (a dangling link included), and
+/// otherwise `O_NOFOLLOW` refuses a link swapped in after the caller's check.
+pub fn write_no_follow(path: &Path, bytes: &[u8], create_new: bool) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut options = fs::OpenOptions::new();
+    options.write(true);
+    if create_new {
+        options.create_new(true);
+    } else {
+        options.truncate(true);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    options.open(path)?.write_all(bytes)
 }
 
 /// Result of repairing one project's scaffold — which pieces were actually
@@ -3648,11 +4103,16 @@ pub fn import_project_blocking(req: ImportProjectRequest) -> Result<ProjectEntry
             } else {
                 fs::create_dir_all(projects_root()).map_err(|e| e.to_string())?;
                 // A plain rename fails across drives/filesystems (EXDEV on Unix,
-                // ERROR_NOT_SAME_DEVICE / os error 17 on Windows). Fall back to
-                // copy-then-remove so a cross-volume import still moves.
-                if fs::rename(&source, &dest).is_err() {
-                    copy_dir_all(&source, &dest)?;
-                    fs::remove_dir_all(&source).map_err(|e| e.to_string())?;
+                // ERROR_NOT_SAME_DEVICE on Windows). Fall back to copy-then-remove
+                // for that case only; `dest` was checked absent above, so any other
+                // failure is reported rather than turned into a duplicate tree.
+                match fs::rename(&source, &dest) {
+                    Ok(()) => {}
+                    Err(e) if crate::paths::is_cross_device(&e) => {
+                        copy_dir_all(&source, &dest)?;
+                        fs::remove_dir_all(&source).map_err(|e| e.to_string())?;
+                    }
+                    Err(e) => return Err(format!("could not move the folder: {e}")),
                 }
             }
             dest
@@ -4280,6 +4740,56 @@ fn chrono_now() -> String {
 mod tests {
     use super::*;
 
+    /// An interrupted archive leaves a partial destination, and a retry must
+    /// resume *into* it. `rename` onto a non-empty directory fails with
+    /// `ENOTEMPTY`, not a cross-device error, so `move_tree` keeps copying when
+    /// the destination already exists.
+    #[test]
+    fn move_tree_resumes_into_a_partial_destination() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::write(src.join("a.txt"), b"new-a").unwrap();
+        std::fs::write(src.join("sub/b.txt"), b"new-b").unwrap();
+
+        let dst = tmp.path().join("archive").join("dir");
+        std::fs::create_dir_all(&dst).unwrap();
+        std::fs::write(dst.join("a.txt"), b"partial").unwrap();
+
+        move_tree(&src, &dst).unwrap();
+
+        assert!(!src.exists(), "the source is removed once the copy completed");
+        assert_eq!(std::fs::read(dst.join("a.txt")).unwrap(), b"new-a");
+        assert_eq!(std::fs::read(dst.join("sub/b.txt")).unwrap(), b"new-b");
+    }
+
+    /// A rename refused for any reason other than a cross-device move, with no
+    /// destination in the way, is reported — never answered with a full copy
+    /// that then cannot remove its source.
+    #[cfg(unix)]
+    #[test]
+    fn move_tree_surfaces_a_non_cross_device_rename_error() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            // Root ignores the directory permission this test relies on.
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let locked = tmp.path().join("locked");
+        let src = locked.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a.txt"), b"x").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let dst = tmp.path().join("dst");
+        let result = move_tree(&src, &dst);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(result.is_err(), "EACCES must surface: {result:?}");
+        assert!(!dst.exists(), "no copy was made");
+        assert!(src.join("a.txt").exists(), "the source is untouched");
+    }
+
     /// #23 D3. `copy_dir_all` skipped `.git` only when `is_dir()`, so in a linked
     /// worktree the one-line `.git` FILE (`gitdir: <main>/.git/worktrees/<name>`)
     /// was copied — producing a second directory claiming the SAME admin entry, in
@@ -4397,6 +4907,99 @@ mod tests {
             name,
             vec![("directory", Value::String(dir.to_string()))],
         )
+    }
+
+    // ── Project folder rename ──────────────────────────────────────────────
+
+    fn dir_rename_status(list: &ProjectsList, id: &str, leaf: &str) -> String {
+        plan_dir_rename(list, id, false, leaf).unwrap().status
+    }
+
+    #[test]
+    fn dir_rename_plan_refuses_anything_already_at_the_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join("alpha");
+        fs::create_dir(&old).unwrap();
+        fs::create_dir(tmp.path().join("taken")).unwrap();
+        fs::write(tmp.path().join("afile"), "x").unwrap();
+        let list = vec![local_entry("a", "Alpha", &old.to_string_lossy())];
+
+        assert_eq!(dir_rename_status(&list, "a", "beta"), "ok");
+        assert_eq!(dir_rename_status(&list, "a", "  beta "), "ok");
+        assert_eq!(dir_rename_status(&list, "a", "alpha"), "same");
+        assert_eq!(dir_rename_status(&list, "a", "taken"), "exists");
+        assert_eq!(dir_rename_status(&list, "a", "afile"), "exists");
+        let plan = plan_dir_rename(&list, "a", false, "beta").unwrap();
+        assert_eq!(plan.target_dir, tmp.path().join("beta").to_string_lossy());
+    }
+
+    #[test]
+    fn dir_rename_plan_rejects_bad_leaves_and_unsupported_projects() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join("alpha");
+        fs::create_dir(&old).unwrap();
+        let dir = old.to_string_lossy().to_string();
+        let mut vm = local_entry("v", "Vm", &dir);
+        vm.extra
+            .insert("vm".into(), serde_json::json!({ "enabled": true }));
+        let list = vec![
+            local_entry("a", "Alpha", &dir),
+            vm,
+            local_entry("gone", "Gone", &tmp.path().join("nope").to_string_lossy()),
+        ];
+        for bad in ["", "..", "a/b", "a\\b", "x:", "trail.", "a\tb"] {
+            assert_eq!(dir_rename_status(&list, "a", bad), "invalid", "{bad:?}");
+        }
+        assert_eq!(plan_dir_rename(&list, "a", true, "b").unwrap().status, "unsupported");
+        assert_eq!(dir_rename_status(&list, "v", "b"), "unsupported");
+        assert_eq!(dir_rename_status(&list, "gone", "b"), "missing");
+        assert!(plan_dir_rename(&list, "nobody", false, "b").is_err());
+    }
+
+    #[test]
+    fn dir_rename_plan_guards_other_projects_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join("alpha");
+        fs::create_dir(&old).unwrap();
+        let dir = old.to_string_lossy().to_string();
+        // A registered project whose folder was deleted still owns its path.
+        let registered = local_entry("r", "R", &tmp.path().join("beta").to_string_lossy());
+        let list = vec![local_entry("a", "Alpha", &dir), registered];
+        assert_eq!(dir_rename_status(&list, "a", "beta"), "registered");
+
+        // Another project living inside this folder would lose its path.
+        let inner = local_entry("i", "Inner", &format!("{dir}/sub"));
+        let list = vec![local_entry("a", "Alpha", &dir), inner];
+        assert_eq!(dir_rename_status(&list, "a", "gamma"), "nested");
+        // …but a sibling that merely shares the prefix does not.
+        let sibling = local_entry("s", "S", &format!("{dir}x"));
+        let list = vec![local_entry("a", "Alpha", &dir), sibling];
+        assert_eq!(dir_rename_status(&list, "a", "gamma"), "ok");
+    }
+
+    #[test]
+    fn rename_dir_no_replace_never_touches_an_existing_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join("alpha");
+        fs::create_dir(&old).unwrap();
+        fs::write(old.join("keep.txt"), "mine").unwrap();
+        // An EMPTY directory is exactly what plain `rename(2)` would replace.
+        let empty = tmp.path().join("empty");
+        fs::create_dir(&empty).unwrap();
+        assert!(rename_dir_no_replace(&old, &empty).is_err());
+        assert!(old.join("keep.txt").exists());
+        assert!(empty.is_dir());
+
+        let full = tmp.path().join("full");
+        fs::create_dir(&full).unwrap();
+        fs::write(full.join("theirs.txt"), "theirs").unwrap();
+        assert!(rename_dir_no_replace(&old, &full).is_err());
+        assert!(!full.join("keep.txt").exists());
+
+        let free = tmp.path().join("beta");
+        rename_dir_no_replace(&old, &free).unwrap();
+        assert!(!old.exists());
+        assert_eq!(fs::read_to_string(free.join("keep.txt")).unwrap(), "mine");
     }
 
     fn spec(user: Option<&str>, host: &str, port: Option<u16>, path: &str) -> RemoteSpec {
@@ -4990,6 +5593,24 @@ mod tests {
 
     /// No `.gitignore` at all: saving a shot writes the one pattern it needs and
     /// does not quietly scaffold the rest of the project around it.
+    #[cfg(unix)]
+    #[test]
+    fn ensure_generated_dir_ignored_never_writes_through_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        fs::write(&victim, "precious\n").unwrap();
+        std::os::unix::fs::symlink(&victim, dir.path().join(".gitignore")).unwrap();
+        assert!(ensure_generated_dir_ignored(dir.path(), EMAILS_DIR).is_err());
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "precious\n");
+
+        // Dangling: `exists()` says no, and a plain write would create the target.
+        let dir = tempfile::tempdir().unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        std::os::unix::fs::symlink(&elsewhere, dir.path().join(".gitignore")).unwrap();
+        assert!(ensure_generated_dir_ignored(dir.path(), EMAILS_DIR).is_err());
+        assert!(!elsewhere.exists());
+    }
+
     #[test]
     fn ensure_generated_dir_ignored_creates_a_minimal_file() {
         let dir = tempfile::tempdir().unwrap();

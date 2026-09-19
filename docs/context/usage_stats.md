@@ -17,3 +17,9 @@ churn comes from a recursive `notify` watcher on the **active** project
 (`services::usage_stats`); it cannot see an SFTP tree, so a remote project is
 counted only via its local mirror. The recap (`components/stats/`) opens on the
 first launch of each day (`daily_stats_recap`, default on) and from Settings.
+
+Autocomplete records `autocomplete.accept.<mode>.<model>` or
+`autocomplete.dismiss.<mode>.<model>` once per offered candidate. Accepting a
+word/line or typing its matching prefix counts as acceptance; later handling of
+its remainder does not count again. The recap groups outcomes by mode/model.
+These are local counters only: no document text, paths or reference contents.

@@ -3,8 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { downloadDir } from "@tauri-apps/api/path";
 import { useSettingsStore } from "../../stores/settings";
 import { useWindowsStore } from "../../stores/windows";
-import { useDragStore } from "../../stores/drag";
-import { bindDragRelease } from "../../lib/dragPlatform";
+import { useDragStore } from "../../stores/drag/drag";
+import { bindDragRelease } from "../../lib/window/dragPlatform";
 import { fmtModified, fmtSize, fileIcon, folderIcon, type FileEntry } from "../../lib/viewers/fileUtils";
 import { useT } from "../../lib/i18n";
 import { useResizableSection } from "./useResizableSection";
@@ -276,16 +276,14 @@ export function DownloadsSection({
           ))}
         </div>
         <button
-          className="toolbar-btn"
-          style={{ fontSize: 10, padding: "1px 6px", height: 20 }}
+          className="toolbar-btn toolbar-btn--sm"
           onClick={() => void refresh()}
           title={t("common.refresh")}
         >
           ⟳
         </button>
         <button
-          className="toolbar-btn"
-          style={{ fontSize: 10, padding: "1px 6px", height: 20 }}
+          className="toolbar-btn toolbar-btn--sm"
           onClick={onClose}
           title={t("downloads.hide")}
         >
@@ -336,8 +334,7 @@ export function DownloadsSection({
                 ) : (
                   !isRemote && (
                     <button
-                      className="toolbar-btn dl-copy-btn"
-                      style={{ fontSize: 10, padding: "1px 6px", height: 20 }}
+                      className="toolbar-btn toolbar-btn--sm dl-copy-btn"
                       onClick={(ev) => {
                         ev.stopPropagation();
                         void copyEntry(entry, targetFolder);

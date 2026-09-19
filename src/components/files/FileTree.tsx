@@ -2,10 +2,11 @@ import React, { useCallback, useContext, useEffect, useLayoutEffect, useMemo, us
 import { createPortal } from "react-dom";
 import { confirm as dialogConfirm, open as openDialog } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
+import { invokeTrusted } from "../../lib/execTrust";
 import { listen } from "@tauri-apps/api/event";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import { useTabsStore } from "../../stores/tabs";
-import { useDragStore, type EmbedCap, type FileDragItem } from "../../stores/drag";
+import { useDragStore, type EmbedCap, type FileDragItem } from "../../stores/drag/drag";
 import { commitFileDrop, fileDropGoesToNewWindow } from "../tabs/commitFileDrop";
 import { startDetachedDropSession } from "../tabs/detachedDropTargets";
 import { FileDropContext } from "./fileDropContext";
@@ -18,16 +19,16 @@ import {
   physToClient,
   type PhysPoint,
   type WindowFrame,
-} from "../../lib/coords";
-import { bindDragRelease, dragPlatform, PLATFORM } from "../../lib/dragPlatform";
+} from "../../lib/window/coords";
+import { bindDragRelease, dragPlatform, PLATFORM } from "../../lib/window/dragPlatform";
 import { useSettingsStore } from "../../stores/settings";
 import { useExperimental } from "../../lib/experimental";
-import { GIT_STATE_COLOR } from "../../lib/gitColors";
+import { GIT_STATE_COLOR } from "../../lib/theme/gitColors";
 import { createDeckFile } from "../../lib/viewers/deck/create";
 import { useProjectsStore } from "../../stores/projects";
-import { useRemoteStatusStore } from "../../stores/remoteStatus";
-import { useSyncStore, isPathExcluded, dirSyncAggregate, type SyncFileState } from "../../stores/sync";
-import { confirmSyncTransfer } from "../../stores/syncConfirm";
+import { useRemoteStatusStore } from "../../stores/remote/remoteStatus";
+import { useSyncStore, isPathExcluded, dirSyncAggregate, type SyncFileState } from "../../stores/remote/sync";
+import { confirmSyncTransfer } from "../../stores/remote/syncConfirm";
 import { useActivityStore } from "../../stores/activity";
 import { useFileClipboardStore } from "../../stores/fileClipboard";
 import { type FileEntry, type InternalViewer, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, visibleEntries, isHiddenByEnding, internalViewerFor, disabledViewers, fileEntriesEqual, stringMapsEqual, nextSelection, STANDARD_PROJECT_FILES } from "../../lib/viewers/fileUtils";
@@ -36,8 +37,8 @@ import {
   fileTreeSnapshotKey,
   readFileTreeSnapshot,
   writeFileTreeSnapshot,
-} from "../../lib/fileViewSnapshots";
-import { type TexCapability, type TexCompileResult, getTexCapability, lastLogLine } from "../../lib/viewers/tex";
+} from "../../lib/projects/fileViewSnapshots";
+import { type TexCapability, type TexCompileResult, getTexCapability, lastLogLine } from "../../lib/viewers/tex/tex";
 import { basename, dirname, relativePathWithin, resolvePath } from "../../lib/paths";
 import {
   moveDestRel,
@@ -45,25 +46,25 @@ import {
   resolveMoveTarget,
   createSpringLoader,
   type ResolvedMoveTarget,
-} from "../../lib/fileMove";
+} from "../../lib/projects/fileMove";
 import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
-import { DirSizeUnavailable, guardedDirSize, isHostTimeout } from "../../lib/dirSizeGuard";
-import { useFastMode } from "../../lib/fastMode";
+import { DirSizeUnavailable, guardedDirSize, isHostTimeout } from "../../lib/projects/dirSizeGuard";
+import { useFastMode } from "../../lib/agents/fastMode";
 import { isPythonPath } from "../../lib/viewers/python";
 import {
   checkMainScripts,
   isMainScriptCached,
   needsMainCheck,
-} from "../../lib/pythonMainCache";
-import { runPythonFile, pythonRunPlan, placeForFocused } from "../../lib/pythonRun";
+} from "../../lib/terminal/pythonMainCache";
+import { runPythonFile, pythonRunPlan, placeForFocused } from "../../lib/terminal/pythonRun";
 import {
   shellRunnerFor,
   shellScriptRunPlan,
   type ScriptShell,
-} from "../../lib/shellScriptRun";
-import { guardLoginNodeRun } from "../../lib/hpcGuard";
-import { projectIsOnHpc } from "../../lib/hpcHost";
-import { useRunHostPrefStore } from "../../stores/runHostPref";
+} from "../../lib/terminal/shellScriptRun";
+import { guardLoginNodeRun } from "../../lib/remote/hpc/hpcGuard";
+import { projectIsOnHpc } from "../../lib/remote/hpc/hpcHost";
+import { useRunHostPrefStore } from "../../stores/remote/runHostPref";
 import { readFileText } from "../embed/fileAccess";
 import { SetDefaultAppDialog } from "./SetDefaultAppDialog";
 import { SendToProjectDialog, type SendSource } from "./SendToProjectDialog";
@@ -148,8 +149,6 @@ const SORT_KEY_LABEL: Record<SortKey, TranslationKey> = {
 interface Props {
   projectDir: string;
   projectId: string | null;
-  /** Path to the project's project.json; enables the project-scoped default app. */
-  localFile?: string | null;
   sortKey?: SortKey;
   descending?: boolean;
   /** When given, the breadcrumb (⌂) row carries the sort control — a right-
@@ -303,17 +302,6 @@ function warmDragIcon(): Promise<string> {
   return dragIconPromise;
 }
 
-// TEMPORARY (Windows drag QA — remove together with every dragDbg call): mirror
-// the drag/selection gesture lifecycle into crash.log via report_frontend_error
-// so a failing gesture can be read back without devtools open.
-function dragDbg(message: string) {
-  try {
-    void invoke("report_frontend_error", { kind: "drag-debug", message, stack: null }).catch(() => {});
-  } catch {
-    /* diagnostics must never affect the gesture */
-  }
-}
-
 /** Turn a raw `list_dir` failure into a sentence a user can act on. The common
  *  case, by far, is switching a remote project's file view to "Remote" while
  *  sitting in a folder that only exists in the local mirror (never synced to the
@@ -340,7 +328,6 @@ function describeListError(
 export function FileTree({
   projectDir,
   projectId,
-  localFile = null,
   sortKey = "name",
   descending = false,
   onSortChange,
@@ -652,9 +639,10 @@ export function FileTree({
   // Same shared, persisted map the open-editor's Run/Debug toolbar reads/writes
   // (`FileViewerPane.tsx`'s `pyArgs`/`setPyArgs`) — keyed by absolute path in
   // global settings, not local component state, so it survives this tree
-  // unmounting (side-panel hide/close) and an Eldrun restart.
-  const pyArgsByPath = useSettingsStore((s) => s.settings?.python_run_args ?? EMPTY_PY_ARGS);
-  const setPyArgs = useCallback((path: string, v: string) => {
+  // unmounting (side-panel hide/close) and an Eldrun restart. Shell scripts
+  // (`.sh` & co.) share the map: it is keyed by path, and the name predates them.
+  const runArgsByPath = useSettingsStore((s) => s.settings?.python_run_args ?? EMPTY_PY_ARGS);
+  const setRunArgs = useCallback((path: string, v: string) => {
     void useSettingsStore.getState().setPythonRunArgs(path, v);
   }, []);
   const [argsPopover, setArgsPopover] = useState<{
@@ -779,7 +767,7 @@ export function FileTree({
   // `if __name__ == "__main__":` guard) — the Run ▶ button only shows for
   // those, not for every importable module. It needs the file's content, which
   // the tree listing doesn't carry, so it is read once per *version* of a file
-  // and the verdict is persisted in settings.json (`lib/pythonMainCache`).
+  // and the verdict is persisted in settings.json (`lib/terminal/pythonMainCache`).
   //
   // Persisting is what makes this affordable on BOTH sides. It used to be a
   // component-lifetime ref, so every reopen of the viewer re-read every visible
@@ -1229,7 +1217,7 @@ export function FileTree({
   const renderGroupTotal = (bytes: number, partial: boolean, title: string) => (
     // Fast mode: no folder walk means every sum is a permanent lower bound, so
     // the header would read "\u2265 1.2 MB" for the rest of the session. A
-    // figure that can never resolve is worse than none — see `lib/fastMode`'s
+    // figure that can never resolve is worse than none — see `lib/agents/fastMode`'s
     // rule that an absence must be legible rather than look stuck.
     fastMode ? null : <span
       className={`file-tree-path-total${partial ? " partial" : ""}`}
@@ -1272,12 +1260,7 @@ export function FileTree({
     // by the time the user starts a Ctrl-drag. Only the plugin path (Win/mac)
     // needs it — the Linux `start_file_drag` embeds the icon backend-side.
     if (PLATFORM !== "linux") void warmDragIcon();
-    let lastCtrl = false; // TEMPORARY drag QA: log transitions only, not every repeat
     const sync = (e: KeyboardEvent) => {
-      if (e.ctrlKey !== lastCtrl) {
-        lastCtrl = e.ctrlKey;
-        dragDbg(`ctrlHeld=${e.ctrlKey} (${e.type})`);
-      }
       setCtrlHeld(e.ctrlKey);
     };
     const clear = () => setCtrlHeld(false);
@@ -1374,7 +1357,7 @@ export function FileTree({
     window.addEventListener("focus", refresh);
     // The 15 s tick is the third periodic walk of a host tree, after the 25 s
     // byte-sync pass and the 12 s lockstep poll — both of which the HPC tag
-    // already stops for exactly the reason `lib/hpcHost.ts` gives ("the same walk,
+    // already stops for exactly the reason `lib/remote/hpc/hpcHost.ts` gives ("the same walk,
     // unasked for, forever"). A tagged login node gets no timer here either: an
     // open file tree is not a standing request to stat a cluster every quarter
     // minute. What survives is the focus listener and every explicit re-list —
@@ -1731,7 +1714,6 @@ export function FileTree({
   // folder — drives the multi-selection instead (shift = range, ctrl/cmd =
   // toggle). Opening a file stays a double-click (onDoubleClick → handleOpen).
   function handleRowClick(ev: React.MouseEvent, entry: FileEntry) {
-    dragDbg(`rowClick ${entry.name} shift=${ev.shiftKey} ctrl=${ev.ctrlKey}`); // TEMPORARY drag QA
     const hasMod = ev.shiftKey || ev.ctrlKey || ev.metaKey;
     if (entry.is_dir && !hasMod) {
       clearSelection();
@@ -1874,9 +1856,7 @@ export function FileTree({
     }
     const begin = (icon: string) =>
       startDrag({ item: paths, icon, mode: "copy" })
-        .then(() => dragDbg("startDrag resolved")) // TEMPORARY drag QA
         .catch((err) => {
-          dragDbg(`startDrag FAILED: ${String(err)}`); // TEMPORARY drag QA
           // Same visibility for the plugin path (`plugin:drag|start_drag` and
           // `drag_preview_icon` only exist after a backend rebuild).
           console.error("[eldrun] native file drag-out failed:", err);
@@ -1891,7 +1871,6 @@ export function FileTree({
     // doesn't reliably export the file to other apps, so suppress it and hand
     // off to the native OS drag.
     e.preventDefault();
-    dragDbg(`dragstart fired ${entry.name} iconWarm=${!!dragIconDataUrl}`); // TEMPORARY drag QA
     // Dragging a row that belongs to a >1 selection exports the whole
     // selection, mirroring the pointer drag-to-tab's multi-drag.
     const paths =
@@ -1919,8 +1898,6 @@ export function FileTree({
     dragTarget: InternalViewer | "embed" | null,
   ) {
     if (e.button !== 0 || entry.is_dir) return;
-    // TEMPORARY drag QA
-    dragDbg(`pdown ${entry.name} ctrl=${e.ctrlKey} shift=${e.shiftKey} target=${dragTarget ?? "none"}`);
     // A built-in viewer drives the in-app drop; "embed" means an external
     // handler, so no viewer. `canTab` is whether this file can land on a tab bar
     // / new window at all — only such files take the commitFileDrop path on
@@ -1948,10 +1925,7 @@ export function FileTree({
     // WebKitGTK drag and hands off to the native OS drag (handleEntryDragStart).
     // Bail out here without preventDefault so that gesture takes over instead of
     // the pointer drag-to-tab.
-    if (e.ctrlKey) {
-      dragDbg("pdown: ctrl bail → native dnd expected (a 'dragstart fired' line should follow)"); // TEMPORARY drag QA
-      return;
-    }
+    if (e.ctrlKey) return;
     // Let the inline run (▶) button own its own clicks — don't seed a drag or
     // swallow the click when the press lands on it.
     if ((e.target as HTMLElement).closest(".file-run-btn")) return;
@@ -1968,7 +1942,7 @@ export function FileTree({
     const detached = startDetachedDropSession();
 
     // Latest in-window client coords ("outside this window" test) and the latest
-    // physical desktop cursor (cross-window hit-test, poll-driven — see lib/coords;
+    // physical desktop cursor (cross-window hit-test, poll-driven — see lib/window/coords;
     // DOM screenX/Y units diverge across WebKitGTK/WebView2/WKWebView).
     let lastClient = { x: startX, y: startY };
     let lastPhys: PhysPoint | null = null;
@@ -2040,7 +2014,6 @@ export function FileTree({
       if (!dragging) {
         if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 5) return;
         dragging = true;
-        dragDbg(`drag engaged ${entry.name}`); // TEMPORARY drag QA
         useDragStore.getState().startFileDrag({
           label: isMultiDrag ? `${dragEntries.length} items` : entry.name,
           pointerX: ev.clientX,
@@ -2066,9 +2039,7 @@ export function FileTree({
         if (dragPlatform.needsPointerCapture) {
           try {
             captureEl.setPointerCapture(pointerId);
-            dragDbg("pointer capture ok"); // TEMPORARY drag QA
-          } catch (err) {
-            dragDbg(`pointer capture FAILED: ${String(err)}`); // TEMPORARY drag QA
+          } catch {
             /* capture is best-effort; the OS-cursor poll does not depend on it */
           }
         }
@@ -2166,7 +2137,6 @@ export function FileTree({
       delayMs: SPRING_LOAD_MS,
       onOpen: (rel) => {
         if (gestureOver || nativeActive) return;
-        dragDbg(`spring-load → ${rel || "/"}`); // TEMPORARY drag QA
         void load(rel).then(() => {
           // The listing under the (unmoved) cursor changed: re-resolve the drop
           // target against the new rows once React has painted them, so the
@@ -2215,10 +2185,6 @@ export function FileTree({
       // file just stayed put). See git dfcb6e0, which introduced the read below
       // the cleanup() call.
       const moveTarget = moveTargetRef.current;
-      // TEMPORARY drag QA
-      dragDbg(
-        `commit shift=${shiftKey} dragging=${dragging} moveRel=${moveTarget?.rel ?? "null"} cross=${moveTarget?.crossRoot ?? false} canDrop=${canDrop}`,
-      );
       cleanup();
       if (!dragging) {
         // Never moved → a plain click does NOT open. Opening a file is a
@@ -2318,10 +2284,6 @@ export function FileTree({
               h: 640,
             }
           : null;
-      // TEMPORARY drag QA
-      dragDbg(
-        `commitFileDrop outside=${outside} reorder=${d.reorderGroup ?? "-"}@${d.reorderIndex ?? "-"} over=${d.overGroup ?? "-"} edge=${d.edge ?? "-"}`,
-      );
       commitFileDrop(d, projectId, projectDir, detachBounds);
       useDragStore.getState().end();
     };
@@ -2329,7 +2291,6 @@ export function FileTree({
     // Escape / blur / a genuine pointercancel (Win/mac) aborts: tear down and drop
     // any in-flight drag without committing.
     const onAbort = () => {
-      dragDbg(`file drag abort (dragging=${dragging})`); // TEMPORARY drag QA
       cleanup();
       if (dragging) useDragStore.getState().end();
     };
@@ -2575,7 +2536,7 @@ export function FileTree({
   // selected), or stop tracking it. Remote source view only.
   //
   // A pull writes the host's bytes over the mirror's — for a folder row, over the
-  // whole subtree — so it asks first (`stores/syncConfirm`), naming what would be
+  // whole subtree — so it asks first (`stores/remote/syncConfirm`), naming what would be
   // replaced and what would be lost. The button used to do it on one click, which
   // is what made an ordinary misclick destructive.
   /**
@@ -3085,12 +3046,19 @@ export function FileTree({
   function runShellScript(event: React.MouseEvent<HTMLButtonElement>, entry: FileEntry) {
     event.preventDefault();
     event.stopPropagation();
+    launchShell(entry, runArgsByPath[entry.path]);
+  }
+
+  /** Run a shell script with `args` appended to its command line — detached when
+   *  "run in background" is on (the backend's shell parses them), else in a
+   *  foreground terminal tab (the tab's shell does). */
+  function launchShell(entry: FileEntry, args?: string) {
     const remoteForegroundOnly = remoteListing;
     if (runInBackground && !remoteForegroundOnly) {
       // Detached spawn: no tab, no captured output. The activity store tracks
       // the run (and the app-lifetime `script-finished` listener clears it) so
       // the spinner survives side-panel hide/show — see TODO group R #34.
-      runScript(entry.path, projectDir, projectId);
+      runScript(entry.path, projectDir, projectId, args);
       return;
     }
     const interp = shellRunnerFor(entry.extension, PLATFORM) as ScriptShell | null;
@@ -3107,6 +3075,7 @@ export function FileTree({
       runHostPref: projectId
         ? useRunHostPrefStore.getState().byProject[projectId]
         : undefined,
+      args,
     });
     if (!plan) {
       setError(t("fileTree.runFailedOutsideTree", { path: entry.path }));
@@ -3125,7 +3094,7 @@ export function FileTree({
     // we're in one, else the focused subwindow of this project. Preceded by the
     // same login-node gate the Python Run has: if `plan.location` resolves to a
     // machine tagged HPC, running a script there is asked about first
-    // (`lib/hpcGuard.ts`) — a script is the likeliest thing on this menu to be
+    // (`lib/remote/hpc/hpcGuard.ts`) — a script is the likeliest thing on this menu to be
     // actual compute.
     void guardLoginNodeRun({
       projectId,
@@ -3140,16 +3109,23 @@ export function FileTree({
 
   /** Run a Python file: open a terminal tab in the project's scope running the
    *  project's interpreter on it. Same mechanism as the viewer's Run button
-   *  (`lib/pythonRun`), so it inherits remote-host/container locality and picks
+   *  (`lib/terminal/pythonRun`), so it inherits remote-host/container locality and picks
    *  up the project's pinned/auto-detected interpreter. */
   function runPythonScript(event: React.MouseEvent<HTMLButtonElement>, entry: FileEntry) {
     event.preventDefault();
     event.stopPropagation();
-    launchPython(entry, pyArgsByPath[entry.path]);
+    launchPython(entry, runArgsByPath[entry.path]);
+  }
+
+  /** The ▶ popover's Run: a `.py` row runs through Python, anything else it is
+   *  offered on is a shell script. */
+  function launchWithArgs(entry: FileEntry, args: string) {
+    if (isPythonPath(entry.path)) launchPython(entry, args);
+    else launchShell(entry, args);
   }
 
   /** Open a run terminal for `entry`, appending `args` to the command line (see
-   *  `lib/pythonRun`). Same placement as the viewer's Run; failures surface into
+   *  `lib/terminal/pythonRun`). Same placement as the viewer's Run; failures surface into
    *  the tree's error banner. */
   function launchPython(entry: FileEntry, args?: string) {
     runPythonFile({
@@ -3205,7 +3181,7 @@ export function FileTree({
     setCompiling((s) => new Set(s).add(entry.path));
     setError(null);
     try {
-      const res = await invoke<TexCompileResult>("compile_tex", {
+      const res = await invokeTrusted<TexCompileResult>("compile_tex", {
         path: entry.path,
         engine: null,
       });
@@ -4062,20 +4038,18 @@ export function FileTree({
                   // instead.
                   aria-label={t(isRunning ? "fileTree.runningName" : "fileTree.runName", { name: e.name })}
                   onClick={(ev) => (canPyRun ? runPythonScript(ev, e) : runShellScript(ev, e))}
-                  // Right-click a Python Run button → set arguments (sys.argv). For a
-                  // shell script there's nothing to offer, so just swallow it so it
-                  // doesn't fall through to the row's file context menu.
+                  // Right-click the Run button → set arguments: `sys.argv` for a
+                  // Python script, `$@` for a shell script. Swallowed either way so
+                  // it doesn't fall through to the row's file context menu.
                   onContextMenu={(ev) => {
                     ev.preventDefault();
                     ev.stopPropagation();
-                    if (canPyRun) {
-                      setArgsPopover({
-                        entry: e,
-                        x: ev.clientX,
-                        y: ev.clientY,
-                        draft: pyArgsByPath[e.path] ?? "",
-                      });
-                    }
+                    setArgsPopover({
+                      entry: e,
+                      x: ev.clientX,
+                      y: ev.clientY,
+                      draft: runArgsByPath[e.path] ?? "",
+                    });
                   }}
                   disabled={runLocked}
                 >
@@ -4243,14 +4217,21 @@ export function FileTree({
               aria-label={t("fileTree.runArgsAria", { name: argsPopover.entry.name })}
             >
               <label className="file-run-args-label">
-                {t("fileTree.runArgsLabel", { name: argsPopover.entry.name })}
+                {isPythonPath(argsPopover.entry.path) ? (
+                  t("fileTree.runArgsLabel", { name: argsPopover.entry.name })
+                ) : (
+                  <>
+                    {t("fileTree.runArgsLabelShell", { name: argsPopover.entry.name })}
+                    <UntestedTag />
+                  </>
+                )}
               </label>
               <input
                 ref={argsInputRef}
                 className="file-run-args-input"
                 value={argsPopover.draft}
                 spellCheck={false}
-                placeholder="--epochs 5 data.csv"
+                placeholder={isPythonPath(argsPopover.entry.path) ? "--epochs 5 data.csv" : "--verbose out/"}
                 onChange={(ev) =>
                   setArgsPopover((p) => (p ? { ...p, draft: ev.target.value } : p))
                 }
@@ -4258,8 +4239,8 @@ export function FileTree({
                   if (ev.key === "Enter") {
                     ev.preventDefault();
                     const a = argsPopover.draft.trim();
-                    setPyArgs(argsPopover.entry.path, a);
-                    launchPython(argsPopover.entry, a);
+                    setRunArgs(argsPopover.entry.path, a);
+                    launchWithArgs(argsPopover.entry, a);
                     setArgsPopover(null);
                   } else if (ev.key === "Escape") {
                     ev.preventDefault();
@@ -4273,8 +4254,8 @@ export function FileTree({
                   className="file-run-args-btn"
                   onClick={() => {
                     const a = argsPopover.draft.trim();
-                    setPyArgs(argsPopover.entry.path, a);
-                    launchPython(argsPopover.entry, a);
+                    setRunArgs(argsPopover.entry.path, a);
+                    launchWithArgs(argsPopover.entry, a);
                     setArgsPopover(null);
                   }}
                 >
@@ -4285,7 +4266,7 @@ export function FileTree({
                   className="file-run-args-btn"
                   onClick={() => {
                     const a = argsPopover.draft.trim();
-                    setPyArgs(argsPopover.entry.path, a);
+                    setRunArgs(argsPopover.entry.path, a);
                     setArgsPopover(null);
                   }}
                   title={t("fileTree.rememberArgsTitle")}
@@ -4786,7 +4767,7 @@ export function FileTree({
         <SetDefaultAppDialog
           ext={defaultAppFor.extension}
           fileName={defaultAppFor.name}
-          localFile={localFile}
+          projectId={projectId ?? null}
           onClose={() => setDefaultAppFor(null)}
         />
       )}
@@ -4839,11 +4820,15 @@ export function FileTree({
                 t("fileTree.tooltipOfTotal", { total: fmtSize(dirSizes[tooltip.entry.path]) })}
             </div>
           )}
-          {!tooltip.entry.is_dir && isPythonPath(tooltip.entry.path) && (
-            (isMainScriptCached(pyMainCache, tooltip.entry.path) || pyArgsByPath[tooltip.entry.path])
+          {!tooltip.entry.is_dir && (
+            isPythonPath(tooltip.entry.path)
+              ? (isMainScriptCached(pyMainCache, tooltip.entry.path) || runArgsByPath[tooltip.entry.path])
+              : shellRunnerFor(tooltip.entry.extension, PLATFORM) !== null
           ) && (
             <>
-              {isMainScriptCached(pyMainCache, tooltip.entry.path) && (
+              {(isPythonPath(tooltip.entry.path)
+                ? isMainScriptCached(pyMainCache, tooltip.entry.path)
+                : true) && (
                 <div>
                   <span className="file-tooltip-label">{t("fileTree.tooltipRun")} </span>
                   {t("fileTree.tooltipRunHint")}
@@ -4852,10 +4837,10 @@ export function FileTree({
               {/* Nested under Run, not a top-level "Run args" row — and shown
                   even when the file above lost its Run button (no `__main__`
                   guard), so args set earlier don't just look lost. */}
-              {pyArgsByPath[tooltip.entry.path] && (
+              {runArgsByPath[tooltip.entry.path] && (
                 <div className="file-tooltip-sub">
                   <span className="file-tooltip-label">{t("fileTree.tooltipArgs")} </span>
-                  {pyArgsByPath[tooltip.entry.path]}
+                  {runArgsByPath[tooltip.entry.path]}
                 </div>
               )}
             </>

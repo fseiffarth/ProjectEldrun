@@ -11,7 +11,13 @@ export interface TabSchedules { total: number; enabled: number; next?: string }
  * desktop; `working_at`/`done_at` are desktop wall-clock ms of the tab's last
  * working output and last finished turn. All three are the desktop's own
  * readings and absent while it is closed or before the tab has done either. */
-export interface TabRow { id: string; label: string; kind: "shell" | "agent"; agent_label?: string; agent_status?: AgentStatus; agent_model?: string; working_at?: number; done_at?: number; schedules?: TabSchedules; available: boolean; viewer_busy: boolean; last_activity?: number }
+/** One prompt an agent tab was given, as the desktop read it off the agent's
+ * own transcript — typed into the terminal, pasted, sent from here or by a
+ * schedule alike. `at` is the transcript record's ISO instant, which the phone
+ * formats in its own zone; a record that carried none arrives without one, and
+ * so does the one line a transcript-less agent leaves on its own screen. */
+export interface TabPrompt { text: string; at?: string }
+export interface TabRow { id: string; label: string; kind: "shell" | "agent"; agent_label?: string; agent_status?: AgentStatus; agent_model?: string; working_at?: number; done_at?: number; schedules?: TabSchedules; prompts?: TabPrompt[]; available: boolean; viewer_busy: boolean; last_activity?: number; /** The tab's colour as a palette id (see `tabColors.ts`); absent when it has none. */ color?: string }
 export interface AgentRow { id: string; label: string; modes: ("plan" | "auto")[] }
 /** One agent tab in the cross-project activity list: an ordinary tab row plus
  * the project it lives in, because that list is flat and a tab label on its own
@@ -278,6 +284,33 @@ export const MAX_TAB_LABEL = 120;
  * layout, so this is a bridge call and needs desktop Eldrun to be open. */
 export function renameTab(tabId: string, label: string): Promise<{ tab?: TabRow; label?: string }> {
   return api(`/api/v1/tabs/${encodeURIComponent(tabId)}`, { method: "PUT", body: JSON.stringify({ label }) });
+}
+
+/** `PUT /api/v1/tabs/{id}/color` — paint one tab, agent or shell, with a colour
+ * from the palette, or clear it by passing `null`. Only the palette id crosses;
+ * both surfaces resolve it to the same hex (see `tabColors.ts`). Its own route
+ * rather than a field on the rename above, because the rename is agent-only
+ * while a colour is for any tab the phone lists. A bridge call, so it needs
+ * desktop Eldrun open. */
+export function setTabColor(tabId: string, color: string | null): Promise<{ tab?: TabRow; color?: string | null }> {
+  return api(`/api/v1/tabs/${encodeURIComponent(tabId)}/color`, { method: "PUT", body: JSON.stringify({ color }) });
+}
+
+/** Which side of the anchor tab a dragged row lands on — the desktop's own
+ * `reorderTabInScope` vocabulary, so both surfaces mean one thing by a drop. */
+export type TabPlace = "before" | "after";
+
+/** `PUT /api/v1/tabs/{id}/order` — move one tab next to another inside the same
+ * project, the phone's half of the desktop Agents view's drag reorder. Both
+ * tabs are named by their opaque ids; the answer is the project's tab ids in
+ * the order the desktop now holds them, which is what the list reconciles
+ * against after having rearranged itself on the drop. A bridge call, so it
+ * needs desktop Eldrun open. */
+export function reorderTab(tabId: string, anchorId: string, place: TabPlace): Promise<{ tabs?: string[] }> {
+  return api(`/api/v1/tabs/${encodeURIComponent(tabId)}/order`, {
+    method: "PUT",
+    body: JSON.stringify({ anchor: anchorId, place }),
+  });
 }
 
 /** `DELETE /api/v1/tabs/{id}` — close one tab, agent or shell. Closing is the

@@ -3,7 +3,7 @@
  * the header badge and the two rails' data selection.
  *
  * Everything here is a pure function over already-loaded state, for the reason
- * the calendar's own math lives in `lib/{calendarTime,recurrence}.ts`: it is the
+ * the calendar's own math lives in `lib/calendar/{calendarTime,recurrence}.ts`: it is the
  * half worth unit-testing, and a board that computes nothing in its components
  * can be re-rendered as often as a drag needs without a second thought.
  *
@@ -50,11 +50,11 @@ import {
   timePart,
   todayStr,
   toStamp,
-} from "./calendarTime";
-import { dayAgenda, visibleCalendarIds } from "../stores/calendar";
+} from "./calendar/calendarTime";
+import { dayAgenda, visibleCalendarIds } from "../stores/calendar/calendar";
 import type { TranslationKey } from "./i18n";
 import { dropSlot } from "./listReorder";
-import type { ProjectRemark } from "./projectRemarks";
+import type { ProjectRemark } from "./projects/projectRemarks";
 
 /** Gap between adjacent ranks. Mirrors the backend's `RANK_GAP`. */
 export const RANK_STEP = 1024;

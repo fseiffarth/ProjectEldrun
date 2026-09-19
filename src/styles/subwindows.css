@@ -241,7 +241,7 @@
   border-radius: var(--radius-lg);
   background: var(--bg-panel);
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: var(--text-base);
 }
 /* Clickable path bar shown while the spherical file viewer is open. */
 .blob-breadcrumb {
@@ -268,7 +268,7 @@
   border-radius: var(--radius);
   background: transparent;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--text-md);
   cursor: var(--cur-pointer, pointer);
 }
 .blob-crumb:hover {
@@ -277,18 +277,18 @@
 }
 .blob-crumb-exit {
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--text-sm);
 }
 .blob-crumb-sep {
   flex-shrink: 0;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--text-sm);
 }
 .blob-crumb-loading {
   flex-shrink: 0;
   margin-left: 6px;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--text-sm);
 }
 .blob-hint {
   position: absolute;
@@ -301,7 +301,7 @@
   background: color-mix(in srgb, var(--bg-panel) 75%, transparent);
   border: 1px solid var(--border-subtle);
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--text-sm);
   pointer-events: none;
   white-space: nowrap;
 }
@@ -324,7 +324,7 @@
   border-radius: var(--radius-full);
   background: transparent;
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: var(--text-sm);
   cursor: var(--cur-pointer, pointer);
 }
 .blob-view-toggle button:hover {
@@ -383,7 +383,7 @@
 }
 .blob-pie-center-sub {
   fill: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--text-sm);
 }
 .blob-pie-empty {
   position: absolute;
@@ -392,7 +392,7 @@
   align-items: center;
   justify-content: center;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: var(--text-base);
 }
 .blob-stage {
   position: absolute;
@@ -422,7 +422,7 @@
   border: 1px solid var(--border-subtle);
   background: color-mix(in srgb, var(--bg-panel) 92%, transparent);
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: var(--text-md);
   cursor: var(--cur-pointer, pointer);
   will-change: transform;
   transition: border-color var(--transition), box-shadow var(--transition), background var(--transition);
@@ -434,7 +434,7 @@
 }
 .blob-node-icon {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: var(--text-sm);
   line-height: 1;
 }
 .blob-node-label {
@@ -466,7 +466,7 @@
   border-radius: var(--radius-full);
   color: var(--accent-secondary);
   background: color-mix(in srgb, var(--accent-secondary) 16%, transparent);
-  font-size: 10px;
+  font-size: var(--text-xs);
   line-height: 14px;
 }
 .blob-node-box-tag-label {
@@ -482,7 +482,7 @@
   border-radius: var(--radius-full);
   background: color-mix(in srgb, var(--accent-secondary) 25%, transparent);
   color: var(--text-secondary);
-  font-size: 10px;
+  font-size: var(--text-xs);
 }
 /* Status coloring of the leading dot/glyph + accents. */
 .blob-status-current .blob-node-icon { color: var(--accent); }
@@ -505,7 +505,7 @@
 .blob-node-center .blob-node-icon { color: var(--accent); }
 /* File/folder nodes orbiting the focused project. */
 .blob-file-dir .blob-node-icon,
-.blob-file-doc .blob-node-icon { font-size: 13px; }
+.blob-file-doc .blob-node-icon { font-size: var(--text-base); }
 .blob-file-dir { border-color: color-mix(in srgb, var(--accent-secondary) 55%, var(--border-subtle)); }
 .blob-file-dir .blob-node-label { font-weight: 500; }
 /* A project node tinted by its primary category color (grouping in the cloud).
@@ -533,7 +533,7 @@
   gap: 4px;
   padding: 1px 7px 1px 5px;
   border-radius: var(--radius-full);
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--text-secondary);
   background: color-mix(in srgb, var(--cat-color) 18%, transparent);
   border: 1px solid color-mix(in srgb, var(--cat-color) 45%, transparent);
@@ -555,7 +555,7 @@
   border-radius: var(--radius-full);
   color: var(--accent-secondary);
   background: color-mix(in srgb, var(--accent-secondary) 16%, transparent);
-  font-size: 10px;
+  font-size: var(--text-xs);
 }
 /* Pointer-anchored info card shown while hovering a node (project description /
    box details). Rendered in a body portal so it's never clipped or scaled by
@@ -573,7 +573,7 @@
   pointer-events: none;
 }
 .blob-hover-title {
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 600;
   color: var(--text-primary);
   overflow: hidden;
@@ -582,14 +582,14 @@
 }
 .blob-hover-meta {
   margin-top: 2px;
-  font-size: 11px;
+  font-size: var(--text-sm);
   text-transform: capitalize;
   color: var(--accent);
 }
 .blob-hover-desc {
   margin-top: 6px;
   max-width: 360px;
-  font-size: 12px;
+  font-size: var(--text-md);
   line-height: 1.4;
   color: var(--text-secondary);
   display: -webkit-box;
@@ -607,7 +607,7 @@
 }
 .blob-hover-hint {
   margin-top: 8px;
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--text-muted);
 }
 
@@ -658,7 +658,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
+  font-size: var(--text-sm);
   font-weight: 600;
   line-height: 1;
   color: var(--bg-main);
@@ -688,10 +688,10 @@
   border-radius: var(--radius);
   box-shadow: var(--shadow-2);
   pointer-events: none;
-  font-size: 12px;
+  font-size: var(--text-md);
 }
 .steering-legend-title {
-  font-size: 11px;
+  font-size: var(--text-sm);
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -706,7 +706,7 @@
 }
 .steering-legend-item kbd {
   font-family: inherit;
-  font-size: 11px;
+  font-size: var(--text-sm);
   font-weight: 600;
   padding: 1px 5px;
   color: var(--text-primary);
@@ -729,7 +729,7 @@
 
 .tab-drag-ghost-label {
   padding: 4px 10px;
-  font-size: 12px;
+  font-size: var(--text-md);
   background: var(--control-hover-bg);
   border: 1px solid var(--accent);
   color: var(--text-primary);
@@ -751,7 +751,7 @@
 }
 
 .tab-drag-ghost-opt {
-  font-size: 10px;
+  font-size: var(--text-xs);
   white-space: nowrap;
   color: var(--text-secondary, var(--text-primary));
   opacity: 0.6;
@@ -775,7 +775,7 @@
 }
 
 /* One-shot send-off when a tab/subwindow is dropped OUT to its own OS window
-   (see DetachFlourish / stores/detachAnim). A card at the exit point lifts,
+   (see DetachFlourish / stores/drag/detachAnim). A card at the exit point lifts,
    scales, and slides toward the edge the content left through, then fades —
    reading as the content being ejected into its own window. The fly direction
    comes from CSS custom props set per play (--fly-dx / --fly-dy). */
@@ -796,7 +796,7 @@
 
 .tab-detach-flourish-label {
   padding: 4px 10px;
-  font-size: 12px;
+  font-size: var(--text-md);
   background: var(--control-hover-bg);
   border-bottom: 1px solid var(--accent);
   color: var(--text-primary);
@@ -863,3 +863,179 @@
     }
   }
 }
+
+/* ── Root console (layout/RootOverlay) ───────────────────────────────────────
+   The root scope as ONE floating subwindow over whatever is open. It wears a
+   subwindow's own chrome (.subwindow / .tab-bar / .tab-strip / .tab), so the
+   only rules here are what "floating" adds: a size, a frame, and the static
+   shadow (never animated — WebKitGTK renders a blurred shadow in software). */
+.root-overlay-backdrop {
+  align-items: flex-start;
+  padding-top: 7vh;
+}
+.root-overlay {
+  /* The size it opens at. A move or a resize replaces all four of these with an
+     inline `position: fixed` frame (stores/rootOverlay), so this stays what an
+     untouched console is. `position: relative` is what the resize grips below
+     hang off before that happens. */
+  position: relative;
+  width: min(1180px, 88vw);
+  height: min(78vh, 900px);
+  color: var(--text-primary);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-lg, 10px);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+}
+/* The title bar doubles as the move handle; its tabs and buttons keep their own
+   pointer (the same set RootOverlay's BAR_NO_DRAG leaves alone). */
+.root-overlay-bar {
+  flex: 0 0 auto;
+  cursor: var(--cur-grab, grab);
+}
+.root-overlay-bar button {
+  cursor: var(--cur-pointer, pointer);
+}
+.root-overlay.framing,
+.root-overlay.framing .root-overlay-bar {
+  /* A drag must not select the bar's text on the way past. */
+  user-select: none;
+}
+/* Resize grips: one per edge, one per corner, inside the frame so they never
+   widen the console's own box. Above the tab bar and the pane layer, which are
+   what they would otherwise be swallowed by. */
+.root-overlay-grip {
+  position: absolute;
+  z-index: 30;
+}
+.grip-n,
+.grip-s {
+  left: 12px;
+  right: 12px;
+  height: 5px;
+  cursor: var(--cur-ns-resize, ns-resize);
+}
+.grip-e,
+.grip-w {
+  top: 12px;
+  bottom: 12px;
+  width: 5px;
+  cursor: var(--cur-ew-resize, ew-resize);
+}
+.grip-ne,
+.grip-nw,
+.grip-se,
+.grip-sw {
+  width: 14px;
+  height: 14px;
+}
+.grip-nw,
+.grip-se {
+  cursor: nwse-resize;
+}
+.grip-ne,
+.grip-sw {
+  cursor: nesw-resize;
+}
+.grip-n,
+.grip-ne,
+.grip-nw {
+  top: 0;
+}
+.grip-s,
+.grip-se,
+.grip-sw {
+  bottom: 0;
+}
+.grip-e,
+.grip-ne,
+.grip-se {
+  right: 0;
+}
+.grip-w,
+.grip-nw,
+.grip-sw {
+  left: 0;
+}
+.root-overlay-mark {
+  display: flex;
+  align-items: center;
+  align-self: center;
+  padding: 0 6px 0 2px;
+}
+.root-overlay-mark svg {
+  width: 16px;
+  height: 16px;
+}
+.root-overlay-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  align-self: center;
+}
+.root-overlay-rights {
+  font-size: 11px;
+  white-space: nowrap;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border, currentColor);
+  color: var(--text-secondary, inherit);
+  background: none;
+  font-family: inherit;
+  line-height: inherit;
+  cursor: var(--cur-pointer, pointer);
+}
+/* Switched off in Settings (or by a click here): struck through, so it reads
+   as a deliberate off rather than the listener's "not running". */
+.root-overlay-rights.off {
+  text-decoration: line-through;
+  opacity: 0.7;
+}
+.root-overlay-rights.on {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+/* The root layout's tree fills the pane region the way a project's fills the
+   center panel; panes are positioned over each group body by RootOverlay. */
+.root-overlay-layout {
+  position: absolute;
+  inset: 0;
+}
+.root-overlay-layout > .subwindow,
+.root-overlay-layout > .split {
+  position: absolute;
+  inset: 0;
+}
+/* Split, the focused subwindow's bar carries the accent underline — the
+   console has no FocusFrameOverlay of its own. Flat inset line, no blur. */
+.root-overlay-group.focused > .tab-bar {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+/* During a tab drag the panes stop taking the pointer, as CenterPanel's do. */
+.root-overlay.dragging .pane-layer,
+.root-overlay.dragging .center-pane {
+  pointer-events: none;
+}
+/* Where a tab dropped on a strip lands. */
+.root-overlay-strip-marker {
+  position: fixed;
+  z-index: 9998;
+  width: 2px;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+/* Root-agent proposals use the shared window and dialog controls. */
+.root-review-strip {
+  flex: 0 0 auto;
+  max-height: 45%;
+  overflow: auto;
+  color: var(--text-primary);
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.root-review-heading, .root-review-actions { display: flex; align-items: center; gap: 8px; }
+.root-review-card { padding: 10px 0; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+.root-review-row table { width: 100%; table-layout: fixed; text-align: left; }
+.root-review-row th, .root-review-row td { vertical-align: top; padding: 3px 6px; }
+.root-review-row pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }

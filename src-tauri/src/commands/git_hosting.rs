@@ -1,18 +1,15 @@
 //! Per-project git-hosting overrides (profile URL + access token) that take
 //! precedence over the global `settings.json` values when set.
 //!
-//! The non-secret profile URL is persisted in the project's `project.json`
-//! (mirrored into `projects.json` so the pill can read it without loading the
-//! per-project file). The secret token lives only in the OS keyring
+//! The non-secret profile URL is persisted in the `projects.json` entry (and
+//! mirrored into the project's `project.json` for display/export only — that
+//! file sits in the project tree, where anything working there can rewrite it). The secret token lives only in the OS keyring
 //! (`services::git_credentials`), keyed by project id — never on disk in our JSON
 //! state. `git_push` / `publish_project` resolve the *effective* credentials via
 //! [`effective_git_creds`]: the per-project value if present, else the global one.
 
-use std::path::PathBuf;
-
 use serde_json::Value;
 
-use crate::schema::project::Project;
 use crate::schema::projects::ProjectsList;
 use crate::schema::settings::Settings;
 use crate::services::git_credentials;
@@ -37,10 +34,10 @@ pub struct GitHostingInfo {
 /// Read effective hosting config for the project-settings editor.
 #[tauri::command]
 pub fn get_project_git_hosting(project_id: String) -> Result<GitHostingInfo, String> {
-    let project = project_for(&project_id)?;
+    let profile_url = project_profile_url(&project_id)?;
     let settings = read_settings();
     Ok(GitHostingInfo {
-        profile_url: project.git_profile_url.filter(|s| !s.is_empty()),
+        profile_url,
         has_token: git_credentials::has_token(&project_id),
         global_profile_url: settings
             .as_ref()
@@ -105,12 +102,10 @@ pub fn set_project_git_hosting(
 /// `(profile_url, token)`. Used by `git::git_push` and `git_publish::publish_project`.
 pub fn effective_git_creds(project_id: &str) -> (Option<String>, Option<String>) {
     let settings = read_settings();
-    let project = project_for(project_id).ok();
 
-    let profile_url = project
-        .as_ref()
-        .and_then(|p| p.git_profile_url.clone())
-        .filter(|s| !s.is_empty())
+    let profile_url = project_profile_url(project_id)
+        .ok()
+        .flatten()
         .or_else(|| {
             settings
                 .as_ref()
@@ -147,11 +142,73 @@ fn read_settings() -> Option<Settings> {
     }
 }
 
-/// Read a project's `project.json` by id (via its `local_file` in projects.json).
-fn project_for(project_id: &str) -> Result<Project, String> {
+/// The per-project profile URL override, from the trusted `projects.json` entry.
+fn project_profile_url(project_id: &str) -> Result<Option<String>, String> {
     let (idx, list) = find_entry(project_id)?;
-    let local_file = list[idx].local_file.clone();
-    storage::read_json::<Project>(&PathBuf::from(&local_file)).map_err(|e| e.to_string())
+    Ok(list[idx]
+        .extra
+        .get("git_profile_url")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string))
+}
+
+/// The provider recorded on the trusted `projects.json` entry, if any.
+fn project_provider(project_id: &str) -> Option<String> {
+    let (idx, list) = find_entry(project_id).ok()?;
+    list[idx]
+        .extra
+        .get("git_provider")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// `scheme://host[:port]` of an http(s) URL, lowercased; `None` for anything else.
+fn url_origin(url: &str) -> Option<String> {
+    let url = url.trim();
+    let lower = url.to_ascii_lowercase();
+    let scheme = ["https://", "http://"].into_iter().find(|s| lower.starts_with(s))?;
+    let rest = &lower[scheme.len()..];
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    // Userinfo is never part of the host: `https://github.com@evil.example/`
+    // is evil.example.
+    let host = authority.rsplit('@').next().unwrap_or("");
+    if host.is_empty() {
+        return None;
+    }
+    Some(format!("{scheme}{host}"))
+}
+
+/// The origins a stored token may be handed to: the profile URL's own host
+/// (project override, else global) plus the provider's public service. Anything
+/// else — a push URL or `insteadOf` rewrite planted in `.git/config`, a pasted
+/// clone URL — gets no token. `provider` overrides the recorded one (a first
+/// publish runs before the provider is recorded).
+pub fn token_origins(project_id: Option<&str>, provider: Option<&str>) -> Vec<String> {
+    let settings = read_settings();
+    let profile = project_id
+        .and_then(|id| project_profile_url(id).ok().flatten())
+        .or_else(|| settings.as_ref().and_then(|s| s.git_profile_url.clone()));
+    let provider = provider
+        .map(str::to_string)
+        .or_else(|| project_id.and_then(project_provider));
+    token_origins_for(profile.as_deref(), provider.as_deref())
+}
+
+fn token_origins_for(profile_url: Option<&str>, provider: Option<&str>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if let Some(origin) = profile_url.and_then(url_origin) {
+        out.push(origin);
+    }
+    let public = match provider {
+        Some("gitlab") => "https://gitlab.com",
+        _ => "https://github.com",
+    };
+    if !out.iter().any(|o| o == public) {
+        out.push(public.to_string());
+    }
+    out
 }
 
 /// Find a project entry by id, returning its index and the owned list so the
@@ -168,4 +225,42 @@ fn find_entry(project_id: &str) -> Result<(usize, ProjectsList), String> {
         .position(|p| p.id == project_id)
         .ok_or_else(|| format!("project '{project_id}' not found"))?;
     Ok((idx, list))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn url_origin_keeps_scheme_host_and_port_only() {
+        assert_eq!(url_origin("https://GitHub.com/me").as_deref(), Some("https://github.com"));
+        assert_eq!(
+            url_origin("https://git.example.org:8443/a/b").as_deref(),
+            Some("https://git.example.org:8443")
+        );
+        assert_eq!(url_origin("ssh://git@github.com/x"), None);
+        assert_eq!(url_origin("https://"), None);
+    }
+
+    #[test]
+    fn userinfo_cannot_pose_as_the_host() {
+        assert_eq!(
+            url_origin("https://github.com@evil.example/me").as_deref(),
+            Some("https://evil.example")
+        );
+    }
+
+    #[test]
+    fn token_origins_are_the_profile_host_plus_the_public_service() {
+        assert_eq!(token_origins_for(None, None), vec!["https://github.com"]);
+        assert_eq!(token_origins_for(None, Some("gitlab")), vec!["https://gitlab.com"]);
+        assert_eq!(
+            token_origins_for(Some("https://git.example.org/me"), Some("gitlab")),
+            vec!["https://git.example.org", "https://gitlab.com"]
+        );
+        assert_eq!(
+            token_origins_for(Some("https://github.com/me"), None),
+            vec!["https://github.com"]
+        );
+    }
 }

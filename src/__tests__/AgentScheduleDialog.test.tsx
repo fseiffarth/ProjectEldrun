@@ -18,7 +18,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import { invoke } from "@tauri-apps/api/core";
 import { AgentScheduleDialog } from "../components/agents/AgentScheduleDialog";
-import { useAgentSchedulesStore } from "../stores/agentSchedules";
+import { useAgentSchedulesStore } from "../stores/agents/agentSchedules";
 import type { TabEntry } from "../stores/tabs";
 
 const tab: TabEntry = {

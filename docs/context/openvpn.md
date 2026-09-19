@@ -6,7 +6,7 @@ Referenced from `AGENTS.md`.
   (`pkexec openvpn`) and Eldrun passes it no routing flags, so a config that pushes
   `redirect-gateway` reroutes *the whole computer's* traffic — browser included — for
   as long as it is up, whichever project asked for it. Two consequences are baked in:
-  it is tracked machine-level in `src/stores/vpnStatus.ts` (keyed by config path, with
+  it is tracked machine-level in `src/stores/remote/vpn/vpnStatus.ts` (keyed by config path, with
   a holder refcount — `releaseVpn` means a project logging out never pulls a tunnel out
   from under another project) and surfaced in the header by `VpnIndicator`, which is
   always present, lists every stored `.ovpn`, and can bring a tunnel **up or down with
@@ -35,14 +35,14 @@ Referenced from `AGENTS.md`.
   connect dialogs, which open their own embedded login terminal instead of a root tab.
   It is deliberately a **local** switch and never writes `connections_headless`: a mode
   is how the user wants Eldrun to behave, not something a failed handshake decides for
-  them. `lib/vpnAutoConnect`'s `openVpnLoginInTerminal` is the one implementation of the
+  them. `lib/remote/vpn/vpnAutoConnect`'s `openVpnLoginInTerminal` is the one implementation of the
   handoff (arms the tunnel, opens the root tab, polls), shared with the paths that are
   always non-headless. The prompt rejects its caller with `VPN_TERMINAL_HANDOFF` —
   checked by every caller of `request`, because it is *not* a failure: the lamp is
   amber, the poll owns the outcome, and reading it as "no tunnel" would paint a login
   the user is still typing red.
 - A tunnel can also be armed to **connect on launch** (`settings.vpn_auto_connect`,
-  toggled per config in the `VpnIndicator` menu; `src/lib/vpnAutoConnect.ts`). It is
+  toggled per config in the `VpnIndicator` menu; `src/lib/remote/vpn/vpnAutoConnect.ts`). It is
   the machine-level twin of a project's `remote.auto_connect` and keeps the same
   promise — *it never prompts*: the opt-in is only offered when the credentials make
   the connect silent, and it is re-checked at launch, so a stale opt-in leaves the
@@ -53,7 +53,7 @@ Referenced from `AGENTS.md`.
   *before* OpenVPN reads the config, so a doomed attempt is not a cheap failure — it
   costs a polkit dialog, and the modal that then collects the missing credential costs
   a second one. Every silent-connect path therefore asks `vpn_can_connect_silently`
-  first (`src/lib/vpnConnect.ts`) and goes straight to the modal when the answer is no.
+  first (`src/lib/remote/vpn/vpnConnect.ts`) and goes straight to the modal when the answer is no.
   The missing credential was usually the `auth-user-pass` **username**: it lived only
   on a project's `OpenVpnSpec`, so a tunnel started from the header had none — the
   backend now keeps a copy beside the saved password (`openvpn_user_account`), saved
@@ -83,7 +83,7 @@ Referenced from `AGENTS.md`.
   dialogs say so. Enforced at each subsystem's one choke point (`mail_engine`'s
   `vpn_gate` before every operation, `commands::caldav::credentials` before the
   keyring is even read) with one shared sentence, `VPN_GATE_REFUSAL`. The frontend
-  schedulers (`MailIndicator`, `CalDavSyncHost`; `src/lib/vpnGate.ts`) skip a gated
+  schedulers (`MailIndicator`, `CalDavSyncHost`; `src/lib/remote/vpn/vpnGate.ts`) skip a gated
   account quietly while down and check it on the tunnel's **rising edge** — a
   reconciled `false → true` only, never the store's first sight of a tunnel at
   launch, which would be a check at mount by the back door.

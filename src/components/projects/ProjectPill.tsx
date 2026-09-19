@@ -19,40 +19,41 @@ import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { cmdToKind, isResumableAgentTab, isRestorableTab, useTabsStore } from "../../stores/tabs";
 import { IS_LINUX, IS_WINDOWS } from "../../lib/platform";
-import { runInstallInTab, PROVIDER_CLI_INSTALL, providerAuthLoginCmd } from "../../lib/installCommand";
+import { runInstallInTab, containerBuildShell, PROVIDER_CLI_INSTALL, providerAuthLoginCmd } from "../../lib/installCommand";
 import { PythonInterpreterWindow } from "./PythonInterpreterWindow";
 import { useGitDirtyStore } from "../../stores/gitDirty";
 import { providerName, gitTypeLabel } from "./projectTypeTags";
 import { GitTokenScopes, tokenPageUrl } from "../common/GitTokenScopes";
 import { ProjectHoverCard, projectDescription, useProjectHoverCard } from "./ProjectHoverCard";
-import { useFastMode } from "../../lib/fastMode";
+import { useFastMode } from "../../lib/agents/fastMode";
 import { ActivityCalendar } from "./ActivityCalendar";
 import { CategoryEditor } from "./CategoryEditor";
 import { ExtendToRemoteDialog } from "./ExtendToRemoteDialog";
 import { autoConnectEligibility } from "./autoConnectEligibility";
-import { describeDetectedSpecSource } from "./scaffold";
+import { describeDetectedSpecSource, sanitizeName } from "./scaffold";
 import { useSavedCredential } from "./useSavedCredential";
-import { isHpcHost, targetOfSpec } from "../../lib/hpcHost";
-import { useRemoteMachinesStore, type DroppedGlobalMachine } from "../../stores/remoteMachines";
+import { isHpcHost, targetOfSpec } from "../../lib/remote/hpc/hpcHost";
+import { useRemoteMachinesStore, type DroppedGlobalMachine } from "../../stores/remote/remoteMachines";
 import { Dropdown } from "../common/Dropdown";
 import { PasswordInput } from "../common/PasswordInput";
 import { FolderPickerDialog } from "../common/FolderPickerDialog";
 import { RemoteConnMenu } from "../header/RemoteConnMenu";
 import { VmSettingsDialog } from "./VmSettingsDialog";
-import { categoryColor, primaryCategoryColor, projectCategories } from "../../lib/categoryColor";
-import { usePillDragStore } from "../../stores/pillDrag";
-import { usePillSelectionStore } from "../../stores/pillSelection";
+import { categoryColor, primaryCategoryColor, projectCategories } from "../../lib/theme/categoryColor";
+import { usePillDragStore } from "../../stores/drag/pillDrag";
+import { usePillSelectionStore } from "../../stores/drag/pillSelection";
 import { useBoxEditorStore } from "../../stores/boxEditor";
 import { useBoxesStore } from "../../stores/boxes";
-import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
+import { bindDragRelease, dragPlatform } from "../../lib/window/dragPlatform";
 import { useT } from "../../lib/i18n";
-import { isTrashProject } from "../../lib/trashProject";
+import { isTrashProject } from "../../lib/projects/trashProject";
 import { TrashProjectIcon } from "./TrashProjectIcon";
 import {
+  agentFenceInstallCommand,
   agentFenceLabelKey,
   agentFenceReasonKey,
   type AgentFenceStatus,
-} from "../../lib/agentFence";
+} from "../../lib/agents/agentFence";
 
 interface Props {
   project: ProjectEntry;
@@ -68,7 +69,7 @@ interface Props {
   /** Drop onto a box pill: assign this project to that box instead of reordering. */
   onAssignToBox?: (boxId: string) => void;
   /** True while THIS pill is the one being pointer-dragged. ProjectSwitcher owns
-   *  the shared gesture state (`stores/pillDrag`) so every sibling can react to
+   *  the shared gesture state (`stores/drag/pillDrag`) so every sibling can react to
    *  one gesture without prop-drilling the raw drag object through each pill. */
   isDragged?: boolean;
   /** Live pointer-follow offset (px) while `isDragged`. */
@@ -191,34 +192,91 @@ function EditDescriptionWindow({
   );
 }
 
+/** `plan_project_dir_rename`'s answer (see `ProjectDirRenamePlan` in
+ *  commands/projects.rs); `status` is worded by `pill.folderStatus.*`. */
+interface DirRenamePlan {
+  currentDir: string;
+  targetDir: string;
+  leaf: string;
+  status: "ok" | "same" | "exists" | "registered" | "nested" | "invalid" | "missing" | "unsupported";
+}
+
+const FOLDER_STATUS_KEY = {
+  same: "pill.folderStatus.same",
+  exists: "pill.folderStatus.exists",
+  registered: "pill.folderStatus.registered",
+  nested: "pill.folderStatus.nested",
+  invalid: "pill.folderStatus.invalid",
+  missing: "pill.folderStatus.missing",
+  unsupported: "pill.folderStatus.unsupported",
+} as const satisfies Record<Exclude<DirRenamePlan["status"], "ok">, string>;
+
+function folderLeaf(dir: string) {
+  return dir.split(/[/\\]/).filter(Boolean).pop() ?? "";
+}
+
 function RenameWindow({
   project,
   onSave,
+  onRenameFolder,
   onClose,
 }: {
   project: ProjectEntry;
   onSave: (name: string) => Promise<void>;
+  onRenameFolder: (leaf: string) => Promise<void>;
   onClose: () => void;
 }) {
   const t = useT();
   const [value, setValue] = useState(project.name);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  // Folder rename is opt-in. The leaf follows the name (the same slug a new
+  // project's folder gets) until the user edits it by hand.
+  const [renameFolder, setRenameFolder] = useState(false);
+  const [leaf, setLeaf] = useState(() => sanitizeName(project.name));
+  const [leafEdited, setLeafEdited] = useState(false);
+  const [plan, setPlan] = useState<DirRenamePlan | null>(null);
+  const planSeq = useRef(0);
+
+  useEffect(() => {
+    const seq = ++planSeq.current;
+    invoke<DirRenamePlan>("plan_project_dir_rename", { projectId: project.id, leaf })
+      .then((next) => {
+        if (seq === planSeq.current) setPlan(next);
+      })
+      .catch(() => {
+        if (seq === planSeq.current) setPlan(null);
+      });
+  }, [project.id, leaf]);
+
+  const folderSupported = !!plan && plan.status !== "unsupported" && plan.status !== "missing";
+  const folderBlocked = renameFolder && plan?.status !== "ok" && plan?.status !== "same";
 
   const save = async () => {
     if (!value.trim()) {
       setError(t("pill.nameEmpty"));
       return;
     }
+    if (folderBlocked) return;
     setSaving(true);
     setError("");
     try {
-      await onSave(value);
-      onClose();
+      if (value.trim() !== project.name) await onSave(value);
     } catch (err) {
       setError(String(err));
       setSaving(false);
+      return;
     }
+    if (renameFolder && plan?.status === "ok") {
+      try {
+        await onRenameFolder(plan.leaf);
+      } catch (err) {
+        setError(t("pill.folderRenameFailed", { error: String(err) }));
+        setSaving(false);
+        return;
+      }
+    }
+    onClose();
   };
 
   return createPortal(
@@ -236,16 +294,66 @@ function RenameWindow({
           value={value}
           autoFocus
           placeholder={t("pill.namePlaceholder")}
-          onChange={(e) => setValue(e.target.value)}
+          onChange={(e) => {
+            setValue(e.target.value);
+            if (!leafEdited) setLeaf(sanitizeName(e.target.value));
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter") void save();
             if (e.key === "Escape") onClose();
           }}
         />
+        {folderSupported && plan && (
+          <>
+            <label className="settings-switch-row">
+              <span>
+                {t("pill.alsoRenameFolder")} <UntestedTag />
+              </span>
+              <Toggle
+                checked={renameFolder}
+                onChange={(e) => setRenameFolder(e.target.checked)}
+              />
+            </label>
+            {renameFolder && (
+              <>
+                <input
+                  type="text"
+                  value={leaf}
+                  placeholder={folderLeaf(plan.currentDir)}
+                  spellCheck={false}
+                  aria-label={t("pill.folderNameLabel")}
+                  onChange={(e) => {
+                    setLeaf(e.target.value);
+                    setLeafEdited(true);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void save();
+                    if (e.key === "Escape") onClose();
+                  }}
+                />
+                <div className="project-dialog-path">
+                  {plan.currentDir}
+                  {plan.targetDir && plan.status !== "same" ? ` → ${plan.targetDir}` : ""}
+                </div>
+                {plan.status === "ok" ? (
+                  <div className="project-dialog-path">
+                    {project.status !== "inactive"
+                      ? t("pill.folderRenameClosesProject")
+                      : t("pill.folderRenameAgentNote")}
+                  </div>
+                ) : (
+                  <div className={plan.status === "same" ? "project-dialog-path" : "project-dialog-error"}>
+                    {t(FOLDER_STATUS_KEY[plan.status])}
+                  </div>
+                )}
+              </>
+            )}
+          </>
+        )}
         {error && <div className="project-dialog-error">{error}</div>}
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose} disabled={saving}>{t("common.cancel")}</button>
-          <button type="button" onClick={() => void save()} disabled={saving}>
+          <button type="button" onClick={() => void save()} disabled={saving || folderBlocked}>
             {saving ? t("common.saving") : t("common.save")}
           </button>
         </div>
@@ -1258,7 +1366,7 @@ export function ProjectPill({
   // Shared hover card (identical popup in the right file-viewer). Owns the
   // popup position, today's time, CPU% and the scaffold-missing flag.
   const hover = useProjectHoverCard(project);
-  // Fast mode withdraws the card (see `lib/fastMode`) — the hook stays
+  // Fast mode withdraws the card (see `lib/agents/fastMode`) — the hook stays
   // mounted and simply never opens, since it arms nothing until `open`.
   const fastMode = useFastMode();
   const [contextMenu, setContextMenu] = useState<ContextMenuPos | null>(null);
@@ -1307,6 +1415,7 @@ export function ProjectPill({
   const gitDirty = useGitDirtyStore((s) => s.byId[project.id]);
   const updateProjectDescription = useProjectsStore((s) => s.updateProjectDescription);
   const renameProject = useProjectsStore((s) => s.renameProject);
+  const renameProjectFolder = useProjectsStore((s) => s.renameProjectFolder);
   const moveRemoteMirror = useProjectsStore((s) => s.moveRemoteMirror);
   const setProjectSandbox = useProjectsStore((s) => s.setProjectSandbox);
   const setProjectRemoteControl = useProjectsStore((s) => s.setProjectRemoteControl);
@@ -1428,7 +1537,7 @@ export function ProjectPill({
         { projectId: project.id },
       );
       if (pf.status === "image_missing" && pf.build_command) {
-        runInstallInTab(t("pill.containerImageTab", { image: pf.image }), pf.build_command, "bash");
+        runInstallInTab(t("pill.containerImageTab", { image: pf.image }), pf.build_command, containerBuildShell());
       } else if (pf.status === "daemon_down") {
         useProjectsStore.setState({
           switchToast: t("pill.dockerNotRunning"),
@@ -2174,16 +2283,14 @@ export function ProjectPill({
                 )}
               <UntestedTag />
             </button>
-            {IS_LINUX && agentFenceStatus?.bwrap_available === false && (
+            {IS_LINUX && agentFenceInstallCommand(agentFenceStatus) && (
                 <button
                   className="untested"
                   onClick={() => {
+                    const command = agentFenceInstallCommand(agentFenceStatus);
                     setContextMenu(null);
-                    runInstallInTab(
-                      t("pill.agentFenceInstall"),
-                      "sudo apt install -y bubblewrap",
-                      "bash",
-                    );
+                    if (!command) return;
+                    runInstallInTab(t("pill.agentFenceInstall"), command, "bash");
                   }}
                 >
                   {t("pill.agentFenceInstall")}
@@ -2392,6 +2499,7 @@ export function ProjectPill({
         <RenameWindow
           project={project}
           onSave={(name) => renameProject(project.id, name)}
+          onRenameFolder={(leaf) => renameProjectFolder(project.id, leaf)}
           onClose={() => setRenaming(false)}
         />
       )}

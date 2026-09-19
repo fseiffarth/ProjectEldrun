@@ -103,8 +103,35 @@ pub fn vm_allow_temporarily(project_id: String, host: String) -> Result<(), Stri
     if host.is_empty() || host.contains('/') || host.contains(':') {
         return Err("not a bare hostname".to_string());
     }
+    // The flag guards the knob: a temporary hole is still a hole, and a mail
+    // reader's one sanctioned way out is a draft the user sends.
+    if vm::vm_spec_for(&project_id).is_some_and(|s| s.mail_reader) {
+        return Err("this project is a mail reader; turn \"mail reader\" off before allowing another host".to_string());
+    }
     vm_proxy::allow_temporarily(&project_id, host, std::time::Duration::from_secs(15 * 60));
     Ok(())
+}
+
+fn has_mirror(project_id: &str) -> bool {
+    std::fs::read_dir(crate::services::remote_sync::mirror_dir(project_id))
+        .is_ok_and(|mut entries| entries.next().is_some())
+}
+
+/// Why this reader's box may not be served mail right now, gathered from the
+/// live registry and proxy per call (`services::mail_reader::refusal`). The
+/// spec is the trusted `projects.json` copy, which an in-VM agent cannot write.
+pub fn mail_reader_refusal(project_id: Option<&str>) -> Option<String> {
+    let Some(id) = project_id else {
+        return Some("this project is not a mail reader".to_string());
+    };
+    let live = vm_proxy::live_state(id);
+    crate::services::mail_reader::refusal(&crate::services::mail_reader::BoxFacts {
+        spec: vm::vm_spec_for(id),
+        booted_egress: vm::running_state(id).map(|rt| rt.egress),
+        live_temp_allows: live.as_ref().map_or(0, |(_, temp)| *temp),
+        live_allow: live.map(|(allow, _)| allow),
+        mirror: has_mirror(id),
+    })
 }
 
 /// Save the VM knobs (memory/cpus/egress/allowlist). Mirrors
@@ -128,6 +155,9 @@ pub fn vm_set_spec(project_id: String, mut spec: VmSpec) -> Result<VmSpec, Strin
                 && !h.contains(char::is_whitespace)
         })
         .collect();
+    if let Some(refusal) = crate::services::mail_reader::widen_refusal(&spec, has_mirror(&project_id)) {
+        return Err(refusal);
+    }
 
     crate::commands::projects::patch_project_entry_mirrored(
         &project_id,

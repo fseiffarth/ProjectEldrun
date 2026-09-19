@@ -8,6 +8,14 @@ runs), and the default-on local-agent filesystem `fence`. All three are
 properties of the *process* — where it runs and what it can reach — which is
 what makes them Eldrun's to decide.
 
+A fourth thing looks like an axis and is narrower: the **root MCP caller
+class** (`root_mcp::Caller`, `docs/context/root_console.md` §Mail). It is fixed
+at spawn with the token and decides which of Eldrun's *own* tools exist for an
+agent — a root tab writes mail drafts and never reads mail; only a `Reader`, an
+agent in a `mail_reader` VM whose egress is the default allowlisting proxy,
+reads. It composes with the axes above rather than replacing them: the class is
+only handed out where `location` is that VM.
+
 ## The permission mode is not one of them
 
 An agent's permission mode — Claude's plan / accept-edits / bypass, Codex's
@@ -118,10 +126,29 @@ Composition is explicit:
   not redirect, so the agents' hook-registration files are read-only there
   (an agent rewriting its own `settings.json` gets `EPERM`) instead of shadowed
   by a throwaway copy, and `~/.claude.json` is exposed unfiltered rather than
-  as the per-project filtered copy Linux stages.
+  as the per-project filtered copy Linux stages. Device writes are denied too,
+  except `/dev/null`, `/dev/zero`, `/dev/tty`, `/dev/dtracehelper` and
+  `/dev/fd`; other terminals' `/dev/ttys*` stay denied, so a fenced agent cannot
+  write into another tab's terminal.
+- The macOS fence is a filesystem fence only. The profile starts from
+  `(allow default)`, so mach services stay reachable — `securityd` among them.
+  A fenced agent can therefore ask the keychain for any item whose access list
+  trusts the requesting tool (`/usr/bin/security` included), which is how the
+  agents sign in at all. The Linux fence hides the keyring; the macOS one cannot
+  without breaking agent authentication, so treat login-keychain items as
+  reachable from a fenced Mac agent. The keychain *file* itself stays unreadable
+  (it sits under the hidden `$HOME`).
 - Windows has no unprivileged filesystem sandbox to build a fence on; the
   status says so rather than presenting a false guarantee.
 - Shell/script tabs are the user's terminals and are never fenced.
+- A persistent (tmux) agent tab keeps an **unfenced** login shell after the
+  agent exits, on the same terminal. Where the kernel still honours `TIOCSTI`
+  (Linux before 6.2 or with `dev.tty.legacy_tiocsti=1`, macOS), a fenced agent
+  could queue keystrokes on its own terminal and exit, and that shell would run
+  them. So the pane drains the input queue between the two
+  (`tmux_local::FENCE_INPUT_DRAIN`). bubblewrap's `--new-session` would block
+  `TIOCSTI` at the source, but it detaches the agent from its controlling
+  terminal, so it never gets `SIGWINCH` and a TUI stops reflowing on resize.
 
 Fenced Linux Codex gets no sandbox-backend override. Its own bubblewrap
 cannot nest under the fence on Ubuntu: the outer bwrap runs under the stacked
@@ -141,6 +168,31 @@ who prefers Landlock for now can opt in through their own `~/.codex/config.toml`
 (`[features] use_legacy_landlock = true` plus
 `[sandbox_workspace_write] exclude_slash_tmp = true`) and live with the
 warning until upstream removes the backend.
+
+The fence-tool probe caches success, but retries failure on the next request.
+Installing bubblewrap therefore allows the next tab to start without restarting
+Eldrun. The project menu reports the policy for **new spawns**, not an inspection
+of already-running tabs; existing tabs retain their original mounts/profile.
+
+Cargo toolchains remain readable, but `credentials` and `credentials.toml` under
+`~/.cargo` and an inherited or tab-specific `CARGO_HOME` are hidden by default.
+Linux masks existing files after all root/toolchain mounts; macOS adds final
+read/write denials, including canonical aliases. The global
+`agent_fence_cargo_credentials` opt-in restores the prior visibility through
+allowed paths when publishing needs registry tokens. It does not filter
+inherited environment variables or touch agent login credentials.
+
+Codex's `skills`, `plugins`, and `shell_snapshots` no longer expose writable host
+content to fenced tabs. Linux seeds fresh **per-tab writable copies** of skills
+and plugins, relocating internal links and copying external targets independently, and starts shell snapshots empty so Codex can regenerate them normally.
+These copies are temporary: changes are private to that tab. Shared `auth.json`,
+session rollouts, the durable per-scope databases, credential refresh, and native
+CLI self-updates retain their existing paths. macOS cannot redirect these
+folders and instead denies writes to the shared executable content; skill/plugin
+updates there need live verification. This does not turn the fence into project
+confidentiality: other Claude transcripts remain readable, Codex's rollout store
+remains shared, and readable host trees outside the hidden directories can still
+be visible.
 
 The boundary is filesystem-only: network access is shared. A nested bubblewrap
 cannot run under the outer boundary on Linux systems with the

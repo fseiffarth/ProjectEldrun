@@ -27,7 +27,22 @@ describe("activity store script-run state", () => {
       cwd: "/proj",
       runId: "/proj/build.sh",
       projectId: "p1",
+      args: null,
     });
+  });
+
+  it("passes the ▶ popover's arguments trimmed, and blank as none", () => {
+    invoke.mockResolvedValue(null);
+    useActivityStore.getState().runScript("/proj/a.sh", "/proj", "p1", "  --n 2 ");
+    expect(invoke).toHaveBeenLastCalledWith(
+      "run_script_detached",
+      expect.objectContaining({ args: "--n 2" }),
+    );
+    useActivityStore.getState().runScript("/proj/b.sh", "/proj", "p1", "   ");
+    expect(invoke).toHaveBeenLastCalledWith(
+      "run_script_detached",
+      expect.objectContaining({ args: null }),
+    );
   });
 
   it("clears the running flag when the detached spawn fails", async () => {

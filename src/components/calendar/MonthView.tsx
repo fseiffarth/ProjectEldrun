@@ -7,9 +7,9 @@ import {
   spanCoversDate,
   todayStr,
   weekdayLabel,
-} from "../../lib/calendarTime";
-import { eventColor } from "../../lib/calendarCategories";
-import { calendarColor } from "../../stores/calendar";
+} from "../../lib/calendar/calendarTime";
+import { eventColor } from "../../lib/calendar/calendarCategories";
+import { calendarColor } from "../../stores/calendar/calendar";
 import { useI18nStore, useT } from "../../lib/i18n";
 
 /** Rows of chips a cell shows before collapsing the rest into "+N more". */
@@ -245,11 +245,11 @@ export function MonthView({
                       onClick={(e) => {
                         e.stopPropagation();
                         onSelect(datePart(occ.start));
-                      }}
-                      onDoubleClick={(e) => {
-                        e.stopPropagation();
                         onOpen(occ);
                       }}
+                      // Keep a habitual double-click off the cell underneath,
+                      // which would open a *new* event on this day.
+                      onDoubleClick={(e) => e.stopPropagation()}
                       title={`${occ.title}${occ.location ? ` — ${occ.location}` : ""}`}
                     >
                       {!spanning ? <span className="cal-month-bar-dot">●</span> : null}

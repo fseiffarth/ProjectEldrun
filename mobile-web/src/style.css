@@ -35,22 +35,94 @@ nav button,.keys button { flex:1; }
 .card { width:100%; text-align:left; justify-content:space-between; padding:16px; background:rgba(28,31,43,.92); }
 .card span:first-child { display:grid; gap:4px; }
 .card-trailing { flex:0 0 auto; gap:10px; }
-/* An agent tab reads as one block: the card opens the session, and under it a
-   foot says what is scheduled and carries the two controls that need no
-   session — rename, and the scheduled prompts. It is the desktop Agents view's
+/* An agent tab reads as one block: the card opens the session (its name
+   renames it), and under it a foot says what is scheduled and carries the
+   controls that need no session — the scheduled prompts, and close. It is the desktop Agents view's
    tab row, stacked for a 360px phone: a bare ◷ in the row's gutter never said
    that scheduling had moved out here. */
 .tab-card { display:grid; border:1px solid #383c4d; border-radius:11px; background:rgba(28,31,43,.92); }
 .tab-card .card { border:0; background:transparent; }
+/* #264 — a tab the user has coloured. The desktop spends the tab's bottom rule
+   on the colour; a card has no such edge, so it spends its left border, which
+   stays visible however far the card's own content scrolls past. The hue comes
+   in as `--tab-color` from the row (one palette, resolved to hex the same way
+   in both surfaces), so this rule needs no per-colour class. */
+.tab-card.has-tab-color { border-left:3px solid var(--tab-color); }
+/* The same left edge on a plain `.card` — the Activity list's rows, which are
+   buttons rather than tab cards. One rule for both, so a colour reads the same
+   wherever a tab is listed. */
+.card.has-tab-color { border-left:3px solid var(--tab-color); }
+/* The colour picker's chips (`ColorSheet`). A dot plus its name, not a bare
+   swatch: nine unlabelled circles is a guessing game on a phone, and the name
+   is also what a screen reader reads out. Two per row at 360px. */
+.tab-color-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; padding:2px 6px; }
+.tab-color-chip { display:flex; align-items:center; gap:9px; padding:10px 12px; background:rgba(56,60,80,.8); font-size:.92rem; text-align:left; }
+.tab-color-chip.is-current { border-color:#7c6cff; background:#3b326e; }
+.tab-color-chip-dot { flex:0 0 auto; width:16px; height:16px; border-radius:50%; }
+.tab-color-chip-dot.none { border:1px solid #6f7488; background:transparent; }
+/* #264 — manual tab order. The grip sits beside the card's own button rather
+   than on it: a press anywhere else on the card opens the session, and the two
+   must not be the same gesture. `touch-action:none` is what keeps the drag from
+   being read as a page scroll on a phone, and the captured pointer is what
+   keeps it once it has started. */
+.tab-card-head { display:flex; align-items:stretch; min-width:0; }
+.tab-card-head .card { flex:1 1 auto; min-width:0; }
+/* The colour chooser: a small dot in the card's upper-left corner. The button
+   is wider than the dot so a thumb can hit it, and the card's own left padding
+   closes up so the label does not drift right. */
+.tab-card-dot { flex:0 0 auto; align-self:flex-start; width:34px; padding:21px 0 12px 8px; border:0; border-radius:11px 0 0 0; background:transparent; line-height:0; }
+.tab-card-dot span { display:block; width:11px; height:11px; margin:0 auto; border:1px solid #6f7488; border-radius:50%; }
+.tab-card.has-tab-color .tab-card-dot span { border-color:var(--tab-color); background:var(--tab-color); }
+.tab-card-head .tab-card-dot + .card { padding-left:6px; }
+/* The card body: the opener is stretched over it, and an agent tab's name —
+   which renames it — sits above the opener. The dotted rule is the one hint
+   that the name is its own control. */
+.tab-card-main { position:relative; }
+.tab-card-main.unavailable > span { opacity:.45; }
+.tab-card-open { position:absolute; inset:0; padding:0; border:0; border-radius:11px; background:transparent; }
+.tab-card-open:disabled { opacity:1; }
+.tab-card-name { position:relative; z-index:1; justify-self:start; min-width:0; margin:-4px -6px; padding:4px 6px; border:0; border-radius:6px; background:transparent; text-align:left; }
+.tab-card-name strong { text-decoration:underline dotted #6f7488; text-underline-offset:4px; overflow-wrap:anywhere; }
+.tab-card-grip { flex:0 0 auto; width:44px; padding:0; border:0; border-left:1px solid #2d3040; border-radius:0 11px 0 0; background:transparent; color:#6f7488; font-size:1.05rem; touch-action:none; cursor:grab; }
+.tab-card-grip:active { cursor:grabbing; color:#d3d6e4; }
+.tab-card.dragging { opacity:.65; }
+/* The slot the dropped card would land in, drawn on the card it lands beside.
+   An outline rather than a moved card: the list itself does not rearrange until
+   the finger lifts, so the line is the whole preview. */
+.tab-card.drop-before { box-shadow:inset 0 3px 0 0 #7c6cff; }
+.tab-card.drop-after { box-shadow:inset 0 -3px 0 0 #7c6cff; }
+.reorder-hint { margin:-4px 0 12px; color:#9aa0b4; font-size:.84rem; }
 .tab-card-foot { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; padding:0 16px 14px; }
 .tab-card-when { min-width:0; flex:1 1 auto; }
-.tab-card-actions { display:flex; flex:0 0 auto; gap:8px; }
-.card-action { padding:8px 12px; background:rgba(56,60,80,.8); font-size:.9rem; }
+.tab-card-actions { display:flex; flex:1 1 auto; flex-wrap:wrap; justify-content:flex-end; gap:8px; min-width:0; }
+.card-action { padding:8px 12px; background:rgba(56,60,80,.8); font-size:.9rem; white-space:nowrap; }
 .card-action.accent { background:#3b326e; border-color:#7c6cff; }
-.agent-status { padding:4px 8px; border:1px solid currentColor; border-radius:0; font-weight:700; text-transform:capitalize; }
+/* The same pill the sheets' headings wear (`.option-sheet h2 small`), as a
+   class, for the places that mark an unverified feature outside a heading. */
+.untested { margin-left:6px; color:#8fb8ff; font-size:.62rem; text-transform:uppercase; }
+/* What each agent session was last asked, between the card and its foot. Always
+   drawn, never behind a disclosure: it is what tells two "claude" tabs apart.
+   The newest prompt wraps to three lines, the ones behind it are one each, so a
+   card's height is bounded whatever the prompts were. */
+.tab-card-prompts { display:grid; gap:4px; padding:0 16px 12px; min-width:0; }
+.tab-card-prompts-label { font-size:.72rem; text-transform:uppercase; letter-spacing:.06em; color:#6f7488; }
+.tab-card-prompt { display:flex; gap:8px; margin:0; min-width:0; color:#9498aa; font-size:.86rem; }
+.tab-card-prompt.latest { color:#d3d6e4; }
+.tab-card-prompt.empty { color:#6f7488; font-style:italic; }
+.tab-card-prompt-when { flex:0 0 auto; color:#6f7488; font-variant-numeric:tabular-nums; }
+.tab-card-prompt-text { min-width:0; overflow:hidden; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:1; overflow-wrap:anywhere; }
+.tab-card-prompt.latest .tab-card-prompt-text { -webkit-line-clamp:3; }
+/* The same reading on the flat Agents list, where a row is one tap tall: two
+   lines, then ellipsis. */
+.activity-prompt { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; color:#b6bacb; overflow-wrap:anywhere; }
+.agent-status { display:inline-flex; align-items:center; gap:5px; padding:4px 8px; border:1px solid currentColor; border-radius:0; font-weight:700; text-transform:capitalize; }
 .agent-status.working { color:#6fe29c; background:#173827; }
 .agent-status.question { color:#ffd36b; background:#493b1d; }
 .agent-status.done { color:#91e6a9; background:#193a29; }
+/* The desktop tab strip's status glyph, leading the word. ▶ runs large beside
+   ? and ✓, so it is set smaller — the same correction the desktop makes. */
+.agent-status-glyph { font-size:.85em; line-height:1; }
+.agent-status.working .agent-status-glyph { font-size:.7em; }
 small { color:#9498aa; }
 .count { min-width:34px; text-align:center; padding:6px; border-radius:0; background:#312a57; }
 .notice,.error { padding:12px; border-radius:10px; }
@@ -353,15 +425,75 @@ body.terminal-open { min-height:0; overflow:hidden; }
    the stored session (`TranscriptTurns`): the same chat, the agent's own
    words. The stored session is prose from a file, not a screen, so it reads
    in the UI face; an answer keeps its line breaks and wraps at the phone's
-   edge. */
+   edge. An answer is a bubble on the left, the mirror of the prompt's; tool
+   output and raw screen rows (`.agent` without `.answer`) stay flat. */
+.readable-turn.agent.answer { width:auto; max-width:92%; padding:8px 12px; border-radius:16px 16px 16px 4px; background:#1d2030; color:#e3e6f2; }
+.readable-turn.agent.answer .readable-line { padding-left:0; text-indent:0; }
 .readable-lines.transcript { font:400 .9rem/1.5 Inter,ui-sans-serif,system-ui,sans-serif; }
+/* The stored session holds one bubble per message the agent wrote, so the
+   "let me check…" notes of a turn stand apart from its answer; a new prompt
+   opens an exchange with more air above it than the bubbles inside one. */
+.readable-lines.chat.transcript { gap:12px; }
+.readable-lines.transcript > .readable-turn.user:not(:first-child) { margin-top:16px; }
+.readable-lines.transcript .readable-turn.agent.answer { border:1px solid #2a2e42; }
 .transcript-text { margin:0; min-width:0; white-space:pre-wrap; overflow-wrap:break-word; }
+/* An answer's Markdown (`answerHtml`): formatting only, in the chat's own
+   palette — nothing in it is a link or loads anything. */
+.transcript-md { min-width:0; overflow-wrap:break-word; }
+.transcript-md > :first-child { margin-top:0; }
+.transcript-md > :last-child { margin-bottom:0; }
+.transcript-md p { margin:0 0 .6em; }
+.transcript-md h1,.transcript-md h2,.transcript-md h3,.transcript-md h4,.transcript-md h5,.transcript-md h6 { margin:.9em 0 .4em; color:#f1f2f8; font-weight:650; line-height:1.3; }
+.transcript-md h1 { font-size:1.12rem; }
+.transcript-md h2 { font-size:1.04rem; }
+.transcript-md h3,.transcript-md h4,.transcript-md h5,.transcript-md h6 { font-size:.95rem; }
+.transcript-md strong { color:#f4f5fa; font-weight:650; }
+.transcript-md em { font-style:italic; }
+.transcript-md del { opacity:.7; }
+.transcript-md ul,.transcript-md ol { margin:0 0 .6em; padding-left:1.25em; }
+.transcript-md li { margin:.2em 0; }
+.transcript-md li::marker { color:#8c84d8; }
+.transcript-md li > ul,.transcript-md li > ol { margin:.2em 0 0; }
+.transcript-md .task-item { list-style:none; margin-left:-1.1em; }
+.transcript-md .md-task { display:inline-block; width:1.1em; color:#8c84d8; }
+.transcript-md code { padding:.08em .35em; border-radius:5px; background:#2a2e42; color:#dcd6ff; font:400 .82rem/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; overflow-wrap:anywhere; }
+.transcript-md pre { margin:0 0 .6em; padding:8px 10px; overflow-x:auto; border-radius:8px; background:#12141c; -webkit-overflow-scrolling:touch; }
+.transcript-md pre code { padding:0; background:none; color:#e3e6f2; white-space:pre; overflow-wrap:normal; }
+.transcript-md blockquote { margin:0 0 .6em; padding:2px 0 2px 10px; border-left:3px solid #4a4f68; color:#b9bdcc; }
+.transcript-md hr { margin:.8em 0; border:0; border-top:1px solid #34384a; }
+.transcript-md .md-link { color:#b7c9ff; }
+.transcript-md .md-math { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:.85em; }
+.transcript-md .md-table { display:block; max-width:100%; margin:0 0 .6em; overflow-x:auto; border-collapse:collapse; font-size:.82rem; -webkit-overflow-scrolling:touch; }
+.transcript-md .md-table th,.transcript-md .md-table td { padding:4px 8px; border:1px solid #34384a; text-align:left; vertical-align:top; }
+.transcript-md .md-table th { background:#252a3c; font-weight:650; }
+.transcript-md .md-alert { margin:0 0 .6em; padding:6px 10px; border-left:3px solid #8fb8ff; border-radius:6px; background:#161a26; }
+.transcript-md .md-alert-title { margin:0 0 .2em; color:#8fb8ff; font-size:.78rem; font-weight:650; text-transform:uppercase; letter-spacing:.04em; }
+.transcript-md .md-alert-warning,.transcript-md .md-alert-caution { border-left-color:#e7b45a; }
+.transcript-md .md-alert-warning .md-alert-title,.transcript-md .md-alert-caution .md-alert-title { color:#e7b45a; }
+.transcript-md .tok-comment { color:#7d8497; font-style:italic; }
+.transcript-md .tok-string { color:#9fd86a; }
+.transcript-md .tok-keyword,.transcript-md .tok-attr { color:#d9bfff; }
+.transcript-md .tok-num { color:#efba5d; }
+.transcript-md .tok-type { color:#e8dca0; }
+.transcript-md .tok-func,.transcript-md .tok-prop { color:#a4a0e8; }
+.transcript-md .tok-tag { color:#f47868; }
+.transcript-md .tok-arg { font-style:italic; }
 .transcript-cut { display:block; margin-top:4px; color:#9298aa; font-size:.72rem; }
 /* What the screen is drawing right now, under the stored session: shown only
    while it holds a choice the session is waiting on. */
 .transcript-screen { display:grid; gap:6px; padding:8px 10px; border-left:3px solid #8fb8ff; border-radius:8px; background:#14161e; }
 .transcript-screen small { color:#8fb8ff; font-size:.62rem; text-transform:uppercase; letter-spacing:.05em; }
+/* Under the stored session while the live screen shows the agent mid-turn. */
+.transcript-working { display:flex; align-items:center; gap:8px; padding:6px 10px; color:#9da3b6; font:500 .78rem/1.4 Inter,ui-sans-serif,system-ui,sans-serif; }
+.transcript-working small { color:#747b90; font-size:.62rem; text-transform:uppercase; letter-spacing:.05em; }
+.transcript-working-dots { display:inline-flex; gap:3px; }
+.transcript-working-dots i { width:5px; height:5px; border-radius:50%; background:#8fb8ff; animation:transcript-working 1.2s ease-in-out infinite; }
+.transcript-working-dots i:nth-child(2) { animation-delay:.2s; }
+.transcript-working-dots i:nth-child(3) { animation-delay:.4s; }
+@keyframes transcript-working { 0%, 80%, 100% { opacity:.25; } 40% { opacity:1; } }
+@media (prefers-reduced-motion: reduce) { .transcript-working-dots i { animation:none; opacity:.7; } }
 .readable-tools button[aria-pressed="true"] { border-color:#6c5ce7; color:#dcd6ff; }
+.readable-tools button.unavailable { opacity:.55; }
 .readable-notice { margin-bottom:10px; padding:8px 10px; border-left:3px solid #747b90; border-radius:8px; background:#14161e; color:#9298aa; font:400 .78rem/1.45 Inter,ui-sans-serif,system-ui,sans-serif; }
 .readable-earlier { display:block; width:100%; margin-bottom:10px; padding:9px 10px; border:1px solid #34384a; border-radius:9px; background:#151823; color:#9da3b6; font:500 .78rem/1.4 Inter,ui-sans-serif,system-ui,sans-serif; text-align:center; }
 .readable-earlier:active { background:#1c2030; color:#c8cdda; }
@@ -372,14 +504,46 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .readable-tools { position:absolute; right:10px; bottom:12px; display:flex; gap:6px; }
 .readable-tools button { padding:5px 10px; border:1px solid #34384a; border-radius:9px; background:rgba(16,19,27,.86); color:#9da3b6; font-size:.72rem; backdrop-filter:blur(6px); }
 .readable-tools small { align-self:center; padding:3px 8px; border-radius:999px; background:rgba(16,19,27,.86); color:#8fb8ff; font-size:.6rem; text-transform:uppercase; letter-spacing:.05em; backdrop-filter:blur(6px); }
+/* The rows an agent draws under its input box (cwd, model, mode, context…),
+   which Focus otherwise cuts away: swiped in from the left over the bottom of
+   the reading view, above its tools. Inside `.terminal-body`, so it can never
+   cover the composer. Slides by transform + opacity only. */
+.focus-statusline { position:absolute; left:8px; right:8px; bottom:46px; z-index:1; max-height:45%; overflow:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; padding:8px 10px 9px; border:1px solid #383c4d; border-radius:9px; background:#11141c; color:#dfe3ee; font-size:.78rem; animation:focus-statusline-in .16s ease-out; }
+.focus-statusline-head { position:sticky; left:0; display:flex; align-items:center; gap:8px; min-width:0; margin-bottom:6px; }
+.focus-statusline-head strong { flex:1 1 auto; font-weight:650; }
+.focus-statusline-head strong small { margin-left:6px; color:#8fb8ff; font-size:.62rem; text-transform:uppercase; }
+.focus-statusline-head button { flex:0 0 auto; padding:4px 9px; border:0; border-radius:7px; background:rgba(255,255,255,.09); color:inherit; font-size:.8rem; }
+.focus-statusline-row { width:max-content; min-width:100%; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; line-height:1.45; white-space:pre; }
+.focus-statusline-empty { color:#9298aa; }
+@keyframes focus-statusline-in { from { opacity:0; transform:translateX(-14px); } to { opacity:1; transform:none; } }
+@media (prefers-reduced-motion:reduce) { .focus-statusline { animation:none; } }
 .readable-jump { position:absolute; left:50%; bottom:12px; transform:translateX(-50%); padding:8px 14px; border:1px solid #4c5165; border-radius:999px; background:rgba(23,26,36,.94); color:#e7e9f2; font-size:.78rem; box-shadow:0 6px 18px rgba(0,0,0,.35); }
 .terminal-controls { min-height:0; overflow:auto; }
 .last-sent { display:grid; grid-template-columns:auto minmax(0,1fr); gap:8px; align-items:start; margin:6px 7px 0; padding:8px 10px; border-radius:9px; background:#211d35; color:#dcd6ff; font-size:.78rem; }
 .last-sent span { color:#9e91e9; font-weight:750; text-transform:uppercase; letter-spacing:.06em; }
 .last-sent p { margin:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; unicode-bidi:plaintext; }
-.session-facts { display:flex; align-items:center; gap:10px; margin:6px 14px 0; color:#8b90a5; font-size:.72rem; font-family:ui-monospace,SFMono-Regular,monospace; white-space:nowrap; overflow:hidden; }
-.session-facts .fact-path { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; }
-.session-facts .fact-branch,.session-facts .fact-context { flex:0 0 auto; }
+/* Scrolls sideways rather than clipping: an agent tab's row leads with its
+   model / mode / status buttons, and a phone can't fit them beside every fact.
+   The path gives way first, down to a stub, before the row scrolls. */
+.session-facts { display:flex; align-items:center; gap:10px; margin:2px 10px 0; padding:0 4px; color:#8b90a5; font-size:.72rem; font-family:ui-monospace,SFMono-Regular,monospace; white-space:nowrap; overflow-x:auto; overflow-y:hidden; scrollbar-width:none; }
+.session-facts::-webkit-scrollbar { display:none; }
+.session-facts .fact-path { flex:0 1 auto; min-width:4em; overflow:hidden; text-overflow:ellipsis; }
+.session-facts .fact-branch,.session-facts .fact-context,.session-facts .fact-limit { flex:0 0 auto; }
+.session-facts .fact-limit.high { color:#f0a35e; }
+/* A fact you can tap: the row's own type and colour, a shade brighter, with a
+   hit area padded out past the glyphs. The row's own padding and trimmed
+   margin absorb it, so plain facts sit where they did; a negative margin
+   would only have been clipped by the row's overflow. */
+.fact-action { display:flex; align-items:center; gap:5px; flex:0 0 auto; max-width:14em; margin:0 -4px; padding:5px 4px; border:0; border-radius:6px; background:transparent; color:#b9bed0; font:inherit; }
+.fact-action:active { background:rgba(255,255,255,.08); }
+.fact-action:disabled { color:#8b90a5; opacity:.6; }
+.fact-action-label { min-width:0; overflow:hidden; text-overflow:ellipsis; text-decoration:underline dotted rgba(185,190,208,.45); text-underline-offset:3px; }
+/* The same lamp the tab row shows, so the state reads without opening the
+   sheet. `idle` is dim rather than absent: a missing lamp reads as broken. */
+.fact-lamp { width:7px; height:7px; flex:0 0 auto; border-radius:50%; background:#5a6178; }
+.fact-lamp.working { background:#6fe29c; box-shadow:0 0 6px #6fe29c; }
+.fact-lamp.question { background:#ffd36b; box-shadow:0 0 6px #ffd36b; }
+.fact-lamp.done { background:#91e6a9; }
 .prompt-composer { display:flex; flex-direction:column; gap:2px; margin:7px 7px 2px; padding:6px 8px 8px 12px; border:1px solid #454a60; border-radius:16px; background:#171a24; box-shadow:0 6px 20px rgba(0,0,0,.18); }
 .prompt-composer:focus-within { border-color:#8c7df4; box-shadow:0 0 0 2px rgba(120,104,217,.4),0 6px 20px rgba(0,0,0,.18); }
 .prompt-composer textarea { width:100%; min-height:42px; max-height:116px; resize:none; border:0; padding:8px 0; appearance:none; -webkit-appearance:none; background-color:#171a24 !important; color:#fff !important; -webkit-text-fill-color:#fff; caret-color:#fff; line-height:1.35; }
@@ -389,29 +553,6 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .composer-bar svg { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:1.9; stroke-linecap:round; stroke-linejoin:round; }
 .composer-bar .composer-dictate,.composer-bar .send-icon { display:grid; place-items:center; width:40px; min-width:40px; height:40px; padding:0; border:0; border-radius:10px; }
 .composer-add { display:grid; place-items:center; flex:0 0 auto; width:36px; height:36px; padding:0; border:0; border-radius:50%; background:transparent; color:#c8cdda; }
-/* Model / mode / status. The chips share one shrinkable group that owns the
-   whole gap between the + button and the dictate/send cluster, so they sit
-   centred in it instead of being shoved against the right-hand buttons: on a
-   phone the three chips at their natural width overflow the bar, and loose
-   chips filled the row edge to edge with the flex gap as their only margin.
-   `max-width` is a share of the group rather than a slice of the viewport for
-   the same reason — the viewport also has to hold three buttons. */
-.composer-chips { display:flex; align-items:center; justify-content:center; flex:1 1 auto; gap:6px; min-width:0; padding:0 5px; }
-/* `justify-content` is load-bearing: a chip is a flex container, so without it
-   the label sits against the left edge as soon as the bar shrinks the chip
-   below its content width. The label is wrapped in its own element for the same
-   reason — `text-overflow` has no effect on a flex container's anonymous text,
-   so a clipped label was cut mid-glyph. */
-.composer-chip { display:flex; align-items:center; justify-content:center; flex:0 1 auto; gap:5px; min-width:0; max-width:40%; overflow:hidden; padding:8px 13px; border:0; border-radius:999px; background:#232735; color:#e2e5f0; font-size:.82rem; }
-.composer-chip svg { width:15px; height:15px; flex:0 0 auto; }
-.composer-chip-label { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
-/* The status chip carries the same lamp the tab row shows, so the state is
-   readable without opening the sheet. `idle` is deliberately dim rather than
-   absent: a chip whose lamp disappears reads as broken. */
-.composer-chip-lamp { width:8px; height:8px; flex:0 0 auto; border-radius:50%; background:#5a6178; }
-.composer-chip-lamp.working { background:#6fe29c; box-shadow:0 0 7px #6fe29c; }
-.composer-chip-lamp.question { background:#ffd36b; box-shadow:0 0 7px #ffd36b; }
-.composer-chip-lamp.done { background:#91e6a9; }
 .composer-spacer { flex:1 0 0; }
 /* The draft row: the textarea and, while there is a draft, a ✕ that empties
    it — a phone keyboard has no select-all, and a long dictated draft was
@@ -419,7 +560,7 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .composer-field { display:flex; align-items:flex-start; gap:4px; }
 .composer-field textarea { flex:1 1 auto; min-width:0; }
 .composer-clear { display:grid; place-items:center; flex:0 0 auto; width:32px; height:32px; margin-top:5px; padding:0; border:0; border-radius:50%; background:#2a2e3e; color:#c8cdda; }
-.composer-clear svg { width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:2.2; stroke-linecap:round; }
+.composer-clear svg { width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; }
 .composer-dictate { color:#dcd6ff; background:transparent; }
 .composer-dictate.listening { color:#fff; background:#7a3151; box-shadow:0 0 0 2px rgba(227,107,154,.22); }
 .composer-dictate.listening svg rect { fill:currentColor; stroke:none; }
@@ -434,7 +575,7 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .voice-feedback { margin:6px 6px 0; padding:9px 11px; border-radius:9px; background:#29253d; color:#e8e3ff; font-size:.86rem; overflow-wrap:anywhere; }
 .voice-feedback.error { background:#3b2027; color:#ffb4c0; }
 .danger { color:#ff9aa6; }
-/* The composer chips' bottom sheet: a phone list in place of walking a TUI
+/* The facts row buttons' bottom sheet: a phone list in place of walking a TUI
    dialog with the arrow keys. */
 .sheet-backdrop { position:fixed; inset:0; z-index:12; display:flex; align-items:flex-end; background:rgba(4,5,9,.7); }
 .option-sheet { display:grid; gap:11px; width:100%; max-height:82dvh; padding:8px 10px calc(16px + env(safe-area-inset-bottom)); border-top:1px solid #383c4d; border-radius:20px 20px 0 0; background:#171a24; overflow:auto; overscroll-behavior:contain; }
@@ -565,3 +706,16 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .outbox-text-body { overflow:auto; padding:12px; }
 .outbox-text-body pre { margin:0 0 12px; white-space:pre-wrap; overflow-wrap:anywhere; font-size:.8rem; }
 .outbox-viewer:has(> [role=alert]) { grid-template-rows:auto auto minmax(0,1fr); }
+/* A file the agent sent, as a message of its own in the Focus chat
+   (`OutboxMessage`), on the agent's side: a picture at its own shape up to
+   the bubble width, any other file a card; name, age and size under it in
+   the UI face. The corner the user bubble squares off is mirrored here. */
+.readable-turn.outbox-message { justify-items:start; gap:4px; font:400 .9rem/1.45 Inter,ui-sans-serif,system-ui,sans-serif; }
+.outbox-message-image { display:block; max-width:88%; padding:0; border:1px solid #34384a; border-radius:16px 16px 16px 4px; overflow:hidden; background:#0f131c; }
+.outbox-message-image img { display:block; min-width:96px; min-height:72px; max-width:100%; max-height:60vh; object-fit:contain; }
+.outbox-message-file { display:flex; align-items:center; gap:10px; max-width:88%; min-width:0; padding:10px 12px; border:1px solid #34384a; border-radius:16px 16px 16px 4px; background:#1b2333; color:#d8e2f5; text-align:left; text-decoration:none; font:inherit; }
+.outbox-message-file span { flex:0 0 auto; color:#8fb8ff; font-weight:650; }
+.outbox-message-file strong { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
+.outbox-message-meta { display:flex; align-items:center; gap:6px; max-width:100%; color:#95a6c8; font-size:.72rem; }
+.outbox-message-meta span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.outbox-message-meta em { flex:0 0 auto; color:#8fb8ff; font-style:normal; font-size:.62rem; text-transform:uppercase; }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseUsageReport } from "../../shared/usageReport";
-import { usageResetMarks, usageWindowKind } from "../lib/agentUsageResets";
+import { usageResetMarks, usageWindowKind } from "../lib/agents/agentUsageResets";
 
 /** A fixed Tuesday, 14:00 local. */
 const TUE_1400 = new Date(2026, 8, 1, 14, 0, 0, 0);
@@ -42,6 +42,16 @@ describe("usageResetMarks", () => {
     ]);
     expect(marks[0].labels).toEqual(["Current week (all models)", "Current week (Fable)"]);
     expect(marks[0].percent).toBe(52);
+  });
+
+  it("repeats a dated weekly reset the way it repeats a weekday one", () => {
+    // Claude Code 2.1.272 names the weekly reset by its date, not its weekday.
+    const report = parseUsageReport("Current week (all models): 54% used · resets Sep 7, 9am");
+    const marks = usageResetMarks("claude", report, TUE_1400, new Date(2026, 7, 25), new Date(2026, 8, 22));
+    expect(marks.map((mark) => mark.at)).toEqual([
+      new Date(2026, 7, 31, 9), new Date(2026, 8, 7, 9), new Date(2026, 8, 14, 9), new Date(2026, 8, 21, 9),
+    ]);
+    expect(marks[0].resets).toBe("Sep 7, 9am");
   });
 
   it("draws nothing for a session reset outside the range or a phrase it cannot place", () => {

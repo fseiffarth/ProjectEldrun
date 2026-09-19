@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { ApiError, getAgentStatus, type AgentStatusReport, type TabRow } from "../api";
-import { noteParts, parseUsageReport } from "../../../shared/usageReport";
+import { limitMeters, noteParts, parseUsageReport, resolveResetAt, type LimitMeters } from "../../../shared/usageReport";
 import type { SessionStatus } from "../terminal/statusLine";
 
 /** Wording for the tab's own state, which the desktop classified from the
@@ -22,6 +22,37 @@ function duration(seconds: number): string {
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
+/** `in 5h 12m` to an instant ahead of `now`; empty once it has passed, which is
+ * a panel read before its own rollover and not worth a negative countdown. */
+function countdown(at: Date, now: Date): string {
+  const minutes = Math.floor((at.getTime() - now.getTime()) / 60_000);
+  if (minutes < 0) return "";
+  if (minutes < 1) return "in <1m";
+  if (minutes < 60) return `in ${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `in ${hours}h ${minutes % 60}m`;
+  return `in ${Math.floor(hours / 24)}d ${hours % 24}h`;
+}
+
+/**
+ * A window's rollover said exactly: weekday, date and clock in the phone's own
+ * locale and timezone, plus how long is left. The CLI's words name a day or a
+ * clock depending on its release and the window (`Mon 9am`, `6:20pm`,
+ * `Sep 17, 2pm (Europe/Berlin)`) and are written on the desktop's clock, which
+ * need not be the phone's. Placed through `resolveResetAt`, the same reading
+ * auto-continue arms off, so the two cannot disagree; a phrase it cannot place
+ * is shown in the CLI's own words rather than guessed at.
+ */
+export function resetText(phrase: string, now: Date): string {
+  const at = resolveResetAt(phrase, now);
+  if (!at) return `resets ${phrase}`;
+  const when = new Intl.DateTimeFormat(undefined, {
+    weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+  }).format(at);
+  const left = countdown(at, now);
+  return left ? `resets ${when} · ${left}` : `resets ${when}`;
+}
+
 function plural(count: number, one: string, many = `${one}s`): string {
   return `${count.toLocaleString()} ${count === 1 ? one : many}`;
 }
@@ -40,9 +71,12 @@ function plural(count: number, one: string, many = `${one}s`): string {
  * (model, mode, context) — free, and about *this* tab, where the quota panel is
  * about the whole account.
  */
-export function StatusSheet({ tab, live, onClose }: {
+export function StatusSheet({ tab, live, onLimits, onClose }: {
   tab: TabRow;
   live: SessionStatus | null;
+  /** Hands a fresh panel's 5h/week windows to the facts row, so a Refresh
+   * here updates it without waiting for its own poll. */
+  onLimits?: (limits: LimitMeters) => void;
   onClose: () => void;
 }) {
   const [view, setView] = useState<"formatted" | "terminal">("formatted");
@@ -54,7 +88,9 @@ export function StatusSheet({ tab, live, onClose }: {
     setBusy(true);
     setError("");
     try {
-      setReport(await getAgentStatus(tab.id, refresh));
+      const next = await getAgentStatus(tab.id, refresh);
+      setReport(next);
+      if (next.usage.raw) onLimits?.(limitMeters(parseUsageReport(next.usage.raw)));
     } catch (cause) {
       setError(cause instanceof ApiError && (cause.status === 503 || cause.code === "desktop_unavailable")
         ? "Open desktop Eldrun to read this session's status."
@@ -64,7 +100,7 @@ export function StatusSheet({ tab, live, onClose }: {
     } finally {
       setBusy(false);
     }
-  }, [tab.id]);
+  }, [tab.id, onLimits]);
 
   useEffect(() => { void load(false); }, [load]);
 
@@ -88,7 +124,7 @@ export function StatusSheet({ tab, live, onClose }: {
         {report.agent && <span>{report.agent}</span>}
         {live?.model && <span>{live.model}</span>}
         {live?.mode && <span>{live.mode}</span>}
-        {live?.context && <span>{live.context} context</span>}
+        {live?.context && <span>{live.context} context left</span>}
       </p>}
 
       {error && <p className="sheet-note error" role="alert">{error}</p>}
@@ -107,7 +143,7 @@ export function StatusSheet({ tab, live, onClose }: {
           <div className="usage-bar" role="img" aria-label={`${meter.label}: ${meter.percent}% used`}>
             <span style={{ width: `${meter.percent}%` }} />
           </div>
-          {meter.resets && <small>resets {meter.resets}</small>}
+          {meter.resets && <small title={`resets ${meter.resets}`}>{resetText(meter.resets, new Date())}</small>}
         </div>)}
         {panel?.unparsed && <p className="sheet-note">
           {usage?.label} answered in a shape Eldrun does not recognize. The Terminal view has all of it.

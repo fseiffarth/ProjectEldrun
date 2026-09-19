@@ -20,8 +20,8 @@ import { invoke } from "@tauri-apps/api/core";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) }));
 
-import { useVpnStatusStore, markVpnConnected, disconnectVpnTunnel } from "../stores/vpnStatus";
-import { useRemoteStatusStore } from "../stores/remoteStatus";
+import { useVpnStatusStore, markVpnConnected, disconnectVpnTunnel } from "../stores/remote/vpn/vpnStatus";
+import { useRemoteStatusStore } from "../stores/remote/remoteStatus";
 
 const invokeMock = vi.mocked(invoke);
 const CONFIG = "/store/office.ovpn";

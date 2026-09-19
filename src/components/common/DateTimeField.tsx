@@ -5,7 +5,7 @@ import {
   timePart,
   todayStr,
   weekdayOf,
-} from "../../lib/calendarTime";
+} from "../../lib/calendar/calendarTime";
 import { DateField } from "./DateField";
 import { TimeField } from "./TimeField";
 
@@ -24,7 +24,7 @@ import { TimeField } from "./TimeField";
  * hour", "tomorrow morning") need neither.
  *
  * The value on the wire is the app's own local wall-clock stamp,
- * `"YYYY-MM-DDTHH:MM"` — what `schema::calendar`, `lib/calendarTime` and the
+ * `"YYYY-MM-DDTHH:MM"` — what `schema::calendar`, `lib/calendar/calendarTime` and the
  * scheduled-prompt rules already store — or `""` when the day is cleared. Half a
  * value is never reported: an hour with no day is not an instant, so clearing
  * the date clears the whole field.

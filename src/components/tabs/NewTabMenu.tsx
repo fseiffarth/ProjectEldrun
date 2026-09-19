@@ -23,10 +23,11 @@ import {
 } from "./newTabItems";
 import { AddTabMenuList } from "./AddTabMenuList";
 import { useAddTabMenuData } from "./useAddTabMenuData";
+import { localModelMenuGroup, useLocalModelPlacement } from "./localModelGroup";
 import { useAgentWorktreePicker } from "./agentWorktrees";
 import { useExperimental } from "../../lib/experimental";
 import { useT } from "../../lib/i18n";
-import { registerHostBoundTab } from "../../lib/hostBound";
+import { registerHostBoundTab } from "../../lib/remote/hostBound";
 
 interface Props {
   /** Scope (project id or "root") the new tab belongs to. Gates the project-only
@@ -72,13 +73,17 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
   // hook — one implementation with TabBar's "+" menu, so the two cannot drift.
   const {
     localModel,
+    localModelOffInRoot,
     localDrivers,
     enabledAgents,
+    vibeForLocalModel,
     compactAgentBins,
     customAgents,
     installedCustom,
     boxMembers,
   } = useAddTabMenuData(scope);
+  // This menu only exists while open, so the GPU gate probes for its lifetime.
+  const localModelGpu = useLocalModelPlacement(localModel, true);
 
   // "+ agent" on a project with linked worktrees asks which one first (#23).
   // The popout cannot tell a remote project from a local one (it is inert to
@@ -193,7 +198,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
     <>
     {worktreePicker.dialogs}
     <div
-      className="tab-new-menu"
+      className="tab-new-menu tab-add-menu"
       ref={menuRef}
       style={{ position: "fixed", left: pos.x, top: pos.y }}
     >
@@ -270,44 +275,16 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                 ]),
               }]
             : []),
-          {
-            label: localModel
-              ? t("newTabMenu.groupLocalModelWithName", { model: localModel })
-              : t("newTabMenu.groupLocalModel"),
-            entries: localModel
-              ? [
-                  ...(enabledAgents?.has("vibe")
-                    ? [{
-                        key: "vibe",
-                        label: "Mistral",
-                        color: TAB_ACCENT["local_agent"],
-                        onPick: () => void pickOllamaModel(localModel),
-                      }]
-                    : []),
-                  // `heavy_harness` cautions, it never withholds — see
-                  // lib/localDrivers.ts. The row stays pickable because which
-                  // local models cope is not something the backend can probe.
-                  ...localDrivers.filter((d) => d.available).map((d) => ({
-                    key: d.id,
-                    label: d.label,
-                    color: TAB_ACCENT["local_agent"],
-                    caution: d.heavy_harness
-                      ? t("newTabMenu.localDriverHeavyHarness", { agent: d.label })
-                      : undefined,
-                    onPick: () => void pickLocalLaunch(d.id, d.label, localModel),
-                  })),
-                ]
-              : [],
-            // An empty list has two causes and they need different sentences:
-            // no agent is installed, or the model can't drive the ones that
-            // are. Without the second, withholding the entries would read as a
-            // bug — the agent is right there in the Agents group above.
-            hint: !localModel
-              ? t("newTabMenu.noLocalModelHint")
-              : localDrivers.some((d) => d.needs_tools_unsupported)
-                ? t("newTabMenu.localModelNoToolsHint", { model: localModel })
-                : t("newTabMenu.noLocalAgentHint"),
-          },
+          localModelMenuGroup({
+            localModel,
+            localModelOffInRoot,
+            localDrivers,
+            vibeForLocalModel,
+            gpu: localModelGpu,
+            onVibe: (model) => void pickOllamaModel(model),
+            onLaunch: (id, label, model) => void pickLocalLaunch(id, label, model),
+            t,
+          }),
           {
             label: t("newTabMenu.groupShell"),
             entries: SHELL_ITEMS.filter((i) => i.kind === "shell").map((item) => ({

@@ -1,5 +1,5 @@
 /**
- * Fast mode (`lib/fastMode`).
+ * Fast mode (`lib/agents/fastMode`).
  *
  * Three things are worth locking in, and each has a plausible-looking wrong
  * version:
@@ -29,7 +29,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(() => Promise.resolve(() => {})),
 }));
 
-import { applyFastModeAttribute, fastModeActive } from "../lib/fastMode";
+import { applyFastModeAttribute, fastModeActive } from "../lib/agents/fastMode";
 import { useSettingsStore } from "../stores/settings";
 import { usePowerStore } from "../stores/power";
 import { AppResourceDisplay } from "../components/header/AppResourceDisplay";

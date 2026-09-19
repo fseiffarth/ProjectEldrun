@@ -1,8 +1,8 @@
 import { ConnLamp } from "../common/ConnLamp";
-import { useRemoteStatusStore } from "../../stores/remoteStatus";
-import { useRemoteMachinesStore } from "../../stores/remoteMachines";
-import { useHostBusyStore, isBusy } from "../../stores/hostBusy";
-import type { ConnState } from "../../stores/remoteStatus";
+import { useRemoteStatusStore } from "../../stores/remote/remoteStatus";
+import { useRemoteMachinesStore } from "../../stores/remote/remoteMachines";
+import { useHostBusyStore, isBusy } from "../../stores/remote/hostBusy";
+import type { ConnState } from "../../stores/remote/remoteStatus";
 import type { ProjectEntry } from "../../types";
 import { useT, type TranslationKey } from "../../lib/i18n";
 
@@ -62,7 +62,7 @@ export function RemoteConnMenu({ project, compact }: { project: ProjectEntry; co
   const workers = project.compute_hosts ?? [];
 
   // Every host this project reaches, tagged with its live SSH state and whether
-  // it is **working** (≥1 tmux session, `stores/hostBusy`) — the primary first,
+  // it is **working** (≥1 tmux session, `stores/remote/hostBusy`) — the primary first,
   // then each worker.
   //
   // The busy half is read from the cache and never probed here: these lamps are

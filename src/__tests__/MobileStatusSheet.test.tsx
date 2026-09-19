@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentStatusReport, TabRow } from "../../mobile-web/src/api";
-import { StatusSheet } from "../../mobile-web/src/screens/StatusSheet";
+import { StatusSheet, resetText } from "../../mobile-web/src/screens/StatusSheet";
 
 // `fetch` rather than the api module: `getAgentStatus` calls `api` through its
 // own module-local binding, which a module mock never reaches — and stubbing
@@ -68,10 +68,26 @@ describe("Eldrun Mobile agent status sheet", () => {
     // The phone's own status-line facts sit next to the account-wide figures;
     // they are about different things and both belong on the headline.
     expect(screen.getByText("opus")).toBeTruthy();
-    expect(screen.getByText("62% context")).toBeTruthy();
+    expect(screen.getByText("62% context left")).toBeTruthy();
     expect(screen.getByText("Current session")).toBeTruthy();
     expect(screen.getByLabelText("Current session: 71% used")).toBeTruthy();
-    expect(screen.getByText("resets 6:20pm")).toBeTruthy();
+    // The reset is placed in time; the CLI's own words stay one hover away.
+    expect(screen.getByTitle("resets 6:20pm").textContent).toMatch(/^resets .+ · in \d+/u);
+  });
+
+  it("names the exact reset instant, not just the day the CLI printed", () => {
+    // 20:00 UTC is 22:00 in Berlin, so the 2pm reset two days out is 40h away
+    // whatever zone the test runs in.
+    const now = new Date("2026-09-15T20:00:00Z");
+    const text = resetText("Sep 17, 2pm (Europe/Berlin)", now);
+    const clock = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" })
+      .format(new Date("2026-09-17T12:00:00Z"));
+    expect(text).toContain(clock);
+    expect(text).toMatch(/ · in 40h 0m$/u);
+    expect(resetText("Mon 9am", new Date(2026, 8, 14, 8, 0))).toMatch(/ · in 1h 0m$/u);
+    expect(resetText("Sep 15, 9am (Europe/Berlin)", now)).not.toContain(" · in ");
+    // What cannot be placed is shown as the CLI said it, never guessed at.
+    expect(resetText("when the moon is full", now)).toBe("resets when the moon is full");
   });
 
   it("labels the project-wide counters as project-wide, not as this agent's", async () => {

@@ -306,6 +306,26 @@ phone the answer is what is wanted, the edit-by-edit status beside it is
 noise. Only that exact shape is dropped, so a permission question drawn under
 a tool call still shows.
 
+**The status line, one swipe away.** Cutting the input frame also cuts the
+rows the TUI draws *under* its box: cwd, branch, model, mode, context, and
+whatever a custom statusline prints. The composer's chips carry the fields
+`sessionStatus` can parse. A custom statusline, a usage meter or a cost readout
+is free text with no chip shape, though, and painting those rows permanently is
+exactly what pushed the output off the top of the screen. So they sit one
+gesture away. A left→right swipe across the output opens a strip under it with
+those rows verbatim (`statusFrameLines`), and a right→left swipe or its ✕
+closes it (`focusSwipe.ts`). It is swipe-only because a button would be one more
+permanent control in the chrome the cut removed. The listeners are passive and
+read only where a touch starts and ends. Nothing is prevented, so vertical
+scrolling and text selection stay the browser's own, and a swipe has to be
+decisively horizontal: at least 56 px, twice its vertical travel, within 700 ms.
+Two guards keep it off gestures that already mean something. A touch starting
+within 16 px of a screen edge is Android's back gesture, and one starting inside
+something that can still scroll horizontally that way (a wide code block, a
+table) is panning it. The strip is never remembered, not per tab and not across
+a reload. It is a glance, not a view, and a strip that came back on its own
+would be the permanent chrome again. Untested on a phone.
+
 **The stored session.** The screen is a poor record of a conversation — the
 pane's scrollback, at the desktop window's width, cut by every redraw — and
 the agent keeps a better one: every prompt and every answer as a record in

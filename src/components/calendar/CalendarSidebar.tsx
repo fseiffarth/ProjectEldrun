@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Calendar } from "../../types";
-import { calendarSyncStatus, useCalDavStore } from "../../stores/caldav";
-import { addMonths, datePart, monthGrid, monthName, todayStr, weekdayLabel } from "../../lib/calendarTime";
+import { calendarSyncStatus, useCalDavStore } from "../../stores/calendar/caldav";
+import { addMonths, datePart, monthGrid, monthName, todayStr, weekdayLabel } from "../../lib/calendar/calendarTime";
 import { useI18nStore, useT } from "../../lib/i18n";
 
 /** The palette a new calendar picks from. */
@@ -309,16 +309,25 @@ export function CalendarSidebar({
               title={cal.visible ? t("calendarSidebar.hideCalendarTitle") : t("calendarSidebar.showCalendarTitle")}
             />
 
-            <input
-              type="color"
+            {/* The swatch is painted by the label's own background, not by the
+                native colour well: in the live window the well stayed white
+                while the calendar took the picked colour everywhere else. The
+                input still sits on top, invisible, as the click target. */}
+            <label
               className="cal-color-dot"
-              // `<input type="color">` takes only `#rrggbb`; anything else (a
-              // CalDAV `#rrggbbaa` that slipped through, an empty string) makes
-              // it render black, which is a colour the calendar does not have.
-              value={swatchColor(draftColor[cal.id] ?? cal.color)}
+              style={{ background: swatchColor(draftColor[cal.id] ?? cal.color) }}
               title={t("calendarSidebar.colorTitle")}
-              onChange={(e) => pickColor(cal, e.target.value)}
-            />
+            >
+              <input
+                type="color"
+                // `<input type="color">` takes only `#rrggbb`; anything else (a
+                // CalDAV `#rrggbbaa` that slipped through, an empty string) makes
+                // it render black, which is a colour the calendar does not have.
+                value={swatchColor(draftColor[cal.id] ?? cal.color)}
+                aria-label={t("calendarSidebar.colorTitle")}
+                onChange={(e) => pickColor(cal, e.target.value)}
+              />
+            </label>
 
             {editing === cal.id ? (
               <input

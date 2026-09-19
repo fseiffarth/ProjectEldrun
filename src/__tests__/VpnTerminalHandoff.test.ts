@@ -58,8 +58,8 @@ const backend = (opts: { build?: "ok" | "fail" } = {}) => {
 async function graph() {
   vi.resetModules();
   const [prompt, vpnStatus, tabs, settings] = await Promise.all([
-    import("../stores/vpnPrompt"),
-    import("../stores/vpnStatus"),
+    import("../stores/remote/vpn/vpnPrompt"),
+    import("../stores/remote/vpn/vpnStatus"),
     import("../stores/tabs"),
     import("../stores/settings"),
   ]);
@@ -85,8 +85,12 @@ describe("VPN terminal handoff", () => {
     // The command was built (which is also what arms the tunnel backend-side) and
     // typed into a freshly-spawned root tab.
     expect(calls("openvpn_login_command")).toHaveLength(1);
-    const rootTabs = g.useTabsStore.getState().tabsByScope.root ?? [];
-    expect(rootTabs[rootTabs.length - 1]).toMatchObject({ kind: "shell", initialInput: COMMAND });
+    // The tab lands once root has been restored (`openTabInRootConsole`): a root
+    // never opened this session is hydrated before anything is added to it.
+    await vi.waitFor(() => {
+      const rootTabs = g.useTabsStore.getState().tabsByScope.root ?? [];
+      expect(rootTabs[rootTabs.length - 1]).toMatchObject({ kind: "shell", initialInput: COMMAND });
+    });
 
     // The tunnel is coming up, not failed: amber, with the poll behind it.
     expect(g.useVpnStatusStore.getState().byConfig[CONFIG]).toBe("connecting");

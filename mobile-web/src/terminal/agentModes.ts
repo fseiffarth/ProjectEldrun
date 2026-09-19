@@ -18,12 +18,25 @@
  * prints *nothing* while in its default mode, so for a tab whose label names
  * such a family, an input frame with no mode text is itself the readout.
  *
+ * One family is listed but cannot be *walked*: OpenCode's minimal interface
+ * has no key that changes its agent, so its entry is marked `fixed` and the
+ * caller shows the list as a readout instead of a switch. A family that binds
+ * nothing must not be offered a cycle — the chip would have pressed a key into
+ * a session that ignores it and then reported a failed switch.
+ *
  * Deliberately absent:
- *   - Gemini CLI — since ~0.5 the approval mode is conveyed only as prompt
- *     colour and an aria-label; nothing the readable view can parse, so no
- *     switch could ever be confirmed. The chip keeps blind-cycling.
- *   - Vibe / OpenCode — full-screen (alternate-screen) TUIs; the Focus view
- *     already hands those to the Terminal view.
+ *   - Vibe / Copilot / Crush / Cline — full-screen (alternate-screen) TUIs;
+ *     the Focus view already hands those to the Terminal view. Copilot has
+ *     drawn one unconditionally since 1.0.12, and Qwen Code does too by
+ *     default since `ui.useTerminalBuffer` (0.23). Plain `opencode` is one of
+ *     them; only `opencode --mini` writes scrollback, and only that is what
+ *     the OpenCode family below reads.
+ *   - Agents whose mode is not on Shift+Tab: Amp (Ctrl+S), Goose and
+ *     mini-SWE-agent (a slash command each), Aider (the prompt prefix is the
+ *     mode). A walk of Shift+Tab presses would never reach one of theirs.
+ *   - Kimi Code, Cursor agent, Grok Build, Antigravity — their mode readouts
+ *     are known from source only; they wait for a live capture.
+ * See `docs/mobile_focus_cli_survey.md` for what each CLI draws.
  */
 
 export interface ModeChoice {
@@ -37,25 +50,36 @@ export interface ModeChoice {
   /** The session shows no mode text at all while in this mode; an input frame
    * with no mode line is read as being in it. At most one per family. */
   silent?: boolean;
+  /** Claimed only for a tab whose label names this family: the mode's word is
+   * another family's too, and without a label it stays theirs. */
+  labelled?: boolean;
 }
 
 interface ModeFamily {
   /** Matches the tab's agent label ("Claude", "Qwen", …). */
   agent: RegExp;
   choices: ModeChoice[];
+  /** The session's mode cannot be changed from here: no key this can press
+   * switches it. The caller lists the modes as a readout and never walks. */
+  fixed?: boolean;
 }
 
-/** Claude Code: the Shift+Tab cycle, plus the mode a session started with
- * `--dangerously-skip-permissions` sits in. Bypass is deliberately listed even
- * though the ordinary cycle never reaches it: a session that has it shows it,
- * and one that does not says so when the switch fails to confirm. Default is
- * `silent` — Claude Code draws no mode line while in it. */
+/** Claude Code: the Shift+Tab cycle — `accept edits on`, `plan mode on`, `auto
+ * mode on`, in that order, read out of the 2.1.272 bundle — plus the mode a
+ * session started with `--dangerously-skip-permissions` sits in. Auto is on the
+ * cycle only where the account offers auto mode, and bypass is never on the
+ * ordinary cycle; both are listed anyway: a session that has one shows it, and
+ * one that does not says so when the switch fails to confirm. Default is
+ * `silent` — Claude Code draws no mode line while in it. Auto is `labelled`:
+ * bare "auto" is Codex's and Qwen's word too, and an unlabelled tab showing it
+ * has always gone to them. */
 const CLAUDE: ModeFamily = {
   agent: /claude/iu,
   choices: [
     { value: "default", label: "Default", description: "Asks before each edit or command", silent: true },
     { value: "accept edits", label: "Accept edits", description: "Applies file edits without asking", aliases: ["auto-accept"] },
     { value: "plan", label: "Plan", description: "Researches and plans; changes nothing" },
+    { value: "auto", label: "Auto", description: "Approves safe actions on its own judgement", labelled: true },
     { value: "bypass permissions", label: "Bypass permissions", description: "Runs everything unasked — only where the session allows it" },
   ],
 };
@@ -94,7 +118,50 @@ const QWEN: ModeFamily = {
   ],
 };
 
-const FAMILIES = [CLAUDE, CODEX, QWEN];
+/** Gemini CLI: `default`, `auto-accept edits` and `plan` on its Shift+Tab
+ * cycle, YOLO on a key of its own (Ctrl+Y) — read out of the 0.56.0 bundle's
+ * `ApprovalModeIndicator` and unchanged in 0.60.0. It draws the mode on the row
+ * *above* its input box (`statusLine` reads it there), and in its default mode
+ * draws only the hint `Shift+Tab to accept edits`, so default is `silent`.
+ * YOLO is listed because a session can be in it; a walk to it fails to
+ * confirm, since no Shift+Tab reaches it. Plan is on the cycle only where the
+ * session allows plan mode. Listed last: without a label, bare "yolo" stays
+ * Qwen's and "accept edits"/"plan" stay Claude Code's, as they always were. */
+const GEMINI: ModeFamily = {
+  agent: /gemini/iu,
+  choices: [
+    { value: "default", label: "Default", description: "Asks before each edit or command", silent: true },
+    { value: "accept edits", label: "Accept edits", description: "Applies file edits without asking", aliases: ["auto-accept"] },
+    { value: "plan", label: "Plan", description: "Researches and plans; changes nothing" },
+    { value: "yolo", label: "YOLO", description: "Runs every tool call unasked — Ctrl+Y on the desktop, not Shift+Tab" },
+  ],
+};
+
+/** OpenCode: what it calls the *agent* — `build` and `plan` are the two
+ * primary ones it ships, and a project can add more — is what the phone's mode
+ * chip shows, read out of the capitals in its status row (` BUILD  …`).
+ *
+ * `fixed`, because `opencode --mini` binds no key that switches it: its
+ * `agent.cycle`/`agent.cycle.reverse` (Tab and Shift+Tab) and its leader
+ * keybinds belong to the full-screen TUI, and pressing any of them in a mini
+ * session does nothing at all — verified against 1.18.31, whose command
+ * palette (ctrl+p, the only commands mini has) offers "Switch model" and
+ * "Variant cycle" and no agent switch. The agent a mini session runs as is the
+ * one it started with (`opencode --mini --agent plan`).
+ *
+ * Both are `labelled`: "plan" is Claude Code's, Codex's, Qwen's and Gemini's
+ * word too, and "build" would otherwise be claimed for any session whose
+ * status line happens to say it. */
+const OPENCODE: ModeFamily = {
+  agent: /open\s*code/iu,
+  fixed: true,
+  choices: [
+    { value: "build", label: "Build", description: "Reads, edits and runs — OpenCode's default agent", labelled: true },
+    { value: "plan", label: "Plan", description: "Researches and plans; changes nothing", labelled: true },
+  ],
+};
+
+const FAMILIES = [CLAUDE, CODEX, QWEN, GEMINI, OPENCODE];
 
 function claims(choice: ModeChoice, mode: string) {
   return choice.value === mode || (choice.aliases?.includes(mode) ?? false);
@@ -117,7 +184,8 @@ export function modeChoices(mode?: string, agentLabel?: string): ModeChoice[] {
   }
   const normalized = mode.trim().toLowerCase();
   const claimants = FAMILIES.filter((family) =>
-    family.choices.some((choice) => claims(choice, normalized)));
+    family.choices.some((choice) =>
+      claims(choice, normalized) && (!choice.labelled || family === labelled)));
   if (claimants.length === 0) return [];
   if (labelled) {
     // The label names the session's family. A mode that family does not list
@@ -128,6 +196,14 @@ export function modeChoices(mode?: string, agentLabel?: string): ModeChoice[] {
     return claimants.includes(labelled) ? labelled.choices : [];
   }
   return claimants[0].choices;
+}
+
+/** Whether this tab's family has a mode the phone cannot change — OpenCode's
+ * mini interface, whose agent is settled when the session starts. The caller
+ * shows the list as a readout and presses nothing. */
+export function modeFixed(agentLabel?: string): boolean {
+  if (!agentLabel) return false;
+  return FAMILIES.some((family) => family.fixed && family.agent.test(agentLabel));
 }
 
 /** Which listed choice the session is in right now, by value or alias.
@@ -160,7 +236,7 @@ const CSI_U_SHIFT_TAB = "\u001b[9;2u";
  * a whole lap and report a failed switch on a session that offers the mode.
  * Codex accepts CSI-u whether or not the terminal answered its keyboard-
  * enhancement probe. The desktop pane re-encodes the same key for the same
- * reason (`src/lib/terminalControl.ts`). */
+ * reason (`src/lib/terminal/terminalControl.ts`). */
 export function shiftTabKey(agentLabel?: string): string {
   return agentLabel && CODEX.agent.test(agentLabel) ? CSI_U_SHIFT_TAB : LEGACY_SHIFT_TAB;
 }

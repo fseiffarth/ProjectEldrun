@@ -163,7 +163,7 @@ describe("Eldrun Mobile terminal pipeline", () => {
     expect(shown).toEqual(Array.from({ length: 42 }, (_, index) => `line ${index}`));
   });
 
-  it("keeps the composer chips current while the Terminal view is up", async () => {
+  it("keeps the model and mode facts current while the Terminal view is up", async () => {
     render(<Terminal tab={TAB} back={() => {}} />);
     await act(async () => {});
     fireEvent.click(screen.getByRole("button", { name: "Terminal" }));

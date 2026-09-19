@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { isAgentSort, sortAgentTabs } from "../../shared/agentSort";
-import { shortModelName } from "../lib/agentModel";
+import { shortModelName } from "../lib/agents/agentModel";
 
 interface Row { id: string; decision?: boolean; working?: boolean; workingAt?: number; doneAt?: number }
 const keys = (row: Row) => ({ decision: row.decision, working: !!row.working, workingAt: row.workingAt, doneAt: row.doneAt });

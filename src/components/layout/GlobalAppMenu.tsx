@@ -2,6 +2,7 @@ import { useRef } from "react";
 import { GlobalAppBar } from "./GlobalAppBar";
 import { useT } from "../../lib/i18n";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
+import { AppsGlyph } from "../header/HeaderGlyphs";
 
 const MENU_ID = "global-apps";
 
@@ -53,7 +54,7 @@ export function GlobalAppMenu() {
         aria-haspopup="menu"
         aria-expanded={open}
       >
-        ▦
+        <AppsGlyph className="global-apps-menu-icon" />
       </button>
       {open && <GlobalAppBar />}
     </div>

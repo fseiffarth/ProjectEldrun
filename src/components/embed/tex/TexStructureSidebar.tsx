@@ -6,13 +6,13 @@ import type {
   TexFileNode,
   TexGraphicNode,
   TexStructure,
-} from "../../../lib/viewers/tex";
+} from "../../../lib/viewers/tex/tex";
 import { useT } from "../../../lib/i18n";
 import { UntestedTag } from "../../common/UntestedTag";
 
 /** The chrome the workspace's two navigation steps share (#tex-structure-up):
  *  what a click does, what the button's title names, and the chord the title
- *  advertises (resolved by the host through `lib/shortcuts`, so a rebound key
+ *  advertises (resolved by the host through `lib/shortcuts/shortcuts`, so a rebound key
  *  is what the tooltip shows). `onX` absent = the step has nowhere to go. */
 export interface TexNavProps {
   /** Go back to the previously centered file; absent = nothing to go back to. */

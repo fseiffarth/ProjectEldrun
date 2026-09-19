@@ -1058,11 +1058,6 @@ label.settings-toggle-card-row {
   padding-top: 2px;
 }
 
-/* A dialog's decision row: the choices sit at the trailing edge. */
-.settings-link-row-end {
-  justify-content: flex-end;
-}
-
 /* Sub-panel navigation menu at the foot of the main settings panel. Mirrors the
    Lessons / How-to-start card menu (.lesson-item) so the whole app's "pick a
    destination" lists read as one style. */
@@ -1073,7 +1068,8 @@ label.settings-toggle-card-row {
   margin-top: 6px;
 }
 
-.settings-nav-item {
+.settings-nav-item,
+.lesson-item {
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -1087,17 +1083,20 @@ label.settings-toggle-card-row {
   transition: border-color var(--transition), background var(--transition);
 }
 
-.settings-nav-item:hover {
+.settings-nav-item:hover,
+.lesson-item:hover {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 8%, var(--bg-panel));
 }
 
-.settings-nav-item-title {
+.settings-nav-item-title,
+.lesson-item-title {
   font-weight: 600;
   font-size: 13px;
 }
 
-.settings-nav-item-blurb {
+.settings-nav-item-blurb,
+.lesson-item-blurb {
   color: var(--text-secondary);
   font-size: var(--text-md);
   line-height: 1.4;
@@ -1488,42 +1487,6 @@ label.settings-toggle-card-row {
 
 .project-settings-dialog {
   width: min(560px, calc(100vw - 32px));
-}
-
-.project-ending-form {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.project-ending-form input {
-  flex: 1;
-  height: 34px;
-  border: 1px solid var(--control-border);
-  border-radius: var(--radius-sm);
-  background: var(--control-bg);
-  color: var(--text-primary);
-  padding: 0 9px;
-}
-
-.project-ending-form input:hover,
-.project-ending-form input:focus {
-  border-color: var(--accent);
-  outline: none;
-}
-
-.project-ending-form button {
-  border: 1px solid var(--control-border);
-  border-radius: var(--radius-sm);
-  background: var(--control-bg);
-  color: var(--text-primary);
-  cursor: var(--cur-pointer, pointer);
-  padding: 7px 10px;
-}
-
-.project-ending-form button:hover {
-  background: var(--control-hover-bg);
-  border-color: var(--accent);
 }
 
 .settings-list.project-ending-list {
@@ -3134,15 +3097,6 @@ label.settings-toggle-card-row {
   transform: translate(14px, -50%);
 }
 
-/* OpenVPN section heading. There's no on/off toggle (OpenVPN is the only tunnel
-   type), so this is a plain title + hint that labels the always-shown config
-   controls below; the tunnel is used only when a config is actually selected. */
-.vpn-section-header {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
 /* Expanded OpenVPN controls, nested under the section heading with an accent
    spine so the config picker / connect button read as belonging to it. */
 .vpn-details {
@@ -3488,38 +3442,6 @@ label.settings-toggle-card-row {
   flex: 0 0 auto;
 }
 
-/* ── Install overlay ──────────────────────────────────────────────────────
-   The one-click install's centered terminal (`InstallOverlayHost`), on the
-   shared `.project-dialog.dialog-framed` chrome. Sized its own way rather than
-   riding the mail/calendar/board trio's shared box: those are whole panes and
-   claim most of the window; this is one terminal watching one command, and a
-   near-fullscreen black rectangle would read as a mode switch rather than a
-   progress window. */
-.install-overlay {
-  width: min(860px, calc(100vw - 48px));
-  height: min(640px, calc(100vh - 96px));
-  display: flex;
-  flex-direction: column;
-}
-.install-overlay-hint {
-  margin: 0;
-  padding: 6px 16px 8px;
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-/* Definite, clipped box for the embedded xterm — same reason as
-   `.dialog-connect-terminal-host`: xterm refuses to open into a zero-height
-   element, and the terminal scrolls itself. */
-.install-overlay-body {
-  position: relative;
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  margin: 0 10px 10px;
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-}
-
 /* "Paste username / password" above a login terminal (see CredentialPasteBar):
    small, secondary buttons — the login itself happens in the terminal below, this
    only saves retyping a credential the keychain already holds. */
@@ -3554,7 +3476,7 @@ label.settings-toggle-card-row {
   border: 1px solid var(--accent);
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--accent) 10%, transparent);
-  color: var(--text-primary, var(--text));
+  color: var(--text-primary);
   font-size: 0.85em;
 }
 
@@ -3612,7 +3534,7 @@ label.settings-toggle-card-row {
 .connection-log-line {
   white-space: pre-wrap;
   word-break: break-word;
-  color: var(--text-secondary, var(--text));
+  color: var(--text-secondary);
   /* Opt back into selection: the app root sets `user-select: none` (base.css),
      which left OpenVPN's own failure line — the one piece of text a user needs
      to hand to someone else — impossible to select, let alone copy. */
@@ -3624,57 +3546,6 @@ label.settings-toggle-card-row {
 .connection-log-waiting {
   opacity: 0.7;
   font-style: italic;
-}
-
-.sshfs-install {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-top: 4px;
-  padding-top: 6px;
-  border-top: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
-  color: var(--text-primary);
-}
-
-.sshfs-install-instruction {
-  font-size: 12px;
-}
-
-.sshfs-install-commands {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.sshfs-install-cmd {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 6px;
-  font-family: var(--font-mono, monospace);
-  font-size: 12px;
-  background: var(--bg-main);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-}
-
-.sshfs-install-cmd-text {
-  flex: 1;
-  min-width: 0;
-  overflow-x: auto;
-  white-space: pre;
-}
-
-.sshfs-install-copy,
-.sshfs-install-guide-btn {
-  flex: none;
-  padding: 2px 8px;
-  font-size: 11px;
-  cursor: var(--cur-pointer, pointer);
-}
-
-.sshfs-install-guide-btn {
-  align-self: flex-start;
 }
 
 .ssh-address-input,

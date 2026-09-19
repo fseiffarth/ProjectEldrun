@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { promptChartInWindow } from "../lib/agentPromptChart";
+import { promptChartInWindow } from "../lib/agents/prompt/chart";
 
 const now = new Date(2026, 8, 15, 12, 0, 0);
 const at = (hours: number) => new Date(now.getTime() + hours * 3_600_000);

@@ -1,8 +1,8 @@
 import { useMemo } from "react";
 import type { Calendar, Occurrence } from "../../types";
-import { datePart, formatLongDate, formatTime, spanDates, todayStr } from "../../lib/calendarTime";
-import { eventColor } from "../../lib/calendarCategories";
-import { calendarColor } from "../../stores/calendar";
+import { datePart, formatLongDate, formatTime, spanDates, todayStr } from "../../lib/calendar/calendarTime";
+import { eventColor } from "../../lib/calendar/calendarCategories";
+import { calendarColor } from "../../stores/calendar/calendar";
 import { useI18nStore, useT } from "../../lib/i18n";
 
 interface Props {
@@ -68,7 +68,7 @@ export function AgendaView({ occurrences, calendars, use24h, onOpen, emptyLabel 
                   "cal-agenda-row" +
                   (occ.status === "cancelled" ? " cal-block-cancelled" : "")
                 }
-                onDoubleClick={() => onOpen(occ)}
+                onClick={() => onOpen(occ)}
               >
                 <span className="cal-agenda-swatch" style={{ color }}>●</span>
                 <span className="cal-agenda-time">

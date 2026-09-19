@@ -12,7 +12,7 @@ the invariants that make it worth having: [`docs/context/caldav.md`](../docs/con
 `src-tauri/src/commands/calendar.rs`, `caldav_account` in
 `src-tauri/src/services/remote_credentials.rs`, `src-tauri/src/lib.rs`
 (`generate_handler!` + managed state), `roxmltree` in `Cargo.toml`; frontend new
-`src/types/caldav.ts`, `src/lib/caldav.ts`, `src/stores/caldav.ts`,
+`src/types/caldav.ts`, `src/lib/calendar/caldav.ts`, `src/stores/calendar/caldav.ts`,
 `src/components/calendar/CalDavAccountDialog.tsx` + `CalDavSyncHost.tsx`,
 `src/components/calendar/{CalendarPane,CalendarSidebar}.tsx`,
 `src/components/layout/AppShell.tsx`, `src/lib/i18n.ts`, `src/styles/themes.css`.*
@@ -106,7 +106,7 @@ the invariants that make it worth having: [`docs/context/caldav.md`](../docs/con
     server's answer, now re-askable via `caldav_refresh_access`.
 
     Two things push forced elsewhere: `UID` and `RECURRENCE-ID` now round-trip
-    through `lib/ics.ts` (without the first a push creates a second copy of every
+    through `lib/calendar/ics.ts` (without the first a push creates a second copy of every
     appointment; without the second a series pushes back as two masters), and
     `serializeIcs` writes a locally-authored series' `overrides[]` — which fixes
     the **file export**, silently dropping occurrence edits since it was written.
@@ -127,7 +127,7 @@ the invariants that make it worth having: [`docs/context/caldav.md`](../docs/con
       - [ ] ❌ Doesn't work
 
 161. **Look at an `.ics` before importing it — built, never live-tested.**
-    `lib/icsSafety.ts` reports what a picked file contains (`PROCEDURE`/`EMAIL`/
+    `lib/calendar/icsSafety.ts` reports what a picked file contains (`PROCEDURE`/`EMAIL`/
     `AUDIO` alarms, `ATTACH`, non-`http(s)` links, `METHOD:REQUEST`, bidi-disguised
     titles, endless sub-daily `RRULE`s, never-imported component kinds) and
     `IcsImportReviewDialog` shows it before anything is written. Explicitly **not**
@@ -192,5 +192,59 @@ the invariants that make it worth having: [`docs/context/caldav.md`](../docs/con
       set the end to 17:30 by hand, move the start again → end stays 17:30. A
       start at 23:30 on the 31st ends 00:30 on the 1st. Editing an existing event
       does not move its end. Repeat on the phone.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+841. **ICS round-trip and recurrence edge cases that lose data.** Found
+    2026-09-15 by the edge-case sweep; each is an `it.skip` in `IcsEdgeCases` /
+    `RecurrenceEdgeCases` naming the bug — un-skip when fixed. `ics.ts`: (1) a
+    bare `\r` in a text value (Windows-pasted note) is serialised raw and
+    `unfold` reads it as a line break on re-import, dropping the rest of the
+    note; (2) `parseLine` splits parameters on every `;`, truncating a quoted
+    `CN="Doe; Jane"` to `Doe`; (3) `buildTask` reads an absent PERCENT-COMPLETE
+    as `0`, so a `STATUS:COMPLETED` VTODO imports at 0 % yet gets a completed
+    date; (4) `fold` counts UTF-16 units, not octets, so non-ASCII lines exceed
+    RFC 5545's 75 (SHOULD-level, round-trip still correct). `recurrence.ts`:
+    (5) `generateStarts` stops at the first start past the window, so an
+    occurrence moved *into* the window by an override never appears (next
+    week's standup moved to this Friday is missing from this week). Fixed
+    the same day: text values normalise CR/CRLF to `\n` before escaping (TEXT
+    has no form for a CR); parameters split on `;` outside quotes only; an
+    absent PERCENT-COMPLETE is absent, not 0; `fold` counts UTF-8 octets and
+    never splits a code point; expansion generates far enough to reach every
+    override moved into the window. **Not live-tested.**
+    - [x] 🤖 Automated test — `IcsEdgeCases`, `RecurrenceEdgeCases`
+    - [ ] 🖐️ Manual test — paste a note with a Windows line break into an
+      event, sync, reopen: the whole note survives. Move next week's recurring
+      event to this Friday: it shows on this week's view.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+2318. **Numbered weekdays in a recurrence ("the 2nd Tuesday").** An imported
+    or synced `RRULE` with an ordinal `BYDAY` — `FREQ=MONTHLY;BYDAY=2TU`,
+    `BYDAY=-1FR`, `FREQ=YEARLY;BYMONTH=11;BYDAY=4TH` — lost its ordinal in
+    `parseRrule`, so a monthly meeting showed on every Tuesday; with two-way push
+    on, `serializeIcs` then wrote the reduced `BYDAY=TU` back to the server.
+    Implemented 2026-09-18: `Rrule.bynthweekday` (`{n, day}` list, `n` ±1…±5;
+    yearly counts within the start's month) in `src/types` and
+    `src-tauri/src/schema/calendar.rs`; `parseRrule` reads ordinals and Outlook's
+    `BYDAY=TU;BYSETPOS=2` spelling; `formatRrule` writes them (yearly names
+    `BYMONTH` from the start); `recurrence.ts` expands them, skipping months
+    without a 5th; `describeRrule` says "Monthly on the 2nd Tuesday". Any rule the
+    model can only reduce (`BYHOUR`, `BYSETPOS` over several days, several or
+    negative `BYMONTHDAY`s, `20MO` in a year…) keeps its text in
+    `Rrule.ics_value`, written back verbatim while the rule still reads the same,
+    so a push no longer rewrites a server rule Eldrun cannot draw — it still
+    *displays* those reduced. `EventDialog` gains a "Repeats on" choice for
+    monthly/yearly (day of month / nth weekday / last weekday, derived from the
+    start), and a save that leaves the rule alone keeps the stored rule object.
+    Still dropped whole: `FREQ=HOURLY`/`MINUTELY` rules. **Not live-tested.**
+    - [x] 🤖 Automated test — `RecurrenceNthWeekday`, `EventDialogRepeatOn`,
+      `Ics`, Rust `rrule_numbered_weekdays_round_trip_and_old_rules_still_load`
+    - [ ] 🖐️ Manual test — import a monthly "2nd Tuesday" invite from Google or
+      Outlook: it shows once a month on the right day and the editor reads
+      "Repeats on: on the 2nd Tuesday"; edit its title with push on, then check
+      the server copy still reads `BYDAY=2TU`. Create a monthly event on a month's
+      last Friday and pick "on the last Friday".
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work

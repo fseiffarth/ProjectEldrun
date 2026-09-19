@@ -108,6 +108,63 @@ describe("Eldrun Mobile select dialog", () => {
     expect(selectSignature(walked!)).toBe(selectSignature(levels!));
   });
 
+  it("keeps reading rows past a note wrapped at phone width", () => {
+    // codex-cli 0.155.0 at 70 columns: sol's note fits, astra's wraps, and the
+    // wrapped line used to end the list after the second row.
+    const codex = readSelectPrompt(lines(
+      "Select Model and Effort",
+      "Access legacy models by running codex -m <model_name> or in your c",
+      "",
+      "  1. gpt-5.6-sol (default)  Latest frontier agentic coding model.",
+      "\u203a 2. gpt-6-astra (current)  Our most capable model for complex,",
+      "                            demanding work.",
+      "  3. gpt-5.6-terra          Balanced agentic coding model for",
+      "                            everyday work.",
+      "  4. gpt-5.6-luna           Fast and affordable agentic coding",
+      "                            model.",
+      "  5. gpt-5.5                Proven previous-generation model for",
+      "                            coding and general work.",
+      "",
+      "Press enter to confirm or esc to go back",
+    ));
+    expect(codex?.options.map((option) => option.label)).toEqual([
+      "gpt-5.6-sol (default)",
+      "gpt-6-astra (current)",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+      "gpt-5.5",
+    ]);
+    expect(codex?.current).toBe(1);
+    expect(codex?.title).toBe("Select Model and Effort");
+    expect(codex?.options[1].description).toBe("Our most capable model for complex, demanding work.");
+    // Claude Code 50 columns wide wraps every note, the same way.
+    const claude = readSelectPrompt(lines(
+      "   Select model",
+      "   Switch between Claude models.",
+      "",
+      "     1. Default (recommended)  Opus 5 with 1M",
+      "                               context",
+      "   \u276f 2. Fable \u2714                Fable 5.1 · Most",
+      "                               capable",
+      "     3. Haiku                  Haiku 4.5 ·",
+      "                               Fastest",
+    ));
+    expect(claude?.options).toHaveLength(3);
+    expect(claude?.current).toBe(1);
+    expect(claude?.options[2].description).toBe("Haiku 4.5 · Fastest");
+  });
+
+  it("ends the run at text shallower than the note's column", () => {
+    const prompt = readSelectPrompt(lines(
+      "  1. Opus    Big",
+      "\u276f 2. Sonnet  Mid",
+      "  some output",
+      "  3. Haiku   Small",
+    ));
+    expect(prompt?.options).toHaveLength(2);
+    expect(prompt?.options[1].description).toBe("Mid");
+  });
+
   it("leaves a dialog untitled rather than titling it with the output above it", () => {
     const prompt = readSelectPrompt(lines(
       "I read the three files and they agree on the shape of the fix,",
@@ -132,7 +189,7 @@ describe("Eldrun Mobile select dialog", () => {
 describe("Eldrun Mobile permission modes", () => {
   it("offers the family of the mode the session is showing", () => {
     expect(modeChoices("plan").map((choice) => choice.value))
-      .toEqual(["default", "accept edits", "plan", "bypass permissions"]);
+      .toEqual(["default", "accept edits", "plan", "auto", "bypass permissions"]);
     expect(modeChoices("full access").map((choice) => choice.value))
       .toEqual(["working", "plan", "read only", "auto", "full access"]);
     expect(modeChoices("yolo").map((choice) => choice.value))
@@ -151,7 +208,7 @@ describe("Eldrun Mobile permission modes", () => {
     expect(modeChoices("plan", "Qwen").map((choice) => choice.value))
       .toEqual(["ask permissions", "plan", "auto-accept", "auto", "yolo"]);
     expect(modeChoices("plan", "Claude 2").map((choice) => choice.value))
-      .toEqual(["default", "accept edits", "plan", "bypass permissions"]);
+      .toEqual(["default", "accept edits", "plan", "auto", "bypass permissions"]);
     // "auto" is Codex's without a label and Qwen's with one.
     expect(modeChoices("auto", "Qwen")[0].value).toBe("ask permissions");
     expect(modeChoices("auto")[0].value).toBe("working");
@@ -162,13 +219,22 @@ describe("Eldrun Mobile permission modes", () => {
   });
 
   it("never hands a labelled tab another family's list for a mode its own does not know", () => {
-    // Claude Code drawing "auto mode": bare "auto" is claimed by Codex and Qwen,
-    // and the sheet used to walk the Claude session through Codex's choices.
-    // The label names the family; a mode it does not list earns no list.
-    expect(modeChoices("auto", "Claude")).toEqual([]);
+    // The label names the family; a mode it does not list earns no list,
+    // rather than walking the session through another family's choices.
     expect(modeChoices("read only", "Qwen")).toEqual([]);
-    // Unlabelled, the first claimant still wins, as before.
+    expect(modeChoices("full access", "Claude")).toEqual([]);
+  });
+
+  it("gives Claude Code's auto mode to a Claude tab, and only to one", () => {
+    // Claude Code draws "auto mode on" (read out of the 2.1.272 bundle). Bare
+    // "auto" is Codex's and Qwen's word too, so only the label hands it to
+    // Claude — unlabelled, the first family that always claimed it still wins.
+    const claude = modeChoices("auto", "Claude");
+    expect(claude.map((choice) => choice.value))
+      .toEqual(["default", "accept edits", "plan", "auto", "bypass permissions"]);
+    expect(currentMode(claude, "auto", true)).toBe("auto");
     expect(modeChoices("auto")[0].value).toBe("working");
+    expect(modeChoices("auto", "Qwen")[0].value).toBe("ask permissions");
   });
 
   it("reads a frame without mode text as a silent-mode family's default", () => {
@@ -176,7 +242,7 @@ describe("Eldrun Mobile permission modes", () => {
     // earns the list — but only for a family that has a silent mode.
     const claude = modeChoices(undefined, "Claude");
     expect(claude.map((choice) => choice.value))
-      .toEqual(["default", "accept edits", "plan", "bypass permissions"]);
+      .toEqual(["default", "accept edits", "plan", "auto", "bypass permissions"]);
     expect(currentMode(claude, undefined, true)).toBe("default");
     // With no input frame on screen, absence of text says nothing.
     expect(currentMode(claude, undefined, false)).toBeUndefined();

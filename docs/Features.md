@@ -37,8 +37,8 @@ only `src-tauri/` changes need a rebuild/restart.
 | Default apps per project / file type | | | | `commands/default_apps.rs` |
 | Per-project download routing | | | | `commands/downloads.rs` |
 | In-app viewers: PDF, image, markdown, code | | | | `FileViewerPane` + `lib/viewers/*` |
-| In-app TeX viewer with bidirectional SyncTeX | | | | `commands/tex.rs`, `stores/pdfSync` |
-| LaTeX `\ref`/`\cite` completion (labels + .bib) | | | | `lib/viewers/tex`, `TexComplete.test` |
+| In-app TeX viewer with bidirectional SyncTeX | | | | `commands/tex.rs`, `stores/viewers/pdfSync` |
+| LaTeX `\ref`/`\cite` completion (labels + .bib) | | | | `lib/viewers/tex/tex`, `TexComplete.test` |
 | In-editor find / find-and-replace | | | | `Ctrl+F`/`Ctrl+R`; `EditorSearch.test` |
 | Viewer reader-position persistence (scroll/zoom/pan) | | | | `ViewerState`; `ViewerStatePersist.test` |
 | Tiling subwindows (split/group tree, DnD) | | | | `CenterPanel`/`Subwindow`/`TabBar` |
@@ -48,7 +48,7 @@ only `src-tauri/` changes need a rebuild/restart.
 | SSH remote projects (sshfs mount, remote PTY) | | | | #28/#28b |
 | OpenVPN tunnels for VPN-gated hosts | | | | `VpnPasswordPrompt`, `services/openvpn.rs` |
 | README default tab; tab inline rename + scope bind | | | | |
-| Keyboard shortcuts (rebindable) | | | | `lib/shortcuts.ts`, #62 |
+| Keyboard shortcuts (rebindable) | | | | `lib/shortcuts/shortcuts.ts`, #62 |
 | Autosave / font-size / per-type viewer prefs | | | | |
 | Viewer link routing | | | | `stores/linkRouting` |
 | WebKitGTK crash reporter | | | | `crashReporter.ts`, `commands/crash.rs` |

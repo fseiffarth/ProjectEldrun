@@ -1,7 +1,7 @@
 //! Agent-CLI management: detect and install the AI coding-agent command-line
 //! tools Eldrun can launch as agent tabs. The registry covers the major hosted,
 //! open-source, and provider-agnostic terminal agents (Claude, Codex, Gemini,
-//! Kiro, Cline, Goose, OpenHands, Pi, and more).
+//! Kiro, Cline, Goose, Pi, and more).
 //!
 //! This mirrors the local-model install flow in `commands::ollama` (see
 //! `install_vibe`), but is registry-driven so the set of agents lives in one
@@ -120,10 +120,15 @@ const AGENTS: &[AgentSpec] = &[
     AgentSpec {
         id: "kiro",
         label: "Kiro",
-        bin: "kiro",
+        // `kiro-cli`, not `kiro`: this installer is the renamed Amazon Q
+        // Developer CLI and it keeps that executable name (the `q`/`q chat`
+        // entry points still work too). Probing `kiro` reported every
+        // installed Kiro as missing, and launched a tab on a command that is
+        // not there.
+        bin: "kiro-cli",
         install_cmd: "curl -fsSL https://cli.kiro.dev/install | bash",
         install_cmd_windows: None,
-        extra_paths: &[".local/bin/kiro"],
+        extra_paths: &[".local/bin/kiro-cli"],
         docs: "https://kiro.dev/docs/cli/installation/",
     },
     AgentSpec {
@@ -190,13 +195,26 @@ const AGENTS: &[AgentSpec] = &[
         docs: "https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli",
     },
     AgentSpec {
+        id: "droid",
+        label: "Droid",
+        bin: "droid",
+        install_cmd: "curl -fsSL https://app.factory.ai/cli | sh",
+        install_cmd_windows: Some("irm https://app.factory.ai/cli/windows | iex"),
+        extra_paths: &[".local/bin/droid"],
+        docs: "https://docs.factory.ai/cli/getting-started/overview",
+    },
+    AgentSpec {
         id: "grok",
         label: "Grok",
         bin: "grok",
-        install_cmd: "npm install -g @vibe-kit/grok-cli",
-        install_cmd_windows: Some("npm install -g @vibe-kit/grok-cli"),
-        extra_paths: &[".local/bin/grok"],
-        docs: "https://github.com/superagent-ai/grok-cli",
+        // xAI's own Grok Build, not `@xai-official/grok` — the third-party
+        // client this row used to install. Both install as `grok`, which is
+        // what made the wrong one invisible: a stale 0.0.34 that keeps no
+        // conversation, where the vendor CLI has shipped 1.0.x since Aug 2026.
+        install_cmd: "curl -fsSL https://x.ai/cli/install.sh | bash",
+        install_cmd_windows: Some("npm install -g @xai-official/grok"),
+        extra_paths: &[".grok/bin/grok"],
+        docs: "https://docs.x.ai/build/overview",
     },
     AgentSpec {
         id: "qwen",
@@ -211,10 +229,65 @@ const AGENTS: &[AgentSpec] = &[
         id: "openclaw",
         label: "OpenClaw",
         bin: "openclaw",
-        install_cmd: "npm install -g openclaw",
-        install_cmd_windows: Some("npm install -g openclaw"),
-        extra_paths: &[".local/bin/openclaw"],
+        // OpenClaw's own local-prefix installer, not `npm install -g openclaw`:
+        // the package demands Node >=24.16, newer than most distro Node, and a
+        // system-wide npm prefix is root-owned (EACCES). This one fetches a
+        // private Node 24 and installs both under `~/.openclaw` — no root, no
+        // onboarding prompt, nothing added to shell rc files.
+        install_cmd: "curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install-cli.sh | bash",
+        // The Windows installer onboards interactively unless told not to.
+        install_cmd_windows: Some(
+            "$env:OPENCLAW_NO_ONBOARD='1'; irm https://openclaw.ai/install.ps1 | iex",
+        ),
+        extra_paths: &[".openclaw/bin/openclaw", ".local/bin/openclaw"],
         docs: "https://docs.openclaw.ai",
+    },
+    AgentSpec {
+        id: "auggie",
+        label: "Auggie",
+        bin: "auggie",
+        install_cmd: "npm install -g @augmentcode/auggie",
+        install_cmd_windows: Some("npm install -g @augmentcode/auggie"),
+        extra_paths: &[],
+        docs: "https://docs.augmentcode.com/cli/overview",
+    },
+    AgentSpec {
+        id: "kilo",
+        label: "Kilo Code",
+        bin: "kilo",
+        install_cmd: "curl -fsSL https://kilo.ai/cli/install | bash",
+        install_cmd_windows: Some("npm install -g @kilocode/cli"),
+        extra_paths: &[".kilo/bin/kilo"],
+        docs: "https://kilo.ai/docs/code-with-ai/platforms/cli",
+    },
+    AgentSpec {
+        id: "continue",
+        label: "Continue.dev",
+        // `cn`, not `continue`: the package is @continuedev/cli and the
+        // executable it installs is the two-letter one.
+        bin: "cn",
+        install_cmd: "npm install -g @continuedev/cli",
+        install_cmd_windows: Some("npm install -g @continuedev/cli"),
+        extra_paths: &[],
+        docs: "https://docs.continue.dev/cli/quickstart",
+    },
+    AgentSpec {
+        id: "junie",
+        label: "JetBrains Junie",
+        bin: "junie",
+        install_cmd: "curl -fsSL https://junie.jetbrains.com/install.sh | bash",
+        install_cmd_windows: Some("npm install -g @jetbrains/junie-cli"),
+        extra_paths: &[".local/bin/junie"],
+        docs: "https://junie.jetbrains.com/docs/junie-cli.html",
+    },
+    AgentSpec {
+        id: "codebuddy",
+        label: "CodeBuddy",
+        bin: "codebuddy",
+        install_cmd: "npm install -g @tencent-ai/codebuddy-code",
+        install_cmd_windows: Some("npm install -g @tencent-ai/codebuddy-code"),
+        extra_paths: &[],
+        docs: "https://www.codebuddy.ai/docs/cli/README",
     },
     AgentSpec {
         id: "goose",
@@ -224,15 +297,6 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd_windows: None,
         extra_paths: &[".local/bin/goose"],
         docs: "https://github.com/aaif-goose/goose",
-    },
-    AgentSpec {
-        id: "openhands",
-        label: "OpenHands",
-        bin: "openhands",
-        install_cmd: "curl -fsSL https://install.openhands.dev/install.sh | sh",
-        install_cmd_windows: None,
-        extra_paths: &[".local/bin/openhands"],
-        docs: "https://docs.openhands.dev/openhands/usage/cli/installation",
     },
     AgentSpec {
         id: "pi",
@@ -271,24 +335,6 @@ const AGENTS: &[AgentSpec] = &[
         docs: "https://mini-swe-agent.com/latest/quickstart/",
     },
     AgentSpec {
-        id: "mentat",
-        label: "Mentat",
-        bin: "mentat",
-        install_cmd: "pip install mentat",
-        install_cmd_windows: Some("pip install mentat"),
-        extra_paths: &[".local/bin/mentat"],
-        docs: "https://github.com/biobootloader/mentat",
-    },
-    AgentSpec {
-        id: "gpt-engineer",
-        label: "GPT Engineer",
-        bin: "gpte",
-        install_cmd: "pip install gpt-engineer",
-        install_cmd_windows: Some("pip install gpt-engineer"),
-        extra_paths: &[".local/bin/gpte"],
-        docs: "https://github.com/AntonOsika/gpt-engineer",
-    },
-    AgentSpec {
         id: "crush",
         label: "Crush",
         bin: "crush",
@@ -301,8 +347,8 @@ const AGENTS: &[AgentSpec] = &[
         id: "amp",
         label: "Amp",
         bin: "amp",
-        install_cmd: "npm install -g @sourcegraph/amp",
-        install_cmd_windows: Some("npm install -g @sourcegraph/amp"),
+        install_cmd: "npm install -g @ampcode/cli",
+        install_cmd_windows: Some("npm install -g @ampcode/cli"),
         extra_paths: &[],
         docs: "https://ampcode.com/",
     },
@@ -310,10 +356,14 @@ const AGENTS: &[AgentSpec] = &[
         id: "kimi",
         label: "Kimi Code",
         bin: "kimi",
-        install_cmd: "curl -LsSf https://code.kimi.com/install.sh | bash",
-        install_cmd_windows: Some("Invoke-RestMethod https://code.kimi.com/install.ps1 | Invoke-Expression"),
-        extra_paths: &[".local/bin/kimi"],
-        docs: "https://github.com/MoonshotAI/kimi-cli",
+        // `/kimi-code/`, not the bare host path: that one serves the
+        // deprecated Python `kimi-cli` (whose own installer renames it to
+        // `kimi-legacy` when Kimi Code lands beside it). Both put `kimi` in
+        // `~/.kimi-code/bin`.
+        install_cmd: "curl -LsSf https://code.kimi.com/kimi-code/install.sh | bash",
+        install_cmd_windows: Some("Invoke-RestMethod https://code.kimi.com/kimi-code/install.ps1 | Invoke-Expression"),
+        extra_paths: &[".kimi-code/bin/kimi", ".local/bin/kimi"],
+        docs: "https://code.kimi.com/kimi-code",
     },
     AgentSpec {
         id: "qoder",
@@ -385,6 +435,14 @@ fn find_spec(id: &str) -> Option<&'static AgentSpec> {
 /// silently start running outside the container.
 pub fn agent_bins() -> Vec<&'static str> {
     AGENTS.iter().map(|a| a.bin).collect()
+}
+
+/// The registry's display name for an agent CLI's binary ("claude" → "Claude"),
+/// or `None` for a command the registry does not list. It lets a surface say
+/// which agent a tab runs without publishing the command itself — the phone's
+/// tab list is one (`services::mobile_control::discovery`).
+pub fn agent_label_for_bin(bin: &str) -> Option<&'static str> {
+    AGENTS.iter().find(|a| a.bin == bin).map(|a| a.label)
 }
 
 /// POSIX login-shell script used by the explicit "install on remote machine"
@@ -537,12 +595,63 @@ pub async fn agent_is_installed(id: String) -> bool {
     find_spec(&id).map(spec_is_installed).unwrap_or(false)
 }
 
-/// True when Node.js' `npm` is reachable on `PATH`. Most agent CLIs install via
-/// `npm install -g …`, so the Manage Agents panel uses this to decide whether to
-/// surface its "install Node/npm first" helper.
+/// The oldest Node.js major the Manage Agents panel accepts without nudging:
+/// the current LTS line. Agent CLIs track it closely — OpenClaw requires
+/// 24.16+, and npm dependencies they pull in already reject Node 22 point
+/// releases — so an older Node installs them with `EBADENGINE` warnings and
+/// then fails at runtime. Raise this when a new line becomes LTS.
+const NODE_MIN_MAJOR: u32 = 24;
+
+/// What the Manage Agents Node helper needs to know about the host's Node.js.
+#[derive(serde::Serialize)]
+pub struct NodeRuntimeStatus {
+    /// `npm` is reachable on Eldrun's PATH.
+    npm: bool,
+    /// `node --version` (e.g. `v22.22.1`), or `None` when Node is absent or
+    /// didn't answer.
+    version: Option<String>,
+    min_major: u32,
+    /// Node answered with a version below `min_major`.
+    too_old: bool,
+}
+
+/// Probe the host's Node.js for the Manage Agents panel. Most agent CLIs
+/// install via `npm install -g …`, so a missing npm or a Node below
+/// [`NODE_MIN_MAJOR`] surfaces the "install Node first" helper.
 #[tauri::command]
-pub async fn npm_is_installed() -> bool {
-    crate::paths::binary_on_path("npm")
+pub async fn node_runtime_status() -> NodeRuntimeStatus {
+    tauri::async_runtime::spawn_blocking(|| {
+        let version = crate::paths::command_no_window("node")
+            .arg("--version")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|v| !v.is_empty());
+        node_runtime_status_from(crate::paths::binary_on_path("npm"), version)
+    })
+    .await
+    .unwrap_or(NodeRuntimeStatus {
+        npm: true,
+        version: None,
+        min_major: NODE_MIN_MAJOR,
+        too_old: false,
+    })
+}
+
+/// Pure half of [`node_runtime_status`]. An unparseable version is never
+/// "too old": the helper nudges only on a reading it understood.
+fn node_runtime_status_from(npm: bool, version: Option<String>) -> NodeRuntimeStatus {
+    let too_old = version
+        .as_deref()
+        .and_then(crate::paths::parse_node_version)
+        .is_some_and(|(major, _, _)| major < NODE_MIN_MAJOR);
+    NodeRuntimeStatus {
+        npm,
+        version,
+        min_major: NODE_MIN_MAJOR,
+        too_old,
+    }
 }
 
 /// Probe arbitrary commands (user-defined custom agents, which aren't in the
@@ -978,6 +1087,9 @@ const WARMUPS: &[(&str, &[&str])] = &[
     ("pi", &["-p"]),
     ("amp", &["-x"]),
     ("opencode", &["run"]),
+    ("droid", &["exec"]),
+    ("continue", &["-p"]),
+    ("codebuddy", &["--print"]),
     ("goose", &["run", "-t"]),
     ("crush", &["run"]),
 ];
@@ -1217,8 +1329,9 @@ pub async fn agent_tab_recent_prompts(
 }
 
 /// The stored conversation of the tab launched as `agent` with launch id
-/// `session_id` — its prompts and answers, read from the CLI's own transcript
-/// (`services::agent_transcript`) for the phone's Focus view. `version` is
+/// `session_id` in `tab_dir` — its prompts and answers, read from the CLI's
+/// own transcript or session store (`services::agent_transcript`) for the
+/// phone's Focus view. `version` is
 /// the fingerprint the caller last saw; a matching one is answered
 /// `unchanged` without a parse. Always answers: an agent with no readable
 /// transcript comes back `available: false` with the reason, never an error.
@@ -1226,6 +1339,7 @@ pub async fn agent_tab_recent_prompts(
 pub async fn agent_tab_transcript(
     agent: String,
     project_id: Option<String>,
+    tab_dir: Option<String>,
     session_id: String,
     version: Option<String>,
     limit: Option<usize>,
@@ -1235,6 +1349,7 @@ pub async fn agent_tab_transcript(
         agent_transcript::agent_session_transcript(
             &agent,
             project_id.as_deref(),
+            tab_dir.as_deref(),
             &session_id,
             version.as_deref(),
             limit.unwrap_or(DEFAULT_LIMIT),
@@ -1487,6 +1602,33 @@ pub async fn agent_versions(
         .collect()
 }
 
+/// Whether the host's `claude` takes `--name` at launch, from the version store
+/// alone — a tab spawn never waits on a probe. A missing or day-old entry is
+/// refreshed in the background (one probe at a time, however many tabs a
+/// relaunch restores at once), so it is the *next* Claude tab that benefits;
+/// until then this answers from what the store holds, or no.
+pub(crate) fn claude_takes_name_flag() -> bool {
+    use crate::services::agent_versions as versions;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static PROBING: AtomicBool = AtomicBool::new(false);
+
+    let store = versions::load();
+    let seen = store.get("claude");
+    let stale = !seen.is_some_and(|seen| versions::fresh(seen, versions::PROBE_TTL));
+    if stale && !PROBING.swap(true, Ordering::SeqCst) {
+        if let Some(spec) = find_spec("claude").filter(|spec| spec_is_installed(spec)) {
+            tauri::async_runtime::spawn(async move {
+                let result = probe_agent_version(spec).await;
+                versions::remember(spec.id, result);
+                PROBING.store(false, Ordering::SeqCst);
+            });
+        } else {
+            PROBING.store(false, Ordering::SeqCst);
+        }
+    }
+    versions::claude_takes_name_flag(seen)
+}
+
 /// Stop reminding the user that `agent`'s installed version has moved past what
 /// Eldrun was verified against.
 ///
@@ -1514,9 +1656,21 @@ pub async fn dismiss_agent_version(agent: String, version: String) -> Result<(),
 /// prompt history and grows into the megabytes, and this is asked once per new
 /// Claude tab — parsing it inline would jank the window at launch.
 #[tauri::command]
-pub async fn claude_folder_trusted(cwd: String) -> bool {
+pub async fn claude_folder_trusted(
+    cwd: String,
+    project_id: Option<String>,
+    sandbox: Option<bool>,
+    local_only: Option<bool>,
+) -> bool {
     tauri::async_runtime::spawn_blocking(move || {
-        crate::services::sandbox::claude_folder_trusted(&cwd)
+        // Recorded trust counts only for a spawn that reads the staged copy it
+        // is applied to; an unfenced tab reads the host file alone.
+        let staged = crate::services::agent_fence::claude_config_staged(
+            project_id.as_deref(),
+            sandbox.unwrap_or(false),
+            local_only.unwrap_or(false),
+        );
+        crate::services::sandbox::claude_folder_trusted(&cwd, staged)
     })
     .await
     .unwrap_or(false)
@@ -1615,25 +1769,29 @@ mod tests {
         let expected = [
             (
                 "kiro",
-                "kiro",
+                "kiro-cli",
                 "curl -fsSL https://cli.kiro.dev/install | bash",
             ),
             ("cline", "cline", "npm install -g cline"),
             ("goose", "goose", "https://github.com/aaif-goose/goose/"),
-            (
-                "openhands",
-                "openhands",
-                "https://install.openhands.dev/install.sh",
-            ),
             ("pi", "pi", "npm install -g @mariozechner/pi-coding-agent"),
             ("plandex", "plandex", "https://plandex.ai/install.sh"),
             ("swe-agent", "sweagent", "pip install swe-agent"),
             ("mini-swe-agent", "mini", "pip install mini-swe-agent"),
-            ("mentat", "mentat", "pip install mentat"),
-            ("gpt-engineer", "gpte", "pip install gpt-engineer"),
+            ("droid", "droid", "https://app.factory.ai/cli"),
+            ("auggie", "auggie", "npm install -g @augmentcode/auggie"),
+            ("kilo", "kilo", "https://kilo.ai/cli/install"),
+            ("continue", "cn", "npm install -g @continuedev/cli"),
+            ("junie", "junie", "https://junie.jetbrains.com/install.sh"),
+            (
+                "codebuddy",
+                "codebuddy",
+                "npm install -g @tencent-ai/codebuddy-code",
+            ),
             ("crush", "crush", "npm install -g @charmland/crush"),
-            ("amp", "amp", "npm install -g @sourcegraph/amp"),
-            ("kimi", "kimi", "https://code.kimi.com/install.sh"),
+            ("amp", "amp", "npm install -g @ampcode/cli"),
+            ("grok", "grok", "https://x.ai/cli/install.sh"),
+            ("kimi", "kimi", "https://code.kimi.com/kimi-code/install.sh"),
             ("qoder", "qoder", "https://qoder.com/install"),
             ("muse", "muse", "https://dev.meta.ai/install.sh"),
         ];
@@ -1717,21 +1875,33 @@ mod tests {
     }
 
     #[test]
+    fn node_below_the_lts_floor_is_too_old() {
+        let status = |v: Option<&str>| node_runtime_status_from(true, v.map(str::to_string));
+        assert!(status(Some("v22.22.1")).too_old);
+        assert!(!status(Some(&format!("v{NODE_MIN_MAJOR}.0.0"))).too_old);
+        assert!(!status(Some("v26.1.0")).too_old);
+        // Absent or unreadable: nothing to say about the version.
+        assert!(!status(None).too_old);
+        assert!(!status(Some("garbage")).too_old);
+        assert_eq!(status(None).min_major, NODE_MIN_MAJOR);
+    }
+
+    #[test]
     fn sudo_variant_only_covers_plain_npm_commands() {
         assert_eq!(
-            sudo_variant("npm install -g @vibe-kit/grok-cli"),
+            sudo_variant("npm install -g @xai-official/grok"),
             if cfg!(windows) {
                 String::new()
             } else {
-                "sudo npm install -g @vibe-kit/grok-cli".to_string()
+                "sudo npm install -g @xai-official/grok".to_string()
             }
         );
         assert_eq!(
-            sudo_variant("npm uninstall -g @vibe-kit/grok-cli"),
+            sudo_variant("npm uninstall -g @xai-official/grok"),
             if cfg!(windows) {
                 String::new()
             } else {
-                "sudo npm uninstall -g @vibe-kit/grok-cli".to_string()
+                "sudo npm uninstall -g @xai-official/grok".to_string()
             }
         );
         // A curl/irm/pip installer targets the user's own home directory —

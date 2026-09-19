@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseTexWarnings, parseTexErrors } from "../lib/viewers/tex";
+import { parseTexWarnings, parseTexErrors } from "../lib/viewers/tex/tex";
 
 // A realistic (abridged) pdflatex log for a two-file document. Everything here
 // is shaped the way TeX actually prints it — the `(file … )` nesting, the

@@ -4,8 +4,8 @@ import {
   dueAgentCronRuns,
   localDayKey,
   scheduledAgentCmds,
-} from "../../lib/agentCron";
-import { runAgentCronWarmup } from "../../lib/agentCronRun";
+} from "../../lib/agents/agentCron";
+import { runAgentCronWarmup } from "../../lib/agents/agentCronRun";
 
 /** How often "is a slot due?" is asked. A minute is finer than the grace window
  *  (`AGENT_CRON_GRACE_MIN`) by five, so no slot can fall between two ticks; the

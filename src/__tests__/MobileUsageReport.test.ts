@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { noteParts, parseUsageReport } from "../../shared/usageReport";
+import { limitMeters, noteParts, parseUsageReport } from "../../shared/usageReport";
 
 /** The panel a real `claude -p "/usage" --output-format json` run returns, as
  * `services::agent_usage` hands it over. */
@@ -19,6 +19,23 @@ describe("Eldrun Mobile agent usage panel", () => {
       { label: "Current session", percent: 71, resets: "6:20pm" },
       { label: "Current week (all models)", percent: 38, resets: "Mon 9am" },
       { label: "Current week (Fable)", percent: 12, resets: undefined },
+    ]);
+  });
+
+  it("keeps a dated reset whole — date, time and zone", () => {
+    // What Claude Code 2.1.272 prints (2026-09-15). The comma inside the date
+    // used to end the phrase, leaving `Sep 15` and no time at all.
+    const report = parseUsageReport([
+      "You are currently using your subscription to power your Claude Code usage",
+      "",
+      "Current session: 39% used · resets Sep 15, 10:30pm (Europe/Berlin)",
+      "Current week (all models): 54% used · resets Sep 17, 2pm (Europe/Berlin)",
+      "Current week (Fable): 94% used · resets Jan 3, 2027, 9am (Europe/Berlin)",
+    ].join("\n"));
+    expect(report.meters).toEqual([
+      { label: "Current session", percent: 39, resets: "Sep 15, 10:30pm (Europe/Berlin)" },
+      { label: "Current week (all models)", percent: 54, resets: "Sep 17, 2pm (Europe/Berlin)" },
+      { label: "Current week (Fable)", percent: 94, resets: "Jan 3, 2027, 9am (Europe/Berlin)" },
     ]);
   });
 
@@ -62,5 +79,16 @@ describe("Eldrun Mobile agent usage panel", () => {
 
   it("survives an empty panel without throwing", () => {
     expect(parseUsageReport("")).toEqual({ meters: [], notes: [], unparsed: true });
+  });
+
+  it("picks the session window and the all-models week for the facts row", () => {
+    const { session, week } = limitMeters(parseUsageReport(CLAUDE_PANEL));
+    expect(session).toEqual({ label: "Current session", percent: 71, resets: "6:20pm" });
+    expect(week?.label).toBe("Current week (all models)");
+  });
+
+  it("falls back to the only weekly line, and names nothing it cannot find", () => {
+    expect(limitMeters(parseUsageReport("Current week (Fable): 12% used")).week?.percent).toBe(12);
+    expect(limitMeters(parseUsageReport("Last 24h: 41 requests"))).toEqual({ session: undefined, week: undefined });
   });
 });

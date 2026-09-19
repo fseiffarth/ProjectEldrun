@@ -8,7 +8,7 @@ import {
   PY_MAIN_MAX_BYTES,
   PY_MAIN_MAX_ENTRIES,
   type PyMainCache,
-} from "../lib/pythonMainCache";
+} from "../lib/terminal/pythonMainCache";
 
 const SCRIPT = 'def main():\n    pass\n\nif __name__ == "__main__":\n    main()\n';
 const MODULE = '"""Shared helpers."""\nfrom pathlib import Path\n\n\ndef helper():\n    return 1\n';

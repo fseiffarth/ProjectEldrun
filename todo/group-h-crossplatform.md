@@ -239,6 +239,11 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       Containers are Unix-only, but `sandbox::sweep_orphans` ran unconditionally
       at startup, spawning `docker --version` (and `docker ps` when Docker
       Desktop exists) for nothing on Windows. Now gated on `cfg!(unix)`.
+      **Superseded 2026-09-16 by 32a:** the premise went stale when the
+      2026-09-03 parity sweep gave containers a Windows path — `up()` has had no
+      OS gate since, so the `cfg!(unix)` guard left crashed-Eldrun containers
+      running. The no-spawn intent is preserved by gating on
+      `binary_on_path("docker")`, which walks PATH without spawning.
       - [x] 🤖 Automated test — compile-covered; behavior is an early return
       - [ ] 🖐️ Manual test — n/a
         - [ ] ✅ Works
@@ -351,6 +356,154 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       `bytes_out` columns) into the existing `SshLinkSnapshot`. Needs a mac to
       verify nettop's CSV shape/permissions before writing the parser.
 
+32. **OS parity sweep (2026-09-16).** ✅ Code-complete, ⚠️ **none of it
+    verified live** — see `docs/os_parity_sweep_plan.md` for the full merged
+    plan, what was refuted, and what was deferred and why. Every item below
+    passed `cargo test`, clippy, the Windows cross-check (25 → 0 warnings),
+    `npm run build`/`test`/`lint`.
+    - [x] **32a — orphan containers swept on Windows.** The startup sweep
+      skipped Windows on a premise that went stale (see 30o); now gated on
+      `binary_on_path("docker")`.
+      - [x] 🤖 Automated test — `sweep_should_probe`
+      - [ ] 🖐️ Manual test — kill Eldrun from Task Manager with a container up,
+        relaunch, `docker ps` shows no `eldrun-*`
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32b — image build uses the platform shell and quoting.** The
+      one-click build ran `/bin/bash` on Windows; `default` would have been
+      cmd.exe, which ignores `'…'`. Now PowerShell plus `install_shell_quote`
+      (apostrophes were broken on POSIX too).
+      - [x] 🤖 Automated test — `install_shell_quote` table, `containerBuildShell`
+      - [ ] 🖐️ Manual test — project path with a space and an apostrophe →
+        build image → PowerShell tab, build succeeds
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32c — copy+delete only on a real cross-device rename.** Any rename
+      error triggered the fallback, so a locked file on Windows could leave a
+      duplicated, half-deleted tree. `paths::is_cross_device` (never compares
+      raw codes across OSes); `move_tree` keeps `|| dst.exists()` so an
+      interrupted archive still resumes.
+      - [x] 🤖 Automated test — predicate per-cfg tests, `move_tree` tempdir resume
+      - [ ] 🖐️ Manual test — Windows: keep a file in a folder open, move the
+        folder — an error, and no duplicate at the destination
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32d — saved downloads marked as from the internet.** Mail
+      attachments and browser downloads carried no provenance:
+      `web_safety::mark_downloaded` writes `Zone.Identifier` on Windows (only
+      when absent, so an engine-written mark is kept) and
+      `com.apple.quarantine` on macOS. Best-effort, never fatal, no new
+      path-taking command.
+      - [x] 🤖 Automated test — body/xattr value format; `no_command_takes_a_path`
+      - [ ] 🖐️ Manual test — Windows: Explorer shows "Unblock", Office opens it
+        in Protected View. macOS: a saved `.command` triggers Gatekeeper
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32e — the phone's sidecar finds tmux.** It spawned bare `tmux`
+      without Eldrun's augmented PATH, so a Homebrew tmux was invisible and the
+      phone's tab list came back empty. The attach keeps its `CommandBuilder`
+      with an absolute tmux and no creation flags (they would detach a ConPTY
+      child). Windows now short-circuits and says so in Mobile settings.
+      - [x] 🤖 Automated test — builder PATH assertions in discovery/pty_bridge
+      - [ ] 🖐️ Manual test — macOS with Homebrew tmux: the phone lists
+        terminals. Windows: the settings note appears and the phone lists none
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32f — fenced macOS agents can write the ordinary device files.**
+      The Seatbelt profile denied all writes and never re-allowed `/dev/null`,
+      so `> /dev/null` failed inside a fenced tab. Allows `/dev/null`, `zero`,
+      `tty`, `dtracehelper`, `/dev/fd` — deliberately **not** `/dev/ttys*`,
+      which would let an agent write into other tabs' terminals.
+      - [x] 🤖 Automated test — profile ordering/content assertions (Linux-run)
+      - [ ] 🖐️ Manual test — a fenced tab runs `git status >/dev/null && echo ok`
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32g — Docker Desktop / OrbStack CLIs on the macOS PATH**, and the
+      **Tailscale CLI inside the app bundle** for App Store installs.
+      - [x] 🤖 Automated test — `supplemental_path_dirs_for(Macos, …)`,
+        `tailscale_program` with an injected `exists`
+      - [ ] 🖐️ Manual test — per-user Docker Desktop: the container tier is
+        offered. App Store Tailscale with no CLI on PATH: Mobile Serve reads
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32h — the fence install hint follows the distribution.** The
+      one-click bubblewrap install hardcoded apt, and the fence fails closed, so
+      a non-Debian user had no working path. `package_install_cmd` covers
+      apt/dnf/pacman/zypper and returns `None` (button hidden) otherwise.
+      - [x] 🤖 Automated test — os-release fixture table incl. `ID_LIKE` precedence
+      - [ ] 🖐️ Manual test — Fedora/Arch: the pill's install button runs
+        dnf/pacman; an unknown distribution hides it
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32i — the presenter's sleep inhibitor dies with Eldrun.** It
+      spawned `systemd-inhibit … sleep infinity` with nothing tying it to
+      Eldrun and no release on exit, so a quit or crash mid-talk kept the
+      machine awake until logout. Now `systemd-inhibit … cat` holding a piped
+      stdin (PDEATHSIG follows the forking *thread*, so it was the wrong tool),
+      plus a release in `RunEvent::Exit`.
+      - [x] 🤖 Automated test — argv builder; a pipe-close test proving the tie
+      - [ ] 🖐️ Manual test — present, `kill -9` Eldrun, then
+        `systemd-inhibit --list` shows no Eldrun row
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32j — the renderer reload budget is per window.** One process-wide
+      counter meant a crash-looping popout could spend the main window's budget.
+      - [x] 🤖 Automated test — pure budget helper; macOS label map
+      - [ ] 🖐️ Manual test — hard to force; watch crash.log for a popout that
+        loops while the main window still reloads
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32k — onboarding names the panel key that works here.** The copy
+      hardcoded "Super" where the code already uses F9 (GNOME/KDE); it now asks
+      `livePanelToggleKey()` and waits for the desktop probe.
+      - [x] 🤖 Automated test — extended `SuperKeyOwnership`
+      - [ ] 🖐️ Manual test — GNOME/KDE: How to start and the Feature Guide say
+        F9; Cinnamon still says Super
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32l — Settings says when the desktop cannot park windows.** A
+      `can_park()` backend capability (default true, null backend false) behind
+      `workspace_capabilities`; the dead `workspace_info` fetch in `HeaderBar`
+      is gone. Carries `UntestedTag`.
+      - [x] 🤖 Automated test — backend capability test; the row renders only
+        when `can_park === false`
+      - [ ] 🖐️ Manual test — GNOME Wayland: Settings → Layout shows the note;
+        Cinnamon or KDE X11 shows none
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32m — macOS gets an explicit menu, and ⌘W closes a tab.** Tauri's
+      default menu bound ⌘W to Close Window, and a focused terminal swallowed
+      the app's own chord, so ⌘W quit the whole app. The menu now omits Close
+      Window, keeps **Edit** (which is what makes ⌘C/⌘V work in xterm — an
+      explicit handler would double-paste) and routes ⌘Q through the window
+      close so the frontend teardown runs. The keyboard bypass is strictly
+      `IS_MAC && metaKey && !ctrlKey`, so ⌃W still reaches every shell.
+      - [x] 🤖 Automated test — pure menu plan (no CloseWindow, Edit present);
+        vitest for ⌘W vs ⌃W on macOS and Ctrl+W unchanged on Linux
+      - [ ] 🖐️ Manual test — macOS: ⌘W in a focused terminal and in a popout
+        closes the tab; ⌃W deletes a word; ⌘Q quits cleanly; ⌘C/⌘V still work
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32n — macOS window stays hidden until its placement is restored.**
+      The per-platform config replaced the window array (RFC 7396), dropping
+      `visible: false`, so the window flashed at its default spot on launch.
+      - [x] 🤖 Automated test — a Rust test reading both config files
+      - [ ] 🖐️ Manual test — macOS: no visible flash before the saved placement
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32o — housekeeping.** One Wayland predicate instead of three
+      disagreeing copies (`Some("")` was read as X11); the deb drops the unused
+      `libappindicator3-1` (universe-only on 26.04) and recommends
+      bubblewrap/tmux/cups-client; the Windows dead-code warnings go 25 → 0 by
+      cfg narrowing, never a blanket `allow`; staged clippy on the macOS CI job;
+      `src-tauri/CLAUDE.md`, `docs/context/agent_authority.md` and `README.md`
+      match the code again.
+      - [x] 🤖 Automated test — covered by the existing suites and both cross-checks
+      - [ ] 🖐️ Manual test — Ubuntu: `dpkg -I` on the CI .deb shows the new
+        Depends/Recommends
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+
 254. **The bare Super key belongs to the desktop, not to the OS.** ✅ Fixed
     2026-09-07, ⚠️ untested live. `useKeyboard` gated its lone Meta/Super panel
     toggle on `PLATFORM === "linux"`, which quietly asserts "on Linux this key
@@ -368,7 +521,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     GNOME, KDE/Plasma and Unity claim it; Cinnamon, XFCE, sway and unknown
     desktops do not), read once per session through
     `commands::workspace::desktop_owns_super_key` and cached in
-    `src/lib/superKey.ts`. F9 stays the toggle everywhere, and `FIXED_KEYS`
+    `src/lib/shortcuts/superKey.ts`. F9 stays the toggle everywhere, and `FIXED_KEYS`
     advertises whichever key is actually live. A probe that cannot be answered
     keeps the binding: `src/` hot-reloads while `src-tauri/` does not, so a
     window running ahead of its backend must not lose the key on the desktops
@@ -462,6 +615,31 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         left out deliberately rather than forgotten — it is the one part that
         reaches the network unasked.
 
+- [~] **31af — Mobile Focus: a swipe shows the agent's status line** (2026-09-15;
+  ✅ code-complete and automated tests passing, ⚠️ untested on a phone — and a
+  rebuild + restart first, since the phone serves the bundle baked into the
+  binary). Focus cuts the agent TUI's bottom frame (31v), and with it the rows
+  drawn under the input box: cwd, branch, model, mode, context %, and any custom
+  statusline, whose free text the composer chips have no shape for. A left→right
+  swipe across the output now opens a strip under it with those rows verbatim
+  (`statusFrameLines` in `mobile-web/src/terminal/statusLine.ts`). A right→left
+  swipe or the strip's ✕ closes it, and a screen with no frame says "No status
+  line on screen". `mobile-web/src/terminal/focusSwipe.ts` listens passively, so
+  scrolling and selection stay native. It counts only a decisively horizontal
+  swipe (≥ 56 px, ≥ 2× the vertical travel, ≤ 700 ms), and ignores one starting
+  within 16 px of a screen edge (Android back), on an input, or inside something
+  that can still scroll sideways. Swipe-only, never persisted. Tested in
+  `src/__tests__/MobileTerminalFocusStatusLine.test.tsx`.
+      - [ ] **Manual QA:** open a Claude agent tab → Focus → swipe right across
+        the output: a strip opens under it showing the status row exactly as
+        the desktop draws it (custom statusline included); swipe left, and
+        separately tap ✕, and it closes; vertical scrolling of the output still
+        works and never opens it; a wide code block still pans sideways instead
+        of opening it; a swipe starting at the screen edge triggers Android's
+        back gesture, not the strip; Terminal view shows no strip
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+
 - [~] **31ae — Every phone section glyph asks for emoji presentation** (2026-09-14;
   ✅ code-complete, tests passing, ⚠️ phone QA pending after a PWA rebuild,
   `1e7f9fb`). The tab bar drew Projects and Calendar in colour but To-do and
@@ -489,15 +667,21 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   7. `eldrun-send --clear` empties the strip; with the desktop closed, existing
      outbox files still list through the sidecar.
   8. Send text named `.png` and an SVG; both preview as inert text.
+  9. Focus posts each file into the chat as an agent message (2026-09-15,
+     `Untested` pill in its caption): with the stored session shown, a plot
+     sits under the answer that sent it, not at the bottom; on the screen
+     source (Session → Screen) the files close the chat; the strip above the
+     composer shows only in the Terminal view.
   Windows PowerShell and macOS runtime behavior also require platform QA.
 
-- [~] **31ac — "Set up in terminal" opens the install overlay** (2026-09-14;
+- [~] **31ac — "Set up in terminal" opens in the root console** (2026-09-14;
   ✅ code-complete, tests passing, ⚠️ live QA pending). The Tailscale Serve
   guide's button switched the whole window to the root scope and opened a tab
   there, unlike every other one-click install. It now goes through
-  `runInstallInTab`: the root tab still owns the PTY, and the centered install
-  overlay mirrors it right over Settings; closing the overlay leaves the
-  command running in the root terminal with the usual toast. The confirmation
+  `runInstallInTab`: the root tab still owns the PTY, and the root console
+  floats over Settings with that tab in front (2026-09-17 — the separate
+  install overlay was merged into the console); closing it leaves the command
+  running in its root tab. The confirmation
   before running stays.
       - [ ] **Manual QA:** Settings → Mobile → open "Set up Tailscale Serve" →
         *Set up in terminal* → confirm. Expect the overlay terminal over
@@ -528,6 +712,10 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   `src/__tests__/MobileChatTurns.test.ts` (7 cases) and
   `MobileTerminalReadableView.test.tsx` (2 cases); `/terminal-preview.html`
   shows two exchanges.
+  - [ ] Manual phone QA (2026-09-15): Codex labelled dividers such as
+    `─ Worked for 2m ─────` show only their label in Focus, with no wrapped
+    white rules; input-frame labels remain hidden. Regression coverage in
+    `MobileReadableScreen.test.ts`; live verification pending.
   - [ ] 🖐️ Manual phone QA — open a Claude agent tab in Focus and send a prompt
     from the composer: it appears as a bubble on the right, in the same violet
     as the "Sent" strip, without the `>`; the answer sits on the left as
@@ -535,6 +723,51 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     question's numbered rows stay on the left and answerable; the live input
     box is still not painted; Copy still includes `> `; a Codex tab shows the
     same for `›`; a shell tab shows no bubbles.
+    - [ ] ✅ Works
+    - [ ] ❌ Doesn't work
+  - 2026-09-16 fix: a user bubble sometimes held text the user never typed.
+    Two sources feed the bubbles and both leaked. **Stored session** (the
+    default for Claude/Codex): the not-a-prompt filter was a short start-only
+    prefix list, so `<tool_use_error>` blocks and a `<total_tokens>` block
+    appended *behind* a prompt were shown as the user's words. It is now a
+    bound *plus* a shape — `CLI_BLOCK_TAGS` and "opens and closes with that
+    same tag" — because a shape alone cannot tell a CLI's private block from
+    someone pasting `<div>hello</div>`; `strip_trailing_blocks` cuts only
+    those tags off the end, and `isCompactSummary`/`isVisibleInTranscriptOnly`
+    join `isMeta`/`isSidechain` as never-a-prompt. **Screen reading**: `❯` is
+    no longer an echo marker (no CLI echoes with it — it is the select-dialog
+    cursor, so every `❯ Opus 4.1` and `/resume` row became the reader's
+    words), `✨` counts only for a tab whose label names Kimi, the empty box's
+    own placeholder and a box the TUI is still drawing are not submissions,
+    and a bubble stops at a tool-result gutter or a footer row.
+    The mirror direction — a guard costing the user their own words — turned
+    out to be just as real and is now covered too: a pasted `tree` stays in
+    the bubble (frame strokes are not stop rows), `> try "npm ci" first` is a
+    prompt and not the placeholder, an answer *about* a key no longer
+    swallows the prompt above it, and a columned status row is told from
+    prose by *columns* carrying status rather than fields (`classify` reads a
+    branch out of the same segment as the path, which scored the ordinary
+    sentence `~/eldrun/projects/app (main)` two and handed the prompt to the
+    agent). The same parser feeds the desktop's last-prompt line, so both
+    directions reach the prompt chart too.
+    Gates: 202 mobile tests, 46 `agent_session` + 4 `agent_transcript` Rust
+    tests, clippy clean, `mobile:build` and `vite build` green, lint clean on
+    the changed files. Backend and PWA both changed, so this needs
+    `npm run package:dev` and a relaunch before a phone sees it.
+    Known and deliberately left: a prompt whose *continuation* is itself a
+    columned row (`opus-4.1   ~/a`) still reads as a box; a Codex gutter drawn
+    `└─ ` rather than `└ ` would land in a bubble (not seen in any version);
+    a quoted `│ > … │` inside a plan box is byte-identical to Gemini's framed
+    echo after the frame is stripped, so it cannot be separated without a live
+    capture; and the Kimi `✨` branch hangs off a renamable tab label, which is
+    harmless only because the phone cannot open a Kimi tab today (31ag).
+  - [ ] 🖐️ Manual phone QA — in a Claude and a Codex tab, check the bubbles
+    hold only what was typed: run a slash command (`/model`) and confirm its
+    `⎿` result stays on the left; scroll back to an old screen and confirm no
+    stale draft or `Try "…"` placeholder appears as a bubble; open `/model`
+    and confirm its `❯` rows stay left. Then the mirror: paste a `tree` into a
+    prompt and send it — the whole thing stays in one bubble; send `try "npm
+    ci" first` and `where am I?` and confirm each still appears as yours.
     - [ ] ✅ Works
     - [ ] ❌ Doesn't work
 
@@ -781,6 +1014,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   - **Gemini CLI** — deliberately no family: since ~0.5 the approval mode is
     only prompt colour + aria-label, nothing the readable view can parse, so
     the chip keeps blind-cycling. Its `NN% used` context column is read.
+    *Superseded by 31ag (2026-09-15): the mode is text after all, on the row
+    above the box, and Gemini has a family now.*
   - Vibe/OpenCode are alt-screen TUIs (Focus already hands them to Terminal);
     Aider is a plain REPL. `scripts/backend-stale.sh` now also flags a stale
     *embedded* mobile bundle (mobile-web src newer than mobile-dist, or
@@ -794,6 +1029,36 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     a Gemini tab still blind-cycles but shows its `% used` as context
     - [ ] ✅ Works
     - [ ] ❌ Doesn't work
+
+- [~] **31ag — Mobile Focus beyond Claude Code** (2026-09-15; ✅ code-complete
+  for the screen half, ⚠️ untested live; phone needs a rebuild + restart).
+  A survey of all 26 other agent CLIs, read out of their published bundles
+  (`docs/mobile_focus_cli_survey.md`), and what it changed:
+  - `chatTurns`: Gemini `✦`, Qwen `◆︎` and Kimi Code `●` answers lay out as
+    answers; Kimi Code's `✨` echo is a prompt bubble.
+  - `statusLine`: a `*` input line with a draft counts only beside the word
+    YOLO, so a markdown bullet at the bottom of an unrecognized TUI is no longer
+    cut as the input box; Gemini's approval mode is read from the row *above*
+    its box (and cut with it); `ctx` labels a context figure.
+  - `agentModes`: a Gemini family (default silent / accept edits / plan on
+    Shift+Tab, YOLO on Ctrl+Y) — this supersedes 31l's "no Gemini family".
+  - [ ] 🖐️ Manual test — on the phone, a Gemini tab: answers show without `✦`;
+    the mode chip reads default / accept edits / plan as Shift+Tab cycles on
+    the desktop, and the sheet walks between them; a Claude tab whose answer
+    ends in a `* item` list still shows the list's last rows.
+    - [ ] ✅ Works
+    - [ ] ❌ Doesn't work
+  - [ ] **Follow-ups** (see the survey for each spec):
+    - [ ] Stored-session readers in `agent_transcript.rs` for the full-screen
+      and inline CLIs that keep one: Gemini, Qwen, Kimi Code, Pi, Vibe,
+      OpenCode/Crush/Goose (SQLite), Aider, Copilot, Muse.
+    - [ ] Widen `discovery.rs::resumable`'s list and publish the tab's `cmd`,
+      so families stop depending on a renamable label.
+    - [ ] Live captures, then patterns, for Aider, mini-SWE-agent, Cursor
+      agent, Goose, Grok Build, Kimi Code modes, OpenCode `--mini`, Codex 0.155
+      `↳ Recap:`.
+    - [ ] Registry fixes: Kiro binary is `kiro-cli`; Kimi Code / Pi / Amp
+      packages moved; archived Mentat / GPT Engineer / Plandex / SWE-agent.
 
 - [~] **31n — Mobile Focus: + attaches from the phone; sheets freeze the view**
   (2026-08-31; ✅ Code-complete, ⚠️ needs live QA on a phone — and a rebuild +
@@ -810,6 +1075,10 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     composer (oversized files never leave the phone; failures name the reason).
     The write is defensive (`inbox.rs`): sanitized + stamped name,
     `create_new`, inbox must canonicalize below the project root.
+  - **+ → "From the gallery"** (2026-09-17): the same drop behind a second
+    hidden input with `accept="image/*,video/*"`. A bare file input lands in
+    the file browser on many Android phones; a media `accept` is what opens
+    the photo picker (iOS: the library). Same 24 MiB limit, same `@` reference.
   - **Frozen reading view**: while the model or mode sheet is up, the Focus
     pane keeps the frame it held when the sheet opened; the `/model` picker
     and the Shift+Tab status redraws are still *read* from the live screen
@@ -821,6 +1090,9 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     and Claude reads the image; pick a >24 MB video → refused without upload;
     + → A project file inserts a bare `@`. Open the Model sheet → the picker
     text does not appear behind the sheet; close it → the view resumes
+    - [ ] ✅ Works
+  - [ ] 🖐️ Manual test — on the phone: + → From the gallery opens the photo
+    picker (not the file browser); pick two photos → both land in the draft
     - [ ] ✅ Works
     - [ ] ❌ Doesn't work
 
@@ -1053,7 +1325,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   pass `true` where `DELETE /api/v1/tabs/{id}` passes `false`.
   - **Closing is the desktop's ×, and nothing stronger.** The tab leaves the
     layout and its viewer dies; the tmux session behind it keeps running and
-    stays reattachable from the desktop's Sessions view — `lib/closeRemoteTab`'s
+    stays reattachable from the desktop's Sessions view — `lib/remote/closeRemoteTab`'s
     rule, applied rather than restated. A tap on a phone must not be able to
     end a running agent, which is also why the sheet says so in place of a
     yes/no confirm, and why the plan's deferred "tab termination" is still
@@ -1068,7 +1340,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     only, so a close in a project the desktop is not showing would never be
     written and the phone's own catalog — which is read out of
     `sessions/<id>/terminals.json` — would list the closed tab for ever. The
-    bridge writes the scope itself (`persistScopeLayout`, `stores/agentSchedules`'
+    bridge writes the scope itself (`persistScopeLayout`, `stores/agents/agentSchedules`'
     `persistScheduleBinding` renamed to what it always did, since a rename from
     the phone needed the same write and never made it). A project the desktop
     has not restored this session is restored first through
@@ -1325,6 +1597,198 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     refresh; edit it on desktop and see the open sheet refresh; close desktop
     Eldrun and verify the explanatory disabled state without losing terminal
     access; verify auth/origin rejection from an unpaired client.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+
+- [~] **31ah — The phone's PWA updates on commit, without a relaunch** (2026-09-17;
+  ✅ code-complete, automated tests passing and the publish→load contract smoke-tested
+  end-to-end, ⚠️ not verified on a phone — and the first pickup costs exactly one
+  relaunch, since the overlay support is itself compiled in). The bundle is baked
+  into the binary (`build.rs` embeds `mobile-dist/`) and the running window keeps
+  its old inode across an install, so freezing a commit never reached the phone
+  until the user relaunched: on 2026-09-17 the sidecar was serving
+  `index-BxC6mmm7.js` while the installed binary held `index-B6ra4vC5.js` and the
+  tree held a third.
+  - `scripts/package-dev.sh` now publishes the bundle it just built into
+    `target/mobile-pwa/` with a `.stamp` (`built`, `commit`, `entry`), and
+    `services::mobile_control::live_pwa` serves that instead of the embedded copy.
+    In `--head` mode it publishes **before** cargo starts, so a commit reaches the
+    phone in seconds rather than after the two-minute compile. Written under
+    `target/` rather than `$HOME` on purpose: commits come from agent tabs, where
+    `agent_fence` replaces `$HOME` with a tmpfs that dies with the tab — the same
+    trap that made the binary install silently evaporate (2026-09-04).
+  - Three guards: opt-in at compile time (`ELDRUN_MOBILE_LIVE_DIR`, set only by
+    `package-dev.sh` and `start-eldrun-tauri-hotreload.sh`, so a released binary
+    has no overlay path at all); never backwards (an overlay older than
+    `MOBILE_ASSETS_BUILT_AT` is refused, so a stale branch cannot shadow a fresh
+    binary); all-or-nothing (a bundle missing its shell or its stamped entry is
+    refused whole, since mixing two bundles is a white screen).
+  - **Open:** the overlay carries the PWA, not the sidecar's HTTP API. A mobile
+    feature whose backend half is not in the running window will now *render* and
+    then fail its request, where before it simply was not there. `backend:stale`
+    reports that gap ("THE PHONE IS AHEAD OF THE RUNNING BACKEND") rather than
+    hiding it, and a relaunch is the same remedy as before.
+  - [ ] 🖐️ Manual phone QA — commit anything touching `mobile-web/`, wait for the
+    post-commit freeze, pull-to-refresh on the phone and confirm the build stamp
+    in the UI moved without the desktop being relaunched; then confirm
+    `npm run backend:stale` names the published bundle.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+
+- [~] **31ai — The phone says what each session was last asked** (2026-09-18;
+  ✅ code-complete, automated tests passing, ⚠️ not verified on a phone). Every
+  agent tab on the phone is called "Claude", and until now the only reading that
+  told two of them apart was a status word. A session's card in a project now
+  carries its **last prompts, always open** — the newest first and given room to
+  wrap, up to four older ones on one line each — and a row in the flat Agents
+  list carries the last one under its label. No disclosure control: an expander
+  answers "which tab did I set on the docs" one tap at a time, which is the work
+  the line exists to save.
+  - The reading is the desktop's own and costs no new read. `stores/agents/agentModels`
+    already tails each agent's transcript for the model pill and the Agents
+    view's "last prompt:" line (`agent_tab_recent_prompts` →
+    `agent_session_recent_prompts`), so the tail is simply kept
+    (`recentByTab`) instead of being reduced to its last entry, and rides the
+    catalog/activity answer as `AgentTabPrompts` the way the schedule summary
+    rides it. However a prompt was submitted — typed into the TUI, pasted, sent
+    from the phone, delivered by a schedule — the transcript has it.
+  - Published for a **quiet** tab too, which is the one asymmetry with the status
+    rows beside it: `projectAgentStatuses` drops an idle tab before its own
+    refresh (right for the Agents list, which deliberately lists nothing quiet),
+    and the session nobody has prompted since this morning is exactly the one
+    whose last prompt is worth reading. A prompt line is not a claim that
+    anything is running.
+  - Bounded twice — the desktop sends at most 5 prompts of 240 characters, and
+    the sidecar re-applies both at the browser boundary, since the far side is
+    someone else's build. Timestamps are the transcript's own ISO instants,
+    formatted in the **phone's** zone rather than sliced like the desktop-local
+    schedule string.
+  - Needs a rebuild **and** a desktop restart: the sidecar, the bridge and the
+    PWA all changed.
+  - [ ] 🖐️ Manual phone QA — open a project with two agent tabs, confirm each
+    card lists its own recent prompts newest-first with the last one legible;
+    type a prompt straight into a tab on the desktop and confirm it appears on
+    the phone within a poll; leave a tab idle for an hour and confirm its card
+    still shows what it was asked; check the Agents list carries the last prompt
+    under each row; check an agent with no readable transcript (Gemini/Qwen)
+    shows its screen-echoed line rather than an empty block.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+
+---
+
+- [~] **31aj — Mobile Focus reads an OpenCode session** (2026-09-18; ✅
+  code-complete, automated tests passing, ⚠️ not verified on a phone). Plain
+  `opencode` is a full-screen TUI and Focus hands it to the Terminal view; its
+  **minimal interface** (`opencode --mini`) writes scrollback instead, and Focus
+  rendered that as a wall: every tool call in full, the start-up banner, the
+  turn footer, and OpenCode's own live status row painted into the
+  conversation — while the composer's model, mode and status chips stayed
+  empty, because a mini frame has no `>` input box for `statusLine` to anchor
+  on. Everything below was read off captures of a real 1.18.31 session replayed
+  through the phone's own emulator at 60/80/100 columns, not out of the bundle;
+  `mobile-web/src/terminal/openCodeMini.ts` holds the shapes and the reasoning
+  for each.
+  - **The frame** is found by its status row (` BUILD   223.0K (21%) · ctrl+p
+    cmd`), the last non-blank row of every mini frame, scoped to a tab whose
+    label names OpenCode — the same tie-break `agentModes` uses, and the only
+    thing that tells a bare ` BUILD` from a line of output. The box above it
+    (blanks, and its `Ask anything…` placeholder) goes with it; a draft typed on
+    the desktop stays in the reading view, the harmless direction.
+  - **The chips**: the agent in capitals is the mode, `223.0K (21%)` the
+    context, and the model comes from the turn footer `▣ Build · Muse Spark 1.3
+    Free · 6.2s` — the one place a mini session prints its display name — or
+    from the `model <id>` notice the status row shows right after a switch.
+  - **The turns**: the banner, the turn footer and each tool call (`→ ✱ ◈ %
+    ✗`, `# … Task`) are dropped the way Claude Code's tool calls are; the bash
+    tool's `$ cmd` and its output stay, being the session's own words. OpenCode
+    **wraps its own rows**, so a block is held together by the blank row that
+    ends it rather than by an indent — that is what keeps a wrapped prompt in
+    one bubble and drops a wrapped `✱ Grep …` whole instead of stranding its
+    tail as the agent's first answer line.
+  - **Its wrapping is undone** with the pane's own column count, so the phone
+    re-wraps at its width — what `readableScreen` does for every other CLI by
+    rejoining the rows xterm wrapped. A break is only undone when the wrap
+    explains it (the row ran into the last column, or the next word would not
+    have fitted), and the seam is read the same way: a space the wrap kept
+    comes back, a long token broken at its own `/`, `-` or `.` is rejoined with
+    nothing between.
+  - **Mode is a readout.** `opencode --mini` binds no key that switches its
+    agent — Tab, Shift+Tab and the leader keybinds belong to the full-screen
+    TUI and do nothing in mini, and its ctrl+p palette offers "Switch model"
+    and "Variant cycle" only (verified against 1.18.31). The family is marked
+    `fixed`: the sheet lists Build and Plan with the current one marked and says
+    the agent is settled at `--agent` time, and the chip presses nothing.
+  - **Model works.** Mini has no `/model` — sending one would submit the word to
+    the model as a prompt, a turn nobody asked for — so the chip opens
+    OpenCode's own picker through the palette (ctrl+p, `model`, Enter) and the
+    sheet lists the rows it drew. A tap answers by typing into the picker's
+    search field (ctrl+u, the row's label, Enter), which is how a person uses
+    it; tapping one of its group headings narrows the list, which the sheet
+    reads as the next step. Verified end-to-end against a live session locally,
+    never on a phone.
+  - The alt-screen notice now names `--mini` for an OpenCode tab, which is the
+    only way into any of this.
+  - [ ] 🖐️ Manual phone QA — start a tab with `opencode --mini`, ask it
+    something that uses tools, and confirm: the chat shows prompts and answers
+    with no tool rows, no banner and no ` BUILD` row; paragraphs re-wrap to the
+    phone rather than breaking at the pane's width, with URLs and paths intact;
+    the mode chip reads Build and its sheet explains it cannot switch; the model
+    chip opens OpenCode's picker and a tap changes the model (the next turn's
+    footer names the new one); the status chips show the context percentage; a
+    left→right swipe shows the ` BUILD …` status row; a plain `opencode` tab
+    still offers the Terminal view with the `--mini` hint.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+  - [ ] **Follow-ups**: model *variants* (ctrl+t, OpenCode's reasoning-effort
+    equivalent) have no chip yet; a stored-session reader for
+    `~/.local/share/opencode/opencode.db` would give Focus a history that
+    reaches past the pane's scrollback (see the survey).
+
+---
+
+- [~] **31ak — Arrange a project's tabs by hand from the phone** (2026-09-18; ✅
+  code-complete, automated tests passing, ⚠️ not verified on a phone). The
+  phone could sort its agent tabs (last working, last done, arrival) and could
+  not *place* them: the flat Agents list had the picker, a project screen had no
+  control at all, and neither had a way to say "this one belongs above that
+  one". A project's tab list now carries the same three-way picker, with the
+  arrival order named **Manual (tab order)** — because on this screen that order
+  IS the desktop's tab bar — and under it every card grows a **⠿ grip** that
+  drags it into place.
+  - The order it writes is the desktop's own, not a phone-local preference. A
+    drop is `PUT /api/v1/tabs/{id}/order` with the anchor tab's opaque id and a
+    side, which the sidecar turns into `DesktopRequest::ReorderTab`; the bridge
+    runs `reorderTabInScope` — the same store action the desktop Agents view's
+    drag calls, so the flat scope order and, where both tabs share a layout
+    group, the tab bar itself move together — then persists the scope's layout
+    before answering, because the route reads the new order back out of the
+    catalog's own session file.
+  - Offered under the manual order alone. The other two are computed from what
+    the agents did, so a dropped row would spring back the next time one of them
+    worked; the desktop's drag follows the same rule.
+  - Both tabs cross as opaque ids and must resolve to one scope
+    (`tab_scope_mismatch`): two projects have two layouts and no shared order a
+    move could be expressed in. A tab dropped on itself is refused before any
+    desktop call.
+  - The list rearranges on the drop and reconciles with the order the desktop
+    answers with; a refusal puts the row back and says to open desktop Eldrun.
+    The 5 s poll is paused across the write, or a reply carrying the pre-drop
+    order would yank the card back for a second.
+  - The grip's arrow keys move a tab one place, since a drag is reachable by
+    neither a keyboard nor a screen reader, and the page scrolls itself when the
+    finger reaches either edge — a list of ten tabs is taller than the phone.
+  - The cross-project **Agents** list is deliberately untouched: its rows span
+    projects, so there is no one tab bar for a manual order to be written into.
+  - Needs a rebuild **and** a desktop restart: the sidecar, the bridge and the
+    PWA all changed.
+  - [ ] 🖐️ Manual phone QA — open a project with three or more tabs, pick
+    **Manual (tab order)**, drag a card to the top and confirm the Eldrun
+    window's tab bar moved with it; confirm the order survives a pull-to-refresh
+    and a relaunch; drag a card past the bottom of the screen and confirm the
+    page scrolls under the finger; switch to **Last working** and confirm the
+    grips disappear; close desktop Eldrun and confirm a drag reports "Open
+    desktop Eldrun to rearrange tabs" and puts the card back.
   - [ ] ✅ Works
   - [ ] ❌ Doesn't work
 

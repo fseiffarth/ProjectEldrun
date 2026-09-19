@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 
 import { resolveProjectDirectory, type CalendarTask, type TaskColumn } from "../../types";
-import { useCalendarStore } from "../../stores/calendar";
+import { useCalendarStore } from "../../stores/calendar/calendar";
 import { useProjectsStore } from "../../stores/projects";
 import { useTodoStore } from "../../stores/todo";
-import { addDays, datePart, formatTime, timePart, toStamp } from "../../lib/calendarTime";
+import { addDays, datePart, formatTime, timePart, toStamp } from "../../lib/calendar/calendarTime";
 import {
   addSubtask,
   dueDelta,
@@ -20,7 +20,7 @@ import {
 import { useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
 import { useListReorder } from "../../hooks/useListReorder";
-import { resolveRemarkAbsPath } from "../../lib/projectRemarks";
+import { resolveRemarkAbsPath } from "../../lib/projects/projectRemarks";
 import { jumpToSource } from "../embed/FileViewerPane";
 import { basename } from "../../lib/paths";
 

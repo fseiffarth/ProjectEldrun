@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, PoisonError},
     time::Duration,
 };
 
@@ -25,20 +25,27 @@ use super::{
     admin,
     auth::AuthStore,
     config::{verify_tailscale_serve, HostConfig},
-    discovery::{Catalog, CatalogCache, PublicTab, TabSchedules},
+    discovery::{Catalog, CatalogCache, PublicTab, TabPrompt, TabSchedules},
     inbox,
     outbox,
     limits,
     protocol::{
-        CalendarAction, CreateTabRequest, DesktopRequest, DesktopResponse, MailMarkAction,
-        MobilePromptInput, MobileScheduleInput, PromptMutation, ScheduleMutation, TodoAction,
-        MAX_CONTROL_MESSAGE, MAX_INPUT_FRAME, MAX_MAIL_REPLY_BYTES, MAX_TAB_LABEL,
-        TERMINAL_PROTOCOL,
+        clean_tab_color, CalendarAction, CreateTabRequest, DesktopRequest, DesktopResponse,
+        MailMarkAction, MobilePromptInput, MobileScheduleInput, PromptMutation, ScheduleMutation,
+        TabPlace, TodoAction, MAX_CONTROL_MESSAGE, MAX_INPUT_FRAME, MAX_MAIL_REPLY_BYTES,
+        MAX_TAB_LABEL, TERMINAL_PROTOCOL,
     },
     pty_bridge::{self, TerminalRegistry},
+    live_pwa, MOBILE_ASSETS,
 };
 
-include!(concat!(env!("OUT_DIR"), "/mobile_assets.rs"));
+
+/// Most prompts one agent tab publishes to the phone, and the most characters
+/// of each. The phone's project overview draws every one of them under every
+/// agent card on a 5s poll, so this is a list to read at a glance, not a
+/// transcript — the Focus view is where the whole conversation lives.
+const MAX_TAB_PROMPTS: usize = 5;
+const MAX_TAB_PROMPT_CHARS: usize = 240;
 
 const MOBILE_PERMISSIONS_POLICY: &str =
     "camera=(), microphone=(self), on-device-speech-recognition=(self), geolocation=(), payment=(), usb=()";
@@ -150,17 +157,17 @@ fn authenticate(
     state
         .auth
         .lock()
-        .unwrap()
+        .unwrap_or_else(PoisonError::into_inner)
         .authenticate(token)
         .ok_or_else(|| api_error(StatusCode::UNAUTHORIZED, "authentication_required"))
 }
 
 fn catalog(state: &HostState) -> Result<Catalog, (StatusCode, Json<serde_json::Value>)> {
-    let key = state.auth.lock().unwrap().host_key().to_vec();
+    let key = state.auth.lock().unwrap_or_else(PoisonError::into_inner).host_key().to_vec();
     state
         .catalog
         .lock()
-        .unwrap()
+        .unwrap_or_else(PoisonError::into_inner)
         .load(&state.config.state_dir, &key)
         .map_err(|_| api_error(StatusCode::SERVICE_UNAVAILABLE, "catalog_unavailable"))
 }
@@ -168,11 +175,11 @@ fn catalog(state: &HostState) -> Result<Catalog, (StatusCode, Json<serde_json::V
 /// The create-tab poll is waiting for a tab the desktop has just been asked to
 /// open, so by definition it is not in the cached snapshot yet.
 fn catalog_fresh(state: &HostState) -> Result<Catalog, (StatusCode, Json<serde_json::Value>)> {
-    let key = state.auth.lock().unwrap().host_key().to_vec();
+    let key = state.auth.lock().unwrap_or_else(PoisonError::into_inner).host_key().to_vec();
     state
         .catalog
         .lock()
-        .unwrap()
+        .unwrap_or_else(PoisonError::into_inner)
         .load_fresh(&state.config.state_dir, &key)
         .map_err(|_| api_error(StatusCode::SERVICE_UNAVAILABLE, "catalog_unavailable"))
 }
@@ -216,7 +223,7 @@ async fn pair(
     match state
         .auth
         .lock()
-        .unwrap()
+        .unwrap_or_else(PoisonError::into_inner)
         .pair(&body.code, &body.device_name, &body.public_key)
     {
         Ok(device_id) => (StatusCode::CREATED, Json(json!({ "device_id": device_id }))),
@@ -232,7 +239,7 @@ async fn challenge(
     if !exact_origin(&headers, &state) {
         return api_error(StatusCode::FORBIDDEN, "invalid_origin");
     }
-    match state.auth.lock().unwrap().challenge(&body.device_id) {
+    match state.auth.lock().unwrap_or_else(PoisonError::into_inner).challenge(&body.device_id) {
         Ok((nonce, payload, expires_at)) => (
             StatusCode::OK,
             Json(json!({ "nonce": nonce, "payload": payload, "expires_at": expires_at })),
@@ -252,7 +259,7 @@ async fn login(
     match state
         .auth
         .lock()
-        .unwrap()
+        .unwrap_or_else(PoisonError::into_inner)
         .login(&body.device_id, &body.nonce, &body.signature)
     {
         Ok((token, expires_at)) => {
@@ -273,7 +280,7 @@ async fn logout(State(state): State<HostState>, headers: HeaderMap) -> Response<
         return api_error(StatusCode::FORBIDDEN, "invalid_origin").into_response();
     }
     if let Some(token) = cookie_token(&headers) {
-        state.auth.lock().unwrap().logout(token);
+        state.auth.lock().unwrap_or_else(PoisonError::into_inner).logout(token);
     }
     let mut response = Json(json!({ "ok": true })).into_response();
     response.headers_mut().insert(
@@ -382,14 +389,14 @@ async fn activity(State(state): State<HostState>, headers: HeaderMap) -> impl In
     };
     let desktop_socket = state.config.control_dir.join("desktop-control.sock");
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
-    let (desktop_available, statuses) = match admin::desktop_call(
+    let (desktop_available, statuses, prompts) = match admin::desktop_call(
         &desktop_socket,
         &DesktopRequest::Activity { request_id },
     )
     .await
     {
-        Ok(DesktopResponse::Activity { statuses }) => (true, statuses),
-        _ => (false, vec![]),
+        Ok(DesktopResponse::Activity { statuses, prompts }) => (true, statuses, prompts),
+        _ => (false, vec![], vec![]),
     };
     // Tmux session names are unique across the whole server, so one map covers
     // every project's tabs.
@@ -397,6 +404,7 @@ async fn activity(State(state): State<HostState>, headers: HeaderMap) -> impl In
         .into_iter()
         .map(|status| (status.tmux_session.clone(), status))
         .collect::<HashMap<_, _>>();
+    let mut prompts = prompt_rows(prompts);
     let mut rows = Vec::new();
     for project in &catalog_snapshot.projects {
         for resolved in &project.tabs {
@@ -412,6 +420,7 @@ async fn activity(State(state): State<HostState>, headers: HeaderMap) -> impl In
             tab.working_at = status.working_at;
             tab.done_at = status.done_at;
             tab.viewer_busy = state.terminal_registry.is_busy(&resolved.tmux_name);
+            tab.prompts = prompts.remove(&resolved.tmux_name).unwrap_or_default();
             rows.push(ActivityRow {
                 tab,
                 project_id: project.public.id.clone(),
@@ -463,7 +472,7 @@ async fn project(
     // and on Windows the nominal path is never a file, so it was never told.
     // A closed desktop refuses the connect at once, on both.
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
-    let (desktop_available, agents, statuses, schedules) = match admin::desktop_call(
+    let (desktop_available, agents, statuses, schedules, prompts) = match admin::desktop_call(
         &desktop_socket,
         &DesktopRequest::Catalog {
             request_id,
@@ -476,8 +485,9 @@ async fn project(
             agents,
             statuses,
             schedules,
-        }) => (true, agents, statuses, schedules),
-        _ => (false, vec![], vec![], vec![]),
+            prompts,
+        }) => (true, agents, statuses, schedules, prompts),
+        _ => (false, vec![], vec![], vec![], vec![]),
     };
     let statuses = statuses
         .into_iter()
@@ -496,6 +506,7 @@ async fn project(
             )
         })
         .collect::<HashMap<_, _>>();
+    let mut prompts = prompt_rows(prompts);
     for (tab, resolved) in tabs.iter_mut().zip(&project.tabs) {
         if tab.kind == "agent" {
             if let Some(status) = statuses.get(&resolved.tmux_name) {
@@ -505,6 +516,9 @@ async fn project(
                 tab.done_at = status.done_at;
             }
             tab.schedules = schedules.remove(&resolved.tmux_name);
+            // Published whether or not the tab has a status: a quiet session's
+            // last prompt is the reading its card exists to carry.
+            tab.prompts = prompts.remove(&resolved.tmux_name).unwrap_or_default();
         }
     }
     (
@@ -513,6 +527,32 @@ async fn project(
             json!({ "project": project.public, "tabs": tabs, "desktop_available": desktop_available, "agents": agents }),
         ),
     )
+}
+
+/// The desktop's per-tab prompt rows, keyed by tmux name and bounded again on
+/// the way out. The desktop already caps both the count and the length, but
+/// this is the browser boundary and the far side is somebody else's build: the
+/// caps are re-applied here so a desktop one version ahead cannot widen what
+/// reaches the phone.
+fn prompt_rows(rows: Vec<super::protocol::AgentTabPrompts>) -> HashMap<String, Vec<TabPrompt>> {
+    rows.into_iter()
+        .map(|row| {
+            let prompts = row
+                .prompts
+                .into_iter()
+                .rev()
+                .take(MAX_TAB_PROMPTS)
+                .map(|prompt| TabPrompt {
+                    text: prompt.text.chars().take(MAX_TAB_PROMPT_CHARS).collect(),
+                    at: prompt.at,
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            (row.tmux_session, prompts)
+        })
+        .collect()
 }
 
 fn random_16() -> [u8; 16] {
@@ -1222,6 +1262,166 @@ async fn rename_tab(
                 // desktop stored and let the screen's poll bring the rest.
                 None => (StatusCode::OK, Json(json!({ "label": label }))),
             }
+        }
+        Ok(DesktopResponse::Error { code, .. }) => api_error(
+            match code.as_str() {
+                "desktop_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
+                "tab_not_found" => StatusCode::NOT_FOUND,
+                _ => StatusCode::BAD_REQUEST,
+            },
+            &code,
+        ),
+        _ => api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable"),
+    }
+}
+
+/// `PUT /api/v1/tabs/{id}/color` — paint one tab, agent or shell, with a colour
+/// from the palette, or clear it with `null`/`""`.
+///
+/// Its own route rather than a field on the rename above, for two reasons that
+/// both matter: the rename is agent-only (`agent_tab_target`) while a colour is
+/// for any tab the phone lists, and that body is `deny_unknown_fields`, so a
+/// phone sending a colour to an older sidecar would have had its *rename*
+/// refused whole. The desktop owns the write, as with every tab-layout change.
+async fn color_tab(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(tab_id): Path<String>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    if !exact_origin(&headers, &state) {
+        return api_error(StatusCode::FORBIDDEN, "invalid_origin");
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ColorBody {
+        #[serde(default)]
+        color: Option<String>,
+    }
+    let Ok(request) = serde_json::from_slice::<ColorBody>(&body) else {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    let Ok(color) = clean_tab_color(request.color.as_deref()) else {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_color");
+    };
+    let (project_id, tmux_session) = match tab_target(&state, &tab_id, false) {
+        Ok(target) => target,
+        Err(error) => return error,
+    };
+    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    let request_id = Base64UrlUnpadded::encode_string(&random_16());
+    match admin::desktop_call(
+        &desktop_socket,
+        &DesktopRequest::ColorTab {
+            request_id,
+            project_id,
+            tmux_session: tmux_session.clone(),
+            color,
+        },
+    )
+    .await
+    {
+        Ok(DesktopResponse::Colored { color }) => {
+            let row = catalog_fresh(&state)
+                .ok()
+                .and_then(|next| next.tab(&tab_id).map(|(_, tab)| tab.public.clone()));
+            match row {
+                Some(mut row) => {
+                    row.viewer_busy = state.terminal_registry.is_busy(&tmux_session);
+                    (StatusCode::OK, Json(json!({ "tab": row })))
+                }
+                // The desktop persists asynchronously, so a catalog that has not
+                // caught up is not a failed write — answer with what it stored,
+                // exactly as the rename route does.
+                None => (StatusCode::OK, Json(json!({ "color": color }))),
+            }
+        }
+        Ok(DesktopResponse::Error { code, .. }) => api_error(
+            match code.as_str() {
+                "desktop_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
+                "tab_not_found" => StatusCode::NOT_FOUND,
+                _ => StatusCode::BAD_REQUEST,
+            },
+            &code,
+        ),
+        _ => api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable"),
+    }
+}
+
+/// `PUT /api/v1/tabs/{id}/order` — move one tab next to another, the phone's
+/// half of the desktop Agents view's drag reorder (#264). Both tabs are named
+/// by opaque id and must live in the same scope: the order being permuted is
+/// one scope's tab layout, and a tab cannot be dropped into a project it is not
+/// in. The desktop owns that layout, so this is a bridge call like the rename
+/// and the colour above it, and the answer is the scope's new order read back
+/// out of the catalog — the phone rearranged its list on the drop, and this is
+/// what it reconciles against.
+async fn order_tab(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(tab_id): Path<String>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    if !exact_origin(&headers, &state) {
+        return api_error(StatusCode::FORBIDDEN, "invalid_origin");
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct OrderBody {
+        anchor: String,
+        place: TabPlace,
+    }
+    let Ok(request) = serde_json::from_slice::<OrderBody>(&body) else {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    if request.anchor == tab_id {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_anchor");
+    }
+    let (project_id, tmux_session) = match tab_target(&state, &tab_id, false) {
+        Ok(target) => target,
+        Err(error) => return error,
+    };
+    let (anchor_project, anchor_tmux) = match tab_target(&state, &request.anchor, false) {
+        Ok(target) => target,
+        Err(error) => return error,
+    };
+    // Two scopes have two layouts and no shared order to express a move in.
+    if anchor_project != project_id {
+        return api_error(StatusCode::BAD_REQUEST, "tab_scope_mismatch");
+    }
+    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    let request_id = Base64UrlUnpadded::encode_string(&random_16());
+    match admin::desktop_call(
+        &desktop_socket,
+        &DesktopRequest::ReorderTab {
+            request_id,
+            project_id,
+            tmux_session,
+            anchor_tmux_session: anchor_tmux,
+            place: request.place,
+        },
+    )
+    .await
+    {
+        Ok(DesktopResponse::Reordered) => {
+            // The desktop persists before it answers, so a fresh read is the new
+            // order; a catalog that somehow has not caught up answers with what
+            // it has rather than failing a write that did happen, exactly as the
+            // colour route does.
+            let tabs: Vec<String> = catalog_fresh(&state)
+                .ok()
+                .and_then(|next| {
+                    next.tab(&tab_id)
+                        .map(|(project, _)| project.tabs.iter().map(|t| t.public.id.clone()).collect())
+                })
+                .unwrap_or_default();
+            (StatusCode::OK, Json(json!({ "tabs": tabs })))
         }
         Ok(DesktopResponse::Error { code, .. }) => api_error(
             match code.as_str() {
@@ -2180,28 +2380,44 @@ async fn index() -> Response<Body> {
 
 fn asset_response(path: &str) -> Response<Body> {
     let requested = if path == "/" { "/index.html" } else { path };
-    let direct = MOBILE_ASSETS.iter().find(|(name, _, _)| *name == requested);
+    // A dev build may have a newer bundle published beside it than the one it
+    // was compiled with (`live_pwa`). It answers everything or nothing — the
+    // two bundles are never mixed, because each names its own hashed entry.
+    match live_pwa::current() {
+        Some(live) => serve_asset(requested, |name| live.get(name)),
+        None => serve_asset(requested, |name| {
+            MOBILE_ASSETS
+                .iter()
+                .find(|(asset, _, _)| *asset == name)
+                .map(|(_, bytes, mime)| (bytes::Bytes::from_static(bytes), *mime))
+        }),
+    }
+}
+
+/// The serving rules, over whichever bundle is in play.
+fn serve_asset<F>(requested: &str, lookup: F) -> Response<Body>
+where
+    F: Fn(&str) -> Option<(bytes::Bytes, &'static str)>,
+{
     // The SPA fallback must not cover hashed build output. Serving index.html
     // for `/assets/index-OLD.js` — with a one-year `immutable` header chosen
     // from the *requested* path — poisoned the service worker's cache with HTML
     // stored under a JavaScript URL after every upgrade.
-    let hit = match direct {
-        Some(hit) => Some(hit),
+    let hit = match lookup(requested) {
+        Some(found) => Some((requested, found)),
         // The SPA fallback covers app routes only. A miss under `/assets/` or
         // `/api/` must be a plain 404: serving the shell for an unknown
         // endpoint turned a removed or mistyped route into a 200 full of HTML
         // that the client then tried to parse as JSON.
         None if requested.starts_with("/assets/") || requested.starts_with("/api/") => None,
-        None => MOBILE_ASSETS
-            .iter()
-            .find(|(name, _, _)| *name == "/index.html"),
+        None => lookup("/index.html").map(|found| ("/index.html", found)),
     };
-    let Some((name, bytes, mime)) = hit else {
+    let Some((name, (bytes, mime))) = hit else {
         return StatusCode::NOT_FOUND.into_response();
     };
     Response::builder()
         .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, *mime)
+        .header(header::CONTENT_TYPE, mime)
         .header(
             header::CACHE_CONTROL,
             // Keyed off what is actually being served, not what was asked for.
@@ -2211,7 +2427,7 @@ fn asset_response(path: &str) -> Response<Body> {
                 "no-cache"
             },
         )
-        .body(Body::from(bytes::Bytes::from_static(bytes)))
+        .body(Body::from(bytes))
         .unwrap()
 }
 
@@ -2265,6 +2481,8 @@ fn router(state: HostState) -> Router {
             "/api/v1/tabs/{tab_id}",
             get(tab).put(rename_tab).delete(close_tab),
         )
+        .route("/api/v1/tabs/{tab_id}/color", put(color_tab))
+        .route("/api/v1/tabs/{tab_id}/order", put(order_tab))
         .route(
             "/api/v1/tabs/{tab_id}/schedules",
             get(schedules).post(schedule_create),
@@ -2331,7 +2549,7 @@ pub async fn run(state_dir: PathBuf) -> Result<(), String> {
         loop {
             interval.tick().await;
             if let Err(error) = verify_tailscale_serve(&publisher_origin, port) {
-                *publisher_failure.lock().unwrap() = Some(error);
+                *publisher_failure.lock().unwrap_or_else(PoisonError::into_inner) = Some(error);
                 let _ = publisher_shutdown.send(true);
                 break;
             }
@@ -2352,7 +2570,7 @@ pub async fn run(state_dir: PathBuf) -> Result<(), String> {
         })
         .await
         .map_err(|e| e.to_string())?;
-    if let Some(error) = serve_failure.lock().unwrap().take() {
+    if let Some(error) = serve_failure.lock().unwrap_or_else(PoisonError::into_inner).take() {
         return Err(format!("Tailscale Serve verification failed: {error}"));
     }
     Ok(())
@@ -2651,6 +2869,45 @@ mod tests {
         "/api/v1/tabs/anything/desktop-images",
     ];
 
+    /// The desktop bounds the tail before it sends one; this bounds it again at
+    /// the browser boundary, and keeps the newest end — a card that dropped the
+    /// last prompt to keep the first five would show a session's morning.
+    #[test]
+    fn a_tab_publishes_the_newest_prompts_of_its_tail_and_no_more() {
+        use crate::services::mobile_control::protocol::{AgentTabPrompt, AgentTabPrompts};
+        let rows = prompt_rows(vec![AgentTabPrompts {
+            tmux_session: "eldrun-p_paper--agent-123456789".into(),
+            prompts: (0..12)
+                .map(|n| AgentTabPrompt {
+                    text: format!("prompt {n}"),
+                    at: Some(format!("2026-09-17T08:{n:02}:00Z")),
+                })
+                .collect(),
+        }]);
+        let prompts = &rows["eldrun-p_paper--agent-123456789"];
+        assert_eq!(prompts.len(), MAX_TAB_PROMPTS);
+        // Oldest first, ending on the newest the desktop sent.
+        assert_eq!(prompts[0].text, "prompt 7");
+        assert_eq!(prompts[MAX_TAB_PROMPTS - 1].text, "prompt 11");
+    }
+
+    #[test]
+    fn a_long_prompt_is_cut_before_it_reaches_the_phone() {
+        use crate::services::mobile_control::protocol::{AgentTabPrompt, AgentTabPrompts};
+        let rows = prompt_rows(vec![AgentTabPrompts {
+            tmux_session: "eldrun-p_paper--agent-123456789".into(),
+            prompts: vec![AgentTabPrompt {
+                // Multi-byte on purpose: the cut counts characters, so a byte
+                // slice here would panic mid-character.
+                text: "ä".repeat(MAX_TAB_PROMPT_CHARS + 40),
+                at: None,
+            }],
+        }]);
+        let prompts = &rows["eldrun-p_paper--agent-123456789"];
+        assert_eq!(prompts[0].text.chars().count(), MAX_TAB_PROMPT_CHARS);
+        assert!(prompts[0].at.is_none());
+    }
+
     #[test]
     fn mobile_policy_allows_only_same_origin_microphone_capture() {
         assert!(MOBILE_PERMISSIONS_POLICY.contains("microphone=(self)"));
@@ -2767,6 +3024,24 @@ mod tests {
         assert_eq!(clean_tab_label("Claude\nrm -rf"), None);
         // The cap counts characters, not bytes: an emoji name is not 4x longer.
         assert!(clean_tab_label(&"\u{1f680}".repeat(MAX_TAB_LABEL)).is_some());
+    }
+
+    #[test]
+    fn a_tab_colour_is_a_palette_id_or_nothing() {
+        // The palette's ids pass; whitespace is trimmed the way a label is.
+        assert_eq!(clean_tab_color(Some("teal")), Ok(Some("teal".into())));
+        assert_eq!(clean_tab_color(Some("  indigo  ")), Ok(Some("indigo".into())));
+        // Two ways of saying "clear it", both accepted: an absent body field and
+        // an empty one. This is the phone's None chip.
+        assert_eq!(clean_tab_color(None), Ok(None));
+        assert_eq!(clean_tab_color(Some("")), Ok(None));
+        // Anything else is refused, NOT read as a clear — a colour this build
+        // does not know is a version seam, not a request to remove one.
+        assert!(clean_tab_color(Some("chartreuse")).is_err());
+        // And nothing that is not an id can reach a style attribute.
+        assert!(clean_tab_color(Some("#ff0000")).is_err());
+        assert!(clean_tab_color(Some("red; background:url(x)")).is_err());
+        assert!(clean_tab_color(Some("Red")).is_err());
     }
 
     #[tokio::test]
@@ -2922,6 +3197,79 @@ mod tests {
             )
             .await;
         assert_eq!(status, StatusCode::NOT_FOUND, "answered: {body}");
+    }
+
+    #[tokio::test]
+    async fn moving_a_tab_names_both_rows_by_id_and_needs_the_desktop_bridge() {
+        // The box fixture, for its two tabs: a move is the one tab route that
+        // takes a second row, and both must resolve to the same scope.
+        let host = Fixture::with_box();
+        let cookie = host.pair_device(&signing_key(31)).await.0;
+        let (_, _, projects_body) = host.send(get_as("/api/v1/projects", &cookie)).await;
+        let project_id = json(&projects_body)["projects"][0]["id"]
+            .as_str()
+            .expect("opaque box id")
+            .to_string();
+        let (_, _, project_body) = host
+            .send(get_as(&format!("/api/v1/projects/{project_id}"), &cookie))
+            .await;
+        let tabs = json(&project_body)["tabs"].clone();
+        let tab_id = tabs[0]["id"].as_str().expect("opaque tab id").to_string();
+        let anchor_id = tabs[1]["id"].as_str().expect("opaque tab id").to_string();
+
+        let move_to = |origin: &'static str, cookie: Option<&str>, anchor: &str, place: &str| {
+            let mut request = Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/tabs/{tab_id}/order"))
+                .header(header::ORIGIN, origin)
+                .header(header::CONTENT_TYPE, "application/json");
+            if let Some(cookie) = cookie {
+                request = request.header(header::COOKIE, cookie_pair(cookie));
+            }
+            request
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({ "anchor": anchor, "place": place }))
+                        .expect("body"),
+                ))
+                .expect("request")
+        };
+
+        // Authentication, then origin, before either row is resolved.
+        let (status, _, body) = host.send(move_to(ORIGIN, None, &anchor_id, "after")).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "answered: {body}");
+        let (status, _, body) = host
+            .send(move_to("https://evil.example", Some(&cookie), &anchor_id, "after"))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "answered: {body}");
+
+        // A side this build does not know, and a tab dropped on itself, are
+        // both refused before any desktop call.
+        let (status, _, body) = host
+            .send(move_to(ORIGIN, Some(&cookie), &anchor_id, "above"))
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "answered: {body}");
+        assert_eq!(json(&body)["error"], "invalid_request");
+        let (status, _, body) = host.send(move_to(ORIGIN, Some(&cookie), &tab_id, "after")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "answered: {body}");
+        assert_eq!(json(&body)["error"], "invalid_anchor");
+
+        // An anchor that is not a tab is a 404, not a move against a guess.
+        let (status, _, body) = host
+            .send(move_to(ORIGIN, Some(&cookie), "not-a-tab", "before"))
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "answered: {body}");
+        assert_eq!(json(&body)["error"], "tab_not_found");
+
+        // A well-formed move with no desktop window is unavailable rather than
+        // refused, and says nothing about the raw ids or the tmux names.
+        let (status, _, body) = host
+            .send(move_to(ORIGIN, Some(&cookie), &anchor_id, "before"))
+            .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "answered: {body}");
+        assert_eq!(json(&body)["error"], "desktop_unavailable");
+        assert!(!body.contains(RAW_BOX));
+        assert!(!body.contains(RAW_PROJECT));
+        assert!(!body.contains("eldrun-"));
     }
 
     #[tokio::test]
@@ -3717,5 +4065,40 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "answered: {body}");
         assert_eq!(json(&body)["desktop_available"], true, "{body}");
         drop(listener);
+    }
+}
+
+#[cfg(test)]
+mod validator_tests {
+    use super::{valid_calendar_month, valid_mail_id};
+
+    /// The month path segment is exactly `YYYY-MM` with a real month number;
+    /// anything looser would reach the desktop's calendar store unvalidated.
+    #[test]
+    fn a_calendar_month_is_exactly_yyyy_mm_with_a_real_month() {
+        assert!(valid_calendar_month("2026-09"));
+        assert!(valid_calendar_month("2026-01"));
+        assert!(valid_calendar_month("2026-12"));
+        assert!(!valid_calendar_month("2026-00"));
+        assert!(!valid_calendar_month("2026-13"));
+        assert!(!valid_calendar_month("2026-9"));
+        assert!(!valid_calendar_month("2026/09"));
+        assert!(!valid_calendar_month("2026-09-01"));
+        assert!(!valid_calendar_month("202a-09"));
+        assert!(!valid_calendar_month(""));
+        assert!(!valid_calendar_month("２０２６-09"), "fullwidth digits are 3 bytes each");
+    }
+
+    /// A mail id is an opaque handle: bounded, ASCII, and never a path.
+    #[test]
+    fn a_mail_id_is_a_bounded_opaque_ascii_handle() {
+        assert!(valid_mail_id("m_7f3-AbC"));
+        assert!(valid_mail_id(&"a".repeat(128)));
+        assert!(!valid_mail_id(&"a".repeat(129)));
+        assert!(!valid_mail_id(""));
+        assert!(!valid_mail_id("../etc"));
+        assert!(!valid_mail_id("id with space"));
+        assert!(!valid_mail_id("id.json"));
+        assert!(!valid_mail_id("ünïcode"));
     }
 }

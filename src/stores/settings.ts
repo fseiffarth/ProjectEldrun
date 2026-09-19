@@ -11,14 +11,14 @@ import {
   type WindowState,
 } from "../types";
 import { applyLanguage, type Language } from "../lib/i18n";
-import { mergeVerdicts, verdictsUnchanged, type PyMainCache } from "../lib/pythonMainCache";
-import { THEME_COLOR_RE, THEME_VAR_NAMES } from "../lib/themeTokens";
+import { mergeVerdicts, verdictsUnchanged, type PyMainCache } from "../lib/terminal/pythonMainCache";
+import { THEME_COLOR_RE, THEME_VAR_NAMES } from "../lib/theme/themeTokens";
 import {
   buildCursorVars,
   CURSOR_VAR_NAMES,
   normalizeCursorPack,
   type CursorPack,
-} from "../lib/cursorPacks";
+} from "../lib/theme/cursorPacks";
 
 /** Each Tauri window is its own JS runtime with its own copy of this store, so
  *  a theme change made in one (normally the main window's Settings dialog)
@@ -206,7 +206,7 @@ export function applyAccent(accent: string | null | undefined) {
 }
 
 /** Keep only what may safely reach the root style: a catalog token name
- *  (`lib/themeTokens`) holding a `#rrggbb`/`#rrggbbaa` color. `ui_theme_vars`
+ *  (`lib/theme/themeTokens`) holding a `#rrggbb`/`#rrggbbaa` color. `ui_theme_vars`
  *  is written as INLINE CUSTOM PROPERTIES, so an unvalidated pair from a
  *  hand-edited settings.json would be an arbitrary-CSS-variable write; and an
  *  invalid *value* is worse than none, since every rule reading that token
@@ -460,7 +460,7 @@ interface SettingsStore {
    *  persisted in settings.json so they survive a restart (see Settings.python_run_args). */
   setPythonRunArgs: (path: string, args: string) => Promise<void>;
   /** Fold a batch of `.py` "is this a script" verdicts into the persisted cache
-   *  that gates the tree's ▶ (see `lib/pythonMainCache`). Batched — one settings
+   *  that gates the tree's ▶ (see `lib/terminal/pythonMainCache`). Batched — one settings
    *  write per folder scan, not one per file — and a no-op when every verdict
    *  already matches, so re-listing an unchanged folder writes nothing. */
   setPythonMainVerdicts: (updates: PyMainCache) => Promise<void>;
@@ -470,7 +470,7 @@ interface SettingsStore {
  * Resolve once settings have loaded — or after `timeoutMs`, whichever comes first.
  *
  * Every gate that decides whether Eldrun may reach a host **without a gesture**
- * reads settings (`lib/hpcHost`'s `mayAutoTouch`, `machines_enabled`) and every one
+ * reads settings (`lib/remote/hpc/hpcHost`'s `mayAutoTouch`, `machines_enabled`) and every one
  * of them fails closed on an unloaded store. That is the right default, and its
  * consequence is that the launch sweeps must *wait* rather than fire into the gap:
  * `AppShell` starts this load in parallel with the projects load, so the answer is

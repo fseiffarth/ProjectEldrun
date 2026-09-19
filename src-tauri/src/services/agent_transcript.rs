@@ -9,7 +9,9 @@
 //! timestamp, from the first turn on. This module turns that file into the
 //! entries the phone lays out as a chat, resolved the same way the model tag
 //! and the last-prompt line are ([`agent_session::read_agent_transcript`]):
-//! the tab's own session, the live id (after a `/clear`) first.
+//! the tab's own session, the live id (after a `/clear`) first — and, unlike
+//! those, never the launch id's file once a live id is recorded, since after
+//! a `/clear` that is the conversation the reader just cleared.
 //!
 //! What is read is deliberately narrow: the prompts the user submitted and
 //! the text the agent answered with. Tool calls and their results, thinking
@@ -43,7 +45,7 @@ pub const MAX_LIMIT: usize = 1000;
 /// Longest text of one prompt. The full prompt is the user's own words, so
 /// the bound is generous; a pasted log is cut and marked.
 const MAX_PROMPT_CHARS: usize = 6_000;
-/// Longest text of one answer, after the text blocks of one turn are joined.
+/// Longest text of one answer record (its text blocks joined).
 const MAX_ANSWER_CHARS: usize = 12_000;
 
 /// One turn of the conversation as the phone shows it.
@@ -98,26 +100,35 @@ impl AgentTranscript {
 }
 
 /// The stored conversation of the tab launched as `cmd` with launch id
-/// `launch_id`: the last `limit` turns of its transcript, or `unchanged` when
-/// `version` still names the file as it is. See [`AgentTranscript::reason`]
-/// for the ways this answers without turns.
+/// `launch_id` in `tab_dir`: the last `limit` turns of its transcript, or
+/// `unchanged` when `version` still names the file as it is. See
+/// [`AgentTranscript::reason`] for the ways this answers without turns.
 pub fn agent_session_transcript(
     cmd: &str,
     project_id: Option<&str>,
+    tab_dir: Option<&str>,
     launch_id: &str,
     version: Option<&str>,
     limit: usize,
 ) -> AgentTranscript {
     let limit = limit.clamp(1, MAX_LIMIT);
-    agent_session::read_agent_transcript(
+    if cmd == "opencode" {
+        return opencode_transcript(project_id, tab_dir, version, limit);
+    }
+    agent_session::read_agent_transcript_from(
         cmd,
         project_id,
         launch_id,
+        // Never the launch id's file once a live id is recorded: after a
+        // `/clear` that file is the cleared conversation.
+        false,
         |path, kind| read_transcript(path, kind, version, limit),
         // Codex's thread store keeps no messages (only a thread's first one),
         // so a release that writes no rollout has no conversation to read.
         |_, _| None,
     )
+    .or_else(|| (cmd == "claude").then(|| fresh_claude_session(project_id, launch_id)).flatten())
+    .or_else(|| (cmd == "codex").then(|| fresh_codex_session(project_id, launch_id)).flatten())
     .unwrap_or_else(|| {
         AgentTranscript::unavailable(if matches!(cmd, "claude" | "codex") {
             "no_transcript"
@@ -125,6 +136,66 @@ pub fn agent_session_transcript(
             "unsupported"
         })
     })
+}
+
+/// A Claude session the hook has recorded but Claude has not written yet —
+/// right after a `/clear`, or a launch before its first turn: available and
+/// empty, so the phone shows a fresh chat rather than the screen or the
+/// conversation before it.
+fn fresh_claude_session(project_id: Option<&str>, launch_id: &str) -> Option<AgentTranscript> {
+    if !agent_session::is_uuid_shaped(launch_id) {
+        return None;
+    }
+    let live = agent_session::read_live_session_for(project_id, launch_id)?;
+    Some(AgentTranscript {
+        available: true,
+        version: Some(format!("new:{live}")),
+        ..Default::default()
+    })
+}
+
+/// A Codex tab whose session has not started yet: Codex mints its session id
+/// itself and reports it to the hook only once the session starts, with its
+/// first turn — so a new or restored tab has no id recorded until then.
+/// Available and empty, as a fresh Claude session is, rather than "not found"
+/// on every Codex tab until it is prompted. Local tabs only: a remote tab's
+/// hook records on the remote host, never here, so it would wait forever.
+fn fresh_codex_session(project_id: Option<&str>, launch_id: &str) -> Option<AgentTranscript> {
+    if !agent_session::is_uuid_shaped(launch_id)
+        || agent_session::read_live_session_for(project_id, launch_id).is_some()
+        || project_id.is_some_and(|id| crate::services::remote::remote_target_for(id).is_some())
+    {
+        return None;
+    }
+    Some(AgentTranscript {
+        available: true,
+        version: Some(format!("new:{launch_id}")),
+        ..Default::default()
+    })
+}
+
+/// An OpenCode tab's conversation, from OpenCode's session store
+/// (`services::opencode_store`): the newest session of the tab's folder. A
+/// remote tab's OpenCode writes a store on the remote host, so it has none
+/// here to read.
+fn opencode_transcript(
+    project_id: Option<&str>,
+    tab_dir: Option<&str>,
+    version: Option<&str>,
+    limit: usize,
+) -> AgentTranscript {
+    let Some(dir) = tab_dir.filter(|dir| Path::new(dir).is_absolute()) else {
+        return AgentTranscript::unavailable("no_session");
+    };
+    if project_id.is_some_and(|id| crate::services::remote::remote_target_for(id).is_some()) {
+        return AgentTranscript::unavailable("unsupported");
+    }
+    let db = crate::services::opencode_store::db_path();
+    if !db.is_file() {
+        return AgentTranscript::unavailable("no_transcript");
+    }
+    crate::services::opencode_store::session_transcript(&db, dir, version, limit)
+        .unwrap_or_else(|| AgentTranscript::unavailable("read_failed"))
 }
 
 /// The file's fingerprint: its length and modification time. Both move on
@@ -189,9 +260,10 @@ pub fn read_transcript(
     })
 }
 
-/// The turns in `lines`, in order. Consecutive answer records are one turn:
-/// Claude writes each text block of an answer as a record of its own, with
-/// the tool calls it made in between, and the reader wants the answer whole.
+/// The turns in `lines`, in order. Each answer record is an entry of its own:
+/// Claude writes each message of a turn as a record, with the tool calls it
+/// made in between, and the phone shows them as separate bubbles — joined
+/// into one they ran together ("Let me check…" glued to the final answer).
 fn parse_entries<'a>(lines: impl Iterator<Item = &'a str>, kind: TranscriptKind) -> Vec<TranscriptEntry> {
     let mut entries: Vec<TranscriptEntry> = Vec::new();
     for line in lines {
@@ -212,30 +284,24 @@ fn parse_entries<'a>(lines: impl Iterator<Item = &'a str>, kind: TranscriptKind)
             .get("timestamp")
             .and_then(Value::as_str)
             .map(str::to_string);
-        let bound = if role == "answer" { MAX_ANSWER_CHARS } else { MAX_PROMPT_CHARS };
-        let Some(text) = clean_text(&raw) else {
-            continue;
-        };
-        if role == "answer" {
-            if let Some(last) = entries.last_mut().filter(|last| last.kind == "answer") {
-                if !last.cut {
-                    last.text.push_str("\n\n");
-                    last.text.push_str(&text);
-                    bound_entry(last, bound);
-                }
-                continue;
-            }
-        }
-        let mut entry = TranscriptEntry {
-            kind: role.to_string(),
-            text,
-            at,
-            cut: false,
-        };
-        bound_entry(&mut entry, bound);
-        entries.push(entry);
+        entries.extend(transcript_entry(role, &raw, at));
     }
     entries
+}
+
+/// One turn as the phone shows it: `raw` cleaned (`clean_text`) and cut at
+/// its kind's bound. `None` when nothing is left to show. Shared by every
+/// reader, whatever the agent keeps its conversation in.
+pub(crate) fn transcript_entry(role: &str, raw: &str, at: Option<String>) -> Option<TranscriptEntry> {
+    let bound = if role == "answer" { MAX_ANSWER_CHARS } else { MAX_PROMPT_CHARS };
+    let mut entry = TranscriptEntry {
+        kind: role.to_string(),
+        text: clean_text(raw)?,
+        at,
+        cut: false,
+    };
+    bound_entry(&mut entry, bound);
+    Some(entry)
 }
 
 /// Cut `entry.text` at `bound` characters, marking the cut.
@@ -260,11 +326,16 @@ fn clean_text(raw: &str) -> Option<String> {
 
 /// A Claude record as a turn: a `user` record that is a prompt (the same
 /// reading the last-prompt line makes — tool results, meta notes and
-/// reminders are not), or an `assistant` record's text blocks. Thinking and
+/// reminders are not), a prompt the user queued mid-turn (the prompt chart's
+/// reading), or an `assistant` record's text blocks. Thinking and
 /// tool-use blocks are stepped over, as is a sidechain (a subagent's) record.
 fn claude_entry(value: &Value) -> Option<(&'static str, String)> {
     match value.get("type").and_then(Value::as_str)? {
         "user" => agent_session::claude_prompt_in_record(value).map(|text| ("prompt", text)),
+        // A prompt typed while Claude was working lives only here.
+        "attachment" if value.get("isSidechain").and_then(Value::as_bool) != Some(true) => {
+            agent_session::claude_queued_prompt(value).map(|text| ("prompt", text))
+        }
         "assistant" => {
             if value.get("isSidechain").and_then(Value::as_bool) == Some(true) {
                 return None;
@@ -331,7 +402,7 @@ mod tests {
     }
 
     #[test]
-    fn a_claude_transcript_reads_as_prompts_and_whole_answers() {
+    fn a_claude_transcript_reads_as_prompts_and_one_bubble_per_message() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("s.jsonl");
         std::fs::write(
@@ -358,9 +429,11 @@ mod tests {
             kinds(&read),
             vec![
                 ("prompt", "add a clear\nbutton"),
-                // The two text blocks of one turn, the tool call and its
-                // result between them left out, the escape byte dropped.
-                ("answer", "Looking at the composer.\n\nDone: the button[0m clears the draft."),
+                // The two messages of one turn, each its own bubble, the
+                // tool call and its result between them left out, the escape
+                // byte dropped.
+                ("answer", "Looking at the composer."),
+                ("answer", "Done: the button[0m clears the draft."),
                 ("prompt", "/model opus"),
             ]
         );
@@ -372,7 +445,7 @@ mod tests {
         assert!(again.unchanged && again.entries.is_empty());
         assert_eq!(again.version, Some(version.clone()));
         let stale = read_transcript(&path, TranscriptKind::Claude, Some("0:0"), DEFAULT_LIMIT).unwrap();
-        assert!(!stale.unchanged && stale.entries.len() == 3);
+        assert!(!stale.unchanged && stale.entries.len() == 4);
 
         // The limit keeps the newest turns and says that older ones exist.
         let last = read_transcript(&path, TranscriptKind::Claude, None, 2).unwrap();
@@ -380,6 +453,41 @@ mod tests {
         assert_eq!(kinds(&last).iter().map(|(k, _)| *k).collect::<Vec<_>>(), vec!["answer", "prompt"]);
 
         assert!(read_transcript(&dir.path().join("missing.jsonl"), TranscriptKind::Claude, None, 5).is_none());
+    }
+
+    #[test]
+    fn a_prompt_typed_while_claude_worked_is_a_bubble_in_its_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"fix the build\"}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Checking.\"}]}}\n",
+                // The shapes a census of real sessions found, as written.
+                "{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"content\":\"also the tests\"}\n",
+                "{\"type\":\"attachment\",\"isSidechain\":false,\"timestamp\":\"2026-09-18T18:51:27.432Z\",\"attachment\":{\"type\":\"queued_command\",\"prompt\":\"also the tests\",\"commandMode\":\"prompt\",\"origin\":{\"kind\":\"human\"}}}\n",
+                "{\"type\":\"attachment\",\"isSidechain\":false,\"attachment\":{\"type\":\"queued_command\",\"prompt\":[{\"type\":\"image\",\"source\":{}},{\"type\":\"text\",\"text\":\"and this screenshot\"}],\"commandMode\":\"prompt\",\"origin\":{\"kind\":\"human\"}}}\n",
+                "{\"type\":\"attachment\",\"isSidechain\":false,\"attachment\":{\"type\":\"queued_command\",\"prompt\":\"<cross-session-message from=\\\"x\\\">hi</cross-session-message>\",\"commandMode\":\"prompt\",\"origin\":{\"kind\":\"peer\"},\"isMeta\":true}}\n",
+                "{\"type\":\"attachment\",\"isSidechain\":false,\"attachment\":{\"type\":\"queued_command\",\"prompt\":\"<task-notification>done</task-notification>\",\"commandMode\":\"task-notification\"}}\n",
+                "{\"type\":\"attachment\",\"isSidechain\":true,\"attachment\":{\"type\":\"queued_command\",\"prompt\":\"a note\",\"origin\":{\"kind\":\"coordinator\"}}}\n",
+                "{\"type\":\"attachment\",\"attachment\":{\"type\":\"date\"}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Both fixed.\"}]}}\n",
+            ),
+        )
+        .unwrap();
+        let read = read_transcript(&path, TranscriptKind::Claude, None, DEFAULT_LIMIT).unwrap();
+        assert_eq!(
+            kinds(&read),
+            vec![
+                ("prompt", "fix the build"),
+                ("answer", "Checking."),
+                ("prompt", "also the tests"),
+                ("prompt", "and this screenshot"),
+                ("answer", "Both fixed."),
+            ]
+        );
+        assert_eq!(read.entries[2].at.as_deref(), Some("2026-09-18T18:51:27.432Z"));
     }
 
     #[test]
@@ -406,6 +514,23 @@ mod tests {
     }
 
     #[test]
+    fn a_bubble_holds_what_the_user_typed_and_nothing_the_cli_appended() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<tool_use_error>File has not been read yet</tool_use_error>\"}}\n",
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"what changed?\"},{\"type\":\"text\",\"text\":\"<total_tokens>128000</total_tokens>\"}]}}\n",
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"ship it\\n<system-reminder>be careful</system-reminder>\"}}\n",
+            ),
+        )
+        .unwrap();
+        let read = read_transcript(&path, TranscriptKind::Claude, None, DEFAULT_LIMIT).unwrap();
+        assert_eq!(kinds(&read), vec![("prompt", "what changed?"), ("prompt", "ship it")]);
+    }
+
+    #[test]
     fn long_text_is_cut_and_marked_and_an_unknown_agent_is_unsupported() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("s.jsonl");
@@ -416,14 +541,18 @@ mod tests {
         )
         .unwrap();
         let read = read_transcript(&path, TranscriptKind::Claude, None, DEFAULT_LIMIT).unwrap();
-        assert_eq!(read.entries.len(), 1);
-        assert!(read.entries[0].cut);
+        assert_eq!(read.entries.len(), 2);
+        assert!(read.entries[0].cut && !read.entries[1].cut);
         assert_eq!(read.entries[0].text.chars().count(), MAX_ANSWER_CHARS);
 
-        let gemini = agent_session_transcript("gemini", None, "0f5f9b7e-1c2d-4e3f-8a9b-0c1d2e3f4a5b", None, 5);
+        let gemini = agent_session_transcript("gemini", None, None, "0f5f9b7e-1c2d-4e3f-8a9b-0c1d2e3f4a5b", None, 5);
         assert!(!gemini.available);
         assert_eq!(gemini.reason.as_deref(), Some("unsupported"));
         // Not even a uuid: refused before any file is looked for.
-        assert_eq!(agent_session_transcript("claude", None, "../x", None, 5).reason.as_deref(), Some("no_transcript"));
+        assert_eq!(agent_session_transcript("claude", None, None, "../x", None, 5).reason.as_deref(), Some("no_transcript"));
+        assert_eq!(agent_session_transcript("codex", None, None, "../x", None, 5).reason.as_deref(), Some("no_transcript"));
+        // OpenCode is found by the tab's folder; without one there is nothing to look up.
+        assert_eq!(agent_session_transcript("opencode", None, None, "0f5f9b7e-1c2d-4e3f-8a9b-0c1d2e3f4a5b", None, 5).reason.as_deref(), Some("no_session"));
+        assert_eq!(agent_session_transcript("opencode", None, Some("relative/dir"), "0f5f9b7e-1c2d-4e3f-8a9b-0c1d2e3f4a5b", None, 5).reason.as_deref(), Some("no_session"));
     }
 }

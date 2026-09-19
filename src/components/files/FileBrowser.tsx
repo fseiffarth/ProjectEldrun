@@ -99,7 +99,7 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
       setShownPaths([]);
       return;
     }
-    invoke<ProjectJson>("load_project", { localFile })
+    invoke<ProjectJson>("get_project_panel_prefs", { localFile })
       .then((project) => {
         setHiddenEndings(readStringList(project, "panel_hidden_endings"));
         setHiddenPaths(readStringList(project, "panel_hidden_paths"));

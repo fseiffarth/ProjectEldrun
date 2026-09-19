@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { defaultUse24h, resolveUse24h } from "../lib/timeFormat";
-import { formatStampTime, formatTime } from "../lib/calendarTime";
+import { formatStampTime, formatTime } from "../lib/calendar/calendarTime";
 
 /**
  * The app-wide clock.

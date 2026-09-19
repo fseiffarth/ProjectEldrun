@@ -21,7 +21,7 @@ import {
   type RectViewport,
 } from "../components/embed/pdf/links";
 import { isFlat } from "../components/embed/pdf/pageInk";
-import type { SyncRect, TextItemBox } from "../lib/viewers/tex";
+import type { SyncRect, TextItemBox } from "../lib/viewers/tex/tex";
 import { destTop, resolveDest } from "../components/embed/pdf/outline";
 
 /** A scale-1, unrotated viewport over a 792bp-tall page: PDF user space is

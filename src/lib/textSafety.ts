@@ -10,7 +10,7 @@
  * stripping at all, while a mail subject three panes away was cleaned.
  *
  * Keeping the helpers here, with no imports, means the pure layers can use them
- * — `lib/ics.ts` parses with no runtime and is unit-tested with none. `lib/mail.ts`
+ * — `lib/calendar/ics.ts` parses with no runtime and is unit-tested with none. `lib/mail.ts`
  * re-exports `stripFormatControls` so its own call sites and public API are
  * unchanged; this is the one definition behind both.
  *
@@ -54,7 +54,7 @@ const FORMAT_CONTROL_CLASS =
  *
  * The strip is deliberately silent (it runs over every imported event title and
  * every mail subject, and narrating it would be noise), which is exactly why
- * something has to be able to *ask*. `lib/icsSafety.ts` does, so that a file
+ * something has to be able to *ask*. `lib/calendar/icsSafety.ts` does, so that a file
  * whose titles are disguised can be reported before it is imported rather than
  * cleaned without a word.
  */

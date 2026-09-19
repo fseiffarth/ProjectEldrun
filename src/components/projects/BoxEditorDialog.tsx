@@ -4,7 +4,7 @@ import type { ProjectEntry } from "../../types";
 import { useProjectsStore } from "../../stores/projects";
 import { useBoxesStore } from "../../stores/boxes";
 import { useBoxEditorStore } from "../../stores/boxEditor";
-import { usePillSelectionStore } from "../../stores/pillSelection";
+import { usePillSelectionStore } from "../../stores/drag/pillSelection";
 import { UntestedTag } from "../common/UntestedTag";
 import { useT } from "../../lib/i18n";
 

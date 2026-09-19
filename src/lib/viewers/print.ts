@@ -27,7 +27,7 @@ import {
   printSnapshot,
   JOB_APPEAR_TIMEOUT_MS,
   type PrintProgress,
-} from "../printing";
+} from "../window/printing";
 import type { PrintSnapshot } from "../../types/printing";
 
 // ── Print options ────────────────────────────────────────────────────────────

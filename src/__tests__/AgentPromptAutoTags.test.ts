@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agentPromptAutoTags } from "../lib/agentPromptAutoTags";
+import { agentPromptAutoTags } from "../lib/agents/prompt/autoTags";
 
 describe("agentPromptAutoTags", () => {
   it("derives agent, preface, blame, result, state and language tags", () => {

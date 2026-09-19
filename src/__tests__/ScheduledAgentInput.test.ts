@@ -1,15 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../lib/terminalInput", () => ({
+vi.mock("../lib/terminal/terminalInput", () => ({
   writePtyInput: vi.fn(() => Promise.resolve()),
 }));
 
-import { writePtyInput } from "../lib/terminalInput";
+import { writePtyInput } from "../lib/terminal/terminalInput";
 import {
   _clearScheduledAgentInputsForTest,
   registerScheduledAgentInput,
   submitScheduledAgentMessage,
-} from "../lib/scheduledAgentInput";
+} from "../lib/agents/scheduledAgentInput";
 
 const writeMock = vi.mocked(writePtyInput);
 const decode = (value: Uint8Array) => new TextDecoder().decode(value);

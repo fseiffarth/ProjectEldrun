@@ -707,7 +707,7 @@ fn sanitize_tmux_key(id: &str) -> String {
 }
 
 /// The `eldrun-<project>--` prefix a session minted for `project_id` carries
-/// (`lib/tmuxSession.ts`'s `newTmuxSessionName`). The `--` cannot occur inside
+/// (`lib/terminal/tmuxSession.ts`'s `newTmuxSessionName`). The `--` cannot occur inside
 /// either half (a project id and a uuid are each single-hyphenated), so it
 /// unambiguously separates the project id from the trailing uuid.
 fn tmux_session_prefix_for(project_id: &str) -> String {

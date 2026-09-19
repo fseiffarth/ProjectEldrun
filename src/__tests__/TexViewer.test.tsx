@@ -75,7 +75,7 @@ describe("TexView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // The beamer/hover switches are remembered per project in localStorage
-    // (`stores/texViewPref`); a test must not inherit the previous one's click.
+    // (`stores/viewers/texViewPref`); a test must not inherit the previous one's click.
     localStorage.clear();
   });
 
@@ -492,7 +492,7 @@ describe("TexView", () => {
         expect.objectContaining({ line: 3, column: 2 }),
       ),
     );
-    const { usePdfSyncStore } = await import("../stores/pdfSync");
+    const { usePdfSyncStore } = await import("../stores/viewers/pdfSync");
     expect(usePdfSyncStore.getState().byPath["/p/paper.pdf"]).toMatchObject({
       rect: { page: 2, x: 10, y: 20, w: 100, h: 12 },
       afterReload: true,

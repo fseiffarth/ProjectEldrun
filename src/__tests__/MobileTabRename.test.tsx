@@ -1,5 +1,5 @@
 /**
- * Renaming an agent tab from the phone. The row's ✎ opens a sheet that PUTs the
+ * Renaming an agent tab from the phone. Tapping the tab's name opens a sheet that PUTs the
  * new label against the tab's opaque id — the desktop owns the tab layout, so
  * nothing here is written by the sidecar — and the screen reloads afterwards so
  * the row shows the label the desktop actually stored.
@@ -61,6 +61,25 @@ describe("Mobile project — rename an agent tab", () => {
       && JSON.parse(String(init?.body)).label === "Release review")).toBe(true));
     expect(await screen.findByText("Release review")).toBeTruthy();
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("renames from the name, opens from the rest of the card, and says which agent runs", async () => {
+    tabs[0] = { ...tabs[0], agent_label: "Codex" } as typeof tabs[0];
+    const terminal = vi.fn();
+    try {
+      render(<Project id="p1" back={() => {}} terminal={terminal} />);
+      const name = await screen.findByRole("button", { name: "Rename Claude" });
+      expect(name.textContent).toBe("Claude");
+      expect(screen.queryByText(/✎/u)).toBeNull();
+      screen.getByText("Codex · live");
+      fireEvent.click(screen.getByRole("button", { name: "Open Claude" }));
+      expect(terminal).toHaveBeenCalledWith(expect.objectContaining({ id: "t-agent" }));
+      fireEvent.click(name);
+      await screen.findByLabelText("Tab name");
+      expect(terminal).toHaveBeenCalledTimes(1);
+    } finally {
+      delete (tabs[0] as { agent_label?: string }).agent_label;
+    }
   });
 
   it("offers no rename on a shell tab and refuses an empty name", async () => {

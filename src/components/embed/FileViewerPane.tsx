@@ -3,6 +3,14 @@ import { DraftSaver } from "./draftSaver";
 import { lineStarts, indexedLine } from "./lineIndex";
 import { Suspense, createContext, lazy, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { invokeTrusted } from "../../lib/execTrust";
+import { CompletionCache, completionLineLength, completionWindow, typeThrough, type CompletionGhost } from "../../lib/viewers/completion/autocomplete";
+import { OllamaCompletionProvider } from "../../lib/viewers/completion/ollamaCompletionProvider";
+import { CopilotCompletionProvider, CopilotFeedback, copilotServes } from "../../lib/viewers/completion/copilotCompletionProvider";
+import type { CompletionCandidate, CompletionProvider } from "../../lib/viewers/completion/completionProvider";
+import { completionContext } from "../../lib/viewers/completion/completionContext";
+import { bumpUsage } from "../../stores/usage";
+import { METRIC } from "../../lib/usageMetrics";
 import { emit, listen } from "@tauri-apps/api/event";
 import { useWindowsStore } from "../../stores/windows";
 import {
@@ -12,11 +20,12 @@ import {
   type ViewerState,
 } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
-import { useTexViewPrefStore, texViewScopeKey } from "../../stores/texViewPref";
+import { saverInterval, useQuiesce } from "../../stores/power";
+import { useTexViewPrefStore, texViewScopeKey } from "../../stores/viewers/texViewPref";
 import { useExperimental } from "../../lib/experimental";
 import { useProjectsStore } from "../../stores/projects";
-import { useRemoteStatusStore } from "../../stores/remoteStatus";
-import { useRemoteMachinesStore } from "../../stores/remoteMachines";
+import { useRemoteStatusStore } from "../../stores/remote/remoteStatus";
+import { useRemoteMachinesStore } from "../../stores/remote/remoteMachines";
 import { RemotePaneHold } from "../projects/RemotePaneHold";
 import { useLinkRoutingStore } from "../../stores/linkRouting";
 import {
@@ -24,18 +33,18 @@ import {
   hasMountedEditor,
   registerEditor,
   unregisterEditor,
-} from "../../stores/editorJump";
-import { usePdfSyncStore } from "../../stores/pdfSync";
-import { useScrollSync } from "../../stores/scrollSync";
+} from "../../stores/viewers/editorJump";
+import { usePdfSyncStore } from "../../stores/viewers/pdfSync";
+import { useScrollSync } from "../../stores/viewers/scrollSync";
 import { parseDetachedParam } from "../../stores/detached";
 import { Dropdown } from "../common/Dropdown";
 import { PrinterIcon } from "../common/PrinterIcon";
 import { SaveIcon } from "../common/SaveIcon";
 import { CompareView } from "./CompareView";
 import { PresentationOverlay } from "./PresentationOverlay";
-import { usePresentationStore } from "../../stores/presentation";
+import { usePresentationStore } from "../../stores/viewers/presentation";
 import { matchAnchorId, renderMarkdown, splitLineHint, toggleTaskCheckbox } from "../../lib/viewers/markdown";
-import { useMdAnchorStore } from "../../stores/mdAnchor";
+import { useMdAnchorStore } from "../../stores/viewers/mdAnchor";
 import { useProjectRemarksStore } from "../../stores/projectRemarks";
 import { MdGraphView } from "./MdGraphView";
 import {
@@ -82,8 +91,8 @@ import {
   wrapBeamerOverlay,
   type BeamerOverlayCommand,
   type RememberedSelection,
-} from "../../lib/viewers/beamer";
-import { internalViewerFor, disabledViewers, relFromAbs, type InternalViewer, type FileEntry } from "../../lib/viewers/fileUtils";
+} from "../../lib/viewers/tex/beamer";
+import { internalViewerFor, disabledViewers, relFromAbs, lineEndingOf, applyLineEnding, type InternalViewer, type FileEntry } from "../../lib/viewers/fileUtils";
 import {
   isPythonPath,
   isPythonMainScript,
@@ -100,9 +109,9 @@ import {
   pythonRunPlan,
   fileSideLocation,
   placeForFocused,
-} from "../../lib/pythonRun";
+} from "../../lib/terminal/pythonRun";
 import { RunHostPicker } from "../tabs/TabLocalityBadges";
-import { useRunHostPrefStore } from "../../stores/runHostPref";
+import { useRunHostPrefStore } from "../../stores/remote/runHostPref";
 import {
   isSlurmScript,
   parseSbatchDirectives,
@@ -114,10 +123,11 @@ import {
   COMMON_SBATCH_KEYS,
   type SlurmInfo,
   type InteractiveResources,
-} from "../../lib/slurm";
+} from "../../lib/remote/hpc/slurm";
 import { FileDropContext } from "../files/fileDropContext";
 import { UntestedTag } from "../common/UntestedTag";
-import { fetchRemoteImage, hostsLabel, remoteImageHosts } from "../../lib/remoteImages";
+import { FolderPickerDialog } from "../common/FolderPickerDialog";
+import { fetchRemoteImage, hostsLabel, remoteImageHosts } from "../../lib/remote/remoteImages";
 import { AddRemarkDialog } from "../files/AddRemarkDialog";
 import { FileSourceSwitch } from "../files/ProjectFilesPane";
 import {
@@ -127,6 +137,7 @@ import {
   isPathWithin,
   normalizePath,
   resolvePath,
+  relativePathFrom,
   relativePathWithin,
   toFileUri,
 } from "../../lib/paths";
@@ -138,9 +149,9 @@ import {
   type AutocompleteMode,
   type GrammarIssue,
 } from "../../types";
-import { useSyncStore } from "../../stores/sync";
+import { useSyncStore } from "../../stores/remote/sync";
 import { ContextFilePicker } from "./ContextFilePicker";
-import { useFileSourcesStore } from "../../stores/fileSources";
+import { useFileSourcesStore } from "../../stores/viewers/fileSources";
 import {
   FileScopeContext,
   useFileScope,
@@ -223,14 +234,14 @@ import {
   texPreamble,
   type TexSnippetRange,
   compileWasNoop,
-} from "../../lib/viewers/tex";
-import { chordLabel, chordMatches, resolveChord, type ShortcutMap } from "../../lib/shortcuts";
-import { useChordHint, useShortcutOverrides } from "../../lib/shortcutHint";
+} from "../../lib/viewers/tex/tex";
+import { chordLabel, chordMatches, resolveChord, type ShortcutMap } from "../../lib/shortcuts/shortcuts";
+import { useChordHint, useShortcutOverrides } from "../../lib/shortcuts/shortcutHint";
 import {
   renderTexPreview,
   cachedTexPreview,
   type TexPreview,
-} from "../../lib/viewers/texPreview";
+} from "../../lib/viewers/tex/texPreview";
 import { TexStructureRail, TexStructureSidebar } from "./tex/TexStructureSidebar";
 import { useDialogs } from "../common/PromptDialogs";
 import { focusTexWorkspaceForSource } from "./openTexWorkspace";
@@ -240,12 +251,12 @@ import {
   registerTexWorkspace,
   unregisterTexCompile,
   unregisterTexWorkspace,
-} from "../../stores/texCenter";
+} from "../../stores/viewers/texCenter";
 import { YamlTree } from "./YamlTree";
 import { YamlGrid } from "./YamlGrid";
 import { BibCards } from "./BibCards";
 import { isTreePath, isJsonPath } from "../../lib/viewers/yaml";
-import { isBibPath } from "../../lib/viewers/bib";
+import { isBibPath } from "../../lib/viewers/tex/bib";
 import { hasCards } from "../../lib/viewers/yamlGrid";
 import { useI18nStore, useT, type TranslationKey } from "../../lib/i18n";
 import { defaultSpellLanguage, dictionaryLabel } from "../../lib/spellDictionaries";
@@ -384,7 +395,7 @@ interface Props {
    *  tab of every backgrounded project keeps paying it forever. */
   visible?: boolean;
   /** The subwindow (group) id hosting this pane, for proportional scroll-linking
-   *  between two side-by-side viewer subwindows (see stores/scrollSync). Null/
+   *  between two side-by-side viewer subwindows (see stores/viewers/scrollSync). Null/
    *  absent when the pane isn't in a syncable group; the sync hooks then no-op. */
   groupId?: string | null;
 }
@@ -426,7 +437,7 @@ export function FileViewerPane({ viewer, path, projectId, tabKey, visible = true
   const deckOn = useExperimental("deck_presenter");
 
   // A talk in progress withdraws this pane's marker/laser overlay — see the note
-  // at the render below, and `stores/presentation` for why it is a store.
+  // at the render below, and `stores/viewers/presentation` for why it is a store.
   const presenting = usePresentationStore((s) => s.presenting > 0);
 
   // Resolve whether these bytes are remote-native (host SFTP) or the local
@@ -1308,6 +1319,9 @@ export function useEditableFile(path: string, enabled = true) {
   const scope = useFileScope();
   const t = useT();
   const paneVisible = usePaneVisible();
+  // Widens the reload poll below while this window is unfocused (or Energy
+  // Saver is on), the same way every other always-on timer site does.
+  const quiesce = useQuiesce();
   const loadedIdentity = useRef<string | null>(null);
   const identity = JSON.stringify([path, scope]);
   const [content, setContent] = useState<string | null>(null);
@@ -1329,6 +1343,24 @@ export function useEditableFile(path: string, enabled = true) {
   // bump it so they don't trip the watcher.
   const lastMtime = useRef<number | null>(null);
 
+  // The line ending the FILE uses, remembered at load and re-applied at save.
+  //
+  // It has to be remembered, because the draft cannot carry it: the editor is a
+  // `<textarea>` and `onTextChange` reads `el.value`, whose API value the HTML
+  // spec normalizes to LF. So the first keystroke anywhere in a CRLF file
+  // silently rewrote EVERY line ending in the buffer and the save wrote LF
+  // throughout — a one-character edit producing a whole-file diff, in every text
+  // viewer at once (md, tex, yaml, .bib, code). That also broke the promise the
+  // structured viewers are built on: `yaml.ts`, `table.ts` and `bib.ts` each
+  // derive the file's ending from the buffer and splice it back, so on a CRLF
+  // file they wrote CRLF into a buffer that turned LF underneath them and the
+  // result was MIXED endings.
+  //
+  // The buffer is therefore LF by construction — seeded normalized, so every
+  // parser and splice above sees one convention — and the ending is restored on
+  // the way out, at the single place bytes leave this hook.
+  const fileEol = useRef<"\r\n" | "\n">("\n");
+
   // Autosave is ON by default; only an explicit `autosave: false` disables it.
   const autosave = useSettingsStore((s) => s.settings?.autosave !== false);
 
@@ -1337,9 +1369,15 @@ export function useEditableFile(path: string, enabled = true) {
 
   const seedFromDisk = useCallback(
     (text: string) => {
-      reset(text);
-      setBaseline(text);
-      setContent(text);
+      // Record the file's own ending, then hold the buffer in LF (see `fileEol`).
+      // A file with no CRLF at all is LF, which is also the right default for an
+      // empty one. Mixed endings resolve to CRLF, the same "any CRLF ⇒ CRLF" rule
+      // `bib.ts`'s `lineEndingOf` and `table.ts` already follow.
+      fileEol.current = lineEndingOf(text);
+      const lf = applyLineEnding(text, "\n");
+      reset(lf);
+      setBaseline(lf);
+      setContent(lf);
       setExternalChange(false);
     },
     [reset],
@@ -1374,9 +1412,18 @@ export function useEditableFile(path: string, enabled = true) {
   const isDirty = loaded && baseline != null && draft !== baseline;
   const isDirtyRef = useRef(isDirty);
   isDirtyRef.current = isDirty;
+  // The poll's `.then` closes over the render that armed it, so the baseline is
+  // read through a ref — same reason `isDirtyRef` exists beside it.
+  const baselineRef = useRef(baseline);
+  baselineRef.current = baseline;
 
   const saver = useMemo(() => new DraftSaver(async (text) => {
-    await writeFileText(path, text, scope);
+    // The ONE place a text buffer leaves this hook, and therefore the one place
+    // the file's own line ending is restored (see `fileEol`). `\r?\n` rather than
+    // `\n` so this is idempotent: a buffer that still holds CRLF — the seed,
+    // before any keystroke has been through the textarea — is not doubled into
+    // `\r\r\n`.
+    await writeFileText(path, applyLineEnding(text, fileEol.current), scope);
     if (scope && basename(path).toLowerCase() === "remarks.md") {
       const project = useProjectsStore.getState().projects.find((p) => p.id === scope);
       if (project) await useProjectRemarksStore.getState().load(scope, resolveProjectDirectory(project));
@@ -1411,6 +1458,10 @@ export function useEditableFile(path: string, enabled = true) {
   // viewer's poll would otherwise run forever (an SFTP round trip per tick for a
   // remote project). The immediate check on re-show catches whatever changed on
   // disk while the pane was hidden, against the baseline seeded at load time.
+  // While the window is unfocused the poll is widened, not stopped: a viewer
+  // left open on a second screen as a live preview of a file edited in another
+  // app must still follow it. `quiesce` is a dependency, so regaining focus
+  // re-runs the effect — whose immediate `check()` is the catch-up.
   useEffect(() => {
     if (!loaded || !paneVisible) return;
     let cancelled = false;
@@ -1426,16 +1477,34 @@ export function useEditableFile(path: string, enabled = true) {
             return;
           }
           // Clean buffer → silently re-read + reseed baseline/draft.
+          //
+          // …but NOT when the bytes are the ones already in the buffer. An mtime
+          // advance is not a content change: a latexmk run that rewrote an
+          // identical file, a `touch`, a formatter that made no difference, a
+          // checkout of the same content all land here, and `seedFromDisk`
+          // `reset()`s the history — clearing `past` AND `future`. So an
+          // untouched recompile in the background silently threw away the
+          // reader's whole undo stack, with nothing on screen to say it had
+          // happened. The banner case at least asks; this one never did.
+          //
+          // The comparison is made in BUFFER space, not against the raw bytes:
+          // the draft is LF by construction (see `fileEol`), so a CRLF file read
+          // back from disk would never compare equal and the skip would never
+          // fire on exactly the platform that needs it.
           readFileText(path, scope)
-            .then((text) => { if (!cancelled && !isDirtyRef.current) seedFromDisk(text); })
+            .then((text) => {
+              if (cancelled || isDirtyRef.current) return;
+              if (applyLineEnding(text, "\n") === baselineRef.current) return;
+              seedFromDisk(text);
+            })
             .catch(() => {});
         })
         .catch(() => {});
     };
     check();
-    const id = setInterval(check, RELOAD_POLL_MS);
+    const id = setInterval(check, saverInterval(RELOAD_POLL_MS, quiesce));
     return () => { cancelled = true; clearInterval(id); };
-  }, [path, scope, loaded, paneVisible, seedFromDisk]);
+  }, [path, scope, loaded, paneVisible, seedFromDisk, quiesce]);
 
   // Banner actions (#43): take the disk version, or keep mine (dismiss banner +
   // adopt current mtime so the next external change re-triggers).
@@ -2148,7 +2217,7 @@ export interface BracketSide {
 /** A matched delimiter pair (`open` earlier in the source than `close`), for
  *  the "highlight the matching bracket" overlay. Ranges rather than single
  *  offsets so the same type/overlay serves both the plain single-char
- *  ()[]{} matcher below and `lib/viewers/tex.ts`'s LaTeX-aware math/environment
+ *  ()[]{} matcher below and `lib/viewers/tex/tex.ts`'s LaTeX-aware math/environment
  *  matcher (`$`/`$$`/`\(`/`\)`/`\[`/`\]`/`\begin{…}`/`\end{…}`), which the two
  *  share structurally without either module importing the other's type. */
 export interface BracketMatch {
@@ -2223,7 +2292,7 @@ export function findMatchingBracket(text: string, caret: number): BracketMatch |
 
 /**
  * Build the transparent bracket-match overlay: the two paired delimiter
- * ranges found by {@link findMatchingBracket} (or `lib/viewers/tex.ts`'s
+ * ranges found by {@link findMatchingBracket} (or `lib/viewers/tex/tex.ts`'s
  * math/environment matcher) are each wrapped in
  * `<span class="file-viewer-bracket-match">`, the rest emitted plain — mirrors
  * `decorateSearchRanges`. SECURITY: every run of source text is HTML-escaped.
@@ -2793,7 +2862,7 @@ function CodeEditor({
    *  `preferred` is the user's active local model (🧠 menu); the completion runs
    *  against whichever model is *currently loaded* in Ollama memory at trigger
    *  time, preferring `preferred` when it is among the loaded set. */
-  autocomplete?: { enabled: boolean; preferred?: string; mode?: AutocompleteMode };
+  autocomplete?: { enabled: boolean; preferred?: string; preferredProse?: string; mode?: AutocompleteMode };
   /** Opt-in local grammar/spelling check (#45 follow-up). When enabled, the whole
    *  draft is checked against the currently-loaded local model after an idle
    *  pause; issues are underlined (colour by category) with a hover tooltip and
@@ -2934,13 +3003,24 @@ function CodeEditor({
   }, []);
 
   // #45 autocomplete: a pending ghost-text suggestion + the caret it applies at.
-  const [suggestion, setSuggestion] = useState<{ text: string; at: number } | null>(null);
+  const [suggestion, setSuggestion] = useState<CompletionGhost | null>(null);
   // A short status shown to the user when a completion is in flight, returns
   // nothing, or can't run (e.g. no local model loaded) — otherwise the feature
   // fails silently and reads as broken. A trailing "…" marks a transient
   // in-flight message; final messages auto-dismiss (see the effect below).
   const [acStatus, setAcStatus] = useState<string | null>(null);
   const acAbort = useRef<AbortController | null>(null);
+  const acDocumentVersion = useRef(0);
+  useLayoutEffect(() => { acDocumentVersion.current++; }, [draft, path]);
+  const acVisible = usePaneVisible();
+  const acCache = useRef(new CompletionCache());
+  const acCandidate = useRef(0);
+  const acCandidates = useRef<CompletionCandidate[]>([]);
+  const acDismissed = useRef<{ draft: string; caret: number } | null>(null);
+  const acOutcome = useRef<{ model: string; mode: AutocompleteMode | "copilot" } | null>(null);
+  const acEndpoint = useSettingsStore((s) => JSON.stringify([
+    s.settings?.ollama_host, s.settings?.ollama_allow_remote_host,
+  ]));
   // #45 live completion-length mode: starts from the per-type default and is
   // cycled in-editor with Shift+Tab while a suggestion is showing. Re-seeded if
   // the per-type default changes (e.g. the user picks a new default in settings).
@@ -2966,6 +3046,14 @@ function CodeEditor({
   >([]);
   const [acPicker, setAcPicker] = useState(false);
   const scope = useFileScope();
+
+  // Count one outcome per offered candidate, including partial acceptance.
+  const recordAcOutcome = useCallback((accepted: boolean) => {
+    const offered = acOutcome.current;
+    if (!offered) return;
+    acOutcome.current = null;
+    bumpUsage(scope ?? "root", `${accepted ? METRIC.AUTOCOMPLETE_ACCEPT : METRIC.AUTOCOMPLETE_DISMISS}.${offered.mode}.${offered.model}`);
+  }, [scope]);
 
   // Resolve the project the edited file belongs to (the longest project directory
   // that is a prefix of `path`), falling back to the active project — so the
@@ -3088,6 +3176,20 @@ function CodeEditor({
   // means we show the plain opaque textarea instead. A trailing newline mirrors
   // the textarea's own final empty line so scrolling stays aligned.
   const lang = useMemo(() => languageForPath(path), [path]);
+  // #45a: Copilot serves this editor only for a consented local project's code
+  // file; everything else stays on Ollama. The backend enforces the same gates.
+  const copilotEnabled = useExperimental("copilot_completion");
+  const acRemote = useProjectsStore((s) => !!s.projects.find((p) => p.id === scope)?.remote);
+  const acCopilot = useSettingsStore((s) => copilotServes(s.settings, copilotEnabled, scope, acRemote, lang));
+  // Per mount, so a remount never inherits the previous mount's document versions.
+  const [acEditorId] = useState(() => crypto.randomUUID());
+  const acFeedback = useMemo(
+    () => (acCopilot && scope ? new CopilotFeedback(scope, acEditorId) : null),
+    [acCopilot, scope, acEditorId],
+  );
+  // Hidden pane, other file, other provider, unmount: the server forgets the
+  // document. The next request after a show re-opens it with current content.
+  useEffect(() => () => acFeedback?.close(), [acFeedback, path, acVisible, autocomplete?.enabled]);
   const highlighted = useMemo(
     () => (loaded ? highlight(draft, lang) : null),
     [loaded, draft, lang],
@@ -3313,7 +3415,7 @@ function CodeEditor({
   // Bracket-match highlight: whichever bracket the caret sits just before/after
   // gets its partner highlighted too (`findMatchingBracket`/`decorateBracketMatch`
   // — mirrors the search overlay). For a `.tex` file, when the plain ()[]{}
-  // matcher finds nothing, fall back to `lib/viewers/tex.ts`'s LaTeX-aware
+  // matcher finds nothing, fall back to `lib/viewers/tex/tex.ts`'s LaTeX-aware
   // extras: math-mode toggles (`$…$`, `$$…$$`, `\(…\)`, `\[…\]`) and
   // `\begin{env}…\end{env}` structure blocks — LaTeX syntax the generic
   // matcher doesn't (and shouldn't, for every other file type) know about.
@@ -3521,6 +3623,19 @@ function CodeEditor({
   const edit = useCallback(
     (next: string, via?: string) => {
       if (next !== draftRef.current) {
+        acCandidates.current = [];
+        acAbort.current?.abort();
+        acAbort.current = null;
+        setAcStatus(null);
+        const before = draftRef.current;
+        if (suggestion) {
+          const inserted = next.slice(suggestion.at, suggestion.at + next.length - before.length);
+          const matches = next.length > before.length && suggestion.text.startsWith(inserted) &&
+            next === before.slice(0, suggestion.at) + inserted + before.slice(suggestion.at);
+          recordAcOutcome(matches);
+          if (matches) acFeedback?.accept(inserted);
+        }
+        setSuggestion((ghost) => typeThrough(before, next, ghost));
         if (changeTintRef.current) {
           const stages =
             via != null && via !== draftRef.current && via !== next ? [via, next] : [next];
@@ -3534,7 +3649,7 @@ function CodeEditor({
       }
       setDraft(next);
     },
-    [setDraft, noteChangeTrail],
+    [setDraft, noteChangeTrail, suggestion, recordAcOutcome, acFeedback],
   );
 
   // Where the caret and the view belong once React has re-rendered the textarea
@@ -4280,93 +4395,112 @@ function CodeEditor({
   }, [gotoLine?.nonce, loaded]);
 
   const dismissSuggestion = useCallback(() => {
+    acCandidates.current = [];
+    const el = textareaRef.current;
+    if (el) acDismissed.current = { draft: draftRef.current, caret: el.selectionStart };
+    recordAcOutcome(false);
     acAbort.current?.abort();
     acAbort.current = null;
     setSuggestion(null);
     setAcStatus(null);
-  }, []);
+  }, [recordAcOutcome]);
 
-  // #45: request a completion at the caret. Privacy-gated by the caller (only
-  // wired when the per-type setting is on). Completion runs against whichever
-  // local model is CURRENTLY LOADED in Ollama memory (the running set from
-  // /api/ps), preferring the user's active model when it is loaded.
-  //
-  // Two modes:
-  //  - manual (Ctrl+Space): surfaces a message when nothing is loaded / it fails,
-  //    so the user gets feedback rather than silence.
-  //  - auto (debounced as you type): only runs for the focused editor with a
-  //    collapsed caret and enough context, and stays SILENT on the unavailable/
-  //    error paths so typing isn't spammed with toasts. There is no remote
-  //    fallback either way (local-only by design, DECISION A).
-  const requestCompletion = useCallback(async (opts?: { auto?: boolean; mode?: AutocompleteMode }) => {
+  // Cancel on hiding, disabling, switching document/context/default mode, and unmount.
+  useEffect(() => {
+    dismissSuggestion();
+    return dismissSuggestion;
+  }, [acVisible, autocomplete?.enabled, path, scope, autocomplete?.preferred, autocomplete?.preferredProse, autocomplete?.mode, acEndpoint, contextFiles, acCopilot, dismissSuggestion]);
+
+  // External changes (reload / undo) bypass edit(). Invalidate their generation.
+  useEffect(() => {
+    acAbort.current?.abort();
+    acAbort.current = null;
+    setAcStatus(null);
+    acCandidates.current = [];
+    if (draft !== lastEditRef.current) {
+      recordAcOutcome(false);
+      setSuggestion(null);
+    }
+  }, [draft, recordAcOutcome]);
+
+  const requestCompletion = useCallback(async (opts?: { auto?: boolean; mode?: AutocompleteMode; candidate?: number }) => {
     const auto = opts?.auto === true;
-    // Explicit override (from the live cycle key) wins over the current mode,
-    // since setState hasn't flushed yet when the key handler calls through.
     const mode = opts?.mode ?? acMode;
     const el = textareaRef.current;
-    if (!el || !autocomplete?.enabled) return;
-    // Auto mode: only the focused editor, only at a collapsed caret, and only
-    // with a little context to complete from — otherwise skip the round trip.
-    if (auto) {
-      if (document.activeElement !== el) return;
-      if (el.selectionStart !== el.selectionEnd) return;
-    }
+    if (!el || !autocomplete?.enabled || !acVisible || el.selectionStart !== el.selectionEnd) return;
+    if (auto && document.activeElement !== el) return;
     const caret = el.selectionStart;
-    const prefix = draft.slice(0, caret);
-    const suffix = draft.slice(caret);
+    const snapshot = draftRef.current;
+    if (auto && acDismissed.current?.draft === snapshot && acDismissed.current.caret === caret) return;
+    const version = acDocumentVersion.current;
+    acDismissed.current = null;
+    const { prefix } = completionWindow(snapshot, caret);
     if (auto && prefix.replace(/\s+/g, "").length < 3) return;
+    recordAcOutcome(false);
+    acCandidates.current = [];
+    acCandidate.current = opts?.candidate ?? 0;
+    const candidate = acCandidate.current;
     acAbort.current?.abort();
     const ctl = new AbortController();
     acAbort.current = ctl;
     setSuggestion(null);
-    setAcStatus(t("fileViewer.autocompleteStatus", { mode: acModeLabel(mode, t) }));
+    setAcStatus(acCopilot ? t("fileViewer.copilotStatus") : t("fileViewer.autocompleteStatus", { mode: acModeLabel(mode, t) }));
+    const publish = (candidates: CompletionCandidate[]) => {
+      if (ctl.signal.aborted || acDocumentVersion.current !== version || draftRef.current !== snapshot ||
+          el.selectionStart !== caret || el.selectionEnd !== caret) return;
+      // Copilot returns its alternatives at once; Alt+[/] walks that list.
+      if (acCopilot) acCandidates.current = candidates;
+      const item = candidates[0];
+      acOutcome.current = item ? { model: `${item.provider}/${item.model ?? item.provider}`, mode: acCopilot ? "copilot" : item.mode ?? mode } : null;
+      setSuggestion(item ? { text: item.text, at: item.at, candidate: item } : null);
+      if (item) setAcStatus(null);
+    };
     try {
-      // Resolve the currently-loaded model at trigger time (it may have been
-      // unloaded since the editor mounted). `list_ollama_models_detailed`
-      // doubles as the running-check; "not_running" means Ollama is down.
-      const detailed = await invoke<{ name: string; running: boolean }[]>(
-        "list_ollama_models_detailed",
-      );
-      if (ctl.signal.aborted) return;
-      const loaded = detailed.filter((m) => m.running).map((m) => m.name);
-      const model =
-        autocomplete.preferred && loaded.includes(autocomplete.preferred)
-          ? autocomplete.preferred
-          : loaded[0] ?? "";
-      if (!model) {
-        setAcStatus(auto ? null : t("fileViewer.autocompleteUnavailable"));
-        return;
-      }
-      const text = await invoke<string>("complete_text", {
-        prefix,
-        suffix,
-        model,
-        language: lang === "plain" ? "" : lang,
-        mode,
-        context: contextFiles.length
-          ? contextFiles.map((f) => ({ name: f.rel, content: f.content }))
-          : undefined,
+      const tabs = useTabsStore.getState();
+      const context = (signal: AbortSignal) => completionContext({
+        path, root: acProjectDir, draft: snapshot,
+        openPaths: (tabs.tabsByScope[scope ?? "root"] ?? tabs.tabs)
+          .filter((tab) => (!tab.scope || tab.scope === (scope ?? "root")) &&
+            ["text", "markdown", "tex", "texworkspace"].includes(tab.viewer ?? ""))
+          .flatMap((tab) => tab.embedPath ? [tab.embedPath] : []),
+        manual: contextFiles.map((f) => ({ name: f.rel, content: f.content })),
+        keys: lang === "tex" ? [
+          ...[...snapshot.matchAll(/\\label\{([^}]+)\}/g)].map((m) => m[1]),
+          ...(texCompletions?.labels.map((l) => l.key) ?? []),
+          ...(texCompletions?.cites.map((c) => c.key) ?? []),
+        ].join("\n") : undefined,
+        read: (file) => readFileText(file, scope), signal,
       });
+      const provider: CompletionProvider = acCopilot && scope ? new CopilotCompletionProvider({
+        projectId: scope, editor: acEditorId, automatic: auto,
+        tabSize: indentUnit.width || 4, insertSpaces: !indentUnit.text.startsWith("\t"),
+      }) : new OllamaCompletionProvider({
+        endpoint: acEndpoint, scope: scope ?? undefined, preferred: autocomplete.preferred,
+        preferredProse: autocomplete.preferredProse, mode, candidate, context,
+      }, acCache.current);
+      const result = await provider.complete({
+        path, text: snapshot, caret, language: lang, version,
+      }, ctl.signal, publish);
       if (ctl.signal.aborted) return;
-      if (text) {
-        setSuggestion({ text, at: caret });
-        setAcStatus(null);
-      } else {
-        setAcStatus(auto ? null : t("fileViewer.noSuggestion"));
-      }
+      setAcStatus(result.length || auto ? null : t("fileViewer.noSuggestion"));
     } catch (e) {
       if (ctl.signal.aborted) return;
-      if (auto) {
-        setAcStatus(null);
-        return;
-      }
-      setAcStatus(
-        String(e).includes("not_running")
-          ? t("fileViewer.autocompleteUnavailable")
-          : t("fileViewer.autocompleteFailed"),
-      );
+      acOutcome.current = null;
+      setSuggestion(null);
+      const reason = String(e);
+      if (reason.includes("copilot_cancelled") || reason.includes("copilot_stale_document")) { setAcStatus(null); return; }
+      // Sign-in and setup problems would otherwise be invisible with automatic
+      // suggestions on, so those two are shown even for an automatic request.
+      const setup = reason.includes("copilot_not_signed_in") ? "fileViewer.copilotNotSignedIn"
+        : reason.includes("copilot_not_installed") ? "fileViewer.copilotNotInstalled" : null;
+      setAcStatus(setup ? t(setup) : auto ? null : t(reason.includes("not_running")
+        ? "fileViewer.autocompleteUnavailable"
+        : acCopilot ? "fileViewer.copilotFailed" : "fileViewer.autocompleteFailed"));
+    } finally {
+      ctl.abort();
+      if (acAbort.current === ctl) acAbort.current = null;
     }
-  }, [autocomplete, draft, lang, acMode, contextFiles]);
+  }, [autocomplete, lang, acMode, contextFiles, acVisible, acEndpoint, path, scope, acProjectDir, texCompletions, recordAcOutcome, t, acCopilot, acEditorId, indentUnit]);
 
   // #45 automatic suggestions: when the per-type toggle is on, request a
   // completion a short while after the user stops typing. Re-runs on each draft
@@ -4374,17 +4508,19 @@ function CodeEditor({
   // Skipped while a suggestion is already showing or the \ref/\cite dropdown is
   // open. The focus/caret/context guards live in `requestCompletion`.
   useEffect(() => {
-    if (!autocomplete?.enabled || !loaded) return;
+    if (!autocomplete?.enabled || !loaded || !acVisible) return;
     if (suggestion || compl) return;
     const id = window.setTimeout(() => void requestCompletion({ auto: true }), AUTO_AC_DEBOUNCE_MS);
     return () => window.clearTimeout(id);
-  }, [autocomplete?.enabled, loaded, draft, suggestion, compl, requestCompletion]);
+  }, [autocomplete?.enabled, loaded, draft, suggestion, compl, requestCompletion, acVisible]);
 
   // The ghost mounts fresh (scrollTop 0) each time a suggestion appears; align it
   // to the editor's current scroll so the inserted preview lands at the caret.
   useEffect(() => {
     if (suggestion) syncScroll();
   }, [suggestion, syncScroll]);
+
+  useEffect(() => acFeedback?.show(suggestion?.candidate), [suggestion, acFeedback]);
 
   const acceptSuggestion = useCallback(() => {
     const el = textareaRef.current;
@@ -4403,19 +4539,19 @@ function CodeEditor({
   // suggestion and keep the remainder ghosted, so the user can walk a long
   // suggestion in word-sized steps. A word = any leading whitespace (including a
   // newline + indentation) plus the following run of non-space characters.
-  const acceptWord = useCallback(() => {
+  const acceptWord = useCallback((line = false) => {
     const el = textareaRef.current;
     if (!el || !suggestion) return;
     const { text, at } = suggestion;
     const m = text.match(/^\s*\S+/);
-    const take = m ? m[0].length : text.length;
+    const take = line ? completionLineLength(text) : m ? m[0].length : text.length;
     const chunk = text.slice(0, take);
     const rest = text.slice(take);
     const next = draft.slice(0, at) + chunk + draft.slice(at);
     edit(next);
     const caret = at + chunk.length;
     // Keep the rest ghosted at the new caret; clear once it's fully consumed.
-    setSuggestion(rest ? { text: rest, at: caret } : null);
+    setSuggestion(rest ? { ...suggestion, text: rest, at: caret } : null);
     requestAnimationFrame(() => {
       el.selectionStart = el.selectionEnd = caret;
     });
@@ -4594,6 +4730,8 @@ function CodeEditor({
   }, [draft, caretTick, refreshCompl]);
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Let the IME own composition keys; input events validate any type-through.
+    if (e.nativeEvent.isComposing || e.key === "Process") return;
     if (onFollowLink && (e.ctrlKey || e.metaKey) && lastMouse.current) {
       updateLinkHover(lastMouse.current.x, lastMouse.current.y, true);
     }
@@ -4668,9 +4806,30 @@ function CodeEditor({
       return;
     }
     if (suggestion) {
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && ["[", "]"].includes(e.key)) {
+        e.preventDefault();
+        if (acCopilot) {
+          const items = acCandidates.current;
+          if (items.length > 1 && items[0].version === acDocumentVersion.current) {
+            recordAcOutcome(false);
+            acCandidate.current = (acCandidate.current + (e.key === "]" ? 1 : items.length - 1)) % items.length;
+            const item = items[acCandidate.current];
+            acOutcome.current = { model: `${item.provider}/${item.model ?? item.provider}`, mode: "copilot" };
+            setSuggestion({ text: item.text, at: item.at, candidate: item });
+          }
+        } else void requestCompletion({ candidate: (acCandidate.current + (e.key === "]" ? 1 : 2)) % 3 });
+        return;
+      }
+      if (e.key === "ArrowRight" && e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        acceptWord(true);
+        return;
+      }
       if (e.key === "Tab") {
         e.preventDefault();
-        if (e.shiftKey) {
+        if (e.shiftKey && acCopilot) {
+          // The language server has no length modes; nothing to switch.
+        } else if (e.shiftKey) {
           // Toggle to the next mode and re-request, so the ghost switches to that
           // mode's completion in place.
           const m = nextAcMode(acMode);
@@ -4693,9 +4852,12 @@ function CodeEditor({
         dismissSuggestion();
         return;
       }
-      // Any other key invalidates the pending suggestion.
-      dismissSuggestion();
+      // Let input events consume matching text (including paste and IME).
+      if (Array.from(e.key).length !== 1 && e.key !== "Enter" && !MODIFIER_KEYS.has(e.key)) dismissSuggestion();
     }
+
+    if (!MODIFIER_KEYS.has(e.key) && (e.key.startsWith("Arrow") ||
+        ["Home", "End", "PageUp", "PageDown", "Escape"].includes(e.key))) dismissSuggestion();
 
     // #46 undo/redo.
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
@@ -4830,7 +4992,7 @@ function CodeEditor({
   };
 
   const onClick = (e: React.MouseEvent<HTMLTextAreaElement>) => {
-    if (suggestion) dismissSuggestion();
+    dismissSuggestion();
     emitCaret();
     if (e.ctrlKey || e.metaKey) {
       // Prefer the link span under the pointer: a Ctrl/⌘+click leaves the caret
@@ -5165,6 +5327,11 @@ function CodeEditor({
           {unclosedTip.hint || t("fileViewer.unclosedBracketHint")}
         </div>
       )}
+      {suggestion && !acStatus && (
+        <div className="file-viewer-ac-status" role="status">
+          {acCopilot ? t("fileViewer.copilotControls") : t("fileViewer.autocompleteControls", { candidate: acCandidate.current + 1 })}
+        </div>
+      )}
       {acStatus && (
         <div className="file-viewer-ac-status" role="status">
           {/* A trailing "…" marks an in-flight request — show a spinner. */}
@@ -5298,7 +5465,7 @@ function CodeEditor({
       })()}
       {/* #45 context files: a button to attach project files plus chips for the
           attached ones, shown only when autocomplete is enabled for this type. */}
-      {autocomplete?.enabled && (
+      {autocomplete?.enabled && !acCopilot && (
         <div className="file-viewer-ac-context">
           <button
             type="button"
@@ -5623,7 +5790,7 @@ function useFormatter(path: string, draft: string, setDraft: (v: string) => void
     if (!lang) return;
     setBusy(true);
     try {
-      const out = await invoke<string>("format_source", { text, lang, path });
+      const out = await invokeTrusted<string>("format_source", { text, lang, path });
       if (out !== text) setDraft(out);
     } catch (e) {
       const msg = String(e);
@@ -5828,7 +5995,7 @@ function useViewerPref(type: InternalViewer) {
 /** What {@link useTabAiPrefs} returns: the effective autocomplete/grammar config
  *  for the editor, plus the current control state + setters for the in-tab UI. */
 export interface TabAiPrefs {
-  ac: { enabled: boolean; preferred?: string; mode: AutocompleteMode };
+  ac: { enabled: boolean; preferred?: string; preferredProse?: string; mode: AutocompleteMode };
   gc: { enabled: boolean; preferred?: string };
   sc: { enabled: boolean; language?: string };
   autocomplete: boolean;
@@ -5860,6 +6027,7 @@ function useTabAiPrefs(tabKey: string | undefined, type: InternalViewer): TabAiP
   const defaultModel = useSettingsStore((s) => s.settings?.ollama_model as string | undefined);
   const acRole = useSettingsStore((s) => s.settings?.ollama_roles?.autocomplete as string | undefined);
   const gcRole = useSettingsStore((s) => s.settings?.ollama_roles?.grammar as string | undefined);
+  const acProseRole = useSettingsStore((s) => s.settings?.ollama_roles?.autocomplete_prose as string | undefined);
   const acPreferred = acRole ?? defaultModel;
   const gcPreferred = gcRole ?? defaultModel;
   // Dictionary spell check: no model involved — its one setting is which
@@ -5933,7 +6101,7 @@ function useTabAiPrefs(tabKey: string | undefined, type: InternalViewer): TabAiP
   );
 
   return {
-    ac: { enabled: autocomplete, preferred: acPreferred, mode },
+    ac: { enabled: autocomplete, preferred: acPreferred, preferredProse: acProseRole, mode },
     gc: { enabled: grammar, preferred: gcPreferred },
     sc: { enabled: spelling, language: spellLanguage },
     autocomplete,
@@ -5949,7 +6117,7 @@ function useTabAiPrefs(tabKey: string | undefined, type: InternalViewer): TabAiP
 
 /** The hover preview's on/off (#tex-hover-preview): the PROJECT's, not the
  *  tab's — one click holds for every TeX pane of the project, across a project
- *  switch and a relaunch (`stores/texViewPref`). Seeded from the per-type
+ *  switch and a relaunch (`stores/viewers/texViewPref`). Seeded from the per-type
  *  `viewer_prefs.tex` default while no click has been made.
  *
  *  Unlike autocomplete and grammar it defaults **ON** (absent ⇒ on), and the
@@ -5993,7 +6161,7 @@ function useTexBeamerMode(
  * The beamer overlay bar (#tex-beamer): a command, a slide range, and three
  * actions over the editor's selection — Wrap (`\only<2->{…}` around it), Items
  * (`<n>` on each `\item` in the lines, counting up), Pause. The bar is chrome;
- * every edit is `lib/viewers/beamer`'s and goes through the editor's `applyEdit`
+ * every edit is `lib/viewers/tex/beamer`'s and goes through the editor's `applyEdit`
  * so undo, the syntax overlay and the caret behave as for any other edit.
  *
  * The **from** field is empty by default and means "the next unused number in
@@ -6168,9 +6336,13 @@ function useLocalModelLoaded(): boolean {
  * viewer header next to the font/undo/save controls. Hidden entirely while no
  * local model is loaded into memory, since neither feature can run then.
  */
-function EditorAiControls({ ai }: { ai: TabAiPrefs }) {
+function EditorAiControls({ ai, path }: { ai: TabAiPrefs; path: string }) {
   const t = useT();
   const modelLoaded = useLocalModelLoaded();
+  const scope = useFileScope();
+  const enabled = useExperimental("copilot_completion");
+  const remote = useProjectsStore((s) => !!s.projects.find((p) => p.id === scope)?.remote);
+  const copilot = useSettingsStore((s) => copilotServes(s.settings, enabled, scope, remote, languageForPath(path)));
   return (
     <div className="file-viewer-ai-controls" role="group" aria-label={t("fileViewer.aiAssistGroup")}>
       {/* Dictionary spelling needs no model, so it is offered regardless —
@@ -6189,7 +6361,7 @@ function EditorAiControls({ ai }: { ai: TabAiPrefs }) {
         {t("fileViewer.spellingLabel")}
       </button>
       {ai.spelling && <SpellLanguageSelect />}
-      {modelLoaded && (
+      {(modelLoaded || copilot) && (
         <>
           <button
             type="button"
@@ -6197,14 +6369,14 @@ function EditorAiControls({ ai }: { ai: TabAiPrefs }) {
             onClick={ai.toggleAutocomplete}
             aria-pressed={ai.autocomplete}
             title={
-              ai.autocomplete
+              copilot ? t("fileViewer.copilotToggleHint") : ai.autocomplete
                 ? t("fileViewer.autocompleteOnHint")
                 : t("fileViewer.autocompleteOffHint")
             }
           >
-            {t("fileViewer.autocompleteLabel")}
+            {t("fileViewer.autocompleteLabel")} <UntestedTag />
           </button>
-          {ai.autocomplete && (
+          {ai.autocomplete && !copilot && (
             <Dropdown
               className="file-viewer-ai-mode"
               value={ai.mode}
@@ -6217,7 +6389,7 @@ function EditorAiControls({ ai }: { ai: TabAiPrefs }) {
               ]}
             />
           )}
-          <button
+          {modelLoaded && <button
             type="button"
             className={`file-viewer-ai-btn${ai.grammar ? " active" : ""}`}
             onClick={ai.toggleGrammar}
@@ -6229,7 +6401,7 @@ function EditorAiControls({ ai }: { ai: TabAiPrefs }) {
             }
           >
             {t("fileViewer.grammarLabel")}
-          </button>
+          </button>}
         </>
       )}
     </div>
@@ -7254,7 +7426,7 @@ function TextView({
   // A `.slurm`-style file (one carrying a `#SBATCH` directive) gets a submit bar
   // beside the Python one — but only when the project's host actually has SLURM
   // (`slurm_available`), so the affordance never appears off-HPC. Everything here
-  // rides the same terminal-tab machinery Run uses (`lib/slurm.ts`).
+  // rides the same terminal-tab machinery Run uses (`lib/remote/hpc/slurm.ts`).
   const isSlurm = useMemo(() => loaded && isSlurmScript(draft), [loaded, draft]);
   const [slurmInfo, setSlurmInfo] = useState<SlurmInfo | null>(null);
   useEffect(() => {
@@ -7514,7 +7686,7 @@ function TextView({
             onInteractive={onSlurmInteractive}
           />
         )}
-        {showEditor && <EditorAiControls ai={ai} />}
+        {showEditor && <EditorAiControls ai={ai} path={path} />}
         {showEditor && fmt.enabled && (
           <FormatButton available={fmt.available} busy={fmt.busy} run={() => void fmt.run()} />
         )}
@@ -7860,7 +8032,7 @@ function MarkdownView({
     return () => { cancelled = true; };
   }, [html, mode, visible, remoteAllowed, remoteImages, t]);
 
-  // Cross-file `#fragment` navigation (stores/mdAnchor): when a followed link
+  // Cross-file `#fragment` navigation (stores/viewers/mdAnchor): when a followed link
   // into this document carried a fragment, scroll the rendered preview to that
   // heading once the preview exists — covering both a freshly opened tab (the
   // request outlives the mount) and an already-open one (`openLinkedFile`
@@ -8033,7 +8205,7 @@ function MarkdownView({
         </div>
         {mode === "edit" && <MarkdownToolbar api={editorApi} />}
         <FontSizeControls fontSize={font.fontSize} inc={font.inc} dec={font.dec} reset={font.reset} />
-        {mode === "edit" && <EditorAiControls ai={ai} />}
+        {mode === "edit" && <EditorAiControls ai={ai} path={path} />}
         {mode === "edit" && fmt.enabled && (
           <FormatButton available={fmt.available} busy={fmt.busy} run={() => void fmt.run()} />
         )}
@@ -9291,8 +9463,34 @@ function TexView({
   // Directory the build runs in — error paths in the log are relative to it.
   const rootDir = dirname(root) || "/";
 
+  // The output-folder picker browses the project this document belongs to,
+  // opening at the main file's folder. A relative out-dir resolves against that
+  // folder in `compile_tex`, so the pick is stored relative to it (`..` included)
+  // and survives the project moving. Outside any project — or a main file that
+  // is not under the project's local tree — the bound is the main file's folder.
+  const [outDirPickerOpen, setOutDirPickerOpen] = useState(false);
+  const outDirBound = useMemo(() => {
+    const project = scope ? useProjectsStore.getState().projects.find((p) => p.id === scope) : undefined;
+    const projectDir = localMirrorRootFor(project) ?? (project ? resolveProjectDirectory(project) : null);
+    return projectDir && isPathWithin(rootDir, projectDir) ? projectDir : rootDir;
+  }, [scope, rootDir]);
+  const pickOutDir = useCallback(
+    async (dir: string) => {
+      setOutDirPickerOpen(false);
+      // The picker hands back `list_dirs`' canonical spelling; measure from the
+      // main folder's canonical spelling too, or a symlinked project path would
+      // climb out to `/` and back down.
+      const base = await invoke<{ path: string }>("list_dirs", { path: rootDir })
+        .then((l) => l.path)
+        .catch(() => rootDir);
+      const rel = relativePathFrom(base, dir);
+      patchOpts({ outDir: rel === null ? dir : rel === "." ? "" : rel });
+    },
+    [rootDir, patchOpts],
+  );
+
   // ── #tex-hover-preview ────────────────────────────────────────────────────
-  // Hovering a formula typesets it. The compile itself is `lib/viewers/texPreview`;
+  // Hovering a formula typesets it. The compile itself is `lib/viewers/tex/texPreview`;
   // what lives here is the two things only this viewer knows — WHICH preamble the
   // fragment is typeset with, and WHERE the engine has to run for that preamble's
   // own `\usepackage{mystyle}` / `\input{macros}` to resolve.
@@ -9435,7 +9633,7 @@ function TexView({
       // #54: pass the compiler options. The backend filters extra_flags so none
       // can ever enable shell-escape (compile_args_never_enable_shell_escape).
       const flags = extraFlags.trim().split(/\s+/).filter(Boolean);
-      const res = await invoke<TexCompileResult>("compile_tex", {
+      const res = await invokeTrusted<TexCompileResult>("compile_tex", {
         path: target,
         engine: engine || null,
         outDir: outDir.trim() || null,
@@ -9598,7 +9796,7 @@ function TexView({
       <div className="file-viewer">
         <ViewerHeader onOpenExternally={onOpenExternally}>
           <FontSizeControls fontSize={font.fontSize} inc={font.inc} dec={font.dec} reset={font.reset} />
-          <EditorAiControls ai={ai} />
+          <EditorAiControls ai={ai} path={path} />
           <CompareButton active={compareOpen} toggle={() => setCompareOpen((v) => !v)} />
           <UndoRedoButtons undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} />
           <SaveButton isDirty={isDirty} saving={saving} save={() => void save()} />
@@ -9783,7 +9981,7 @@ function TexView({
           {counting ? t("fileViewer.wordCountBusy") : t("fileViewer.wordCountBtn")}
         </button>
         <FontSizeControls fontSize={font.fontSize} inc={font.inc} dec={font.dec} reset={font.reset} />
-        <EditorAiControls ai={ai} />
+        <EditorAiControls ai={ai} path={path} />
         <CompareButton active={compareOpen} toggle={() => setCompareOpen((v) => !v)} />
         <UndoRedoButtons undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} />
         <SaveButton isDirty={isDirty} saving={saving} save={() => void save()} />
@@ -9805,6 +10003,15 @@ function TexView({
               placeholder={t("fileViewer.outputFolderPlaceholder")}
               onChange={(e) => patchOpts({ outDir: e.target.value })}
             />
+            <button
+              type="button"
+              className="file-viewer-tex-outdir-browse"
+              onClick={() => setOutDirPickerOpen(true)}
+              title={t("fileViewer.outputFolderBrowseTitle")}
+            >
+              {t("fileViewer.outputFolderBrowse")}
+            </button>
+            <UntestedTag />
           </label>
           <label className="file-viewer-tex-option">
             <span>{t("fileViewer.extraFlagsLabel")}</span>
@@ -9819,6 +10026,17 @@ function TexView({
             {t("fileViewer.shellEscapeNotePre")} <code>\write18</code> {t("fileViewer.shellEscapeNotePost")}
           </p>
         </div>
+      )}
+      {outDirPickerOpen && (
+        <FolderPickerDialog
+          initialPath={rootDir}
+          boundPath={outDirBound}
+          title={t("fileViewer.outputFolderPickerTitle", { name: rootName })}
+          confirmLabel={t("fileViewer.outputFolderPickerConfirm")}
+          allowCreateFolder
+          onConfirm={(dir) => void pickOutDir(dir)}
+          onClose={() => setOutDirPickerOpen(false)}
+        />
       )}
       {externalChange && <ExternalChangeBanner onReload={reloadFromDisk} onKeep={keepMine} />}
       {createRef && (

@@ -15,7 +15,7 @@ import { useActivityStore, type AttentionKind } from "../../stores/activity";
 import { resolveProjectDirectory, type FilesPanelView } from "../../types";
 import { useT } from "../../lib/i18n";
 import { RailSwitchSideIcon } from "../common/EdgeRailIcons";
-import { sidePanelViewKey, sidePanelViewPatch } from "../../lib/sidePanelView";
+import { sidePanelViewKey, sidePanelViewPatch } from "../../lib/projects/sidePanelView";
 import { terminalCharsPerSecond } from "../../dev/terminalOutputRate";
 import {
   RENDERER_CEILING_MB,
@@ -24,7 +24,7 @@ import {
   readRendererRss,
   rendererName,
   type RendererRss,
-} from "../../lib/rendererWatchdog";
+} from "../../lib/window/rendererWatchdog";
 // Single source of truth for the displayed version: package.json is kept in
 // lockstep with the Tauri manifests on each version bump.
 import { version as APP_VERSION } from "../../../package.json";
@@ -169,7 +169,8 @@ export function SidePanel({
   onMouseLeave,
 }: Props) {
   const t = useT();
-  const { projects, activeId } = useProjectsStore();
+  const projects = useProjectsStore((s) => s.projects);
+  const activeId = useProjectsStore((s) => s.activeId);
   const sidePanelFolderByProject = useProjectsStore((s) => s.sidePanelFolderByProject);
   const setSidePanelFolder = useProjectsStore((s) => s.setSidePanelFolder);
   const rootDir = useProjectsStore((s) => s.rootDir);
@@ -345,11 +346,13 @@ export function SidePanel({
                     {keys.map((k, ki) => {
                       const label = scopeTabs?.find((t) => t.key === k)?.label ?? k;
                       const status = tabStatuses[ki];
+                      const shell =
+                        status === "working" && scopeTabs?.find((t) => t.key === k)?.kind === "shell";
                       return (
                         <button
                           key={k}
                           type="button"
-                          className={`hidden-sw-chip${status ? ` ${status}` : ""}`}
+                          className={`hidden-sw-chip${status ? ` ${status}` : ""}${shell ? " shell" : ""}`}
                           title={t("sidePanel.restoreFocusedOn", { label })}
                           onClick={() => unhideGroup(h.id, { activeKey: k })}
                         >

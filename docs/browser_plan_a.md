@@ -142,7 +142,7 @@ webview paints above all DOM regardless of z-index:
 1. **During any drag, every native view hides.** The split preview, the drag
    ghost and the focused-subwindow marker are DOM overlays drawn *above* the pane
    layer (`CenterPanel.tsx:1126-1135`); a native view would cover them. The drag
-   store (`stores/drag.ts`) increments the suppression refcount (§3.3).
+   store (`stores/drag/drag.ts`) increments the suppression refcount (§3.3).
 2. **A file dragged from `FileTree` onto a browser tab bar** behaves as it does
    today (embed/split/popout of the *file*, via `commitFileDrop`). Dropping a
    file *onto the page* to fill an upload field is #53 — see §8.
@@ -236,12 +236,12 @@ incremented by:
 
 1. Any open modal (`.modal-backdrop` mounted — settings, project dialog, remote
    machines, the local-loss dialog, the alarm popup, the stats recap).
-2. An active tab/file/PDF-page drag (`stores/drag.ts`, `stores/pdfDrag.ts`).
+2. An active tab/file/PDF-page drag (`stores/drag/drag.ts`, `stores/drag/pdfDrag.ts`).
 3. `.center-panel.moving` (`CenterPanel.tsx:108` already hides the heavy pane
    layer during a window move — a native view is not DOM, so it must be told).
 4. The right-panel overlay while it overlaps the pane's rect (`RightPanel` slides
    *over* the center panel).
-5. A presenter/fullscreen overlay (`stores/presentation.ts`'s counters).
+5. A presenter/fullscreen overlay (`stores/viewers/presentation.ts`'s counters).
 
 This store is the single place that knowledge lives, so a new overlay adds one
 `suppress()`/`release()` pair rather than a new class of "the page is covering my
@@ -420,7 +420,7 @@ it. Concretely:
 
 - `browser` is **absent from `isLocatableKind`**, so the locality badge, the
   locality menu and `effectiveTabLocation` never touch it.
-- It is absent from `lib/tmuxSession.ts`'s `shouldPersistTab` /
+- It is absent from `lib/terminal/tmuxSession.ts`'s `shouldPersistTab` /
   `shouldPersistLocalTab` (both require a *shell* tab), so no tmux wrap.
 - **The run-host preference must not claim it.** `applyRunHostPref`
   (`tabs.ts:40-46`) already gates on `tab.kind !== "shell"`, so this is free —
@@ -582,7 +582,7 @@ Phase 5+ and engine-gated.**
 
 What #53 is today (`todo/group-m-viewers.md` #53, automated test already ✅): images and
 image/text *tabs* are OS-level drag sources via `tauri-plugin-drag`
-(`drag:default` is in `capabilities/default.json`; `src/lib/dragPlatform.ts` owns
+(`drag:default` is in `capabilities/default.json`; `src/lib/window/dragPlatform.ts` owns
 the per-platform gesture semantics). Dropping onto an **external** browser's
 upload field works because the OS drag carries a real file path and the external
 browser is a normal drop target. Nothing in this plan changes that.
@@ -590,7 +590,7 @@ browser is a normal drop target. Nothing in this plan changes that.
 Dropping onto the **in-app** browser is a different problem, in three layers:
 
 1. **The drop lands on a native child webview**, an OS surface outside the React
-   tree. The JS drag state never sees it, so `stores/drag.ts` cannot commit it.
+   tree. The JS drag state never sees it, so `stores/drag/drag.ts` cannot commit it.
    `tauri.conf.json` also sets `"dragDropEnabled": false` for the app window.
 2. **WebKitGTK withholds dropped paths from HTML5 drops** and leaks at most one
    via `text/html` — the limitation `files/importDrop.tsx` documents and works
@@ -606,7 +606,7 @@ What it would take, if picked up later:
 - **Contract H (Plan B):** the gesture must originate in Eldrun. A page must never
   be able to *request* a file, and a staged path must be one the user just
   dragged; a page-initiated `showOpenFilePicker`-style path is refused.
-- Frontend: `BrowserPane` registers as a drop target in `stores/drag.ts` with the
+- Frontend: `BrowserPane` registers as a drop target in `stores/drag/drag.ts` with the
   pane rect, so the existing pointer-drag can end over a page.
 
 Until all three exist, the in-app browser's upload affordance is the page's own

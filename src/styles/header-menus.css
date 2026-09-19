@@ -529,21 +529,6 @@
 .local-model-status-dot.loaded { background-color: var(--success); }
 
 /* ── Local-model menu: live "loaded in memory" status line ───────────────── */
-.local-model-loaded {
-  padding: 4px 10px 6px;
-  border-bottom: 1px solid var(--control-border);
-  margin-bottom: 2px;
-}
-.local-model-loaded-idle {
-  font-size: 11px;
-  color: var(--text-secondary);
-}
-.local-model-loaded-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
 .local-model-loaded-name {
   font-size: 12px;
   color: var(--text-primary);
@@ -760,7 +745,7 @@
 /* ── Up vs. working ───────────────────────────────────────────────────────
    A machine that is CONNECTED but has nothing running on it is drawn HOLLOW —
    an outline of the same green — and one with live work on it (≥1 tmux session,
-   `stores/hostBusy`) stays the solid dot. It is the tab ring's vocabulary at dot
+   `stores/remote/hostBusy`) stays the solid dot. It is the tab ring's vocabulary at dot
    scale: same colour for the same subject, the shape saying whether it is under
    way. With a fleet held open all day "connected" is the resting state and stops
    distinguishing anything, so what the lamp usefully answers is "where am I
@@ -846,6 +831,12 @@
   border-color: var(--accent);
   color: var(--accent);
   font-weight: 600;
+}
+/* A CLI Eldrun cannot hand the MCP server to at all is dimmed further than an
+   off chip — "off" and "impossible" should not look alike. */
+.local-model-role-chip.local-model-role-chip-unwired {
+  opacity: 0.5;
+  border-style: dashed;
 }
 /* The trailing action pair on a model row — "On start" plus the row's own verb
    (Unload for a resident model, Load for an installed one). Grouped and pushed
@@ -1043,12 +1034,14 @@
   background: var(--control-hover-bg);
   color: var(--text-primary);
 }
-/* The `!` on the 🧠 button itself, pointing at the notice inside the menu. Amber
-   (the mail button's failed-check badge, same reasoning): something needs
-   attention, without claiming anything was loaded. */
+/* The `!` on the Models & agents button itself, pointing at the notice inside
+   the menu. Amber (the mail button's failed-check badge, same reasoning):
+   something needs attention, without claiming anything was loaded. Inset, not
+   overhanging: the button is the bar's full height, so anything below its edge
+   would hang over the tab strip. */
 .local-model-autostart-flag {
   position: absolute;
-  bottom: -3px;
+  bottom: 1px;
   left: -3px;
   min-width: 14px;
   height: 14px;
@@ -1057,7 +1050,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--warning);
   /* `--warning` is light in some themes and dark in others; near-black reads on both. */
   color: #1c1300;
@@ -1232,33 +1225,6 @@
   gap: 8px;
   min-height: 26px;
   padding: 0 10px 6px 25px;
-}
-/* The two badge cells. They are plain layout boxes and carry no pill styling
-   of their own — an empty one must occupy its column silently, not paint a
-   bare chip-shaped stripe on every row whose model has nothing to say there.
-   The pill look belongs to the badge inside (below). */
-.local-model-param-slot,
-.local-model-notools-slot {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-}
-.local-model-param-slot > span,
-.local-model-notools-slot > span {
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-size: 10px;
-  line-height: 1;
-  padding: 2px 5px;
-  border-radius: var(--radius-sm);
-  background: var(--control-bg);
-  color: var(--text-secondary);
-  white-space: nowrap;
-}
-.local-model-notools-slot > span.local-model-notools-chip {
-  background: color-mix(in srgb, var(--warning) 20%, transparent);
-  color: var(--warning);
 }
 .local-model-load-bar {
   margin: 2px 12px 4px;
@@ -1950,12 +1916,13 @@
    of the header menus rather than a bespoke widget. */
 .vpn-indicator-btn,
 .machines-indicator-btn,
-.mobile-indicator-btn {
+.mobile-indicator-btn,
+.dev-build-btn {
   /* Unlike the other .global-apps-menu-btn siblings, this one reads as a
      quiet status readout (lamp + label), not a button — so its inherited
      button box (background/border) is stripped back to plain text/icon.
-     Height stays the shared 32px (matching the brain/local-model button
-     and every other .global-apps-menu-btn) so the header row's icons align.
+     Height stays the shared 32px .global-apps-menu-btn box (the 🔔 beside
+     it keeps it too; only the six icon launchers fill the 40px bar).
      The dropdowns line up regardless — they hang off the header's bottom edge
      (`.global-apps-menu .tab-new-menu`), not off each button. */
   display: inline-flex;
@@ -2055,7 +2022,9 @@
 .machines-indicator-btn:hover,
 .machines-indicator-btn[aria-expanded="true"],
 .mobile-indicator-btn:hover,
-.mobile-indicator-btn[aria-expanded="true"] {
+.mobile-indicator-btn[aria-expanded="true"],
+.dev-build-btn:hover,
+.dev-build-btn[aria-expanded="true"] {
   /* Same accent-tinted highlight as .tab-new-btn:hover (the + button), so the
      header's three "quiet until touched" controls (+, VPN, Machines) all light
      up the same way instead of these two staying flat while the + brightens. */
@@ -2065,7 +2034,9 @@
 .vpn-indicator-btn:hover .vpn-indicator-label,
 .vpn-indicator-btn[aria-expanded="true"] .vpn-indicator-label,
 .machines-indicator-btn:hover .vpn-indicator-label,
-.machines-indicator-btn[aria-expanded="true"] .vpn-indicator-label {
+.machines-indicator-btn[aria-expanded="true"] .vpn-indicator-label,
+.dev-build-btn:hover .vpn-indicator-label,
+.dev-build-btn[aria-expanded="true"] .vpn-indicator-label {
   color: var(--text-primary);
 }
 .vpn-indicator-label {
@@ -2081,15 +2052,50 @@
   width: 25px;
   padding-inline: 3px;
 }
-.mobile-indicator-icon {
+.mobile-indicator-icon,
+.dev-build-icon {
   width: 16px;
   height: 16px;
   flex: none;
   color: var(--text-secondary);
 }
 .mobile-indicator-icon.connected { color: var(--success); }
-.mobile-indicator-icon.connecting { color: var(--warning); }
-.mobile-indicator-icon.error { color: var(--danger); }
+.mobile-indicator-icon.connecting,
+.dev-build-icon.active { color: var(--warning); }
+.mobile-indicator-icon.error,
+.dev-build-icon.error { color: var(--danger); }
+
+/* ── Dev-build chip (DevBuildIndicator) ──────────────────────────────────────
+   The VPN chip's lamp-plus-label readout; the label carries the step and its
+   clock, so it is set in tabular digits to hold still while the clock ticks. A
+   2px estimate bar runs along the button's foot while a build is on. */
+.dev-build-btn {
+  position: relative;
+}
+.dev-build-chip-text {
+  font-variant-numeric: tabular-nums;
+}
+.dev-build-chip-text.error { color: var(--danger); }
+.dev-build-bar {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  bottom: 3px;
+  height: 2px;
+  background: var(--border-subtle);
+  overflow: hidden;
+}
+.dev-build-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 1s linear;
+}
+.dev-build-bar.dev-build-bar-wide {
+  position: static;
+  height: 3px;
+  margin-top: 8px;
+}
 /* The dot is punched out of the surface behind the icon, so the stroke has to
    BE that surface. It named `--bg`, which is not a token in this app — an
    invalid value drops the declaration, leaving `stroke` at its initial `none`,
@@ -2236,8 +2242,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.vpn-indicator-holders,
-.vpn-indicator-untracked {
+.vpn-indicator-holders {
   font-size: 11px;
   line-height: 1.4;
   color: var(--text-secondary);

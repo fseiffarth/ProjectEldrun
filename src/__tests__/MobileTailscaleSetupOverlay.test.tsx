@@ -1,9 +1,10 @@
 /**
  * "Set up in terminal" in Mobile settings is a one-click install like every
  * other install-via-command flow: the `tailscale serve` command runs in a root
- * terminal tab that is mirrored by the centered install overlay, so the user
- * watches it (and answers Tailscale's approval prompt) right in Settings. It
- * used to switch the whole window to the root scope instead.
+ * terminal tab that the root console floats over Settings with that tab in
+ * front, so the user watches it (and answers Tailscale's approval prompt)
+ * without leaving the project. It used to switch the whole window to the root
+ * scope instead.
  */
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -16,7 +17,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(), emit: vi.fn() }));
 
 import { MobileSettings } from "../components/mobile/MobileSettings";
 import { useBoxesStore } from "../stores/boxes";
-import { useInstallOverlayStore } from "../stores/installOverlay";
+import { useRootOverlayStore } from "../stores/rootOverlay";
 import { useProjectsStore } from "../stores/projects";
 import { useSettingsStore } from "../stores/settings";
 import { useTabsStore } from "../stores/tabs";
@@ -34,8 +35,10 @@ describe("Mobile settings — Set up Tailscale Serve in terminal", () => {
     useProjectsStore.setState({ projects: [], activeId: "p1", loaded: true, rootDir: "/home/u/eldrun/root" });
     useBoxesStore.setState({ boxes: [], loaded: true });
     useSettingsStore.setState({ settings: {} as Settings, loaded: true });
-    useTabsStore.setState({ scope: "project:p1", tabsByScope: {} });
-    useInstallOverlayStore.setState({ ptyId: null, label: "" });
+    // Root already restored this session — the unhydrated path is
+    // `InstallInRootConsole.test.tsx`'s.
+    useTabsStore.setState({ scope: "project:p1", tabsByScope: { root: [] } });
+    useRootOverlayStore.setState({ open: false });
     vi.spyOn(window, "confirm").mockReturnValue(true);
   });
 
@@ -44,10 +47,10 @@ describe("Mobile settings — Set up Tailscale Serve in terminal", () => {
     vi.restoreAllMocks();
     vi.mocked(invoke).mockReset();
     useSettingsStore.setState({ settings: null, loaded: false });
-    useInstallOverlayStore.setState({ ptyId: null, label: "" });
+    useRootOverlayStore.setState({ open: false });
   });
 
-  it("opens the install overlay on a root tab running the serve command, without leaving the current scope", async () => {
+  it("opens the root console on a root tab running the serve command, without leaving the current scope", async () => {
     const user = userEvent.setup();
     render(<MobileSettings />);
     await user.click(screen.getByRole("button", { name: "Set up in terminal" }));
@@ -55,11 +58,9 @@ describe("Mobile settings — Set up Tailscale Serve in terminal", () => {
     const rootTabs = useTabsStore.getState().tabsByScope.root ?? [];
     expect(rootTabs).toHaveLength(1);
     expect(rootTabs[0].initialInput).toMatch(/^tailscale serve --bg http:\/\/127\.0\.0\.1:\d+$/);
-    expect(useInstallOverlayStore.getState()).toMatchObject({
-      ptyId: `root:${rootTabs[0].key}`,
-      label: "Set up Tailscale Serve",
-    });
-    // The panel stays where it is — the overlay is the window onto the install.
+    expect(rootTabs[0].label).toBe("Set up Tailscale Serve");
+    expect(useRootOverlayStore.getState().open).toBe(true);
+    // The panel stays where it is — the console is the window onto the install.
     expect(useTabsStore.getState().scope).toBe("project:p1");
   });
 
@@ -69,6 +70,6 @@ describe("Mobile settings — Set up Tailscale Serve in terminal", () => {
     render(<MobileSettings />);
     await user.click(screen.getByRole("button", { name: "Set up in terminal" }));
     expect(useTabsStore.getState().tabsByScope.root ?? []).toHaveLength(0);
-    expect(useInstallOverlayStore.getState().ptyId).toBeNull();
+    expect(useRootOverlayStore.getState().open).toBe(false);
   });
 });

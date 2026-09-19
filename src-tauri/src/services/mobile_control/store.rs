@@ -80,3 +80,105 @@ pub fn ensure_private_dir(path: &Path) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    struct Doc {
+        n: u32,
+        s: String,
+    }
+
+    /// The atomic writer creates missing parents, leaves no `.tmp` sibling
+    /// behind, and a second write replaces the content wholesale.
+    #[test]
+    fn write_then_read_round_trips_and_leaves_no_temp_sibling() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("devices.json");
+        let doc = Doc { n: 1, s: "one".into() };
+        write_json_atomic(&path, &doc, 0o600).unwrap();
+        assert_eq!(read_json::<Doc>(&path).unwrap(), doc);
+        assert!(!path.with_extension("tmp").exists());
+
+        let next = Doc { n: 2, s: "two".into() };
+        write_json_atomic(&path, &next, 0o600).unwrap();
+        assert_eq!(read_json::<Doc>(&path).unwrap(), next);
+        assert!(!path.with_extension("tmp").exists());
+    }
+
+    /// Both failure modes name the file, so a log line says which of the
+    /// store's files is missing or damaged.
+    #[test]
+    fn read_errors_name_the_path_and_the_stage() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("absent.json");
+        let err = read_json::<Doc>(&missing).unwrap_err();
+        assert!(err.starts_with("read "), "{err}");
+        assert!(err.contains("absent.json"), "{err}");
+
+        let damaged = dir.path().join("damaged.json");
+        fs::write(&damaged, b"{\"n\":").unwrap();
+        let err = read_json::<Doc>(&damaged).unwrap_err();
+        assert!(err.starts_with("parse "), "{err}");
+        assert!(err.contains("damaged.json"), "{err}");
+    }
+
+    /// Key material is private from the moment the file exists: the written
+    /// file carries exactly the requested mode.
+    #[cfg(unix)]
+    #[test]
+    fn the_written_file_carries_the_requested_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("host.key");
+        write_bytes_atomic(&path, b"secret", 0o600).unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(fs::read(&path).unwrap(), b"secret");
+        ensure_private_file(&path).unwrap();
+    }
+
+    /// The private-file check refuses everything that is not an owner-only,
+    /// owner-writable regular file: group/world bits, a read-only owner mode,
+    /// a directory, and a symlink to an otherwise fine file.
+    #[cfg(unix)]
+    #[test]
+    fn ensure_private_file_refuses_shared_readonly_directory_and_symlink() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared");
+        fs::write(&shared, b"x").unwrap();
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(ensure_private_file(&shared).is_err());
+
+        let readonly = dir.path().join("readonly");
+        fs::write(&readonly, b"x").unwrap();
+        fs::set_permissions(&readonly, fs::Permissions::from_mode(0o400)).unwrap();
+        assert!(ensure_private_file(&readonly).is_err(), "must be writable too");
+
+        assert!(ensure_private_file(dir.path()).is_err(), "a directory is not a file");
+
+        let good = dir.path().join("good");
+        fs::write(&good, b"x").unwrap();
+        fs::set_permissions(&good, fs::Permissions::from_mode(0o600)).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&good, &link).unwrap();
+        assert!(ensure_private_file(&link).is_err(), "symlink_metadata sees the link");
+        assert!(ensure_private_file(&good).is_ok());
+    }
+
+    /// The control dir is created owner-only, and tightened if it exists.
+    #[cfg(unix)]
+    #[test]
+    fn ensure_private_dir_creates_and_tightens_to_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let control = dir.path().join("mobile-control");
+        ensure_private_dir(&control).unwrap();
+        assert_eq!(fs::metadata(&control).unwrap().permissions().mode() & 0o777, 0o700);
+        fs::set_permissions(&control, fs::Permissions::from_mode(0o755)).unwrap();
+        ensure_private_dir(&control).unwrap();
+        assert_eq!(fs::metadata(&control).unwrap().permissions().mode() & 0o777, 0o700);
+    }
+}

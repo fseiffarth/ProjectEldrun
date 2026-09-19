@@ -37,10 +37,189 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     (`commands/ollama.rs`). *Accept (while a ghost is showing):* `Tab` inserts the
     whole suggestion; `Right` (→) inserts only the next word and keeps the rest
     ghosted (walk word-by-word); `Esc` dismisses.
+    *Roadmap 1–5 (2026-09-18):* bounded caret context, capability-based native
+    FIM (chat fallback for references/empty suffix/unsupported insert), cancellable
+    streaming with socket teardown, and matching-input type-through implemented.
+    Chat preserves the document language; thinking is off and known non-text
+    models are skipped. Regression coverage exercises Unicode/chunk boundaries,
+    cancellation before startup/first token, stale output and matching edits.
+    *Roadmap 6–9 (2026-09-18):* five-second shared model discovery; bounded
+    automatic same-project imports/open-tab references and TeX label/bib keys;
+    prose chat instructions and streaming sentence/line stops; Alt+→ line accept,
+    Alt+[/] three lazy candidates, a bounded 60-second per-editor completion cache,
+    and local accept/dismiss counts by mode/model in the usage recap. Manual
+    references take priority; automatic references are disk snapshots refreshed
+    on requests. Test the new keys, reference edits, German prose, caret revisits
+    and recap counters live before removing UntestedTag.
+    Live checks: load a local model in the brain menu, enable Autocomplete in a
+    text/TeX tab, then Ctrl+Space mid-file; verify streaming, type its matching
+    prefix, accept with →/Tab, and interrupt with typing/Esc/tab switches. Repeat
+    with an insert-capable model, attached references, and a long document.
+    Compare first-token latency and suggestion quality; the UntestedTag remains.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+45a. **Optional GitHub Copilot provider for autocomplete — in progress (2026-09-18).**
+    Add Copilot alongside Ollama, preserving Ollama as the default for existing
+    settings. First release: local code files, explicit project opt-in, manual
+    Ctrl+Space and debounced automatic suggestions. Keep prose on its existing
+    Ollama role initially; remote files, attached references and prose support
+    follow after their context and URI handling are verified.
+
+    Integration source: GitHub's official
+    [Copilot Language Server](https://github.com/github/copilot-language-server-release).
+    Its documented editor protocol provides inline completions, browser device
+    sign-in, cancellation, and shown/partial/full acceptance notifications.
+    Use its LSP interface over stdio for autocomplete. Eldrun's existing Copilot
+    agent-tab launcher is a separate integration.
+
+    - [ ] **Verify the protocol in a standalone probe.** Initialize the server,
+      sign in, synchronize an unsaved document, request an inline completion,
+      and cancel it. Check credential persistence, content exclusions, workspace
+      access, supported installation platforms and server-version compatibility.
+      Do not launch or restart Eldrun for the probe. Resolve credential storage
+      before shipping; no tokens in settings, browser storage or logs, and no
+      changes to another editor's configuration.
+    - [ ] **Extract completion-provider adapters.** Move provider-specific work
+      out of `src/components/embed/FileViewerPane.tsx` into a shared interface
+      with Ollama and Copilot implementations. Reuse ghost text, cancellation,
+      visibility guards and acceptance controls. Carry document versions,
+      replacement ranges, provider identity and opaque completion IDs rather
+      than reducing every result to a string. Support both Ollama's streaming
+      updates and Copilot's returned completion items.
+    - [ ] **Add settings and setup.** Offer Ollama / GitHub Copilot for code
+      autocomplete; missing provider settings retain today's behavior and
+      persisted settings round-trip without losing existing values. Keep the
+      current code/prose Ollama model assignments. Provide one-click installation
+      in a terminal tab, browser sign-in, sign-out and connection/quota status.
+      Use `useExperimental`, `UntestedTag`, the shared dialog scheme and i18n
+      strings. Surface relevant server account/billing messages. Provider changes
+      invalidate in-flight work and displayed suggestions.
+    - [ ] **Enforce cloud consent and context boundaries.** Require explicit
+      project-level opt-in before supplying documents to Copilot; enforce this
+      in the backend as well as the UI. Document synchronization needs its own
+      context policy: the current bounded Ollama prefix/suffix does not describe
+      what a language server receives. Explain that document content may leave
+      the machine, verify additional workspace reads, and honor exclusions.
+      Keep contexts isolated by project and account. Do not silently switch from
+      Ollama to Copilot or bypass a local-only project policy. Disabling consent
+      must cancel work and release synchronized project documents.
+    - [ ] **Implement the managed backend service.** Add an `AppHandle`-free
+      Rust service for process lifecycle and framed JSON-RPC, with thin Tauri
+      commands using camelCase payloads. Handle initialization, incremental
+      document open/change/close synchronization, focus changes, status messages,
+      timeouts, explicit request cancellation and bounded crash recovery.
+      Launch only an installed, resolved server executable; manage and reap its
+      child subtree on shutdown. Scope IPC results to the requesting window and
+      reject stale document versions. Pause hidden-pane work and synchronize
+      current content before requesting again when shown.
+    - [ ] **Adapt editor behavior to provider capabilities.** Preserve Tab,
+      word/line acceptance, Esc and type-through. Normalize line endings and
+      UTF-16 positions, convert compatible ranges into safe insertions, and
+      reject replacements the current ghost UI cannot represent safely. Cycle
+      actual returned candidates. The documented Copilot inline request has no
+      Eldrun Sentence/Block/Scope controls: hide unsupported controls rather
+      than implying they affect generation. Preserve original item metadata for
+      shown and partial/full acceptance notifications; report acceptance once
+      with correct offsets. Initially avoid reusing cached Copilot items across
+      document versions or server sessions. Include provider identity in local
+      usage metrics and any later cache keys.
+    - [ ] **Validate and document the implementation.** Add meaningful tests for
+      settings migration, disabled-provider/no-consent behavior, Unicode and
+      CRLF positions, replacement ranges, cancellation races, stale responses,
+      project isolation, partial acceptance and sign-in/server failures. Keep
+      existing Ollama regression coverage passing. Update affected file-map rows
+      when adding or reshaping files and follow the third-party update checklist
+      for the new wrapped server. Run `npm run build`, `npm test`,
+      `cargo test --manifest-path src-tauri/Cargo.toml`, `npm run lint`,
+      `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings`,
+      and `git diff --check`. After backend edits run `npm run backend:stale`
+      and report its result without restarting the app.
+
+    Live checks for the user after the new backend is available: install/sign in,
+    opt in one local project, enable Copilot for code and request a suggestion;
+    accept by word, line and Tab, type through a matching prefix, then interrupt
+    with edits, caret movement, Esc and tab switches. Verify a second project
+    receives no Copilot context without consent, disabling consent stops work,
+    and changing back to Ollama restores its existing behavior. Exercise logout,
+    unavailable network, exclusions and quota errors. Keep `UntestedTag` until
+    the user confirms these checks; no live verification yet.
+
+    Implementation evidence (2026-09-18): Ollama's streaming/model/cache work is
+    extracted into `ollamaCompletionProvider.ts`; `completionProvider.ts` retains
+    original items and tests UTF-16/CRLF, safe ranges and cumulative acceptance.
+    Rust `services/copilot/{rpc,policy}.rs` supplies bounded framing, cancellation,
+    timeouts and directory-bound consent checks, with migration/isolation tests.
+    Wiring (2026-09-18, second pass): `services/copilot/{process,documents,session}.rs`
+    add the narrow fence, incremental sync and the per-project session; thin
+    commands in `commands/copilot.rs`; `copilotCompletionProvider.ts` + editor
+    selection/feedback; `CopilotCompletionCard` (provider, one-click install,
+    project consent, device sign-in) under Settings → Experimental. The real
+    1.547.0 server starts inside the fence and returns error 1000 through the
+    session (ignored test). All gates pass. Boxes above stay unticked: nothing
+    has run live, and sign-in/`checkStatus` are untested against a real account.
+    `scripts/copilot-probe.py` verified CLS 1.547.0 initialization, incremental
+    unsaved document sync, unauthenticated error 1000 and cancellation -32800.
+    Its inspected default auth store writes plaintext; the isolated probe blocks
+    `auth.db` and uses its in-memory fallback. Production credential policy and
+    authenticated workspace/exclusion behavior still need verification before
+    enabling sign-in. See `docs/context/copilot_completion.md`.
+
+45b. **More autocomplete providers: HTTP FIM, richer local context, next-edit
+    — planned (2026-09-18).** Follows #45a, which is in progress. Builds on its
+    `CompletionProvider` interface (`src/lib/viewers/completion/completionProvider.ts`) and
+    reuses its settings, consent and acceptance machinery; nothing here waits on
+    the Copilot language-server service. Rationale (web survey 2026-09-18): a
+    fill-in-the-middle HTTP endpoint takes the same bounded prefix/suffix Ollama
+    already gets, so it needs no process lifecycle, document sync or device
+    sign-in. Zed ships a comparable provider set (Zeta, Mercury, Sweep, Ollama,
+    Codestral, Copilot). Supermaven is sunset; Tabby would be a second local
+    model server beside Ollama, so neither is planned.
+
+    Order: HTTP FIM providers first, then richer local context, then next-edit.
+
+    - [ ] **Mistral Codestral FIM provider.** Codestral's `/v1/fim/completions`
+      endpoint (`prompt` + `suffix`, `max_tokens`, `stop`, streaming) maps onto
+      the existing `completionWindow()` prefix/suffix. Verify the request shape,
+      streaming format and endpoint choice (dedicated Codestral key vs. general
+      Mistral key) in a standalone probe first. The HTTP call runs in the Rust
+      backend with thin camelCase commands, never a webview `fetch` (the CSP is
+      the perimeter). The API key goes only in the OS keychain: never in
+      settings, browser storage or logs. Same project opt-in and backend-enforced
+      consent as Copilot in #45a; it sends only the bounded window, which the
+      consent text must say. Map Sentence/Block/Scope onto `max_tokens`/`stop`
+      only where that is honest; otherwise hide them, as #45a does.
+    - [ ] **Inception Mercury Coder FIM provider.** Same shape (FIM endpoint,
+      API key, very low latency). Share one generic "HTTP FIM" adapter with
+      Codestral if the probe confirms compatible request/response formats;
+      per-vendor code stays limited to endpoint, auth header and model id.
+    - [ ] **Richer local context (llama.cpp `/infill`).** Optional llama-server
+      endpoint as a local provider. Besides prefix/suffix, `/infill` accepts
+      extra context chunks. Feed it a bounded ring buffer of recently edited or
+      viewed chunks, the way llama.vim does, taken only from the same project
+      and cleared when the project or provider changes. Check whether Ollama can
+      take the same extra context through its prompt before adding a second
+      local server.
+    - [ ] **Next-edit prediction (later).** Sweep Next-Edit (1.5B, open weights,
+      runs locally), Zed's Zeta2 (open weights) and Mercury Edit 2 (API) predict
+      a replacement near the caret, not an insertion at it. That needs a
+      replacement/diff preview in the editor. Today's ghost UI deliberately
+      rejects replacements (#45a), so design that preview first, then serve the
+      local models through Ollama or llama-server.
+    - [ ] **Validate.** Tests for key-absent/consent-absent behavior (no
+      request leaves the machine), streaming and cancellation, stop sequences,
+      provider switching, extra-context project isolation, and settings
+      round-trip. Run the full gates plus `npm run backend:stale` after backend
+      edits. Tag new providers with `UntestedTag` behind `useExperimental`.
+
+    Live checks for the user: add a Codestral key, opt in one project and
+    request suggestions (manual and automatic, all acceptance paths). Confirm a
+    project without consent sends nothing, removing the key disables the
+    provider cleanly, and switching back to Ollama restores today's behavior.
+    Repeat for Mercury and the llama-server provider. No implementation or live
+    verification yet.
 
 46. **Undo/redo in native text/TeX viewers.** Add an undo/redo history to the
     in-app text and TeX editors (keyboard `Ctrl+Z`/`Ctrl+Shift+Z` plus buttons).
@@ -221,7 +400,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     case toggle, and `Esc` to close. Each page's text is extracted lazily on first
     use via `getTextContent()` (shared `pageTextItemBoxes`, the same boxes SyncTeX
     word-refinement uses) and cached per document; the pure `pdfPageMatches`
-    (`lib/viewers/tex.ts`) slices matches into big-point boxes (one per text run a
+    (`lib/viewers/tex/tex.ts`) slices matches into big-point boxes (one per text run a
     match straddles). Matches paint as translucent overlays over the page canvases
     (`.file-viewer-pdf-search-hit`), the current one brighter and scrolled into
     view. Pure helper `pdfPageMatches`.
@@ -261,11 +440,11 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       an external change while dirty raises a banner instead of clobbering either
       side. pdf.js *detaches* the buffer it is handed, so each source keeps a pristine
       byte copy for pdf-lib.
-    - **Cross-window drag (`stores/pdfDrag.ts` + `commands/pdf_clip.rs`).** Two
+    - **Cross-window drag (`stores/drag/pdfDrag.ts` + `commands/pdf_clip.rs`).** Two
       windows are separate WebViews with separate JS heaps, so the pages are built
       into a small PDF, parked in a backend slot, and only the *token* rides the
       event. Position comes from polling the OS cursor in physical desktop px
-      (`lib/coords`), because DOM pointer events don't cross an OS window boundary on
+      (`lib/window/coords`), because DOM pointer events don't cross an OS window boundary on
       WebKitGTK — the same reason the tab drag-dock does it. On release every window
       gets the END carrying the last polled cursor; only the one whose rect contains
       it claims the drop and acks. Copy is the default; **Shift moves**, and the
@@ -291,7 +470,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     Turn the text editor into a usable Python workbench for the three things a
     script actually needs, without importing an LSP or a DAP client.
 
-    - **Run / Debug open a terminal tab** (`lib/pythonRun.ts`) rather than a bespoke
+    - **Run / Debug open a terminal tab** (`lib/terminal/pythonRun.ts`) rather than a bespoke
       execution path — the same one-click-open-a-tab-and-run policy as
       `installCommand.ts`. That is what makes them work everywhere Eldrun already
       works, *for free*: a shell tab carries the project's locality and sandboxing,
@@ -635,7 +814,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     a `.bib` keeps everything it had (highlighting, find/replace, blame, compare,
     autocomplete, the save/undo path).
 
-    - **The cards edit the TEXT** (`lib/viewers/bib.ts`), the #88 bargain applied
+    - **The cards edit the TEXT** (`lib/viewers/tex/bib.ts`), the #88 bargain applied
       to a second format: every action is a splice, so field order, the alignment
       somebody sorted by hand, brace-protected `{LaTeX}` capitalization, an older
       file's `"…"` quoting and the `%` comments all survive an edit, and a card
@@ -985,7 +1164,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     page.
 
     - **A break is now read, not ignored** (`pageHaystack` in
-      `lib/viewers/tex.ts`): a trailing hyphen at a line end is dropped, joining
+      `lib/viewers/tex/tex.ts`): a trailing hyphen at a line end is dropped, joining
       the halves into the word the typesetter split; any other break becomes a
       space, which is what it means to a reader — unless one of the two sides
       already carries whitespace.
@@ -1101,9 +1280,9 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
 100. **Markdown viewer: cross-file `#fragment` navigation.** ✅ Implemented ·
     A preview link like `docs/guide.md#setup` now opens the target *and*
     scrolls its preview to the heading. The click posts the fragment to
-    `stores/mdAnchor` keyed by the target's absolute path (`openLinkedFile`
+    `stores/viewers/mdAnchor` keyed by the target's absolute path (`openLinkedFile`
     may re-activate an existing tab, so a prop cannot carry it — the same
-    shape as `stores/editorJump` for SyncTeX line targets); the target's
+    shape as `stores/viewers/editorJump` for SyncTeX line targets); the target's
     `MarkdownView` consumes it once its preview is rendered. Fragment→id
     matching (`matchAnchorId` in `lib/viewers/markdown.ts`) tries the decoded
     fragment verbatim, then its slugified form (a link written as the
@@ -1156,7 +1335,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     same region capture is now armed by the header's global Screenshot button
     instead. Pressing Screenshot while a PDF viewer is visible offers the shot
     to it first (claimable `eldrun:screenshot-capture` window event,
-    `lib/screenshot.ts`; first visible viewer claims, so the OS region tool is
+    `lib/window/screenshot.ts`; first visible viewer claims, so the OS region tool is
     only spawned when no PDF is on screen). The drag captures from the rendered
     page canvas (document-sharp, pending blackouts burned in), copies the PNG
     to the clipboard AND files it as `eldrun-screenshots/Screenshot-….png` (was `screenshots/`, see #835) in the
@@ -1592,7 +1771,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     never "is *this* formula right" — the question actually asked while writing
     one, and asked dozens of times per page. Resting the pointer on a fragment
     now typesets that fragment alone and shows it over the source.
-    - **What counts as a snippet** (`texSnippetRanges`, `lib/viewers/tex.ts`):
+    - **What counts as a snippet** (`texSnippetRanges`, `lib/viewers/tex/tex.ts`):
       inline math, display math, and a **whitelist** of self-contained
       environments (`equation`/`align`/`gather`/`multline`/`cases`/the matrix
       family/`array`/`tabular`/`tikzpicture`/…) **plus `figure` and `table`
@@ -1955,7 +2134,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       selection when focus moves to the bar's number field; the live selection
       wins when there is one, the remembered one is used only while the draft
       still holds exactly that text there.
-    - Pure half in `src/lib/viewers/beamer.ts`; tests in
+    - Pure half in `src/lib/viewers/tex/beamer.ts`; tests in
       `src/__tests__/Beamer.test.ts`, `Highlight.test.ts` (the token) and
       `TexViewer.test.tsx` (toggle → bar → Wrap; a beamer document opens with
       the bar on). Frontend only, hot-reloads.
@@ -1992,7 +2171,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       elsewhere can never leave a mark painted over moved text.
     - A new transparent overlay layer (`.file-viewer-occurrence-layer`), the
       same scroll-synced, metric-matched stack as the search/link/bracket
-      layers. Pure half in `src/lib/viewers/tex.ts` (`texCommandAt`,
+      layers. Pure half in `src/lib/viewers/tex/tex.ts` (`texCommandAt`,
       `texCommandOccurrences`); tests in `TexDelimiterMatch.test.ts` and
       `TexCommandOccurrences.test.tsx`. Frontend only, hot-reloads.
     - [ ] 🖐️ Manual test — open a `.tex` with a macro used several times.
@@ -2026,7 +2205,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       tab, since `closeTab` closes that one and naming the chord on any other
       would advertise a key that closes a different tab than the one under the
       pointer.
-    - *Files: `src/lib/shortcutHint.ts` (new), `src/lib/shortcuts.ts`,
+    - *Files: `src/lib/shortcuts/shortcutHint.ts` (new), `src/lib/shortcuts/shortcuts.ts`,
       `src/components/embed/FileViewerPane.tsx`,
       `src/components/tabs/TabBar.tsx`, `src/lib/i18n.ts` (+ the four
       dictionaries).* Frontend only, hot-reloads.
@@ -2046,14 +2225,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     tab's.** Implemented 2026-09-10, not yet verified live. Both toggles wrote
     to the tab's `ViewerState`, so every `.tex` of a deck had to be told
     "beamer" on its own and a fresh tab of the same document opened without
-    the bar. Now one row per project (`stores/texViewPref`, localStorage keyed
+    the bar. Now one row per project (`stores/viewers/texViewPref`, localStorage keyed
     by project id, `"root"` for the root scope, capped at 200 rows like
     `fileSourcePref`), read live by every TeX pane of the project — center,
     workspace, popout — and surviving a project switch and a relaunch. Absent
     means the old default: beamer follows the document, the preview follows
     `viewer_prefs.tex`. The per-tab `texBeamer`/`texHoverPreview` rows in old
     sessions are ignored.
-    - *Files: `src/stores/texViewPref.ts` (new),
+    - *Files: `src/stores/viewers/texViewPref.ts` (new),
       `src/components/embed/FileViewerPane.tsx`, `src/stores/tabs.ts`.*
       Frontend only, hot-reloads.
     - [x] 🤖 Automated test — `src/__tests__/TexViewPref.test.ts` (merge,
@@ -2079,7 +2258,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     (remembered per document for the session), and Load goes through the new
     `markdown_remote_image` command on the reader's hardened fetch — https on
     every hop, no loopback/private address even on hop 0, image content types
-    only, 2 MB cap — landing as a `blob:` URL. Files: `lib/remoteImages.ts`,
+    only, 2 MB cap — landing as a `blob:` URL. Files: `lib/remote/remoteImages.ts`,
     `lib/viewers/markdown.ts`, `components/embed/FileViewerPane.tsx`,
     `commands/markdown.rs`, `services/browser_engine.rs`. Implemented 2026-09-14
     (`2ee40a3`), **not live-tested; Load needs a backend restart.**
@@ -2102,7 +2281,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     `Collected error summary` and `Latexmk:` cause lines — titling a real
     failure and standing beside a forgiven one. Files: `commands/tex.rs`,
     `components/embed/FileViewerPane.tsx`, `components/files/FileTree.tsx`,
-    `lib/viewers/tex.ts`. Implemented 2026-09-08 (`d81f579`), **not live-tested;
+    `lib/viewers/tex/tex.ts`. Implemented 2026-09-08 (`d81f579`), **not live-tested;
     backend change.**
     - [x] 🤖 Automated test — cargo `commands::tex` (verdict + driver note),
       `TexViewer`
@@ -2150,7 +2329,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     `block`/`alertblock`/`exampleblock` join environments with a `{}` title
     seed. Accepting an environment after an unclosed `\begin{`/`\end{` writes
     the missing `}` and, for `\begin`, opens the block. Frontend:
-    `lib/viewers/tex.ts`. Implemented 2026-09-09 (`e7f36e6`), **not live-tested**.
+    `lib/viewers/tex/tex.ts`. Implemented 2026-09-09 (`e7f36e6`), **not live-tested**.
     - [x] 🤖 Automated test — `TexCompletions`
     - [ ] 🖐️ Manual test — in a beamer deck type `\frame` → `\frametitle` is
       offered; in an article it is not. Type `\begin{ali`, accept `align` → the
@@ -2198,7 +2377,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     data is not un-ignored). Scaffold repair runs only on request, so the write
     paths call `ensure_generated_dir_ignored` — append the one pattern (or write
     a minimal `.gitignore`) before the first file lands, refusing any other
-    folder. Files: `commands/{projects,mail,screenshot}.rs`, `lib/screenshot.ts`,
+    folder. Files: `commands/{projects,mail,screenshot}.rs`, `lib/window/screenshot.ts`,
     `lib/mail.ts`, `components/layout/ScreenshotSaveOverlay.tsx`,
     `components/mail/MailMessageView.tsx`, `components/embed/pdf/PdfViewer.tsx`.
     Implemented 2026-09-14 (`296c396`), **not live-tested; backend change.**
@@ -2208,5 +2387,122 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       `.gitignore` gains that line before the file exists, and `git status` is
       clean. Save a mail attachment to the emails folder → `eldrun-emails/`,
       same. A project with no `.gitignore` gets a minimal one.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+840. **Table and BibTeX parsers break their own text-preservation promise on
+    four inputs.** Found 2026-09-15 by the edge-case sweep; each case is an
+    `it.skip` in `TableEdgeCases` / `BibEdgeCases` naming the bug, so un-skip
+    the test when the fix lands. (1) `table.ts parseTable`: the docstring says a
+    mid-field `"` in an unquoted field is a literal, but any `"` opens a quoted
+    region — `a,b"c,d` parses as two cells, not three. (2) `bib.ts
+    deleteBibField` on a CRLF file eats the LF of the *previous* line's CRLF
+    while keeping the deleted field's own, leaving a bare `\r`. (3) `addBibField`
+    and (4) `addBibEntry` hardcode `\n`, so one card edit gives a CRLF file mixed
+    endings. Files: `lib/viewers/table.ts`, `lib/viewers/tex/bib.ts`. Fixed the
+    same day: a quote opens a quoted region only at the start of a field; the
+    delete takes the field's own line ending; add-field and add-entry write
+    the file's line ending. **Not live-tested.**
+    - [x] 🤖 Automated test — `TableEdgeCases`, `BibEdgeCases`
+    - [ ] 🖐️ Manual test — edit a card in a CRLF `.bib`; `file` still reports
+      CRLF line terminators and git shows one changed line.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+842. **Native viewers review: the deferred items.** An eight-agent read-only
+    review of the TeX/Markdown/YAML/PDF viewers on 2026-09-16 produced
+    `docs/native_viewers_review.md`, which holds the findings, the corrected and
+    withdrawn ones, and the per-item plans. Landed from it: the editor's line-
+    ending contract (V-01) and YAML flow-context quoting (V-05). **Still open,
+    each needing a decision rather than a patch:** *V-21* — "Delete all
+    metadata" leaves `/T` (a real name, typed into the card's author field) on
+    every PDF remark, although the button's own wording promises no author;
+    folding it into that action is one i18n rewording, adding a second checkbox
+    would be one intent wearing two switches. *V-22* — coalescing a PDF page-rail
+    drag into one undo entry changes what Ctrl+Z means, and `PageStrip` has two
+    hosts, so the print preview inherits the decision. *V-23* — `links.ts:18-20`
+    states a `Launch`/`GoToR` is never rendered; pdf.js sets `url` from `/F` for
+    both, so either arrives as an ordinary external link when `/F` is `http://…`
+    (no execution hole — the confirm stands — but a false invariant in a
+    security comment). *V-24* — the backend write path, below. *V-25* —
+    `PageStrip` has no keyboard path at all; `TableView` is the sibling to copy.
+    *V-26* — closing a tab with autosave **off** discards the draft, which
+    `ViewerEfficiency.test.ts:37` and `DeckView.tsx:462-470` both state is
+    deliberate; the fix was landed here and **reverted** for that reason, and the
+    three candidates (leave it / flush on close / add the unsaved-work prompt the
+    design currently refuses) are a user's call.
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+843. **A PDF is written by two processes with no lock (V-04/V-24).** latexmk
+    writes the PDF in place via `-outdir` — `tex.rs`'s only two `fs::rename`
+    calls are the `.fmt` cache — and repeatedly across one build, while
+    `write_file_bytes_local` (`fs.rs:1659`) is a plain create+truncate+write with
+    no temp file, no rename and no lock. The PDF viewer's remark autosave is a
+    1.2 s `setTimeout` that no user action triggers, its staleness flag cannot
+    become true while the pane is hidden, and the poll is 1500 ms against that
+    1200 ms timer even when visible. So either the engine truncates our bytes
+    (the remark is gone and the panel reported success) or we truncate its
+    half-written file. The **frontend gate** — re-stat immediately before the
+    write instead of trusting a cached flag, which also subsumes the own-write
+    mtime latch and the `stripMeta`-without-materialise hole — is `src/` and
+    hot-reloads. The **class** fix is `src-tauri/`: compile into a scratch
+    out-dir and `fs::rename` the finished PDF into place, plus a compare-and-swap
+    `write_file_text(expectedMtime)`. Backend, so it needs a deliberate restart.
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test — open a TeX document's PDF, write a remark, switch tab
+      within a second and recompile: the compile output survives and the remark
+      is either saved or honestly refused.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+845. **Clicking a checkbox in a rendered README can tick a different one.**
+    `markdown.ts`'s list collector has no fence bookkeeping while
+    `toggleTaskCheckbox` (:639) has it, so the two disagree about what a task
+    line is. A fenced block indented inside a list item is folded into the list
+    region (the continuation branch at :609), and its `- [ ]` lines render as
+    real checkboxes; the click handler then addresses the toggler **by DOM
+    ordinal**, so box 0 flips the first *real* task and the last box matches
+    nothing and silently does nothing. Shape: `- item`, a 4-space ```` ``` ````,
+    `- [ ] shown`, the closing fence, `- [ ] real`.
+    Two candidate fixes, and the second is the one to take: (a) give the
+    collector the same fence bookkeeping — resynchronises two structural
+    analyses that will drift again at the next block type; (b) put the source
+    line on the item (`ListItem` gains `line`, set from the collector's loop
+    index), emit it as `data-md-task-line`, and address the line instead of the
+    ordinal — which deletes the second analysis from the addressing path and
+    makes an unaddressable checkbox impossible to draw, the structural form of
+    `yaml.ts`'s "refuse when unsure" rule. Blast radius for (b) is one consumer
+    (`FileViewerPane.tsx:7959`), but it changes a contract stated in
+    `renderList`'s own doc comment ("checkboxes are emitted in document order, so
+    their DOM order is the toggler's index") and threads an index through the
+    collector, `renderList` and `openItem`. **Deliberately not landed with the
+    rest of the 2026-09-16 review** — a rendering-contract change wants its own
+    pass, not the tail of a long one. Files: `lib/viewers/markdown.ts`,
+    `components/embed/FileViewerPane.tsx`. See `docs/native_viewers_review.md`
+    V-07. There is no component test of `MarkdownView` at all today.
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test — a README with a fenced block indented inside a list
+      item: every checkbox ticks the line it sits on.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+844. **`npm test` runs the suite roughly twice.** `vitest.config`'s `exclude` is
+    `[...configDefaults.exclude, "target/**"]`, so the run also sweeps every
+    `*.test.ts(x)` under `.claude/worktrees/` — 952 duplicate test files across
+    two live worktrees against 479 in the tree itself (1431 files / 15390 tests
+    observed, where the UI unification plan recorded 957 / 10282 the same day).
+    The wall clock roughly doubles, failures are reported against
+    `.claude/worktrees/…` paths that read like the tree's own, and a stale
+    worktree can fail a run for code nobody is editing. Add `".claude/**"` beside
+    `"target/**"`. Separately, the DOM-timing tests in `YamlViewer.test.tsx`
+    (hover tints, drag reorder) are **flaky under load**: an intermediate run
+    reported 49 failures that a re-run of the identical command on identical code
+    did not reproduce — dangerous because the obvious reading is "my change broke
+    this".
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work

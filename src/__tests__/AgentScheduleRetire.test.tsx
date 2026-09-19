@@ -17,8 +17,8 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 import { AgentScheduleHost } from "../components/layout/AgentScheduleHost";
-import { useAgentPromptsStore } from "../stores/agentPrompts";
-import { useAgentSchedulesStore } from "../stores/agentSchedules";
+import { useAgentPromptsStore } from "../stores/agents/agentPrompts";
+import { useAgentSchedulesStore } from "../stores/agents/agentSchedules";
 import { useTabsStore, type TabEntry } from "../stores/tabs";
 
 const invokeMock = vi.mocked(invoke);

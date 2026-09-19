@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useRendererWatchdog } from "../../lib/rendererWatchdog";
+import { useRendererWatchdog } from "../../lib/window/rendererWatchdog";
 import { emit, listen } from "@tauri-apps/api/event";
+import { detachedWindowVisible } from "../../lib/window/detachedVisibility";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   useSettingsStore,
@@ -28,6 +29,7 @@ import {
   DETACHED_REQUEST_SEED,
   DETACHED_ZOOM,
   applyEditToSubtree,
+  applyColorToTabs,
   applyRenameToTabs,
   applyLocationToTabs,
   detachedSeedEvent,
@@ -56,19 +58,20 @@ import {
 } from "../../stores/tabs";
 import { withdrawnTabKinds } from "../../lib/experimental";
 import { PLATFORM } from "../../lib/platform";
-import { useTabLandStore } from "../../stores/tabLand";
+import { useTabLandStore } from "../../stores/drag/tabLand";
 import { startFocusTracking, useQuiesce } from "../../stores/power";
-import { clearStrayFullscreen } from "../../lib/strayFullscreen";
-import { applyFastModeAttribute, useFastMode } from "../../lib/fastMode";
-import { useRemoteStatusStore } from "../../stores/remoteStatus";
+import { clearStrayFullscreen } from "../../lib/window/strayFullscreen";
+import { applyFastModeAttribute, useFastMode } from "../../lib/agents/fastMode";
+import { useRemoteStatusStore } from "../../stores/remote/remoteStatus";
 import { useProjectsStore } from "../../stores/projects";
 import { useBoxesStore } from "../../stores/boxes";
 import { installWindowsEvents } from "../../stores/windows";
-import { listenPdfReveal } from "../../stores/pdfSync";
-import { listenEditorJump } from "../../stores/editorJump";
-import { listenTexCenter } from "../../stores/texCenter";
+import { listenPdfReveal } from "../../stores/viewers/pdfSync";
+import { listenEditorJump } from "../../stores/viewers/editorJump";
+import { listenTexCenter } from "../../stores/viewers/texCenter";
 import { DetachedCenterPanel } from "./DetachedCenterPanel";
 import { BrowserDownloadHost } from "../browser/BrowserDownloadHost";
+import { ExecTrustHost } from "../common/ExecTrustHost";
 import { SyncConfirmDialog } from "../common/SyncConfirmDialog";
 import { HpcGuardDialog } from "../common/HpcGuardDialog";
 import { ScreenshotSaveOverlay } from "./ScreenshotSaveOverlay";
@@ -161,7 +164,7 @@ export function DetachedApp({ param }: Props) {
   // reloads ITSELF when that renderer runs away (a reload re-seeds the group
   // from the main window, like the crash reporter's reload does). The main
   // window's watchdog cannot do this for it: reloading the main window frees
-  // nothing in this process — the 2026-09-01 reload loop. See lib/rendererWatchdog.
+  // nothing in this process — the 2026-09-01 reload loop. See lib/window/rendererWatchdog.
   useRendererWatchdog();
   // A popout hosts the docked file column → its Apps view needs the same
   // app-windows-changed subscription the main window installs.
@@ -220,7 +223,7 @@ export function DetachedApp({ param }: Props) {
   // onto `gtk_window_unfullscreen()` unconditionally and is a no-op otherwise,
   // which is why the backend clears the main window's the same read-free way.
   // What is deliberately NOT cleared — a talk in progress, the page's own DOM
-  // fullscreen — is the pure `mayClearStrayFullscreen`; see `lib/strayFullscreen`.
+  // fullscreen — is the pure `mayClearStrayFullscreen`; see `lib/window/strayFullscreen`.
   useEffect(() => {
     if (PLATFORM === "macos") return;
     const win = getCurrentWindow();
@@ -445,8 +448,7 @@ export function DetachedApp({ param }: Props) {
       // whatever geometry the WM used while the window was off screen. Persisting
       // that would move the popout on the next launch, so a flush is only taken
       // while the window is actually visible.
-      void win
-        .isVisible()
+      void detachedWindowVisible(win)
         .then((visible) => {
           if (!visible || cancelled || !pos || !size) return;
           void emit(DETACHED_BOUNDS, {
@@ -487,15 +489,16 @@ export function DetachedApp({ param }: Props) {
   // or minimised), so the panes below can stop streaming and polling for a
   // window nobody can see. Polled rather than event-driven: a Tauri-side
   // `hide()` raises no window event the renderer can hear, and the check is one
-  // cheap IPC call on the same cadence a hidden pane would otherwise cost far
-  // more than.
+  // cheap IPC check on the same cadence a hidden pane would otherwise cost far
+  // more than. Include Eldrun's parking state: Wayland does not reliably expose
+  // minimization, and a parked surface deliberately remains mapped there.
   useEffect(() => {
     const win = getCurrentWindow();
     let cancelled = false;
     const check = () => {
-      Promise.all([win.isVisible(), win.isMinimized()])
-        .then(([visible, minimized]) => {
-          if (!cancelled) setWindowVisible(visible && !minimized);
+      detachedWindowVisible(win)
+        .then((visible) => {
+          if (!cancelled) setWindowVisible(visible);
         })
         .catch(() => {});
     };
@@ -643,6 +646,10 @@ export function DetachedApp({ param }: Props) {
     setGroup((g) => (g ? applyEditToSubtree(g, edit) : g));
     if (edit.kind === "rename") {
       setTabs((ts) => applyRenameToTabs(ts, edit.key, edit.label));
+    } else if (edit.kind === "setColor") {
+      // Optimistic, like the two beside it: the picker stays open after a pick,
+      // so the tab has to recolour under it rather than on the re-seed.
+      setTabs((ts) => applyColorToTabs(ts, edit.key, edit.color));
     } else if (edit.kind === "setLocation") {
       // Optimistic: flip the badge now; the main window respawns the pane on the
       // new host and re-derives the same payload.
@@ -813,6 +820,9 @@ export function DetachedApp({ param }: Props) {
           emits browser events to every window — so it needs its own single
           download-consent host for the same reason AppShell does. */}
       <BrowserDownloadHost />
+      {/* A popout's viewer can Build or Format, so its exec-trust question
+          renders here, in this window's own store. */}
+      <ExecTrustHost />
       {/* Same reason: a popout hosts the per-subwindow file viewer, so a pull or
           push can be started in this window and its confirmation has to render
           here — this store instance is this window's. */}
@@ -864,6 +874,7 @@ export function DetachedApp({ param }: Props) {
       onSetLocation={(key, location) => pushEdit({ kind: "setLocation", key, location })}
       onReorder={(tabKeys) => pushEdit({ kind: "reorder", tabKeys })}
       onRename={(key, label) => pushEdit({ kind: "rename", key, label })}
+      onSetColor={(key, color) => pushEdit({ kind: "setColor", key, color })}
       onSplit={(key, targetGroupId, edge) => {
         // Mint the new pane's ids HERE and ship them, so the main store names
         // the pane as this window does (see `mintDetachedSplitIds`). The ids

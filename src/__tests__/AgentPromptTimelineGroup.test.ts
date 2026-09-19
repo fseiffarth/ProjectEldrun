@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { PromptChartCard } from "../lib/agentPromptChart";
-import { timelineGroupDrop, timelineGroupMovable, timelineWindow } from "../lib/agentPromptTimeline";
+import type { PromptChartCard } from "../lib/agents/prompt/chart";
+import { timelineGroupDrop, timelineGroupMovable, timelineWindow } from "../lib/agents/prompt/timeline";
 
 const now = new Date(2026, 8, 4, 12, 2, 0);
 const win = timelineWindow("day", "2026-09-04", 1);
@@ -41,7 +41,7 @@ describe("moving a selection along the axis", () => {
 
   it("refuses the whole drop when any member would land at or before now", () => {
     const drops = timelineGroupDrop(later, [later, early], { kind: "time", at: new Date(2026, 8, 4, 12, 10) }, targets, win, now);
-    expect(drops.map((entry) => entry.drop.type)).toEqual(["none", "none"]);
+    expect(drops.map((entry) => entry.drop)).toEqual([{ type: "none", reason: "past" }, { type: "none", reason: "past" }]);
   });
 
   it("sends or unschedules every member on the now band and the strip", () => {
@@ -49,5 +49,35 @@ describe("moving a selection along the axis", () => {
       .toEqual([{ type: "send", targetId: "t1" }, { type: "send", targetId: "t1" }]);
     expect(timelineGroupDrop(early, [early, later], { kind: "strip" }, targets, win, now).map((entry) => entry.drop.type))
       .toEqual(["unschedule", "unschedule"]);
+  });
+
+  it("refuses a selection dropped on the past body whole, rather than sending it", () => {
+    const drops = timelineGroupDrop(early, [early, later], { kind: "past" }, targets, win, now);
+    expect(drops.map((entry) => [entry.card.id, entry.drop])).toEqual([
+      ["a", { type: "none", reason: "past" }],
+      ["b", { type: "none", reason: "past" }],
+    ]);
+  });
+
+  it("refuses the whole drop before any write when a member would fall back onto an occupied tab", () => {
+    // `stray`'s tab is gone, so its drop falls back to the first tab — which
+    // already holds a rule. Moving `early` first and then failing on `stray`
+    // would leave half the selection moved.
+    const stray = { ...rule("c", new Date(2026, 8, 4, 13, 32)), targetId: "gone" };
+    const occupied = new Set(["t1"]);
+    const at = { kind: "time" as const, at: new Date(2026, 8, 4, 18, 0) };
+    expect(timelineGroupDrop(early, [early, stray], at, targets, win, now, occupied).map((entry) => entry.drop))
+      .toEqual([{ type: "none", reason: "occupied" }, { type: "none", reason: "occupied" }]);
+    expect(timelineGroupDrop(early, [early, stray], { kind: "now" }, targets, win, now, occupied).map((entry) => entry.drop))
+      .toEqual([{ type: "none", reason: "occupied" }, { type: "none", reason: "occupied" }]);
+    // Members on their own tab are not falling back: it holding them is no refusal.
+    expect(timelineGroupDrop(early, [early, later], at, targets, win, now, occupied).map((entry) => entry.drop.type))
+      .toEqual(["retime", "retime"]);
+  });
+
+  it("refuses the whole drop with no agent tab to reach", () => {
+    const at = { kind: "time" as const, at: new Date(2026, 8, 4, 18, 0) };
+    expect(timelineGroupDrop(early, [early, later], at, [], win, now).map((entry) => entry.drop))
+      .toEqual([{ type: "none", reason: "no-target" }, { type: "none", reason: "no-target" }]);
   });
 });

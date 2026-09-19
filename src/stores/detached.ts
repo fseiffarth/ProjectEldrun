@@ -42,13 +42,14 @@ import {
   useRemoteStatusStore,
   type ConnState,
   type HostConnState,
-} from "./remoteStatus";
+} from "./remote/remoteStatus";
 import { BOX_SCOPE_PREFIX, useBoxesStore } from "./boxes";
 import { useActivityStore, noteUserInput } from "./activity";
 import { bumpUsage } from "./usage";
-import { useRemoteMachinesStore } from "./remoteMachines";
+import { useRemoteMachinesStore } from "./remote/remoteMachines";
 import { useBigFoldersStore } from "./bigFolders";
 import type { ProjectBox, ProjectEntry } from "../types";
+import { isTabColor, type TabColor } from "../lib/theme/tabColors";
 
 /** Parsed `?detached=<scope>:<groupId>` query. */
 export interface DetachedParam {
@@ -129,7 +130,7 @@ export const DETACHED_ZOOM = "detached-zoom";
  * popout drags at a time, so MOVE/END carry no id.
  *
  * The streamed coords are OS-level desktop CURSOR coords in PHYSICAL desktop px
- * (the canonical cross-window space — see `lib/coords`), polled from
+ * (the canonical cross-window space — see `lib/window/coords`), polled from
  * `cursorPosition()` — NOT DOM pointer-event coords. DOM `screenX/Y` units diverge
  * across engines under DPI scaling, and on WebKitGTK (esp. Wayland) DOM
  * pointermove/up don't cross the OS window boundary, so the DOM stream would die at
@@ -235,7 +236,7 @@ export const detachedDropPreviewEvent = (label: string) =>
 export interface DetachedDropPreview {
   active: boolean;
   target?: { groupId: string; edge: DropEdge } | null;
-  // OS cursor in PHYSICAL desktop px (see lib/coords) so the popout can position
+  // OS cursor in PHYSICAL desktop px (see lib/window/coords) so the popout can position
   // its own drag ghost while the main-window item hovers (the main's ghost lives in
   // the main window and isn't visible over the popout). Cosmetic — the target
   // drives the drop.
@@ -290,14 +291,14 @@ export interface DetachedDragStart {
   tabKey?: string;
   paneId?: string;
 }
-/** Detached → main: the OS cursor moved (physical desktop px — see lib/coords). */
+/** Detached → main: the OS cursor moved (physical desktop px — see lib/window/coords). */
 export interface DetachedDragMove {
   cursorPhysX: number;
   cursorPhysY: number;
 }
 /**
  * Detached → main: the drag ended; `cancelled` skips docking. `cursorPhysX/Y` carry
- * the LAST OS-level cursor position (physical desktop px — see lib/coords), so the
+ * the LAST OS-level cursor position (physical desktop px — see lib/window/coords), so the
  * main window resolves the drop against where the cursor actually is — not the
  * stale DOM coordinates of the release event, which on WebKitGTK fire inside the
  * popout even when the cursor is released over the main window. Absent only on a
@@ -411,6 +412,10 @@ export function buildSeed(
 export type DetachedEdit =
   | { kind: "activate"; key: string }
   | { kind: "rename"; key: string; label: string }
+  // A tab colour picked in the popout's own right-click menu (#264). The colour
+  // lives on the tab payload the MAIN window persists, so the popout forwards it
+  // the way it forwards a rename.
+  | { kind: "setColor"; key: string; color: TabColor | undefined }
   | { kind: "close"; key: string }
   | { kind: "reorder"; tabKeys: string[] }
   // Multi-host: change WHERE a locatable tab runs (local mirror / primary / a
@@ -588,6 +593,7 @@ export function applyEditToSubtree(
       // and waits for the main window's re-seed (with the real, keyed tab).
       return subtree;
     case "rename":
+    case "setColor":
     case "setViewerState":
     case "setTmuxName":
     case "setFolder":
@@ -609,6 +615,19 @@ export function applyRenameToTabs(
   const next = label.trim();
   if (!next) return tabs;
   return tabs.map((t) => (t.key === key ? { ...t, label: next } : t));
+}
+
+/** Apply a `setColor` edit to a tab payload list (#264). Popout-side optimistic
+ *  update, so the tab recolours under the open picker instead of a beat later,
+ *  when the main window's re-seed lands. An id outside the palette clears the
+ *  colour rather than reaching CSS. Pure. */
+export function applyColorToTabs(
+  tabs: TabEntry[],
+  key: string,
+  color: TabColor | undefined,
+): TabEntry[] {
+  const next = isTabColor(color) ? color : undefined;
+  return tabs.map((t) => (t.key === key && t.color !== next ? { ...t, color: next } : t));
 }
 
 /** Apply a `setLocation` edit to a tab payload list (popout-side optimistic

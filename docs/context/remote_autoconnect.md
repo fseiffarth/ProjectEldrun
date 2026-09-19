@@ -17,7 +17,7 @@ With **`connections_headless` off** the promise is kept differently, because it
 cannot be kept that way at all: Eldrun persists no passwords in that mode, so the
 eligibility gate above can never pass and auto-connect used to reject every project
 and do nothing, silently. There, "auto-connect" means what it means for a tunnel
-armed in the header (`lib/vpnAutoConnect`): the connect command opens in the **root
+armed in the header (`lib/remote/vpn/vpnAutoConnect`): the connect command opens in the **root
 terminal** for the user to authenticate, and the pool then rides the ControlMaster
 that login leaves behind (`autoConnectInteractive` → `pollRootLoginReady`, the
 store-side twin of the Connect dialog's `pollSshReady`). No *modal* is raised on
@@ -43,7 +43,7 @@ login tab **is** the connection on that path, closing it is an outcome of its ow
 (`"closed"`, distinct from `"timeout"`): the lamp goes back to *disconnected*, not
 red, since the re-attempt guard only fires from `"off"` — a red lamp would read a
 deliberate dismissal as a failure and wedge the project shut. The root-terminal
-dedupe (`lib/remoteConnect`) expires with the tab for the same reason: it now maps
+dedupe (`lib/remote/remoteConnect`) expires with the tab for the same reason: it now maps
 each key to the tab carrying it, so a closed login stops claiming the key and the
 next activation offers the login again instead of waiting on a master that is never
 coming. A `null` mapping is a connection another surface owns (the Connect dialog's
@@ -55,7 +55,7 @@ embedded terminal), whose lifetime stays that surface's business.
 checked — which was the bug: a project could be dialled unattended by paths that
 never asked. Every unattended connect now passes the same three, in order:
 
-1. **`mayAutoTouch(settings, target)`** (`src/lib/hpcHost.ts`) — fail-**closed**.
+1. **`mayAutoTouch(settings, target)`** (`src/lib/remote/hpc/hpcHost.ts`) — fail-**closed**.
    `isHpcHost` answers `false` for a null settings object, which is right for
    painting a badge and wrong for authorising a connect; the launch sweep runs in
    exactly that window, so it needed a predicate that says *no* while it doesn't

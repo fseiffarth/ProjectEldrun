@@ -7,7 +7,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
-import { useScrollSyncStore, type ScrollHandle } from "../stores/scrollSync";
+import { useScrollSyncStore, type ScrollHandle } from "../stores/viewers/scrollSync";
 
 function reset() {
   useScrollSyncStore.setState({ links: {}, handles: new Map() });

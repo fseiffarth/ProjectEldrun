@@ -10,7 +10,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve({})) }));
 
-import { confirmSyncTransfer, useSyncConfirmStore } from "../stores/syncConfirm";
+import { confirmSyncTransfer, useSyncConfirmStore } from "../stores/remote/syncConfirm";
 
 const invokeMock = vi.mocked(invoke);
 

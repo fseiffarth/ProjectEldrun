@@ -321,7 +321,7 @@ pub fn parse_lpstat_accepting(out: &str) -> HashMap<String, bool> {
 }
 
 /// Parse `lpstat -o`:
-/// `Office-42   florian   14336   Mon 28 Jul 2026 09:12:00 AM CEST`.
+/// `Office-42   alice     14336   Mon 28 Jul 2026 09:12:00 AM CEST`.
 ///
 /// Split on whitespace for the first three fields only — the timestamp contains
 /// spaces and is kept whole, because re-formatting a locale-formatted date is a
@@ -409,6 +409,7 @@ pub fn parse_lpq_titles(out: &str) -> HashMap<u32, (String, String)> {
 /// Join the two CUPS readings: titles and the active/held state come from
 /// `lpq`, everything else from `lpstat`. A job `lpq` never mentioned keeps its
 /// id as a title, so no row is blank.
+#[cfg(any(not(target_os = "windows"), test))]
 fn merge_cups_jobs(
     mut jobs: Vec<PrintJob>,
     titles: &HashMap<u32, (String, String)>,
@@ -1321,14 +1322,14 @@ printer Lab-Plotter now printing Lab-Plotter-7.  enabled since Mon 28 Jul 2026 0
     #[test]
     fn lpstat_jobs_keeps_the_timestamp_whole() {
         let jobs = parse_lpstat_jobs(
-            "Office_Laser-42       florian      14336   Mon 28 Jul 2026 09:12:00 AM CEST\n\
+            "Office_Laser-42       alice        14336   Mon 28 Jul 2026 09:12:00 AM CEST\n\
              Lab-Plotter-7         ada           4096   Mon 28 Jul 2026 09:30:00 AM CEST\n",
         );
         assert_eq!(jobs.len(), 2);
         assert_eq!(jobs[0].id, "Office_Laser-42");
         assert_eq!(jobs[0].number, 42);
         assert_eq!(jobs[0].printer, "Office_Laser");
-        assert_eq!(jobs[0].user, "florian");
+        assert_eq!(jobs[0].user, "alice");
         assert_eq!(jobs[0].size_bytes, 14336);
         assert_eq!(jobs[0].submitted, "Mon 28 Jul 2026 09:12:00 AM CEST");
         // A printer name containing '-' still splits on the LAST one.
@@ -1347,7 +1348,7 @@ printer Lab-Plotter now printing Lab-Plotter-7.  enabled since Mon 28 Jul 2026 0
         let map = parse_lpq_titles(
             "Office_Laser is ready and printing\n\
              Rank    Owner   Job     File(s)                         Total Size\n\
-             active  florian 42      quarterly report final.pdf      14336 bytes\n\
+             active  alice   42      quarterly report final.pdf      14336 bytes\n\
              1st     ada     7       notes.txt                       4096 bytes\n",
         );
         assert_eq!(
@@ -1366,7 +1367,7 @@ printer Lab-Plotter now printing Lab-Plotter-7.  enabled since Mon 28 Jul 2026 0
     #[test]
     fn merge_falls_back_to_the_id_rather_than_a_blank_title() {
         let jobs = parse_lpstat_jobs(
-            "Office_Laser-42   florian   14336   Mon 28 Jul 2026 09:12:00 AM CEST\n",
+            "Office_Laser-42   alice     14336   Mon 28 Jul 2026 09:12:00 AM CEST\n",
         );
         let merged = merge_cups_jobs(jobs, &HashMap::new());
         assert_eq!(merged[0].title, "Office_Laser-42");

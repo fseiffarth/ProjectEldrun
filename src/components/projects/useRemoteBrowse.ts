@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { joinRemotePath, type ParsedSshAddress } from "./scaffold";
-import { resolveRemoteStartDir } from "../../lib/remoteConnect";
+import { resolveRemoteStartDir } from "../../lib/remote/remoteConnect";
 import type { RemoteEntry } from "../../types";
-import { withHostKeyConfirm } from "../../lib/hostKey";
+import { withHostKeyConfirm } from "../../lib/remote/hostKey";
 import type { SshConnectOutcome } from "./useSavedCredential";
 import { useT } from "../../lib/i18n";
 

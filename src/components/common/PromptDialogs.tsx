@@ -88,8 +88,9 @@ export type MessageSpec = {
   error?: boolean;
 };
 
-/** The dialog frame every one of these wears — portaled, backdrop-dismissed. */
-function DialogShell({
+/** The dialog frame every one of these wears — portaled, backdrop-dismissed.
+ *  Exported for a question too specific for the helpers below. */
+export function DialogShell({
   onDismiss,
   children,
 }: {

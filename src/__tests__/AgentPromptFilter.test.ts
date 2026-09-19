@@ -11,9 +11,9 @@ import {
   isSentFilterActive,
   sentAgents,
   sentTags,
-} from "../lib/agentPromptFilter";
+} from "../lib/agents/prompt/filter";
 import { dropSlot, reorderedIds } from "../lib/listReorder";
-import type { SentAgentPrompt } from "../stores/agentPrompts";
+import type { SentAgentPrompt } from "../stores/agents/agentPrompts";
 
 const now = new Date("2026-09-02T12:00:00");
 

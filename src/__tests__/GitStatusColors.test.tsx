@@ -2,7 +2,7 @@
  * Tests for git status color bars:
  * - STATUS_COLOR mapping (untracked/modified=danger, staged=warning,
  *   unpushed=success, ignored=muted — theme TOKENS, never hardcoded hexes,
- *   so the light themes' own palettes apply; see lib/gitColors)
+ *   so the light themes' own palettes apply; see lib/theme/gitColors)
  * - SidePanel git action buttons have correct color bars
  * - Hovering a button shows the relevant staged/unpushed list
  */
@@ -10,7 +10,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { STATUS_COLOR } from "../components/files/FileTree";
-import { clearFileViewSnapshots } from "../lib/fileViewSnapshots";
+import { clearFileViewSnapshots } from "../lib/projects/fileViewSnapshots";
 
 const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
 
@@ -36,7 +36,15 @@ vi.mock("../stores/settings", () => {
 import { useProjectsStore } from "../stores/projects";
 import { SidePanel } from "../components/layout/SidePanel";
 
-const mockUseProjectsStore = vi.mocked(useProjectsStore);
+// Selector-aware, like the real zustand hook: the panel reads each field
+// through its own selector, so a mock that returned the whole state for every
+// call handed `projects` the state object itself.
+function mockProjectsState(state: { projects: unknown[]; activeId: string | null }) {
+  const full = { sidePanelFolderByProject: {}, setSidePanelFolder: vi.fn(), rootDir: null, ...state };
+  vi.mocked(useProjectsStore).mockImplementation(((sel?: (s: typeof full) => unknown) =>
+    sel ? sel(full) : full) as unknown as typeof useProjectsStore);
+}
+
 
 const ACTIVE_PROJECT = {
   id: "proj-1",
@@ -101,11 +109,11 @@ describe("git action button bars", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // The panel seeds its git bar and tree from module-level snapshots so a
-    // reveal paints instantly (lib/fileViewSnapshots). Every case here renders
+    // reveal paints instantly (lib/projects/fileViewSnapshots). Every case here renders
     // the SAME project, so without a reset each one would start seeded from the
     // previous case's counts.
     clearFileViewSnapshots();
-    mockUseProjectsStore.mockReturnValue({ projects: [ACTIVE_PROJECT], activeId: "proj-1" } as ReturnType<typeof useProjectsStore>);
+    mockProjectsState({ projects: [ACTIVE_PROJECT], activeId: "proj-1" });
   });
 
   async function renderOpenPanel() {
@@ -178,11 +186,11 @@ describe("git change tree", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // The panel seeds its git bar and tree from module-level snapshots so a
-    // reveal paints instantly (lib/fileViewSnapshots). Every case here renders
+    // reveal paints instantly (lib/projects/fileViewSnapshots). Every case here renders
     // the SAME project, so without a reset each one would start seeded from the
     // previous case's counts.
     clearFileViewSnapshots();
-    mockUseProjectsStore.mockReturnValue({ projects: [ACTIVE_PROJECT], activeId: "proj-1" } as ReturnType<typeof useProjectsStore>);
+    mockProjectsState({ projects: [ACTIVE_PROJECT], activeId: "proj-1" });
   });
 
   async function renderOpenPanel() {

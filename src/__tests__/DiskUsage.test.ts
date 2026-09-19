@@ -7,7 +7,7 @@ import {
   sharePercent,
   squarify,
   type DuNode,
-} from "../lib/diskUsage";
+} from "../lib/projects/diskUsage";
 
 const TAU = Math.PI * 2;
 

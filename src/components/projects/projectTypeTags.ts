@@ -83,9 +83,13 @@ export function projectTypeTags(
           : t("projectType.providerPublic", { provider: providerLabel })
         : providerLabel;
       const color = provider === "gitlab" ? "#fc6d26" : "#a371f7";
-      const title = published
+      const summary = published
         ? gitTypeLabel(gitType, provider, t)
         : t("projectType.titleOriginDetected", { provider: providerName(provider) });
+      // The sniffed `origin` address rides on a second line, so hovering the
+      // badge says *where* the repo lives, not just which provider hosts it.
+      const origin = project.git_origin_url?.trim();
+      const title = origin ? `${summary}\n${origin}` : summary;
       tags.push({ key: "provider", label, color, title });
     }
   }

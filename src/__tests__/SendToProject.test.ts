@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { loadLastSendTarget, saveLastSendTarget } from "../lib/sendToProject";
+import { loadLastSendTarget, saveLastSendTarget } from "../lib/projects/sendToProject";
 
 describe("sendToProject memory", () => {
   beforeEach(() => {

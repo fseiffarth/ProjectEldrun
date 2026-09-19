@@ -33,7 +33,7 @@ import {
   isProjectWorktreeCwd,
   restoredAgentCwd,
   type GitWorktree,
-} from "../lib/agentWorktrees";
+} from "../lib/agents/agentWorktrees";
 import type { ProjectEntry } from "../types";
 
 function wt(over: Partial<GitWorktree> & { path: string }): GitWorktree {

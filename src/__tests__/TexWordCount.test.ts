@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { texWordCount } from "../lib/viewers/tex";
+import { texWordCount } from "../lib/viewers/tex/tex";
 
 describe("texWordCount", () => {
   it("counts only the body of a file that has one", () => {

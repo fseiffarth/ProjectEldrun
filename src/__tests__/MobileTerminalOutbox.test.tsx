@@ -59,6 +59,9 @@ describe("Eldrun Mobile Focus shows the pictures the agent left in the project's
   beforeEach(() => {
     FakeWebSocket.instances = [];
     vi.stubGlobal("WebSocket", FakeWebSocket);
+    // The strip is Terminal view's; Focus shows the pictures in the chat
+    // (MobileFocusOutboxMessages), and an agent tab opens in Focus by default.
+    localStorage.setItem("eldrun.mobile.view.agent", "terminal");
     vi.spyOn(Date, "now").mockReturnValue(NOW * 1000);
     Object.defineProperty(HTMLElement.prototype, "scrollTo", { configurable: true, value: vi.fn() });
   });
@@ -77,7 +80,8 @@ describe("Eldrun Mobile Focus shows the pictures the agent left in the project's
     render(<Terminal tab={TAB} back={() => {}} />);
     await settle();
 
-    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["/api/v1/tabs/tab-7/outbox"]);
+    // The facts row's usage read (`/status`) is not this test's concern.
+    expect(fetchMock.mock.calls.map(([url]) => url).filter((url) => !url.endsWith("/status"))).toEqual(["/api/v1/tabs/tab-7/outbox"]);
     const strip = screen.getByRole("region", { name: "Files from the agent" });
     expect(strip.textContent).toContain("From the agent");
     expect(strip.textContent).toContain("2 files");

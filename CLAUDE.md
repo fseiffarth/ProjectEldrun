@@ -7,4 +7,4 @@ Claude-specific overrides only.
 @AGENTS.md
 
 Other agent files: [AGENTS.md](./AGENTS.md) · [GEMINI.md](./GEMINI.md) ·
-[src/CLAUDE.md](./src/CLAUDE.md) · [src-tauri/CLAUDE.md](./src-tauri/CLAUDE.md)
+[frontend map](./docs/filemap_frontend.md) · [backend map](./docs/filemap_backend.md)

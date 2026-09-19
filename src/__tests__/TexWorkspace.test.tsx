@@ -134,9 +134,9 @@ async function resetStores() {
     focusedGroupId: null,
     activeKey: null,
   });
-  const { useEditorJumpStore } = await import("../stores/editorJump");
+  const { useEditorJumpStore } = await import("../stores/viewers/editorJump");
   useEditorJumpStore.setState({ requestsByPath: {} });
-  const { usePdfSyncStore } = await import("../stores/pdfSync");
+  const { usePdfSyncStore } = await import("../stores/viewers/pdfSync");
   usePdfSyncStore.setState({ byPath: {} });
 }
 
@@ -330,7 +330,7 @@ describe("TeX workspace — center switching + SyncTeX", () => {
     expect(useTabsStore.getState().tabs).toHaveLength(2);
 
     // Forward search revealed the caret's box in that PDF (path-keyed store).
-    const { usePdfSyncStore } = await import("../stores/pdfSync");
+    const { usePdfSyncStore } = await import("../stores/viewers/pdfSync");
     await waitFor(() =>
       expect(usePdfSyncStore.getState().byPath["/p/main.pdf"]).toMatchObject({
         rect: { page: 1, x: 10, y: 20, w: 100, h: 12 },
@@ -379,7 +379,7 @@ describe("TeX workspace — center switching + SyncTeX", () => {
 
     // Watch the jump channel: the child editor mounted by the center switch
     // consumes the request almost immediately, so spy rather than race the value.
-    const { useEditorJumpStore } = await import("../stores/editorJump");
+    const { useEditorJumpStore } = await import("../stores/viewers/editorJump");
     const jumpSpy = vi.spyOn(useEditorJumpStore.getState(), "requestJump");
 
     // A standalone PDF tab's reverse-click calls the module `jumpToSource`; for a
@@ -455,7 +455,7 @@ describe("TeX workspace — center switching + SyncTeX", () => {
     setupInvoke();
     const { tabKey, useTabsStore } = await renderWorkspace();
     const vsOf = () => useTabsStore.getState().tabs.find((t) => t.key === tabKey)?.viewerState;
-    const { useEditorJumpStore } = await import("../stores/editorJump");
+    const { useEditorJumpStore } = await import("../stores/viewers/editorJump");
 
     // On the main document there is nothing above: present, inert, and the
     // title says so.
@@ -495,7 +495,7 @@ describe("TeX workspace — center switching + SyncTeX", () => {
     setupInvoke();
     const { tabKey, useTabsStore } = await renderWorkspace();
     const vsOf = () => useTabsStore.getState().tabs.find((t) => t.key === tabKey)?.viewerState;
-    const { useEditorJumpStore } = await import("../stores/editorJump");
+    const { useEditorJumpStore } = await import("../stores/viewers/editorJump");
 
     const childRow = await screen.findByRole("button", { name: /chap\.tex/i });
     await act(async () => {
@@ -663,7 +663,7 @@ describe("TeX workspace — center switching + SyncTeX", () => {
     });
     await screen.findByRole("button", { name: /chap\.tex/i });
 
-    const { useEditorJumpStore } = await import("../stores/editorJump");
+    const { useEditorJumpStore } = await import("../stores/viewers/editorJump");
     const jumpSpy = vi.spyOn(useEditorJumpStore.getState(), "requestJump");
 
     await act(async () => {
@@ -685,7 +685,7 @@ describe("TeX workspace — center switching + SyncTeX", () => {
     setupInvoke();
     vi.resetModules();
     const { useTabsStore } = await import("../stores/tabs");
-    const { TEX_CENTER_EVENT } = await import("../stores/texCenter");
+    const { TEX_CENTER_EVENT } = await import("../stores/viewers/texCenter");
     const { emit } = await import("@tauri-apps/api/event");
     useTabsStore.getState().setScope("p");
     const tab = useTabsStore.getState().addTab({
@@ -856,7 +856,7 @@ describe("TeX workspace — center switching + SyncTeX", () => {
     );
 
     const { tabKey, useTabsStore } = await renderWorkspace();
-    const { useEditorJumpStore } = await import("../stores/editorJump");
+    const { useEditorJumpStore } = await import("../stores/viewers/editorJump");
     const jumpSpy = vi.spyOn(useEditorJumpStore.getState(), "requestJump");
 
     await act(async () => {

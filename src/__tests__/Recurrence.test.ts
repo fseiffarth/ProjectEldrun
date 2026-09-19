@@ -6,7 +6,7 @@ import {
   expandEvents,
   occurrencesOn,
   overrideOccurrence,
-} from "../lib/recurrence";
+} from "../lib/calendar/recurrence";
 import { translate, type TranslationKey } from "../lib/i18n";
 import type { CalendarEvent, Rrule } from "../types";
 

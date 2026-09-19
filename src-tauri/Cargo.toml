@@ -1,6 +1,6 @@
 [package]
 name = "eldrun"
-version = "0.1.68"
+version = "0.1.76"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 default-run = "eldrun"
@@ -61,7 +61,7 @@ notify = "8"
 arboard = { version = "3", features = ["wayland-data-control"] }
 # Encode the clipboard's raw RGBA image as PNG before writing it to disk.
 png = "0.17"
-calamine = "0.35.0"
+calamine = "0.36"
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 # Stage host file bytes on disk so `git diff --no-index` can diff the local mirror
 # against the current host copy (SSH-sync host-vs-mirror diff button).
@@ -105,7 +105,7 @@ bytes = "1"
 # maintained fork of the `battery` crate; one API over Linux
 # (`/sys/class/power_supply`), Windows (`GetSystemPowerStatus`), and macOS
 # (IOKit), so it needs no cfg-gating here.
-starship-battery = "0.10"
+starship-battery = "0.11"
 # Hunspell-compatible spell checking (`services/spell.rs`) for the native
 # editors' dictionary provider — pure Rust (helix's checker), so no C
 # dependency and the Windows/macOS builds stay toolchain-free. Reads the

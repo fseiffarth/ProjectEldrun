@@ -19,9 +19,9 @@ import {
   type TabEntry,
   type TabKind,
 } from "../../stores/tabs";
-import { useDragStore } from "../../stores/drag";
-import { useTabLandStore } from "../../stores/tabLand";
-import { useDetachAnimStore, flyVector } from "../../stores/detachAnim";
+import { useDragStore } from "../../stores/drag/drag";
+import { useTabLandStore } from "../../stores/drag/tabLand";
+import { useDetachAnimStore, flyVector } from "../../stores/drag/detachAnim";
 import { commitDrop } from "./commitDrop";
 import { TabDropPlaceholder } from "./TabDropPlaceholder";
 import {
@@ -36,37 +36,41 @@ import {
   type StaticMenuItem,
 } from "./newTabItems";
 import { AddTabMenuList } from "./AddTabMenuList";
+import { localModelMenuGroup, useLocalModelPlacement } from "./localModelGroup";
+import { TabColorPicker } from "./TabColorPicker";
+import { tabColorCss } from "../../lib/theme/tabColors";
 import { useAddTabMenuData } from "./useAddTabMenuData";
 import { useAgentWorktreePicker } from "./agentWorktrees";
 import { CustomAgentDialog } from "./CustomAgentDialog";
 import { reseedDetached, startDetachedDropSession } from "./detachedDropTargets";
 import { TabHoverCard } from "./TabHoverCard";
-import { useFastMode } from "../../lib/fastMode";
+import { useFastMode } from "../../lib/agents/fastMode";
 import {
   TabSourceBadge,
+  TabStatusMark,
   TabTexLinkBadge,
   TabLocalityBadge,
   LocalityMenu,
   tabLocation,
   type LocalityMenuState,
 } from "./TabLocalityBadges";
-import { texPdfPartner, useTexPdfCandidates } from "../../lib/texPdfLink";
+import { texPdfPartner, useTexPdfCandidates } from "../../lib/viewers/tex/texPdfLink";
 import { useClampToViewport } from "../../hooks/useClampToViewport";
-import { startCursorPoll, desktopCursor, type PhysPoint } from "../../lib/coords";
-import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
+import { startCursorPoll, desktopCursor, type PhysPoint } from "../../lib/window/coords";
+import { bindDragRelease, dragPlatform } from "../../lib/window/dragPlatform";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { useExperimental } from "../../lib/experimental";
-import { closeTabWithConfirm } from "../../lib/closeRemoteTab";
-import { registerHostBoundTab } from "../../lib/hostBound";
+import { closeTabWithConfirm } from "../../lib/remote/closeRemoteTab";
+import { registerHostBoundTab } from "../../lib/remote/hostBound";
 import { useActivityStore } from "../../stores/activity";
 import { UntestedTag } from "../common/UntestedTag";
 import { useT } from "../../lib/i18n";
-import { useChordHint } from "../../lib/shortcutHint";
-import { TRASH_PROJECT_ID } from "../../lib/trashProject";
+import { useChordHint } from "../../lib/shortcuts/shortcutHint";
+import { TRASH_PROJECT_ID } from "../../lib/projects/trashProject";
 import { AgentScheduleDialog } from "../agents/AgentScheduleDialog";
-import { scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agentSchedules";
-import { nextScheduleOccurrence } from "../../lib/agentSchedule";
+import { scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agents/agentSchedules";
+import { nextScheduleOccurrence } from "../../lib/agents/agentSchedule";
 
 /** Default fly-out card size when no live pane thumbnail is available (group
  *  detach via the bar drag carries no preview). */
@@ -155,7 +159,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // pair very often straddles two subwindows (the workspace here, its compiled
   // PDF beside it), so the search runs over the scope rather than this group —
   // behind a shallow guard that keeps the bar's subscription narrow (see
-  // lib/texPdfLink).
+  // lib/viewers/tex/texPdfLink).
   const texPdfTabs = useTexPdfCandidates();
   // The 3D project-blob tab is a root-scope feature, offered only once at least
   // one project exists (it has nothing to show otherwise).
@@ -171,10 +175,10 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // group-scoped `setGroupActive`.
   const setActive = useTabsStore((s) => s.setActive);
   const renameTab = useTabsStore((s) => s.renameTab);
+  const setTabColor = useTabsStore((s) => s.setTabColor);
   const addTab = useTabsStore((s) => s.addTab);
   const duplicateTab = useTabsStore((s) => s.duplicateTab);
   const ensureTab = useTabsStore((s) => s.ensureTab);
-  const removeTab = useTabsStore((s) => s.removeTab);
   const setTabLocation = useTabsStore((s) => s.setTabLocation);
   // Experimental — off for users, on in debug: the in-app browser (#61). This is
   // the entry-point half of the gate; the other half is the withdrawal
@@ -238,8 +242,10 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // one implementation with the popout's NewTabMenu, so the two cannot drift.
   const {
     localModel,
+    localModelOffInRoot,
     localDrivers,
     enabledAgents,
+    vibeForLocalModel,
     compactAgentBins,
     customAgents,
     installedCustom,
@@ -298,6 +304,8 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
   const menuOpen = menuPos !== null;
+  // The local-model group's GPU gate; probes only while the menu is open.
+  const localModelGpu = useLocalModelPlacement(localModel, menuOpen);
 
   const updateScrollState = useCallback(() => {
     const el = stripRef.current;
@@ -737,17 +745,17 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
     setTabMenu({ x: event.clientX, y: event.clientY, key, index });
   }
 
-  // Bulk-close helpers built on the tested `removeTab` action over this group's
-  // ordered `tabs`. Each removeTab reads fresh store state and repicks the active
+  // Bulk-close helpers built on `closeTabWithConfirm` (`removeTab` plus the
+  // tab's local tmux session) over this group's ordered `tabs`. Each close reads fresh store state and repicks the active
   // tab / collapses empty groups, so looping over a render-time snapshot is safe.
   function closeToLeft(index: number) {
-    tabs.slice(0, index).forEach((tb) => removeTab(tb.key));
+    tabs.slice(0, index).forEach((tb) => closeTabWithConfirm(tb.key));
   }
   function closeToRight(index: number) {
-    tabs.slice(index + 1).forEach((tb) => removeTab(tb.key));
+    tabs.slice(index + 1).forEach((tb) => closeTabWithConfirm(tb.key));
   }
   function closeOthers(key: string) {
-    tabs.filter((tb) => tb.key !== key).forEach((tb) => removeTab(tb.key));
+    tabs.filter((tb) => tb.key !== key).forEach((tb) => closeTabWithConfirm(tb.key));
   }
 
   // Start a pointer-based tab drag once the pointer crosses a 5px threshold.
@@ -960,7 +968,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
         overDetached &&
         (await invoke<boolean>("detached_window_frontmost", {
           registryId: overDetached.label,
-        }).catch(() => true));
+        }).catch(() => false));
       if (overDetached && overFrontDetached && phys) {
         // Dock into the SPECIFIC pane under the cursor (a body edge splits, a bar
         // merges) — resolved synchronously at the release coords, so no stale
@@ -1213,7 +1221,9 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             : null;
         const attn = !isActive || rawAttn === "decision" ? rawAttn : null;
         const stateClass = working
-          ? " working"
+          ? tab.kind === "shell"
+            ? " working shell"
+            : " working"
           : attn === "decision"
             ? " needs-decision"
             : attn === "done"
@@ -1223,7 +1233,14 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
         // so the top stripe reads as the tab-group colour consistently — plain
         // themes draw the rail above, fancy themes move it below. Inactive tabs
         // keep a transparent stripe slot; hover/active tint it with this colour.
-        const style = { "--tab-accent": TAB_ACCENT[tab.kind] } as React.CSSProperties;
+        // A user-set colour (#264) REPLACES the kind colour in the same slot, so
+        // every treatment already keyed off `--tab-accent` (the active tab's
+        // bottom rule, and a fancy theme's rail below it) follows it without a
+        // second code path. `has-tab-color` is what makes it visible on an
+        // INACTIVE tab too: colouring tabs is for telling them apart at a
+        // glance, and a mark only the current tab carries would say nothing.
+        const userColor = tabColorCss(tab.color);
+        const style = { "--tab-accent": userColor ?? TAB_ACCENT[tab.kind] } as React.CSSProperties;
         const editing = editingKey === tab.key;
         // A tab freshly dropped into this bar plays the drop-in landing once.
         const landing = !isDragging && landedKey === tab.key;
@@ -1231,7 +1248,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
           <Fragment key={tab.key}>
           {showMarkerBefore && dropPlaceholder}
           <div
-            className={`tab ${isActive ? "active" : ""}${stateClass}${isDragging ? " dragging" : ""}${editing ? " editing" : ""}${landing ? " landing" : ""}`}
+            className={`tab ${isActive ? "active" : ""}${stateClass}${userColor ? " has-tab-color" : ""}${isDragging ? " dragging" : ""}${editing ? " editing" : ""}${landing ? " landing" : ""}`}
             style={style}
             data-tab-index={index}
             data-kind={tab.kind}
@@ -1263,6 +1280,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                 : undefined
             }
           >
+            <TabStatusMark stateClass={stateClass} />
             {editing ? (
               <input
                 className="tab-label-edit"
@@ -1315,7 +1333,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             {/* TeX ⇄ PDF coupling mark: this tab's other half (the compiled PDF,
                 or the LaTeX source that produces it) when that tab is open —
                 click to jump to it. Derived from the paths, so it needs nothing
-                persisted on the tab; see lib/texPdfLink. */}
+                persisted on the tab; see lib/viewers/tex/texPdfLink. */}
             <TabTexLinkBadge
               partner={texPdfPartner(texPdfTabs, tab)}
               onFocus={setActive}
@@ -1455,7 +1473,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
       </div>
       {menuOpen && menuPos && createPortal(
         <div
-          className="tab-new-menu"
+          className="tab-new-menu tab-add-menu"
           ref={addMenuRef}
           style={{ position: "fixed", left: menuPos.x, top: menuPos.y }}
         >
@@ -1527,48 +1545,18 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   }]
                 : []),
               // Only offer agents whose binary is actually installed: Mistral/vibe
-              // (checked against `enabledAgents`) and the drivers the backend
-              // already marks `available` (which now includes an installed check).
-              ...(!trashScope ? [{
-                label: localModel
-                  ? t("newTabMenu.groupLocalModelWithName", { model: localModel })
-                  : t("newTabMenu.groupLocalModel"),
-                entries: localModel
-                  ? [
-                      // Mistral/vibe keeps its bespoke per-model VIBE_HOME path.
-                      ...(enabledAgents?.has("vibe")
-                        ? [{
-                            key: "vibe",
-                            label: "Mistral",
-                            color: TAB_ACCENT["local_agent"],
-                            onPick: () => void handleOllamaModel(localModel),
-                          }]
-                        : []),
-                      // Other agents drive the same model via `ollama launch` / fallback.
-                      // `heavy_harness` cautions, it never withholds — see
-                      // lib/localDrivers.ts. The row stays pickable because
-                      // which local models cope is not something the backend
-                      // can probe.
-                      ...localDrivers.filter((d) => d.available).map((d) => ({
-                        key: d.id,
-                        label: d.label,
-                        color: TAB_ACCENT["local_agent"],
-                        caution: d.heavy_harness
-                          ? t("newTabMenu.localDriverHeavyHarness", { agent: d.label })
-                          : undefined,
-                        onPick: () => void handleLocalLaunch(d.id, d.label, localModel),
-                      })),
-                    ]
-                  : [],
-                // Two causes, two sentences — see NewTabMenu: an empty list
-                // because the model can't drive tool-calling agents must not
-                // read as "you have no agents installed".
-                hint: !localModel
-                  ? t("newTabMenu.noLocalModelHint")
-                  : localDrivers.some((d) => d.needs_tools_unsupported)
-                    ? t("newTabMenu.localModelNoToolsHint", { model: localModel })
-                    : t("newTabMenu.noLocalAgentHint"),
-              }] : []),
+              // (checked against `vibeForLocalModel`) and the drivers the backend
+              // already marks `available` — and only once the model is on the GPU.
+              ...(!trashScope ? [localModelMenuGroup({
+                localModel,
+                localModelOffInRoot,
+                localDrivers,
+                vibeForLocalModel,
+                gpu: localModelGpu,
+                onVibe: (model) => void handleOllamaModel(model),
+                onLaunch: (id, label, model) => void handleLocalLaunch(id, label, model),
+                t,
+              })] : []),
               ...(!trashScope ? [{
                 label: t("newTabMenu.groupShell"),
                 entries: SHELL_ITEMS.filter((i) => i.kind === "shell").map((item) => ({
@@ -1734,15 +1722,22 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
               setTabMenu(null);
             }}
           >
-            <span className="tab-new-menu-dot" style={{ color: "var(--accent)" }}>✎</span>
+            <span className="tab-new-menu-dot tab-new-menu-dot--accent">✎</span>
             {t("common.rename")}
           </button>
+          {/* The picker keeps the menu OPEN after a pick: the tab recolours behind
+              it, so trying a second hue is one more click rather than another
+              right-click. Every other row here is a one-shot action and closes. */}
+          <TabColorPicker
+            current={tabs.find((tab) => tab.key === tabMenu.key)?.color}
+            onPick={(color) => setTabColor(tabMenu.key, color)}
+          />
           {tabs.some((tab) => tab.key === tabMenu.key && canDuplicateTab(tab)) && (
             <button
               className="tab-new-menu-item"
               onClick={() => void handleDuplicate(tabMenu.key)}
             >
-              <span className="tab-new-menu-dot" style={{ color: "var(--accent)" }}>⧉</span>
+              <span className="tab-new-menu-dot tab-new-menu-dot--accent">⧉</span>
               {t("tabBar.duplicate")}
               <UntestedTag />
             </button>
@@ -1755,7 +1750,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                 setTabMenu(null);
               }}
             >
-              <span className="tab-new-menu-dot" style={{ color: "var(--accent)" }}>◷</span>
+              <span className="tab-new-menu-dot tab-new-menu-dot--accent">◷</span>
               {t("agentSchedule.menu")}
               <UntestedTag />
             </button>
@@ -1767,7 +1762,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
               setTabMenu(null);
             }}
           >
-            <span className="tab-new-menu-dot" style={{ color: "var(--danger)" }}>×</span>
+            <span className="tab-new-menu-dot tab-new-menu-dot--danger">×</span>
             {t("common.close")}
           </button>
           <button
@@ -1778,7 +1773,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
               setTabMenu(null);
             }}
           >
-            <span className="tab-new-menu-dot" style={{ color: "var(--danger)" }}>×</span>
+            <span className="tab-new-menu-dot tab-new-menu-dot--danger">×</span>
             {t("tabBar.closeOthers")}
           </button>
           <button
@@ -1789,7 +1784,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
               setTabMenu(null);
             }}
           >
-            <span className="tab-new-menu-dot" style={{ color: "var(--danger)" }}>×</span>
+            <span className="tab-new-menu-dot tab-new-menu-dot--danger">×</span>
             {t("tabBar.closeToLeft")}
           </button>
           <button
@@ -1800,7 +1795,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
               setTabMenu(null);
             }}
           >
-            <span className="tab-new-menu-dot" style={{ color: "var(--danger)" }}>×</span>
+            <span className="tab-new-menu-dot tab-new-menu-dot--danger">×</span>
             {t("tabBar.closeToRight")}
           </button>
         </div>,

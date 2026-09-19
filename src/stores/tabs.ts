@@ -1,17 +1,18 @@
 import { invoke } from "@tauri-apps/api/core";
-import { restoredAgentCwd } from "../lib/agentWorktrees";
+import { restoredAgentCwd } from "../lib/agents/agentWorktrees";
+import { isTabColor, type TabColor } from "../lib/theme/tabColors";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import type { InternalViewer } from "../lib/viewers/fileUtils";
 import type { AutocompleteMode } from "../types";
-import { forgetPty } from "../lib/promptCount";
-import { BOX_SCOPE_PREFIX, splitPtyId } from "../lib/ptyId";
+import { forgetPty } from "../lib/agents/promptCount";
+import { BOX_SCOPE_PREFIX, splitPtyId } from "../lib/terminal/ptyId";
 import { METRIC, agentMetricLeaf, sub } from "../lib/usageMetrics";
 import { useLinkRoutingStore } from "./linkRouting";
 import { bumpUsage } from "./usage";
 import { translate, useI18nStore } from "../lib/i18n";
-import { newTmuxSessionName } from "../lib/tmuxSession";
-import { useRunHostPrefStore } from "./runHostPref";
+import { newTmuxSessionName } from "../lib/terminal/tmuxSession";
+import { useRunHostPrefStore } from "./remote/runHostPref";
 import { withdrawnTabKinds } from "../lib/experimental";
 import { useSettingsStore } from "./settings";
 import { getDetachedWindowContext } from "./detachedContext";
@@ -78,7 +79,7 @@ function withRunHostDefault(
  * - `hostBoundUid` is dropped because the grant is a file the backend writes
  *   against a specific uid; the caller re-registers one and passes it back in
  *   (a store action cannot await). Without it the copy simply runs inside the
- *   project's container, which is the safe direction (`lib/hostBound.ts`).
+ *   project's container, which is the safe direction (`lib/remote/hostBound.ts`).
  */
 export function duplicateSpec(tab: TabEntry): Omit<TabEntry, "key"> {
   const {
@@ -401,7 +402,7 @@ export interface ViewerState {
   grammarCheck?: boolean;
   spellCheck?: boolean;
   // The TeX editor's hover-preview and beamer switches are NOT here: they are
-  // the project's, in `stores/texViewPref` (a tab of a deck is not where "this
+  // the project's, in `stores/viewers/texViewPref` (a tab of a deck is not where "this
   // is a deck" belongs). Old sessions may still carry `texHoverPreview` /
   // `texBeamer` rows; they are ignored.
   // Debug breakpoints (#py), as 1-based line numbers into the file. Persisted per
@@ -573,7 +574,7 @@ export interface TabEntry {
   // The backend strips it from the project-tree export/adoption path.
   scheduleTargetId?: string;
   // This tab's work is **not** worth outliving it: never tmux-wrapped, however
-  // persist-enabled its project is (`lib/tmuxSession`'s `shouldPersistTab`). Set
+  // persist-enabled its project is (`lib/terminal/tmuxSession`'s `shouldPersistTab`). Set
   // by the SLURM log tab on an HPC-tagged host — a `tail -F` left running under a
   // tmux daemon on a shared login node after Eldrun quits is exactly the standing
   // presence the tag forbids, and the tail is one click away in the Jobs view.
@@ -647,14 +648,14 @@ export interface TabEntry {
   // must live on the tab to survive a relaunch and let the tab REATTACH rather than
   // start a second session. Passed to the backend as `tmux_session` when the tab
   // actually runs persistently (a remote shell tab of a persist-enabled project);
-  // inert otherwise. See `lib/tmuxSession.ts`, `shouldPersistTab`.
+  // inert otherwise. See `lib/terminal/tmuxSession.ts`, `shouldPersistTab`.
   tmuxSession?: string;
   // When set, this shell tab **attaches** to an existing named tmux session on the
   // host (opened from the Sessions view onto a running, possibly hand-started
   // session) instead of spawning a fresh one. Persisted so it reattaches across a
   // restart. Passed as `tmux_attach`, which takes precedence over `tmuxSession`.
   tmuxAttach?: string;
-  // The tab's HOST-BOUND MARKER id (`lib/hostBound.ts`, #150): set on a local-model
+  // The tab's HOST-BOUND MARKER id (`lib/remote/hostBound.ts`, #150): set on a local-model
   // driver tab, which is the one kind of tab allowed to run on the host when the
   // project's container toggle is on. Minted and registered at creation and
   // persisted here for the same reason `tmuxSession` is — the tab's key and PTY id
@@ -662,11 +663,21 @@ export interface TabEntry {
   // grant itself is a file in the state dir; this is only the index into it, which
   // is why a planted value buys nothing.
   hostBoundUid?: string;
+  // A user-chosen colour from the closed palette in `lib/theme/tabColors.ts` (#264):
+  // set by the tab's right-click menu on the desktop, or the Colour sheet on the
+  // phone. Absent (the default) leaves the tab on its KIND colour — `TAB_ACCENT`
+  // — which is why this is stored as "no colour" rather than as the kind's hue:
+  // re-theming, or a kind gaining a new accent, must still move an uncoloured
+  // tab. Persisted, because a colour a user assigned to group their tabs is
+  // worthless if it does not survive the relaunch that reopens them; and copied
+  // verbatim by `duplicateSpec`, since a colour DESCRIBES a tab rather than
+  // identifying it.
+  color?: TabColor;
   // Idempotency key of the request that created this tab, for the callers that
   // create one without a click behind them: a Mobile create (a keyed hash — it
   // contains no client token) whose timed-out retry must resolve to this exact
   // saved tab instead of duplicating it, and the agent warm-up cron, whose slot
-  // id (`lib/agentCron`'s `agentCronKey`) does the same job for two ticks racing
+  // id (`lib/agents/agentCron`'s `agentCronKey`) does the same job for two ticks racing
   // inside the grace window. Named for its first caller; read only by
   // `hydrateThenCreateInScope`, which is what both go through.
   mobileRequestHash?: string;
@@ -772,6 +783,10 @@ export type DropEdge = "left" | "right" | "top" | "bottom" | "center";
 export type DetachedEditPayload =
   | { kind: "activate"; key: string }
   | { kind: "rename"; key: string; label: string }
+  // A tab colour picked in a popout's own right-click menu (#264). Forwarded
+  // like the rename beside it rather than applied locally: a popout's store
+  // holds no tabs, and the colour lives on the payload the MAIN window persists.
+  | { kind: "setColor"; key: string; color: TabColor | undefined }
   // Multi-host: change where a locatable tab runs; applied to the payload here so
   // the main window's flat pane layer (which owns the popout's PTY) respawns it.
   | { kind: "setLocation"; key: string; location: TabLocation }
@@ -863,6 +878,8 @@ export interface SavedTabEntry {
   autoContinue?: boolean;
   // Persisted host-bound marker id (see TabEntry.hostBoundUid, #150).
   hostBoundUid?: string;
+  // Persisted user-chosen tab colour (see TabEntry.color).
+  color?: TabColor;
   mobileRequestHash?: string;
 }
 
@@ -914,6 +931,7 @@ export function toSavedTabEntry(t: TabEntry): SavedTabEntry {
     mobileRequestHash: t.mobileRequestHash,
     ephemeral: t.ephemeral,
     autoContinue: t.autoContinue,
+    color: t.color,
   };
 }
 
@@ -1011,8 +1029,12 @@ interface TabsStore {
 
   // focus / activation
   focusGroup: (groupId: string) => void;
+  /** `focusGroup` for any scope — the root console arranges the root scope's
+   *  subwindows while a project is the active scope. */
+  focusGroupInScope: (scope: string, groupId: string) => void;
   setActive: (key: string) => void; // activate tab + focus its group
   setGroupActive: (groupId: string, key: string) => void;
+  setGroupActiveInScope: (scope: string, groupId: string, key: string) => void;
   // `setActive` for a scope that is not necessarily the current one: activate the
   // tab within its subwindow and focus that subwindow in THAT scope's own tree,
   // so a caller can aim a click at a project before switching to it (the project
@@ -1059,6 +1081,14 @@ interface TabsStore {
   // loud. Falls through to `renameTab` when they are the same, keeping the
   // detached-popout forwarding path intact.
   renameTabInScope: (scope: string, key: string, label: string) => void;
+  // Paint one tab of the ACTIVE scope with a palette colour, or clear it with
+  // `undefined` (see TabEntry.color). Forwards to the main window from a popout
+  // exactly as `renameTab` does.
+  setTabColor: (key: string, color: TabColor | undefined) => void;
+  // The same, aimed at a named scope — what the phone's Colour sheet goes
+  // through, since the project it is looking at need not be the one the window
+  // is showing. Falls through to `setTabColor` when they are the same scope.
+  setTabColorInScope: (scope: string, key: string, color: TabColor | undefined) => void;
   // Turn auto-continue on or off for ONE agent tab in `scope` (see
   // TabEntry.autoContinue). Scoped like the rename above, because the Agents
   // view is rendered for a scope that need not be the active one.
@@ -1110,8 +1140,8 @@ interface TabsStore {
   // which need not be the one the desktop is showing — and `removeTab` writes
   // to the active scope, so without the scope said out loud a close from the
   // phone would drop a tab out of the project on the user's screen. Closing
-  // stays what it is on the desktop (`lib/closeRemoteTab`): the pane unmounts
-  // and its PTY dies, while a tmux session behind the tab keeps running. A tab
+  // stays what it is on the desktop (`lib/remote/closeRemoteTab`, which also
+  // ends the tab's local tmux session): the pane unmounts and its PTY dies. A tab
   // living in a popout is closed through that window's own teardown, since its
   // pane is mounted there and nothing here would otherwise kill its PTY.
   // Non-current scopes are dropped in memory only; persist at the call site.
@@ -1159,6 +1189,10 @@ interface TabsStore {
   reorderInGroup: (groupId: string, from: number, to: number) => void;
   moveTab: (key: string, targetGroupId: string, index?: number) => void;
   splitWithTab: (key: string, targetGroupId: string, edge: DropEdge) => void;
+  // The same two moves on a named scope (the root console arranges the root
+  // scope while a project is active). The current-scope pair delegates here.
+  moveTabInScope: (scope: string, key: string, targetGroupId: string, index?: number) => void;
+  splitWithTabInScope: (scope: string, key: string, targetGroupId: string, edge: DropEdge) => void;
   // Create a brand-new tab in a fresh group split off the target at `edge`
   // (or, for "center", added into the target group). Used by file drops from the
   // side panel to spawn a new subwindow holding the file directly. Returns the
@@ -1169,12 +1203,14 @@ interface TabsStore {
     edge: DropEdge,
   ) => TabEntry | null;
   resizeSplit: (splitId: string, dividerIndex: number, fraction: number) => void;
+  resizeSplitInScope: (scope: string, splitId: string, dividerIndex: number, fraction: number) => void;
   // Merge two adjacent subwindows into one (double-click the divider between
   // them): append every tab of `sourceGroupId` onto `targetGroupId`, then let
   // `writeScope`'s collapse pass drop the emptied source and unwrap the split.
   // PTYs are preserved (tabs move, not close); the survivor keeps its activeKey.
   // No-op if either group is missing or they are the same group.
   mergeGroups: (targetGroupId: string, sourceGroupId: string) => void;
+  mergeGroupsInScope: (scope: string, targetGroupId: string, sourceGroupId: string) => void;
 
   // Per-subwindow right file viewer: open/close a group's docked file-viewer
   // column, and persist its width. Both write the flag onto the group NODE
@@ -1186,6 +1222,13 @@ interface TabsStore {
   // Persist the folder the group's docked viewer last browsed to (see
   // GroupNode.filesFolder). Same node-write path as the flag/width.
   setGroupFilesFolder: (groupId: string, folder: string) => void;
+  // The same three writes addressed to a NAMED scope — what the root console
+  // needs, since root is not the active scope while it floats over a project
+  // (the plain actions above write `s.scope` and would file the console's file
+  // viewer onto the project on screen).
+  setGroupFilesInScope: (scope: string, groupId: string, open: boolean) => void;
+  setGroupFilesWidthInScope: (scope: string, groupId: string, width: number) => void;
+  setGroupFilesFolderInScope: (scope: string, groupId: string, folder: string) => void;
 
   // #42: detach / re-attach a subwindow (group) to/from its own OS window.
   // `detachGroup` removes the group from the in-window tree, records it in
@@ -2041,13 +2084,18 @@ function writeScope(
   };
 }
 
+/** Convenience accessor for a scope's mutable state. */
+function scopeState(s: TabsStore, scope: string) {
+  return {
+    tabs: s.tabsByScope[scope] ?? [],
+    layout: s.layoutByScope[scope] ?? null,
+    focusedGroupId: s.focusedGroupByScope[scope] ?? null,
+  };
+}
+
 /** Convenience accessor for the current scope's mutable state. */
 function currentScopeState(s: TabsStore) {
-  return {
-    tabs: s.tabsByScope[s.scope] ?? [],
-    layout: s.layoutByScope[s.scope] ?? null,
-    focusedGroupId: s.focusedGroupByScope[s.scope] ?? null,
-  };
+  return scopeState(s, s.scope);
 }
 
 // ── Tree (de)serialization ──────────────────────────────────────────────────
@@ -2234,11 +2282,13 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
   },
 
-  focusGroup: (groupId) => {
+  focusGroup: (groupId) => get().focusGroupInScope(get().scope, groupId),
+
+  focusGroupInScope: (scope, groupId) => {
     set((s) => {
-      const { tabs, layout } = currentScopeState(s);
+      const { tabs, layout } = scopeState(s, scope);
       if (!findGroup(layout, groupId)) return {};
-      return writeScope(s, s.scope, tabs, layout, groupId);
+      return writeScope(s, scope, tabs, layout, groupId);
     });
   },
 
@@ -2263,13 +2313,15 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
   },
 
-  setGroupActive: (groupId, key) => {
+  setGroupActive: (groupId, key) => get().setGroupActiveInScope(get().scope, groupId, key),
+
+  setGroupActiveInScope: (scope, groupId, key) => {
     set((s) => {
-      const { tabs, layout } = currentScopeState(s);
+      const { tabs, layout } = scopeState(s, scope);
       const group = findGroup(layout, groupId);
       if (!group || !group.tabKeys.includes(key) || !layout) return {};
       const next = mapGroup(layout, groupId, (g) => ({ ...g, activeKey: key }));
-      return writeScope(s, s.scope, tabs, next, groupId);
+      return writeScope(s, scope, tabs, next, groupId);
     });
   },
 
@@ -2427,6 +2479,45 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         s,
         scope,
         tabs.map((t) => (t.key === key ? { ...t, label: nextLabel } : t)),
+        s.layoutByScope[scope] ?? null,
+        s.focusedGroupByScope[scope] ?? null,
+      );
+    });
+  },
+
+  setTabColor: (key, color) => {
+    const next = isTabColor(color) ? color : undefined;
+    const ctx = getDetachedWindowContext();
+    if (ctx) {
+      ctx.pushEdit({ kind: "setColor", key, color: next });
+      return;
+    }
+    set((s) => {
+      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      if (!tabs.some((t) => t.key === key && t.color !== next)) return {};
+      return writeScope(
+        s,
+        s.scope,
+        tabs.map((t) => (t.key === key ? { ...t, color: next } : t)),
+        layout,
+        focusedGroupId,
+      );
+    });
+  },
+
+  setTabColorInScope: (scope, key, color) => {
+    if (scope === get().scope) {
+      get().setTabColor(key, color);
+      return;
+    }
+    const next = isTabColor(color) ? color : undefined;
+    set((s) => {
+      const tabs = s.tabsByScope[scope];
+      if (!tabs?.some((t) => t.key === key && t.color !== next)) return {};
+      return writeScope(
+        s,
+        scope,
+        tabs.map((t) => (t.key === key ? { ...t, color: next } : t)),
         s.layoutByScope[scope] ?? null,
         s.focusedGroupByScope[scope] ?? null,
       );
@@ -2937,9 +3028,12 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
   },
 
-  moveTab: (key, targetGroupId, index) => {
+  moveTab: (key, targetGroupId, index) =>
+    get().moveTabInScope(get().scope, key, targetGroupId, index),
+
+  moveTabInScope: (scope, key, targetGroupId, index) => {
     set((s) => {
-      const { tabs, layout } = currentScopeState(s);
+      const { tabs, layout } = scopeState(s, scope);
       if (!layout) return {};
       const source = findGroupOfTab(layout, key);
       const target = findGroup(layout, targetGroupId);
@@ -2957,7 +3051,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
           tabKeys.splice(to, 0, moved);
           return { ...g, tabKeys, activeKey: key };
         });
-        return writeScope(s, s.scope, tabs, next, targetGroupId);
+        return writeScope(s, scope, tabs, next, targetGroupId);
       }
 
       // Remove from source, then insert into target.
@@ -2974,13 +3068,16 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         return { ...g, tabKeys, activeKey: key };
       });
       // Source may have emptied → collapse handles it; focus the target.
-      return writeScope(s, s.scope, tabs, next, targetGroupId);
+      return writeScope(s, scope, tabs, next, targetGroupId);
     });
   },
 
-  mergeGroups: (targetGroupId, sourceGroupId) => {
+  mergeGroups: (targetGroupId, sourceGroupId) =>
+    get().mergeGroupsInScope(get().scope, targetGroupId, sourceGroupId),
+
+  mergeGroupsInScope: (scope, targetGroupId, sourceGroupId) => {
     set((s) => {
-      const { tabs, layout } = currentScopeState(s);
+      const { tabs, layout } = scopeState(s, scope);
       if (!layout || targetGroupId === sourceGroupId) return {};
       const target = findGroup(layout, targetGroupId);
       const source = findGroup(layout, sourceGroupId);
@@ -2998,17 +3095,20 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         tabKeys: [],
         activeKey: null,
       }));
-      return writeScope(s, s.scope, tabs, next, targetGroupId);
+      return writeScope(s, scope, tabs, next, targetGroupId);
     });
   },
 
-  splitWithTab: (key, targetGroupId, edge) => {
+  splitWithTab: (key, targetGroupId, edge) =>
+    get().splitWithTabInScope(get().scope, key, targetGroupId, edge),
+
+  splitWithTabInScope: (scope, key, targetGroupId, edge) => {
     if (edge === "center") {
-      get().moveTab(key, targetGroupId);
+      get().moveTabInScope(scope, key, targetGroupId);
       return;
     }
     set((s) => {
-      const { tabs, layout } = currentScopeState(s);
+      const { tabs, layout } = scopeState(s, scope);
       if (!layout) return {};
       const source = findGroupOfTab(layout, key);
       const target = findGroup(layout, targetGroupId);
@@ -3048,7 +3148,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       const next = insertAdjacent(cleaned, targetGroupId, newGroup, dir, before);
 
       // Focus the freshly-split-off group.
-      return writeScope(s, s.scope, tabs, next, newGroup.id);
+      return writeScope(s, scope, tabs, next, newGroup.id);
     });
   },
 
@@ -3103,42 +3203,51 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     return created ? entry : null;
   },
 
-  resizeSplit: (splitId, dividerIndex, fraction) => {
+  resizeSplit: (splitId, dividerIndex, fraction) =>
+    get().resizeSplitInScope(get().scope, splitId, dividerIndex, fraction),
+
+  resizeSplitInScope: (scope, splitId, dividerIndex, fraction) => {
     set((s) => {
-      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      const { tabs, layout, focusedGroupId } = scopeState(s, scope);
       if (!layout) return {};
       const next = applyResize(layout, splitId, dividerIndex, fraction);
-      return writeScope(s, s.scope, tabs, next, focusedGroupId);
+      return writeScope(s, scope, tabs, next, focusedGroupId);
     });
   },
 
-  setGroupFiles: (groupId, open) => {
+  setGroupFiles: (groupId, open) => get().setGroupFilesInScope(get().scope, groupId, open),
+
+  setGroupFilesInScope: (scope, groupId, open) => {
     set((s) => {
-      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      const { tabs, layout, focusedGroupId } = scopeState(s, scope);
       if (!layout || !findGroup(layout, groupId)) return {};
       const next = mapGroup(layout, groupId, (g) => ({ ...g, filesOpen: open }));
-      return writeScope(s, s.scope, tabs, next, focusedGroupId);
+      return writeScope(s, scope, tabs, next, focusedGroupId);
     });
   },
 
-  setGroupFilesWidth: (groupId, width) => {
+  setGroupFilesWidth: (groupId, width) => get().setGroupFilesWidthInScope(get().scope, groupId, width),
+
+  setGroupFilesWidthInScope: (scope, groupId, width) => {
     set((s) => {
-      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      const { tabs, layout, focusedGroupId } = scopeState(s, scope);
       if (!layout || !findGroup(layout, groupId)) return {};
       const next = mapGroup(layout, groupId, (g) => ({ ...g, filesWidth: width }));
-      return writeScope(s, s.scope, tabs, next, focusedGroupId);
+      return writeScope(s, scope, tabs, next, focusedGroupId);
     });
   },
 
-  setGroupFilesFolder: (groupId, folder) => {
+  setGroupFilesFolder: (groupId, folder) => get().setGroupFilesFolderInScope(get().scope, groupId, folder),
+
+  setGroupFilesFolderInScope: (scope, groupId, folder) => {
     set((s) => {
-      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      const { tabs, layout, focusedGroupId } = scopeState(s, scope);
       const g = layout && findGroup(layout, groupId);
       // No-op when unchanged, so re-listing the same folder doesn't churn the
       // layout and wake the saveLayout debounce for nothing (mirrors setTabFolder).
       if (!g || (g.filesFolder ?? "") === folder) return {};
       const next = mapGroup(layout, groupId, (grp) => ({ ...grp, filesFolder: folder }));
-      return writeScope(s, s.scope, tabs, next, focusedGroupId);
+      return writeScope(s, scope, tabs, next, focusedGroupId);
     });
   },
 
@@ -3849,6 +3958,17 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
           }
           break;
         }
+        case "setColor": {
+          // Validated here as well as at the picker: this edit arrives over the
+          // popout channel, and an unknown id must not reach `--tab-accent`.
+          const color = isTabColor(edit.color) ? edit.color : undefined;
+          if (nextTabs) {
+            nextTabs = nextTabs.map((t) =>
+              t.key === edit.key && t.color !== color ? { ...t, color } : t,
+            );
+          }
+          break;
+        }
         case "setLocation": {
           // Locality lives on the payload; the popout's pane is owned by THIS
           // (main) window's flat pane layer, so updating it here respawns that
@@ -4529,6 +4649,10 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         // so after a relaunch. Only the switch comes back: `AgentContinueHost`
         // re-reads the CLI's usage panel and arms a fresh window.
         autoContinue: t.autoContinue,
+        // The user's tab colour. Validated against the palette on the way in
+        // rather than trusted: this layout is a file on disk, and an id that is
+        // not in `TAB_COLORS` would reach `--tab-accent` as raw CSS.
+        color: isTabColor(t.color) ? t.color : undefined,
       };
     });
 
@@ -4845,6 +4969,7 @@ const AGENT_CMDS = new Set([
   "grok",
   "qwen",
   "openclaw",
+  "droid",
 ]);
 
 export function cmdToKind(cmd: string): TabKind {
@@ -4919,7 +5044,7 @@ export function isPtyTabKind(kind: TabKind): boolean {
  *
  *  - id-based: Claude (`--resume <id>`) and Codex (`codex resume`, args injected
  *    by the backend) resume a *specific* captured session.
- *  - cwd "continue last": Qwen, OpenCode, Copilot, Cursor, Grok, Gemini,
+ *  - cwd "continue last": Qwen, OpenCode, Copilot, Cursor, Gemini, Grok,
  *    Google Antigravity and Mistral/vibe have no caller-supplied launch id, so
  *    Eldrun re-launches with their "continue the most recent session" flag.
  *    Because each agent tab
@@ -4944,7 +5069,14 @@ export const RESUMABLE_AGENTS: Record<string, (id: string) => string[]> = {
   opencode: () => ["--continue"],
   copilot: () => ["--continue"],
   "cursor-agent": () => ["--continue"],
-  grok: () => ["--session", "latest"],
+  // Grok Build (xAI's own CLI, which replaced the third-party `grok-cli` this
+  // registry used to install): `-c/--continue` takes the most recent session
+  // of the current directory. Its `--resume <id>` wants Grok's own session id,
+  // which a launch cannot supply, so it is continue-last like the others.
+  grok: () => ["--continue"],
+  // Droid: `--resume` with no id loads the most recent session of the
+  // current directory (its `~/.factory/sessions` are filed by cwd).
+  droid: () => ["--resume"],
   // Gemini's `--resume` takes "latest" (or an index), not a uuid, so it can only
   // continue the project's most-recent session — not the specific one its launch
   // `--session-id <uuid>` minted. That makes it continue-last like the others.
@@ -5244,7 +5376,7 @@ export function isDetachedPtyId(id: string): boolean {
 // immutably along the changed path only (mapGroup), so an unchanged group node
 // keeps its reference identity — meaning these selectors return the SAME value
 // across an unrelated group's mutation and React bails out of the re-render.
-// Modelled on stores/drag.ts's coarse-selector discipline.
+// Modelled on stores/drag/drag.ts's coarse-selector discipline.
 
 /**
  * The current scope's `GroupNode` for `groupId`, or null if it isn't in the live

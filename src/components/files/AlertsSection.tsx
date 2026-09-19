@@ -5,7 +5,7 @@ import { alertCounts, readsInHours } from "../../lib/alerts";
 import { finishAlert } from "../../lib/alertDone";
 import { useAlertsFeed } from "./useAlertsFeed";
 import { useResizableSection } from "./useResizableSection";
-import { useCalendarStore } from "../../stores/calendar";
+import { useCalendarStore } from "../../stores/calendar/calendar";
 import { useMailStore } from "../../stores/mail";
 import { useSettingsStore } from "../../stores/settings";
 import { useTodoStore } from "../../stores/todo";
@@ -178,7 +178,7 @@ export function AlertsSection({ onClose }: AlertsSectionProps) {
    * its reason — selecting resolves the header out of the loaded page, so a
    * selection made before the page lands renders a body with no envelope.
    *
-   * The calendar has no per-event focus request in `stores/calendar`, so an
+   * The calendar has no per-event focus request in `stores/calendar/calendar`, so an
    * event row opens the calendar overlay plainly rather than inventing one. A
    * task row *can* be aimed (`openCard` → `focusTaskId`, consumed once by
    * `TodoPane`), so it is.
@@ -249,7 +249,7 @@ export function AlertsSection({ onClose }: AlertsSectionProps) {
    * silencer (or the door) part of the click target that opens the thing.
    *
    * The Join goes to the same place the calendar's own Join buttons do, through
-   * the same `lib/conference` verdict (`item.source.conferenceUrl`, computed in
+   * the same `lib/calendar/conference` verdict (`item.source.conferenceUrl`, computed in
    * `lib/alerts`): a video meeting two minutes off is the one alert whose point
    * is the door, not the surface behind it. It is shown even on a muted row —
    * muting silenced the reminder, it did not cancel the meeting.
@@ -367,16 +367,15 @@ export function AlertsSection({ onClose }: AlertsSectionProps) {
           </button>
         )}
         <button
-          className="toolbar-btn"
-          style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: "auto" }}
+          className="toolbar-btn toolbar-btn--sm"
+          style={{ marginLeft: "auto" }}
           onClick={refresh}
           title={t("filesAlerts.refresh")}
         >
           ⟳
         </button>
         <button
-          className="toolbar-btn"
-          style={{ fontSize: 10, padding: "1px 6px", height: 20 }}
+          className="toolbar-btn toolbar-btn--sm"
           onClick={onClose}
           title={t("filesAlerts.hide")}
         >

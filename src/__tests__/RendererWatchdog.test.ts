@@ -14,7 +14,7 @@ import {
   RENDERER_CEILING_RAM_SHARE,
   WORKING_SET_HEADROOM,
   type RendererRss,
-} from "../lib/rendererWatchdog";
+} from "../lib/window/rendererWatchdog";
 
 const MB = 1024;
 

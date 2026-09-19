@@ -7,7 +7,7 @@ import {
   dueAlarms,
   snooze,
   wokenSnoozes,
-} from "../lib/alarms";
+} from "../lib/calendar/alarms";
 import { translate, type TranslationKey } from "../lib/i18n";
 import type { Occurrence } from "../types";
 

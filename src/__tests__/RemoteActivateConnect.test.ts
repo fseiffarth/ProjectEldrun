@@ -22,12 +22,12 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) 
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(() => Promise.resolve(() => {})) }));
 
 import { retryAutoConnectAfterVpn, useProjectsStore } from "../stores/projects";
-import { useConnectDialogStore } from "../stores/connectDialog";
-import { useRemoteStatusStore } from "../stores/remoteStatus";
+import { useConnectDialogStore } from "../stores/remote/connectDialog";
+import { useRemoteStatusStore } from "../stores/remote/remoteStatus";
 import { useSettingsStore } from "../stores/settings";
 import { useTabsStore } from "../stores/tabs";
-import { useVpnStatusStore } from "../stores/vpnStatus";
-import { forgetConnection } from "../lib/remoteConnect";
+import { useVpnStatusStore } from "../stores/remote/vpn/vpnStatus";
+import { forgetConnection } from "../lib/remote/remoteConnect";
 import type { ProjectEntry, RemoteSpec, Settings, SshProbe } from "../types";
 
 const invokeMock = vi.mocked(invoke);
@@ -119,7 +119,7 @@ beforeEach(() => {
   useRemoteStatusStore.setState({ byProject: {} });
   useProjectsStore.setState({ projects: [], activeId: null });
   // Settings must be **loaded** for auto-connect to run at all: the HPC gate
-  // (`lib/hpcHost`'s `mayAutoTouch`) fails closed on an unloaded store, because
+  // (`lib/remote/hpc/hpcHost`'s `mayAutoTouch`) fails closed on an unloaded store, because
   // "we haven't read the tag yet" must not authorise a connect. The app has them
   // by the time any project is activated — `load()` now waits for them — so the
   // tests give them too. The tag map is empty, so no host here is HPC-tagged.

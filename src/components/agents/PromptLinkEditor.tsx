@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { edgeCommandChoices, toggleEdgeCommand } from "../../lib/agentPromptLinks";
+import { edgeCommandChoices, toggleEdgeCommand } from "../../lib/agents/prompt/links";
 import { useT } from "../../lib/i18n";
-import type { PromptLink } from "../../stores/agentPrompts";
+import type { PromptLink } from "../../stores/agents/agentPrompts";
 import { ContextMenuPortal } from "../common/ContextMenuPortal";
 
 interface Props {
@@ -11,7 +11,7 @@ interface Props {
   toLabel: string;
   /** The tab an `after` edge queues its target on, when it is open. */
   tabLabel?: string;
-  /** That tab's agent's own prefix commands (`lib/agentPrefaces`). */
+  /** That tab's agent's own prefix commands (`lib/agents/agentPrefaces`). */
   offered: string[];
   x: number;
   y: number;
@@ -35,7 +35,7 @@ export function PromptLinkEditor({ link, fromLabel, toLabel, tabLabel, offered, 
   const choices = edgeCommandChoices(offered, preface);
   const write = (patch: Pick<PromptLink, "kind" | "preface">) => {
     setError("");
-    void onChange(patch).catch((cause) => setError(String(cause)));
+    void onChange(patch).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
   };
   return (
     <ContextMenuPortal x={x} y={y} onClose={onClose} className="context-menu agent-prompt-link-editor">
@@ -68,7 +68,7 @@ export function PromptLinkEditor({ link, fromLabel, toLabel, tabLabel, offered, 
       ) : <p className="context-menu-note">{t("promptChart.edgeRelatedHelp")}</p>}
       {error && <p className="context-menu-note project-dialog-error">{error}</p>}
       <div className="agent-prompt-link-editor-row">
-        <button type="button" className="settings-btn sm danger" onClick={() => void onRemove().catch((cause) => setError(String(cause)))}>{t("common.remove")}</button>
+        <button type="button" className="settings-btn sm danger" onClick={() => void onRemove().catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)))}>{t("common.remove")}</button>
       </div>
     </ContextMenuPortal>
   );

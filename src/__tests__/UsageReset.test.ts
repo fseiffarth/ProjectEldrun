@@ -43,10 +43,39 @@ describe("resolveResetAt", () => {
     expect(resolveResetAt("today 9am", TUE_1400)).toEqual(new Date(2026, 8, 1, 9, 0));
   });
 
+  it("reads the dated form Claude Code 2.1.272 prints, on the clock of the zone it names", () => {
+    // Berlin is UTC+2 in September, UTC+1 in January.
+    expect(resolveResetAt("Sep 15, 10:30pm (Europe/Berlin)", TUE_1400))
+      .toEqual(new Date(Date.UTC(2026, 8, 15, 20, 30)));
+    // A whole hour drops its minutes; a year is printed only when it is not this one.
+    expect(resolveResetAt("Sep 17, 2pm (Europe/Berlin)", TUE_1400))
+      .toEqual(new Date(Date.UTC(2026, 8, 17, 12, 0)));
+    expect(resolveResetAt("Jan 3, 2027, 9am (Europe/Berlin)", TUE_1400))
+      .toEqual(new Date(Date.UTC(2027, 0, 3, 8, 0)));
+    // The offset is the one in force at the reset: New York leaves DST that morning.
+    expect(resolveResetAt("Nov 1, 9am (America/New_York)", TUE_1400))
+      .toEqual(new Date(Date.UTC(2026, 10, 1, 14, 0)));
+    // Without a zone the date is local, like every other shape.
+    expect(resolveResetAt("Sep 15, 10:30pm", TUE_1400)).toEqual(new Date(2026, 8, 15, 22, 30));
+    // A date already behind `now` stays there — the caller drops a stale panel.
+    expect(resolveResetAt("Aug 30, 9am", TUE_1400)).toEqual(new Date(2026, 7, 30, 9, 0));
+  });
+
+  it("places the relative shapes on a named zone's clock too", () => {
+    // Tuesday 12:00 UTC is Tuesday 14:00 in Berlin, wherever the test runs.
+    const now = new Date(Date.UTC(2026, 8, 1, 12, 0));
+    expect(resolveResetAt("10:30pm (UTC)", now)).toEqual(new Date(Date.UTC(2026, 8, 1, 22, 30)));
+    expect(resolveResetAt("9am (UTC)", now)).toEqual(new Date(Date.UTC(2026, 8, 2, 9, 0)));
+    expect(resolveResetAt("Mon 9am (Europe/Berlin)", now)).toEqual(new Date(Date.UTC(2026, 8, 7, 7, 0)));
+  });
+
   it("refuses a phrase it cannot place rather than guessing", () => {
-    // A calendar date: nothing here parses one, and reading the `3` as an hour
-    // is exactly the confident wrong answer this must not give.
-    expect(resolveResetAt("Feb 3, 9am", TUE_1400)).toBeNull();
+    // A date with no time, or a day the month does not have: reading the `3`
+    // as an hour is exactly the confident wrong answer this must not give.
+    expect(resolveResetAt("Feb 3", TUE_1400)).toBeNull();
+    expect(resolveResetAt("Feb 30, 9am", TUE_1400)).toBeNull();
+    // A zone this engine does not know is refused, not quietly read as local.
+    expect(resolveResetAt("Sep 15, 10:30pm (Mars/Olympus_Mons)", TUE_1400)).toBeNull();
     expect(resolveResetAt("soon", TUE_1400)).toBeNull();
     expect(resolveResetAt("", TUE_1400)).toBeNull();
     // A bare number is a day, not an hour: neither a colon nor a meridiem.
@@ -77,6 +106,16 @@ describe("nextUsageReset", () => {
       TUE_1400,
     );
     expect(reset?.label).toBe("Current week (all models)");
+  });
+
+  it("places the dated panel Claude Code 2.1.272 prints", () => {
+    const panel = [
+      "Current session: 39% used · resets Sep 15, 10:30pm (Europe/Berlin)",
+      "Current week (all models): 54% used · resets Sep 17, 2pm (Europe/Berlin)",
+    ].join("\n");
+    const reset = nextUsageReset(parseUsageReport(panel), new Date(Date.UTC(2026, 8, 15, 16, 0)));
+    expect(reset?.label).toBe("Current session");
+    expect(reset?.at).toEqual(new Date(Date.UTC(2026, 8, 15, 20, 30)));
   });
 
   it("answers null when nothing in the panel can be placed in time", () => {

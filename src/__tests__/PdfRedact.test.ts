@@ -33,7 +33,7 @@ import {
   markMatches,
   marksOf,
 } from "../lib/viewers/redact";
-import type { SyncRect, TextItemBox } from "../lib/viewers/tex";
+import type { SyncRect, TextItemBox } from "../lib/viewers/tex/tex";
 
 /** A one-line text run at (x, y), 10 points tall. */
 const run = (str: string, x: number, y: number, w: number): TextItemBox => ({ str, x, y, w, h: 10 });

@@ -397,6 +397,32 @@ export const VIEWER_PREF_TYPES: ViewerTypeMeta[] = [
   },
 ];
 
+/**
+ * The line ending `text` uses: CRLF when any line ends that way, else LF.
+ *
+ * The "any CRLF ⇒ CRLF" rule rather than a majority vote, matching `bib.ts`'s
+ * own `lineEndingOf` and `table.ts` — a mixed file is being repaired towards one
+ * convention either way, and picking the Windows one never loses a `\r` somebody
+ * else's tooling put there.
+ */
+export function lineEndingOf(text: string): "\r\n" | "\n" {
+  return text.includes("\r\n") ? "\r\n" : "\n";
+}
+
+/**
+ * Rewrite every line ending in `text` as `eol`.
+ *
+ * Idempotent in both directions — it matches `\r?\n` rather than `\n`, so text
+ * that already uses the target ending is returned unchanged instead of being
+ * doubled into `\r\r\n`. That matters because the caller cannot generally know
+ * which convention a buffer is in: an editor buffer is LF once a `<textarea>`
+ * has normalized it, but the SEED of that same buffer still holds the file's
+ * own endings until the first keystroke goes through the DOM.
+ */
+export function applyLineEnding(text: string, eol: "\r\n" | "\n"): string {
+  return eol === "\r\n" ? text.replace(/\r?\n/g, "\r\n") : text.replace(/\r\n/g, "\n");
+}
+
 export function joinRel(base: string, name: string): string {
   return base ? `${base}/${name}` : name;
 }

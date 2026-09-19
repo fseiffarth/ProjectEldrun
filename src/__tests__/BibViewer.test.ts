@@ -1,5 +1,5 @@
 /**
- * Tests for the BibTeX (`.bib`) card view's pure half (`lib/viewers/bib`):
+ * Tests for the BibTeX (`.bib`) card view's pure half (`lib/viewers/tex/bib`):
  *  - the parse is tolerant and reports what it could not take responsibility for
  *    (stray lines, non-rewritable values, `@string`/`@comment` records),
  *  - every edit op is a SPLICE: the bytes it did not aim at come back untouched,
@@ -30,7 +30,7 @@ import {
   setBibKey,
   setBibType,
   sortBibRecords,
-} from "../lib/viewers/bib";
+} from "../lib/viewers/tex/bib";
 
 const SAMPLE = `% my library, hand-sorted
 @string{jml = {J. Machine Learning}}

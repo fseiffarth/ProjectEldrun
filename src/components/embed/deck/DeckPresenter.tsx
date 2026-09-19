@@ -36,7 +36,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import { PLATFORM } from "../../../lib/platform";
 import { PresentationOverlay } from "../PresentationOverlay";
-import { isToolArmed, usePresentationStore } from "../../../stores/presentation";
+import { isToolArmed, usePresentationStore } from "../../../stores/viewers/presentation";
 import {
   type Deck,
   type Slide,
@@ -170,7 +170,7 @@ export function DeckPresenter({
 
   // Tell the rest of the app a talk is on, so `FileViewerPane` withdraws the
   // marker/laser overlay it keeps mounted behind this portal — see
-  // `stores/presentation`.
+  // `stores/viewers/presentation`.
   useEffect(() => {
     const { setPresenting } = usePresentationStore.getState();
     setPresenting(true);

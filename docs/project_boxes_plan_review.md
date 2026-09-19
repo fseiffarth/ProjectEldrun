@@ -6,7 +6,7 @@ tree. Verdict at the bottom.
 Verification baseline (confirmed in-tree, so the plan rests on solid ground):
 - Pills DO use native HTML5 DnD with `PILL_DRAG_TYPE = "application/x-eldrun-project"`
   (`src/components/projects/ProjectPill.tsx:20,395,399-419`). The tab pointer system
-  lives in `src/stores/drag.ts` and carries no `PILL_DRAG_TYPE` — confirming the plan's
+  lives in `src/stores/drag/drag.ts` and carries no `PILL_DRAG_TYPE` — confirming the plan's
   claim that the WebKitGTK HTML5-DnD quirk applies to tabs, not pills. Reuse is safe.
 - The switcher globally suppresses contextmenu: `.project-switcher`
   `onContextMenu={(e) => e.preventDefault()}` (`ProjectSwitcher.tsx:291`), asserted by

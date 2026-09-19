@@ -1067,6 +1067,7 @@ fn parse_ssh_link_nettop(text: &str, master_pid: u32) -> Option<SshLinkSnapshot>
     })
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn counter(text: &str, key: &str) -> Option<u64> {
     let start = text.find(key)?;
     text[start + key.len()..]
@@ -1076,6 +1077,7 @@ fn counter(text: &str, key: &str) -> Option<u64> {
         .ok()
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn parse_ssh_link_ss(text: &str, master_pid: u32) -> Option<SshLinkSnapshot> {
     let needle = format!("pid={master_pid},");
     let lines: Vec<&str> = text.lines().collect();

@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { buildPromptChart, type PromptChartCard, type PromptChartStrand } from "../lib/agentPromptChart";
+import { buildPromptChart, type PromptChartCard, type PromptChartStrand } from "../lib/agents/prompt/chart";
 import {
-  attachedChains,
   dayClusters,
   formatTimelineInstant,
   packLanes,
   promptTargetColor,
+  queueReorderWrites,
   queuedStack,
   sessionItems,
   shiftAnchor,
@@ -20,7 +20,7 @@ import {
   zoomTimelineView,
   hourAnchor,
   type TimelineRects,
-} from "../lib/agentPromptTimeline";
+} from "../lib/agents/prompt/timeline";
 
 const now = new Date(2026, 8, 4, 12, 2, 0);
 const strand: PromptChartStrand = {
@@ -67,6 +67,8 @@ describe("timeline windows", () => {
     expect(snapTimelineTime(new Date(2026, 8, 4, 13, 7), hour)).toEqual(new Date(2026, 8, 4, 13, 5));
     expect(shiftAnchor("hour", "2026-09-04T23", 1)).toBe("2026-09-05T00");
     expect(shiftAnchor("hour", "2026-09-05T00", -1)).toBe("2026-09-04T23");
+    // A date-only anchor names midnight.
+    expect(shiftAnchor("hour", "2026-09-04", 1)).toBe("2026-09-04T01");
     expect(hourAnchor(new Date(2026, 8, 4, 9, 41))).toBe("2026-09-04T09");
   });
 
@@ -88,6 +90,21 @@ describe("timeline windows", () => {
     expect(week.filter((tick) => tick.label === "day")).toHaveLength(7);
     expect(week.filter((tick) => tick.label === "hour")).toHaveLength(21);
     expect(timelineTicks(timelineWindow("month", "2026-09-04", 1), 3000)).toHaveLength(30);
+  });
+
+  it("labels every hour of a day wide enough to hold them, and the majors otherwise", () => {
+    const day = timelineWindow("day", "2026-09-04", 1);
+    // 36 px an hour is the line: 864 px labels all 24, 863 px only the four majors.
+    expect(timelineTicks(day, 864).every((tick) => tick.labelled)).toBe(true);
+    const narrow = timelineTicks(day, 863);
+    expect(narrow.filter((tick) => tick.labelled).map((tick) => tick.at.getHours())).toEqual([0, 6, 12, 18]);
+    // The other views keep the labels they had.
+    expect(timelineTicks(timelineWindow("hour", "2026-09-04T13", 1), 300).every((tick) => tick.labelled)).toBe(true);
+    const week = timelineTicks(timelineWindow("week", "2026-09-04", 1), 700);
+    expect(week.filter((tick) => tick.labelled).every((tick) => tick.label === "day")).toBe(true);
+    expect(week.filter((tick) => tick.labelled)).toHaveLength(7);
+    const month = timelineTicks(timelineWindow("month", "2026-09-04", 1), 3000);
+    expect(month.every((tick) => tick.labelled === tick.major)).toBe(true);
   });
 });
 
@@ -126,10 +143,10 @@ describe("timeline items", () => {
     expect(byMessage("Mon Fri").map((item) => item.at.getDate())).toEqual([4]);
     expect(byMessage("Waiting")).toHaveLength(0);
     expect(byMessage("Draft")).toHaveLength(0);
+    // A chained card waits on the board, never at its source's minute.
     expect(byMessage("Next")).toHaveLength(0);
     expect(items.map((item) => item.at.getTime())).toEqual([...items].map((item) => item.at.getTime()).sort());
     expect(queuedStack(cards, now).map((item) => item.message)).toEqual(["Waiting"]);
-    expect([...attachedChains(cards).entries()].map(([from, rows]) => [from, rows.map((row) => row.message)])).toEqual([["draft", ["Next"]]]);
   });
 
   it("folds a session's sent prompts into one card spanning its first to its last", () => {
@@ -175,6 +192,39 @@ describe("timeline items", () => {
   });
 });
 
+describe("queue reorder", () => {
+  const queued = (id: string, at: string, targetId = "t1") => card({
+    key: `rule:s:${id}`, id, state: "queued", targetId,
+    schedule: { id, enabled: true, message: id, rule: { type: "once", at } },
+  });
+  const a = queued("a", "2026-09-04T11:58");
+  const b = queued("b", "2026-09-04T11:59");
+  const c = queued("c", "2026-09-04T12:00");
+  const elsewhere = queued("x", "2026-09-04T11:57", "t2");
+  // Stored in an order the queue column does not show: a previous reorder
+  // rewrote the minutes and left the rules where they were.
+  const cards = [c, a, elsewhere, b];
+
+  it("swaps a card with its neighbour in the order the queue column shows", () => {
+    expect(queuedStack(cards, now).filter((item) => item.targetId === "t1").map((item) => item.id)).toEqual(["a", "b", "c"]);
+    const swapped = [
+      { id: "b", at: "2026-09-04T12:00" },
+      { id: "a", at: "2026-09-04T12:01" },
+      { id: "c", at: "2026-09-04T12:02" },
+    ];
+    expect(queueReorderWrites(cards, b, -1, now)).toEqual(swapped);
+    expect(queueReorderWrites(cards, a, 1, now)).toEqual(swapped);
+  });
+
+  it("does nothing past either end, and never writes another tab's queue", () => {
+    expect(queueReorderWrites(cards, a, -1, now)).toEqual([]);
+    expect(queueReorderWrites(cards, c, 1, now)).toEqual([]);
+    expect(queueReorderWrites(cards, elsewhere, -1, now)).toEqual([]);
+    expect(queueReorderWrites(cards, b, 1, now).map((write) => write.id)).toEqual(["a", "c", "b"]);
+    expect(queueReorderWrites(cards, card({ key: "draft" }), 1, now)).toEqual([]);
+  });
+});
+
 describe("timeline drops", () => {
   const day = timelineWindow("day", "2026-09-04", 1);
   const rects: TimelineRects = {
@@ -186,8 +236,10 @@ describe("timeline drops", () => {
   it("names the zone under the pointer", () => {
     const zone = (x: number, y: number, scrollLeft = 0) => timelineHitZone({ x, y }, rects, day, 2400, scrollLeft, now);
     expect(zone(10, 10)).toEqual({ kind: "strip" });
+    // The band itself is the send; the body left of the now line is the past.
     expect(zone(500, 200)).toEqual({ kind: "now" });
-    expect(zone(100, 200)).toEqual({ kind: "now" });
+    expect(zone(100, 200)).toEqual({ kind: "past" });
+    expect(zone(480, 200, 720)).toEqual({ kind: "past" });
     expect(zone(900, 200, 800)).toEqual({ kind: "time", at: new Date(2026, 8, 4, 17, 0) });
     expect(zone(900, 200, 807)).toEqual({ kind: "time", at: new Date(2026, 8, 4, 17, 5) });
     expect(zone(500, 600)).toEqual({ kind: "none" });
@@ -207,12 +259,18 @@ describe("timeline drops", () => {
     expect(timelineDropAction(aimed, at, targets)).toEqual({ type: "schedule", targetId: "t2", at: "2026-09-04T14:05" });
     expect(timelineDropAction(card({ state: "draft", targetId: "gone" }), at, targets)).toEqual({ type: "schedule", targetId: "t1", at: "2026-09-04T14:05" });
     expect(timelineDropAction(draft, { kind: "now" }, targets)).toEqual({ type: "send", targetId: "t1" });
+    // One card dropped on the past body is a send, as on the band.
+    expect(timelineDropAction(draft, { kind: "past" }, targets)).toEqual({ type: "send", targetId: "t1" });
     expect(timelineDropAction(draft, { kind: "strip" }, targets)).toEqual({ type: "none" });
-    expect(timelineDropAction(draft, at, [])).toEqual({ type: "none" });
+    // With no agent tab at all, the refusal says so.
+    expect(timelineDropAction(draft, at, [])).toEqual({ type: "none", reason: "no-target" });
+    expect(timelineDropAction(draft, { kind: "now" }, [])).toEqual({ type: "none", reason: "no-target" });
     expect(timelineDropAction(scheduled, at, targets)).toEqual({ type: "retime", targetId: "t1", fromTargetId: "t1", at: "2026-09-04T14:05" });
     expect(timelineDropAction(scheduled, { kind: "now" }, targets)).toEqual({ type: "send", targetId: "t1" });
+    expect(timelineDropAction(scheduled, { kind: "past" }, targets)).toEqual({ type: "send", targetId: "t1" });
     expect(timelineDropAction(scheduled, { kind: "strip" }, targets)).toEqual({ type: "unschedule", fromTargetId: "t1" });
     expect(timelineDropAction(queued, { kind: "now" }, targets)).toEqual({ type: "none" });
+    expect(timelineDropAction(queued, { kind: "past" }, targets)).toEqual({ type: "none" });
     // A tab already holding a rule takes no second one from a draft: an
     // unaimed draft goes to the first free tab, an aimed one is refused, and
     // a rule keeps its own tab.

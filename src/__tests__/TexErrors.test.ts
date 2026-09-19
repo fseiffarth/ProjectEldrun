@@ -9,7 +9,7 @@ import {
   parseTexErrors,
   resolveTexErrorPath,
   texDiagnosticsByFile,
-} from "../lib/viewers/tex";
+} from "../lib/viewers/tex/tex";
 
 describe("parseTexErrors", () => {
   it("pulls file/line/message out of -file-line-error lines", () => {

@@ -11,10 +11,10 @@ import {
 } from "../../lib/alerts";
 import type { Calendar, CalendarEvent, CalendarTask, Occurrence } from "../../types";
 import type { MailHeader } from "../../types/mail";
-import { addDays, datePart, toStamp } from "../../lib/calendarTime";
-import { expandEvents } from "../../lib/recurrence";
+import { addDays, datePart, toStamp } from "../../lib/calendar/calendarTime";
+import { expandEvents } from "../../lib/calendar/recurrence";
 import { useExperimental } from "../../lib/experimental";
-import { useCalendarStore } from "../../stores/calendar";
+import { useCalendarStore } from "../../stores/calendar/calendar";
 import { useSettingsStore } from "../../stores/settings";
 import {
   releaseUrgentMailPoll,
@@ -26,7 +26,7 @@ import {
  * **The data feed behind the side panel's opt-in "Alerts" group.**
  *
  * It owns the *reads*; `lib/alerts`' `selectAlerts` owns the merging, and the
- * two stores that already hold this data (`stores/calendar` for events and
+ * two stores that already hold this data (`stores/calendar/calendar` for events and
  * tasks, `stores/todo` for the priority-marked mail) stay the only owners of it.
  * There is no fourth store and no cached copy of an alert.
  *
@@ -186,13 +186,13 @@ export function useAlertsFeed(options?: AlertsFeedOptions): AlertsFeed {
 
   // Recomputed on every tick, so severities age instead of freezing at the value
   // they had when the panel mounted. Local wall-clock, never a raw `Date` format
-  // — every stamp the calendar stores is wall-clock (`lib/calendarTime`).
+  // — every stamp the calendar stores is wall-clock (`lib/calendar/calendarTime`).
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const now = useMemo(() => toStamp(new Date()), [tick]);
 
   // ── The reads ─────────────────────────────────────────────────────────────
   // The mail read joins the refcounted module-level poll (`stores/todo`'s
-  // retain/release, the `stores/hostSessions` pattern): this hook is mounted
+  // retain/release, the `stores/remote/hostSessions` pattern): this hook is mounted
   // many times at once, and a per-instance interval — worse, one keyed on
   // `newCount` — meant N identical queries per minute and N more per delivery.
   // The poll itself re-reads on arrival, so no `newCount` subscription is left
@@ -228,7 +228,7 @@ export function useAlertsFeed(options?: AlertsFeedOptions): AlertsFeed {
 
   /**
    * `selectAlerts` takes already-expanded occurrences, so the RRULE work happens
-   * here — through `lib/recurrence`'s `expandEvents`, which is the one
+   * here — through `lib/calendar/recurrence`'s `expandEvents`, which is the one
    * implementation of what a series generates (exdates dropped, overrides
    * applied, duration carried). Hand-rolling it here would be a second answer to
    * the same question and the two would drift.

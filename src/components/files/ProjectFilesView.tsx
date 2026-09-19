@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { invokeTrusted } from "../../lib/execTrust";
 import { GitHistory } from "./GitHistory";
 import { GitChangeTree, type ChangeScope } from "./GitChangeTree";
 import { AlertsSection } from "./AlertsSection";
@@ -14,11 +15,11 @@ import { RunHostPicker } from "../tabs/TabLocalityBadges";
 import { ProjectFilesSettingsDialog, useProjectFileFilters } from "./ProjectFilesSettings";
 import { useImportDrop } from "./importDrop";
 import { logoutRemote, useProjectsStore } from "../../stores/projects";
-import { isTrashProject } from "../../lib/trashProject";
-import { GIT_STATE_COLOR } from "../../lib/gitColors";
+import { isTrashProject } from "../../lib/projects/trashProject";
+import { GIT_STATE_COLOR } from "../../lib/theme/gitColors";
 import { ContextMenuPortal } from "../common/ContextMenuPortal";
-import { useSyncStore, amberPaths, localNewPaths } from "../../stores/sync";
-import { confirmSyncTransfer } from "../../stores/syncConfirm";
+import { useSyncStore, amberPaths, localNewPaths } from "../../stores/remote/sync";
+import { confirmSyncTransfer } from "../../stores/remote/syncConfirm";
 import { openLinkedFile, viewerForPath } from "../embed/FileViewerPane";
 import { useWindowsStore } from "../../stores/windows";
 import { useGitDirtyStore, gitDirtyState } from "../../stores/gitDirty";
@@ -28,25 +29,25 @@ import {
   readGitBarSnapshot,
   writeGitBarSnapshot,
   type GitStatus,
-} from "../../lib/fileViewSnapshots";
+} from "../../lib/projects/fileViewSnapshots";
 import { basename, dirname } from "../../lib/paths";
 import { projectTypeTags } from "../projects/projectTypeTags";
 import { ProjectHoverCard, useProjectHoverCard } from "../projects/ProjectHoverCard";
-import { useRemoteMachinesStore } from "../../stores/remoteMachines";
+import { useRemoteMachinesStore } from "../../stores/remote/remoteMachines";
 import { UntestedTag } from "../common/UntestedTag";
 import { AgentSchedulesView } from "../agents/AgentSchedulesView";
 import { useDialogs } from "../common/PromptDialogs";
 import { ROOT_SCOPE, useTabsStore, type TabEntry } from "../../stores/tabs";
-import { persistentSessionOf } from "../../lib/closeRemoteTab";
-import { sessionKindFromName, type TmuxSessionKind } from "../../lib/tmuxSession";
-import { useRemoteStatusStore, sshOf } from "../../stores/remoteStatus";
+import { persistentSessionOf } from "../../lib/remote/closeRemoteTab";
+import { sessionKindFromName, type TmuxSessionKind } from "../../lib/terminal/tmuxSession";
+import { useRemoteStatusStore, sshOf } from "../../stores/remote/remoteStatus";
 import {
   sessionHostsOf,
   useHostSessions,
   useHostSessionsStore,
   useShowAllSessions,
   type SessionRow,
-} from "../../stores/hostSessions";
+} from "../../stores/remote/hostSessions";
 import {
   slurmAvailable,
   slurmQueue,
@@ -54,8 +55,8 @@ import {
   slurmJobOut,
   openLogTab,
   type SlurmJob,
-} from "../../lib/slurm";
-import { useHpcJobsStore } from "../../stores/hpcJobs";
+} from "../../lib/remote/hpc/slurm";
+import { useHpcJobsStore } from "../../stores/remote/hpc/hpcJobs";
 import { useSettingsStore } from "../../stores/settings";
 import {
   wsAvailable,
@@ -72,7 +73,7 @@ import {
   remainingLabel,
   expiryTone,
   type HpcWorkspace,
-} from "../../lib/hpcWorkspace";
+} from "../../lib/remote/hpc/hpcWorkspace";
 import { useT, type TranslationKey } from "../../lib/i18n";
 import { useExperimental } from "../../lib/experimental";
 import { useProjectRemarksStore } from "../../stores/projectRemarks";
@@ -660,7 +661,7 @@ export function ProjectFilesView({
   // worker, each row tagged with its host; polled while this view is active (rides
   // each host's pooled ControlMaster). An absent tmux / no server yields nothing.
   //
-  // The list, its poll and its toggle all live in `stores/hostSessions`, NOT
+  // The list, its poll and its toggle all live in `stores/remote/hostSessions`, NOT
   // here: this component is rendered by the side panel, by every Files (Project)
   // tab and by every subwindow's docked column at once, and a per-instance poll
   // meant one `tmux ls` per host per surface every 7s — and, worse, that a
@@ -1241,7 +1242,7 @@ export function ProjectFilesView({
     setGitBusy(true);
     setGitError(null);
     try {
-      await invoke("git_commit", { projectDir: effectiveGitRoot, message: commitMsg });
+      await invokeTrusted("git_commit", { projectDir: effectiveGitRoot, message: commitMsg });
       setCommitMsg(null);
       refreshGit(effectiveGitRoot);
     } catch (e) {
@@ -1258,7 +1259,7 @@ export function ProjectFilesView({
     try {
       // On a nested repo, push to its own configured remote (no project id →
       // plain `git push`), not the project's GitHub/GitLab provider flow.
-      await invoke("git_push", {
+      await invokeTrusted("git_push", {
         projectDir: effectiveGitRoot,
         projectId: onNestedRepo ? null : projectId ?? null,
       });
@@ -1444,7 +1445,7 @@ export function ProjectFilesView({
               local machine, so the control would have nothing to choose, and
               showing a machine name there would state the opposite of what happens
               (a Local-side ▶ runs in a local shell and the preference cannot
-              overrule it — see `lib/pythonRun`'s `pythonRunPlan`). */}
+              overrule it — see `lib/terminal/pythonRun`'s `pythonRunPlan`). */}
           {source === "remote" && (
             <RunHostPicker
               projectId={projectId}
@@ -1509,8 +1510,8 @@ export function ProjectFilesView({
         {(["files", "git", "windows", "agents"] as View[]).map((v) => (
           <button
             key={v}
-            className={`toolbar-btn${view === v ? " active" : ""}${v === "git" && gitPendingColor ? " toolbar-btn--flagged" : ""}`}
-            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: v === "files" ? 0 : 2 }}
+            className={`toolbar-btn toolbar-btn--sm${view === v ? " active" : ""}${v === "git" && gitPendingColor ? " toolbar-btn--flagged" : ""}`}
+            style={{ marginLeft: v === "files" ? 0 : 2 }}
             aria-pressed={view === v}
             onClick={() => setView(v)}
           >
@@ -1540,8 +1541,8 @@ export function ProjectFilesView({
             first shows up at all. */}
         {!activeBox && project?.remote && projectId && (
           <button
-            className={`toolbar-btn side-panel-orange-btn${view === "orange" ? " active" : ""}`}
-            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            className={`toolbar-btn toolbar-btn--sm side-panel-orange-btn${view === "orange" ? " active" : ""}`}
+            style={{ marginLeft: 2 }}
             aria-pressed={view === "orange"}
             onClick={() => setView(view === "orange" ? "files" : "orange")}
             title={t("projectFilesView.divergedFilesTitle", {
@@ -1560,8 +1561,8 @@ export function ProjectFilesView({
             click from being reattached. */}
         {!activeBox && project?.remote && projectId && (
           <button
-            className={`toolbar-btn side-panel-orange-btn${view === "sessions" ? " active" : ""}`}
-            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            className={`toolbar-btn toolbar-btn--sm side-panel-orange-btn${view === "sessions" ? " active" : ""}`}
+            style={{ marginLeft: 2 }}
             aria-pressed={view === "sessions"}
             onClick={() => setView(view === "sessions" ? "files" : "sessions")}
             title={t("projectFilesView.persistentSessionsTitle", { count: sessionRows.length })}
@@ -1573,8 +1574,8 @@ export function ProjectFilesView({
             toggle never appears off-cluster. Badged with the live queue count. */}
         {!activeBox && slurmSupported && projectId && (
           <button
-            className={`toolbar-btn side-panel-orange-btn${view === "jobs" ? " active" : ""}`}
-            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            className={`toolbar-btn toolbar-btn--sm side-panel-orange-btn${view === "jobs" ? " active" : ""}`}
+            style={{ marginLeft: 2 }}
             aria-pressed={view === "jobs"}
             onClick={() => setView(view === "jobs" ? "files" : "jobs")}
             title={t("projectFilesView.slurmJobsTitle", { count: jobRows.length })}
@@ -1584,8 +1585,8 @@ export function ProjectFilesView({
         )}
         {!activeBox && remarksEnabled && projectId && (
           <button
-            className={`toolbar-btn side-panel-orange-btn${view === "remarks" ? " active" : ""}`}
-            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            className={`toolbar-btn toolbar-btn--sm side-panel-orange-btn${view === "remarks" ? " active" : ""}`}
+            style={{ marginLeft: 2 }}
             aria-pressed={view === "remarks"}
             onClick={() => setView(view === "remarks" ? "files" : "remarks")}
             title={t("projectRemarks.view")}
@@ -1599,8 +1600,8 @@ export function ProjectFilesView({
             Same chrome as every other toolbar button — see `toolbar-btn`. */}
         {view === "files" && (
           <button
-            className={`toolbar-btn${searchOpen ? " active" : ""}`}
-            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            className={`toolbar-btn toolbar-btn--sm${searchOpen ? " active" : ""}`}
+            style={{ marginLeft: 2 }}
             aria-pressed={searchOpen}
             aria-expanded={searchOpen}
             onClick={() => setSearchOpen((v) => !v)}
@@ -1612,8 +1613,8 @@ export function ProjectFilesView({
         )}
         {view === "files" && (
           <button
-            className="toolbar-btn"
-            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            className="toolbar-btn toolbar-btn--sm"
+            style={{ marginLeft: 2 }}
             onClick={() => setRefreshNonce((n) => n + 1)}
             title={t("fileTree.refreshTitle")}
             aria-label={t("common.refresh")}
@@ -1623,8 +1624,8 @@ export function ProjectFilesView({
         )}
         {importDrop.canImport && (
           <button
-            className="toolbar-btn"
-            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            className="toolbar-btn toolbar-btn--sm"
+            style={{ marginLeft: 2 }}
             onClick={(e) => {
               const r = e.currentTarget.getBoundingClientRect();
               setImportMenu({ x: r.left, y: r.bottom + 2 });
@@ -1660,8 +1661,8 @@ export function ProjectFilesView({
         )}
         {projectDir && (
           <button
-            className="toolbar-btn"
-            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            className="toolbar-btn toolbar-btn--sm"
+            style={{ marginLeft: 2 }}
             onClick={openInOsBrowser}
             title={t("projectFilesView.openInFileManagerTitle")}
           >
@@ -1670,8 +1671,8 @@ export function ProjectFilesView({
         )}
         {!activeBox && projectDir && (
           <button
-            className={`toolbar-btn${showDownloads ? " active" : ""}`}
-            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            className={`toolbar-btn toolbar-btn--sm${showDownloads ? " active" : ""}`}
+            style={{ marginLeft: 2 }}
             aria-pressed={showDownloads}
             onClick={() => {
               setShowDownloads((v) => !v);
@@ -1691,8 +1692,8 @@ export function ProjectFilesView({
             The group itself stays below the tree — only its switch moved. */}
         {projectId && (
           <button
-            className="toolbar-btn"
-            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            className="toolbar-btn toolbar-btn--sm"
+            style={{ marginLeft: 2 }}
             onClick={() => setShowSettings(true)}
             title={t("projectFilesView.projectSettingsTitle")}
           >

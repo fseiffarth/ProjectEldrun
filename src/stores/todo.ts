@@ -13,7 +13,7 @@
  * user loses cards: the board opens showing three of forty and nothing on screen
  * says why.
  *
- * **The drag lives here, not in `stores/drag`.** That store's `drag !== null` is
+ * **The drag lives here, not in `stores/drag/drag`.** That store's `drag !== null` is
  * read by `CenterPanel`, `DetachedCenterPanel`, `FileTree` and
  * `dragPreviewLayout` as "a tab or file drag is in flight" — populating it for a
  * card drag would put the whole center panel into drag mode (panes
@@ -231,7 +231,7 @@ export const useTodoStore = create<TodoStore>((set, get) => ({
 // ── The shared urgent-mail poll ──────────────────────────────────────────────
 //
 // The 60 s re-read behind `urgentMail`/`importantMail`, refcounted at module
-// level — `stores/hostSessions`' retain/release pattern. It exists because the
+// level — `stores/remote/hostSessions`' retain/release pattern. It exists because the
 // consumers are mounted many times at once (`useAlertsFeed` rides the file
 // viewer, which renders in the side panel plus every Files tab, and
 // `TodoMailRail` is a third copy): each used to arm its own interval keyed on

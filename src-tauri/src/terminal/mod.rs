@@ -3,9 +3,10 @@
 //! Design constraints from TauriRust.md Phase 3:
 //! - portable-pty for cross-platform PTY creation.
 //! - Bounded per-PTY output channels (backpressure via mpsc).
-//! - Batched/throttled Tauri events (max one emit per 16 ms mid-burst; the
-//!   first chunk after quiet flushes immediately, and an idle PTY parks with
-//!   no timer at all — see `batch_output`).
+//! - Batched/throttled Tauri events (mid-burst, one emit per 16 ms window or
+//!   per `BATCH_MAX_BYTES` of output, whichever comes first; the first chunk
+//!   after quiet flushes immediately, and an idle PTY parks with no timer at
+//!   all — see `batch_output`).
 //! - Stateful UTF-8 output decoding; binary-safe read loop.
 //! - Crash-loop protection: tracks last-exit timestamps.
 //! - Explicit terminal-ready event when the shell starts.
@@ -24,7 +25,16 @@ use tauri::{AppHandle, Emitter};
 // ── Constants ─────────────────────────────────────────────────────────────
 
 const BATCH_INTERVAL: Duration = Duration::from_millis(16);
-const BATCH_MAX_BYTES: usize = 4096;
+/// Size cap on one coalesced emit — the backpressure bound on a single
+/// `terminal-output` payload. **Must stay well above the reader thread's read
+/// buffer** (the `[0u8; 4096]` in `spawn_pty`): `batch_output` flushes as soon as
+/// `batch.len() >= BATCH_MAX_BYTES`, so when the two were both 4096 every full
+/// read of a sustained burst (a build log) tripped the size rule on its own and
+/// the 16 ms window coalesced nothing — one IPC event per 4 KiB. At 32 KiB a
+/// burst takes ~8 reads per emit. The two literals are independent and nothing
+/// else ties them: "making them consistent" or sharing one constant silently
+/// restores that bug with every `batch_tests` case still green.
+const BATCH_MAX_BYTES: usize = 32768;
 #[allow(dead_code)]
 const MIN_RESTART_INTERVAL: Duration = Duration::from_secs(2);
 const CRASH_LOOP_THRESHOLD: usize = 5;
@@ -162,13 +172,18 @@ impl OutputRoute {
     /// Append to the always-on catch-up tail. Called for every routed chunk,
     /// visible or not — that is the point: the question it answers is "what has
     /// this terminal shown", which does not depend on who was watching.
-    fn retain(&mut self, text: &str) -> OutputSlice {
+    ///
+    /// Takes the decoded chunk by value and moves it into the returned slice:
+    /// this runs for every chunk of every PTY, and borrowing here forced a
+    /// second copy (`to_string`) of a String the caller no longer needed.
+    /// Callers that still want the text read it back from `slice.text`.
+    fn retain(&mut self, text: String) -> OutputSlice {
         let start_offset = self.output_offset;
         self.output_offset += text.len() as u64;
-        self.retained.push_str(text);
+        self.retained.push_str(&text);
         self.retained_start += trim_with_hysteresis(&mut self.retained, ROUTE_SCROLLBACK_CAP) as u64;
         OutputSlice {
-            text: text.to_string(),
+            text,
             start_offset,
             end_offset: self.output_offset,
         }
@@ -319,12 +334,12 @@ fn route_chunk_at(id: &str, bytes: &[u8], now: Instant, seq: u64) -> Routed {
     if text.is_empty() {
         return Routed::Quiet;
     }
-    let slice = route.retain(&text);
+    let slice = route.retain(text);
     if route.subscribed() {
         return Routed::Data(slice);
     }
     route.push_pending(&slice);
-    route.digest.push_str(&text);
+    route.digest.push_str(&slice.text);
     trim_with_hysteresis(&mut route.digest, ACTIVITY_TAIL_CAP);
     let due = route
         .last_activity
@@ -363,12 +378,12 @@ fn route_finish(id: &str, seq: u64) -> Routed {
     if text.is_empty() {
         return Routed::Quiet;
     }
-    let slice = route.retain(&text);
+    let slice = route.retain(text);
     if route.subscribed() {
         return Routed::Data(slice);
     }
     route.push_pending(&slice);
-    route.digest.push_str(&text);
+    route.digest.push_str(&slice.text);
     trim_with_hysteresis(&mut route.digest, ACTIVITY_TAIL_CAP);
     route.last_activity = Some(Instant::now());
     Routed::Activity(std::mem::take(&mut route.digest))
@@ -900,6 +915,7 @@ impl PtyRegistry {
             // (best-effort, no-op for tabs that never containerized).
             crate::services::sandbox::kill_tab_process(id);
             crate::services::agent_fence::on_tab_gone(id);
+            crate::services::root_mcp_review::on_tab_gone(&crate::storage::state_dir(), id);
         }
     }
 
@@ -926,6 +942,7 @@ impl PtyRegistry {
             // exec client we just killed is not it).
             crate::services::sandbox::kill_tab_process(&id);
             crate::services::agent_fence::on_tab_gone(&id);
+            crate::services::root_mcp_review::on_tab_gone(&crate::storage::state_dir(), &id);
         }
         reap_pids(subtree, ReapMode::Immediate);
         invalidate_proc_tree_cache();
@@ -1067,6 +1084,7 @@ pub fn spawn_pty(
     let bind_seq = crate::services::codex_bind::current_seq(&opts.id);
     let resume_seq = crate::services::codex_bind::resume_seq(&opts.id);
     let route_seq = route_open(&opts.id);
+    let mcp_token = opts.env.get(crate::services::root_mcp::TOKEN_ENV).cloned();
     tokio::spawn(async move {
         let emitter = app.clone();
         batch_output(rx, |bytes| match route_chunk(&id, bytes, route_seq) {
@@ -1157,6 +1175,11 @@ pub fn spawn_pty(
         }
         if current_spawn_ended {
             crate::services::agent_fence::on_tab_gone(&id);
+            if let Some(token) = mcp_token {
+                let state = crate::storage::state_dir();
+                crate::services::root_mcp_review::on_spawn_gone(&state, &token);
+                let _ = app.emit("root-mcp-review-changed", crate::services::root_mcp_review::pending_count(&state));
+            }
             let _ = app.emit("terminal-exit", TerminalExit { id, code: None });
         }
     });
@@ -1177,9 +1200,14 @@ pub fn spawn_pty(
 ///   the leading edge. This is every keystroke echo at typing speed (inter-key
 ///   gaps far exceed the window), so echo latency stays ~0 ms.
 /// - A chunk arriving inside the window arms one timeout for the *remainder*
-///   of the window, coalescing a burst; `BATCH_MAX_BYTES` flushes early.
+///   of the window, coalescing a burst; a batch reaching `BATCH_MAX_BYTES`
+///   flushes before the window ends. That early flush only coalesces anything
+///   because the cap is several reader-buffer reads deep — see the constant.
 async fn batch_output<F: FnMut(&[u8])>(mut rx: tokio::sync::mpsc::Receiver<Vec<u8>>, mut flush: F) {
-    let mut batch: Vec<u8> = Vec::with_capacity(BATCH_MAX_BYTES);
+    // Small initial capacity, grown on demand: this runs once per PTY and the
+    // preallocation is eager, so reserving the full `BATCH_MAX_BYTES` would pin
+    // ~32 KiB per idle tab (≈1.6 MB across a 50-tab session) for nothing.
+    let mut batch: Vec<u8> = Vec::with_capacity(8192);
     // Start stale by one full window so the very first chunk takes the
     // leading-edge flush too (checked_sub: an Instant can't go below the
     // platform's epoch; the fallback merely delays the first flush one window).
@@ -1320,6 +1348,13 @@ fn build_command(opts: &PtyOptions) -> CommandBuilder {
     {
         cmd.env_remove("GIO_LAUNCHED_DESKTOP_FILE");
         cmd.env_remove("GIO_LAUNCHED_DESKTOP_FILE_PID");
+        // Eldrun's own AT-SPI opt-out is about Eldrun's window (see
+        // `services::webkit_a11y`); inherited, it would silently strip
+        // accessibility from any other WebKitGTK app a tab launches. Dropped
+        // only when Eldrun set it — an address the user exported stays.
+        if crate::services::webkit_a11y::installed() {
+            cmd.env_remove(crate::services::webkit_a11y::BUS_ADDRESS_VAR);
+        }
     }
 
     cmd

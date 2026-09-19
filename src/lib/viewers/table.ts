@@ -142,7 +142,9 @@ export function parseTable(text: string, delimiter: string): ParsedTable {
       continue;
     }
 
-    if (ch === '"') {
+    // Only a quote that opens a field starts a quoted region; one that turns up
+    // mid-field is a literal character, as the docstring promises.
+    if (ch === '"' && field === "") {
       inQuotes = true;
       rowStarted = true;
       continue;

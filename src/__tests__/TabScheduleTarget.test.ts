@@ -12,7 +12,7 @@ import { invoke } from "@tauri-apps/api/core";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) }));
 
 import { toSavedTabEntry, useTabsStore, type SavedTabEntry } from "../stores/tabs";
-import { persistScopeLayout, useAgentSchedulesStore } from "../stores/agentSchedules";
+import { persistScopeLayout, useAgentSchedulesStore } from "../stores/agents/agentSchedules";
 import { useProjectsStore } from "../stores/projects";
 
 const invokeMock = vi.mocked(invoke);

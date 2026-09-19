@@ -10,7 +10,8 @@ import {
   isTerminalIdentityResponse,
   isTerminalReport,
   stripTerminalQueries,
-} from "../lib/terminalControl";
+  suppressNativeContextMenu,
+} from "../lib/terminal/terminalControl";
 
 describe("terminal control helpers", () => {
   beforeEach(() => {
@@ -179,5 +180,16 @@ describe("agent pane mousedown", () => {
     // Right/middle button: the context menu and paste-on-middle-click are xterm's.
     expect(agentMouseDownAction(press({ button: 2, detail: 2 }), true)).toBe("pass");
     expect(agentMouseDownAction(press({ button: 1 }), true)).toBe("pass");
+  });
+});
+
+describe("right-click context menu", () => {
+  it("belongs to the program while it holds the mouse — its own paste is the only one", () => {
+    expect(suppressNativeContextMenu({ shiftKey: false }, true)).toBe(true);
+  });
+
+  it("stays native when nothing grabbed the mouse, and Shift always reaches it", () => {
+    expect(suppressNativeContextMenu({ shiftKey: false }, false)).toBe(false);
+    expect(suppressNativeContextMenu({ shiftKey: true }, true)).toBe(false);
   });
 });

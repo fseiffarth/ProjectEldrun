@@ -13,7 +13,7 @@ import {
   serializeIcs,
   unescapeText,
   unfold,
-} from "../lib/ics";
+} from "../lib/calendar/ics";
 import type { CalendarEvent, CalendarTask } from "../types";
 
 function event(over: Partial<CalendarEvent> = {}): CalendarEvent {
@@ -146,10 +146,10 @@ describe("RRULE", () => {
     expect(parseRrule("FREQ=DAILY;UNTIL=20261231")).toMatchObject({ until: "2026-12-31" });
   });
 
-  it("strips an ordinal BYDAY prefix down to the weekday", () => {
-    // "2MO" (the 2nd Monday) degrades to plain Monday — the model holds no ordinal.
-    expect(parseRrule("FREQ=MONTHLY;BYDAY=2MO")).toMatchObject({ byweekday: [1] });
-    expect(parseRrule("FREQ=MONTHLY;BYDAY=-1FR")).toMatchObject({ byweekday: [5] });
+  it("holds an ordinal BYDAY as a numbered weekday", () => {
+    // "2MO" is the 2nd Monday, not every Monday (more in RecurrenceNthWeekday).
+    expect(parseRrule("FREQ=MONTHLY;BYDAY=2MO")).toMatchObject({ bynthweekday: [{ n: 2, day: 1 }] });
+    expect(parseRrule("FREQ=MONTHLY;BYDAY=-1FR")).toMatchObject({ bynthweekday: [{ n: -1, day: 5 }] });
   });
 
   it("drops an unsupported FREQ rather than guessing", () => {

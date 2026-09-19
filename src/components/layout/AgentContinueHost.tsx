@@ -1,11 +1,11 @@
 import { useEffect, useRef } from "react";
 import { nextUsageReset, parseUsageReport } from "../../../shared/usageReport";
-import { readAgentUsage } from "../../lib/agentUsage";
-import { localOccurrenceKey } from "../../lib/agentSchedule";
-import { submitScheduledAgentMessage, scheduledAgentInput } from "../../lib/scheduledAgentInput";
+import { readAgentUsage } from "../../lib/agents/agentUsage";
+import { localOccurrenceKey } from "../../lib/agents/agentSchedule";
+import { submitScheduledAgentMessage, scheduledAgentInput } from "../../lib/agents/scheduledAgentInput";
 import { lastPtyOutputAt, useActivityStore } from "../../stores/activity";
-import { recordScheduledDelivery } from "../../stores/agentPrompts";
-import { continueKey, useAgentContinueStore } from "../../stores/agentContinue";
+import { recordScheduledDelivery } from "../../stores/agents/agentPrompts";
+import { continueKey, useAgentContinueStore } from "../../stores/agents/agentContinue";
 import { useTabsStore, type TabEntry } from "../../stores/tabs";
 
 /**
@@ -27,7 +27,7 @@ import { useTabsStore, type TabEntry } from "../../stores/tabs";
  *  - a way to choose the agent's mode or model. It submits one word into the
  *    tab, through the same composer path everything else uses.
  *
- * It reuses the scheduler's delivery path and its gate (`lib/scheduledAgentInput`
+ * It reuses the scheduler's delivery path and its gate (`lib/agents/scheduledAgentInput`
  * plus the idle/decision/settle checks): a continue typed into a tab that is
  * mid-turn or sitting on an approval prompt is at best ignored and at worst
  * answers a question the user was being asked. See `deliverable` for the one

@@ -57,6 +57,32 @@ fn agent_remote_control_effective(
         .unwrap_or(global_default)
 }
 
+/// What `pty_spawn` tells the tab it launched.
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
+pub struct PtySpawned {
+    /// The session name rode in on the launch argv (Claude's `--name`), so the
+    /// tab must not also type its `/rename` line.
+    pub named: bool,
+}
+
+/// Append Claude's `--name=<name>` to a launch argv, unless there is no name
+/// or the argv already names the session. Returns whether the argv now does.
+///
+/// The `=` form, so a name that starts with `-` is still read as the value.
+/// Argv, never a shell line: this is only applied to a spawn that runs the
+/// host's own binary, after the ssh/docker wrap has had its turn.
+fn append_claude_name(args: &mut Vec<String>, name: Option<&str>) -> bool {
+    let named = |a: &String| a == "-n" || a == "--name" || a.starts_with("--name=");
+    if args.iter().any(named) {
+        return true;
+    }
+    let Some(name) = name.map(str::trim).filter(|n| !n.is_empty()) else {
+        return false;
+    };
+    args.push(format!("--name={name}"));
+    true
+}
+
 /// Whether `cwd` sits inside `allowed`, compared component-wise (`Path::starts_with`)
 /// so a sibling directory sharing a prefix (`…/proj2` vs `…/proj`) is never
 /// mistaken for nesting. O#149's hard gate: mirrors `services::sandbox::cwd_is_within`
@@ -160,6 +186,28 @@ mod tests {
         assert!(!cwd_within("/etc", Path::new("/home/u/proj")));
     }
 
+    #[test]
+    fn claude_name_rides_the_argv_once() {
+        let mut args = vec!["--session-id".to_string(), "u".to_string()];
+        assert!(append_claude_name(&mut args, Some(" Proj (feature) ")));
+        assert_eq!(args.last().map(String::as_str), Some("--name=Proj (feature)"));
+        // A respawn with the name already there does not stack a second one.
+        assert!(append_claude_name(&mut args, Some("Other")));
+        assert_eq!(args.iter().filter(|a| a.starts_with("--name")).count(), 1);
+        // A leading dash stays the flag's value.
+        let mut dashed = Vec::new();
+        assert!(append_claude_name(&mut dashed, Some("-x")));
+        assert_eq!(dashed, vec!["--name=-x".to_string()]);
+    }
+
+    #[test]
+    fn no_name_no_flag() {
+        let mut args = Vec::new();
+        assert!(!append_claude_name(&mut args, None));
+        assert!(!append_claude_name(&mut args, Some("   ")));
+        assert!(args.is_empty());
+    }
+
     fn entry(id: &str, remote_control: Option<bool>) -> ProjectEntry {
         let mut extra = HashMap::new();
         if let Some(v) = remote_control {
@@ -208,7 +256,8 @@ pub async fn pty_spawn(
     registry: State<'_, RegistryState>,
     pool: State<'_, crate::services::remote::RemotePoolState>,
     mut opts: PtyOptions,
-) -> Result<(), String> {
+    session_name: Option<String>,
+) -> Result<PtySpawned, String> {
     // Resolve empty cwd to Eldrun's root workspace directory.
     if opts.cwd.is_empty() {
         let root_dir = storage::root_work_dir();
@@ -396,6 +445,55 @@ pub async fn pty_spawn(
         crate::services::agent_fence::add_box_root_args(&mut opts, roots, &own);
     }
 
+    // The root console's extra rights (`services::root_mcp`): a LOCAL agent in
+    // the ROOT scope — and no other spawn — is handed the MCP endpoint and its
+    // per-run token. Decided here from the same `project_id` that picks the
+    // fence roots above, while `cmd`/`args` still describe the agent itself, so
+    // the config rides into the bubblewrap argv unchanged.
+    let root_agent = crate::services::root_mcp::is_root_agent(&opts, agent_spawn);
+    if root_agent {
+        crate::services::root_mcp::apply_to_spawn(&mut opts);
+    }
+    // The contained reader (`services::mail_reader`): an agent spawn into a VM
+    // project whose TRUSTED record carries `mail_reader` gets a per-tab token of
+    // class `Reader` and the guest-side URL, riding the remote command's
+    // environment. Every other project agent spawn — VM or not — is handed
+    // nothing. Whether the box is actually narrow is checked per mail call, not
+    // here: the flag is a request, not a fact.
+    let reader_project = opts
+        .project_id
+        .clone()
+        .filter(|_| agent_spawn && !root_agent && !opts.local_only)
+        .filter(|id| crate::services::vm::vm_spec_for(id).is_some_and(|spec| spec.mail_reader));
+    if let Some(project) = reader_project.as_deref() {
+        let cmd = opts.cmd.clone();
+        if let Some(env) =
+            crate::services::root_mcp::apply_reader_to_spawn(&opts.id, project, &cmd, &mut opts.args)
+        {
+            opts.env.extend(env);
+        }
+    }
+    let mut mcp_spawn_guard = (root_agent || reader_project.is_some())
+        .then(|| crate::services::root_mcp::SpawnTokenGuard::new(&opts));
+
+    // A local OpenCode is offered exactly the models Ollama has loaded (see
+    // `commands::ollama::opencode_loaded_models_config`) — handed over as an
+    // inline config, never written into OpenCode's own. A remote run's OpenCode
+    // talks to the far host's Ollama, and an inline config the user set wins.
+    const OPENCODE_INLINE: &str = "OPENCODE_CONFIG_CONTENT";
+    if !remote_agent_run
+        && !opts.env.contains_key(OPENCODE_INLINE)
+        && std::env::var_os(OPENCODE_INLINE).is_none()
+    {
+        if let Some(requested) = crate::commands::ollama::opencode_spawn_model(&opts.cmd, &opts.args) {
+            if let Some(cfg) =
+                crate::commands::ollama::opencode_loaded_models_config(requested.as_deref())
+            {
+                opts.env.insert(OPENCODE_INLINE.into(), cfg);
+            }
+        }
+    }
+
     // The agent's hooks report its turn state under its tab uid; bind that uid
     // to this PTY so the report reaches the tab's own marks, and drop any
     // record a previous run of the same tab left behind (see agent_turn).
@@ -452,7 +550,11 @@ pub async fn pty_spawn(
     // session resolution but before ssh/docker wrapping — so it rides into the
     // wrapped command for remote/sandboxed tabs too. Guarded against
     // duplicates so a re-spawn never stacks the flag.
+    // Never for the root console: `--remote-control` is what puts a session in
+    // the Claude phone app, and the root scope's rights must not be reachable
+    // from a phone by any route (it is absent from Eldrun Mobile's catalog too).
     if opts.cmd == "claude"
+        && !root_agent
         && resolve_agent_remote_control(opts.project_id.as_deref())
         && !opts.args.iter().any(|a| a == "--remote-control")
     {
@@ -523,11 +625,27 @@ pub async fn pty_spawn(
         crate::services::ssh_exec::wrap_pty_options(&mut opts)?;
     }
 
+    // The tab's session name (the Remote Control title too), set at launch with
+    // Claude's `--name` rather than a `/rename` line typed a few seconds in —
+    // which is what anything the user typed meanwhile ran into. Only a spawn
+    // still running `claude` here reaches this, i.e. the host's own binary
+    // (fenced or not), the one whose version Eldrun has read; a container or
+    // remote host has its own, and an older one exits on the unknown option.
+    // Those, and a host CLI that is too old or not read yet, keep the typed line.
+    let named = opts.cmd == "claude"
+        && session_name.is_some()
+        && crate::commands::agents::claude_takes_name_flag()
+        && append_claude_name(&mut opts.args, session_name.as_deref());
+
     // Apply the outer fence boundary (bubblewrap on Linux, sandbox-exec on
     // macOS) after docker/ssh selection but before local tmux.  This keeps the
     // tmux server on the host while the command *inside* its session is
     // fenced.  A missing/blocked fence tool fails closed.
     let mut fenced_registration: Option<(String, String)> = None;
+    #[cfg(target_os = "linux")]
+    let mut fenced_content_shadow = None;
+    #[cfg(not(target_os = "linux"))]
+    let fenced_content_shadow = None;
     if let Some(roots) = fence_roots.as_deref() {
         let decision = crate::services::agent_fence::decide(
             &opts,
@@ -546,24 +664,19 @@ pub async fn pty_spawn(
                     .clone()
                     .unwrap_or_else(|| "root".to_string());
                 #[cfg(target_os = "linux")]
-                crate::services::agent_fence::wrap_pty_options_bwrap(&mut opts, roots, &scope_id)?;
+                {
+                    fenced_content_shadow = Some(crate::services::agent_fence::wrap_pty_options_bwrap(
+                        &mut opts, roots, &scope_id,
+                    )?);
+                }
                 #[cfg(target_os = "macos")]
                 crate::services::agent_fence::wrap_pty_options_sandbox_exec(
                     &mut opts, roots, &scope_id,
                 )?;
                 fenced_registration = Some((opts.id.clone(), scope_id));
             }
-            crate::services::agent_fence::FenceDecision::Unavailable { install_hint } => {
-                let tool = crate::services::agent_fence::fence_tool_name();
-                return Err(if cfg!(target_os = "macos") {
-                    format!(
-                        "Agent fence: {tool} is unavailable on this Mac, so this agent was not started. Turn the Agent fence off for this project."
-                    )
-                } else {
-                    format!(
-                        "Agent fence: {tool} is unavailable, so this agent was not started. Install it with `{install_hint}`, or turn the Agent fence off for this project."
-                    )
-                });
+            crate::services::agent_fence::FenceDecision::Unavailable => {
+                return Err(crate::services::agent_fence::fence_unavailable_message());
             }
             _ => {}
         }
@@ -600,14 +713,15 @@ pub async fn pty_spawn(
 
     let result = crate::terminal::spawn_pty(app, registry.inner().clone(), opts);
     if result.is_ok() {
+        if let Some(guard) = mcp_spawn_guard.as_mut() { guard.keep(); }
         if let Some(claim) = resume_claim {
             claim.keep();
         }
         if let Some((tab_id, scope_id)) = fenced_registration {
-            crate::services::agent_fence::register_tab(&tab_id, &scope_id);
+            crate::services::agent_fence::register_tab(&tab_id, &scope_id, fenced_content_shadow);
         }
     }
-    result
+    result.map(|()| PtySpawned { named })
 }
 
 /// Honest per-scope fence status for the project-pill menu.  This performs no
@@ -806,6 +920,7 @@ pub async fn pty_kill(registry: State<'_, RegistryState>, id: String) -> Result<
     crate::commands::credentials::forget_login_pty(&id);
     registry.lock().unwrap().kill(&id);
     crate::services::agent_fence::on_tab_gone(&id);
+    crate::services::root_mcp_review::on_tab_gone(&crate::storage::state_dir(), &id);
     crate::services::agent_turn::on_tab_gone(&id);
     Ok(())
 }
@@ -824,6 +939,7 @@ pub async fn pty_kill_scope(
         crate::terminal::route_remove_all_views(id);
         registry.lock().unwrap().kill(id);
         crate::services::agent_fence::on_tab_gone(id);
+        crate::services::root_mcp_review::on_tab_gone(&crate::storage::state_dir(), id);
         crate::services::agent_turn::on_tab_gone(id);
     }
     Ok(ids)

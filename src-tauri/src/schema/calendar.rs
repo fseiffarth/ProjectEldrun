@@ -131,14 +131,30 @@ pub struct Rrule {
     /// Monthly only: day of month (1–31). `None` → the event's own day of month.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bymonthday: Option<u8>,
+    /// Monthly and yearly: numbered weekdays (`{n: 2, day: 2}` = the 2nd
+    /// Tuesday, `n: -1` = the last). Yearly counts within the event's own month.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bynthweekday: Vec<NthWeekday>,
     /// Inclusive last date (`"YYYY-MM-DD"`) the rule may fire on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub until: Option<String>,
     /// Total number of occurrences, counting the first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub count: Option<u32>,
+    /// The imported RRULE text, kept only when the fields above could not hold
+    /// all of it, so an export or CalDAV push can write it back unreduced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ics_value: Option<String>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
+}
+
+/// One numbered weekday of a recurrence: the `n`th (negative: from the end)
+/// `day`, `0`=Sunday … `6`=Saturday.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NthWeekday {
+    pub n: i8,
+    pub day: u8,
 }
 
 fn default_interval() -> u32 {
@@ -200,7 +216,7 @@ pub struct CalendarEvent {
     pub location: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub notes: String,
-    /// The video call's join URL (`http(s)`; the frontend's `lib/conference.ts`
+    /// The video call's join URL (`http(s)`; the frontend's `lib/calendar/conference.ts`
     /// is the one place that decides what is joinable). Its own field rather
     /// than a convention on `location`, so a **Join** button is never a guess
     /// about what a room name meant.
@@ -1050,7 +1066,7 @@ pub fn migrate_legacy(events: Vec<LegacyEvent>) -> CalendarData {
 // ── Date math ───────────────────────────────────────────────────────────────
 //
 // Just enough civil-date arithmetic to migrate and validate. The frontend owns
-// the real calendar math (`src/lib/calendarTime.ts`); this exists so the backend
+// the real calendar math (`src/lib/calendar/calendarTime.ts`); this exists so the backend
 // never has to parse a date to serve a request.
 
 fn is_leap(y: i32) -> bool {
@@ -1141,6 +1157,40 @@ pub fn add_minutes(stamp: &str, n: i64) -> String {
     format!("{}T{:02}:{:02}", new_date, within / 60, within % 60)
 }
 
+/// Days from 1970-01-01 to a civil date, by Howard Hinnant's `days_from_civil`.
+/// Constant-time where [`add_days`] would loop, which is what makes a span
+/// between two arbitrary dates affordable.
+pub(crate) fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
+    let y = i64::from(if m <= 2 { y - 1 } else { y });
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400; // [0, 399]
+    let mp = i64::from((m + 9) % 12); // March is 0
+    let doy = (153 * mp + 2) / 5 + i64::from(d) - 1; // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    era * 146_097 + doe - 719_468
+}
+
+/// Whole days from `a` to `b`, both `"YYYY-MM-DD"` (a `T…` suffix is ignored).
+/// Negative when `b` is the earlier date; `None` when either is unparseable.
+pub fn days_between(a: &str, b: &str) -> Option<i64> {
+    let (ay, am, ad) = parse_date(a)?;
+    let (by, bm, bd) = parse_date(b)?;
+    Some(days_from_civil(by, bm, bd) - days_from_civil(ay, am, ad))
+}
+
+/// Whole minutes from `a` to `b`, both `"YYYY-MM-DDTHH:MM"`. `None` when either
+/// is unparseable — the caller then has no duration to preserve and says so,
+/// rather than silently editing an event to a made-up length.
+pub fn minutes_between(a: &str, b: &str) -> Option<i64> {
+    let minutes_of = |stamp: &str| -> Option<i64> {
+        let (_, time) = stamp.split_once('T')?;
+        let (h, mi) = time.split_once(':')?;
+        let (h, mi): (i64, i64) = (h.parse().ok()?, mi.parse().ok()?);
+        (h < 24 && mi < 60).then_some(h * 60 + mi)
+    };
+    Some(days_between(a, b)? * 24 * 60 + minutes_of(b)? - minutes_of(a)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1164,6 +1214,30 @@ mod tests {
     #[test]
     fn add_days_leaves_garbage_alone() {
         assert_eq!(add_days("not-a-date", 1), "not-a-date");
+    }
+
+    #[test]
+    fn days_between_spans_months_years_and_leap_days() {
+        assert_eq!(days_between("2026-09-17", "2026-09-17"), Some(0));
+        assert_eq!(days_between("2026-09-17", "2026-09-20"), Some(3));
+        assert_eq!(days_between("2026-09-20", "2026-09-17"), Some(-3));
+        assert_eq!(days_between("2024-02-28", "2024-03-01"), Some(2));
+        assert_eq!(days_between("2026-02-28", "2026-03-01"), Some(1));
+        assert_eq!(days_between("2025-12-31", "2026-01-01"), Some(1));
+        // The `T…` suffix of a timed stamp is ignored, as `parse_date` does.
+        assert_eq!(days_between("2026-09-17T23:00", "2026-09-18T01:00"), Some(1));
+        assert_eq!(days_between("nonsense", "2026-09-17"), None);
+    }
+
+    #[test]
+    fn minutes_between_measures_a_span_across_midnight() {
+        assert_eq!(minutes_between("2026-09-17T09:00", "2026-09-17T10:30"), Some(90));
+        assert_eq!(minutes_between("2026-09-17T23:30", "2026-09-18T00:30"), Some(60));
+        assert_eq!(minutes_between("2026-09-18T00:30", "2026-09-17T23:30"), Some(-60));
+        // Its inverse: adding the span back lands on the far end.
+        let (start, end) = ("2026-09-17T14:15", "2026-09-19T08:45");
+        assert_eq!(add_minutes(start, minutes_between(start, end).unwrap()), end);
+        assert_eq!(minutes_between("2026-09-17", "2026-09-18T09:00"), None);
     }
 
     #[test]
@@ -1868,5 +1942,25 @@ mod tests {
         let future = mk(99);
         assert_eq!(old, future);
         assert_eq!(old.version, CALENDAR_VERSION);
+    }
+
+    #[test]
+    fn rrule_numbered_weekdays_round_trip_and_old_rules_still_load() {
+        let raw = r#"{"freq":"monthly","interval":1,"bynthweekday":[{"n":2,"day":2},{"n":-1,"day":5}],"ics_value":"FREQ=MONTHLY;BYDAY=2TU,-1FR;BYHOUR=9"}"#;
+        let rule: Rrule = serde_json::from_str(raw).unwrap();
+        assert_eq!(
+            rule.bynthweekday,
+            vec![NthWeekday { n: 2, day: 2 }, NthWeekday { n: -1, day: 5 }]
+        );
+        assert_eq!(rule.ics_value.as_deref(), Some("FREQ=MONTHLY;BYDAY=2TU,-1FR;BYHOUR=9"));
+        assert!(rule.extra.is_empty());
+        let back: Rrule = serde_json::from_str(&serde_json::to_string(&rule).unwrap()).unwrap();
+        assert_eq!(back, rule);
+
+        // A rule written before either field existed loads, and writes neither.
+        let old: Rrule = serde_json::from_str(r#"{"freq":"weekly","interval":2,"byweekday":[1]}"#).unwrap();
+        assert!(old.bynthweekday.is_empty() && old.ics_value.is_none());
+        let out = serde_json::to_string(&old).unwrap();
+        assert!(!out.contains("bynthweekday") && !out.contains("ics_value"), "{out}");
     }
 }

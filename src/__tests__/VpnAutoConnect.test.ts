@@ -65,9 +65,9 @@ async function launch(seed: Partial<Settings>) {
   vi.resetModules();
   const [{ autoConnectVpnOnLaunch }, { useSettingsStore }, { useVpnStatusStore }] =
     await Promise.all([
-      import("../lib/vpnAutoConnect"),
+      import("../lib/remote/vpn/vpnAutoConnect"),
       import("../stores/settings"),
-      import("../stores/vpnStatus"),
+      import("../stores/remote/vpn/vpnStatus"),
     ]);
   useSettingsStore.setState({ settings: seed as Settings, loaded: true });
   await autoConnectVpnOnLaunch();

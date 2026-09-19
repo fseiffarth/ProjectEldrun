@@ -112,7 +112,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
  * *themselves* still sends `true` even on an unreadable keyring — that is a
  * request to save, and the backend answers it with `save_error` if it can't.
  *
- * The pattern is `stores/globalMachines`' (`opts.remember ? true : null`); this
+ * The pattern is `stores/remote/globalMachines`' (`opts.remember ? true : null`); this
  * is that decision named, so no fourth copy has to rediscover it.
  */
 export function rememberArg(checked: boolean): true | null {

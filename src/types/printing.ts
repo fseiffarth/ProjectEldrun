@@ -1,7 +1,7 @@
 /**
  * The print manager's wire types — the exact shapes `commands::printing`
  * serializes. Kept in `types/` rather than inside the pane because the pane and
- * `lib/printing.ts` both read them, and because a wire type that lives next to
+ * `lib/window/printing.ts` both read them, and because a wire type that lives next to
  * its consumer is the one that quietly grows a field the backend never sends.
  */
 

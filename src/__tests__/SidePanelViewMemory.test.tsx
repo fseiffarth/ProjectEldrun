@@ -18,7 +18,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Settings } from "../types";
-import { clearFileViewSnapshots } from "../lib/fileViewSnapshots";
+import { clearFileViewSnapshots } from "../lib/projects/fileViewSnapshots";
 
 const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
 
@@ -44,6 +44,15 @@ vi.mock("../stores/settings", () => {
 import { useProjectsStore } from "../stores/projects";
 import * as settingsModule from "../stores/settings";
 import { SidePanel } from "../components/layout/SidePanel";
+
+// Selector-aware, like the real zustand hook: the panel reads each field
+// through its own selector, so a mock that returned the whole state for every
+// call handed `projects` the state object itself.
+function mockProjectsState(state: { projects: unknown[]; activeId: string | null }) {
+  const full = { sidePanelFolderByProject: {}, setSidePanelFolder: vi.fn(), rootDir: null, ...state };
+  vi.mocked(useProjectsStore).mockImplementation(((sel?: (s: typeof full) => unknown) =>
+    sel ? sel(full) : full) as unknown as typeof useProjectsStore);
+}
 
 const settingsState = (settingsModule as unknown as {
   __state: { settings: Settings | null; updateSettings: ReturnType<typeof vi.fn> };
@@ -72,9 +81,7 @@ beforeEach(() => {
     if (cmd === "list_dir") return Promise.resolve([]);
     return Promise.resolve(null);
   });
-  vi.mocked(useProjectsStore).mockReturnValue(
-    { projects: [LOCAL_PROJECT], activeId: "proj-1" } as ReturnType<typeof useProjectsStore>,
-  );
+  mockProjectsState({ projects: [LOCAL_PROJECT], activeId: "proj-1" });
 });
 
 async function renderPanel() {

@@ -18,7 +18,7 @@ import {
   startOfWeek,
   todayStr,
   weekdayLabel,
-} from "../../lib/calendarTime";
+} from "../../lib/calendar/calendarTime";
 import { useI18nStore, useT } from "../../lib/i18n";
 import { useSettingsStore } from "../../stores/settings";
 import { ContextMenuPortal } from "./ContextMenuPortal";

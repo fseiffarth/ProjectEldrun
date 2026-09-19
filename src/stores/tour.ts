@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { useSettingsStore } from "./settings";
 import { useProjectsStore } from "./projects";
 import { useHintsStore } from "./hints";
-import type { HintId } from "../lib/hints";
+import type { HintId } from "../lib/shortcuts/hints";
 import {
   TOUR_STEPS,
   ADVANCED_TOUR_STEPS,

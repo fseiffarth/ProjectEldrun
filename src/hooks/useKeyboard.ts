@@ -1,8 +1,10 @@
 import { useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { PLATFORM } from "../lib/dragPlatform";
-import { desktopOwnsSuperKey, probeSuperKeyOwnership } from "../lib/superKey";
+import { PLATFORM } from "../lib/window/dragPlatform";
+import { IS_MAC } from "../lib/platform";
+import { desktopOwnsSuperKey, probeSuperKeyOwnership } from "../lib/shortcuts/superKey";
 import { allGroups, findGroup, useTabsStore } from "../stores/tabs";
+import { closeTabWithConfirm } from "../lib/remote/closeRemoteTab";
 import { useProjectsStore } from "../stores/projects";
 import { useSettingsStore, stepZoom } from "../stores/settings";
 import { useSubwindowNavStore } from "../stores/subwindowNav";
@@ -10,16 +12,46 @@ import {
   projectStations,
   useKeyboardSteeringStore,
 } from "../stores/keyboardSteering";
+import { toggleRootConsole } from "../stores/rootOverlay";
 import {
   chordMatches,
   isLoneModifier,
   resolveChord,
   type ShortcutAction,
   type ShortcutMap,
-} from "../lib/shortcuts";
+} from "../lib/shortcuts/shortcuts";
 
 interface KeyboardOptions {
   onTogglePanels: () => void;
+}
+
+/** The close actions a chord may still trigger while a text field or terminal
+ *  has focus — on macOS, with ⌘, and nothing else (see
+ *  {@link editorMayTakeChord}). */
+const EDITOR_CLOSE_ACTIONS: ReadonlySet<ShortcutAction> = new Set<ShortcutAction>([
+  "closeTab",
+  "closeSubwindow",
+  "closeAllTabs",
+]);
+
+/** Whether `action` may be resolved for a keydown whose target is an editable
+ *  field (an input, the code editor, xterm's helper textarea).
+ *
+ *  Normally never: those keys are the field's. The one exception is ⌘W and its
+ *  close-family siblings on macOS, where ⌘ is never text editing — and where a
+ *  ⌘W the frontend let pass used to reach the default menu's Close Window and
+ *  quit the whole app from a focused terminal. The gate is strict on purpose:
+ *  `IS_MAC && metaKey && !ctrlKey`. ⌃W is readline's delete-word on a Mac too,
+ *  and on Linux and Windows Ctrl+W (and Super+W, which is `metaKey` there) must
+ *  keep reaching the terminal. Shared with the popout's handler. */
+export function editorMayTakeChord(action: ShortcutAction, e: KeyboardEvent): boolean {
+  return isMacCommandChord(e) && EDITOR_CLOSE_ACTIONS.has(action);
+}
+
+/** ⌘ without ⌃ on macOS — the only keydown from an editable target that is
+ *  worth resolving at all (see {@link editorMayTakeChord}). */
+export function isMacCommandChord(e: KeyboardEvent): boolean {
+  return IS_MAC && e.metaKey && !e.ctrlKey;
 }
 
 /** True when keystrokes belong to a text field (input/textarea/contenteditable)
@@ -45,7 +77,7 @@ export function isEditableTarget(target: EventTarget | null): boolean {
  * shadowed; we only `preventDefault` when we actually act, and never while a
  * text field (e.g. an inline tab rename) is focused.
  *
- * The navigation chords are user-rebindable (see `src/lib/shortcuts.ts` and the
+ * The navigation chords are user-rebindable (see `src/lib/shortcuts/shortcuts.ts` and the
  * "Keyboard Shortcuts" settings panel); the defaults below are applied when
  * `settings.keyboard_shortcuts` has no override for an action. F11 (OS
  * fullscreen), Super/F9 (panels — Super on Linux, F9 on Windows where the lone
@@ -118,6 +150,16 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
         e.stopPropagation();
         if (steering.active) steering.exit();
         else steering.enter();
+        return;
+      }
+      // The root console toggles from anywhere, a focused terminal included —
+      // and from inside steering mode, which it leaves (two modes owning the
+      // keyboard at once is one too many).
+      if (chordMatches(resolveChord("rootConsole", overrides), e)) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (steering.active) steering.exit();
+        toggleRootConsole();
         return;
       }
       if (!steering.active) return;
@@ -195,7 +237,7 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
           onTogglePanels();
           return;
         case "w": // close the active tab
-          if (tabs.activeKey) tabs.removeTab(tabs.activeKey);
+          if (tabs.activeKey) closeTabWithConfirm(tabs.activeKey);
           return;
         case "s": // open settings — same door the header ⚙ menu fires
           steering.exit();
@@ -301,13 +343,17 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
         return;
       }
 
-      // Don't steal keys from a focused text field (e.g. inline tab rename).
-      if (isEditableTarget(e.target)) return;
+      // Don't steal keys from a focused text field (e.g. inline tab rename) —
+      // except the macOS ⌘W family, which `editorMayTakeChord` admits.
+      const editable = isEditableTarget(e.target);
+      if (editable && !isMacCommandChord(e)) return;
 
       // Resolve the configured chord for an action (user override or default).
+      // From an editable target only the close family may match.
       const overrides = useSettingsStore.getState().settings
         ?.keyboard_shortcuts as ShortcutMap | undefined;
       const is = (action: ShortcutAction) =>
+        (!editable || editorMayTakeChord(action, e)) &&
         chordMatches(resolveChord(action, overrides), e);
 
       // Toggle app-internal fullscreen of the focused subwindow.
@@ -381,7 +427,7 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
       if (is("closeTab")) {
         if (tabs.activeKey) {
           e.preventDefault();
-          tabs.removeTab(tabs.activeKey);
+          closeTabWithConfirm(tabs.activeKey);
         }
         return;
       }

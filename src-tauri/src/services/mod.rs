@@ -31,21 +31,31 @@ pub mod agent_creds;
 // per-platform asset pick, staged download, per-platform install.
 pub mod app_update;
 pub mod big_folders;
+// Ask-once approval for project-supplied programs Eldrun runs on the host
+// (git hooks, latexmkrc, a project's own prettier), re-asked when they change.
+pub mod exec_trust;
 // In-app browser (TODO J #61): reader-mode fetch+sanitize, the live-page window
 // registry, and download quarantine. See docs/browser_plan_{b,c}.md.
 pub mod browser_engine;
 // CalDAV accounts (docs/caldav_plan.md): the WebDAV transport half. Hand-rolled
-// on reqwest + roxmltree; iCalendar itself is still parsed by src/lib/ics.ts.
+// on reqwest + roxmltree; iCalendar itself is still parsed by src/lib/calendar/ics.ts.
 pub mod caldav;
 // What the phone's composer may attach from the desktop: recent screenshots and
 // pictures by opaque id, copied into the project inbox on request.
 pub mod desktop_images;
+// What the background "Eldrun (dev)" freeze (`scripts/package-dev-auto.sh`) is
+// doing, read from that script's own state files for the header's dev-build
+// chip. Compiled to "no chip" unless the binary was built from a checkout.
+pub mod dev_build;
 pub mod codex_bind;
 // Codex's own SQLite thread store (`~/.codex/state_<n>.sqlite`), read
 // read-only for the model a Codex tab is running now that its releases
 // no longer write the JSONL rollout the model tag used to come from.
 pub mod codex_store;
+pub mod copilot;
 pub mod git_credentials;
+// The `.git` control files a sandbox keeps its occupant from writing (#158).
+pub mod git_guard;
 // The default branch (`main`) for repositories Eldrun creates, and the
 // unpublished-`master` rename that runs just before a publish.
 pub mod git_init;
@@ -61,10 +71,12 @@ pub mod mail_crypto;
 pub mod mail_engine;
 pub mod mail_filters;
 pub mod mail_pgp;
+pub mod mail_reader;
 pub mod mail_sanitize;
 pub mod mail_store;
 pub mod mobile_control;
 pub mod net_usage;
+pub mod opencode_store;
 pub mod openvpn;
 pub mod project_runtime;
 pub mod prompt_blame;
@@ -74,6 +86,9 @@ pub mod remote_credentials;
 pub mod remote_sync;
 pub mod remote_usage;
 pub mod restore_service;
+pub mod root_mcp;
+pub mod root_mcp_mail;
+pub mod root_mcp_review;
 // The project container bind-mounts host paths straight into a Linux container
 // and maps the host uid/gid, so it is Unix-only today *at runtime*: Windows
 // refuses at the `pty_spawn` call site (and `up_for_project` no-ops) rather
@@ -104,6 +119,13 @@ pub mod vm_proxy;
 // used by BOTH the mail client and the in-app browser. `mail_sanitize`
 // re-exports what it used to own.
 pub mod web_safety;
+// The WebKitGTK accessibility (AT-SPI) opt-out: WebKit 2.48's ATSPI text
+// handler aborts the whole web process on an out-of-range offset, which a
+// continuously rewriting UI hands it routinely. Installed before the first
+// webview, stripped from spawned children.
+pub mod webkit_a11y;
 pub mod window_service;
 pub mod window_state;
 pub mod worker_sync;
+
+pub mod text_completion;

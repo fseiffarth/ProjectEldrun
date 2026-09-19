@@ -16,7 +16,7 @@ vi.mock("../stores/windows", () => ({
 
 import { commitFileDrop } from "../components/tabs/commitFileDrop";
 import { useTabsStore, type GroupNode } from "../stores/tabs";
-import { type TabDrag, type EmbedCap } from "../stores/drag";
+import { type TabDrag, type EmbedCap } from "../stores/drag/drag";
 
 const PASS: EmbedCap = { os_embeddable: true, app_embeddable: true, resolved_exec: "mousepad" };
 

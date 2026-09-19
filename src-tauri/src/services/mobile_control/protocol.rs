@@ -14,6 +14,46 @@ pub const TERMINAL_PROTOCOL: &str = "eldrun-terminal.v1";
 /// with the row the phone is looking at. Rejected at the edge instead.
 pub const MAX_TAB_LABEL: usize = 120;
 
+/// The closed palette a tab colour comes from (#264), mirroring
+/// `src/lib/theme/tabColors.ts` and `mobile-web/src/tabColors.ts` — both surfaces
+/// resolve these ids to the same hex, and the sidecar validates against the
+/// list rather than accepting a colour.
+///
+/// A named id, not a CSS value, is the whole point of the boundary here: what
+/// crosses is one of nine words, so nothing a phone sends can reach a style
+/// attribute as anything but a hue this build already knows.
+pub const TAB_COLORS: [&str; 8] = [
+    "blue", "orange", "green", "purple", "yellow", "red", "teal", "indigo",
+];
+
+/// A colour a phone named that is not in [`TAB_COLORS`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnknownTabColor;
+
+/// Which side of the anchor tab a reordered tab lands on. A side rather than
+/// an index: the phone lists a scope's tabs in whatever order it is sorting by
+/// and never sees the layout groups underneath, so "before that one" is the
+/// only instruction it can give that means the same thing on both screens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TabPlace {
+    Before,
+    After,
+}
+
+/// A phone-supplied tab colour, resolved to what may be stored: `Ok(Some(id))`
+/// for a palette colour, `Ok(None)` for "clear it" (a `null` or empty body
+/// field), and an error for anything else. Unknown ids are refused rather than
+/// silently cleared: a phone asking for a colour this build does not have is a
+/// version seam worth reporting, not a request to remove one.
+pub fn clean_tab_color(raw: Option<&str>) -> Result<Option<String>, UnknownTabColor> {
+    match raw.map(str::trim) {
+        None | Some("") => Ok(None),
+        Some(id) if TAB_COLORS.contains(&id) => Ok(Some(id.to_string())),
+        Some(_) => Err(UnknownTabColor),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum CreateTabKind {
@@ -606,6 +646,30 @@ pub enum DesktopRequest {
         tmux_session: String,
         label: String,
     },
+    /// Paint one tab — agent or shell — with a palette colour, or clear it with
+    /// `None` (#264). Named by the same `project_id` + `tmux_session` pair the
+    /// rename uses, and carrying a palette id rather than a colour, so nothing
+    /// the phone sends can reach the window as raw CSS.
+    ColorTab {
+        request_id: String,
+        project_id: String,
+        tmux_session: String,
+        #[serde(default)]
+        color: Option<String>,
+    },
+    /// Move one tab — agent or shell — next to another inside the same scope,
+    /// as the desktop Agents view's own drag reorder does. Both tabs are named
+    /// by the `project_id` + `tmux_session` pair every other tab request uses,
+    /// so what crosses is two tmux names and a side, never an index into a
+    /// layout the phone cannot see. The order this permutes is the one the
+    /// catalog publishes and the "native" sort reads.
+    ReorderTab {
+        request_id: String,
+        project_id: String,
+        tmux_session: String,
+        anchor_tmux_session: String,
+        place: TabPlace,
+    },
     /// Close one tab — agent or shell — exactly as the desktop's own × does:
     /// non-destructively. The tab leaves the desktop's layout and its viewer
     /// dies; the tmux session behind it keeps running and stays reattachable
@@ -714,6 +778,8 @@ impl DesktopRequest {
             | Self::Schedules { request_id, .. }
             | Self::ScheduleMutate { request_id, .. }
             | Self::RenameTab { request_id, .. }
+            | Self::ColorTab { request_id, .. }
+            | Self::ReorderTab { request_id, .. }
             | Self::CloseTab { request_id, .. }
             | Self::Prompts { request_id, .. }
             | Self::PromptMutate { request_id, .. }
@@ -772,7 +838,7 @@ pub struct AgentTabStatus {
     /// `working`, `question`, or `done`.
     pub status: String,
     /// The model this tab last answered with, already shortened for display
-    /// by the desktop (`lib/agentModel`), when its transcript names one.
+    /// by the desktop (`lib/agents/agentModel`), when its transcript names one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// Desktop wall clock (ms since the epoch) of the tab's last output while
@@ -796,6 +862,28 @@ pub struct AgentTabSchedules {
     /// Desktop-local `YYYY-MM-DDTHH:MM` of the next run, when one is due.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next: Option<String>,
+}
+
+/// One prompt an agent tab was given, read off the agent's own transcript by
+/// the desktop (`agent_session::agent_session_recent_prompts`) — typed into the
+/// terminal, pasted, sent from the phone or delivered by a schedule alike.
+/// `at` is the transcript record's own ISO instant, absent when it carried none.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentTabPrompt {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
+}
+
+/// One agent tab's newest prompts, newest last, bounded by the desktop before
+/// they are sent. Another internal desktop-control row keyed by tmux name, like
+/// `AgentTabStatus` and `AgentTabSchedules`: the sidecar folds it onto the
+/// opaque public tab, and unlike a status it is published for a quiet tab too —
+/// what a session was last asked is what the phone's list is read for.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentTabPrompts {
+    pub tmux_session: String,
+    pub prompts: Vec<AgentTabPrompt>,
 }
 
 /// What one agent CLI answered when asked about its own quota.
@@ -902,6 +990,11 @@ pub enum DesktopResponse {
         /// field still answers a catalog request.
         #[serde(default)]
         schedules: Vec<AgentTabSchedules>,
+        /// Per-tab recent prompts, same shape again. Defaulted like the two
+        /// above, so an older desktop answers a catalog request with none and
+        /// the phone's cards simply carry no prompt line.
+        #[serde(default)]
+        prompts: Vec<AgentTabPrompts>,
     },
     /// Answer to [`DesktopRequest::Activity`]: the agent tabs of every eligible
     /// project that are working, waiting on a decision, or done. Keyed by tmux
@@ -910,6 +1003,10 @@ pub enum DesktopResponse {
     Activity {
         #[serde(default)]
         statuses: Vec<AgentTabStatus>,
+        /// The same per-tab prompt rows the catalog carries, for the tabs this
+        /// answer lists.
+        #[serde(default)]
+        prompts: Vec<AgentTabPrompts>,
     },
     Activated,
     Created {
@@ -937,6 +1034,18 @@ pub enum DesktopResponse {
     Renamed {
         label: String,
     },
+    /// The colour the desktop actually stored — `None` when the tab was cleared.
+    /// Answered rather than assumed, so the phone's swatch ring follows the
+    /// window instead of the tap.
+    Colored {
+        #[serde(default)]
+        color: Option<String>,
+    },
+    /// Acknowledges a [`DesktopRequest::ReorderTab`]. Carries nothing: the
+    /// desktop has already persisted its layout by the time it answers, so the
+    /// order the phone reconciles against is the one the route reads back out
+    /// of the catalog — the same authority every other tab row comes from.
+    Reordered,
     /// Acknowledges a [`DesktopRequest::CloseTab`]. Carries nothing: the tab is
     /// simply gone from the desktop's layout, and the phone drops the row it
     /// just closed rather than waiting for the catalog to agree.
@@ -1044,7 +1153,8 @@ impl TerminalEvent {
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentTabSchedules, AgentTabStatus, DesktopRequest, DesktopResponse, MobileAlertItem,
+        AgentTabPrompt, AgentTabPrompts, AgentTabSchedules, AgentTabStatus, DesktopRequest,
+        DesktopResponse, MobileAlertItem,
         MobileAlertsSnapshot,
         MobileMailView, MobilePromptInput, MobileScheduleInput, PromptMutation, ScheduleMutation,
     };
@@ -1074,6 +1184,13 @@ mod tests {
                 enabled: 2,
                 next: Some("2026-09-03T09:00".into()),
             }],
+            prompts: vec![AgentTabPrompts {
+                tmux_session: "eldrun-project-0--agent-123456789".into(),
+                prompts: vec![AgentTabPrompt {
+                    text: "fix the failing tests".into(),
+                    at: Some("2026-09-17T08:12:00Z".into()),
+                }],
+            }],
         };
         let response_json = serde_json::to_value(response).expect("serialize catalog response");
         assert_eq!(response_json["statuses"][0]["status"], "question");
@@ -1082,6 +1199,16 @@ mod tests {
         assert!(response_json["statuses"][0].get("done_at").is_none());
         assert_eq!(response_json["schedules"][0]["enabled"], 2);
         assert_eq!(response_json["schedules"][0]["next"], "2026-09-03T09:00");
+        // The prompt rows are keyed the same way and carry no id of their own:
+        // the sidecar is what turns the tmux name into the phone's tab id.
+        assert_eq!(
+            response_json["prompts"][0]["tmux_session"],
+            "eldrun-project-0--agent-123456789"
+        );
+        assert_eq!(
+            response_json["prompts"][0]["prompts"][0]["text"],
+            "fix the failing tests"
+        );
     }
 
     /// A desktop one build ahead of this sidecar must cost the phone the field

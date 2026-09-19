@@ -235,9 +235,10 @@ pub fn parse_version(text: &str) -> Option<String> {
 /// lower (`1.2` < `1.2.3`).
 ///
 /// Deliberately not a semver implementation — these strings come from other
-/// people's CLIs and are not promised to be semver. It exists to word a drift
-/// ("newer"/"older"), never to gate anything, so an exotic string it orders
-/// oddly costs an adjective and nothing else.
+/// people's CLIs and are not promised to be semver. It words a drift
+/// ("newer"/"older"), where an exotic string it orders oddly costs an
+/// adjective, and picks a launch flag ([`claude_takes_name_flag`]), where it
+/// costs the typed fallback that flag replaces — never a launch.
 pub fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     let split = |v: &str| {
@@ -510,9 +511,42 @@ impl VersionReport {
     }
 }
 
+/// First Claude Code release with `-n/--name <name>` — "Added `-n` /
+/// `--name <name>` CLI flag to set a display name for the session at startup"
+/// (Claude Code changelog, 2.1.76). An older CLI exits on the unknown option.
+pub const CLAUDE_NAME_FLAG_SINCE: &str = "2.1.76";
+
+/// Whether the Claude a probe last read accepts `--name` at launch.
+///
+/// Only a known version says yes: no probe, a failed one, or an unparsed line
+/// all answer no, and the caller keeps typing `/rename` instead. A stale entry
+/// still counts — an installed CLI moves forward, and 2.1.76 is far behind
+/// anything a daily probe has seen since.
+pub fn claude_takes_name_flag(seen: Option<&Seen>) -> bool {
+    seen.and_then(|seen| seen.version.as_deref())
+        .is_some_and(|v| version_cmp(v, CLAUDE_NAME_FLAG_SINCE) != std::cmp::Ordering::Less)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_takes_name_from_2_1_76_on() {
+        let seen = |v: Option<&str>| Seen {
+            version: v.map(str::to_string),
+            ..Seen::default()
+        };
+        assert!(claude_takes_name_flag(Some(&seen(Some("2.1.76")))));
+        // Numeric, not lexical: 2.1.276 is newer than 2.1.76.
+        assert!(claude_takes_name_flag(Some(&seen(Some("2.1.276")))));
+        assert!(claude_takes_name_flag(Some(&seen(Some("3.0.0")))));
+        assert!(!claude_takes_name_flag(Some(&seen(Some("2.1.75")))));
+        assert!(!claude_takes_name_flag(Some(&seen(Some("1.0.128")))));
+        // Nothing read, nothing claimed.
+        assert!(!claude_takes_name_flag(Some(&seen(None))));
+        assert!(!claude_takes_name_flag(None));
+    }
 
     /// The three shapes the recipes were verified against, and the one that
     /// must not be read as a version: `copilot`'s trailing commit hash.

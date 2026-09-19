@@ -46,12 +46,23 @@ pub async fn debug_app_resource_usage() -> Result<AppResourceUsage, String> {
     })
 }
 
+/// The background "Eldrun (dev)" freeze, for the header's dev-build chip; `None`
+/// when this binary was not built from a checkout (see `services::dev_build`).
+/// Blocking-pool, because it reads a log tail and runs `git rev-list`.
+#[tauri::command]
+pub async fn dev_build_status() -> Option<crate::services::dev_build::DevBuildStatus> {
+    tauri::async_runtime::spawn_blocking(crate::services::dev_build::status)
+        .await
+        .ok()
+        .flatten()
+}
+
 /// Resident size (KiB) of the largest webview *renderer* process under the app.
 ///
 /// The renderer (WebKitWebProcess on Linux) holds the whole UI's JS heap in a
 /// child process, and WebKitGTK does not implement `performance.memory`, so the
 /// renderer cannot measure its own heap — the memory watchdog
-/// (`src/lib/rendererWatchdog.ts`) reads it from the backend and reloads before
+/// (`src/lib/window/rendererWatchdog.ts`) reads it from the backend and reloads before
 /// it OOMs. Returns the MAX rather than the sum: the failure mode is one runaway
 /// renderer growing without bound (a 44 GB JS-heap leak observed 2026-07-31 in
 /// a long HMR-heavy dev session, which then OOM-aborted and got amplified by
@@ -157,7 +168,7 @@ static RENDERER_CLAIMS: std::sync::Mutex<Vec<(u32, String)>> = std::sync::Mutex:
 /// WebKitGTK API for it (`webkit_web_view_get_web_process_identifier`) is not
 /// exported by the 2.52 library this builds against, and WebView2/WKWebView
 /// have no equivalent — so the *windows* work it out themselves
-/// (`src/lib/rendererWatchdog.ts`): a window allocates and touches a large
+/// (`src/lib/window/rendererWatchdog.ts`): a window allocates and touches a large
 /// buffer while sampling this list before and after, and the one pid whose
 /// RSS jumped by that much is its own. It then records the answer here so every
 /// other window's readout can name it too. A claim is dropped the moment its

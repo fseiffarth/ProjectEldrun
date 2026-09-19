@@ -11,7 +11,7 @@ import {
   clipBox,
   type Box,
   type TrackMetrics,
-} from "../lib/customScrollbar";
+} from "../lib/theme/customScrollbar";
 
 /**
  * The scrollbar's arithmetic, which is the whole of what can be wrong about it

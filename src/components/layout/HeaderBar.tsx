@@ -1,10 +1,7 @@
-import { useEffect } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { PLATFORM } from "../../lib/dragPlatform";
+import { PLATFORM } from "../../lib/window/dragPlatform";
 import { IS_MAC } from "../../lib/platform";
-import { trackWindowMove } from "../../stores/windowMove";
+import { trackWindowMove } from "../../stores/drag/windowMove";
 import { Clock } from "../header/Clock";
 import { StatusCluster } from "../header/StatusCluster";
 import { MailIndicator } from "../header/MailIndicator";
@@ -16,12 +13,6 @@ import { ProjectSwitcher } from "./ProjectSwitcher";
 import { GlobalAppMenu } from "./GlobalAppMenu";
 import { LocalModelMenu } from "./LocalModelMenu";
 import { useT } from "../../lib/i18n";
-
-interface WorkspaceInfo {
-  label: string;
-  current_desktop: number | null;
-  desktop_count: number | null;
-}
 
 const NON_DRAG_SELECTOR = [
   "button",
@@ -54,12 +45,11 @@ function handleDrag(e: React.MouseEvent) {
 }
 
 export function HeaderBar() {
+  // (A `workspace_info` fetch whose answer was discarded, and a
+  // `workspace-changed` listener unsubscribed the moment it resolved, used to
+  // sit here. What the workspace backend can do is now said in Settings →
+  // Layout, from `workspace_capabilities`.)
   const t = useT();
-
-  useEffect(() => {
-    invoke<WorkspaceInfo>("workspace_info").catch(() => {});
-    listen<WorkspaceInfo>("workspace-changed", () => {}).then((fn) => fn());
-  }, []);
 
   return (
     <header

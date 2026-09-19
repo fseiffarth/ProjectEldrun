@@ -53,6 +53,8 @@ const { termSpy } = vi.hoisted(() => ({
     // Whatever xterm's own mousedown listener would have seen, recorded by a
     // stand-in listener the stub installs on the element it is "opened" into.
     seen: [] as MouseEvent[],
+    // The key handler the pane attached — the Ctrl+Shift chords live there.
+    keyHandler: null as null | ((e: KeyboardEvent) => boolean),
   },
 }));
 
@@ -76,7 +78,7 @@ vi.mock("@xterm/xterm", () => ({
     onTitleChange() {}
     onSelectionChange(cb: () => void) { termSpy.onSelection = cb; }
     buffer = { active: { length: 0, getLine: () => null } };
-    attachCustomKeyEventHandler() {}
+    attachCustomKeyEventHandler(h: (e: KeyboardEvent) => boolean) { termSpy.keyHandler = h; }
     getSelection() { return termSpy.selection; }
     focus() { termSpy.focus(); }
     paste(text: string) { termSpy.paste(text); }
@@ -188,6 +190,20 @@ describe("agent pane mouse gestures", () => {
     // Taken away from the selection service: no word-select, so copy-on-select
     // cannot overwrite the clipboard this very gesture is pasting.
     expect(termSpy.seen.some((e) => e.detail === 2)).toBe(false);
+    expect(ev.defaultPrevented).toBe(true);
+  });
+
+  it("Ctrl+Shift+V pastes once: the webview's own paste is cancelled", async () => {
+    await agentPane("p:chord");
+    const ev = new KeyboardEvent("keydown", { code: "KeyV", key: "V", ctrlKey: true, shiftKey: true, cancelable: true });
+    let handled: boolean | undefined;
+    await act(async () => {
+      handled = termSpy.keyHandler?.(ev);
+    });
+    expect(handled).toBe(false);
+    expect(termSpy.paste).toHaveBeenCalledTimes(1);
+    // Without this WebKitGTK runs its own paste command too, whose native
+    // `paste` event xterm's textarea turns into a second copy of the text.
     expect(ev.defaultPrevented).toBe(true);
   });
 

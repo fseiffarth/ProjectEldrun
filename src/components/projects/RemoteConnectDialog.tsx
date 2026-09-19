@@ -13,13 +13,13 @@ import { SavePasswordRow } from "./SavePasswordRow";
 import { rememberArg } from "./useSavedCredential";
 import { CarefulHostToggle } from "./CarefulHostToggle";
 import { HpcHostToggle } from "./HpcHostToggle";
-import { primaryTargetOf, targetOfSpec } from "../../lib/carefulHost";
+import { primaryTargetOf, targetOfSpec } from "../../lib/remote/carefulHost";
 import { CredentialPasteBar, sshPasteEntries, vpnPasteEntries } from "./CredentialPasteBar";
 import { useRemoteReconnect } from "./useRemoteReconnect";
-import { useConnectDialogStore } from "../../stores/connectDialog";
+import { useConnectDialogStore } from "../../stores/remote/connectDialog";
 import { useProjectsStore, disconnectRemote } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
-import { useVpnSectionVisible } from "../../stores/vpnStatus";
+import { useVpnSectionVisible } from "../../stores/remote/vpn/vpnStatus";
 import { VpnTunnelUpNotice } from "../common/VpnTunnelUpNotice";
 import { formatRemoteTarget, resolveLocalMirror, type ProjectEntry } from "../../types";
 import { useT } from "../../lib/i18n";
@@ -918,7 +918,7 @@ function RemoteConnectDialogInner({
               kind of machine even when they belong to the same cluster. */}
           <CarefulHostToggle target={carefulTarget} />
           {/* The stronger statement about the same machine: careful is how much
-              Eldrun reads, this is what it is allowed to do (`lib/hpcHost.ts`). */}
+              Eldrun reads, this is what it is allowed to do (`lib/remote/hpc/hpcHost.ts`). */}
           <HpcHostToggle target={carefulTarget} />
         </div>
 

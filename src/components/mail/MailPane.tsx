@@ -1,12 +1,14 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { MAIL_PAGE_SIZE, unreadTotal, useMailStore } from "../../stores/mail";
 import { useSettingsStore } from "../../stores/settings";
-import { onMailSync, mailAiAllowed } from "../../lib/mail";
+import { onMailSync, mailAiAllowed, planMailDelete } from "../../lib/mail";
 import { useT } from "../../lib/i18n";
 import { Toggle } from "../common/Toggle";
 import { UntestedTag } from "../common/UntestedTag";
-import type { MailAccount, MailHeader, MailPriority } from "../../types/mail";
-import { MailList } from "./MailList";
+import { stripFormatControls } from "../../lib/textSafety";
+import { useDialogs } from "../common/PromptDialogs";
+import type { MailAccount, MailHeader, MailPriority, MailSort } from "../../types/mail";
+import { MailList, type MailCheckMode } from "./MailList";
 import { MailMessageView } from "./MailMessageView";
 import { MailAccountDialog } from "./MailAccountDialog";
 import { MailComposeDialog, type ComposeMode } from "./MailComposeDialog";
@@ -47,6 +49,10 @@ export interface MailPaneProps {
 
 export function MailPane({ visible }: MailPaneProps) {
   const t = useT();
+  // The app's own confirm, not `window.confirm`: WebKitGTK draws that as an
+  // origin-titled browser alert, and the one question here worth asking is the
+  // irreversible delete — the last place to show a system box.
+  const { confirmAction, dialogs } = useDialogs();
   const settings = useSettingsStore((s) => s.settings);
   const updateSettings = useSettingsStore((s) => s.updateSettings);
 
@@ -58,6 +64,7 @@ export function MailPane({ visible }: MailPaneProps) {
   const selectedPriority = useMailStore((s) => s.selectedPriority);
   const priorityCounts = useMailStore((s) => s.priorityCounts);
   const selectedMessageId = useMailStore((s) => s.selectedMessageId);
+  const checkedIds = useMailStore((s) => s.checkedIds);
   const headers = useMailStore((s) => s.headers);
   const headerTotal = useMailStore((s) => s.headerTotal);
   const headerScanned = useMailStore((s) => s.headerScanned);
@@ -65,6 +72,7 @@ export function MailPane({ visible }: MailPaneProps) {
   const query = useMailStore((s) => s.query);
   const sort = useMailStore((s) => s.sort);
   const sortDesc = useMailStore((s) => s.sortDesc);
+  const unreadOnly = useMailStore((s) => s.unreadOnly);
   const body = useMailStore((s) => s.body);
   const loadingHeaders = useMailStore((s) => s.loadingHeaders);
   const loadingBody = useMailStore((s) => s.loadingBody);
@@ -73,6 +81,8 @@ export function MailPane({ visible }: MailPaneProps) {
 
   const [accountDialog, setAccountDialog] = useState<{ account: MailAccount | null } | null>(null);
   const [compose, setCompose] = useState<{ mode: ComposeMode; toAddress?: string } | null>(null);
+  const agentDrafts = useMailStore((s) => s.agentDrafts);
+  const pendingDraft = useMailStore((s) => s.pendingDraft);
   // The local store's encryption. Read once when the pane first becomes visible
   // rather than on mount: the read *opens the store* (that is what resolves the
   // unlock), and a pane that is mounted-but-hidden must not be the thing that
@@ -116,6 +126,16 @@ export function MailPane({ visible }: MailPaneProps) {
     void useMailStore.getState().loadAccounts({ preferred: settings?.mail_default_account });
   }, [settings?.mail_default_account]);
 
+  // Agent-written drafts (root MCP). A local read; an event keeps it current
+  // while the pane is up (`RootOverlayHost` re-reads on `root-mcp-changed`).
+  // Keyed on `encryption` too: that read is what opens the store, and the list
+  // command never opens it itself, so a draft from an earlier run appears once
+  // the store is up.
+  useEffect(() => {
+    if (visible === false) return;
+    void useMailStore.getState().loadAgentDrafts();
+  }, [visible, encryption]);
+
   // Sync progress. Installed on mount so a sync started elsewhere (another
   // window, the header's interval check) still moves this pane's strip. The
   // `mail:new` half is deliberately NOT here: arrivals are announced by the
@@ -149,20 +169,130 @@ export function MailPane({ visible }: MailPaneProps) {
   const syncState = selectedAccountId ? sync[selectedAccountId] : undefined;
   const syncing = syncState?.phase === "start" || syncState?.phase === "folder" || syncState?.phase === "headers";
 
-  const toggleFlag = (h: MailHeader) =>
-    void useMailStore.getState().setFlag(h.id, "flagged", !h.flagged);
-  const setPriority = (h: MailHeader, priority: MailPriority | null) =>
-    void useMailStore.getState().setPriority(h.id, priority);
+  // Every `MailList` callback is identity-stable. `MailList` is `memo`ed, and
+  // this pane re-renders on store writes the list never shows (sync phases, a
+  // loading body, an error) — one fresh arrow would re-render all 100 rows on
+  // each. The actions go through `getState()` and act on the row they are
+  // handed, so they close over nothing; `accountLabel` reads `accounts` and is
+  // rebuilt exactly when that changes.
+  const toggleFlag = useCallback(
+    (h: MailHeader) => void useMailStore.getState().setFlag(h.id, "flagged", !h.flagged),
+    [],
+  );
+  const setPriority = useCallback(
+    (h: MailHeader, priority: MailPriority | null) =>
+      void useMailStore.getState().setPriority(h.id, priority),
+    [],
+  );
   // Resolve a row's account to something a person recognizes. Falls back to
   // nothing rather than to the id: an account deleted since the mark was made
   // leaves rows whose `account_id` names no mailbox, and a raw uuid on a row
   // would be worse than a blank line.
-  const accountLabel = (h: MailHeader) => {
-    const account = accounts.find((a) => a.id === h.account_id);
-    return account ? account.label || account.address : undefined;
-  };
-  const toggleSeen = (h: MailHeader) =>
-    void useMailStore.getState().setFlag(h.id, "seen", !h.seen);
+  const accountLabel = useCallback(
+    (h: MailHeader) => {
+      const account = accounts.find((a) => a.id === h.account_id);
+      return account ? account.label || account.address : undefined;
+    },
+    [accounts],
+  );
+  const toggleSeen = useCallback(
+    (h: MailHeader) => void useMailStore.getState().setFlag(h.id, "seen", !h.seen),
+    [],
+  );
+  const selectMessage = useCallback(
+    (id: string) => void useMailStore.getState().selectMessage(id),
+    [],
+  );
+  const checkRow = useCallback((h: MailHeader, mode: MailCheckMode, order: string[]) => {
+    const store = useMailStore.getState();
+    if (mode === "toggle") store.toggleChecked(h.id);
+    else if (mode === "range") store.checkRange(h.id, order);
+    else store.checkOnly(h.id);
+  }, []);
+  const clearChecks = useCallback(() => useMailStore.getState().clearChecked(), []);
+  // Read (locally) the folders of every account these rows come from. A folder
+  // list is what tells a delete where to go, and in a cross-account priority
+  // list only the *selected* account's has been read — so without this the plan
+  // would call another account's mail unrecoverable.
+  const ensureFoldersFor = useCallback(async (rows: MailHeader[]) => {
+    for (const accountId of new Set(rows.map((h) => h.account_id))) {
+      if (!useMailStore.getState().foldersByAccount[accountId]) {
+        await useMailStore.getState().loadFolders(accountId, false);
+      }
+    }
+  }, []);
+  // How a delete of these rows would split. The list needs it to word its menu;
+  // the store recomputes it from the same function when the delete runs, rather
+  // than being handed this answer — one pure function, two callers, so the
+  // sentence the user reads and the commands that go out cannot disagree.
+  const deletePlan = useCallback((rows: MailHeader[]) => {
+    const folders = useMailStore.getState().foldersByAccount;
+    let trashed = 0;
+    let purged = 0;
+    for (const group of planMailDelete(rows, folders)) {
+      if (group.trashFolderId) trashed += group.messageIds.length;
+      else purged += group.messageIds.length;
+    }
+    return { trashed, purged };
+  }, []);
+  // The confirmation is here and not in the store, because only the permanent
+  // half needs one: a move to Trash is undone on the server by dragging the
+  // message back, so asking about it would make the answer meaningless on the
+  // one delete that actually destroys something.
+  const deleteRows = useCallback(
+    (rows: MailHeader[]) => {
+      if (rows.length === 0) return;
+      const run = async () => {
+        // Every account's folders in hand before the question: a cross-account list can hold
+        // rows from an account whose folders were never read, and the plan would
+        // then find no Trash folder and ask about a permanent delete that is in
+        // fact a move. A local read, so it costs no socket.
+        await ensureFoldersFor(rows);
+        const purged = planMailDelete(rows, useMailStore.getState().foldersByAccount)
+          .filter((g) => !g.trashFolderId)
+          .reduce((n, g) => n + g.messageIds.length, 0);
+        if (
+          purged > 0 &&
+          !(await confirmAction({
+            title: t("mail.deleteForever"),
+            body: t("mail.confirmDeleteForever", { count: purged }),
+            confirmLabel: t("mail.deleteForever"),
+            danger: true,
+          }))
+        ) {
+          return;
+        }
+        await useMailStore.getState().deleteMessages(rows.map((h) => h.id));
+      };
+      void run();
+    },
+    [confirmAction, ensureFoldersFor, t],
+  );
+  // The same read, ahead of any click, so the *menu's* wording is right too —
+  // it is drawn synchronously and cannot await anything. Only ever fires for an
+  // account whose folders have never been read (a cross-account priority list),
+  // and each read is local.
+  useEffect(() => {
+    if (visible === false) return;
+    void ensureFoldersFor(headers);
+  }, [visible, headers, foldersByAccount, ensureFoldersFor]);
+  const setSort = useCallback(
+    (next: MailSort, desc: boolean) => void useMailStore.getState().setSort(next, desc),
+    [],
+  );
+  const setQuery = useCallback(
+    (next: string) => void useMailStore.getState().setQuery(next),
+    [],
+  );
+  const setUnreadOnly = useCallback(
+    (next: boolean) => void useMailStore.getState().setUnreadOnly(next),
+    [],
+  );
+  const clearFilters = useCallback(() => void useMailStore.getState().clearFilters(), []);
+  const loadPage = useCallback(
+    (offset: number) => void useMailStore.getState().stepPage(offset),
+    [],
+  );
 
   // The unread count is the *folder's*, not this page's: the button acts on the
   // whole folder, so counting the 100 rows on screen would understate what the
@@ -480,15 +610,34 @@ export function MailPane({ visible }: MailPaneProps) {
             read off the thing being ordered rather than off a dropdown at the
             other end of the toolbar. What stays this pane's job is passing the
             store's `sort`/`sortDesc` down and handing the answer back. */}
-        <input
-          className="mail-input mail-search"
-          type="search"
-          placeholder={t("mail.searchPlaceholder")}
-          value={query}
-          disabled={!selectedFolderId && !selectedPriority}
-          onChange={(e) => void useMailStore.getState().setQuery(e.target.value)}
-        />
       </div>
+
+      {agentDrafts.length > 0 && (
+        <div className="mail-agent-drafts" aria-label={t("mail.agentDrafts")}>
+          <span className="mail-agent-drafts-title">
+            {t("mail.agentDrafts")} <UntestedTag />
+          </span>
+          {agentDrafts.map((d) => (
+            <button
+              key={d.id}
+              type="button"
+              className="mail-agent-draft-row"
+              title={t(d.origin === "reader" ? "mail.agentDraftReaderBanner" : "mail.agentDraftBanner")}
+              onClick={() => void useMailStore.getState().openAgentDraft(d)}
+            >
+              <span className={`mail-agent-mark${d.origin === "reader" ? " reader" : ""}`}>
+                {t(d.origin === "reader" ? "mail.agentMarkReader" : "mail.agentMark")}
+              </span>
+              <span className="mail-agent-draft-subject">
+                {stripFormatControls(d.subject) || t("mail.noSubject")}
+              </span>
+              <span className="mail-agent-draft-account">
+                {accounts.find((a) => a.id === d.account_id)?.address ?? ""}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
 
       {error && (
         <div className="mail-error-strip">
@@ -575,14 +724,19 @@ export function MailPane({ visible }: MailPaneProps) {
             <MailList
               headers={headers}
               selectedId={selectedMessageId}
+              checkedIds={checkedIds}
               loading={loadingHeaders}
-              onSelect={(id) => void useMailStore.getState().selectMessage(id)}
+              onSelect={selectMessage}
+              onCheck={checkRow}
+              onClearChecks={clearChecks}
+              onDelete={deleteRows}
+              deletePlan={deletePlan}
               onToggleFlag={toggleFlag}
               onToggleSeen={toggleSeen}
               onSetPriority={setPriority}
               sort={sort}
               sortDesc={sortDesc}
-              onSort={(next, desc) => void useMailStore.getState().setSort(next, desc)}
+              onSort={setSort}
               // Only in a priority list: there the rail cannot say which mailbox
               // a row came from, and in a folder it already does.
               {...(selectedPriority ? { accountLabel } : {})}
@@ -590,7 +744,12 @@ export function MailPane({ visible }: MailPaneProps) {
               pageSize={MAIL_PAGE_SIZE}
               total={headerTotal}
               scanned={headerScanned}
-              onPage={(offset) => void useMailStore.getState().loadPage(offset)}
+              onPage={loadPage}
+              query={query}
+              unreadOnly={unreadOnly}
+              onQuery={setQuery}
+              onUnreadOnly={setUnreadOnly}
+              onClearFilters={clearFilters}
             />
             <MailMessageView
               header={selectedHeader}
@@ -643,6 +802,8 @@ export function MailPane({ visible }: MailPaneProps) {
             // the whole feature is switched on; otherwise there is nothing to set.
             const isNew = accountDialog.account === null;
             setAccountDialog(null);
+            // Saved settings are what a paused background check waits for.
+            useMailStore.getState().clearSyncState(id);
             void useMailStore
               .getState()
               .reloadAccounts(id)
@@ -656,6 +817,19 @@ export function MailPane({ visible }: MailPaneProps) {
           }}
         />
       )}
+      {pendingDraft && (
+        <MailComposeDialog
+          key={pendingDraft.id}
+          accounts={accounts}
+          accountId={pendingDraft.account_id}
+          mode="new"
+          draft={pendingDraft}
+          onClose={() => {
+            void useMailStore.getState().openAgentDraft(null);
+            void useMailStore.getState().loadAgentDrafts();
+          }}
+        />
+      )}
       {compose && selectedAccountId && (
         <MailComposeDialog
           accounts={accounts}
@@ -666,6 +840,7 @@ export function MailPane({ visible }: MailPaneProps) {
           onClose={() => setCompose(null)}
         />
       )}
+      {dialogs}
     </div>
   );
 }

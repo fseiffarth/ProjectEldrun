@@ -31,7 +31,7 @@ import {
   useProjectsStore,
 } from "../../stores/projects";
 import { Dropdown } from "../common/Dropdown";
-import { runInstallInTab, PROVIDER_CLI_INSTALL } from "../../lib/installCommand";
+import { runInstallInTab, containerBuildShell, PROVIDER_CLI_INSTALL } from "../../lib/installCommand";
 import { UntestedTag } from "../common/UntestedTag";
 import { IS_WINDOWS, IS_MAC } from "../../lib/platform";
 import { useT } from "../../lib/i18n";
@@ -891,7 +891,7 @@ export function ProjectDialog({
             { projectId: project.id },
           );
           if (pf.status === "image_missing" && pf.build_command) {
-            runInstallInTab(`container image ${pf.image}`, pf.build_command, "bash");
+            runInstallInTab(`container image ${pf.image}`, pf.build_command, containerBuildShell());
           }
         } catch {
           // Docker missing/down surfaces at the first tab spawn; not worth

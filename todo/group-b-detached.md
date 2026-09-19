@@ -1,5 +1,16 @@
 ## Group B — Detached Windows: Parity & Cross-Window Correctness
 
+- [ ] **GNOME Wayland monitor retention (2026-09-17): live verification.**
+  Scope switches now minimize popouts and present their existing surfaces on
+  return. Hiding destroyed GTK's Wayland toplevel and lost GNOME's monitor
+  placement; desktop coordinates cannot restore it. Parking requests are
+  tracked independently of GTK's unreliable minimized flag, including renderer
+  polling/streaming and bounds-save gating. Minimized popouts may remain in
+  GNOME's overview/window switcher. After a backend restart, place two popouts
+  on different monitors, switch projects and back repeatedly, then try root/box
+  scopes and unplugging a monitor while parked. Check placement, size, focus,
+  and that every popout returns. Not run live.
+
 *Created 2026-09-01 from a two-agent code audit (one agent for feature parity
 inside a popout, one for every cross-window action), each finding then
 spot-checked by hand against the tree.*
@@ -26,7 +37,7 @@ actions), **`src/stores/detachedContext.ts`** (new — the popout's store seam),
 `src/components/tabs/detachedDropTargets.ts`,
 **`src/components/tabs/detachedDragNet.ts`** (new), `src/components/tabs/TabPane.tsx`,
 `src/components/terminal/TerminalView.tsx`, `src/stores/settings.ts`,
-`src/stores/activity.ts`, `src/stores/usage.ts`, `src/stores/hpcGuardPrompt.ts`,
+`src/stores/activity.ts`, `src/stores/usage.ts`, `src/stores/remote/hpc/hpcGuardPrompt.ts`,
 `src-tauri/src/commands/subwindow.rs`, `src-tauri/src/commands/terminal.rs`,
 `src-tauri/src/terminal/mod.rs`, `src-tauri/src/services/project_runtime.rs`,
 `src-tauri/src/lib.rs` (`WindowEvent::Destroyed`).*
@@ -743,7 +754,7 @@ writes are now forwarded rather than dropped.
      unconditionally and is a no-op otherwise — which is how the backend has
      always cleared the main window's (`restore_main_window`: `let _ =
      win.set_fullscreen(false)`, no read, no branch). What must not be cleared
-     is now the pure `mayClearStrayFullscreen` (`lib/strayFullscreen`): the
+     is now the pure `mayClearStrayFullscreen` (`lib/window/strayFullscreen`): the
      page's own DOM fullscreen and a talk in progress hold it, macOS is
      excluded. And the title-bar press self-heals, because the guard fires on
      resize and focus-regain and a window already stuck *and* already focused

@@ -37,7 +37,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invokeTrusted } from "../../../lib/execTrust";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import { UntestedTag } from "../../common/UntestedTag";
@@ -100,7 +100,7 @@ import {
   texPathForDeck,
   titleFromPath,
 } from "../../../lib/viewers/deck/template";
-import { getTexCapability, type TexCompileResult } from "../../../lib/viewers/tex";
+import { getTexCapability, type TexCompileResult } from "../../../lib/viewers/tex/tex";
 import { loadBase, renderPage, renderPdfPageToPng } from "./deckBase";
 import {
   dirOf,
@@ -992,7 +992,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
           scope,
         );
       }
-      const res = await invoke<TexCompileResult>("compile_tex", { path: texPath });
+      const res = await invokeTrusted<TexCompileResult>("compile_tex", { path: texPath });
       if (!res.success) {
         setNotice(
           t("deckView.starterTexFailed", { log: res.log.trim().split("\n").slice(-3).join(" ") }),
@@ -1127,7 +1127,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
     setError(null);
     try {
       await writeFileBytes(texAbs, new TextEncoder().encode(starterTexFigure()), scope);
-      const res = await invoke<TexCompileResult>("compile_tex", { path: texAbs });
+      const res = await invokeTrusted<TexCompileResult>("compile_tex", { path: texAbs });
       if (!res.success || !res.pdf_path) {
         setNotice(
           t("deckView.texFigureFailed", { log: res.log.trim().split("\n").slice(-3).join(" ") }),
@@ -1192,7 +1192,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
       markTexBusy(obj.id, true);
       setError(null);
       try {
-        const res = await invoke<TexCompileResult>("compile_tex", { path: texAbs });
+        const res = await invokeTrusted<TexCompileResult>("compile_tex", { path: texAbs });
         if (!res.success || !res.pdf_path) {
           setNotice(t("deckView.recompileFailed", { log: res.log.trim().split("\n").slice(-3).join(" ") }));
           return;

@@ -123,9 +123,9 @@ export interface Heap {
   context: typeof import("../stores/detachedContext");
   projects: typeof import("../stores/projects");
   boxes: typeof import("../stores/boxes");
-  remoteStatus: typeof import("../stores/remoteStatus");
+  remoteStatus: typeof import("../stores/remote/remoteStatus");
   usage: typeof import("../stores/usage");
-  runHostPref: typeof import("../stores/runHostPref");
+  runHostPref: typeof import("../stores/remote/runHostPref");
 }
 
 /**
@@ -146,9 +146,9 @@ export async function loadHeap(): Promise<Heap> {
       import("../stores/detachedContext"),
       import("../stores/projects"),
       import("../stores/boxes"),
-      import("../stores/remoteStatus"),
+      import("../stores/remote/remoteStatus"),
       import("../stores/usage"),
-      import("../stores/runHostPref"),
+      import("../stores/remote/runHostPref"),
     ]);
   return {
     tabs,

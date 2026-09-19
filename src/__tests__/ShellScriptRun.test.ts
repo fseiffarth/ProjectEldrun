@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { shellScriptRunPlan } from "../lib/shellScriptRun";
+import { shellRunCommand, shellScriptRunPlan } from "../lib/terminal/shellScriptRun";
 import type { ProjectEntry } from "../types";
 
 const remoteProject: ProjectEntry = {
@@ -73,7 +73,7 @@ describe("shell script run planning", () => {
   });
 
   it("keeps a mirror-browsed script LOCAL even with a worker chosen", () => {
-    // The browsed side is dominant (`lib/pythonRun`'s `pythonRunPlan` carries the
+    // The browsed side is dominant (`lib/terminal/pythonRun`'s `pythonRunPlan` carries the
     // reasoning): the preference is persisted per project, so it is normally set
     // from some earlier session on the host side, and it must not reach back and
     // redirect a Run of a file the user is looking at on the local mirror.
@@ -135,5 +135,24 @@ describe("shell script run planning", () => {
         interp: "bash",
       }),
     ).toBeNull();
+  });
+
+  it("appends the run arguments verbatim after the quoted script", () => {
+    const plan = shellScriptRunPlan({
+      project: remoteProject,
+      treeRoot: "/state/demoproj",
+      syncSource: "remote",
+      scriptPath: "/home/alice/demoproj/train.sh",
+      interp: "bash",
+      args: '  --epochs 5 "out dir"  ',
+    });
+
+    expect(plan?.initialInput).toBe(`bash 'train.sh' --epochs 5 "out dir"`);
+  });
+
+  it("leaves the command bare when the arguments are blank", () => {
+    expect(shellRunCommand("bash", "a.sh", "   ")).toBe("bash 'a.sh'");
+    expect(shellRunCommand("powershell", "b.ps1", "-Name x")).toBe("powershell -File 'b.ps1' -Name x");
+    expect(shellRunCommand("cmd", "c.bat", "one")).toBe("cmd /c 'c.bat' one");
   });
 });

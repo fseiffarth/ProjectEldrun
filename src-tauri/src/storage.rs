@@ -200,6 +200,45 @@ pub fn project_session_dir(project_id: &str) -> std::path::PathBuf {
     sessions_root().join(project_key(project_id))
 }
 
+/// Re-point every string in `value` that names `old` or a path under it at the
+/// same place under `new`, in place. Returns whether anything changed.
+///
+/// Used after a project folder is renamed, so the registry entry, its
+/// `project.json` and its saved tab layout (cwds, open files, a pinned venv
+/// interpreter) follow the folder without each field being listed here. A match
+/// is a whole path component: `/p/foo` rewrites `/p/foo` and `/p/foo/x`, never
+/// `/p/foobar`.
+pub fn rewrite_path_prefix(value: &mut serde_json::Value, old: &str, new: &str) -> bool {
+    use serde_json::Value;
+    if old.is_empty() {
+        return false;
+    }
+    match value {
+        Value::String(s) => {
+            let rest = if s.as_str() == old {
+                Some("")
+            } else {
+                s.strip_prefix(old)
+                    .filter(|rest| rest.starts_with('/') || rest.starts_with('\\'))
+            };
+            match rest {
+                Some(rest) => {
+                    *s = format!("{new}{rest}");
+                    true
+                }
+                None => false,
+            }
+        }
+        Value::Array(items) => items
+            .iter_mut()
+            .fold(false, |changed, item| rewrite_path_prefix(item, old, new) | changed),
+        Value::Object(map) => map
+            .values_mut()
+            .fold(false, |changed, item| rewrite_path_prefix(item, old, new) | changed),
+        _ => false,
+    }
+}
+
 fn now_secs() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
@@ -278,6 +317,26 @@ pub(crate) fn is_leap_year(y: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── rewrite_path_prefix ────────────────────────────────────────────────
+
+    #[test]
+    fn rewrite_path_prefix_follows_whole_components_only() {
+        let mut v = serde_json::json!({
+            "directory": "/p/foo",
+            "tabs": [{ "cwd": "/p/foo/sub", "embedPath": "/p/foobar/x.md" }],
+            "python": "/p/foo\\venv\\python.exe",
+            "n": 3,
+        });
+        assert!(rewrite_path_prefix(&mut v, "/p/foo", "/p/bar"));
+        assert_eq!(v["directory"], "/p/bar");
+        assert_eq!(v["tabs"][0]["cwd"], "/p/bar/sub");
+        assert_eq!(v["tabs"][0]["embedPath"], "/p/foobar/x.md");
+        assert_eq!(v["python"], "/p/bar\\venv\\python.exe");
+        assert_eq!(v["n"], 3);
+        assert!(!rewrite_path_prefix(&mut v, "/p/foo", "/p/bar"));
+        assert!(!rewrite_path_prefix(&mut v, "", "/x"));
+    }
 
     // ── today_utc ──────────────────────────────────────────────────────────
 

@@ -32,9 +32,9 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(() => Promise.resolve(
 
 import { VpnIndicator } from "../components/header/VpnIndicator";
 import { useProjectsStore, logoutRemote } from "../stores/projects";
-import { useRemoteStatusStore } from "../stores/remoteStatus";
-import { markVpnConnected, useVpnStatusStore } from "../stores/vpnStatus";
-import { useVpnPromptStore } from "../stores/vpnPrompt";
+import { useRemoteStatusStore } from "../stores/remote/remoteStatus";
+import { markVpnConnected, useVpnStatusStore } from "../stores/remote/vpn/vpnStatus";
+import { useVpnPromptStore } from "../stores/remote/vpn/vpnPrompt";
 import { useSettingsStore } from "../stores/settings";
 import type { ProjectEntry } from "../types";
 

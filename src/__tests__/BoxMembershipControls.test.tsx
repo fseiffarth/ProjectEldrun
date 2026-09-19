@@ -17,7 +17,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 }));
 
 import { ProjectSwitcher } from "../components/layout/ProjectSwitcher";
-import { TRASH_PROJECT_ID } from "../lib/trashProject";
+import { TRASH_PROJECT_ID } from "../lib/projects/trashProject";
 import { useBoxesStore } from "../stores/boxes";
 import { useHeaderHoverMenuStore } from "../stores/headerHoverMenu";
 import { useProjectsStore } from "../stores/projects";

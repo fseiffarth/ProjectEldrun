@@ -60,6 +60,38 @@ pub fn binary_on_path(bin: &str) -> bool {
     resolve_executable(bin).is_some()
 }
 
+/// True when a failed `rename` failed only because source and destination sit
+/// on different filesystems or volumes — the one failure a copy-then-delete
+/// fallback is the right answer to. Anything else (a file held open on Windows,
+/// a permission refusal, a TCC-protected folder on macOS) must surface: a copy
+/// would either fail the same way halfway through or succeed and then leave the
+/// source behind, i.e. a duplicate the user never asked for.
+///
+/// `ErrorKind::CrossesDevices` maps both `EXDEV` and `ERROR_NOT_SAME_DEVICE`.
+/// The raw-code arms are a belt-and-braces fallback and are deliberately
+/// cfg-gated per OS family: raw 17 is `ERROR_NOT_SAME_DEVICE` on Windows but
+/// `EEXIST` on Linux and macOS, so comparing it across OSes would turn "the
+/// destination already exists" into a silent copy over it.
+pub fn is_cross_device(e: &std::io::Error) -> bool {
+    if e.kind() == std::io::ErrorKind::CrossesDevices {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        // EXDEV is 18 on Linux and macOS alike.
+        e.raw_os_error() == Some(18)
+    }
+    #[cfg(windows)]
+    {
+        // ERROR_NOT_SAME_DEVICE.
+        e.raw_os_error() == Some(17)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        false
+    }
+}
+
 /// Standard directories macOS package managers (Homebrew, MacTeX) install CLI
 /// tools into but which a Finder/Dock-launched GUI app's inherited PATH omits —
 /// so a tool can be installed yet unreachable by bare name. The macOS analogue of
@@ -85,9 +117,24 @@ fn supplemental_path_dirs_for(
         home.join(".local").join("bin"),
         home.join(".cargo").join("bin"),
         home.join(".opencode").join("bin"),
+        // OpenClaw's installer puts only its `openclaw` wrapper here (the
+        // private Node it bundles lives under `tools/`), so nothing is shadowed.
+        home.join(".openclaw").join("bin"),
     ];
     match os {
-        OsKind::Macos => dirs.extend(MACOS_EXTRA_DIRS.iter().map(PathBuf::from)),
+        OsKind::Macos => {
+            dirs.extend(MACOS_EXTRA_DIRS.iter().map(PathBuf::from));
+            // Container CLIs a Finder-launched app cannot see: Docker Desktop's
+            // per-user install (no admin rights, nothing in /usr/local/bin),
+            // OrbStack's, and the CLI inside Docker.app itself. Mac-only on
+            // purpose — the common list above is prepended on Linux too, where an
+            // extra dir would change which binary wins.
+            dirs.push(home.join(".docker").join("bin"));
+            dirs.push(home.join(".orbstack").join("bin"));
+            dirs.push(PathBuf::from(
+                "/Applications/Docker.app/Contents/Resources/bin",
+            ));
+        }
         OsKind::Windows => {
             if let Some(local) = local_app_data {
                 let local = PathBuf::from(local);
@@ -153,7 +200,82 @@ pub fn extra_path_dirs() -> Vec<PathBuf> {
         std::env::var_os("APPDATA").as_deref(),
         std::env::var_os("ProgramFiles").as_deref(),
     ));
+    if OsKind::current() != OsKind::Windows {
+        dirs.extend(nvm_default_node_bin());
+    }
     dirs
+}
+
+/// `v24.19.0` / `24.19.0` → `(24, 19, 0)`; a missing minor/patch reads as 0.
+pub fn parse_node_version(raw: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = raw.trim().trim_start_matches('v').splitn(3, '.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next().map_or(Some(0), |p| p.parse().ok())?;
+    let patch = parts.next().map_or(Some(0), |p| p.parse().ok())?;
+    Some((major, minor, patch))
+}
+
+/// The `bin` dir of nvm's default Node, the one an interactive shell gets once
+/// `nvm.sh` runs from its rc file. Eldrun's own processes never source that, so
+/// without this a Node installed through nvm (the Manage Agents Node helper's
+/// route) stays invisible to agent installs and to the helper's recheck, which
+/// would keep finding an older system Node instead.
+fn nvm_default_node_bin() -> Option<PathBuf> {
+    let nvm_dir = std::env::var_os("NVM_DIR")
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir().join(".nvm"));
+    let versions = nvm_dir.join("versions").join("node");
+    let installed: Vec<String> = std::fs::read_dir(&versions)
+        .ok()?
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .collect();
+    let read_alias = |name: &str| {
+        std::fs::read_to_string(nvm_dir.join("alias").join(name))
+            .ok()
+            .map(|s| s.trim().to_string())
+    };
+    let version = resolve_nvm_version(read_alias("default").as_deref(), &read_alias, &installed)?;
+    Some(versions.join(version).join("bin"))
+}
+
+/// Which installed nvm version (`v24.19.0` dir name) the `default` alias means.
+/// Aliases chain through nvm's alias files (`lts/*` → `lts/jod` → `v22.22.2`);
+/// a version prefix (`24`, `v24.19`) takes the newest install it matches. With
+/// no default, or one that resolves to nothing installed, the newest install
+/// wins — what `nvm.sh` activates when a lone `nvm install --lts` set no alias.
+fn resolve_nvm_version(
+    default: Option<&str>,
+    read_alias: &impl Fn(&str) -> Option<String>,
+    installed: &[String],
+) -> Option<String> {
+    let newest_matching = |prefix: Option<&str>| {
+        installed
+            .iter()
+            .filter(|v| {
+                prefix.is_none_or(|p| {
+                    let p = p.trim_start_matches('v');
+                    let v = v.trim_start_matches('v');
+                    v == p || v.starts_with(&format!("{p}."))
+                })
+            })
+            .filter_map(|v| Some((parse_node_version(v)?, v)))
+            .max_by_key(|(parsed, _)| *parsed)
+            .map(|(_, v)| v.clone())
+    };
+    let mut alias = default.map(str::to_string);
+    for _ in 0..8 {
+        let Some(current) = alias.take() else { break };
+        // The user pointed nvm back at the OS Node on purpose; add nothing.
+        if current == "system" {
+            return None;
+        }
+        if parse_node_version(&current).is_some() {
+            return newest_matching(Some(&current)).or_else(|| newest_matching(None));
+        }
+        alias = read_alias(&current);
+    }
+    newest_matching(None)
 }
 
 /// Prepend [`extra_path_dirs`] to `cmd`'s PATH env.
@@ -520,16 +642,58 @@ mod tests {
     }
 
     #[test]
+    fn parse_node_version_reads_node_and_nvm_spellings() {
+        assert_eq!(parse_node_version("v22.22.1\n"), Some((22, 22, 1)));
+        assert_eq!(parse_node_version("24.19.0"), Some((24, 19, 0)));
+        assert_eq!(parse_node_version("24"), Some((24, 0, 0)));
+        assert_eq!(parse_node_version("lts/*"), None);
+        assert_eq!(parse_node_version("node"), None);
+    }
+
+    #[test]
+    fn nvm_default_alias_resolution() {
+        let installed: Vec<String> = ["v20.11.0", "v22.22.2", "v24.9.0", "v24.19.0"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let aliases = |name: &str| match name {
+            "lts/*" => Some("lts/jod".to_string()),
+            "lts/jod" => Some("v22.22.2".to_string()),
+            _ => None,
+        };
+        let pick = |default: Option<&str>| resolve_nvm_version(default, &aliases, &installed);
+        // A major prefix takes the newest install of that line (numerically).
+        assert_eq!(pick(Some("24")).as_deref(), Some("v24.19.0"));
+        assert_eq!(pick(Some("v20.11.0")).as_deref(), Some("v20.11.0"));
+        // Aliases chain through nvm's alias files.
+        assert_eq!(pick(Some("lts/*")).as_deref(), Some("v22.22.2"));
+        // No alias, or one naming nothing installed → the newest install.
+        assert_eq!(pick(None).as_deref(), Some("v24.19.0"));
+        assert_eq!(pick(Some("node")).as_deref(), Some("v24.19.0"));
+        assert_eq!(pick(Some("18")).as_deref(), Some("v24.19.0"));
+        // `system` means the OS Node: nvm contributes nothing.
+        assert_eq!(pick(Some("system")), None);
+        assert_eq!(resolve_nvm_version(None, &aliases, &[]), None);
+    }
+
+    #[test]
     fn supplemental_paths_cover_all_supported_os_families() {
         let home = Path::new("/home/alice");
         let unix = supplemental_path_dirs_for(OsKind::Unix, home, None, None, None);
         assert!(unix.contains(&home.join(".local/bin")));
         assert!(unix.contains(&home.join(".cargo/bin")));
         assert!(unix.contains(&home.join(".opencode/bin")));
+        assert!(unix.contains(&home.join(".openclaw/bin")));
 
         let mac = supplemental_path_dirs_for(OsKind::Macos, home, None, None, None);
         assert!(mac.contains(&PathBuf::from("/opt/homebrew/bin")));
         assert!(mac.contains(&PathBuf::from("/Library/TeX/texbin")));
+        assert!(mac.contains(&home.join(".docker").join("bin")));
+        assert!(mac.contains(&home.join(".orbstack").join("bin")));
+        assert!(mac.contains(&PathBuf::from("/Applications/Docker.app/Contents/Resources/bin")));
+        // The container dirs are the Mac's alone: Linux keeps its list unchanged.
+        assert!(!unix.contains(&home.join(".docker").join("bin")));
+        assert!(!unix.contains(&home.join(".orbstack").join("bin")));
 
         let windows = supplemental_path_dirs_for(
             OsKind::Windows,
@@ -622,6 +786,38 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         panic!("background waiter did not reap pid {pid}");
+    }
+
+    #[test]
+    fn cross_device_is_recognized_by_kind_on_every_os() {
+        let e = std::io::Error::from(std::io::ErrorKind::CrossesDevices);
+        assert!(is_cross_device(&e));
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert!(!is_cross_device(&denied));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cross_device_raw_codes_on_unix() {
+        // EXDEV.
+        assert!(is_cross_device(&std::io::Error::from_raw_os_error(18)));
+        // EEXIST — the code Windows uses for ERROR_NOT_SAME_DEVICE. Treating it as
+        // cross-device here would copy over an existing destination.
+        assert!(!is_cross_device(&std::io::Error::from_raw_os_error(17)));
+        // ENOTEMPTY / EACCES.
+        assert!(!is_cross_device(&std::io::Error::from_raw_os_error(39)));
+        assert!(!is_cross_device(&std::io::Error::from_raw_os_error(13)));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cross_device_raw_codes_on_windows() {
+        let not_same_device = std::io::Error::from_raw_os_error(17);
+        assert!(is_cross_device(&not_same_device));
+        // Checks std's own mapping on the windows-latest job.
+        assert_eq!(not_same_device.kind(), std::io::ErrorKind::CrossesDevices);
+        // ERROR_SHARING_VIOLATION: a file inside is open — must surface.
+        assert!(!is_cross_device(&std::io::Error::from_raw_os_error(32)));
     }
 
     #[test]

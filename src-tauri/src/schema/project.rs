@@ -367,6 +367,12 @@ pub struct VmSpec {
     /// is exactly the exfiltration channel the tier narrows.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub allow_github: bool,
+    /// This VM is a **contained mail reader** (`services::mail_reader`): its
+    /// agent tabs are served the root MCP's mail read tools, for as long as the
+    /// box stays at the default proxy allowlist. Trusted only from the
+    /// `projects.json` mirror — an in-folder `project.json` grants nothing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mail_reader: bool,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }
@@ -381,6 +387,7 @@ impl Default for VmSpec {
             egress: VmEgress::default(),
             allow_hosts: Vec::new(),
             allow_github: false,
+            mail_reader: false,
             extra: HashMap::new(),
         }
     }
@@ -594,4 +601,279 @@ pub struct HpcInfo {
     /// `slurm_job_out` uses for a job `scontrol` has already forgotten.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub logs_dir: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse<T: serde::de::DeserializeOwned>(json: &str) -> T {
+        serde_json::from_str(json).expect("parse")
+    }
+
+    fn json<T: Serialize>(value: &T) -> Value {
+        serde_json::to_value(value).expect("serialize")
+    }
+
+    /// The three required keys are the whole floor: a `project.json` written by
+    /// the earliest app version loads, and writing it back adds no key it did not
+    /// have (no `null`s, no `[]` for `compute_hosts`).
+    #[test]
+    fn a_minimal_project_loads_and_writes_back_only_its_three_keys() {
+        let p: Project = parse(r#"{"id":"p1","name":"One","directory":"/tmp/one"}"#);
+        assert!(p.remote.is_none() && p.sandbox.is_none() && p.vm.is_none());
+        assert!(p.compute_hosts.is_empty());
+        assert!(p.extra.is_empty());
+        let out = json(&p);
+        let keys: Vec<&str> = out.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys.len(), 3, "unexpected keys written: {keys:?}");
+        assert!(out.get("compute_hosts").is_none());
+    }
+
+    /// Fields the Python app wrote and the Rust model never learned about ride
+    /// through `extra` unchanged, at the top level and inside the nested blocks.
+    #[test]
+    fn python_era_unknown_fields_round_trip_through_extra() {
+        let raw = r#"{
+            "id":"p1","name":"One","directory":"/tmp/one",
+            "favorite": true,
+            "time": {"total_s": 12.5, "recent_sessions": [
+                {"date":"2026-07-08","start":"2026-07-08 09:00","duration_s":600,"note":"pair"}
+            ], "streak_days": 3},
+            "open_apps": [{"exec":"code","legacy_flag":1}]
+        }"#;
+        let p: Project = parse(raw);
+        assert_eq!(p.extra["favorite"], Value::Bool(true));
+        let time = p.time.as_ref().unwrap();
+        assert_eq!(time.extra["streak_days"], Value::from(3));
+        assert_eq!(time.recent_sessions[0].extra["note"], Value::from("pair"));
+        let app = &p.open_apps.as_ref().unwrap()[0];
+        assert!(app.mode.is_none() && app.pid.is_none(), "legacy record has no mode/pid");
+        assert_eq!(app.extra["legacy_flag"], Value::from(1));
+
+        let back: Project = parse(&serde_json::to_string(&p).unwrap());
+        assert_eq!(back.extra["favorite"], Value::Bool(true));
+        assert_eq!(back.time.unwrap().extra["streak_days"], Value::from(3));
+        assert_eq!(back.open_apps.unwrap()[0].extra["legacy_flag"], Value::from(1));
+    }
+
+    /// `sessionId` is the wire spelling the frontend reads for `--resume`; the
+    /// snake_case spelling is *not* an alias and would ride in `extra` — a tab
+    /// layout hand-edited that way silently loses its resume.
+    #[test]
+    fn tab_entry_session_id_is_camel_case_on_the_wire() {
+        let e: TabEntry = parse(
+            r#"{"key":"t1","label":"claude","cmd":"claude","cwd":"/p","sessionId":"abc"}"#,
+        );
+        assert_eq!(e.session_id.as_deref(), Some("abc"));
+        let out = json(&e);
+        assert_eq!(out["sessionId"], "abc");
+        assert!(out.get("session_id").is_none());
+
+        let shell: TabEntry = parse(r#"{"key":"t2","label":"sh","cmd":"bash","cwd":"/p"}"#);
+        assert!(shell.session_id.is_none());
+        assert!(json(&shell).get("sessionId").is_none(), "absent, not null");
+
+        let snake: TabEntry =
+            parse(r#"{"key":"t3","label":"x","cmd":"x","cwd":"/p","session_id":"abc"}"#);
+        assert!(snake.session_id.is_none());
+        assert_eq!(snake.extra["session_id"], "abc");
+    }
+
+    /// A remote spec needs only `host` + `remote_path`; every knob is absent
+    /// rather than null on the way back out, so an older reader keeps its
+    /// defaults (tmux persistence stays ON while the key is missing).
+    #[test]
+    fn remote_spec_minimal_shape_and_omitted_options() {
+        let r: RemoteSpec = parse(r#"{"host":"build.example","remote_path":"/srv/p"}"#);
+        assert!(r.user.is_none() && r.port.is_none() && r.openvpn.is_none());
+        assert!(r.persist_sessions.is_none() && r.vm.is_none() && r.label.is_none());
+        let out = json(&r);
+        assert_eq!(
+            out.as_object().unwrap().len(),
+            2,
+            "only host + remote_path written: {out}"
+        );
+
+        let full: RemoteSpec = parse(
+            r#"{"user":"alice","host":"h","port":2222,"remote_path":"/p",
+                "openvpn":{"config":"/etc/x.ovpn"},"persist_sessions":false,"vm":true}"#,
+        );
+        assert_eq!(full.port, Some(2222));
+        assert_eq!(full.persist_sessions, Some(false));
+        assert_eq!(full.vm, Some(true));
+        let vpn = full.openvpn.as_ref().unwrap();
+        assert_eq!(vpn.config, "/etc/x.ovpn");
+        assert!(vpn.username.is_none());
+        assert!(json(vpn).get("username").is_none());
+    }
+
+    /// A worker is `{id, flags…}` with the `RemoteSpec` flattened in: `label`
+    /// sits at the top level of the JSON (the same key worker labels always
+    /// used), `sync_code` defaults ON and the other two flags OFF.
+    #[test]
+    fn compute_host_flattens_its_spec_and_defaults_its_flags() {
+        let h: ComputeHost = parse(r#"{"id":"h1","host":"gpu-2.example","remote_path":"/w"}"#);
+        assert!(h.sync_code);
+        assert!(!h.pull_outputs);
+        assert!(!h.shared_fs);
+        assert_eq!(h.display_label(), "gpu-2.example");
+
+        let labelled: ComputeHost = parse(
+            r#"{"id":"h2","host":"192.0.2.2","remote_path":"/w","label":"gpu-2","shared_fs":true}"#,
+        );
+        assert_eq!(labelled.display_label(), "gpu-2");
+        assert!(labelled.shared_fs);
+        let out = json(&labelled);
+        assert_eq!(out["label"], "gpu-2", "label is flattened, not nested: {out}");
+        assert!(out.get("spec").is_none());
+        assert_eq!(out["host"], "192.0.2.2");
+    }
+
+    /// A `sandbox` object written before `scope` existed keeps containing every
+    /// tab, and `readonly_rootfs` is written only when it is on.
+    #[test]
+    fn sandbox_spec_without_scope_reads_as_all() {
+        let s: SandboxSpec = parse(r#"{"enabled":true}"#);
+        assert_eq!(s.scope, SandboxScope::All);
+        assert!(!s.readonly_rootfs);
+        let out = json(&s);
+        assert_eq!(out["scope"], "all");
+        assert!(out.get("readonly_rootfs").is_none());
+        assert!(out.get("image").is_none());
+
+        let agents: SandboxSpec =
+            parse(r#"{"enabled":true,"scope":"agents","readonly_rootfs":true}"#);
+        assert_eq!(agents.scope, SandboxScope::Agents);
+        let out = json(&agents);
+        assert_eq!(out["scope"], "agents");
+        assert_eq!(out["readonly_rootfs"], true);
+        assert!(serde_json::from_str::<SandboxSpec>(r#"{"enabled":true,"scope":"Agents"}"#).is_err());
+    }
+
+    /// A VM spec needs only `enabled`: sizes fall back to 4 GiB / 2 vCPU /
+    /// 32 GiB, egress to `proxy`, and the opt-in GitHub hole stays closed —
+    /// and none of those defaults is written back as a list or a `false`.
+    #[test]
+    fn vm_spec_defaults_and_egress_wire_names() {
+        let v: VmSpec = parse(r#"{"enabled":true}"#);
+        assert_eq!((v.memory_mb, v.cpus, v.disk_gb), (4096, 2, 32));
+        assert_eq!(v.egress, VmEgress::Proxy);
+        assert!(!v.allow_github);
+        assert!(v.allow_hosts.is_empty());
+        let out = json(&v);
+        assert!(out.get("allow_hosts").is_none());
+        assert!(out.get("allow_github").is_none());
+        assert_eq!(out["egress"], "proxy");
+        for (variant, name) in [(VmEgress::Off, "off"), (VmEgress::Proxy, "proxy"), (VmEgress::Open, "open")] {
+            assert_eq!(json(&variant), Value::from(name));
+            assert_eq!(parse::<VmEgress>(&format!("\"{name}\"")), variant);
+        }
+        let d = VmSpec::default();
+        assert!(d.enabled, "a VM project is created enabled");
+        assert_eq!(d.memory_mb, v.memory_mb);
+    }
+
+    /// The toggle result is tagged by `outcome`, and a detected source names
+    /// its kind in snake_case — what the confirm dialog switches on.
+    #[test]
+    fn sandbox_toggle_outcome_is_tagged_by_outcome() {
+        let applied = SandboxToggleOutcome::Applied {
+            spec: SandboxSpec::default(),
+        };
+        let out = json(&applied);
+        assert_eq!(out["outcome"], "applied");
+        assert_eq!(out["spec"]["enabled"], false);
+
+        let ask = SandboxToggleOutcome::NeedsConfirmation {
+            source: DetectedSpecSource {
+                kind: DetectedSpecKind::DevcontainerImage,
+                value: "ghcr.io/x/y:1".into(),
+                hash: "abc".into(),
+            },
+        };
+        let out = json(&ask);
+        assert_eq!(out["outcome"], "needs_confirmation");
+        assert_eq!(out["source"]["kind"], "devcontainer_image");
+        assert_eq!(json(&DetectedSpecKind::Dockerfile), "dockerfile");
+
+        let decision: SandboxSourceDecision = parse(r#"{"hash":"abc","adopt":false}"#);
+        assert_eq!(decision.hash, "abc");
+        assert!(!decision.adopt);
+    }
+
+    /// Every HPC field is optional, an empty record is `{}` on disk, and a
+    /// partial one (workspace released, anchor kept) survives the round trip.
+    #[test]
+    fn hpc_info_writes_only_what_it_knows() {
+        assert_eq!(json(&HpcInfo::default()), serde_json::json!({}));
+        let partial = HpcInfo {
+            anchor_dir: Some("/home/u/eldrun-anchors/p".into()),
+            anchor_rel: Some("eldrun-anchors/p".into()),
+            ..Default::default()
+        };
+        let out = json(&partial);
+        assert_eq!(out.as_object().unwrap().len(), 2);
+        let back: HpcInfo = parse(&out.to_string());
+        assert_eq!(back, partial);
+
+        let p: Project = parse(
+            r#"{"id":"p","name":"n","directory":"/d","hpc":{"workspace_id":"ws1","filesystem":"lustre"}}"#,
+        );
+        let hpc = p.hpc.unwrap();
+        assert_eq!(hpc.workspace_id.as_deref(), Some("ws1"));
+        assert!(hpc.workspace_path.is_none());
+    }
+
+    /// `file_type_stats` keeps its Python shape: a map keyed by extension whose
+    /// values carry count/bytes plus whatever else was recorded.
+    #[test]
+    fn file_type_stats_keep_their_python_shape() {
+        let p: Project = parse(
+            r#"{"id":"p","name":"n","directory":"/d",
+                "file_type_stats":{"py":{"count":3,"bytes":1200,"lines":80},"md":{"count":1,"bytes":5}},
+                "default_apps":{"pdf":"okular"}}"#,
+        );
+        let stats = p.file_type_stats.as_ref().unwrap();
+        assert_eq!(stats["py"].count, 3);
+        assert_eq!(stats["py"].extra["lines"], Value::from(80));
+        assert_eq!(p.default_apps.as_ref().unwrap()["pdf"], "okular");
+        let back: Project = parse(&serde_json::to_string(&p).unwrap());
+        assert_eq!(back.file_type_stats.unwrap()["py"].extra["lines"], Value::from(80));
+    }
+
+    /// The opaque frontend-owned trees (`tab_groups`, `open_tab_sessions`) are
+    /// carried byte-for-byte whatever their shape, and `agent_tasks` stays a
+    /// list of untyped values.
+    #[test]
+    fn opaque_frontend_trees_round_trip_verbatim() {
+        let raw = r#"{"id":"p","name":"n","directory":"/d",
+            "tab_groups":{"kind":"split","dir":"h","children":[{"kind":"group","tabs":["a"]}]},
+            "open_tab_sessions":["u1","u2"],
+            "agent_tasks":[{"id":"t","anything":null}]}"#;
+        let p: Project = parse(raw);
+        let back: Project = parse(&serde_json::to_string(&p).unwrap());
+        let expected: Value = parse(raw);
+        assert_eq!(back.tab_groups.unwrap(), expected["tab_groups"]);
+        assert_eq!(back.open_tab_sessions.unwrap(), expected["open_tab_sessions"]);
+        assert_eq!(back.agent_tasks.unwrap()[0], expected["agent_tasks"][0]);
+    }
+
+    /// The per-project overrides are tri-state: absent inherits the global
+    /// setting, and an explicit `false` must be written back as `false` (it is
+    /// the user's "off"), never normalized to absent.
+    #[test]
+    fn per_project_overrides_keep_an_explicit_false() {
+        let p: Project = parse(
+            r#"{"id":"p","name":"n","directory":"/d","remote_control":false,"agent_fence":false,"run_host":"host:h1"}"#,
+        );
+        assert_eq!(p.remote_control, Some(false));
+        assert_eq!(p.agent_fence, Some(false));
+        let out = json(&p);
+        assert_eq!(out["remote_control"], false);
+        assert_eq!(out["agent_fence"], false);
+        assert_eq!(out["run_host"], "host:h1");
+        let plain: Project = parse(r#"{"id":"p","name":"n","directory":"/d"}"#);
+        assert!(plain.remote_control.is_none() && plain.agent_fence.is_none());
+    }
 }

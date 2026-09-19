@@ -244,9 +244,10 @@ impl Peer {
     /// byte-identically for both, exactly like `commands::git::run_git`).
     pub fn run(&self, args: &[&str]) -> Result<Output, String> {
         match self {
-            Peer::Local(dir) => crate::paths::command_no_window("git")
-                .args(args)
-                .current_dir(dir)
+            // Hardened, hooks off: lockstep runs `status`/`checkout`/`merge`/
+            // `commit` in the background, in a tree a fenced agent can write — its
+            // `.git/config` and `.git/hooks/` included.
+            Peer::Local(dir) => crate::commands::git::hookless_git_command_in(dir, args)
                 .output()
                 .map_err(|e| e.to_string()),
             Peer::Remote(spec) => {
@@ -1049,7 +1050,12 @@ fn now_secs() -> u64 {
 
 /// `<state_dir>/remote-projects/<id>/git_peer.json` (sibling of `sync.json`).
 pub fn state_path(project_id: &str) -> PathBuf {
-    crate::storage::state_dir()
+    state_path_in(&crate::storage::state_dir(), project_id)
+}
+
+/// [`state_path`] under an explicit state dir — see `local_loss::log_path_in`.
+pub fn state_path_in(state_dir: &Path, project_id: &str) -> PathBuf {
+    state_dir
         .join("remote-projects")
         .join(project_id)
         .join("git_peer.json")

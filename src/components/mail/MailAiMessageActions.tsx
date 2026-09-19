@@ -12,8 +12,8 @@ import {
   useMailAiFeature,
 } from "../../lib/mail";
 import { boardColumns, fallbackColumnId, taskFromMail } from "../../lib/todoBoard";
-import { toDate, toStamp } from "../../lib/calendarTime";
-import { useCalendarStore } from "../../stores/calendar";
+import { toDate, toStamp } from "../../lib/calendar/calendarTime";
+import { useCalendarStore } from "../../stores/calendar/calendar";
 import { useMailStore } from "../../stores/mail";
 import { useSettingsStore } from "../../stores/settings";
 import type { CalendarEvent } from "../../types";

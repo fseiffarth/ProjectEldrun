@@ -31,7 +31,7 @@ pub const MAX_HISTORY_PER_PROJECT: usize = 200;
 const MAX_TAB_LABEL_BYTES: usize = 256;
 const MAX_AGENT_BYTES: usize = 256;
 /// Tags are labels, not sentences: a handful per prompt, each a short token.
-/// The frontend's `lib/agentPromptTags` normalizes the same way and truncates
+/// The frontend's `lib/agents/prompt/tags` normalizes the same way and truncates
 /// at 32 characters, so the byte cap here is the guard, not the editor.
 pub const MAX_TAGS_PER_PROMPT: usize = 16;
 pub const MAX_TAG_BYTES: usize = 64;
@@ -584,6 +584,59 @@ fn validate_link(input: PromptLinkInput) -> Result<PromptLink, String> {
     })
 }
 
+/// The refusal an `after` edge gets when its target already leads back to its
+/// source: two prompts each waiting on the other never start. Exact string —
+/// the frontend matches it.
+pub const LINK_CYCLE_ERROR: &str = "prompt_link_cycle";
+/// The refusal when its target already waits on another prompt: a prompt goes
+/// after ONE turn, and two sources finishing would queue it twice.
+pub const LINK_JOIN_ERROR: &str = "prompt_link_join";
+
+fn is_session_roll_link(id: &str) -> bool {
+    id.starts_with("roll:")
+}
+
+/// Whether an edge may be written, as `lib/agents/prompt/links`' `afterLinkRefusal`
+/// decides it: only `after` edges are judged, the edge's own id is skipped so
+/// an existing edge can be re-saved, and the history's `roll:` edges are
+/// exempt on both sides. Those are written by [`link_session_roll`], which
+/// discards the result — a refusal there would silently drop the `/clear`
+/// edge the history exists to draw — and they are not counted against a
+/// manual edge either, since they join session cards, not queued prompts.
+/// A re-save of an `after` edge already stored with the same ends (only its
+/// preface or tab changes) adds no edge, so it is never refused: data written
+/// before this check existed can hold a join, and editing one of its edges
+/// must not demand the other be deleted first.
+fn after_link_refusal(links: &[PromptLink], link: &PromptLink) -> Option<&'static str> {
+    if link.kind != "after" || is_session_roll_link(&link.id) {
+        return None;
+    }
+    let unchanged = links.iter().any(|item| {
+        item.id == link.id && item.kind == "after" && item.from == link.from && item.to == link.to
+    });
+    if unchanged {
+        return None;
+    }
+    let after: Vec<&PromptLink> = links
+        .iter()
+        .filter(|item| item.kind == "after" && item.id != link.id && !is_session_roll_link(&item.id))
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![link.to.as_str()];
+    while let Some(node) = stack.pop() {
+        if node == link.from {
+            return Some(LINK_CYCLE_ERROR);
+        }
+        if seen.insert(node) {
+            stack.extend(after.iter().filter(|edge| edge.from == node).map(|edge| edge.to.as_str()));
+        }
+    }
+    after
+        .iter()
+        .any(|edge| edge.to == link.to)
+        .then_some(LINK_JOIN_ERROR)
+}
+
 fn apply_link_upsert(
     file: &mut AgentPromptsFile,
     project_id: &str,
@@ -592,6 +645,10 @@ fn apply_link_upsert(
     let endpoints = endpoint_ids(file, project_id);
     if !endpoints.contains(&link.from) || !endpoints.contains(&link.to) {
         return Err("prompt link endpoint not found".into());
+    }
+    let existing = file.links.get(project_id).map(Vec::as_slice).unwrap_or_default();
+    if let Some(refusal) = after_link_refusal(existing, &link) {
+        return Err(refusal.into());
     }
     let links = file.links.entry(project_id.to_string()).or_default();
     if let Some(index) = links.iter().position(|item| item.id == link.id) {
@@ -982,6 +1039,82 @@ mod tests {
         assert!(validate_link(with("after", &["clear"])).is_err());
         let many: Vec<&str> = vec!["/clear"; agent_tasks::MAX_PREFACE_COMMANDS + 1];
         assert!(validate_link(with("after", &many)).is_err());
+    }
+
+    #[test]
+    fn an_after_link_that_closes_a_loop_or_joins_is_refused() {
+        let mut file = AgentPromptsFile::default();
+        for id in ["a", "b", "c", "d"] {
+            apply_upsert(&mut file, "p", input(id, id), "t1").unwrap();
+        }
+        let put = |file: &mut AgentPromptsFile, id: &str, from: &str, to: &str, kind: &str| {
+            apply_link_upsert(file, "p", validate_link(link(id, from, to, kind)).unwrap())
+        };
+        put(&mut file, "ab", "a", "b", "after").unwrap();
+        assert_eq!(put(&mut file, "ba", "b", "a", "after"), Err(LINK_CYCLE_ERROR.to_string()));
+        put(&mut file, "bc", "b", "c", "after").unwrap();
+        assert_eq!(put(&mut file, "ca", "c", "a", "after"), Err(LINK_CYCLE_ERROR.to_string()));
+        assert_eq!(put(&mut file, "dc", "d", "c", "after"), Err(LINK_JOIN_ERROR.to_string()));
+        // A related edge is no sequence, and re-saving an edge is not a join with itself.
+        put(&mut file, "dc", "d", "c", "related").unwrap();
+        put(&mut file, "ca", "c", "a", "related").unwrap();
+        put(&mut file, "bc", "b", "c", "after").unwrap();
+        // Moving an existing edge onto a prompt that already waits is a join.
+        assert_eq!(put(&mut file, "ab", "a", "c", "after"), Err(LINK_JOIN_ERROR.to_string()));
+        assert_eq!(file.links["p"].len(), 4);
+    }
+
+    #[test]
+    fn an_edge_of_a_join_written_before_the_check_can_still_be_edited() {
+        let mut file = AgentPromptsFile::default();
+        for id in ["a", "b", "c", "d"] {
+            apply_upsert(&mut file, "p", input(id, id), "t1").unwrap();
+        }
+        // Stored before joins were refused: a and b both lead into c.
+        let joined = ["ac", "bc"].map(|id| validate_link(link(id, &id[..1], "c", "after")).unwrap());
+        file.links.insert("p".into(), joined.to_vec());
+        let preface = PromptLinkInput {
+            preface: vec!["/clear".into()],
+            ..link("bc", "b", "c", "after")
+        };
+        let stored = apply_link_upsert(&mut file, "p", validate_link(preface).unwrap()).unwrap();
+        let bc = stored.iter().find(|edge| edge.id == "bc").unwrap();
+        assert_eq!(bc.preface, vec!["/clear".to_string()]);
+        // Only an unchanged edge is exempt: a new edge or a changed end still joins.
+        let put = |file: &mut AgentPromptsFile, id: &str, from: &str| {
+            apply_link_upsert(file, "p", validate_link(link(id, from, "c", "after")).unwrap())
+        };
+        assert_eq!(put(&mut file, "dc", "d"), Err(LINK_JOIN_ERROR.to_string()));
+        assert_eq!(put(&mut file, "bc", "d"), Err(LINK_JOIN_ERROR.to_string()));
+        assert_eq!(file.links["p"].len(), 2);
+    }
+
+    #[test]
+    fn a_session_roll_draws_its_edge_beside_a_manual_after_edge() {
+        let mut file = AgentPromptsFile::default();
+        let on = |id: &str, session: &str, sent_at: &str| RecordedAgentPromptInput {
+            sent: SentAgentPromptInput {
+                session_id: Some(session.into()),
+                tab_id: Some("launch".into()),
+                sent_at: Some(sent_at.into()),
+                ..sent("Claude")
+            },
+            ..recorded(id, id, "delivered")
+        };
+        let a = on("a", "launch", "2026-09-15T08:00:00Z");
+        apply_record(&mut file, "p", &a, &a.sent, None, Some("startup"), "t");
+        let b = on("b", "launch", "2026-09-15T08:05:00Z");
+        apply_record(&mut file, "p", &b, &b.sent, None, Some("startup"), "t");
+        let c = on("c", "cleared", "2026-09-15T08:10:00Z");
+        apply_record(&mut file, "p", &c, &c.sent, None, None, "t");
+        // The user already made `c` wait on `a`…
+        apply_link_upsert(&mut file, "p", validate_link(link("manual", "a", "c", "after")).unwrap()).unwrap();
+        // …and the hook then says the session rolled by `/clear`: the history's
+        // own edge into `c` is still drawn, though it counts as a second incoming one.
+        apply_record(&mut file, "p", &c, &c.sent, None, Some("clear"), "t");
+        let roll = file.links["p"].iter().find(|edge| edge.id == "roll:c").unwrap();
+        assert_eq!((roll.from.as_str(), roll.kind.as_str()), ("b", "after"));
+        assert!(file.links["p"].iter().any(|edge| edge.id == "manual"));
     }
 
     #[test]

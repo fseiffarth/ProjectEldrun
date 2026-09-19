@@ -105,6 +105,71 @@ describe("Eldrun Mobile terminal dictation", () => {
     expect(screen.getByRole("status").textContent).toContain("Heard: fix the mobile voice input");
   });
 
+  it("forgets the dictated words once they are sent, while it keeps listening", async () => {
+    render(<Terminal tab={{ id: "opaque-agent", label: "Claude", kind: "agent", available: true, viewer_busy: false }} back={() => {}} />);
+    await act(async () => {});
+
+    fireEvent.click(screen.getByRole("button", { name: "Dictate" }));
+    await act(async () => {});
+    const speech = FakeRecognition.instances[0];
+    act(() => speech.onresult?.(finalResult("fix the login")));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    // "Heard:" quoted the sent message for as long as the recognizer ran, and
+    // the next words were shown glued onto it.
+    expect(screen.queryByText(/Heard:/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Stop dictation" })).toBeTruthy();
+    act(() => speech.onresult?.(finalResult("and add a test")));
+    expect((screen.getByRole("textbox", { name: "Message agent" }) as HTMLTextAreaElement).value).toBe("and add a test");
+    expect(screen.getByRole("status").textContent).toBe("Heard: and add a test");
+  });
+
+  it("does not send earlier dictation again when the phone re-reads its results", async () => {
+    render(<Terminal tab={{ id: "opaque-agent", label: "Claude", kind: "agent", available: true, viewer_busy: false }} back={() => {}} />);
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "Dictate" }));
+    await act(async () => {});
+    const speech = FakeRecognition.instances[0];
+    const composer = screen.getByRole("textbox", { name: "Message agent" }) as HTMLTextAreaElement;
+    // Chrome on Android: every event carries the whole result list from index 0.
+    const reading = (...items: [string, boolean][]) => ({
+      resultIndex: 0,
+      results: Object.assign(
+        Object.fromEntries(items.map(([transcript, isFinal], index) => [index, { 0: { transcript }, isFinal, length: 1 }])),
+        { length: items.length },
+      ),
+    }) as unknown as MobileSpeechRecognitionResultEvent;
+
+    act(() => speech.onresult?.(reading(["fix the login", true])));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    act(() => speech.onresult?.(reading(["fix the login", true], ["and add a test", false])));
+    expect(screen.getByRole("status").textContent).toBe("Heard: and add a test");
+    act(() => speech.onresult?.(reading(["fix the login", true], ["and add a test", true])));
+    expect(composer.value).toBe("and add a test");
+
+    // And a final that repeats everything before it as its head.
+    act(() => speech.onresult?.(reading(["fix the login", true], ["and add a test", true], ["Fix the login and add a test please", true])));
+    expect(composer.value).toBe("and add a test please");
+  });
+
+  it("leaves dictation behind when React reuses the screen for another tab", async () => {
+    const { rerender } = render(<Terminal tab={{ id: "agent-a", label: "Claude A", kind: "agent", available: true, viewer_busy: false }} back={() => {}} />);
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "Dictate" }));
+    await act(async () => {});
+    act(() => FakeRecognition.instances[0].onresult?.(finalResult("words meant for tab a")));
+
+    rerender(<Terminal tab={{ id: "agent-b", label: "Claude B", kind: "agent", available: true, viewer_busy: false }} back={() => {}} />);
+    await act(async () => {});
+
+    // The recognizer is detached before it is aborted, so its own onend never
+    // ran: tab b showed tab a's transcript and a mic stuck on "listening".
+    expect(screen.queryByText(/words meant for tab a/)).toBeNull();
+    const dictate = screen.getByRole("button", { name: "Dictate" }) as HTMLButtonElement;
+    expect(dictate.getAttribute("aria-pressed")).toBe("false");
+    expect(dictate.disabled).toBe(false);
+  });
+
   it("does not add dictation to ordinary shell tabs", async () => {
     render(<Terminal tab={{ id: "opaque-shell", label: "Shell", kind: "shell", available: true, viewer_busy: false }} back={() => {}} />);
     await act(async () => {});

@@ -574,7 +574,7 @@ container) — as opposed to the git **push** axis (#21/#22).*
       input. `buildRemoteSpec` collapsed to one branch + Windows fallback. Added
       red/orange/green `ConnLamp` for SSH + OpenVPN, shown in-dialog and
       persistently in the header for the active remote project, driven by a new
-      `stores/remoteStatus.ts` (keyed by project id). Activation (`stores/projects.ts`)
+      `stores/remote/remoteStatus.ts` (keyed by project id). Activation (`stores/projects.ts`)
       drives the lamps (pooled `remote_connect` with retry; VPN from the prompt
       result or a bounded `openvpn_status` poll) and fires a dedicated `connToast`
       ("VPN connected · <proj>"). **Known gaps for live QA:** (a) ~~macOS
@@ -956,7 +956,7 @@ container) — as opposed to the git **push** axis (#21/#22).*
 84. ✅ **The header VPN indicator is a machine-level VPN control.** The tunnel reroutes
     the whole OS, so it gets a surface that does not hang off a project:
     `components/header/VpnIndicator.tsx`, always present in the header (dim when no
-    tunnel is up), backed by `stores/vpnStatus.ts` (config-keyed state + holder
+    tunnel is up), backed by `stores/remote/vpn/vpnStatus.ts` (config-keyed state + holder
     refcount, seeded from the new `openvpn_active` command and re-seated on window
     focus, so a tunnel that outlived a reload or a previous run still shows).
     It lists every stored `.ovpn`, brings one **up** as well as down (a VPN is a thing
@@ -983,7 +983,7 @@ container) — as opposed to the git **push** axis (#21/#22).*
     tmux_wrap_exec,tmux_kill_session_script,tmux_rename_session_script,tmux_ls_script,parse_tmux_ls,
     valid_tmux_session_name}`, `services::tmux_local`, `remote_tmux_{list,kill,rename}` +
     `local_tmux_{list,kill,rename}` + `set_project_persist_sessions` commands;
-    frontend `lib/tmuxSession.ts`, `lib/closeRemoteTab.ts`, CenterPanel/TabPane/TerminalView
+    frontend `lib/terminal/tmuxSession.ts`, `lib/remote/closeRemoteTab.ts`, CenterPanel/TabPane/TerminalView
     plumbing, the pill toggle + a global Settings toggle, and the multi-host Sessions view in
     `ProjectFilesView`.)* Shipped **default ON** rather than behind the experimental flag (per user).
     Beyond the original remote scope it also covers: **local** persistence (Unix — survives an
@@ -1045,7 +1045,7 @@ container) — as opposed to the git **push** axis (#21/#22).*
     directive form editing the draft by splice (render-rows/edit-text, like the YAML
     viewer); **Interactive session…** opens an `srun --pty … bash -l` shell on a
     compute node. A **Jobs view** in `ProjectFilesView` (alongside Sessions/Orange)
-    polls `squeue`, per-row Watch/Cancel. Frontend `lib/slurm.ts` + `stores/hpcJobs`.
+    polls `squeue`, per-row Watch/Cancel. Frontend `lib/remote/hpc/slurm.ts` + `stores/remote/hpc/hpcJobs`.
     - [x] 🤖 Automated test — Rust parsers (`parse_submit_jobid` incl. `;cluster`
       suffix + numeric-guard, `parse_scontrol_paths`, `parse_squeue` incl.
       multi-word reason, `split_script_rel` incl. absolute paths, `default_out_file`);
@@ -1059,7 +1059,7 @@ container) — as opposed to the git **push** axis (#21/#22).*
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
     - **Phase B — guided pipeline wizard (implemented, untested).** A 5-step stepper
-      (`HpcPipelineWizard.tsx` + `stores/hpcPipeline`, launched from the project-switcher
+      (`HpcPipelineWizard.tsx` + `stores/remote/hpc/hpcPipeline`, launched from the project-switcher
       **+** menu) that composes the existing flows rather than reimplementing them:
       **Login** (`RemoteProjectSection`/`useRemoteSession`) → **Project**
       (name + local-mirror location → `create_project`) → **Load data** (skippable; local
@@ -1086,7 +1086,7 @@ container) — as opposed to the git **push** axis (#21/#22).*
       is asked what it offers (`ws_list -l`); every interpolated value is validated
       **and** `shell_quote`d; each list/allocate is one round trip that appends a
       `ws_find` confirmation, since the *path* is what everything downstream uses.
-      Frontend `lib/hpcWorkspace.ts` + a new **Workspace** step in the wizard
+      Frontend `lib/remote/hpc/hpcWorkspace.ts` + a new **Workspace** step in the wizard
       (between Project and Load data, and now the step that calls `create_project`):
       the chosen workspace path becomes the project's **remote root**, which is the
       entire integration — SFTP upload, byte-sync, git lockstep and every run tab
@@ -1290,7 +1290,7 @@ deliberately did **not** do, in priority order:
   > the toggle, which brings the tri-state, the 4 s bound and the
   > **Unlock keyring** banner with it; the password field's "(not stored)" is
   > withheld when the store was unreadable, since that is a claim about a
-  > keychain nobody could read. Unticking stays **inert** — `stores/vpnPrompt`
+  > keychain nobody could read. Unticking stays **inert** — `stores/remote/vpn/vpnPrompt`
   > already sends `remember ? true : null`, never `false` — so deleting a VPN
   > credential remains an explicit act in the header's VPN menu. The box is
   > seeded once per prompt behind a ref, so a later `applyOutcome`/`refresh`
@@ -1318,7 +1318,7 @@ deliberately did **not** do, in priority order:
   not happen and names the pill as the way to connect, rather than leaving a
   blank pane.
 - [ ] **A tagged machine connected by hand does not propagate to its project**
-  (`lib/machineSync` skips HPC refs before opening a pool). Correct as a default —
+  (`lib/remote/machineSync` skips HPC refs before opening a pool). Correct as a default —
   a pool is a `ControlPersist` master — but the user is not told the project needs
   a second click. Product call.
 - [x] **`useSavedCredential` fires per keystroke** (2026-08-04; ✅ Done · 🧪

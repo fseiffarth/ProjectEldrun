@@ -25,7 +25,7 @@ import {
   createTexRefFile,
   insertTexInputLine,
   addTexChildFile,
-} from "../lib/viewers/tex";
+} from "../lib/viewers/tex/tex";
 
 const MAIN = "/home/u/proj/paper.tex";
 

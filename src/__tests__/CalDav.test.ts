@@ -17,8 +17,8 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn().mockResolvedValue(null) }));
 
-import { DEFAULT_CALDAV_SYNC_MIN, parseChanges, syncStamp } from "../lib/caldav";
-import { calendarSyncStatus, type CalDavSyncStatus } from "../stores/caldav";
+import { DEFAULT_CALDAV_SYNC_MIN, parseChanges, syncStamp } from "../lib/calendar/caldav";
+import { calendarSyncStatus, type CalDavSyncStatus } from "../stores/calendar/caldav";
 import type { CalDavChanges } from "../types/caldav";
 import type { CalDavAccount } from "../types/caldav";
 

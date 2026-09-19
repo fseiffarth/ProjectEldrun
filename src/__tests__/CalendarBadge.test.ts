@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { eventsLeftToday, occurrencesToday, occurrenceStale } from "../stores/calendar";
+import { eventsLeftToday, occurrencesToday, occurrenceStale } from "../stores/calendar/calendar";
 import type { Calendar, CalendarEvent } from "../types";
 
 /**
- * The header calendar button's badge (`stores/calendar`'s `eventsLeftToday`).
+ * The header calendar button's badge (`stores/calendar/calendar`'s `eventsLeftToday`).
  *
  * The number is *derived*, not acknowledged — nothing marks an event "seen" — so
  * every case here is really the same question asked at different clock times:

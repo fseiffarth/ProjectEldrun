@@ -241,7 +241,7 @@ pub fn forget_user_connect(user: &Option<String>, host: &str, port: Option<u16>)
 /// user tagged HPC, and permit everything else.
 ///
 /// The refusal carries `services::hpc_mode`'s existing `HPC_GUARD` sentinel, so
-/// `src/lib/hpcGuard.ts` already knows how to read it — the frontend can name the
+/// `src/lib/remote/hpc/hpcGuard.ts` already knows how to read it — the frontend can name the
 /// machine and offer to connect anyway, and confirmation stays per act. The slug
 /// is `connect`, since what was refused is the connection itself.
 pub fn authorize_dial(
@@ -350,7 +350,7 @@ fn control_reuse_opts() -> Vec<String> {
 /// different connection, and may well have different rights on it.
 ///
 /// **This must stay byte-identical to the frontend's `targetKey`**
-/// (`src/lib/machineSync.ts`). Both sides index `Settings::careful_hosts` by the
+/// (`src/lib/remote/machineSync.ts`). Both sides index `Settings::careful_hosts` by the
 /// string this produces, so a divergence would not fail loudly — it would quietly
 /// look up a host that is not there and answer "not careful", i.e. fail *open*,
 /// in exactly the case the flag exists to protect. `target_key_matches_frontend`
@@ -1015,6 +1015,7 @@ impl Drop for Askpass {
 /// after `ap-`: this is the sole input to a delete, and a name that does not
 /// parse must fall through to "leave it alone" instead of being attributed to a
 /// pid that happens to be dead.
+#[cfg(any(unix, test))]
 fn askpass_owner_pid(name: &str) -> Option<u32> {
     let rest = name.strip_prefix("ap-")?;
     let (pid, seq) = rest.split_once('-')?;
@@ -1602,7 +1603,7 @@ pub fn locked_key_hint(user: &Option<String>, host: &str, port: Option<u16>) -> 
 /// Marker prefix on the error a password connect fails with when the host's key
 /// has never been seen. The frontend keys on this exact string to raise the
 /// fingerprint-confirmation dialog instead of showing a dead end; keep them in
-/// step (`src/lib/hostKey.ts`).
+/// step (`src/lib/remote/hostKey.ts`).
 pub const UNKNOWN_HOST_KEY: &str = "ELDRUN_UNKNOWN_HOST_KEY";
 
 /// How OpenSSH itself resolves `[user@]host[:port]` after `~/.ssh/config` is
@@ -1918,7 +1919,7 @@ mod tests {
 
     #[test]
     fn target_key_matches_frontend() {
-        // The four normalizations `lib/machineSync.ts`'s `targetKey` applies. A
+        // The four normalizations `lib/remote/machineSync.ts`'s `targetKey` applies. A
         // divergence here fails OPEN (a careful host looked up under a key nobody
         // wrote reads as "not careful"), so each is pinned rather than trusted.
         let k = |u: Option<&str>, h: &str, p: Option<u16>| target_key(u, h, p);
@@ -1951,7 +1952,7 @@ mod tests {
     /// The whole policy as a table. Split out of [`authorize_dial`] precisely so
     /// it can be stated without a `settings.json` on disk: exactly one of the
     /// four combinations refuses, and the refusal is the sentinel
-    /// `src/lib/hpcGuard.ts` already parses (three whitespace-separated fields).
+    /// `src/lib/remote/hpc/hpcGuard.ts` already parses (three whitespace-separated fields).
     #[test]
     fn only_a_background_dial_at_a_tagged_host_is_refused() {
         let key = "alice@login.example:22";
@@ -2732,7 +2733,7 @@ mod tests {
     #[test]
     fn the_unknown_host_marker_is_what_the_frontend_matches() {
         // The frontend keys on this exact prefix to raise the fingerprint dialog
-        // (`src/lib/hostKey.ts`); a rename here silently turns that dialog into a
+        // (`src/lib/remote/hostKey.ts`); a rename here silently turns that dialog into a
         // dead-end error message.
         assert_eq!(UNKNOWN_HOST_KEY, "ELDRUN_UNKNOWN_HOST_KEY");
     }

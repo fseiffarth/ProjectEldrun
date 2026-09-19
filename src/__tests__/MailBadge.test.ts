@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { inboxUnread, unreadTotal } from "../stores/mail";
+import { accountInboxUnread, inboxUnread, unreadTotal } from "../stores/mail";
 import type { MailFolder, MailFolderKind } from "../types/mail";
 
 /**
@@ -73,5 +73,18 @@ describe("inboxUnread", () => {
     // count crosses a serialization boundary to get here.
     const broken = folder({ kind: "inbox", unread: undefined as unknown as number });
     expect(inboxUnread({ a1: [broken, folder({ id: "f2", kind: "inbox", unread: 4 })] })).toBe(4);
+  });
+});
+
+describe("accountInboxUnread", () => {
+  it("is each account's share of the dot, so the menu's rows add up to it", () => {
+    const a1 = [
+      folder({ id: "i1", kind: "inbox", unread: 3 }),
+      folder({ id: "x1", kind: "other", unread: 40 }),
+    ];
+    const a2 = [folder({ id: "i2", kind: "inbox", unread: 5 })];
+    expect(accountInboxUnread(a1)).toBe(3);
+    expect(accountInboxUnread(a1) + accountInboxUnread(a2)).toBe(inboxUnread({ a1, a2 }));
+    expect(accountInboxUnread(undefined)).toBe(0);
   });
 });

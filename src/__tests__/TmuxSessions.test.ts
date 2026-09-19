@@ -17,7 +17,7 @@ import {
   persistSessionsEnabled,
   shouldPersistTab,
   shouldPersistLocalTab,
-} from "../lib/tmuxSession";
+} from "../lib/terminal/tmuxSession";
 import { useTabsStore } from "../stores/tabs";
 import type { RemoteSpec } from "../types";
 

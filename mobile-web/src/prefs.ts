@@ -47,8 +47,11 @@ export function writeFlag(name: MobileFlag, value: boolean, storage?: FlagStorag
 /** A choice among named options, kept the way the flags are. `agentsSort` is
  * the Agents list's order (`shared/agentSort.ts`); the desktop remembers its
  * own copy of the same choice, since a phone and a laptop are not necessarily
- * looking at the list for the same reason. */
-export type MobileChoice = "agentsSort";
+ * looking at the list for the same reason. `projectTabsSort` is the same choice
+ * for one project screen's tab list, kept apart from it because the two lists
+ * are read for different things: the cross-project Agents list is triage, while
+ * a project's own tabs are a place the reader arranges by hand. */
+export type MobileChoice = "agentsSort" | "projectTabsSort";
 
 export function readChoice<T extends string>(name: MobileChoice, accept: (value: unknown) => value is T, fallback: T, storage?: FlagStorage): T {
   try {
@@ -67,24 +70,26 @@ export function writeChoice(name: MobileChoice, value: string, storage?: FlagSto
   }
 }
 
-/** Which output view a terminal opens in. **Terminal** until the reader picks
- * otherwise, then whatever they last chose for that *agent* — keyed by the
+/** Which output view a terminal opens in: whatever the reader last chose for
+ * that *agent* — keyed by the
  * agent behind the tab ("Claude Code", "Codex"; shells share one key), since
  * whether Focus reads a session well is a property of the TUI, not of the
  * tab: a reader who moved their Claude tab to Focus wants the next Claude tab
- * there too, and a shell they keep on Terminal stays there. */
+ * there too, and a shell they keep on Terminal stays there. `null` until they
+ * choose: the screen then picks — Focus on an agent tab whose stored session
+ * reads, Terminal otherwise. */
 export type TerminalViewChoice = "focus" | "terminal";
 
 function viewKey(agent: string): string {
   return `${PREFIX}view.${agent.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-") || "agent"}`;
 }
 
-export function readTerminalView(agent: string, storage?: FlagStorage): TerminalViewChoice {
+export function readTerminalView(agent: string, storage?: FlagStorage): TerminalViewChoice | null {
   try {
     const stored = (storage ?? localStorage).getItem(viewKey(agent));
-    return stored === "focus" ? "focus" : "terminal";
+    return stored === "focus" || stored === "terminal" ? stored : null;
   } catch {
-    return "terminal";
+    return null;
   }
 }
 

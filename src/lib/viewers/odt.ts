@@ -155,6 +155,9 @@ function collectListStyles(root: Element): Map<string, "ol" | "ul"> {
   return map;
 }
 
+/** Longest `<text:s>` run rendered; far past any real layout's padding. */
+const MAX_SPACE_RUN = 1000;
+
 /** Allow only safe, non-script hyperlink targets. */
 function safeHref(href: string | null): string | null {
   if (!href) return null;
@@ -222,7 +225,9 @@ export function renderOdtDocument(
       case "tab":
         return "    ";
       case "s": {
-        const count = Math.max(1, parseInt(attr(el, "c") ?? "1", 10) || 1);
+        // Capped: the count is document-supplied, and `c="1000000000"` would
+        // otherwise ask for a gigabyte string and take the viewer down.
+        const count = Math.min(MAX_SPACE_RUN, Math.max(1, parseInt(attr(el, "c") ?? "1", 10) || 1));
         return " ".repeat(count);
       }
       case "frame": {

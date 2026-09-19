@@ -1,23 +1,28 @@
 import { create } from "zustand";
 import {
   mailAccountDelete,
+  mailAgentDrafts,
   mailAccountsList,
   mailBody,
   mailFlag,
   mailFolders,
   mailHeaders,
   mailMarkFolderRead,
+  mailMove,
   mailPriorityClear,
   mailPriorityCounts,
   mailPriorityPage,
   mailPrioritySet,
+  mailPurge,
   mailSync,
   mailSyncCancel,
+  planMailDelete,
 } from "../lib/mail";
 import { translate, useI18nStore } from "../lib/i18n";
 import type {
   MailAccount,
   MailBody,
+  MailDraft,
   MailFlag,
   MailFolder,
   MailHeader,
@@ -32,7 +37,7 @@ import type {
  * selected message and its body — one global set, backed by
  * `~/.local/share/eldrun/mail/`.
  *
- * Modeled on `stores/calendar.ts`, and deliberately **global** — one mailbox, no
+ * Modeled on `stores/calendar/calendar.ts`, and deliberately **global** — one mailbox, no
  * matter which project is active. That is also what retired the mail *tab*: a tab
  * belongs to a scope, so a mail tab could only ever show the same mailbox this
  * store already holds while behaving as though it belonged to a project you then
@@ -88,6 +93,23 @@ interface MailStore {
   selectedFolderId: string | null;
   selectedMessageId: string | null;
   /**
+   * The rows ticked for a bulk action — Ctrl-click and Shift-click in the list.
+   *
+   * Distinct from `selectedMessageId`, which is the *open* message, because the
+   * two answer different questions: one message is being read, any number can be
+   * filed or deleted at once. Every action still works with the set empty, in
+   * which case it is about the row it was invoked on — a menu that does nothing
+   * until something is ticked would make right-click useless for one message.
+   *
+   * It belongs to the **page**: `loadPage` clears it, because a folder change, a
+   * re-sort, a search keystroke or a pager step all leave ids that name mail the
+   * user can no longer see, and a bulk delete aimed at rows off screen is the
+   * one mistake this feature can make.
+   */
+  checkedIds: string[];
+  /** The row a Shift-click measures its range from. */
+  anchorId: string | null;
+  /**
    * The priority list currently on screen, or `null` when an ordinary folder is.
    *
    * These are the two states of ONE list: `selectedPriority` and
@@ -116,6 +138,10 @@ interface MailStore {
    *  `setSort` for why that is not an implementation detail. */
   sort: MailSort;
   sortDesc: boolean;
+  /** Only unread messages. A filter over the folder, applied by the backend
+   *  for `sort`'s reason: on a paged list, filtering the page would hide the
+   *  unread mail that sits on page three. */
+  unreadOnly: boolean;
 
   body: MailBody | null;
   /** This body was fetched with remote references resolved (an explicit click). */
@@ -150,6 +176,17 @@ interface MailStore {
   noteArrival: (accountId: string, count: number) => void;
   openOverlay: () => void;
   closeOverlay: () => void;
+
+  /** Drafts an agent wrote through the root MCP (`origin` set) that the user
+   *  has not yet sent, discarded or edited. Read by the pane's strip and by the
+   *  root console's review strip; refreshed on `root-mcp-changed` kind `draft`. */
+  agentDrafts: MailDraft[];
+  loadAgentDrafts: () => Promise<void>;
+  /** The agent draft the pane should open in the composer next. */
+  pendingDraft: MailDraft | null;
+  /** Open the overlay on an agent draft's account with the composer on it —
+   *  never an "approve": the composer's Send stays the only way out. */
+  openAgentDraft: (draft: MailDraft | null) => Promise<void>;
 
   /**
    * Open the overlay **on** a given account — the header dropdown's account rows.
@@ -205,9 +242,44 @@ interface MailStore {
    * a re-sort that kept the page number would land somewhere arbitrary.
    */
   setSort: (sort: MailSort, desc: boolean) => Promise<void>;
+  setUnreadOnly: (unreadOnly: boolean) => Promise<void>;
+  /** Drop every narrowing at once — the search and the unread filter — in one
+   *  read rather than one per control. */
+  clearFilters: () => Promise<void>;
   loadPage: (offset: number) => Promise<void>;
+  /**
+   * The pager's step, as opposed to `loadPage`'s re-read in place.
+   *
+   * Under `unreadOnly` the offset counts rows of a set that **shrinks as it is
+   * read**: every message opened on this page has left the filter by the time
+   * "Older" is pressed, so the rows behind it have all moved up by that many.
+   * Stepping a whole page would skip exactly that many unread mails — silently,
+   * which for the one view whose job is "what have I not read" is the worst
+   * way to be wrong. So a forward step gives back the rows that left.
+   */
+  stepPage: (offset: number) => Promise<void>;
 
   selectMessage: (messageId: string | null) => Promise<void>;
+  /** Tick exactly this row and nothing else, and anchor a later range on it. */
+  checkOnly: (messageId: string) => void;
+  /** Ctrl-click: add or remove one row, leaving the rest of the set alone. */
+  toggleChecked: (messageId: string) => void;
+  /** Shift-click: tick every row between the anchor and this one, in the order
+   *  the list is showing — which is why it takes that order rather than reading
+   *  `headers`: the rows on screen are the rows a range may cover. */
+  checkRange: (messageId: string, order: string[]) => void;
+  clearChecked: () => void;
+  /**
+   * Delete messages — into each account's Trash where there is one, off the
+   * server where there is not (`planMailDelete`).
+   *
+   * The caller confirms the permanent half **first**: this reaches a server the
+   * moment it is called and there is no undo for the purge branch. Grouped per
+   * folder because that is what the commands take, and a group that fails lands
+   * in `error` without stopping the others — one account being unreachable is no
+   * reason to leave the other's mail undeleted.
+   */
+  deleteMessages: (messageIds: string[]) => Promise<void>;
   /** Re-fetch the open body with remote references resolved (explicit click). */
   setFlag: (messageId: string, flag: MailFlag, value: boolean) => Promise<void>;
   /** Mark every unread message in a folder read, locally and on the server.
@@ -217,6 +289,9 @@ interface MailStore {
   /** THE network action. Never called from a launch, restore or render path. */
   checkMail: (accountId: string, folderId?: string | null) => Promise<void>;
   cancelCheck: (accountId: string) => Promise<void>;
+  /** Forget an account's last sync outcome — after its settings are saved, so a
+   *  rejected login stops pausing the background check (`backgroundCheckBlocked`). */
+  clearSyncState: (accountId: string) => void;
 }
 
 /** A rejected invoke's message, as a string the UI can show. */
@@ -258,6 +333,8 @@ export const useMailStore = create<MailStore>((set, get) => ({
   selectedAccountId: null,
   selectedFolderId: null,
   selectedMessageId: null,
+  checkedIds: [],
+  anchorId: null,
   selectedPriority: null,
   priorityCounts: { important: 0, urgent: 0, important_unread: 0, urgent_unread: 0 },
 
@@ -267,6 +344,7 @@ export const useMailStore = create<MailStore>((set, get) => ({
   query: "",
   sort: "date",
   sortDesc: true,
+  unreadOnly: false,
 
   body: null,
 
@@ -303,6 +381,20 @@ export const useMailStore = create<MailStore>((set, get) => ({
     void get().refreshPriorityCounts();
   },
   closeOverlay: () => set({ overlayOpen: false }),
+
+  agentDrafts: [],
+  pendingDraft: null,
+  loadAgentDrafts: async () => {
+    // A locked or never-opened store lists nothing; that is not an error here.
+    const drafts = await mailAgentDrafts().catch(() => [] as MailDraft[]);
+    set({ agentDrafts: Array.isArray(drafts) ? drafts : [] });
+  },
+  openAgentDraft: async (draft) => {
+    if (!draft) return set({ pendingDraft: null });
+    get().openOverlay();
+    if (get().selectedAccountId !== draft.account_id) await get().selectAccount(draft.account_id);
+    set({ pendingDraft: draft });
+  },
 
   openAccountView: async (accountId) => {
     get().openOverlay();
@@ -458,7 +550,7 @@ export const useMailStore = create<MailStore>((set, get) => ({
     // is stale, and the optimistic patch above just told the user otherwise.
     if (ok === false) {
       // Outside React, so the imperative translator — the pattern
-      // `stores/alarms` and `stores/projects` already use for a store-built
+      // `stores/calendar/alarms` and `stores/projects` already use for a store-built
       // sentence.
       set({ error: translate(useI18nStore.getState().lang, "mail.messageGone") });
     }
@@ -502,8 +594,18 @@ export const useMailStore = create<MailStore>((set, get) => ({
     await get().loadPage(0);
   },
 
+  setUnreadOnly: async (unreadOnly) => {
+    set({ unreadOnly, headerOffset: 0 });
+    await get().loadPage(0);
+  },
+
+  clearFilters: async () => {
+    set({ query: "", unreadOnly: false, headerOffset: 0 });
+    await get().loadPage(0);
+  },
+
   loadPage: async (offset) => {
-    const { selectedFolderId, selectedPriority, query, sort, sortDesc } = get();
+    const { selectedFolderId, selectedPriority, query, sort, sortDesc, unreadOnly } = get();
     if (!selectedFolderId && !selectedPriority) {
       pageToken += 1;
       set({ headers: [], headerTotal: 0, headerScanned: undefined, loadingHeaders: false });
@@ -517,7 +619,15 @@ export const useMailStore = create<MailStore>((set, get) => ({
     // the list's sort headers — stays one code path that does not know which it
     // is showing.
     const page = await (selectedPriority
-      ? mailPriorityPage(selectedPriority, offset, MAIL_PAGE_SIZE, query.trim() || null, sort, sortDesc)
+      ? mailPriorityPage(
+          selectedPriority,
+          offset,
+          MAIL_PAGE_SIZE,
+          query.trim() || null,
+          sort,
+          sortDesc,
+          unreadOnly,
+        )
       : mailHeaders(
           selectedFolderId as string,
           offset,
@@ -525,6 +635,7 @@ export const useMailStore = create<MailStore>((set, get) => ({
           query.trim() || null,
           sort,
           sortDesc,
+          unreadOnly,
         )
     ).catch((err) => {
       set({ error: reason(err) });
@@ -536,6 +647,11 @@ export const useMailStore = create<MailStore>((set, get) => ({
     if (token !== pageToken) return;
     set({
       loadingHeaders: false,
+      // The tick marks go with the page they were made on — see `checkedIds`.
+      // Cleared even when the read failed: whatever is on screen afterwards is
+      // no longer the list the user was ticking.
+      checkedIds: [],
+      anchorId: null,
       ...(page
         ? {
             headers: page.items,
@@ -545,6 +661,13 @@ export const useMailStore = create<MailStore>((set, get) => ({
           }
         : {}),
     });
+  },
+
+  stepPage: async (offset) => {
+    const { unreadOnly, headerOffset, headers } = get();
+    const left =
+      unreadOnly && offset > headerOffset ? headers.filter((h) => h.seen).length : 0;
+    await get().loadPage(Math.max(0, offset - left));
   },
 
   selectMessage: async (messageId) => {
@@ -566,6 +689,71 @@ export const useMailStore = create<MailStore>((set, get) => ({
     // is not worth a banner, but the list must not lie about it either.
     const header = get().headers.find((h) => h.id === messageId);
     if (header && !header.seen) await get().setFlag(messageId, "seen", true);
+  },
+
+  checkOnly: (messageId) => set({ checkedIds: [messageId], anchorId: messageId }),
+
+  toggleChecked: (messageId) =>
+    set((s) => ({
+      checkedIds: s.checkedIds.includes(messageId)
+        ? s.checkedIds.filter((id) => id !== messageId)
+        : [...s.checkedIds, messageId],
+      // The anchor follows the last row touched either way, so a Ctrl-click
+      // followed by a Shift-click reads as one gesture.
+      anchorId: messageId,
+    })),
+
+  checkRange: (messageId, order) => {
+    const { anchorId } = get();
+    const from = anchorId ? order.indexOf(anchorId) : -1;
+    const to = order.indexOf(messageId);
+    // No anchor, or an anchor that scrolled out of the page: the range has no
+    // other end, so this is an ordinary click rather than nothing at all.
+    if (from < 0 || to < 0) {
+      get().checkOnly(messageId);
+      return;
+    }
+    const span = order.slice(Math.min(from, to), Math.max(from, to) + 1);
+    // The anchor is deliberately *not* moved: a run of Shift-clicks stretches
+    // and shrinks one range from where it started, as every list does.
+    set({ checkedIds: span });
+  },
+
+  clearChecked: () => set({ checkedIds: [], anchorId: null }),
+
+  deleteMessages: async (messageIds) => {
+    if (messageIds.length === 0) return;
+    const wanted = new Set(messageIds);
+    const targets = get().headers.filter((h) => wanted.has(h.id));
+    if (targets.length === 0) return;
+    // A cross-account list can hold rows from an account whose folders were
+    // never read — a local read, so this costs no socket, but without it the
+    // plan would find no Trash folder and call the delete permanent.
+    const accountIds = [...new Set(targets.map((h) => h.account_id))];
+    for (const accountId of accountIds) {
+      if (!get().foldersByAccount[accountId]) await get().loadFolders(accountId, false);
+    }
+    for (const group of planMailDelete(targets, get().foldersByAccount)) {
+      await (group.trashFolderId
+        ? mailMove(group.messageIds, group.trashFolderId)
+        : mailPurge(group.messageIds)
+      ).catch((err) => set({ error: reason(err) }));
+    }
+    // The open message may be one of the ones just deleted, and a body left on
+    // screen over a row that no longer exists is the worst of both.
+    if (get().selectedMessageId && wanted.has(get().selectedMessageId as string)) {
+      set({ selectedMessageId: null, body: null });
+    }
+    // Rail badges, then the marked-mail badges (a deleted message leaves its
+    // priority list too), then the page — which also clears the tick marks.
+    for (const accountId of accountIds) await get().loadFolders(accountId, false);
+    await get().refreshPriorityCounts();
+    await get().loadPage(get().headerOffset);
+    // Deleting the whole of the last page leaves the pager past the end, which
+    // reads as an empty folder. Step back one page instead.
+    if (get().headers.length === 0 && get().headerOffset > 0) {
+      await get().loadPage(Math.max(0, get().headerOffset - MAIL_PAGE_SIZE));
+    }
   },
 
   setFlag: async (messageId, flag, value) => {
@@ -655,7 +843,40 @@ export const useMailStore = create<MailStore>((set, get) => ({
     await mailSyncCancel(accountId).catch((err) => set({ error: reason(err) }));
     set((s) => ({ sync: { ...s.sync, [accountId]: { phase: "done" } } }));
   },
+
+  clearSyncState: (accountId) => {
+    set((s) => {
+      if (!(accountId in s.sync)) return s;
+      const sync = { ...s.sync };
+      delete sync[accountId];
+      return { sync };
+    });
+  },
 }));
+
+/**
+ * Whether a sync error is the server refusing the credentials. Matched on the
+ * backend's `MailError::AuthFailed` text (`services/mail_engine.rs`), which
+ * `MailAutoCheck.test.ts` pins — the error crosses IPC as a display string.
+ */
+export function isAuthRejection(error: string | undefined): boolean {
+  return !!error && error.toLowerCase().includes("rejected the username or password");
+}
+
+/**
+ * Whether an unattended check (the interval tick, the VPN catch-up) must skip
+ * this account: a check is already running, or the last one was a rejected
+ * login. The backend never retries a login within one action, but a poll every
+ * few minutes against a stale password is a retry loop all the same — and mail
+ * servers answer repeated failed logins from one IP with a temporary block. The
+ * pause lasts until the user checks by hand (one attempt, their call) or saves
+ * the account (`clearSyncState`).
+ */
+export function backgroundCheckBlocked(state: MailSyncState | undefined): boolean {
+  if (!state) return false;
+  if (state.phase === "start" || state.phase === "folder" || state.phase === "headers") return true;
+  return state.phase === "error" && isAuthRejection(state.error);
+}
 
 /** Total unread across an account's folders, for the rail's badge. */
 export function unreadTotal(folders: MailFolder[] | undefined): number {
@@ -680,10 +901,16 @@ export function unreadTotal(folders: MailFolder[] | undefined): number {
  */
 export function inboxUnread(byAccount: Record<string, MailFolder[]>): number {
   let sum = 0;
-  for (const folders of Object.values(byAccount)) {
-    for (const f of folders ?? []) {
-      if (f.kind === "inbox") sum += f.unread || 0;
-    }
+  for (const folders of Object.values(byAccount)) sum += accountInboxUnread(folders);
+  return sum;
+}
+
+/** One account's share of `inboxUnread` — the header menu's account rows, so
+ *  the rows add up to the button's dot rather than to a different number. */
+export function accountInboxUnread(folders: MailFolder[] | undefined): number {
+  let sum = 0;
+  for (const f of folders ?? []) {
+    if (f.kind === "inbox") sum += f.unread || 0;
   }
   return sum;
 }

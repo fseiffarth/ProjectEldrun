@@ -17,8 +17,8 @@ import { BoxEditorDialog } from "../components/projects/BoxEditorDialog";
 import { useProjectsStore } from "../stores/projects";
 import { useBoxesStore } from "../stores/boxes";
 import { useBoxEditorStore } from "../stores/boxEditor";
-import { usePillSelectionStore } from "../stores/pillSelection";
-import { usePillDragStore } from "../stores/pillDrag";
+import { usePillSelectionStore } from "../stores/drag/pillSelection";
+import { usePillDragStore } from "../stores/drag/pillDrag";
 
 function proj(id: string, position: number): ProjectEntry {
   return {

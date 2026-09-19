@@ -20,11 +20,11 @@ import {
   pointInOuter,
   type PhysPoint,
   type WindowFrame,
-} from "../../lib/coords";
+} from "../../lib/window/coords";
 import { useTabsStore, type DetachedDockTarget, type DropEdge } from "../../stores/tabs";
 
 /** An open popout of the active scope, with its physical-px window frame (see
- *  lib/coords). All hit-tests take a physical desktop cursor (`PhysPoint`) — never
+ *  lib/window/coords). All hit-tests take a physical desktop cursor (`PhysPoint`) — never
  *  DOM `ev.screenX/Y`, whose units diverge across engines under DPI scaling. */
 export interface DetachedTarget {
   label: string;

@@ -1,5 +1,5 @@
 import { createContext } from "react";
-import type { TabDrag } from "../../stores/drag";
+import type { TabDrag } from "../../stores/drag/drag";
 import type { TabEntry } from "../../stores/tabs";
 
 /**

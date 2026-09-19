@@ -242,7 +242,14 @@ export function YamlTree({
               onCancel={() => setAdding(null)}
               onAdd={(kind, key, type, value) => {
                 onChange(
-                  addChild(text, doc, root, kind, key, literalFor(type, value, doc.strict)),
+                  addChild(
+                    text,
+                    doc,
+                    root,
+                    kind,
+                    key,
+                    literalFor(type, value, doc.strict, root.inFlow || isFlow(root)),
+                  ),
                 );
                 setAdding(null);
               }}
@@ -389,6 +396,18 @@ function YamlRows({
       setDrag(live.current);
     }
   };
+  // A cancelled gesture writes NOTHING. `hooks/useListReorder` states the rule for
+  // this exact shape — a grip drag among siblings — and the reason: "a row
+  // reordered by a cancel nobody asked for is a silent edit". Only `TodoBoard`'s
+  // card drag commits on `pointercancel`, and it is safe there because no column
+  // under the pointer means the card stays put; here the equivalent fallback is
+  // index 0, so a cancelled press-and-twitch moved an entry to the top of its
+  // mapping and spliced the file.
+  const abort = () => {
+    live.current = null;
+    setDrag(null);
+  };
+
   const drop = () => {
     const d = live.current;
     live.current = null;
@@ -444,6 +463,7 @@ function YamlRows({
           onDragStart={start}
           onDragOver={over}
           onDragEnd={drop}
+          onDragAbort={abort}
         />
       ))}
     </>
@@ -474,6 +494,7 @@ function YamlRow({
   onDragStart,
   onDragOver,
   onDragEnd,
+  onDragAbort,
 }: {
   node: YamlNode;
   index: number;
@@ -499,6 +520,10 @@ function YamlRow({
   onDragStart: (index: number) => void;
   onDragOver: (clientY: number) => void;
   onDragEnd: () => void;
+  /** `pointercancel` — drop the gesture WITHOUT writing. Separate from
+   *  `onDragEnd` on purpose: the two terminal events mean opposite things here
+   *  (see `abort` beside `drop`). */
+  onDragAbort: () => void;
 }) {
   const t = useT();
   const [renaming, setRenaming] = useState(false);
@@ -624,7 +649,7 @@ function YamlRow({
                 e.currentTarget.releasePointerCapture?.(e.pointerId);
                 onDragEnd();
               }}
-              onPointerCancel={onDragEnd}
+              onPointerCancel={onDragAbort}
             >
               ⠿
             </button>
@@ -878,7 +903,16 @@ function YamlRow({
           marked={childMark}
           onCancel={() => setAdding(null)}
           onAdd={(kind, key, type, value) => {
-            onChange(addChild(text, doc, node, kind, key, literalFor(type, value, doc.strict)));
+            onChange(
+              addChild(
+                text,
+                doc,
+                node,
+                kind,
+                key,
+                literalFor(type, value, doc.strict, node.inFlow || isFlow(node)),
+              ),
+            );
             setAdding(null);
           }}
           onCopyLast={copyLastAction(node, text, onChange, () => setAdding(null))}

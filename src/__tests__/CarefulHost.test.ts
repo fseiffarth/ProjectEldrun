@@ -7,8 +7,8 @@ import {
   primaryTargetOf,
   setCarefulPatch,
   targetOfSpec,
-} from "../lib/carefulHost";
-import { targetKey } from "../lib/machineSync";
+} from "../lib/remote/carefulHost";
+import { targetKey } from "../lib/remote/machineSync";
 import type { ProjectEntry, Settings } from "../types";
 
 const login = { user: "alice", host: "login.example.org", port: 22 };

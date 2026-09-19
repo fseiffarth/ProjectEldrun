@@ -58,6 +58,10 @@ export default defineConfig({
   root: "mobile-web",
   plugins: [react(), stampServiceWorker()],
   base: "/",
+  // The build time the phone shows beside its version (see `src/buildInfo.ts`).
+  define: {
+    __ELDRUN_MOBILE_BUILT_AT__: JSON.stringify(new Date().toISOString()),
+  },
   build: {
     outDir: "../mobile-dist",
     emptyOutDir: true,

@@ -50,7 +50,7 @@
     same `ProjectFilesView` is mounted many times over at once (right panel, each
     Files (Project) tab, each subwindow's docked file column, main window + every
     popout). The persistent-session list was pulled out into one shared, refcounted
-    reading (`src/stores/hostSessions.ts`); the same duplication remains for the
+    reading (`src/stores/remote/hostSessions.ts`); the same duplication remains for the
     HPC probes, which are per-project facts held per surface:
     `slurmAvailable(projectDir)` (one SSH round trip per mounted viewer),
     `slurmQueue` (a 7s poll per viewer showing the Jobs view — so a cancel in one
@@ -92,7 +92,7 @@
     no reveal, every hit opened as raw text, and on a remote project it silently
     searched the local mirror. Deleted the view (main toolbar + box member-root
     mini toolbar), extracted the shared pure pieces into
-    `src/lib/projectSearch.ts` (`SearchMatch`, `matchParts`, `rankNameMatches`),
+    `src/lib/projects/projectSearch.ts` (`SearchMatch`, `matchParts`, `rankNameMatches`),
     and a remote-source tree now shows a "switch the source to Local to search"
     hint in the box's place instead of nothing. Implemented 2026-08-31.
     Follow-ups, deliberately out of scope: `QuickOpen` (Ctrl+P) is a third
@@ -201,7 +201,7 @@
     open the panel — and unmount the rail — before any button could be clicked.
     Hovering the edge above or below the rail still reveals the panel on its
     remembered view, and the click path stays the Windows/WebView2-safe one.
-    Frontend: `lib/sidePanelView.ts` (new), `components/layout/AppShell.tsx`,
+    Frontend: `lib/projects/sidePanelView.ts` (new), `components/layout/AppShell.tsx`,
     `components/layout/SidePanel.tsx`, `styles/onboarding.css`, `lib/i18n.ts`
     + the four dicts (`appShell.showPanelView` replaces `showFilesPanel` and
     `filesEdgeLabel`).
@@ -330,7 +330,7 @@
     was thrown away a write later — and the side switch answered its press a
     write later too. The patch is now in state before it is on disk; the
     backend's merged answer replaces it, a failed write rolls back. (2) The
-    app-drawn scrollbar (`lib/customScrollbar.ts`) re-measured on resize,
+    app-drawn scrollbar (`lib/theme/customScrollbar.ts`) re-measured on resize,
     mutation and scroll but never when a *transition* moved a container: a view
     mounted mid-slide had its thumb measured wherever the panel was that frame
     and left there — "the scrollbar in the agents view is in the middle of the
@@ -347,7 +347,7 @@
     still elsewhere 450ms later closes it. Clicks and the lessons event are not
     guarded. Also: `CenterPanel` is memoised — it takes no props, and the shell
     re-rendered the whole workspace under it on every hover-open and close.
-    Frontend: `stores/settings.ts`, `lib/customScrollbar.ts`,
+    Frontend: `stores/settings.ts`, `lib/theme/customScrollbar.ts`,
     `components/layout/{AppShell,SidePanel,CenterPanel}.tsx`,
     `styles/files-panel.css`. Implemented 2026-09-14, **not live-tested**.
     - [x] 🤖 Automated test — `SettingsPatchOptimistic`, `SidePanelEdgeRail`,
@@ -377,7 +377,7 @@
     tabs' own resting tone, the header's lights accent on hover. (2) "Scroll
     bar on unhide sometimes shows, sometimes keeps hidden, sometimes not at the
     wished position" (user, 2026-09-14): two discovery gaps in
-    `lib/customScrollbar.ts`. A container got a thumb per axis that overflowed
+    `lib/theme/customScrollbar.ts`. A container got a thumb per axis that overflowed
     *when it was found* and was then skipped by every later scan, so a file
     tree first painted with few rows and long names had a horizontal bar and
     never a vertical one; the missing axis's thumb is now made the moment that
@@ -387,7 +387,7 @@
     touched it; the end of a box-moving transition rescans the element that
     moved, and a window resize or visibility change rescans the document.
     Frontend: `components/common/EdgeRailIcons.tsx`,
-    `components/layout/{AppShell,SidePanel}.tsx`, `lib/customScrollbar.ts`,
+    `components/layout/{AppShell,SidePanel}.tsx`, `lib/theme/customScrollbar.ts`,
     `styles/{onboarding,files-panel}.css`. Implemented 2026-09-14, **not
     live-tested**.
     - [x] 🤖 Automated test — `SidePanelFlip`, `CustomScrollbar` (discovering

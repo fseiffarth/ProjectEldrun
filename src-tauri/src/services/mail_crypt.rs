@@ -493,6 +493,14 @@ const B64: base64::engine::general_purpose::GeneralPurpose =
 
 fn derive_passphrase_kek(passphrase: &str, salt: &[u8], kdf: KdfParams) -> Result<Key, String> {
     use argon2::{Algorithm, Argon2, Params, Version};
+    // The parameters come from `key.json`, which anyone able to write the mail
+    // directory can edit: an `m_cost` of 4 TiB is an allocation that takes the
+    // app down on unlock. Bounded well above what this module writes (64 MiB,
+    // 3 passes) and well below what would hurt.
+    const MAX_M_COST_KIB: u32 = 1024 * 1024;
+    if kdf.m_cost > MAX_M_COST_KIB || kdf.t_cost > 16 || kdf.p_cost > 8 {
+        return Err("the key file asks for Argon2 parameters beyond what Eldrun accepts".into());
+    }
     let params = Params::new(kdf.m_cost, kdf.t_cost, kdf.p_cost, Some(32))
         .map_err(|e| format!("bad Argon2 parameters: {e}"))?;
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);

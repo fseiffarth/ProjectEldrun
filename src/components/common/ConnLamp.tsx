@@ -1,4 +1,4 @@
-import type { ConnState } from "../../stores/remoteStatus";
+import type { ConnState } from "../../stores/remote/remoteStatus";
 
 /**
  * A small red/orange/green status lamp for a remote connection channel.
@@ -13,7 +13,7 @@ import type { ConnState } from "../../stores/remoteStatus";
  * an open Machines menu were also the most expensive thing on screen.
  *
  * `busy` is a second, **orthogonal** axis, not a fifth state: a connected host
- * with live work on it (≥1 tmux session — see `stores/hostBusy`). It exists
+ * with live work on it (≥1 tmux session — see `stores/remote/hostBusy`). It exists
  * because with a fleet held open all day "connected" is the resting state and
  * stops distinguishing anything, so the lamp answers "where am I actually
  * running something?" instead — as HOLLOW vs FILLED, the tab ring's

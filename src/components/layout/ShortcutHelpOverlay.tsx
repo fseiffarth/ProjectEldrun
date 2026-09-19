@@ -10,7 +10,7 @@ import {
   chordLabel,
   resolveChord,
   type ShortcutMap,
-} from "../../lib/shortcuts";
+} from "../../lib/shortcuts/shortcuts";
 
 /**
  * The keyboard-shortcut cheat sheet (part 2 of the keyboard-only steering
@@ -18,7 +18,7 @@ import {
  * steering mode, and from the header ⚙ menu; all three doors dispatch the one
  * `eldrun:open-shortcut-help` window event this host listens for.
  *
- * Every key it shows renders from `lib/shortcuts` — `SHORTCUT_DEFS` through
+ * Every key it shows renders from `lib/shortcuts/shortcuts` — `SHORTCUT_DEFS` through
  * `resolveChord`, so a user rebind shows its *effective* chord (marked
  * "customized"), plus the fixed `STEERING_KEYS`/`FIXED_KEYS` tables — never a
  * hardcoded chord string, so the sheet cannot drift from what `useKeyboard`

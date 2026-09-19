@@ -900,7 +900,7 @@ pub async fn fetch_reader(raw: &str) -> Result<FetchedPage, String> {
 /// `commands::calendar::calendar_fetch_ics`) and decode it to text.
 ///
 /// Deliberately **not** `fetch_reader`: an ICS body is handed to
-/// `src/lib/ics.ts`'s parser, never rendered as markup, so there is nothing
+/// `src/lib/calendar/ics.ts`'s parser, never rendered as markup, so there is nothing
 /// here for the mail sanitizer to do — it would only risk mangling a `\n`
 /// inside a folded content line. The SSRF defence (hop judging, DNS pinning,
 /// the size cap) is `fetch_raw`'s and is identical to the reader's.

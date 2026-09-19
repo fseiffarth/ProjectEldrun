@@ -307,7 +307,7 @@ engine's correctness arguments all assume one human.*
 
 181. **The timezone detector.** Every stamp is floating local wall-clock
     (`schema/calendar.rs:11-13`) and `parseIcsDate` **ignores `TZID` entirely**
-    (`src/lib/ics.ts:133-159`), so `DTSTART;TZID=Europe/Berlin:20260801T140000`
+    (`src/lib/calendar/ics.ts:133-159`), so `DTSTART;TZID=Europe/Berlin:20260801T140000`
     already lands as floating `14:00` regardless of the reader's zone. Invisibly
     correct for one person in one zone; **silently wrong across zones** — Alice in
     Berlin creates 14:00, Bob in Boston sees 14:00 and arrives six hours late, and
@@ -547,17 +547,17 @@ engine's correctness arguments all assume one human.*
     against a TTL'd server set, and a `👥 N` chip beside the existing category dots
     on the pill (`ProjectPill.tsx:2287-2297`) — N is *other* members online, hidden
     at 0 rather than showing `0`, `title` naming them. Server connectivity reuses
-    `ConnLamp`'s four states (`stores/remoteStatus.ts:10`) with `busy` orthogonal;
+    `ConnLamp`'s four states (`stores/remote/remoteStatus.ts:10`) with `busy` orthogonal;
     aggregate by status the way `RemoteConnMenu` already does rather than growing a
     row of near-identical dots, and **presence is a count, never a fifth colour**.
     **One poll per window, not per pill** — a `stores/presence` with
-    `stores/hostSessions`'s refcounted-subscriber shape, since "sessions are a
+    `stores/remote/hostSessions`'s refcounted-subscriber shape, since "sessions are a
     property of the host, not of the surface looking at one". **Advisory locking is
     deliberately not built**: the unit of conflict here is a commit and git reports
     it better and later; Eldrun does not own the editor (files open in `xdg-open`'d
     external apps), so a lock it cannot enforce would be routinely and invisibly
     violated; and the one case a lock would help — the long-running job — is already
-    visible via `stores/hostBusy` and the Sessions view. Extend the existing busy
+    visible via `stores/remote/hostBusy` and the Sessions view. Extend the existing busy
     signal to say *whose* session it is (the tmux name already carries
     `eldrun-<scope>--<uuid>`) instead. Carries `UntestedTag`.
     - [ ] 🤖 Automated test — a vitest over the pure "who is online" reduction

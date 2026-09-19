@@ -3,7 +3,7 @@ import {
   cancelDelayedCapture,
   SCREENSHOT_DELAY_MS,
   startDelayedCapture,
-} from "../lib/screenshot";
+} from "../lib/window/screenshot";
 
 /**
  * The Shift+click delay: the window the user Alt+Tabs in.

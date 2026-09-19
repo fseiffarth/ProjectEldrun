@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pickHint, type HintCtx } from "../lib/hints";
+import { pickHint, type HintCtx } from "../lib/shortcuts/hints";
 
 const empty: HintCtx = { projectCount: 0, activeId: null };
 const active: HintCtx = { projectCount: 1, activeId: "p1" };

@@ -133,6 +133,10 @@ pub fn classify_fs_event(kind: &EventKind, path: &Path) -> Option<&'static str> 
 #[derive(Default)]
 pub struct Debouncer {
     last: HashMap<PathBuf, Instant>,
+    /// When [`Debouncer::prune`] last actually swept. `Option` because `Instant`
+    /// has no `Default` and this struct derives it (built via `default()` in the
+    /// watcher and every test); `None` means "never swept", so the first call runs.
+    last_prune: Option<Instant>,
 }
 
 impl Debouncer {
@@ -154,10 +158,24 @@ impl Debouncer {
         true
     }
 
-    /// Drop cooldown entries older than the window. Called on each flush so the
-    /// map cannot grow without bound over a long session (a `git checkout` can
-    /// touch thousands of distinct paths).
+    /// Drop cooldown entries older than the window, so the map cannot grow without
+    /// bound over a long session (a `git checkout` can touch thousands of distinct
+    /// paths).
+    ///
+    /// Called after **every filesystem event** by the watcher callback, which owns
+    /// this debouncer outright — not from the 30 s flush loop, which cannot reach
+    /// it without a lock on the per-event path. A full `retain` per event made a
+    /// burst quadratic (N events each walking a map of up to N paths), so the sweep
+    /// runs at most once per [`COOLDOWN`]. That is inert for correctness —
+    /// `should_count` compares timestamps itself and never trusts an entry's mere
+    /// presence — and still bounds the map to roughly two windows of distinct paths.
     pub fn prune(&mut self, now: Instant) {
+        if let Some(last) = self.last_prune {
+            if now.duration_since(last) < COOLDOWN {
+                return;
+            }
+        }
+        self.last_prune = Some(now);
         self.last
             .retain(|_, seen| now.duration_since(*seen) < COOLDOWN);
     }
@@ -295,26 +313,20 @@ fn watch_pruned(
     }
 }
 
-/// The user's own scan-exclusion list for `project_id` — `scan_excluded_paths` in
-/// the project's `project.json`, the same list the file tree writes and the size
-/// walk reads (`commands::fs::excluded_rel_set`).
-///
-/// Read from the project's *state* directory, which is where `project.json` lives
-/// for a local and a remote project alike — the remote one's watch root is its
-/// mirror, a different path entirely, so resolving the list from the watch root
-/// would find nothing.
+/// The user's own scan-exclusion list for `project_id` — `scan_excluded_paths` on
+/// the trusted `projects.json` entry, the same list the file tree writes and the
+/// size walk reads (`commands::fs::excluded_rel_set`). Never the in-folder
+/// `project.json` copy, which anything working in the tree can rewrite.
 fn user_excluded_dirs(project_id: &str) -> std::collections::HashSet<String> {
-    let Some(dir) = crate::services::remote::project_directory(project_id) else {
+    let list_path = crate::storage::state_dir().join("projects.json");
+    let Ok(list) = crate::storage::read_json::<crate::schema::projects::ProjectsList>(&list_path)
+    else {
         return Default::default();
     };
-    let Ok(raw) = std::fs::read_to_string(PathBuf::from(dir).join("project.json")) else {
-        return Default::default();
-    };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) else {
-        return Default::default();
-    };
-    let list: Vec<String> = json
-        .get("scan_excluded_paths")
+    let list: Vec<String> = list
+        .iter()
+        .find(|e| e.id == project_id)
+        .and_then(|e| e.extra.get("scan_excluded_paths"))
         .and_then(|v| v.as_array())
         .map(|a| {
             a.iter()

@@ -6,7 +6,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 import {
   _clearAllPtyInputsForTest,
   writePtyInput,
-} from "../lib/terminalInput";
+} from "../lib/terminal/terminalInput";
 
 const invokeMock = vi.mocked(invoke);
 const encoder = new TextEncoder();

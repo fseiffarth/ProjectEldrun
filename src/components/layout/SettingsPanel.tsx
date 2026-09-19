@@ -8,6 +8,7 @@ import {
   MAX_UI_ZOOM,
   ZOOM_STEPS,
 } from "../../stores/settings";
+import { CopilotCompletionCard } from "./CopilotCompletionCard";
 import { UntestedTag } from "../common/UntestedTag";
 import { experimentalEnabled } from "../../lib/experimental";
 import { usePowerStore, useEnergySaver } from "../../stores/power";
@@ -37,11 +38,12 @@ import {
   chordLabel,
   findConflicts,
   isFixedChord,
+  livePanelToggleKey,
   resolveChord,
   type ShortcutAction,
   type ShortcutDef,
   type ShortcutMap,
-} from "../../lib/shortcuts";
+} from "../../lib/shortcuts/shortcuts";
 import {
   AgentsPanel,
   FileTypeSettings,
@@ -53,10 +55,10 @@ import { Dropdown } from "../common/Dropdown";
 import { PasswordInput } from "../common/PasswordInput";
 import { useT, LANGUAGES, type Language, type TranslationKey } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
-import { IS_MAC, IS_WINDOWS } from "../../lib/platform";
+import { IS_MAC, IS_WINDOWS, PLATFORM } from "../../lib/platform";
 import { useHintsStore } from "../../stores/hints";
-import { canConnectVpnSilently } from "../../lib/vpnConnect";
-import { setVpnAutoConnect, vpnUsernameFor } from "../../lib/vpnAutoConnect";
+import { canConnectVpnSilently } from "../../lib/remote/vpn/vpnConnect";
+import { setVpnAutoConnect, vpnUsernameFor } from "../../lib/remote/vpn/vpnAutoConnect";
 import type { StoredVpnConfig } from "../../types";
 import { MobileSettings } from "../mobile/MobileSettings";
 import { UpdatesPanel } from "./UpdatesPanel";
@@ -70,15 +72,57 @@ import {
   ToggleRow,
 } from "./settingsUi";
 
-// The workspace-layout help text. On Linux a lone Super toggles the panels; on
-// Windows it's F9 (the lone Win key is OS-reserved — Start opens on release, see
-// useKeyboard); on macOS the Meta key is reserved for Cmd shortcuts, so the
-// lone-key toggle is disabled — there the panels stay reachable via the
-// cursor-to-edge reveal. Keep the copy honest per OS.
+// The workspace-layout help text. The key is the one that works here, from
+// `livePanelToggleKey`: a lone Super on a Linux desktop that leaves it to the
+// window, F9 where the shell claims Super (GNOME, KDE) and on Windows (the lone
+// Win key is OS-reserved — Start opens on release, see useKeyboard). On macOS
+// the Meta key is reserved for Cmd shortcuts, so the lone-key toggle is
+// disabled — there the panels stay reachable via the cursor-to-edge reveal.
 function workspaceLayoutIntro(t: ReturnType<typeof useT>): string {
   return IS_MAC
     ? t("help.workspaceLayout.introMac")
-    : t("help.workspaceLayout.introOther", { key: IS_WINDOWS ? "F9" : "Super" });
+    : t("help.workspaceLayout.introOther", { key: livePanelToggleKey() });
+}
+
+/** What `workspace_capabilities` answers (backend `commands::workspace`). */
+interface WorkspaceCapabilities {
+  backend: string;
+  can_park: boolean;
+}
+
+/**
+ * One sentence in Layout, Linux only: this desktop cannot hide other apps'
+ * windows on a project switch. Project switching promises to swap the apps
+ * with the project, and on GNOME, XFCE or KDE Wayland (the `null` and
+ * `kde-wayland` backends) it silently leaves every window where it was — the
+ * user should read that here rather than conclude the feature is broken.
+ * Renders nothing until the backend answers, when it can park, and when the
+ * command is missing (a backend older than this frontend). Not on Windows or
+ * macOS, whose backends always park.
+ */
+export function WorkspaceParkingNote() {
+  const t = useT();
+  const [caps, setCaps] = useState<WorkspaceCapabilities | null>(null);
+  useEffect(() => {
+    if (PLATFORM !== "linux") return;
+    let live = true;
+    invoke<WorkspaceCapabilities>("workspace_capabilities")
+      .then((c) => {
+        if (live && c && typeof c.can_park === "boolean") setCaps(c);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
+  if (!caps || caps.can_park) return null;
+  return (
+    <SettingsCard>
+      <p className="settings-help">
+        {t("settings.workspaceNoParking")} <UntestedTag />
+      </p>
+    </SettingsCard>
+  );
 }
 
 /** Every sub-panel takes the same two: `onBack` returns to the main panel,
@@ -394,7 +438,7 @@ function GitHostingSettings({ onBack, onClose }: SubPanelProps) {
 
 /**
  * Same setting the header's VPN menu arms per config (`settings.vpn_auto_connect`,
- * see `lib/vpnAutoConnect.ts`) — surfaced here too since the header menu only shows
+ * see `lib/remote/vpn/vpnAutoConnect.ts`) — surfaced here too since the header menu only shows
  * up once a tunnel exists, which makes this opt-in easy to miss.
  */
 function VpnAutoConnectSettings({ onBack, onClose }: SubPanelProps) {
@@ -908,6 +952,48 @@ export function SettingsDialog({
               />
             )}
 
+            {/* Absent means on. The backend reads the key per spawn and per
+                request, so the switch needs no restart in either direction. */}
+            <ToggleCard
+              label={<>{t("settings.rootMcp")} <UntestedTag /></>}
+              checked={settings?.root_mcp ?? true}
+              onChange={(e) => void updateSettings({ root_mcp: e.target.checked })}
+              help={t("settings.rootMcpHelp")}
+            />
+            {/* Subordinate to the switch above. Read per spawn and per request
+                too: on, the endpoint refuses the cloud agents already running. */}
+            <ToggleCard
+              label={<>{t("settings.rootMcpLocalOnly")} <UntestedTag /></>}
+              checked={settings?.root_mcp_local_only ?? false}
+              disabled={!(settings?.root_mcp ?? true)}
+              onChange={(e) => void updateSettings({ root_mcp_local_only: e.target.checked })}
+              help={t("settings.rootMcpLocalOnlyHelp")}
+            />
+            {/* Its own switch, absent means off: the tools above never bring
+                mail with them. Read per request, like the two above. */}
+            <ToggleCard
+              label={<>{t("settings.rootMcpMail")} <UntestedTag /></>}
+              checked={settings?.root_mcp_mail ?? false}
+              disabled={!(settings?.root_mcp ?? true)}
+              onChange={(e) => void updateSettings({ root_mcp_mail: e.target.checked })}
+              help={t("settings.rootMcpMailHelp")}
+            />
+
+            <SettingRow
+              label={<>{t("rootReview.setting")} <UntestedTag /></>}
+              control={<Dropdown
+                value={settings?.root_mcp_review ?? "all"}
+                disabled={!(settings?.root_mcp ?? true)}
+                options={[
+                  { value: "all", label: t("rootReview.levelAll") },
+                  { value: "destructive", label: t("rootReview.levelDestructive") },
+                  { value: "off", label: t("rootReview.levelOff") },
+                ]}
+                onChange={(value) => void updateSettings({ root_mcp_review: value as "all" | "destructive" | "off" })}
+              />}
+              help={t("rootReview.settingHelp")}
+            />
+
             {/* Eldrun Mobile runs its host sidecar on every desktop (systemd
                 user unit, launchd agent, or the Windows Run key), so the
                 section is not platform-gated. */}
@@ -954,7 +1040,7 @@ export function SettingsDialog({
             {/* Beside Energy Saver rather than folded into it: that one widens
                 timers off a live battery reading, this removes features off a
                 standing preference, and "plugged in, still want it lean" is the
-                case a merged control could not express. `lib/fastMode` holds the
+                case a merged control could not express. `lib/agents/fastMode` holds the
                 list of what goes — the help string above mirrors it. */}
             <ToggleCard
               label={
@@ -1009,6 +1095,14 @@ export function SettingsDialog({
               onChange={(e) => void updateSettings({ project_remarks: e.target.checked })}
               help={t("settings.projectRemarksHelp")}
             />
+
+            <ToggleCard
+              label={<>{t("settings.copilotCompletion")} <UntestedTag /></>}
+              checked={experimentalEnabled(settings, "copilot_completion")}
+              onChange={(e) => void updateSettings({ copilot_completion: e.target.checked })}
+              help={t("settings.copilotCompletionHelp")}
+            />
+            {experimentalEnabled(settings, "copilot_completion") && <CopilotCompletionCard />}
 
             {/* Mail is ONE switch. It used to be two — this gate plus a
                 `mail_global_app` sub-toggle deciding whether the header button
@@ -1362,6 +1456,7 @@ export function SettingsDialog({
                 </>
               }
             />
+            <WorkspaceParkingNote />
             <SettingRow
               label={t("settings.windowZoom")}
               control={

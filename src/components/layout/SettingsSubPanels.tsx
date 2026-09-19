@@ -15,13 +15,13 @@ import {
   codexHookNeedsTrust,
   openCodexHooksTab,
   type CodexHookState,
-} from "../../lib/codexHooks";
+} from "../../lib/agents/codexHooks";
 import type { GlobalAppEntry } from "../../types";
 import { parseSshAddress } from "../projects/scaffold";
 import { useProjectsStore } from "../../stores/projects";
-import { useGlobalMachinesStore } from "../../stores/globalMachines";
+import { useGlobalMachinesStore } from "../../stores/remote/globalMachines";
 import { useT, type TranslationKey } from "../../lib/i18n";
-import { notifyAgentRegistryChanged } from "../../lib/agentRegistry";
+import { notifyAgentRegistryChanged } from "../../lib/agents/agentRegistry";
 import {
   DEFAULT_PREFACE_COMMANDS,
   MAX_PREFACE_COMMANDS,
@@ -29,7 +29,7 @@ import {
   agentModelsFor,
   prefaceCommandsFor,
   sanitizePrefaceCommand,
-} from "../../lib/agentPrefaces";
+} from "../../lib/agents/agentPrefaces";
 import {
   AGENT_CRON_MESSAGE,
   addTime,
@@ -44,10 +44,10 @@ import {
   withCronEnabled,
   withGlobalTimes,
   type AgentCron,
-} from "../../lib/agentCron";
-import { formatTime } from "../../lib/calendarTime";
+} from "../../lib/agents/agentCron";
+import { formatTime } from "../../lib/calendar/calendarTime";
 import { useUse24h } from "../../lib/timeFormat";
-import { AGENT_FENCE_DEFAULT_PATHS, parseAgentFencePaths } from "../../lib/agentFence";
+import { AGENT_FENCE_DEFAULT_PATHS, parseAgentFencePaths } from "../../lib/agents/agentFence";
 
 interface OllamaModelInfo {
   name: string;
@@ -713,6 +713,15 @@ function AgentFenceCard() {
       </label>
       <p className="settings-help">{t("settings.agentFenceHelp")}</p>
       <p className="settings-help">{t("settings.agentFenceLimits")}</p>
+      <p className="settings-help">{t("settings.agentFenceSharedState")}</p>
+      <label className="settings-toggle-card-row">
+        <span>{t("settings.agentFenceCargoCredentials")} <UntestedTag /></span>
+        <Toggle
+          checked={settings?.agent_fence_cargo_credentials ?? false}
+          onChange={(e) => void updateSettings({ agent_fence_cargo_credentials: e.target.checked })}
+        />
+      </label>
+      <p className="settings-help">{t("settings.agentFenceCargoCredentialsHelp")}</p>
       <label className="settings-help" htmlFor="agent-fence-paths">
         {t("settings.agentFencePaths")}
       </label>
@@ -743,34 +752,60 @@ function AgentFenceCard() {
   );
 }
 
+/** Backend `NodeRuntimeStatus` (`node_runtime_status`). */
+interface NodeRuntimeStatus {
+  npm: boolean;
+  /** `node --version`, e.g. `v22.22.1`; null when Node is absent. */
+  version: string | null;
+  min_major: number;
+  too_old: boolean;
+}
+
 /**
  * "Install Node/npm first" helper for the Manage Agents panel. Most agent CLIs
- * install through `npm`, so when `npm` isn't on the host's PATH this points the
- * user at the one-click, no-admin Node install for their OS (and stays hidden
- * once npm is detected). Follows Eldrun's install-via-terminal-tab policy.
+ * install through `npm`, so when `npm` isn't on the host's PATH — or the Node
+ * that is there is older than the current LTS the CLIs require — this points
+ * the user at the one-click, no-admin Node install for their OS (and stays
+ * hidden once a current Node is detected). Follows Eldrun's
+ * install-via-terminal-tab policy.
  */
 function NodeRuntimeNotice() {
   const t = useT();
-  // null = still probing; true/false = npm present or not.
-  const [hasNpm, setHasNpm] = useState<boolean | null>(null);
+  // null = still probing.
+  const [status, setStatus] = useState<NodeRuntimeStatus | null>(null);
   const recheck = () =>
-    invoke<boolean>("npm_is_installed").then(setHasNpm).catch(() => setHasNpm(true));
+    invoke<NodeRuntimeStatus>("node_runtime_status")
+      .then(setStatus)
+      .catch(() => setStatus(null));
   useEffect(() => void recheck(), []);
 
-  // While probing, or once npm is present, there is nothing to nudge about.
-  if (hasNpm !== false) return null;
+  // While probing, or once a current npm is present, there is nothing to nudge about.
+  if (!status || (status.npm && !status.too_old)) return null;
+  const tooOld = status.npm && status.too_old;
 
   const { command, shellKey, shellKind } = NODE_INSTALL[PLATFORM];
   return (
     <div className="ollama-vibe-section agent-list-entry">
       <div className="settings-subheader">
         Node.js / npm{" "}
-        <span className="ollama-status-text">{t("agents.nodeNotDetected")}</span>
+        <span className="ollama-status-text">
+          {tooOld
+            ? t("agents.nodeTooOld", { version: status.version ?? "", min: status.min_major })
+            : t("agents.nodeNotDetected")}
+        </span>
+        {tooOld && <UntestedTag />}
       </div>
-      <p className="settings-help">
-        {t("agents.nodeHelpPre")} <code>npm</code> {t("agents.nodeHelpMid")}{" "}
-        <strong>{t(shellKey)}</strong> {t("agents.nodeHelpPost")}
-      </p>
+      {tooOld ? (
+        <p className="settings-help">
+          {t("agents.nodeTooOldHelpPre", { min: status.min_major })}{" "}
+          <strong>{t(shellKey)}</strong> {t("agents.nodeTooOldHelpPost")}
+        </p>
+      ) : (
+        <p className="settings-help">
+          {t("agents.nodeHelpPre")} <code>npm</code> {t("agents.nodeHelpMid")}{" "}
+          <strong>{t(shellKey)}</strong> {t("agents.nodeHelpPost")}
+        </p>
+      )}
       <div className="ollama-install-cmd-row">
         <code className="ollama-install-cmd">{command}</code>
         <button
@@ -930,7 +965,7 @@ function NextRunLabel({ cron, cmd }: { cron: AgentCron | undefined; cmd: string 
  * ships: a CLI adds a slash command in a point release and renames its models
  * more often than that. What is NOT offered here is a permission or plan mode —
  * an agent's authority is set through the agent's own CLI, and every entry in
- * these lists is literally typed into it (see `lib/agentPrefaces`).
+ * these lists is literally typed into it (see `lib/agents/agentPrefaces`).
  *
  * An agent the user has never touched carries no stored entry at all and falls
  * back to the defaults; "Use defaults" deletes the key rather than writing the
@@ -2108,10 +2143,19 @@ export function OllamaPanel({ onBack, onClose }: SubPanelProps) {
       .catch(() => {});
   }, [installed]);
 
-  // Delete an orphaned partial layer to reclaim its disk space.
+  // Delete an orphaned partial layer to reclaim its disk space. The list is
+  // re-read afterwards rather than trimmed optimistically: a delete the OS
+  // refused (the system service's cache, authorization declined) must leave the
+  // row in place next to its error, not vanish and reappear on the next open.
   const deleteOrphan = (path: string) => {
-    setOrphans((p) => p.filter((o) => o.path !== path));
-    void invoke("delete_partial_blob", { path }).catch((e) => setError(String(e)));
+    setError("");
+    void invoke("delete_partial_blob", { path })
+      .catch((e) => setError(String(e)))
+      .finally(() => {
+        invoke<{ digest: string; size: number; path: string }[]>("list_orphan_partial_blobs")
+          .then(setOrphans)
+          .catch(() => {});
+      });
   };
 
   // Reconcile interrupted entries against what's actually installed: any model
@@ -2438,7 +2482,7 @@ export function OllamaPanel({ onBack, onClose }: SubPanelProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shownRegistry]);
 
-  // "Load on Eldrun start" — which models `stores/ollamaAutoload` warms into
+  // "Load on Eldrun start" — which models `stores/agents/ollamaAutoload` warms into
   // memory at launch. The per-model switches write straight through (the same
   // setting the 🧠 menu's chip toggles, so the two surfaces cannot disagree);
   // the Energy Saver opt-out is *staged* behind a Save button, because it is the
@@ -2945,7 +2989,7 @@ export function OllamaPanel({ onBack, onClose }: SubPanelProps) {
       )}
 
       {/* Load-on-start: the models Eldrun warms into memory at launch, plus the
-          Energy Saver opt-out. See `stores/ollamaAutoload` for the rules. */}
+          Energy Saver opt-out. See `stores/agents/ollamaAutoload` for the rules. */}
       <div className="settings-section-title">
         {t("ollama.autostartTitle")} <UntestedTag />
       </div>

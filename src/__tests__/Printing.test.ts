@@ -1,5 +1,5 @@
 /**
- * The print manager's pure helpers (`lib/printing.ts`). Two things are pinned
+ * The print manager's pure helpers (`lib/window/printing.ts`). Two things are pinned
  * here, both of them the reason the helpers exist rather than being inlined into
  * the pane:
  *
@@ -23,7 +23,7 @@ import {
   printerStateKey,
   printerStateLabelKey,
   printerTone,
-} from "../lib/printing";
+} from "../lib/window/printing";
 import type { PrintJob, PrintJobState, PrintSnapshot, PrinterInfo } from "../types/printing";
 
 function printer(over: Partial<PrinterInfo> = {}): PrinterInfo {

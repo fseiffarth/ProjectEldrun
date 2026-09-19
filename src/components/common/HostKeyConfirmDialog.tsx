@@ -1,4 +1,4 @@
-import { useHostKeyPromptStore } from "../../stores/hostKeyPrompt";
+import { useHostKeyPromptStore } from "../../stores/remote/hostKeyPrompt";
 import { UntestedTag } from "./UntestedTag";
 import { useT } from "../../lib/i18n";
 

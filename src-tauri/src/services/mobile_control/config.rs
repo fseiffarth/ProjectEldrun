@@ -88,8 +88,46 @@ pub fn validate_origin(raw: &str) -> Result<String, String> {
     Ok(origin)
 }
 
+/// The Tailscale CLI to run. PATH first; then the CLI the platform's own
+/// Tailscale app ships where PATH does not reach it — the macOS App Store /
+/// standalone app bundles its CLI inside `Tailscale.app` and adds nothing to a
+/// GUI app's PATH, and a Windows install made after Eldrun started is on the
+/// machine but not yet on this process's PATH (the MiKTeX/Codex gap `paths`
+/// already covers). Falls back to the bare name so the spawn error stays the
+/// ordinary "not installed" one.
+fn tailscale_program_for(
+    os: crate::paths::OsKind,
+    on_path: bool,
+    program_files: Option<&std::ffi::OsStr>,
+    exists: impl Fn(&Path) -> bool,
+) -> PathBuf {
+    if on_path {
+        return PathBuf::from("tailscale");
+    }
+    let bundled = match os {
+        crate::paths::OsKind::Macos => {
+            Some(PathBuf::from("/Applications/Tailscale.app/Contents/MacOS/Tailscale"))
+        }
+        crate::paths::OsKind::Windows => program_files
+            .map(|pf| PathBuf::from(pf).join("Tailscale").join("tailscale.exe")),
+        crate::paths::OsKind::Unix => None,
+    };
+    bundled
+        .filter(|path| exists(path))
+        .unwrap_or_else(|| PathBuf::from("tailscale"))
+}
+
+fn tailscale_program() -> PathBuf {
+    tailscale_program_for(
+        crate::paths::OsKind::current(),
+        crate::paths::binary_on_path("tailscale"),
+        std::env::var_os("ProgramFiles").as_deref(),
+        |path| path.is_file(),
+    )
+}
+
 pub fn serve_status_json() -> Result<serde_json::Value, String> {
-    let output = crate::paths::command_no_window("tailscale")
+    let output = crate::paths::command_no_window(tailscale_program())
         .args(["serve", "status", "--json"])
         .output()
         .map_err(|error| {
@@ -300,6 +338,40 @@ impl HostConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::paths::OsKind;
+
+    #[test]
+    fn tailscale_on_path_is_always_preferred() {
+        for os in [OsKind::Macos, OsKind::Windows, OsKind::Unix] {
+            let program = tailscale_program_for(os, true, None, |_| true);
+            assert_eq!(program, PathBuf::from("tailscale"));
+        }
+    }
+
+    #[test]
+    fn tailscale_falls_back_to_the_app_bundled_cli_on_macos() {
+        let bundled = PathBuf::from("/Applications/Tailscale.app/Contents/MacOS/Tailscale");
+        let found = tailscale_program_for(OsKind::Macos, false, None, |p| p == bundled);
+        assert_eq!(found, bundled);
+        let missing = tailscale_program_for(OsKind::Macos, false, None, |_| false);
+        assert_eq!(missing, PathBuf::from("tailscale"));
+    }
+
+    #[test]
+    fn tailscale_falls_back_to_program_files_on_windows() {
+        let pf = std::ffi::OsStr::new(r"C:\Program Files");
+        let expected = PathBuf::from(pf).join("Tailscale").join("tailscale.exe");
+        let found = tailscale_program_for(OsKind::Windows, false, Some(pf), |p| p == expected);
+        assert_eq!(found, expected);
+        let no_env = tailscale_program_for(OsKind::Windows, false, None, |_| true);
+        assert_eq!(no_env, PathBuf::from("tailscale"));
+    }
+
+    #[test]
+    fn tailscale_has_no_bundled_fallback_on_other_unixes() {
+        let program = tailscale_program_for(OsKind::Unix, false, None, |_| true);
+        assert_eq!(program, PathBuf::from("tailscale"));
+    }
 
     fn state_dir_with(settings: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("state dir");

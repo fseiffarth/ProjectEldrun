@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { matchAnchorId, slugify } from "../lib/viewers/markdown";
-import { useMdAnchorStore } from "../stores/mdAnchor";
+import { useMdAnchorStore } from "../stores/viewers/mdAnchor";
 
 describe("matchAnchorId", () => {
   const ids = ["project-map", "docs", "agent-instructions", "Config"];

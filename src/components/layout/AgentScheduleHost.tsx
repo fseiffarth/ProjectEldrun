@@ -1,22 +1,22 @@
 import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { deliveryRecordId, isFinishedOneTime } from "../../lib/agentPromptSend";
-import { promptOfSchedule } from "../../lib/agentPromptScheduled";
-import { nextAfter } from "../../lib/agentPromptLinks";
+import { deliveryRecordId, isFinishedOneTime } from "../../lib/agents/prompt/send";
+import { promptOfSchedule } from "../../lib/agents/prompt/scheduled";
+import { nextAfter } from "../../lib/agents/prompt/links";
 import {
   scheduleVerdict,
   sortSchedules,
   type ScheduleResult,
   type ScheduledAgentPrompt,
-} from "../../lib/agentSchedule";
+} from "../../lib/agents/agentSchedule";
 import {
   scheduledAgentInput,
   submitScheduledAgentMessage,
-} from "../../lib/scheduledAgentInput";
+} from "../../lib/agents/scheduledAgentInput";
 import { agentDeliveryReady, agentDeliveryTurn, lastPtyOutputAt, useActivityStore } from "../../stores/activity";
-import { recordScheduledDelivery, sendCollectedPrompt, useAgentPromptsStore } from "../../stores/agentPrompts";
-import { useAgentSchedulesStore } from "../../stores/agentSchedules";
+import { recordScheduledDelivery, sendCollectedPrompt, useAgentPromptsStore } from "../../stores/agents/agentPrompts";
+import { useAgentSchedulesStore } from "../../stores/agents/agentSchedules";
 import { useTabsStore, type TabEntry } from "../../stores/tabs";
 
 const TICK_MS = 15_000;

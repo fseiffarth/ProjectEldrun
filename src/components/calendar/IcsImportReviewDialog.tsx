@@ -1,5 +1,5 @@
 import { UntestedTag } from "../common/UntestedTag";
-import type { IcsFinding, IcsReport } from "../../lib/icsSafety";
+import type { IcsFinding, IcsReport } from "../../lib/calendar/icsSafety";
 import { useT } from "../../lib/i18n";
 
 /**
@@ -8,7 +8,7 @@ import { useT } from "../../lib/i18n";
  * ## Why a dialog, when the file cannot do anything
  *
  * It cannot. An `.ics` carries no code this app would run, and the module note
- * on `lib/icsSafety.ts` lists the four independent reasons why. This is not a
+ * on `lib/calendar/icsSafety.ts` lists the four independent reasons why. This is not a
  * quarantine gate and it must not pretend to be one — a dialog that implies a
  * calendar file might infect something is a dialog that teaches people to click
  * through warnings.

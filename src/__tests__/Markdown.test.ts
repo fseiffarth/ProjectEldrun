@@ -151,6 +151,77 @@ describe("renderMarkdown", () => {
   });
 });
 
+describe("renderMarkdown — hostile documents", () => {
+  // A markdown file inside a project folder is attacker-controlled, and the
+  // preview is injected into the main window, whose IPC reaches the whole
+  // backend. Assert on the parsed DOM, not on strings: an attribute breakout is
+  // only visible as a structural change.
+  const HOSTILE = [
+    "[a]($x$)",
+    "[a]($$x$$)",
+    "![a]($x$)",
+    '[a](`x"`)',
+    "![a](`x`)",
+    "![$x$](data:image/png;base64,AAAA)",
+    '![`" onerror="alert(1)`](data:image/png;base64,AAAA)',
+    '![$" onerror=alert(1) x="$](./local.png)',
+    "![`c`](https://example.invalid/p.png)",
+    "[![b]($x$)](y.md)",
+    "[a](![b](c))",
+    '<img src=x onerror="alert(1)">',
+    "[x](javascript:alert(1))",
+    "[x](JaVaScRiPt:alert(1))",
+    "[x]( javascript:alert(1))",
+    "[x](data:text/html,<script>alert(1)</script>)",
+    "[x](vbscript:msgbox)",
+    "![x](data:text/html;base64,PHNjcmlwdD4=)",
+    '```"><script>alert(1)</script>\ncode\n```',
+    '# heading" onclick="x',
+    "| a |\n| --- |\n| <b onmouseover=x>c</b> |",
+    "> [!NOTE]\n> <script>alert(1)</script>",
+    "- [ ] <svg onload=alert(1)>",
+    "https://example.invalid/\"onmouseover=\"x",
+    "$<img src=x onerror=alert(1)>$",
+  ];
+
+  for (const src of HOSTILE) {
+    it(`renders ${JSON.stringify(src)} without script-capable markup`, () => {
+      const doc = new DOMParser().parseFromString(renderMarkdown(src), "text/html");
+      expect(doc.querySelector("script, iframe, object, embed, svg, style")).toBeNull();
+      for (const el of Array.from(doc.body.querySelectorAll("*"))) {
+        for (const a of Array.from(el.attributes)) {
+          expect(a.name).toMatch(/^[a-z][a-z-]*$/);
+          expect(a.name.startsWith("on")).toBe(false);
+          // One of the renderer's own tags inside an attribute value is the
+          // signature of a restored placeholder (`href="<span class=…`).
+          expect(a.value).not.toMatch(/<(span|code|img|a)\b/);
+          // An unrestored placeholder leaking into the value.
+          expect(a.value).not.toContain("\u0000");
+        }
+      }
+      for (const a of Array.from(doc.querySelectorAll("a[href]"))) {
+        expect(a.getAttribute("href")).not.toMatch(/^\s*(javascript|vbscript|data):/i);
+      }
+      for (const img of Array.from(doc.querySelectorAll("img[src]"))) {
+        expect(img.getAttribute("src")).toMatch(/^data:image\//i);
+      }
+    });
+  }
+
+  it("keeps a marker-bearing link as readable text rather than a broken anchor", () => {
+    const html = renderMarkdown("[a]($x$)");
+    expect(html).not.toContain("<a ");
+    expect(html).toContain('<span class="md-math" data-display="false">x</span>');
+  });
+
+  it("resolves code and math in an image alt to their text", () => {
+    const img = new DOMParser()
+      .parseFromString(renderMarkdown("![`a<b` and $c$](data:image/png;base64,AA)"), "text/html")
+      .querySelector("img");
+    expect(img?.getAttribute("alt")).toBe("a<b and c");
+  });
+});
+
 describe("toggleTaskCheckbox", () => {
   it("checks an unchecked task and unchecks a checked one", () => {
     const src = "- [ ] a\n- [x] b";

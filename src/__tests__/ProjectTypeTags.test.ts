@@ -112,6 +112,30 @@ describe("projectTypeTags — stacked / edge axes", () => {
     const tags = projectTypeTags(entry({ git_type: "remote-public" }), false, t);
     expect(facets(tags)).toEqual([GIT, GITHUB_PUBLIC]);
   });
+
+  it("shows the origin address in the provider tag's tooltip", () => {
+    const url = "git@github.com:owner/repo.git";
+    const detected = projectTypeTags(
+      entry({ detected_provider: "github", git_origin_url: url }),
+      false,
+      t,
+    ).find((tag) => tag.key === "provider");
+    expect(detected?.title.split("\n")).toEqual([
+      "origin on GitHub (detected — not published via Eldrun)",
+      url,
+    ]);
+    const published = projectTypeTags(
+      entry({ git_type: "remote-private", git_provider: "github", git_origin_url: url }),
+      false,
+      t,
+    ).find((tag) => tag.key === "provider");
+    expect(published?.title).toBe(`GitHub · private\n${url}`);
+    // No sniffed origin → the tooltip stays the bare summary line.
+    const bare = projectTypeTags(entry({ git_type: "remote-public" }), false, t).find(
+      (tag) => tag.key === "provider",
+    );
+    expect(bare?.title).toBe("GitHub · public");
+  });
 });
 
 describe("gitTypeLabel", () => {

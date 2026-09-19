@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const terminalState = vi.hoisted(() => ({ lines: [] as string[] }));
+const terminalState = vi.hoisted(() => ({ lines: [] as string[], alternate: false }));
 
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
@@ -11,6 +11,7 @@ vi.mock("@xterm/xterm", () => ({
     textarea = document.createElement("textarea");
     buffer = {
       active: {
+        get type() { return terminalState.alternate ? "alternate" : "normal"; },
         get length() { return terminalState.lines.length; },
         getLine(row: number) {
           const value = terminalState.lines[row];
@@ -78,13 +79,15 @@ const STORED = {
   truncated: false,
   entries: [
     { kind: "prompt", text: "add a clear button", at: "2026-09-15T05:49:39.013Z" },
-    { kind: "answer", text: "Looking at the composer.\n\nDone: the ✕ empties the draft." },
+    { kind: "answer", text: "Looking at the composer." },
+    { kind: "answer", text: "Done: the **✕** empties the draft. See [the docs](https://example.com)." },
   ],
 };
 
 describe("Eldrun Mobile Focus reads the stored session", () => {
   beforeEach(() => {
     terminalState.lines = [];
+    terminalState.alternate = false;
     FakeWebSocket.instances = [];
     localStorage.clear();
     vi.stubGlobal("WebSocket", FakeWebSocket);
@@ -97,23 +100,40 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     vi.restoreAllMocks();
   });
 
-  it("opens on Terminal, and remembers Focus for the agent once chosen", async () => {
+  it("opens an agent tab on its stored session, and remembers Terminal for the agent once chosen", async () => {
     vi.stubGlobal("fetch", sidecarFetch(() => STORED));
     const { unmount } = render(<Terminal tab={TAB} back={() => {}} />);
     await settle();
-    expect(screen.getByRole("button", { name: "Terminal" }).getAttribute("aria-pressed")).toBe("true");
-    expect(screen.queryByTestId("session-transcript")).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: "Focus" }));
-    await settle();
-    expect(localStorage.getItem("eldrun.mobile.view.claude-code")).toBe("focus");
-    unmount();
-
-    // Another Claude tab opens where this one was left; a Codex tab does not.
-    render(<Terminal tab={{ ...TAB, id: "tab-8" }} back={() => {}} />);
-    await settle();
     expect(screen.getByRole("button", { name: "Focus" }).getAttribute("aria-pressed")).toBe("true");
     screen.getByTestId("session-transcript");
+    // The default is not written down as the reader's choice.
+    expect(localStorage.getItem("eldrun.mobile.view.claude-code")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Terminal" }));
+    await settle();
+    expect(localStorage.getItem("eldrun.mobile.view.claude-code")).toBe("terminal");
+    unmount();
+
+    // Another Claude tab opens where this one was left.
+    render(<Terminal tab={{ ...TAB, id: "tab-8" }} back={() => {}} />);
+    await settle();
+    expect(screen.getByRole("button", { name: "Terminal" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.queryByTestId("session-transcript")).toBeNull();
+  });
+
+  it("opens on Terminal when no stored session reads and Focus was never chosen", async () => {
+    vi.stubGlobal("fetch", sidecarFetch(() => ({ available: false, reason: "unsupported", entries: [], truncated: false })));
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+    expect(screen.getByRole("button", { name: "Terminal" }).getAttribute("aria-pressed")).toBe("true");
+    expect(localStorage.getItem("eldrun.mobile.view.claude-code")).toBeNull();
+  });
+
+  it("opens a shell tab on Terminal", async () => {
+    vi.stubGlobal("fetch", sidecarFetch(() => STORED));
+    render(<Terminal tab={{ ...TAB, id: "tab-9", kind: "shell", agent_label: undefined }} back={() => {}} />);
+    await settle();
+    expect(screen.getByRole("button", { name: "Terminal" }).getAttribute("aria-pressed")).toBe("true");
   });
 
   it("lays the stored prompts and answers out as a chat and polls with the last version", async () => {
@@ -129,8 +149,12 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     const prompt = screen.getByRole("group", { name: "Your prompt" });
     expect(prompt.textContent).toBe("add a clear button");
     expect(prompt.className).toBe("readable-turn user");
-    const answer = chat.querySelector(".readable-turn.agent.answer");
-    expect(answer?.textContent).toContain("Done: the ✕ empties the draft.");
+    // One bubble per message the agent wrote, its Markdown formatted, its
+    // link only a label.
+    const answers = chat.querySelectorAll(".readable-turn.agent.answer");
+    expect([...answers].map((bubble) => bubble.textContent)).toEqual(["Looking at the composer.", "Done: the ✕ empties the draft. See the docs."]);
+    expect(answers[1].querySelector("strong")?.textContent).toBe("✕");
+    expect(chat.querySelector("a")).toBeNull();
     // The next read names the version it holds, so an unmoved file answers small.
     act(() => { document.dispatchEvent(new Event("visibilitychange")); });
     await settle();
@@ -140,7 +164,7 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     // Copy copies the stored turns, prompts marked the way the screen marks them.
     fireEvent.click(screen.getByRole("button", { name: "Copy the session text" }));
     await settle();
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("> add a clear button\n\nLooking at the composer.\n\nDone: the ✕ empties the draft.");
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("> add a clear button\n\nLooking at the composer.\n\nDone: the **✕** empties the draft. See [the docs](https://example.com).");
   });
 
   it("falls back to the screen when the session is unavailable, and can be switched to it", async () => {
@@ -157,7 +181,13 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 200)); });
     expect(screen.queryByTestId("session-transcript")).toBeNull();
     expect(screen.getByText("Hi there.").closest(".readable-turn")?.className).toBe("readable-turn agent answer");
-    expect(screen.queryByRole("button", { name: "Session" })).toBeNull();
+    // The toggle is still there, dimmed; a tap says why instead of switching.
+    const dimmed = screen.getByRole("button", { name: "Session" });
+    expect(dimmed.getAttribute("aria-disabled")).toBe("true");
+    expect(screen.queryByText("No session id for this tab yet")).toBeNull();
+    fireEvent.click(dimmed);
+    screen.getByText("No session id for this tab yet");
+    expect(screen.queryByTestId("session-transcript")).toBeNull();
 
     stored = STORED;
     act(() => { document.dispatchEvent(new Event("visibilitychange")); });
@@ -168,6 +198,72 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     expect(screen.getByText("Hi there.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Session" }));
     screen.getByTestId("session-transcript");
+  });
+
+  it("reads a full-screen agent's stored session in Focus instead of the full-screen notice", async () => {
+    const openCode = { ...TAB, id: "tab-oc", label: "OpenCode", agent_label: "OpenCode" };
+    localStorage.setItem("eldrun.mobile.view.opencode", "focus");
+    let stored: unknown = STORED;
+    vi.stubGlobal("fetch", sidecarFetch(() => stored));
+    render(<Terminal tab={openCode} back={() => {}} />);
+    await settle();
+    // OpenCode's TUI draws on the alternate screen.
+    terminalState.alternate = true;
+    const bytes = new TextEncoder().encode("┃ Build  grok-4.5\n┃ > 1. Yes\n┃   2. No");
+    const payload = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(payload).set(bytes);
+    act(() => { FakeWebSocket.instances[0].onmessage?.({ data: payload } as MessageEvent); });
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 200)); });
+    screen.getByTestId("session-transcript");
+    expect(screen.queryByText("Full-screen program")).toBeNull();
+    // The frame is not read as a question the stored session lacks.
+    expect(screen.queryByRole("group", { name: "On screen now" })).toBeNull();
+
+    // Switched to the screen, the full-screen program says so, as before.
+    fireEvent.click(screen.getByRole("button", { name: "Screen" }));
+    screen.getByText("Full-screen program");
+    expect(screen.queryByTestId("session-transcript")).toBeNull();
+
+    // The notice leads back to the stored session; with none, it is only the notice.
+    fireEvent.click(screen.getByRole("button", { name: "Read the agent's stored conversation" }));
+    screen.getByTestId("session-transcript");
+    stored = { available: false, reason: "unsupported", entries: [], truncated: false };
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    await settle();
+    screen.getByText("Full-screen program");
+    expect(screen.queryByRole("button", { name: "Read the agent's stored conversation" })).toBeNull();
+  });
+
+  it("shows a sent prompt as the reader's bubble at once, and never changes it", async () => {
+    localStorage.setItem("eldrun.mobile.view.claude-code", "focus");
+    let stored = STORED;
+    vi.stubGlobal("fetch", sidecarFetch(() => stored));
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+    fireEvent.change(screen.getByRole("textbox", { name: "Message agent" }), { target: { value: "also the tests" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await settle();
+    // In the chat at once, as any prompt, not a "Sent" strip under it.
+    const chat = screen.getByTestId("session-transcript");
+    const prompts = () => [...chat.querySelectorAll(".readable-turn.user")];
+    const bubble = prompts()[1];
+    expect(bubble.textContent).toBe("also the tests");
+    expect(bubble.className).toBe("readable-turn user");
+    expect(document.querySelector(".last-sent")).toBeNull();
+
+    // The agent answered, then took the prompt in: the record lands after
+    // that answer in the file, the bubble stays where it was, as it was.
+    stored = { ...STORED, version: "1300:2", entries: [
+      ...STORED.entries,
+      { kind: "answer", text: "Still on the button.", at: "2026-09-15T05:51:00.000Z" },
+      { kind: "prompt", text: "also the tests", at: "2026-09-15T05:52:00.000Z" },
+    ] };
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    await settle();
+    expect(prompts()).toHaveLength(2);
+    expect(prompts()[1]).toBe(bubble);
+    expect(bubble.textContent).toBe("also the tests");
+    expect(bubble.nextElementSibling?.textContent).toBe("Still on the button.");
   });
 
   it("clears the draft with the composer's ✕", async () => {

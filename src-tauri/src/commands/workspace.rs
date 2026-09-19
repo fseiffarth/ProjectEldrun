@@ -32,6 +32,29 @@ pub fn workspace_info(state: State<'_, WorkspaceStateArc>) -> WorkspaceInfo {
     state.lock().unwrap().backend.info()
 }
 
+/// What the running desktop's workspace backend can do, for Settings: which
+/// backend was picked and whether a project switch really hides the previous
+/// project's app windows (`WorkspaceBackend::can_park`). A separate command
+/// rather than new `WorkspaceInfo` fields, so no backend constructor (macOS's
+/// among them, uncompilable here) has to change.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WorkspaceCapabilities {
+    pub backend: String,
+    pub can_park: bool,
+}
+
+pub(crate) fn capabilities_of(backend: &dyn WorkspaceBackend) -> WorkspaceCapabilities {
+    WorkspaceCapabilities {
+        backend: backend.name().to_string(),
+        can_park: backend.can_park(),
+    }
+}
+
+#[tauri::command]
+pub fn workspace_capabilities(state: State<'_, WorkspaceStateArc>) -> WorkspaceCapabilities {
+    capabilities_of(&*state.lock().unwrap().backend)
+}
+
 #[tauri::command]
 pub fn workspace_switch(
     state: State<'_, WorkspaceStateArc>,
@@ -64,7 +87,7 @@ pub fn workspace_switch(
 /// The frontend binds the bare Super key to the panel toggle, and must not do
 /// so where the shell answers that key itself (GNOME's overview, KDE's
 /// launcher) — see `platform::desktop_claims_super`. Read once at startup and
-/// cached in `src/lib/superKey.ts`; the environment cannot change under a
+/// cached in `src/lib/shortcuts/superKey.ts`; the environment cannot change under a
 /// running session.
 #[tauri::command]
 pub fn desktop_owns_super_key() -> bool {
@@ -460,6 +483,13 @@ mod tests {
         if wireless {
             fs::create_dir_all(iface_dir.join("wireless")).unwrap();
         }
+    }
+
+    #[test]
+    fn null_backend_reports_it_cannot_park() {
+        let caps = capabilities_of(&crate::platform::null::NullBackend);
+        assert_eq!(caps.backend, "null");
+        assert!(!caps.can_park);
     }
 
     #[test]

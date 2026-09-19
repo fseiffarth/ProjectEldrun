@@ -27,7 +27,7 @@ import {
   movedEntryAbs,
   remoteMemberTreeDir,
   resolveMoveTarget,
-} from "../lib/fileMove";
+} from "../lib/projects/fileMove";
 
 const LOCAL_A = { root: "/home/u/eldrun/projects/a", folderRel: "src", remote: false };
 

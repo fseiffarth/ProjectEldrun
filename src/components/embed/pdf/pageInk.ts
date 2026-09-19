@@ -26,7 +26,7 @@
  */
 import * as pdfjs from "pdfjs-dist";
 import type { PDFDocumentProxy } from "pdfjs-dist";
-import type { SyncRect } from "../../../lib/viewers/tex";
+import type { SyncRect } from "../../../lib/viewers/tex/tex";
 
 /** 72 dpi. The probe is looking for a figure, a rule or a logo — things drawn at
  *  a size a reader can see — so page units are resolution enough, and one page at

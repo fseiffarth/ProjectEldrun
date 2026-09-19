@@ -48,6 +48,16 @@ correctness/UX work atop the same layout model #42 detaches.*
     `src-tauri/src/commands/subwindow.rs`, `platform/x11.rs` / `platform/mod.rs`,
     `services/window_service.rs` / `services/project_runtime.rs`, `lib.rs`,
     `tauri.conf.json`, `capabilities/default.json`.*
+    - [ ] Verify tab split, merge and reorder in the main window and inside a
+      detached window on native Wayland and X11. Local gestures now use DOM
+      coordinates; native Wayland's dummy desktop cursor must never route a drop
+      to another window. Covered by `DragDropSplit` and `DetachedTabDrag` tests;
+      desktop-coordinate dragging between OS windows remains unavailable on native
+      Wayland (use the existing dock controls).
+    - [ ] Restore a detached window to its previous monitor on native Wayland
+      after both project switching and app restart (reported on a non-KDE
+      desktop). The tab-drag fix does not solve placement: GTK's global positions
+      are unavailable, and hiding/showing leaves placement to the compositor.
     - [x] 🤖 Automated test — `SubwindowDetach`, `DetachedSync`, `DetachedHost`,
       `TerminalAttachOnly` (frontend) + `window_service` detached-labels selector
       (backend). tsc clean; 30 #42 frontend tests pass; cargo 373 pass.
@@ -163,7 +173,7 @@ correctness/UX work atop the same layout model #42 detaches.*
     colliding chords, Reset all, the new Ctrl+Shift+← cycle-back), and the
     "Steer with the keyboard" lesson (basics tier — its enter-mode task must
     complete when the legend appears).
-    *Files: `src/lib/shortcuts.ts`, `src/hooks/useKeyboard.ts`,
+    *Files: `src/lib/shortcuts/shortcuts.ts`, `src/hooks/useKeyboard.ts`,
     `src/stores/keyboardSteering.ts`, `src/components/layout/SteeringLegend.tsx`
     / `ShortcutHelpOverlay.tsx`, `src/lib/lessons.ts`.*
     - [x] 🤖 Automated test — `src/__tests__/Shortcuts.test.ts` (chord helpers,
@@ -173,23 +183,27 @@ correctness/UX work atop the same layout model #42 detaches.*
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
 
-215. **Live-QA the install overlay terminal.** ✅ Implemented · 🧪 Awaiting live
-    QA. Every one-click install (`runInstallInTab`: Ollama/agent CLI installs,
-    the LaTeX/MiKTeX prompt, `gh`/`glab` install + auth login, custom-agent
-    install commands) now also opens a centered overlay terminal attached to
-    the same root-scope PTY, replacing the open-time toast. Verify: the
-    overlay shows the install live and accepts input (a sudo password);
-    closing it (×, backdrop, Escape outside the terminal) leaves the install
-    running in the root tab and raises the "still running in the root
-    terminal" toast; the root tab shows the full output when opened later
-    (client buffer + backend replay); closing the root tab while the overlay
-    is up takes the overlay down silently; Escape typed into the terminal does
-    NOT close the overlay.
-    *Files: `src/lib/installCommand.ts`, `src/stores/installOverlay.ts`,
-    `src/components/layout/InstallOverlay.tsx`, `src/components/layout/AppShell.tsx`,
-    `src/styles/settings-chrome.css`.*
-    - [x] 🤖 Automated test — `src/__tests__/InstallOverlay.test.tsx` (tab+PTY
-      wiring, attach-only props, close hand-off toast, dead-tab silent close).
+215. **Live-QA one-click installs in the root console.** ✅ Implemented · 🧪
+    Awaiting live QA. Every one-click install (`runInstallInTab`: Ollama/agent
+    CLI installs, the LaTeX/MiKTeX prompt, `gh`/`glab` install + auth login,
+    custom-agent install commands) opens its root tab **in the root console**
+    (2026-09-17). It used to float its own centered overlay terminal
+    (`InstallOverlay`) on the same PTY — a second overlay onto the root
+    terminal beside the console; the two are merged, the install overlay, its
+    store, CSS and strings are gone. Verify: the console opens over the dialog
+    the install was started from, with the install's tab in front, live and
+    accepting input (a sudo password); closing it (×, backdrop, Escape outside
+    a pane, Ctrl+Shift+R) leaves the install running and reopening shows the
+    full output; Escape typed into the terminal does NOT close the console;
+    after a relaunch, an install started BEFORE the console was first opened
+    keeps the saved root tabs (root is restored before the tab is added) —
+    same for a login parked by `openConnectionInRoot`.
+    *Files: `src/lib/installCommand.ts`, `src/lib/remote/remoteConnect.ts`,
+    `src/stores/rootOverlay.ts` (`openTabInRootConsole`),
+    `src/components/layout/AppShell.tsx`.*
+    - [x] 🤖 Automated test — `src/__tests__/InstallInRootConsole.test.tsx`
+      (tab in front + console open, project untouched, restore-before-add,
+      no second login mid-restore).
     - [ ] 🖐️ Manual test
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
@@ -219,7 +233,7 @@ correctness/UX work atop the same layout model #42 detaches.*
     missed while the app was closed is skipped, not sent at launch; the chips read in the user's 12/24-hour setting; the panel's warnings
     render for "armed with no times" and "master switch off". Settings ride the
     backend `extra` catch-all, so **no backend restart is needed**.
-    *Files: `src/lib/agentCron.ts`, `src/lib/agentCronRun.ts`,
+    *Files: `src/lib/agents/agentCron.ts`, `src/lib/agents/agentCronRun.ts`,
     `src/components/layout/AgentCronHost.tsx`,
     `src/components/layout/SettingsSubPanels.tsx`, `src/styles/header-menus.css`,
     `src/types/index.ts`, `src/lib/i18n.ts` (+ the four dictionaries).*
@@ -248,7 +262,7 @@ correctness/UX work atop the same layout model #42 detaches.*
     PDF (`notes.pdf` next to `paper.tex`) is never marked; the badge is muted on
     an inactive tab and full-strength on the hovered/active one; a popout's
     strip shows the same badge for a pair that is fully inside that window.
-    *Files: `src/lib/texPdfLink.ts`,
+    *Files: `src/lib/viewers/tex/texPdfLink.ts`,
     `src/components/tabs/TabLocalityBadges.tsx`,
     `src/components/tabs/TabBar.tsx`,
     `src/components/layout/DetachedCenterPanel.tsx`,
@@ -262,3 +276,267 @@ correctness/UX work atop the same layout model #42 detaches.*
       - [ ] ❌ Doesn't work
 
 ---
+
+846. **Root console: the root terminal as a Ctrl+Shift+R overlay with Eldrun's own tools.**
+    ✅ Implemented · 🧪 Awaiting live QA. The root scope is no longer a place
+    you switch to: Ctrl+Shift+R (rebindable, `rootConsole`), the scope chip's
+    Root entry and a root-terminal login all open it as one floating subwindow
+    over whatever project is open, and nothing about the project on screen
+    moves. Agents opened there, and nowhere else, get Eldrun's MCP tools:
+    `projects_list`, `calendar_list`, `calendar_add_event` (1 h by default),
+    `calendar_delete_event`, and the whole to-do board — `todo_list`,
+    `todo_add`, `todo_update`, `todo_complete`, `todo_reopen`, `todo_move`
+    (column + position, through the drag's own `move_tasks_at`) and
+    `todo_delete`. The
+    tools are served on loopback with a per-run token that only a root-scope
+    agent spawn is given. The root console is never in Eldrun Mobile's catalog
+    and its Claude tabs get no `--remote-control`. Design:
+    `docs/context/root_console.md`.
+    *Files: `src-tauri/src/services/root_mcp.rs`,
+    `src-tauri/src/commands/root_mcp.rs`, `commands/terminal.rs`,
+    `commands/calendar.rs`, `services/mobile_control/discovery.rs`, `lib.rs`;
+    `src/components/layout/RootOverlay.tsx`, `src/stores/rootOverlay.ts`,
+    `CenterPanel.tsx`, `AppShell.tsx`, `ProjectSwitcher.tsx`,
+    `src/lib/remote/remoteConnect.ts`, `src/lib/shortcuts/shortcuts.ts`, `src/hooks/useKeyboard.ts`,
+    `src/styles/subwindows.css`, `src/lib/i18n.ts` (+ the four dictionaries).*
+    - [x] 🤖 Automated test — `services::root_mcp` (spawn wiring per CLI,
+      bearer check, every tool incl. the 1 h default and bad input),
+      `discovery::the_root_scope_is_never_in_the_catalog`,
+      `src/__tests__/RootOverlay.test.tsx`.
+    - [ ] 🖐️ Manual test (needs a restart: backend change)
+      - Ctrl+Shift+R from a focused project terminal opens the console and
+        pressing it again closes it; the project stays where it was.
+      - Open Claude with **+**: `/mcp` lists `eldrun`; "add a calendar entry
+        tomorrow at 14:00, 1 h, Review" puts the event in the header's 🗓 at
+        once. With CalDAV write turned on, the event also reaches the server.
+      - With the to-do board open beside the console: "put a card 'Ship' on
+        the board for project X", "move it to Doing", "rename it", "mark it
+        done", "reopen it", "delete it" — each shows on the board at once,
+        with no reload.
+      - "Show me my mail" / "open the calendar" / "open the board on that
+        card": the console closes and the overlay appears (the card's editor
+        for the last one). With that overlay's setting off, the agent is told
+        so and nothing opens.
+      - Claude in a project tab: `/mcp` lists no `eldrun`.
+      - Codex in the root console: `/mcp` lists `eldrun`.
+      - The phone's project list never shows the root console.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+- [ ] **Root MCP staged writes — live QA** (implemented, not run live).
+  After the updated backend is running, ask a root agent to add an event: only
+  the header's pending count should change. Open Ctrl+Shift+R and approve: the
+  event appears and a CalDAV calendar pushes it. Add then move a card; approve
+  both in order, then repeat and reject the add to conflict the dependent move.
+  Edit a proposed row yourself: approval must conflict without overwriting it.
+  Verify per-tab `proposals_list`, persistence across tab close/resume, bulk
+  approval of only displayed cards, inert bidi titles, and the outbound warning.
+  In Settings → root MCP review, choose destructive: adds apply with Undo,
+  deletes wait; Undo after a user edit conflicts. Off restores direct writes.
+  Keep the strip/setting's `UntestedTag` until these checks are confirmed.
+
+2314. **The root console as a window: a docked file viewer, move, resize.** ✅
+    Implemented · 🧪 Awaiting live QA. Three things the console lacked because
+    it was built as a dialog and is used as a window (2026-09-17). **The file
+    viewer** docks on every subwindow's right edge through the same ◫ a
+    project's subwindows carry — the shared `SubwindowFilesSidebar` →
+    `ProjectFilesTab` → `ProjectFilesView`, so no fourth copy of the viewer —
+    rooted at `~/eldrun/root`, the folder that belongs to no project and could
+    until now only be read with `ls` from inside the console. Its state is the
+    group node's own three fields (`filesOpen`/`filesWidth`/`filesFolder`),
+    written through new `setGroupFiles*InScope` actions, because root is not the
+    active scope while the console floats over a project and the plain actions
+    would have filed the console's file column onto the project on screen.
+    Unsplit, the ◫ sits in the console's title bar beside the ×, and the control
+    cluster reserves the column's width the way `TabBar` does; split, every
+    subwindow carries its own ◫ and its own column. **Move** is a drag of the
+    title bar (a press on a tab or a control keeps its own meaning), **resize**
+    is eight grips on the edges and corners, and ⤢ fills the window with ⤡ back
+    — double-clicking the bar does the same. The frame is remembered per machine
+    in localStorage (`stores/rootOverlay`, the `fileSourcePref`/`texViewPref`
+    convention, never `settings.json`: where a window sits on one desk is not a
+    preference worth syncing) and re-clamped against the window it actually
+    opens in, so a console sized on an external display is still reachable
+    without one; an edge dragged past the minimum pins the opposite edge instead
+    of pushing the console across the screen.
+    *Files: `src/components/layout/RootOverlay.tsx`, `src/stores/rootOverlay.ts`,
+    `src/stores/tabs.ts`, `src/styles/subwindows.css`, `src/lib/i18n.ts` (+ the
+    four dictionaries), `docs/context/root_console.md`.*
+    - [x] 🤖 Automated test — `src/__tests__/RootOverlay.test.tsx` (the ◫ writes
+      the ROOT group node and never the project's, the column's scope/cwd/viewer
+      id, one column per split subwindow, fill/restore, and the pure frame
+      helpers: clamping into a smaller window, move, corner resize, the pinned
+      far edge).
+    - [ ] 🖐️ Manual test (frontend only — hot-reloads)
+      - Ctrl+Shift+R, then ◫: a file tree of `~/eldrun/root` docks on the right;
+        drag its left edge to resize it, double-click that edge to close it.
+        Close and reopen the console — the column, its width and its browsed
+        folder are still there; the project on screen never grew one.
+      - Split the console (drag a tab onto a body edge): each subwindow has its
+        own ◫ and its own column.
+      - Drag the title bar's empty space to move the console; drag each edge and
+        corner to resize it; ⤢ fills the window and ⤡ comes back; a
+        double-click on the bar toggles the same. A press on a tab still drags
+        the tab, and a press on ⚿/×/+ still does its own job.
+      - Relaunch: the console opens where it was left, at the size it was left.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+2315. **Root console: an event is edited in place, and five sweeps answer for
+    every project at once.** ✅ Implemented · 🧪 Awaiting live QA (2026-09-17).
+    Six tools on top of the console's original set. **`calendar_update_event`**
+    was the missing sibling of `todo_update`: rescheduling an event used to mean
+    delete + add, which loses the row's identity, so a CalDAV server saw a
+    cancellation and a new invitation. Only the fields given change, an empty
+    string clears `location`/`notes`, and moving `start` alone **keeps the
+    event's length** (an agent that omits `end` is moving it, not resizing it);
+    `all_day` can be turned on and off, and an event in a read-only calendar is
+    refused before anything is written. The five read-only sweeps answer what no
+    project agent can: **`projects_git_status`** (branch, ahead/behind,
+    staged/unstaged/untracked per project, `dirty_only` to keep it short),
+    **`sync_status`** (lockstep state and why, what byte-sync tracks, and the
+    unacknowledged local-loss warnings), **`time_summary`** (tracked seconds per
+    project, Eldrun's own window time separate), **`usage_recap`** (the daily
+    recap's counters over a range) and **`boxes_list`** (each box's members and
+    relations). None of them opens a connection: the git sweep reads the local
+    working copy only — a remote project through its mirror, skipped with a
+    reason when it has none — and `sync_status` reports the last recorded pass,
+    because a synchronous SSH round trip per project inside a tool call is the
+    window freeze the remote gates exist to avoid. Both rollups are bucketed by
+    UTC date, as they were written, and say so. Design:
+    `docs/context/root_console.md`.
+    *Files: `src-tauri/src/services/root_mcp.rs`,
+    `src-tauri/src/commands/root_mcp.rs`, `commands/calendar.rs`,
+    `schema/calendar.rs` (`days_between`/`minutes_between`),
+    `services/{git_peer,remote_sync,local_loss}.rs` (`*_in` path helpers).*
+    - [x] 🤖 Automated test — `services::root_mcp` (the move-keeps-its-length
+      rule, field-by-field edits, all-day both ways, every refusal incl. the
+      read-only calendar; the porcelain/branch-header parsers; the git sweep
+      against a real repo, a non-repo, a missing folder and a mirror-less remote;
+      the rollups' ranges, filters and app-time split; `sync_status` against
+      written state), `schema::calendar` (the two date helpers).
+    - [ ] 🖐️ Manual test (needs a restart: backend change)
+      - In a root Claude/Codex tab: "move tomorrow's 14:00 Review to 16:00" —
+        the header's 🗓 shows it at 16:00, still one hour long (or whatever it
+        was), and the same event, not a new one. With CalDAV write on, the
+        server gets an update rather than a cancel + invite.
+      - "Rename it", "clear its notes", "make it an all-day event", "put it back
+        at 10:00 for 90 minutes" — each lands at once, with no reload.
+      - "Which of my projects have uncommitted work?" — the answer matches the
+        switcher's dots; a remote project without a mirror is named as skipped
+        rather than silently missing.
+      - "How long was I on <project> last week?" and "what did I do yesterday?"
+        — the numbers match the daily recap's.
+      - "Is anything out of step with its host?" — matches the pill lamps and
+        the local-loss dialog, with no SSH connection made (a disconnected
+        remote project answers instantly).
+      - "What's in my boxes?" — members and their names match the switcher.
+      - The ⚿ badge's tooltip lists twenty tools.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+2316. **Root console: one global switch for Eldrun's MCP tools.** ✅
+    Implemented · 🧪 Untested (2026-09-17). `settings.json`'s `root_mcp`
+    (absent means on, so nothing migrates) turns the root console's tools off
+    and on. It is read per spawn and per request, so neither direction needs a
+    restart, and off closes both halves: `apply_to_spawn` hands a new root agent
+    no endpoint, and `POST /mcp` answers `503` to the agents that already hold
+    the token — after the bearer check, so an unauthenticated caller learns
+    nothing from it. Two doors onto the one key: Settings → "Eldrun's tools
+    (MCP) for root-console agents", and the console's ⚿ badge, now a button
+    that is struck through while off.
+    *Files: `src-tauri/src/schema/settings.rs`, `services/root_mcp.rs`
+    (`enabled_in`), `commands/root_mcp.rs`,
+    `src/components/layout/{RootOverlay,SettingsPanel}.tsx`.*
+    - [x] 🤖 Automated test — `services::root_mcp::the_switch_is_on_unless_stored_off`.
+    - [ ] 🖐️ Manual test (needs a restart once: backend change)
+      - Click the ⚿ badge: it strikes through, and the Settings toggle follows.
+        A root Claude tab opened now has no `eldrun` server under `/mcp`.
+      - In a root agent opened *before* the click, ask for the calendar: the
+        tool call fails with "switched off in Eldrun's Settings".
+      - Click again: that same agent's next tool call works, no restart.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+---
+
+2317. **Colour a tab, on the desktop and on the phone.**
+    ✅ Implemented · 🧪 Awaiting live QA (2026-09-18). A tab bar of five
+    look-alike `claude` tabs had one mark to tell them apart — the label — and
+    the tab's *kind* colour, which is the same for all five. A tab now carries
+    an optional colour from a closed palette of eight hues
+    (`src/lib/theme/tabColors.ts`, the calendar sidebar's own eight, so the app has
+    one palette rather than two): **right-click a tab → Colour**, a swatch grid
+    under the menu's accent group label, with a leading ⃠ chip that clears it.
+    The colour substitutes for the kind colour in the same `--tab-accent` slot,
+    so every treatment already keyed off it follows without a second code path;
+    what is new is that a coloured tab shows its bottom rule while **inactive**
+    too (dimmed, `.tab.has-tab-color`), because a mark only the current tab
+    carries says nothing about the other four. The picker deliberately keeps the
+    menu open after a pick — it is the one row in that menu that is not a
+    one-shot action — which is also why the popout's strip finally dismisses its
+    context menu on an outside click / Escape like the main window's does.
+    Persisted through `toSavedTabEntry` (so the colour survives the relaunch
+    that reopens the tabs) and validated against the palette on the way back
+    in; copied by Duplicate, since a colour describes a tab rather than
+    identifying it. The popout forwards its pick as the `setColor` edit, applied
+    optimistically so the tab recolours under the open picker.
+
+    On the phone the same colour is reachable and readable: **✻ Colour** on any
+    tab card (agent or shell — the rename beside it is agent-only) opens a
+    sheet of named chips that commits on the tap, and the colour becomes the
+    card's left border on the project screen *and* on the flat cross-project
+    Activity list, which is the list it earns most. `PUT
+    /api/v1/tabs/{id}/color` is its own route rather than a field on the
+    agent-only rename, whose body is `deny_unknown_fields`. **Only a palette id
+    crosses** — never a CSS value — validated by `protocol::clean_tab_color` at
+    the sidecar, again at the desktop bridge (reachable without that route),
+    and once more on restore; an unknown id is refused rather than read as a
+    clear, and the catalog drops one it does not know instead of publishing it
+    for the phone to guess at. The bridge write is scoped, restores the project
+    first and persists the layout itself, for the three reasons the close
+    beside it does: the phone colours a tab in whichever project it is looking
+    at, that project may not be open in the window at all, and `CenterPanel`
+    persists only the active scope — so without the write the catalog (read out
+    of that same session file) would keep publishing the old colour.
+    *Files: `src/lib/theme/tabColors.ts`,
+    `src/components/tabs/TabColorPicker.tsx`, `src/components/tabs/TabBar.tsx`,
+    `src/components/layout/{DetachedCenterPanel,DetachedApp}.tsx`,
+    `src/stores/{tabs,detached}.ts`, `src/styles/projects-tabs.css`,
+    `src/lib/i18n.ts` (+ the four dictionaries),
+    `src/components/mobile/MobileBridgeHost.tsx`,
+    `src-tauri/src/services/mobile_control/{protocol,discovery,host}.rs`,
+    `mobile-web/src/tabColors.ts`, `mobile-web/src/screens/ColorSheet.tsx`,
+    `mobile-web/src/screens/{Project,Activity}.tsx`, `mobile-web/src/api.ts`,
+    `mobile-web/src/style.css`.*
+    - [x] 🤖 Automated test — `src/__tests__/TabColor.test.tsx` (the palette
+      resolves its ids and nothing else, incl. a hex and a CSS injection; the
+      scoped and active-scope writes; the disk projection; restore dropping an
+      unknown id; the popout's optimistic apply; and the real `TabBar` menu
+      painting, keeping itself open, and clearing),
+      `src/__tests__/MobileTabColor.test.tsx` (the bridge across a
+      non-showing scope, a shell tab, the layout write, clear-by-null and
+      clear-by-absent, every refusal; and the phone screen's chips, request
+      body, ring and card border), `services::mobile_control::host`
+      (`clean_tab_color`), `services::mobile_control::discovery` (a palette
+      colour published, an unknown one dropped).
+    - [ ] 🖐️ Manual test (needs a restart: backend change — the sidecar route
+      and the published field)
+      - Right-click a tab → pick a hue: the tab's bottom rule takes it at once,
+        and stays visible when another tab is active. Pick a second hue without
+        re-opening the menu. ⃠ clears it. Escape / a click outside closes the
+        menu.
+      - Colour three tabs, quit and relaunch: all three come back coloured.
+        Duplicate one: the copy carries the colour.
+      - Pop a coloured tab out: the popout's strip shows the colour; colour a
+        tab *in* the popout and dock it back — the colour survives.
+      - On the phone: ✻ Colour on an agent card and on a shell card. The chip
+        rings, the card gets a left border, and the desktop tab recolours
+        without a reload. The Activity list's row shows it too.
+      - Colour a tab of a project the desktop window is **not** showing: it
+        lands there, the project on screen is untouched, and it is still there
+        after a relaunch.
+      - With desktop Eldrun closed, the sheet says "Open desktop Eldrun to
+        colour a tab." rather than a generic failure.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

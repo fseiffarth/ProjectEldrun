@@ -10,8 +10,8 @@ import {
   deliveryRecordId,
   schedulesToPruneForSend,
   sendNowRule,
-} from "../lib/agentPromptSend";
-import { scheduleVerdict, type ScheduledAgentPrompt } from "../lib/agentSchedule";
+} from "../lib/agents/prompt/send";
+import { scheduleVerdict, type ScheduledAgentPrompt } from "../lib/agents/agentSchedule";
 
 const now = new Date(2026, 8, 2, 14, 37, 42);
 

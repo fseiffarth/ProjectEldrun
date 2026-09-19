@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { CalendarTask, Subtask, TaskColumn } from "../../types";
-import { useCalendarStore } from "../../stores/calendar";
+import { useCalendarStore } from "../../stores/calendar/calendar";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { useTodoStore } from "../../stores/todo";
 import { mailPrioritySet } from "../../lib/mail";
 import { useExperimental } from "../../lib/experimental";
 import { addSubtask, fallbackColumnId, moveSubtask, removeSubtask, setSubtask } from "../../lib/todoBoard";
-import { datePart, formatTime, timePart, toDateStr } from "../../lib/calendarTime";
+import { datePart, formatTime, timePart, toDateStr } from "../../lib/calendar/calendarTime";
 import { useUse24h } from "../../lib/timeFormat";
 import { useT } from "../../lib/i18n";
 import { TimeField } from "../common/TimeField";

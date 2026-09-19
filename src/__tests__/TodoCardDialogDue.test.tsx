@@ -13,7 +13,7 @@ import userEvent from "@testing-library/user-event";
 
 import { TodoCardDialog } from "../components/todo/TodoCardDialog";
 import { useSettingsStore } from "../stores/settings";
-import { useCalendarStore } from "../stores/calendar";
+import { useCalendarStore } from "../stores/calendar/calendar";
 import { useProjectsStore } from "../stores/projects";
 import type { CalendarTask, TaskColumn } from "../types";
 

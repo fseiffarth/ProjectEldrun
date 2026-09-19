@@ -21,7 +21,7 @@
 
 use std::collections::HashMap;
 
-use crate::services::ssh_exec::{is_valid_env_key, TMUX_HISTORY_LINES};
+use crate::services::ssh_exec::{is_valid_env_key, shell_quote, TMUX_HISTORY_LINES};
 use crate::terminal::PtyOptions;
 
 /// Prefix reserved for tmux sessions Eldrun creates on the local machine.
@@ -148,23 +148,6 @@ pub fn is_eldrun_local_tmux_session(session: &str) -> bool {
     session.starts_with(ELDRUN_LOCAL_TMUX_PREFIX)
 }
 
-/// Single-quote `s` for a POSIX shell (mirrors `ssh_exec::shell_quote`). Used only
-/// to fold a command tab's `cmd`+`args` into the single command string tmux hands
-/// to `sh -c`.
-fn shell_quote(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('\'');
-    for ch in s.chars() {
-        if ch == '\'' {
-            out.push_str("'\\''");
-        } else {
-            out.push(ch);
-        }
-    }
-    out.push('\'');
-    out
-}
-
 /// The tab variables worth putting in a session's environment, sorted so the
 /// argv is deterministic (and testable).
 ///
@@ -210,6 +193,7 @@ fn tmux_supports_session_env() -> bool {
 /// output is treated as *not* supporting it: emitting an unknown flag would make
 /// every persistent tab fail to start, while the `export` fallback keeps the
 /// case that matters (an agent tab) working.
+#[cfg(any(unix, test))]
 fn version_supports_session_env(v_output: &str) -> bool {
     let rest = v_output.trim();
     let rest = rest.strip_prefix("tmux").unwrap_or(rest).trim();
@@ -314,8 +298,28 @@ fn local_tmux_args_with(
     session_env: bool,
 ) -> Vec<String> {
     let line = command_line(target_cmd, target_args, env, session_env);
-    local_tmux_args_for(session, line.as_deref(), env, session_env)
+    local_tmux_args_for(session, line.as_deref(), env, session_env, is_fence(target_cmd))
 }
+
+/// Whether the tab's command is an agent fence (`agent_fence` has already
+/// rewritten a fenced agent's command to its sandbox launcher by now).
+fn is_fence(cmd: &str) -> bool {
+    matches!(
+        cmd.rsplit('/').next().unwrap_or(cmd),
+        "bwrap" | "sandbox-exec"
+    )
+}
+
+/// Run between a fenced command and the pane's trailing login shell: read and
+/// discard whatever is waiting in the terminal's input queue. On a kernel that
+/// still honours `TIOCSTI` (Linux before 6.2 or with `legacy_tiocsti=1`,
+/// macOS), a fenced agent can push bytes into its own terminal's input and exit;
+/// the next reader of that queue is the *unfenced* shell below, which would run
+/// them. The fence's pid namespace dies with the agent, so nothing fenced can
+/// add more after this runs. `min 0 time 0` makes `cat` see end-of-file the
+/// moment the queue is empty; the saved modes are put back for the shell.
+const FENCE_INPUT_DRAIN: &str = "s=$(stty -g 2>/dev/null); stty raw -echo min 0 time 0 2>/dev/null \
+&& cat >/dev/null 2>&1; [ -n \"$s\" ] && stty \"$s\" 2>/dev/null; ";
 
 /// The inline `<cmd> <args>` half of a command tab's tmux target, with the
 /// `export`s ahead of it when the tmux has no `new-session -e`. `None` for a
@@ -359,6 +363,9 @@ pub(crate) fn launcher_script(
     let mut script = String::from("#!/bin/sh\n");
     if !session_env {
         for (k, v) in session_env_pairs(env) {
+            if SECRET_ENV.contains(&k) {
+                continue; // carried on the tmux line instead, see `launcher_line`
+            }
             script.push_str(&format!("export {k}={}\n", shell_quote(v)));
         }
     }
@@ -369,6 +376,32 @@ pub(crate) fn launcher_script(
     script
 }
 
+/// Env values that must never be written into a [`launcher_script`]: the script
+/// sits on disk for the session's lifetime (and past a crash), and the root
+/// console's MCP token is documented as never written to disk.
+const SECRET_ENV: &[&str] = &[crate::services::root_mcp::TOKEN_ENV];
+
+/// The tmux command line that runs a launcher `path`. With `-e` the session env
+/// carries every variable; without it the script exports them, except the
+/// [`SECRET_ENV`] ones, which ride on this line as an `env` prefix — tmux's own
+/// argv lives in memory only, and the line stays a few hundred bytes.
+fn launcher_line(path: &str, env: &HashMap<String, String>, session_env: bool) -> String {
+    let quoted = shell_quote(path);
+    if session_env {
+        return quoted;
+    }
+    let secrets: Vec<String> = session_env_pairs(env)
+        .into_iter()
+        .filter(|(k, _)| SECRET_ENV.contains(k))
+        .map(|(k, v)| format!("{k}={}", shell_quote(v)))
+        .collect();
+    if secrets.is_empty() {
+        quoted
+    } else {
+        format!("env {} {quoted}", secrets.join(" "))
+    }
+}
+
 /// [`local_tmux_args_with`] with the command half already rendered: `line` is
 /// what tmux runs before the trailing login shell, or `None` for a shell tab.
 fn local_tmux_args_for(
@@ -376,6 +409,7 @@ fn local_tmux_args_for(
     line: Option<&str>,
     env: &HashMap<String, String>,
     session_env: bool,
+    fenced: bool,
 ) -> Vec<String> {
     let pairs = session_env_pairs(env);
     let mut args: Vec<String> = vec![
@@ -400,7 +434,8 @@ fn local_tmux_args_for(
     if let Some(line) = line {
         // One positional arg = the command line tmux runs via `sh -c`. Keeping a
         // login shell after it is what makes a finished run reattachable.
-        args.push(format!("{line}; exec \"${{SHELL:-/bin/bash}}\" -l"));
+        let drain = if fenced { FENCE_INPUT_DRAIN } else { "" };
+        args.push(format!("{line}; {drain}exec \"${{SHELL:-/bin/bash}}\" -l"));
     }
     // Session options as trailing tmux commands (standalone ';' tokens split argv).
     for tok in [
@@ -483,8 +518,14 @@ pub fn wrap_pty_options_local(opts: &mut PtyOptions) {
         let script = launcher_script(&opts.cmd, &opts.args, &opts.env, session_env);
         match write_launcher(&session, &script) {
             Ok(path) => {
-                let line = shell_quote(&path.to_string_lossy());
-                args = local_tmux_args_for(&session, Some(&line), &opts.env, session_env);
+                let line = launcher_line(&path.to_string_lossy(), &opts.env, session_env);
+                args = local_tmux_args_for(
+                    &session,
+                    Some(&line),
+                    &opts.env,
+                    session_env,
+                    is_fence(&opts.cmd),
+                );
             }
             Err(e) => {
                 // Leave the long argv in place: tmux's own error is the honest
@@ -661,6 +702,42 @@ mod tests {
     }
 
     #[test]
+    fn only_a_fenced_command_drains_input_before_the_unfenced_shell() {
+        let env = env_of(&[]);
+        let shell = "exec \"${SHELL:-/bin/bash}\" -l";
+        for fence in ["bwrap", "/usr/bin/sandbox-exec"] {
+            let args = local_tmux_args_with("eldrun-x", fence, &["claude".into()], &env, true);
+            let line = args.iter().find(|a| a.ends_with(shell)).unwrap();
+            assert!(line.contains(&format!("; {FENCE_INPUT_DRAIN}{shell}")), "{line}");
+        }
+        let args = local_tmux_args_with("eldrun-x", "claude", &[], &env, true);
+        assert!(args.iter().any(|a| a == &format!("'claude'; {shell}")));
+        // A shell tab has no command line and so no trailing shell to guard.
+        let args = local_tmux_args_with("eldrun-x", "", &[], &env, true);
+        assert!(!args.iter().any(|a| a.contains("stty")));
+    }
+
+    #[test]
+    fn the_root_mcp_token_never_reaches_the_launcher_script() {
+        // A fenced root agent's argv always takes the launcher path, and the
+        // script outlives a crash on disk — the token rides on tmux's argv.
+        let env = env_of(&[
+            ("ELDRUN_TAB_UID", "tab-uid-1"),
+            (crate::services::root_mcp::TOKEN_ENV, "s3cret"),
+        ]);
+        for session_env in [true, false] {
+            let script = launcher_script("claude", &[], &env, session_env);
+            assert!(!script.contains("s3cret"), "{script}");
+        }
+        assert_eq!(launcher_line("/l.sh", &env, true), "'/l.sh'");
+        assert_eq!(
+            launcher_line("/l.sh", &env, false),
+            "env ELDRUN_ROOT_MCP_TOKEN='s3cret' '/l.sh'"
+        );
+        assert_eq!(launcher_line("/l.sh", &env_of(&[("A", "b")]), false), "'/l.sh'");
+    }
+
+    #[test]
     fn a_fence_sized_argv_is_over_budget_and_the_launcher_form_is_not() {
         // A fenced agent on a well-used machine: one `--ro-bind src dst` per
         // transcript dir, and 120 of those already pass tmux's message
@@ -677,12 +754,12 @@ mod tests {
         assert!(argv_bytes(&inline) > TMUX_ARGV_LIMIT, "{}", argv_bytes(&inline));
 
         let line = shell_quote("/state/tmux-launch/eldrun-x.sh");
-        let launched = local_tmux_args_for("eldrun-x", Some(&line), &env, true);
+        let launched = local_tmux_args_for("eldrun-x", Some(&line), &env, true, true);
         assert!(argv_bytes(&launched) < TMUX_ARGV_BUDGET);
         let dash_s = launched.iter().position(|a| a == "-s").unwrap();
         assert_eq!(
             launched[dash_s + 2],
-            "'/state/tmux-launch/eldrun-x.sh'; exec \"${SHELL:-/bin/bash}\" -l"
+            format!("'/state/tmux-launch/eldrun-x.sh'; {FENCE_INPUT_DRAIN}exec \"${{SHELL:-/bin/bash}}\" -l")
         );
         // The env still rides `-e`; only the command moved.
         assert!(launched.iter().any(|a| a == "ELDRUN_TAB_UID=tab-uid-1"));
