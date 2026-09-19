@@ -107,6 +107,90 @@ pub trait MailAccess {
     fn save_draft(&self, draft: &MailDraft) -> Result<(), String>;
     fn delete_draft(&self, draft_id: &str) -> Result<(), String>;
     fn new_id(&self) -> String;
+    fn change_draft(&self, before: Option<&MailDraft>, after: Option<&MailDraft>) -> Result<(), String> {
+        // Fixtures use the primitive methods; the real store overrides this
+        // with a comparison under its database lock.
+        if let Some(d) = after { self.save_draft(d) }
+        else { self.delete_draft(&before.ok_or("Missing draft")?.id) }
+    }
+}
+
+/// Restrict the underlying store before helpers can resolve ids or enumerate
+/// accounts/drafts. Ownership is the spawn, not merely the caller class.
+struct ScopedMail<'a> {
+    inner: &'a dyn MailAccess,
+    stores: &'a Stores<'a>,
+}
+impl ScopedMail<'_> {
+    fn account(&self, id: &str) -> Result<(), String> {
+        self.stores.check()?;
+        if !self.stores.access.accounts.contains(id) || !self.inner.accounts()?.iter().any(|a|
+            a.id == id && (self.stores.caller != Caller::Reader || a.agent_access)) {
+            return Err(UNKNOWN_ACCOUNT.into());
+        }
+        Ok(())
+    }
+    fn owns(&self, d: &MailDraft) -> bool {
+        self.stores.access.accounts.contains(&d.account_id)
+            && self.stores.session.is_none_or(|s| d.owner_session.as_deref() == Some(&s.id))
+    }
+}
+impl MailAccess for ScopedMail<'_> {
+    fn accounts(&self) -> Result<Vec<AgentAccount>, String> {
+        self.stores.check()?;
+        Ok(self.inner.accounts()?.into_iter().filter(|a| self.stores.access.accounts.contains(&a.id)).collect())
+    }
+    fn folders(&self, account_id: &str) -> Result<Vec<MailFolder>, String> {
+        self.account(account_id)?;
+        self.inner.folders(account_id)
+    }
+    fn headers(&self, folder_id: &str, offset: u32, limit: u32, query: Option<&str>, unread_only: bool) -> Result<MailHeaderPage, String> {
+        self.stores.check()?;
+        // Callers resolve the folder through folders() on an authorized account.
+        let mut page = self.inner.headers(folder_id, offset, limit, query, unread_only)?;
+        page.items.retain(|h| self.stores.access.accounts.contains(&h.account_id));
+        Ok(page)
+    }
+    fn header(&self, message_id: &str) -> Result<Option<MailHeader>, String> {
+        self.stores.check()?;
+        Ok(self.inner.header(message_id)?.filter(|h| self.stores.access.accounts.contains(&h.account_id)))
+    }
+    fn body(&self, message_id: &str) -> Result<MailBody, String> {
+        let header = self.header(message_id)?.ok_or("unknown message")?;
+        self.account(&header.account_id).map_err(|_| "unknown message")?;
+        let body = self.inner.body(message_id)?;
+        self.account(&header.account_id).map_err(|_| "unknown message")?;
+        Ok(body)
+    }
+    fn drafts(&self) -> Result<Vec<MailDraft>, String> {
+        self.stores.check()?;
+        let accounts: Vec<_> = self.accounts()?.into_iter()
+            .filter(|a| self.stores.caller != Caller::Reader || a.agent_access).map(|a| a.id).collect();
+        Ok(self.inner.drafts()?.into_iter().filter(|d| self.owns(d) && accounts.contains(&d.account_id)).collect())
+    }
+    fn save_draft(&self, draft: &MailDraft) -> Result<(), String> {
+        self.account(&draft.account_id)?;
+        let mut draft = draft.clone();
+        draft.owner_session = self.stores.session.map(|s| s.id.clone());
+        self.inner.save_draft(&draft)
+    }
+    fn delete_draft(&self, draft_id: &str) -> Result<(), String> {
+        if !self.drafts()?.iter().any(|d| d.id == draft_id) { return Err("unknown draft".into()); }
+        self.stores.check()?;
+        self.inner.delete_draft(draft_id)
+    }
+    fn new_id(&self) -> String { self.inner.new_id() }
+    fn change_draft(&self, before: Option<&MailDraft>, after: Option<&MailDraft>) -> Result<(), String> {
+        self.stores.check()?;
+        if before.is_some_and(|d| !self.owns(d)) { return Err("unknown draft".into()); }
+        let next = after.map(|d| {
+            let mut d = d.clone();
+            d.owner_session = self.stores.session.map(|s| s.id.clone());
+            d
+        });
+        if let Some(d) = &next { self.account(&d.account_id)?; }
+        self.inner.change_draft(before, next.as_ref())
+    }
 }
 
 // ── Text hygiene ────────────────────────────────────────────────────────────
@@ -692,25 +776,26 @@ fn mail_draft_create(mail: &dyn MailAccess, caller: Caller, args: &Value) -> Res
     };
     apply_recipients(mail, caller, &acc, args, &mut draft)?;
     apply_text(args, &mut draft);
-    mail.save_draft(&draft)?;
+    mail.change_draft(None, Some(&draft))?;
     Ok((json!({ "draft_id": draft.id, "sent": false, "note": "A draft only. The user reviews and sends it in Eldrun." }), draft_change(&draft, "upsert")))
 }
 
 fn mail_draft_update(mail: &dyn MailAccess, caller: Caller, args: &Value) -> Result<(Value, Change), String> {
     let mut draft = own_draft(mail, caller, str_arg(args, "draft_id").ok_or("`draft_id` is required")?)?;
+    let before = draft.clone();
     let acc = account(mail, caller, &draft.account_id)?;
     apply_recipients(mail, caller, &acc, args, &mut draft)?;
     apply_text(args, &mut draft);
     // No attachment path exists for an agent; keep it that way on every write.
     draft.staged.clear();
     draft.bcc.clear();
-    mail.save_draft(&draft)?;
+    mail.change_draft(Some(&before), Some(&draft))?;
     Ok((json!({ "draft_id": draft.id, "sent": false }), draft_change(&draft, "upsert")))
 }
 
 fn mail_draft_delete(mail: &dyn MailAccess, caller: Caller, args: &Value) -> Result<(Value, Change), String> {
     let draft = own_draft(mail, caller, str_arg(args, "draft_id").ok_or("`draft_id` is required")?)?;
-    mail.delete_draft(&draft.id)?;
+    mail.change_draft(Some(&draft), None)?;
     Ok((json!({ "deleted": draft.id }), draft_change(&draft, "delete")))
 }
 
@@ -735,8 +820,13 @@ fn mail_drafts_list(mail: &dyn MailAccess, caller: Caller, args: &Value) -> Resu
 /// again so a read tool can never answer a caller that is not a reader, however
 /// it was reached.
 pub fn call(stores: &Stores, name: &str, args: &Value) -> Result<(Value, Effects), String> {
+    // Share the mutation barrier with revocation and grant changes; reads can
+    // wait on the network without holding the calendar review lock.
+    let _guard = super::root_mcp_security::tool(name).is_some_and(|t| t.write)
+        .then(super::root_mcp_review::lock);
+    stores.check()?;
     let caller = stores.caller;
-    if !TOOLS.contains(&name) || (is_read_tool(name) && caller != Caller::Reader) {
+    if !stores.access.allows(caller, name) || !TOOLS.contains(&name) || (is_read_tool(name) && caller != Caller::Reader) {
         return Err(format!("unknown tool '{name}'"));
     }
     if caller == Caller::Reader {
@@ -744,7 +834,9 @@ pub fn call(stores: &Stores, name: &str, args: &Value) -> Result<(Value, Effects
             return Err(refusal.to_string());
         }
     }
-    let mail = stores.mail.ok_or(LOCKED)?;
+    stores.check()?;
+    let scoped = ScopedMail { inner: stores.mail.ok_or(LOCKED)?, stores };
+    let mail: &dyn MailAccess = &scoped;
     let wrote = |r: Result<(Value, Change), String>| r.map(|(v, c)| (v, vec![c]));
     let (mut value, changes) = match name {
         "mail_accounts_list" => {
@@ -929,6 +1021,8 @@ mod tests {
             caller,
             mail,
             reader_refusal: None,
+            policy: super::super::root_mcp_security::Policy { enabled: true, local_only: false, mail: true, review: "all".into() },
+            access: super::super::root_mcp_security::Access::initial(Caller::Agent), session: None, deadline: None,
         }
     }
 
@@ -943,6 +1037,28 @@ mod tests {
         let body_start = start + text[start..].find('\n').unwrap() + 1;
         let end = text.rfind("\nELDRUN-MAIL-").unwrap();
         serde_json::from_str(&text[body_start..end]).unwrap()
+    }
+
+    #[test]
+    fn drafts_belong_to_one_spawn_and_account_grants_hide_metadata() {
+        let f = fx();
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("settings.json");
+        std::fs::write(&settings, r#"{"root_mcp_mail":true}"#).unwrap();
+        let (_, first) = super::super::root_mcp::test_session(Caller::Agent);
+        let (_, second) = super::super::root_mcp::test_session(Caller::Agent);
+        let mut a = stores(Some(&f), Caller::Agent); a.settings = &settings; a.session = Some(&first);
+        let created = call(&a, "mail_draft_create", &json!({"account_id":"open", "subject":"Private draft"})).unwrap().0;
+        let id = created["draft_id"].as_str().unwrap();
+        let mut b = stores(Some(&f), Caller::Agent); b.settings = &settings; b.session = Some(&second);
+        assert!(call(&b, "mail_draft_update", &json!({"draft_id":id, "subject":"Hijack"})).is_err());
+        assert!(call(&b, "mail_draft_delete", &json!({"draft_id":id})).is_err());
+        assert_eq!(call(&b, "mail_drafts_list", &json!({})).unwrap().0["drafts"], json!([]));
+        b.access.accounts = super::super::root_mcp_security::Scope::default();
+        assert_eq!(call(&b, "mail_accounts_list", &json!({})).unwrap().0["accounts"], json!([]));
+        assert!(call(&b, "mail_draft_create", &json!({"account_id":"open"})).is_err());
+        super::super::root_mcp::revoke_tab(&first.identity.tab);
+        super::super::root_mcp::revoke_tab(&second.identity.tab);
     }
 
     #[test]

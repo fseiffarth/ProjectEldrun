@@ -267,9 +267,12 @@ agent saw) and `redact_urls` (link *texts* only; a URL is a pre-built
 exfiltration target). Encrypted mail is opaque: headers and the verdict, no
 body.
 
-**Drafts.** `MailDraft.origin` is `"agent"` or `"reader"`; each class lists,
-updates and deletes only its own, and `mail_draft_save` (the composer) clears
-it, which puts the draft out of the agent's reach. A reader's recipients must
+**Drafts.** `MailDraft.origin` is `"agent"` or `"reader"`; each spawn lists,
+updates and deletes only its own (the persisted `owner_session` binds it), and `mail_draft_save` (the composer) clears
+both origin and owner, which puts the draft out of the agent's reach. Agent
+changes compare the previous row atomically under the mail database lock: a
+composer save also defeats an already-running agent update or delete. Older
+class-only drafts remain available to the user in the composer. A reader's recipients must
 already be on the replied-to message. A draft is not a staged `Proposal`: it
 lives in the mail store, shows in the review strip as a row that *opens the
 composer*, and `mail_draft_send` stays a Tauri command — nothing here sends.
@@ -280,11 +283,18 @@ only.
 opened this run, or opened as the memory-only stand-in, both answer "mail is
 locked, unlock it in Eldrun first". No tool unlocks and none prompts.
 
-**Residuals.** A reader's token rides the `ssh` command line's exports, so it is
-visible in the host's process list to same-uid unfenced processes — scoped to
-the `Reader` tool set and dead with the tab. `agent_warmup` builds its own
-`Command` and never reaches `pty_spawn`, so an unattended run gets no endpoint;
-a future scheduled-agent feature routed through `pty_spawn` must opt out.
+**Reader credential transport.** The host SSH command contains only the name
+`LC_ELDRUN_ROOT_MCP_TOKEN`. SSH sends its value through the encrypted environment
+channel (`SendEnv`); the provisioned guest's standard `AcceptEnv LC_*` accepts
+it. The guest exports the actual MCP variable and passes the locale variable
+into a new tmux session with `-e`. A guest that rejects the channel fails before
+launching the agent; no config file is edited and no plaintext/argv fallback
+exists. The host environment and guest processes still carry the secret, so the
+same-uid unfenced-process limitation still applies. Natural PTY exit retains
+the token identity for generation-safe revocation.
+
+`agent_warmup` builds its own `Command` and never reaches `pty_spawn`, so an
+unattended run gets no endpoint; future scheduled-agent spawns must opt out.
 
 ## Staged writes
 
@@ -340,6 +350,77 @@ can access the real store directly. Mail integration remains in
 `docs/mail_mcp_plan.md`: future agent drafts should share this surface, and its
 reader class must force staging and mark proposals regardless of the root's
 review setting. No mail reader, draft, send or approval tool was added here.
+
+## MCP security policy and session controls
+
+`root_mcp_security` owns the explicit tool policy. A new tool has no caller
+class until assigned one. Listing and dispatch use that registry and the
+session's grants; MCP annotations are derived descriptions, never the source
+of write-approval decisions. The ordinary CLI permission mode remains its own.
+
+One validated settings snapshot determines each request. Missing, malformed
+or unreadable settings refuse access, including at spawn. Missing keys in a
+valid existing settings object retain the historical defaults. Requests check
+that the security policy still matches their snapshot after lock waits and
+before protected operations; a changed policy requires a fresh request.
+
+Settings → MCP session access grants tool families, read/write access and
+calendar/project/account scopes for a running session. These grants are
+memory-only and die with the spawn. Root sessions retain the existing broad
+defaults; readers start with mail only and still require per-account opt-in.
+The `all` scope explicitly includes future entries; a selected-id scope does
+not. A grant cannot override a role prohibition (root agents never read mail,
+readers never get project sweeps). Clients may need to refresh their tool list
+after a grant expands. The controls carry `UntestedTag` until live verification.
+
+Calendar copies are filtered by grant, project summaries exclude denied
+projects, and mail resolution/draft ownership is scoped before returning data.
+Scoped calendar/board writes always stage. Both old and new rows must remain
+inside the grant, including side effects: a board normalization or reindex
+that changes shared structure outside the scope is refused. Calendar creation
+requires the all-calendars grant. A proposal binds its original grant, caller
+and spawn into its digest, and approval also checks an active spawn's current
+grant. Closed-tab proposals can still be approved by the user within their
+recorded original grant. Read-only sessions cannot create proposals or alter
+drafts. None of this prevents an agent from leaking data it was allowed to read.
+
+Changing grants or revoking access invalidates queued requests immediately.
+Operations already past their mutation check may finish; revocation/grant
+commands wait for those operations before returning. Completed changes retain
+their normal UI events. Natural exit and failed-spawn cleanup cannot revoke a
+replacement generation or remove its sandbox. Revoking access never closes
+the terminal.
+
+The HTTP server authenticates before collecting a body, rejects all Origins,
+and accepts only its loopback authority or the fixed reader guest authority
+(the latter for readers only). Bounds: 32 sockets with 30-second lifetimes (one HTTP/1 request per socket; replies
+close the connection so a later write cannot outlive an old keep-alive socket),
+8 workers, 2 requests per spawn, 120 requests per spawn per minute, 128 KiB
+request bodies with a 5-second upload deadline, and 512 KiB serialized replies.
+A worker retains its permit even if HTTP disconnects. Work has a 15-second
+cooperative deadline; git subprocesses have a 3-second deadline and bounded
+output, with their subtree killed/reaped on cancellation. Mail fetches time out
+after 8 seconds. These bounds do not make uninterruptible OS filesystem I/O
+cancellable.
+
+Read tools expose bounded pages (`offset`/`limit`, with `next_offsets` for
+non-mail arrays). Mail retains its existing row/body caps. Argument types,
+required fields, extra keys, ranges, strings and arrays are checked before
+dispatch. Calendar moves expand to at most 50 events. Pending proposals cap at
+100 per tab / 500 total and the log at 8 MiB, without evicting undecided work;
+agent draft creation refuses when the mail store already has 500 drafts.
+Large successful write receipts are shortened without losing change events.
+
+The audit retains at most 500 records in memory, with the latest 50 shown in
+Settings: spawn id, caller class, known tool name, outcome and timing. It never
+records tokens, arbitrary arguments or message bodies and resets on app exit.
+
+On Linux the fence finally shadows the entire state directory and its
+canonical alias, then restores only explicit agent-support mounts. Project
+roots, tool installs and user read allowlists cannot reopen it. Symlink targets
+of private stores are masked too. macOS denies the known private stores after
+its path grants; Windows and deliberately unfenced agents retain their existing
+limitations. New private store paths must be added to the macOS deny inventory.
 
 ## Never the phone
 

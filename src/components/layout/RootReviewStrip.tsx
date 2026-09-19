@@ -78,6 +78,11 @@ export function RootReviewStrip() {
         return <article key={proposal.id} className="root-review-card">
           <strong>{stripInvisible(proposal.tool)}</strong> · {status}
           <div>{stripInvisible(proposal.tab)} · {new Date(Number(proposal.created)).toLocaleString()}</div>
+          {proposal.mcp_access && proposal.mcp_caller && <p>{t("mcpSecurity.reviewScope", {
+            calendars: proposal.mcp_access.calendars.all ? t("mcpSecurity.allScopes") : proposal.mcp_access.calendars.ids.length,
+            projects: proposal.mcp_access.projects.all ? t("mcpSecurity.allScopes") : proposal.mcp_access.projects.ids.length,
+            caller: t(`mcpSecurity.${proposal.mcp_caller}`),
+          })}</p>}
           {proposal.closed && <p>{t("rootReview.closed")}</p>}
           {proposal.tainted && <p>{t("rootReview.tainted")}</p>}
           {proposal.calendars.filter((c) => c.caldav_account_id).map((c) =>

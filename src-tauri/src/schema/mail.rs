@@ -1053,6 +1053,9 @@ pub struct MailDraft {
     /// existing drafts round-trip; a composer save clears it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+    /// MCP spawn owner. Older class-only drafts stay available in the composer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_session: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]

@@ -3187,6 +3187,7 @@ pub async fn mail_draft_save(
         // A save from the composer is the user's: it takes the draft out of the
         // reach of the agent that wrote it (`root_mcp_mail::own_draft`).
         draft.origin = None;
+        draft.owner_session = None;
         // The staged list is the store's, not the caller's: a draft cannot
         // invent an attachment it did not pick through `mail_attach_pick`.
         draft.staged = store.staged(&draft.id)?;
@@ -3302,7 +3303,10 @@ impl crate::services::root_mcp_mail::MailAccess for AgentMail {
         self.store()?;
         // Called from the listener's `spawn_blocking` thread, where blocking on
         // the runtime is allowed.
-        tauri::async_runtime::block_on(body_inner(self.0.clone(), message_id.to_string())).map_err(
+        tauri::async_runtime::block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(8), body_inner(self.0.clone(), message_id.to_string()))
+                .await.map_err(|_| "MCP mail read timed out".to_string())?
+        }).map_err(
             |e| {
                 if e == no_password_message() {
                     "open this account in Eldrun first".to_string()
@@ -3323,6 +3327,10 @@ impl crate::services::root_mcp_mail::MailAccess for AgentMail {
 
     fn delete_draft(&self, draft_id: &str) -> Result<(), String> {
         self.store()?.delete_draft(draft_id)
+    }
+
+    fn change_draft(&self, before: Option<&MailDraft>, after: Option<&MailDraft>) -> Result<(), String> {
+        self.store()?.change_agent_draft(before, after)
     }
 
     fn new_id(&self) -> String {

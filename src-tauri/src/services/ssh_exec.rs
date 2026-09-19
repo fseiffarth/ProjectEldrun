@@ -385,9 +385,12 @@ fn tmux_wrap_exec(exec_line: &str, wrap: &TmuxWrap, env_prefix: &str) -> String 
             // would be directly, only now inside the persistent session, with the
             // tab's exports ahead of it so the pane has the same environment.
             let target = shell_quote(&format!("{env_prefix}{exec_line}"));
+            let credential = if env_prefix.contains("LC_ELDRUN_ROOT_MCP_TOKEN") {
+                " -e \"LC_ELDRUN_ROOT_MCP_TOKEN=${LC_ELDRUN_ROOT_MCP_TOKEN:?}\""
+            } else { "" };
             format!(
                 "if command -v tmux >/dev/null 2>&1; then \
-                 exec tmux {history} new-session -A -D -s {q} {target} {opts}; \
+                 exec tmux {history} new-session -A -D -s {q}{credential} {target} {opts}; \
                  else printf 'eldrun: tmux not found on the remote host; session persistence is OFF (install tmux to enable it)\\n' >&2; {exec_line}; fi"
             )
         }
@@ -449,7 +452,11 @@ pub fn remote_command(
     keys.sort();
     let exports: Vec<String> = keys
         .into_iter()
-        .map(|k| format!("export {}={}", k, shell_quote(&env[k])))
+        .map(|k| if k == crate::services::root_mcp::TOKEN_ENV {
+            // SSH sends this through its encrypted environment channel. The
+            // stock VM sshd accepts LC_*; refusal fails before launching a CLI.
+            "export ELDRUN_ROOT_MCP_TOKEN=\"${LC_ELDRUN_ROOT_MCP_TOKEN:?MCP credential channel unavailable}\"".to_string()
+        } else { format!("export {}={}", k, shell_quote(&env[k])) })
         .collect();
     parts.extend(exports.iter().cloned());
 
@@ -1209,7 +1216,11 @@ pub fn wrap_pty_options(opts: &mut PtyOptions) -> Result<(), String> {
     };
 
     let cmd_string = remote_command(&opts.cmd, &opts.args, &opts.env, &remote_dir, tmux.as_ref());
-    let args = ssh_pty_args(&target.spec, &cmd_string)?;
+    let mut args = ssh_pty_args(&target.spec, &cmd_string)?;
+    let mcp_token = opts.env.get(crate::services::root_mcp::TOKEN_ENV).cloned();
+    if mcp_token.is_some() {
+        args.splice(0..0, ["-o".into(), "SendEnv=LC_ELDRUN_ROOT_MCP_TOKEN".into()]);
+    }
 
     opts.cmd = "ssh".to_string();
     opts.args = args;
@@ -1217,6 +1228,11 @@ pub fn wrap_pty_options(opts: &mut PtyOptions) -> Result<(), String> {
     // TERM/COLORTERM, which build_command sets. Clear the rest to avoid leaking
     // local env into the ssh client process.
     opts.env.retain(|k, _| k == "TERM" || k == "COLORTERM");
+    if let Some(token) = mcp_token {
+        opts.env.insert("LC_ELDRUN_ROOT_MCP_TOKEN".into(), token.clone());
+        // Kept for PTY teardown's generation-safe revocation, never in argv.
+        opts.env.insert(crate::services::root_mcp::TOKEN_ENV.into(), token);
+    }
     opts.cwd = storage::root_work_dir().to_string_lossy().into_owned();
     Ok(())
 }
@@ -1242,6 +1258,18 @@ mod tests {
     }
 
     // ── shell_quote ────────────────────────────────────────────────────────
+
+    #[test]
+    fn reader_secret_never_enters_the_ssh_command_line() {
+        let mut env = HashMap::new();
+        env.insert(crate::services::root_mcp::TOKEN_ENV.into(), "secret-token-fixture".into());
+        for tmux in [None, Some(TmuxWrap::Session("reader".into()))] {
+            let command = remote_command("claude", &[], &env, "/work", tmux.as_ref());
+            assert!(!command.contains("secret-token-fixture"));
+            assert!(command.contains("LC_ELDRUN_ROOT_MCP_TOKEN"));
+            assert!(command.contains("MCP credential channel unavailable"));
+        }
+    }
 
     #[test]
     fn shell_quote_wraps_and_escapes() {

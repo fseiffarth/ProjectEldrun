@@ -1,6 +1,7 @@
 //! Root MCP's backend-owned copies and immutable, row-based write proposals.
 //! Lock order: REVIEW_LOCK, then the calendar RMW lock. No AppHandle or IPC.
 use super::root_mcp::{self, Change, Effects, Stores};
+use super::root_mcp_security::{self as security, Access};
 use crate::{commands::calendar, storage};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -71,7 +72,8 @@ pub fn digest(p: &Proposal) -> String {
             p.rows,
             p.calendars,
             p.undo,
-            p.tainted
+            p.tainted,
+            p.extra.get("mcp_access"), p.extra.get("mcp_caller"), p.extra.get("mcp_session")
         ]))
         .unwrap()
         .as_bytes(),
@@ -92,6 +94,9 @@ pub fn load(state: &Path) -> Result<Vec<Proposal>, String> {
     if !path.exists() {
         return Ok(Vec::new());
     }
+    if std::fs::metadata(&path).map_err(|e| e.to_string())?.len() > security::MAX_LOG_BYTES as u64 {
+        return Err("MCP proposal log exceeds its size limit".into());
+    }
     storage::read_json(&path).map_err(|e| e.to_string())
 }
 fn save(state: &Path, proposals: &[Proposal]) -> Result<(), String> {
@@ -111,6 +116,9 @@ fn save(state: &Path, proposals: &[Proposal]) -> Result<(), String> {
         }
     });
     keep.reverse();
+    if serde_json::to_vec(&keep).map_err(|e| e.to_string())?.len() > security::MAX_LOG_BYTES {
+        return Err("MCP proposal storage limit reached; review pending proposals".into());
+    }
     storage::write_json_atomic(&log_path(state), &keep).map_err(|e| e.to_string())
 }
 pub fn list(stores: &Stores) -> Result<Vec<ReviewEntry>, String> {
@@ -301,7 +309,7 @@ fn rebuild(stores: &Stores, tab: &str, proposals: &mut [Proposal]) -> Result<Pat
         .filter(|p| p.tab == tab && p.status == "pending")
         .collect();
     let signature = hash(
-        serde_json::to_string(&json!([hash(&real_bytes), pending]))
+        serde_json::to_string(&json!([hash(&real_bytes), pending, stores.access]))
             .unwrap()
             .as_bytes(),
     );
@@ -326,6 +334,7 @@ fn rebuild(stores: &Stores, tab: &str, proposals: &mut [Proposal]) -> Result<Pat
             p.status = "conflicted".into();
         }
     }
+    stores.access.filter_calendar(&mut data);
     storage::write_json_atomic(&path, &data).map_err(|e| e.to_string())?;
     let copy = std::fs::read(&path).map_err(|e| e.to_string())?;
     storage::write_json_atomic(
@@ -415,14 +424,27 @@ pub fn call(
     args: &Value,
 ) -> Result<(Value, Effects), String> {
     let _guard = lock();
+    stores.check()?;
+    if !stores.access.allows(stores.caller, name) { return Err("unknown tool".into()); }
+    if security::tool(name).is_some_and(|t| t.family == "projects") {
+        return root_mcp::call_tool(stores, name, args);
+    }
     // A reader's taint is its class: every write it makes stages, additive ones
     // included, and `off` cannot lower that.
     let reader = stores.caller == root_mcp::Caller::Reader;
-    let level = if reader { "all".to_string() } else { level(stores.settings) };
+    let scoped = !stores.access.calendars.all || !stores.access.projects.all;
+    let level = if reader || scoped { "all".to_string() } else { stores.policy.review.clone() };
     if level == "off" && name != "proposals_list" {
         return root_mcp::call_tool(stores, name, args);
     }
     let mut proposals = load(stores.state)?;
+    if security::tool(name).is_some_and(|t| t.write) {
+        let pending = proposals.iter().filter(|p| p.status == "pending").count();
+        let own = proposals.iter().filter(|p| p.status == "pending" && p.tab == tab).count();
+        if pending >= security::MAX_PENDING || own >= security::MAX_PENDING_PER_TAB {
+            return Err("MCP pending proposal limit reached; review existing proposals".into());
+        }
+    }
     // Rebuild on a changed real file or proposal sequence.
     let path = if level != "off" {
         Some(rebuild(stores, tab, &mut proposals)?)
@@ -460,16 +482,23 @@ pub fn call(
         caller: stores.caller,
         mail: stores.mail,
         reader_refusal: stores.reader_refusal,
+        policy: stores.policy.clone(), access: stores.access.clone(), session: stores.session, deadline: stores.deadline,
     };
     let before = data_at(view.calendar)?;
+    stores.check()?;
     let (mut value, mut effects) = root_mcp::call_tool(&view, name, args)?;
     if level != "off" {
         let after = data_at(view.calendar)?;
         let rows = capture(&before, &after, &effects.changes)?;
         if !rows.is_empty() {
+            if rows.len() > security::MAX_ROWS || rows.iter().any(|r|
+                !stores.access.row(&r.kind, &r.post) || r.pre.as_ref().is_some_and(|pre| !stores.access.row(&r.kind, pre))) {
+                return Err("Change exceeds this session's scope or batch limit".into());
+            }
+            stores.check()?;
             let calendars = calendar_context(&before, &after, &rows)?;
             let automatic = level == "destructive"
-                && root_mcp::tool_annotations(name)["destructiveHint"] == false;
+                && security::tool(name).is_some_and(|t| t.write && !t.destructive);
             let mut p = Proposal {
                 id: root_mcp::mint_token().ok_or("No OS entropy")?,
                 tab: tab.into(),
@@ -486,7 +515,10 @@ pub fn call(
                 status: "pending".into(),
                 undo: automatic,
                 notified: false,
-                extra: Default::default(),
+                extra: serde_json::from_value(json!({
+                    "mcp_access": stores.access, "mcp_caller": stores.caller,
+                    "mcp_session": stores.session.map(|s| &s.id),
+                })).unwrap(),
             };
             proposals.push(p.clone());
             save(stores.state, &proposals)?;
@@ -530,6 +562,21 @@ pub fn call(
     Ok((value, effects))
 }
 
+fn check_proposal_access(p: &Proposal) -> Result<(), String> {
+    let Some(value) = p.extra.get("mcp_access") else { return Ok(()) }; // pre-policy proposals
+    let original: Access = serde_json::from_value(value.clone()).map_err(|_| "Invalid proposal grant")?;
+    let caller: root_mcp::Caller = serde_json::from_value(p.extra.get("mcp_caller").cloned().unwrap_or(Value::Null))
+        .map_err(|_| "Invalid proposal caller")?;
+    let current = root_mcp::sessions().into_iter().find(|s| Some(s.id.as_str()) == p.extra.get("mcp_session").and_then(Value::as_str));
+    for access in std::iter::once(&original).chain(current.as_ref().map(|s| &s.access)) {
+        if !access.allows(caller, &p.tool) || p.rows.iter().any(|r|
+            !access.row(&r.kind, &r.post) || r.pre.as_ref().is_some_and(|pre| !access.row(&r.kind, pre))) {
+            return Err("Proposal is outside its session's access grant".into());
+        }
+    }
+    Ok(())
+}
+
 pub fn decide(stores: &Stores, id: &str, seen: &str, action: &str) -> Result<Vec<Change>, String> {
     let _guard = lock();
     decide_locked(stores, id, seen, action)
@@ -555,6 +602,7 @@ fn decide_locked(
             p.status = "rejected".into()
         }
         "apply" if p.status == "pending" => {
+            check_proposal_access(p)?;
             match calendar::apply_change_at(stores.calendar, &p.rows, &p.calendars) {
                 Ok(changes) => {
                     effects = changes;
@@ -594,7 +642,9 @@ fn decide_locked(
     save(stores.state, &proposals)?;
     // Closing a tab removes its sandbox; a later decision must not recreate it.
     if root_mcp::tab_active(&tab) {
-        rebuild(stores, &tab, &mut proposals)?;
+        // Next tool call rebuilds using its own scope. Never write an
+        // unrestricted review view into an agent's scoped sandbox.
+        if let Some(dir) = sandbox(stores.state, &tab).parent() { let _ = std::fs::remove_dir_all(dir); }
     } else {
         // Replay in memory to invalidate dependent rows without a directory.
         let mut data = data_at(stores.calendar)?;
@@ -629,6 +679,7 @@ pub fn apply_all(stores: &Stores, approvals: &[Approval]) -> Result<Vec<Change>,
             .iter()
             .find(|p| p.id == a.id)
             .ok_or("Proposal no longer exists")?;
+        check_proposal_access(p)?;
         if p.status != "pending" || digest(p) != a.digest {
             return Err("Proposal changed; refresh the review".into());
         }
@@ -649,23 +700,21 @@ pub fn apply_all(stores: &Stores, approvals: &[Approval]) -> Result<Vec<Change>,
     Ok(changes)
 }
 
-pub fn on_tab_gone(state: &Path, tab: &str) {
+pub fn cleanup_tab(state: &Path, tab: &str) {
     let _guard = lock();
-    root_mcp::revoke_tab(tab);
-    if let Some(dir) = sandbox(state, tab).parent() {
-        let _ = std::fs::remove_dir_all(dir);
+    // A replacement spawn can already own this tab; never remove its view.
+    if !root_mcp::tab_active(tab) {
+        if let Some(dir) = sandbox(state, tab).parent() { let _ = std::fs::remove_dir_all(dir); }
     }
 }
+pub fn on_tab_gone(state: &Path, tab: &str) {
+    root_mcp::revoke_tab(tab);
+    cleanup_tab(state, tab);
+}
 
-/// Natural exit is scoped to a particular spawn: an old reader's EOF must not
-/// revoke a replacement process that reused the PTY id.
+/// Invalidate the generation before waiting for queued review operations.
 pub fn on_spawn_gone(state: &Path, token: &str) {
-    let _guard = lock();
-    if let Some(identity) = root_mcp::revoke_token(token) {
-        if let Some(dir) = sandbox(state, &identity.tab).parent() {
-            let _ = std::fs::remove_dir_all(dir);
-        }
-    }
+    if let Some(identity) = root_mcp::revoke_token(token) { cleanup_tab(state, &identity.tab); }
 }
 
 #[cfg(test)]
@@ -686,6 +735,7 @@ mod tests {
                 &crate::schema::calendar::CalendarData::default(),
             )
             .unwrap();
+            std::fs::write(dir.path().join("settings.json"), "{}").unwrap();
             Self {
                 projects: dir.path().join("projects.json"),
                 settings: dir.path().join("settings.json"),
@@ -702,6 +752,8 @@ mod tests {
                 caller: root_mcp::Caller::Agent,
                 mail: None,
                 reader_refusal: None,
+                policy: security::Policy::load(&self.settings).unwrap(),
+                access: Access::initial(root_mcp::Caller::Agent), session: None, deadline: None,
             }
         }
         fn call(&self, tab: &str, name: &str, args: Value) -> Value {
@@ -720,6 +772,70 @@ mod tests {
             storage::write_json_atomic(&self.calendar, &data).unwrap();
         }
     }
+    #[test]
+    fn scoped_views_hide_rows_and_direct_ids_and_bind_approval() {
+        let f = Fixture::new();
+        f.mode("off");
+        let secret = f.call("setup", "calendar_create", json!({"name":"Secret"}));
+        let hidden = f.call("setup", "calendar_add_event", json!({"title":"SECRET", "calendar":secret["id"], "start":"2026-09-20T10:00"}));
+        let visible = f.call("setup", "calendar_add_event", json!({"title":"Visible", "start":"2026-09-20T10:00"}));
+        f.mode("all");
+        let (_, session) = root_mcp::test_session(root_mcp::Caller::Agent);
+        let mut access = session.access.clone();
+        access.calendars = security::Scope { all:false, ids:vec![visible["calendar_id"].as_str().unwrap().into()] };
+        root_mcp::set_access(&session.id, access.clone()).unwrap();
+        // A fresh authentication sees the new grant; fixture session is used
+        // only for ownership below and has been invalidated by the change.
+        let mut stores = f.stores(); stores.access = access;
+        let view = call(&stores, "scoped", "calendar_list", &json!({})).unwrap().0;
+        assert!(!view.to_string().contains("SECRET"));
+        let copy = std::fs::read_to_string(sandbox(f.dir.path(), "scoped")).unwrap();
+        assert!(!copy.contains("SECRET"));
+        assert!(call(&stores, "scoped", "calendar_delete_event", &json!({"id":hidden["id"]})).is_err());
+        call(&stores, "scoped", "calendar_update_event", &json!({"id":visible["id"],"title":"Updated"})).unwrap();
+        let mut p = f.proposals().pop().unwrap();
+        p.extra.insert("mcp_session".into(), json!(session.id));
+        save(f.dir.path(), &[p.clone()]).unwrap();
+        let mut narrowed = stores.access.clone(); narrowed.write = false;
+        root_mcp::set_access(&session.id, narrowed).unwrap();
+        assert!(decide(&f.stores(), &p.id, &digest(&p), "apply").is_err());
+        assert!(data_at(&f.calendar).unwrap().to_string().contains("SECRET"));
+        root_mcp::revoke_tab(&session.identity.tab);
+    }
+
+    #[test]
+    fn request_waiting_on_review_lock_observes_revocation() {
+        let f = Fixture::new();
+        let (_, session) = root_mcp::test_session(root_mcp::Caller::Agent);
+        std::thread::scope(|scope| {
+            let guard = lock();
+            let worker = scope.spawn(|| {
+                let stores = Stores { session: Some(&session), ..f.stores() };
+                call(&stores, &session.identity.tab, "todo_add", &json!({"title":"Never applied"})).is_err()
+            });
+            root_mcp::revoke_tab(&session.identity.tab);
+            drop(guard);
+            assert!(worker.join().unwrap());
+        });
+        assert!(f.proposals().is_empty());
+    }
+
+    #[test]
+    fn quota_and_revocation_do_not_mutate_live_data() {
+        let f = Fixture::new();
+        f.call("quota", "todo_add", json!({"title":"seed"}));
+        let p = f.proposals().pop().unwrap();
+        let rows: Vec<_> = (0..security::MAX_PENDING_PER_TAB).map(|i| { let mut p = p.clone(); p.id = i.to_string(); p }).collect();
+        save(f.dir.path(), &rows).unwrap();
+        let before = std::fs::read(&f.calendar).unwrap();
+        assert!(call(&f.stores(), "quota", "todo_add", &json!({"title":"overflow"})).is_err());
+        let (_, session) = root_mcp::test_session(root_mcp::Caller::Agent);
+        let stores = Stores { session: Some(&session), ..f.stores() };
+        root_mcp::revoke_tab(&session.identity.tab);
+        assert!(call(&stores, &session.identity.tab, "todo_add", &json!({"title":"revoked"})).is_err());
+        assert_eq!(std::fs::read(&f.calendar).unwrap(), before);
+    }
+
     #[test]
     fn isolated_read_your_writes_and_tab_scoped_status() {
         let f = Fixture::new();
@@ -760,7 +876,7 @@ mod tests {
                 let v = f.call("root:a", name, args);
                 covered.insert(name.to_string());
                 let automatic = mode == "destructive"
-                    && root_mcp::tool_annotations(name)["destructiveHint"] == false;
+                    && security::tool(name).is_some_and(|t| t.write && !t.destructive);
                 assert_eq!(v["staged"], !automatic, "{mode}: {name}");
                 if !automatic {
                     assert_eq!(

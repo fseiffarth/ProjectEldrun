@@ -8,6 +8,7 @@ import {
   MAX_UI_ZOOM,
   ZOOM_STEPS,
 } from "../../stores/settings";
+import { RootMcpSecurity } from "./RootMcpSecurity";
 import { CopilotCompletionCard } from "./CopilotCompletionCard";
 import { UntestedTag } from "../common/UntestedTag";
 import { experimentalEnabled } from "../../lib/experimental";
@@ -65,6 +66,7 @@ import { UpdatesPanel } from "./UpdatesPanel";
 import {
   SettingRow,
   SettingsCard,
+  SettingsAdvanced,
   SettingsHeader,
   SettingsList,
   SettingsSection,
@@ -993,6 +995,10 @@ export function SettingsDialog({
               />}
               help={t("rootReview.settingHelp")}
             />
+
+            <SettingsAdvanced title={t("mcpSecurity.title")}>
+              <RootMcpSecurity />
+            </SettingsAdvanced>
 
             {/* Eldrun Mobile runs its host sidecar on every desktop (systemd
                 user unit, launchd agent, or the Windows Run key), so the

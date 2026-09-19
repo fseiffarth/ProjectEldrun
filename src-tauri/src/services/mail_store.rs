@@ -1875,6 +1875,41 @@ impl MailStore {
 
     // ── Drafts ──────────────────────────────────────────────────────────────
 
+    /// Atomic MCP compare-and-swap. A composer save clears origin/owner and
+    /// makes a racing agent edit/delete fail instead of reclaiming the draft.
+    pub fn change_agent_draft(&self, before: Option<&MailDraft>, after: Option<&MailDraft>) -> Result<(), String> {
+        let draft = after.or(before).ok_or("Missing draft")?;
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        let current: Option<Option<String>> = conn.query_row(
+            "SELECT account_id, json FROM drafts WHERE id = ?1", params![draft.id], |r| {
+                let account: String = r.get(0)?;
+                self.open_text(r, 1, &account, "drafts", "json", &draft.id)
+            }).optional().map_err(|e| e.to_string())?;
+        let expected = before.map(serde_json::to_value).transpose().map_err(|e| e.to_string())?;
+        let current = current.map(|s| s.ok_or("Draft cannot be decrypted"))
+            .transpose()?.map(|s| serde_json::from_str::<serde_json::Value>(&s)).transpose().map_err(|e| e.to_string())?;
+        // Normalize older drafts through the schema before comparing defaults.
+        let current = current.map(serde_json::from_value::<MailDraft>).transpose().map_err(|e| e.to_string())?
+            .map(serde_json::to_value).transpose().map_err(|e| e.to_string())?;
+        if current != expected { return Err("Draft changed; refresh before editing".into()); }
+        if let Some(next) = after {
+            if next.origin.is_none() || next.owner_session.is_none() || !next.staged.is_empty() || !next.bcc.is_empty() {
+                return Err("Invalid agent draft".into());
+            }
+            if before.is_none() {
+                let count: i64 = conn.query_row("SELECT COUNT(*) FROM drafts", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+                if count >= 500 { return Err("Draft storage limit reached; review existing drafts".into()); }
+            }
+            conn.execute("INSERT INTO drafts (id, account_id, json) VALUES (?1, ?2, ?3)
+                ON CONFLICT(id) DO UPDATE SET account_id = excluded.account_id, json = excluded.json",
+                params![next.id, next.account_id, self.seal_text(&next.account_id, "drafts", "json", &next.id,
+                    &serde_json::to_string(next).map_err(|e| e.to_string())?)]).map_err(|e| e.to_string())?;
+        } else {
+            conn.execute("DELETE FROM drafts WHERE id = ?1", params![draft.id]).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
     pub fn save_draft(&self, draft: &MailDraft) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
         conn.execute(
@@ -2831,6 +2866,18 @@ mod tests {
 
     /// The sync loop's arrival watermark: `None` before any message lands, then
     /// the highest UID stored — never a lower one, whatever order they arrive in.
+    #[test]
+    fn composer_claim_prevents_racing_agent_edits_and_deletes() {
+        let (_dir, store) = store();
+        let original = MailDraft { id:"owned".into(), account_id:"a1".into(), origin:Some("agent".into()), owner_session:Some("session".into()), ..Default::default() };
+        store.change_agent_draft(None, Some(&original)).unwrap();
+        let mut human = original.clone(); human.origin = None; human.owner_session = None; human.subject = "Human edit".into();
+        store.save_draft(&human).unwrap();
+        assert!(store.change_agent_draft(Some(&original), None).is_err());
+        assert!(store.change_agent_draft(Some(&original), Some(&original)).is_err());
+        assert_eq!(store.draft("owned").unwrap().unwrap().subject, "Human edit");
+    }
+
     #[test]
     fn folder_max_uid_tracks_the_high_water_mark() {
         let (_dir, store) = store();

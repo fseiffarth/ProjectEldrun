@@ -21,6 +21,8 @@ export interface RootProposal {
   undo: boolean;
   digest: string;
   closed: boolean;
+  mcp_caller?: "agent" | "local_model" | "reader";
+  mcp_access?: { calendars: { all: boolean; ids: string[] }; projects: { all: boolean; ids: string[] } };
 }
 interface RootReviewState {
   proposals: RootProposal[];

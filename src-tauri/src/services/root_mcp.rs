@@ -40,7 +40,9 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use super::root_mcp_security::{self as security, Access, Policy};
 
 use serde_json::{json, Value};
 
@@ -70,24 +72,44 @@ pub struct Identity {
     /// one of its mail calls is checked against. `None` for a root agent.
     pub project: Option<String>,
 }
-static TOKENS: OnceLock<std::sync::Mutex<HashMap<String, Identity>>> = OnceLock::new();
-fn tokens() -> &'static std::sync::Mutex<HashMap<String, Identity>> {
+static TOKENS: OnceLock<std::sync::Mutex<HashMap<String, Session>>> = OnceLock::new();
+fn tokens() -> &'static std::sync::Mutex<HashMap<String, Session>> {
     TOKENS.get_or_init(Default::default)
 }
 fn register_token(token: String, identity: Identity) {
     let mut map = tokens().lock().unwrap_or_else(|p| p.into_inner());
-    map.retain(|_, old| old.tab != identity.tab);
-    map.insert(token, identity);
+    map.retain(|_, old| {
+        if old.identity.tab == identity.tab { old.revoked.store(true, Ordering::Release); false } else { true }
+    });
+    let session = Session {
+        id: super::root_mcp_review::hash(token.as_bytes()),
+        access: Access::initial(identity.caller), identity,
+        revoked: Arc::new(AtomicBool::new(false)),
+        permits: Arc::new(tokio::sync::Semaphore::new(2)),
+        rate: Arc::new(std::sync::Mutex::new((std::time::Instant::now(), 0))),
+    };
+    map.insert(token, session);
 }
 pub fn revoke_tab(tab: &str) {
-    tokens().lock().unwrap_or_else(|p| p.into_inner()).retain(|_, i| i.tab != tab);
+    tokens().lock().unwrap_or_else(|p| p.into_inner()).retain(|_, s| {
+        if s.identity.tab == tab { s.revoked.store(true, Ordering::Release); false } else { true }
+    });
 }
 pub fn tab_active(tab: &str) -> bool {
-    tokens().lock().unwrap_or_else(|p| p.into_inner()).values().any(|i| i.tab == tab)
+    tokens().lock().unwrap_or_else(|p| p.into_inner()).values().any(|s| s.identity.tab == tab)
+}
+
+#[cfg(test)]
+pub(crate) fn test_session(caller: Caller) -> (String, Session) {
+    let token = mint_token().unwrap();
+    register_token(token.clone(), Identity { tab: format!("test:{}", &token[..16]), caller, project: None });
+    let session = authenticate(Some(&format!("Bearer {token}"))).unwrap();
+    (token, session)
 }
 
 /// Who a presented bearer token belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Caller {
     /// Any root agent CLI (Claude, Codex, …).
     Agent,
@@ -124,13 +146,70 @@ pub fn endpoint_url(port: u16) -> String {
 }
 
 /// Compare every candidate; no shared process-wide token remains valid.
-pub fn caller(header: Option<&str>) -> Option<Identity> {
+/// A request holds this generation even after its token is revoked or narrowed.
+#[derive(Clone)]
+pub struct Session {
+    pub id: String,
+    pub identity: Identity,
+    pub access: Access,
+    revoked: Arc<AtomicBool>,
+    pub permits: Arc<tokio::sync::Semaphore>,
+    rate: Arc<std::sync::Mutex<(std::time::Instant, u32)>>,
+}
+impl Session {
+    pub fn admit_rate(&self) -> bool {
+        let mut rate = self.rate.lock().unwrap_or_else(|p| p.into_inner());
+        if rate.0.elapsed() >= std::time::Duration::from_secs(60) { *rate = (std::time::Instant::now(), 0); }
+        if rate.1 >= 120 { return false; }
+        rate.1 += 1;
+        true
+    }
+    pub fn check(&self) -> Result<(), String> {
+        if self.revoked.load(Ordering::Acquire) { Err("MCP session was revoked or changed".into()) } else { Ok(()) }
+    }
+}
+#[derive(serde::Serialize)]
+pub struct SessionInfo {
+    pub id: String,
+    pub tab: String,
+    pub caller: Caller,
+    pub access: Access,
+}
+pub fn sessions() -> Vec<SessionInfo> {
+    tokens().lock().unwrap_or_else(|p| p.into_inner()).values().map(|s| SessionInfo {
+        id: s.id.clone(), tab: s.identity.tab.clone(), caller: s.identity.caller, access: s.access.clone(),
+    }).collect()
+}
+/// Tauri-only: replacing a grant invalidates all requests queued under the old grant.
+pub fn set_access(id: &str, access: Access) -> Result<(), String> {
+    access.validate()?;
+    let mut map = tokens().lock().unwrap_or_else(|p| p.into_inner());
+    let s = map.values_mut().find(|s| s.id == id).ok_or("MCP session is closed")?;
+    s.revoked.store(true, Ordering::Release);
+    s.revoked = Arc::new(AtomicBool::new(false));
+    s.access = access;
+    drop(map);
+    // Finish any operation which already crossed its mutation boundary.
+    let _guard = super::root_mcp_review::lock();
+    Ok(())
+}
+pub fn revoke_session(id: &str) -> Result<String, String> {
+    let mut map = tokens().lock().unwrap_or_else(|p| p.into_inner());
+    let key = map.iter().find(|(_, s)| s.id == id).map(|(k, _)| k.clone()).ok_or("MCP session is closed")?;
+    let s = map.remove(&key).unwrap();
+    s.revoked.store(true, Ordering::Release);
+    Ok(s.identity.tab)
+}
+pub fn authenticate(header: Option<&str>) -> Option<Session> {
     let map = tokens().lock().unwrap_or_else(|p| p.into_inner());
     let mut found = None;
-    for (token, identity) in map.iter() {
-        if authorized(header, token) { found = Some(identity.clone()); }
+    for (token, session) in map.iter() {
+        if authorized(header, token) { found = Some(session.clone()); }
     }
     found
+}
+pub fn caller(header: Option<&str>) -> Option<Identity> {
+    authenticate(header).map(|s| s.identity)
 }
 
 /// Constant-time bearer check. `header` is the raw `Authorization` value.
@@ -298,44 +377,22 @@ impl Drop for SpawnTokenGuard {
     }
 }
 pub fn revoke_token(token: &str) -> Option<Identity> {
-    tokens().lock().unwrap_or_else(|p| p.into_inner()).remove(token)
+    tokens().lock().unwrap_or_else(|p| p.into_inner()).remove(token).map(|s| {
+        s.revoked.store(true, Ordering::Release);
+        s.identity
+    })
 }
 
-/// The global switch (`Settings::root_mcp`), read per use so flipping it needs
-/// no restart. A missing or unreadable file is a fresh install: on.
+/// Missing, malformed or unreadable policy always refuses access.
 pub fn enabled_in(settings: &Path) -> bool {
-    crate::storage::read_json::<crate::schema::Settings>(settings)
-        .map(|settings| settings.root_mcp())
-        .unwrap_or(true)
+    Policy::load(settings).is_ok_and(|p| p.enabled)
 }
-
-/// `Settings::root_mcp_local_only`, read per use like [`enabled_in`]. A missing
-/// or unreadable file is a fresh install: every root agent gets the tools.
-pub fn local_only_in(settings: &Path) -> bool {
-    crate::storage::read_json::<crate::schema::Settings>(settings)
-        .map(|settings| settings.root_mcp_local_only())
-        .unwrap_or(false)
-}
-
-/// `Settings::root_mcp_mail`, read per use like [`enabled_in`] — but a missing
-/// or unreadable file is **off**: mail is never served until switched on.
 pub fn mail_enabled_in(settings: &Path) -> bool {
-    crate::storage::read_json::<crate::schema::Settings>(settings)
-        .map(|settings| settings.root_mcp_mail())
-        .unwrap_or(false)
+    Policy::load(settings).is_ok_and(|p| p.enabled && p.mail)
 }
-
-/// What a mail tool answers while [`mail_enabled_in`] is off.
-pub const MAIL_OFF: &str =
-    "Eldrun's mail tools are switched off in Eldrun's Settings; the user has to turn them on first";
-
-/// Whether the endpoint serves `caller` right now: the global switch, then the
-/// local-only one; a reader exists for mail alone, so the mail switch is its
-/// switch too. Read per request so none needs a tab closed.
+pub const MAIL_OFF: &str = "mail tools are switched off in Eldrun's Settings";
 pub fn serves(settings: &Path, caller: Caller) -> bool {
-    enabled_in(settings)
-        && (caller == Caller::LocalModel || !local_only_in(settings))
-        && (caller != Caller::Reader || mail_enabled_in(settings))
+    Policy::load(settings).is_ok_and(|p| p.serves(caller))
 }
 
 /// [`enabled_in`] against the live `settings.json`.
@@ -347,17 +404,13 @@ pub fn enabled() -> bool {
 /// or while the tools are switched off.
 pub fn apply_to_spawn(opts: &mut PtyOptions) {
     let Some(runtime) = runtime() else { return };
-    let settings = crate::storage::read_json::<crate::schema::Settings>(
+    let Ok(settings) = crate::storage::read_json::<crate::schema::Settings>(
         &crate::storage::state_dir().join("settings.json"),
-    )
-    .ok();
-    // Same reading as `enabled_in`: a missing or unreadable file is on.
-    if settings.as_ref().is_some_and(|s| !s.root_mcp()) {
-        return;
-    }
-    let local_only = settings.as_ref().is_some_and(|s| s.root_mcp_local_only());
-    let tool_agents = settings.as_ref().map(|s| s.root_mcp_agent_list()).unwrap_or_default();
-    let tool_models = settings.and_then(|s| s.ollama_mcp_models).unwrap_or_default();
+    ) else { return };
+    if !settings.root_mcp() { return; }
+    let local_only = settings.root_mcp_local_only();
+    let tool_agents = settings.root_mcp_agent_list();
+    let tool_models = settings.ollama_mcp_models.unwrap_or_default();
     let Some(token) = mint_token() else { return };
     let caller = if is_local_model(opts) { Caller::LocalModel } else { Caller::Agent };
     apply_to_spawn_with(opts, runtime, &token, &tool_agents, &tool_models, local_only);
@@ -474,27 +527,28 @@ pub struct Stores<'a> {
     /// For a [`Caller::Reader`]: why its VM is not narrow *right now*
     /// (`services::mail_reader`), checked by the command layer per call.
     pub reader_refusal: Option<&'a str>,
+    pub policy: Policy,
+    pub access: Access,
+    pub session: Option<&'a Session>,
+    pub deadline: Option<std::time::Instant>,
+}
+impl Stores<'_> {
+    pub fn check(&self) -> Result<(), String> {
+        if let Some(s) = self.session {
+            s.check()?;
+            if Policy::load(self.settings)? != self.policy {
+                return Err("MCP security policy changed; retry the request".into());
+            }
+        }
+        if self.deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            return Err("MCP request deadline exceeded".into());
+        }
+        Ok(())
+    }
 }
 
-/// The cross-project sweeps. Each is private data an injected instruction could
-/// reach in the same breath as the mail that carried it, so a reader is served
-/// none of them.
-const SWEEPS: &[&str] =
-    &["projects_list", "projects_git_status", "sync_status", "time_summary", "usage_recap", "boxes_list"];
-
-/// Whether `name` exists for `caller`. `tools/list` and dispatch both go through
-/// this, so an agent is never shown a tool it would be refused — and a tool
-/// added later is served to nobody's surprise: `every_tool_has_a_class` fails
-/// until it is placed here on purpose.
 pub fn served(caller: Caller, name: &str) -> bool {
-    use super::root_mcp_mail as mail;
-    if !tool_names().contains(&name) {
-        return false;
-    }
-    match caller {
-        Caller::Agent | Caller::LocalModel => !mail::is_read_tool(name),
-        Caller::Reader => !SWEEPS.contains(&name),
-    }
+    security::tool(name).is_some_and(|t| t.serves(caller))
 }
 
 pub fn tool_names() -> Vec<&'static str> {
@@ -533,45 +587,10 @@ fn store_tool_names() -> Vec<&'static str> {
 /// read-only; the annotation only describes the tool — the approval stays the
 /// CLI's own (`docs/context/root_console.md`).
 pub(crate) fn tool_annotations(name: &str) -> Value {
-    let read_only = matches!(
-        name,
-        "proposals_list"
-            | "projects_list"
-            | "projects_git_status"
-            | "boxes_list"
-            | "calendar_list"
-            | "todo_list"
-            | "time_summary"
-            | "usage_recap"
-            | "sync_status"
-            | "mail_accounts_list"
-            | "mail_folders"
-            | "mail_search"
-            | "mail_read"
-            | "mail_thread"
-            | "mail_drafts_list"
-    );
-    // Overwrites or removes what the user wrote. A complete/reopen/move is
-    // undone by its opposite gesture; an add only adds. A *calendar* move is
-    // not a board move: out of a CalDAV calendar it deletes the server's copy
-    // and re-creates the event from the local row, and whatever the server held
-    // that Eldrun does not model does not come back with a move back.
-    let destructive = matches!(
-        name,
-        "calendar_delete_event"
-            | "calendar_update_event"
-            | "calendar_move_events"
-            | "todo_delete"
-            | "todo_update"
-            | "mail_draft_update"
-            | "mail_draft_delete"
-    );
-    if read_only {
-        json!({ "readOnlyHint": true, "openWorldHint": false })
-    } else {
-        // No `openWorldHint`: a write to a CalDAV-backed calendar is pushed
-        // to its server by the window.
-        json!({ "readOnlyHint": false, "destructiveHint": destructive })
+    match security::tool(name) {
+        Some(t) if !t.write => json!({ "readOnlyHint": true, "openWorldHint": false }),
+        Some(t) => json!({ "readOnlyHint": false, "destructiveHint": t.destructive }),
+        None => json!({ "readOnlyHint": false, "destructiveHint": true }),
     }
 }
 
@@ -584,6 +603,11 @@ fn tool_definitions(caller: Caller, mail: bool) -> Value {
     for tool in &mut tools {
         let name = tool["name"].as_str().unwrap_or_default().to_string();
         tool["annotations"] = tool_annotations(&name);
+        tool["inputSchema"]["additionalProperties"] = json!(false);
+        if security::tool(&name).is_some_and(|t| !t.write && t.family != "mail") {
+            tool["inputSchema"]["properties"]["offset"] = json!({"type":"integer", "minimum":0, "maximum":1000000});
+            tool["inputSchema"]["properties"]["limit"] = json!({"type":"integer", "minimum":1, "maximum":100});
+        }
     }
     Value::Array(tools)
 }
@@ -651,7 +675,7 @@ fn tool_schemas() -> Value {
                     "title": { "type": "string" },
                     "start": { "type": "string", "description": stamp },
                     "end": { "type": "string", "description": "Exclusive end, same format as start." },
-                    "duration_minutes": { "type": "integer", "minimum": 1, "description": "Used when `end` is absent. Default 60." },
+                    "duration_minutes": { "type": "integer", "minimum": 1, "maximum": 1000000, "description": "Used when `end` is absent. Default 60." },
                     "all_day": { "type": "boolean" },
                     "location": { "type": "string" },
                     "notes": { "type": "string" },
@@ -670,7 +694,7 @@ fn tool_schemas() -> Value {
                     "title": { "type": "string" },
                     "start": { "type": "string", "description": stamp },
                     "end": { "type": "string", "description": "Exclusive end, same format as start." },
-                    "duration_minutes": { "type": "integer", "minimum": 1, "description": "New length, from `start`. Ignored when `end` is given." },
+                    "duration_minutes": { "type": "integer", "minimum": 1, "maximum": 1000000, "description": "New length, from `start`. Ignored when `end` is given." },
                     "all_day": { "type": "boolean", "description": "Turn the event into (or out of) an all-day one; turning it into a timed event needs a `start`." },
                     "location": { "type": "string" },
                     "notes": { "type": "string" },
@@ -877,8 +901,8 @@ fn read_projects(path: &Path) -> Vec<crate::schema::projects::ProjectEntry> {
 
 /// Resolve "id or name" to a project id. A name must match exactly one project
 /// (case-insensitively) — an ambiguous name links nothing rather than guessing.
-fn resolve_project(path: &Path, wanted: &str) -> Result<String, String> {
-    let projects = read_projects(path);
+fn resolve_project(stores: &Stores, wanted: &str) -> Result<String, String> {
+    let projects: Vec<_> = read_projects(stores.projects).into_iter().filter(|p| stores.access.projects.contains(&p.id)).collect();
     if let Some(p) = projects.iter().find(|p| p.id == wanted) {
         return Ok(p.id.clone());
     }
@@ -896,7 +920,7 @@ fn resolve_project(path: &Path, wanted: &str) -> Result<String, String> {
 fn projects_list(stores: &Stores) -> Result<Value, String> {
     let rows: Vec<Value> = read_projects(stores.projects)
         .iter()
-        .filter(|p| !crate::paths::is_trash_project_id(&p.id))
+        .filter(|p| !crate::paths::is_trash_project_id(&p.id) && stores.access.projects.contains(&p.id))
         .map(|p| {
             json!({
                 "id": p.id,
@@ -924,12 +948,14 @@ fn calendar_list(stores: &Stores, args: &Value) -> Result<Value, String> {
     let events: Vec<&CalendarEvent> = data
         .events
         .iter()
+        .filter(|e| stores.access.calendars.contains(&e.calendar_id))
         .filter(|e| e.rrule.is_some() || from.is_none_or(|f| e.start.as_str() >= f))
         .filter(|e| to.is_none_or(|t| e.start.as_str() < t))
         .collect();
     let calendars: Vec<Value> = data
         .calendars
         .iter()
+        .filter(|c| stores.access.calendars.contains(&c.id))
         .map(|c| json!({ "id": c.id, "name": c.name, "readonly": c.readonly }))
         .collect();
     Ok(json!({ "calendars": calendars, "events": events }))
@@ -1239,6 +1265,8 @@ fn calendar_move_events(stores: &Stores, args: &Value) -> Result<(Value, Vec<Cha
         }
         (None, None) => return Err("give `ids` (events to move) or `from` (a calendar to empty)".into()),
     };
+    if ids.len() > security::MAX_ROWS / 2 { return Err("Move at most 50 events per call".into()); }
+    stores.check()?;
     let moved = crate::commands::calendar::move_events_at(stores.calendar, &ids, &to)?;
     let mut changes = Vec::new();
     for m in &moved {
@@ -1268,13 +1296,14 @@ fn calendar_delete_event(stores: &Stores, args: &Value) -> Result<(Value, Change
 fn todo_list(stores: &Stores, args: &Value) -> Result<Value, String> {
     let include_completed = args.get("include_completed").and_then(Value::as_bool).unwrap_or(false);
     let project = match str_arg(args, "project") {
-        Some(p) => Some(resolve_project(stores.projects, p)?),
+        Some(p) => Some(resolve_project(stores, p)?),
         None => None,
     };
     let data = crate::commands::calendar::read_data(stores.calendar)?;
     let cards: Vec<&CalendarTask> = data
         .tasks
         .iter()
+        .filter(|t| stores.access.calendars.contains(&t.calendar_id) && stores.access.projects.contains(&t.project_id))
         .filter(|t| include_completed || t.completed.is_none())
         .filter(|t| project.as_ref().is_none_or(|p| &t.project_id == p))
         .collect();
@@ -1335,7 +1364,7 @@ fn todo_add(stores: &Stores, args: &Value) -> Result<(Value, Change), String> {
     let title = str_arg(args, "title").ok_or("`title` is required")?;
     let due = str_arg(args, "due").map(parse_due).transpose()?;
     let project_id = match str_arg(args, "project") {
-        Some(p) => resolve_project(stores.projects, p)?,
+        Some(p) => resolve_project(stores, p)?,
         None => String::new(),
     };
     let data = crate::commands::calendar::read_data(stores.calendar)?;
@@ -1407,7 +1436,7 @@ fn todo_update(stores: &Stores, args: &Value) -> Result<(Value, Change), String>
         task.project_id = if project.is_empty() {
             String::new()
         } else {
-            resolve_project(stores.projects, project)?
+            resolve_project(stores, project)?
         };
     }
     if let Some(tags) = args.get("tags").and_then(Value::as_array) {
@@ -1507,7 +1536,7 @@ fn in_range(day: &str, (from, to): (Option<&str>, Option<&str>)) -> bool {
 /// The optional `project` argument, resolved to an id.
 fn project_filter(stores: &Stores, args: &Value) -> Result<Option<String>, String> {
     match str_arg(args, "project") {
-        Some(wanted) => resolve_project(stores.projects, wanted).map(Some),
+        Some(wanted) => resolve_project(stores, wanted).map(Some),
         None => Ok(None),
     }
 }
@@ -1559,10 +1588,10 @@ fn time_summary(stores: &Stores, args: &Value) -> Result<Value, String> {
             }
             // Eldrun's own window time is not any project's work.
             if id == crate::commands::timer::APP_TIMER_ID {
-                app += secs;
+                if stores.access.projects.all { app += secs; }
                 continue;
             }
-            if only.as_deref().is_some_and(|o| o != id) {
+            if !stores.access.projects.contains(id) || only.as_deref().is_some_and(|o| o != id) {
                 continue;
             }
             *per_project.entry(id.as_str()).or_insert(0.0) += secs;
@@ -1616,9 +1645,9 @@ fn usage_recap(stores: &Stores, args: &Value) -> Result<Value, String> {
         if !in_range(day, range) {
             continue;
         }
-        days += 1;
+        if by_id.keys().any(|id| stores.access.projects.contains(id) && only.as_deref().is_none_or(|o| o == id)) { days += 1; }
         for (id, counters) in by_id {
-            if only.as_deref().is_some_and(|o| o != id) {
+            if !stores.access.projects.contains(id) || only.as_deref().is_some_and(|o| o != id) {
                 continue;
             }
             for (key, count) in counters {
@@ -1670,6 +1699,8 @@ fn boxes_list(stores: &Stores, args: &Value) -> Result<Value, String> {
     let names = project_names(stores.projects);
     let mut boxes: Vec<_> = boxes
         .into_iter()
+        .filter(|b| b.member_ids.iter().all(|id| stores.access.projects.contains(id))
+            && b.relations.iter().all(|r| stores.access.projects.contains(&r.source) && stores.access.projects.contains(&r.target)))
         .filter(|b| only.as_deref().is_none_or(|p| b.member_ids.iter().any(|m| m == p)))
         .collect();
     boxes.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.name.cmp(&b.name)));
@@ -1766,19 +1797,59 @@ fn parse_porcelain(text: &str) -> GitSnapshot {
 /// `GIT_OPTIONAL_LOCKS=0` for the same reason the file tree sets it: a status
 /// read that refreshes the index takes `index.lock`, and a background reader
 /// doing that is half of the root git-status loop.
-fn git_snapshot(dir: &Path) -> Result<Option<GitSnapshot>, String> {
-    // Hardened: `status` is exactly what fires a repo-configured `core.fsmonitor`.
-    let out = crate::commands::git::hardened_git_command_in(
-        dir,
-        &["status", "--porcelain=v1", "--branch"],
-    )
-    .env("GIT_OPTIONAL_LOCKS", "0")
-    .output()
-    .map_err(|e| format!("running git: {e}"))?;
-    if !out.status.success() {
-        return Ok(None);
+fn git_snapshot(stores: &Stores, dir: &Path) -> Result<Option<GitSnapshot>, String> {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+    stores.check()?;
+    let mut command = crate::commands::git::hookless_git_command_in(
+        dir, &["status", "--porcelain=v1", "--branch"],
+    );
+    command.env("GIT_OPTIONAL_LOCKS", "0").stdin(Stdio::null()).stderr(Stdio::null()).stdout(Stdio::piped());
+    #[cfg(unix)] {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
     }
-    Ok(Some(parse_porcelain(&String::from_utf8_lossy(&out.stdout))))
+    let mut child = command.spawn().map_err(|e| format!("running git: {e}"))?;
+    let stdout = child.stdout.take().ok_or("Missing git output pipe")?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let result = stdout.take((security::MAX_RESPONSE + 1) as u64).read_to_end(&mut bytes)
+            .map_err(|e| e.to_string()).and_then(|_| {
+                if bytes.len() > security::MAX_RESPONSE { Err("Git output limit exceeded".into()) } else { Ok(bytes) }
+            });
+        let _ = tx.send(result);
+    });
+    let deadline = stores.deadline.unwrap_or_else(|| Instant::now() + Duration::from_secs(3))
+        .min(Instant::now() + Duration::from_secs(3));
+    let result = loop {
+        if let Err(e) = stores.check() { break Err(e); }
+        if Instant::now() >= deadline { break Err("Git status timed out".into()); }
+        match rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(result) => break result,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {},
+            Err(_) => break Err("Git output reader stopped".into()),
+        }
+    };
+    // A closed stdout is not process completion. Bound that wait too.
+    let result = result.and_then(|bytes| loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status.success().then(|| parse_porcelain(&String::from_utf8_lossy(&bytes)))),
+            Err(e) => break Err(e.to_string()),
+            Ok(None) => {},
+        }
+        if Instant::now() >= deadline || stores.check().is_err() { break Err("Git status cancelled or timed out".into()); }
+        std::thread::sleep(Duration::from_millis(10));
+    });
+    if result.is_err() {
+        crate::terminal::reap_child_subtree(child.id(), crate::terminal::ReapMode::Immediate);
+        #[cfg(unix)] unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL); }
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+    let _ = reader.join();
+    result
 }
 
 /// The **local** working copy to read for a project, and what it is: a local
@@ -1815,7 +1886,8 @@ fn projects_git_status(stores: &Stores, args: &Value) -> Result<Value, String> {
     let dirty_only = args.get("dirty_only").and_then(Value::as_bool).unwrap_or(false);
     let (mut rows, mut skipped) = (Vec::new(), Vec::new());
     for entry in read_projects(stores.projects) {
-        if crate::paths::is_trash_project_id(&entry.id) || only.as_deref().is_some_and(|o| o != entry.id) {
+        stores.check()?;
+        if !stores.access.projects.contains(&entry.id) || crate::paths::is_trash_project_id(&entry.id) || only.as_deref().is_some_and(|o| o != entry.id) {
             continue;
         }
         let skip = |reason: String| json!({ "id": entry.id, "name": entry.name, "reason": reason });
@@ -1826,7 +1898,7 @@ fn projects_git_status(stores: &Stores, args: &Value) -> Result<Value, String> {
                 continue;
             }
         };
-        let snap = match git_snapshot(Path::new(&dir)) {
+        let snap = match git_snapshot(stores, Path::new(&dir)) {
             Ok(Some(snap)) => snap,
             Ok(None) => {
                 skipped.push(skip("not a git repository".into()));
@@ -1876,7 +1948,8 @@ fn sync_status(stores: &Stores, args: &Value) -> Result<Value, String> {
     let include_acked = args.get("include_acked").and_then(Value::as_bool).unwrap_or(false);
     let (mut rows, mut local) = (Vec::new(), 0usize);
     for entry in read_projects(stores.projects) {
-        if crate::paths::is_trash_project_id(&entry.id) || only.as_deref().is_some_and(|o| o != entry.id) {
+        stores.check()?;
+        if !stores.access.projects.contains(&entry.id) || crate::paths::is_trash_project_id(&entry.id) || only.as_deref().is_some_and(|o| o != entry.id) {
             continue;
         }
         let Some(remote) = entry.extra.get("remote").filter(|r| !r.is_null()) else {
@@ -1981,6 +2054,24 @@ fn call_store_tool(stores: &Stores, name: &str, args: &Value) -> Result<(Value, 
 
 // ── JSON-RPC ────────────────────────────────────────────────────────────────
 
+fn paginate(value: &mut Value, args: &Value) {
+    let offset = args["offset"].as_u64().unwrap_or(0) as usize;
+    let limit = args["limit"].as_u64().unwrap_or(50).min(security::MAX_ROWS as u64) as usize;
+    let mut next = serde_json::Map::new();
+    if let Some(object) = value.as_object_mut() {
+        for (key, field) in object.iter_mut() {
+            if let Some(rows) = field.as_array_mut() {
+                let total = rows.len();
+                let end = offset.saturating_add(limit).min(total);
+                let page = rows.drain(offset.min(total)..end).collect();
+                *rows = page;
+                if end < total { next.insert(key.clone(), json!(end)); }
+            }
+        }
+        if !next.is_empty() { object.insert("next_offsets".into(), Value::Object(next)); }
+    }
+}
+
 fn rpc_error(id: Value, code: i64, message: &str) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
 }
@@ -1988,11 +2079,20 @@ fn rpc_error(id: Value, code: i64, message: &str) -> Value {
 /// Answer one JSON-RPC message. `None` for a notification (no `id`), which MCP
 /// answers with `202 Accepted` and no body. Blocking: it reads and writes files.
 pub fn handle_message(stores: &Stores, tab: &str, message: &Value) -> (Option<Value>, Effects) {
+    if message["jsonrpc"] != "2.0" || !message["method"].is_string()
+        || message.get("id").is_some_and(|id| !id.is_string() && !id.is_i64() && !id.is_u64())
+        || message.get("params").is_some_and(|p| !p.is_object()) {
+        return (Some(rpc_error(Value::Null, -32600, "invalid request")), Effects::default());
+    }
     let Some(id) = message.get("id").filter(|v| !v.is_null()).cloned() else {
         return (None, Effects::default());
     };
     let method = message.get("method").and_then(Value::as_str).unwrap_or("");
     let ok = |result: Value| Some(json!({ "jsonrpc": "2.0", "id": id.clone(), "result": result }));
+    if !stores.policy.serves(stores.caller) || stores.check().is_err()
+        || (stores.caller == Caller::Reader && stores.reader_refusal.is_some()) {
+        return (Some(rpc_error(id, -32000, "MCP access unavailable")), Effects::default());
+    }
     match method {
         "initialize" => (
             ok(json!({
@@ -2005,7 +2105,8 @@ pub fn handle_message(stores: &Stores, tab: &str, message: &Value) -> (Option<Va
         ),
         "ping" => (ok(json!({})), Effects::default()),
         "tools/list" => (
-            ok(json!({ "tools": tool_definitions(stores.caller, mail_enabled_in(stores.settings)) })),
+            ok(json!({ "tools": tool_definitions(stores.caller, stores.policy.mail).as_array().unwrap().iter()
+                .filter(|t| stores.access.allows(stores.caller, t["name"].as_str().unwrap_or(""))).collect::<Vec<_>>() })),
             Effects::default(),
         ),
         "tools/call" => {
@@ -2017,12 +2118,18 @@ pub fn handle_message(stores: &Stores, tab: &str, message: &Value) -> (Option<Va
             // that is what lets the model read the message and correct itself.
             // A tool outside the caller's class does not exist for it: the
             // same answer an invented name gets.
-            let result = if !served(stores.caller, name) {
+            let definitions = tool_definitions(stores.caller, true);
+            let schema = definitions.as_array().unwrap().iter().find(|t| t["name"] == name);
+            let validation = schema.map(|t| security::validate(&t["inputSchema"], args))
+                .unwrap_or_else(|| Err("unknown tool".into()));
+            let result = if !stores.access.allows(stores.caller, name) {
                 Err(format!("unknown tool '{name}'"))
-            } else if super::root_mcp_mail::is_mail_tool(name) && !mail_enabled_in(stores.settings) {
+            } else if super::root_mcp_mail::is_mail_tool(name) && !stores.policy.mail {
                 // Its own switch, off by default: unlisted, and named when
                 // called anyway so the agent can tell the user what to flip.
                 Err(MAIL_OFF.to_string())
+            } else if let Err(error) = validation {
+                Err(error)
             } else if super::root_mcp_mail::is_mail_tool(name) {
                 // Mail touches no calendar row, so it has nothing to stage: the
                 // draft *is* the proposal and the composer's Send the approval.
@@ -2030,16 +2137,29 @@ pub fn handle_message(stores: &Stores, tab: &str, message: &Value) -> (Option<Va
             } else {
                 super::root_mcp_review::call(stores, tab, name, args)
             };
+            let result = result.and_then(|(mut value, effects)| {
+                if security::tool(name).is_some_and(|t| !t.write && t.family != "mail") {
+                    paginate(&mut value, args);
+                }
+                if security::tool(name).is_some_and(|t| !t.write) { stores.check()?; }
+                Ok((value, effects))
+            });
             match result {
-                Ok((value, effects)) => (
-                    ok(json!({
-                        // An enveloped mail result is already text; quoting it
-                        // again would bury its markers in escapes.
-                        "content": [{ "type": "text", "text": match value { Value::String(s) => s, v => v.to_string() } }],
-                        "isError": false,
-                    })),
-                    effects,
-                ),
+                Ok((value, effects)) => {
+                    let text = match &value { Value::String(s) => s.clone(), v => v.to_string() };
+                    let mut reply = ok(json!({"content":[{"type":"text", "text":text}], "isError":false}));
+                    if reply.as_ref().unwrap().to_string().len() > security::MAX_RESPONSE {
+                        let write = security::tool(name).is_some_and(|t| t.write);
+                        let receipt = if write {
+                            json!({"result_omitted":true, "staged":value["staged"].as_bool().unwrap_or(false),
+                                "proposal":value.get("proposal"), "note":"Change recorded; result is too large to return. Review it in Eldrun."}).to_string()
+                        } else { "Result exceeds the response limit; narrow the query".into() };
+                        reply = ok(json!({"content":[{"type":"text", "text":receipt}], "isError":!write}));
+                    }
+                    // Never lose committed change events because a receipt
+                    // was large, or because the caller disconnected afterwards.
+                    (reply, effects)
+                },
                 Err(error) => (
                     ok(json!({
                         "content": [{ "type": "text", "text": error }],
@@ -2057,6 +2177,51 @@ pub fn handle_message(stores: &Stores, tab: &str, message: &Value) -> (Option<Va
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn narrowing_invalidates_already_authenticated_requests() {
+        let (token, old) = test_session(Caller::Agent);
+        let mut access = old.access.clone(); access.write = false;
+        set_access(&old.id, access).unwrap();
+        assert!(old.check().is_err());
+        let current = authenticate(Some(&format!("Bearer {token}"))).unwrap();
+        assert!(current.check().is_ok());
+        assert!(!current.access.allows(Caller::Agent, "todo_delete"));
+        revoke_session(&current.id).unwrap();
+        assert!(current.check().is_err());
+    }
+
+    #[test]
+    fn rpc_types_and_scope_filters_cannot_be_bypassed() {
+        let f = Fixture::new();
+        let mut stores = f.stores();
+        stores.access.projects = security::Scope { all: false, ids: vec!["p1".into()] };
+        let list = projects_list(&stores).unwrap();
+        assert_eq!(list["projects"].as_array().unwrap().len(), 1);
+        assert!(resolve_project(&stores, "p2").is_err());
+        assert!(resolve_project(&stores, "Beta").is_err());
+        for message in [json!({"method":"ping", "id":1}), json!({"jsonrpc":"2.0","method":"ping","id":[]})] {
+            assert_eq!(handle_message(&stores, "t", &message).0.unwrap()["error"]["code"], -32600);
+        }
+        for args in [json!([]), json!({"title":"test","start":7}), json!({"title":"test","start":"2026-09-20","unexpected":true})] {
+            let message = json!({"jsonrpc":"2.0","id":1,"method":"tools/call", "params":{"name":"calendar_add_event","arguments":args}});
+            let (reply, effects) = handle_message(&stores, "t", &message);
+            assert_eq!(reply.unwrap()["result"]["isError"], true);
+            assert!(effects.changes.is_empty());
+            assert!(!f.calendar.exists());
+        }
+    }
+
+    #[test]
+    fn policy_change_refuses_a_queued_request() {
+        let f = Fixture::new();
+        let (_, session) = test_session(Caller::Agent);
+        let stores = Stores { session: Some(&session), ..f.stores() };
+        assert!(stores.check().is_ok());
+        f.write_state("settings.json", json!({"root_mcp":false}));
+        assert!(stores.check().is_err());
+        revoke_tab(&session.identity.tab);
+    }
 
     fn opts(cmd: &str, args: &[&str], project_id: Option<&str>) -> PtyOptions {
         PtyOptions {
@@ -2082,13 +2247,12 @@ mod tests {
         Runtime { port: 4321 }
     }
 
-    /// The global switch: absent (and a missing file) means on, and only a
-    /// stored `false` turns the tools off.
+    /// Missing keys retain old defaults; an unavailable policy file refuses.
     #[test]
     fn the_switch_is_on_unless_stored_off() {
         let fx = Fixture::new();
         std::fs::remove_file(&fx.settings).unwrap();
-        assert!(enabled_in(&fx.settings), "no settings.json is a fresh install");
+        assert!(!enabled_in(&fx.settings), "missing security settings refuse access");
         fx.write_state("settings.json", json!({ "debug": true }));
         assert!(enabled_in(&fx.settings));
         fx.write_state("settings.json", json!({ "root_mcp": false }));
@@ -2129,6 +2293,8 @@ mod tests {
                 caller: Caller::Agent,
                 mail: None,
                 reader_refusal: None,
+                policy: Policy::load(&self.settings).unwrap(),
+                access: Access::initial(Caller::Agent), session: None, deadline: None,
             }
         }
         /// Write one of the flat state files the read-only sweeps roll up.
@@ -2326,7 +2492,7 @@ mod tests {
                 .filter(|t| is_mail_tool(t["name"].as_str().unwrap()))
                 .count()
         };
-        for off in [None, Some(json!({})), Some(json!({ "root_mcp": true })), Some(json!({ "root_mcp_mail": false }))] {
+        for off in [Some(json!({})), Some(json!({ "root_mcp": true })), Some(json!({ "root_mcp_mail": false }))] {
             match &off {
                 Some(body) => fx.write_state("settings.json", body.clone()),
                 None => std::fs::remove_file(&fx.settings).unwrap(),
