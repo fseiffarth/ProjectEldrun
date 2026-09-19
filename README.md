@@ -564,9 +564,7 @@ follows debug mode, so they are all on in a development build.
   would a dialog edit); the board tools add, edit, complete, reopen, move, and
   delete cards through the same gestures a drag uses; plus read-only sweeps —
   which projects have uncommitted work, what is out of sync with its host, last
-  week's time and usage — and "show me" tools that open the mail, calendar, and
-  board overlays. **Mail tools are next**; today an agent can only open the
-  client. The tools live on a loopback endpoint behind a per-run bearer token
+  week's time and usage. **Mail tools are next**. The tools live on a loopback endpoint behind a per-run bearer token
   that is never written to disk, and **no project's agents ever get them**. One
   switch in Settings turns it all off without a restart: new root agents are
   handed nothing and the ones already running are refused.

@@ -367,6 +367,12 @@ pub struct VmSpec {
     /// is exactly the exfiltration channel the tier narrows.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub allow_github: bool,
+    /// This VM is a **contained mail reader** (`services::mail_reader`): its
+    /// agent tabs are served the root MCP's mail read tools, for as long as the
+    /// box stays at the default proxy allowlist. Trusted only from the
+    /// `projects.json` mirror — an in-folder `project.json` grants nothing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mail_reader: bool,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }
@@ -381,6 +387,7 @@ impl Default for VmSpec {
             egress: VmEgress::default(),
             allow_hosts: Vec::new(),
             allow_github: false,
+            mail_reader: false,
             extra: HashMap::new(),
         }
     }

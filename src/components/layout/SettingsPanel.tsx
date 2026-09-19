@@ -969,6 +969,30 @@ export function SettingsDialog({
               onChange={(e) => void updateSettings({ root_mcp_local_only: e.target.checked })}
               help={t("settings.rootMcpLocalOnlyHelp")}
             />
+            {/* Its own switch, absent means off: the tools above never bring
+                mail with them. Read per request, like the two above. */}
+            <ToggleCard
+              label={<>{t("settings.rootMcpMail")} <UntestedTag /></>}
+              checked={settings?.root_mcp_mail ?? false}
+              disabled={!(settings?.root_mcp ?? true)}
+              onChange={(e) => void updateSettings({ root_mcp_mail: e.target.checked })}
+              help={t("settings.rootMcpMailHelp")}
+            />
+
+            <SettingRow
+              label={<>{t("rootReview.setting")} <UntestedTag /></>}
+              control={<Dropdown
+                value={settings?.root_mcp_review ?? "all"}
+                disabled={!(settings?.root_mcp ?? true)}
+                options={[
+                  { value: "all", label: t("rootReview.levelAll") },
+                  { value: "destructive", label: t("rootReview.levelDestructive") },
+                  { value: "off", label: t("rootReview.levelOff") },
+                ]}
+                onChange={(value) => void updateSettings({ root_mcp_review: value as "all" | "destructive" | "off" })}
+              />}
+              help={t("rootReview.settingHelp")}
+            />
 
             {/* Eldrun Mobile runs its host sidecar on every desktop (systemd
                 user unit, launchd agent, or the Windows Run key), so the

@@ -3230,3 +3230,68 @@ handle — it swallows the pointer before the card ever sees it. */
 .mail-staged-remove:hover {
   color: var(--danger);
 }
+
+/* ── Drafts an agent wrote (root MCP) ──────────────────────────────────────
+   A strip of rows above the list: each opens the composer, never sends. The
+   mark is a pill; the reader's is the warning tone — that draft carries text
+   shaped by mail from outside. */
+.mail-agent-drafts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.mail-agent-drafts-title {
+  color: var(--text-secondary);
+}
+.mail-agent-draft-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 2px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font: inherit;
+  cursor: var(--cur-pointer, pointer);
+}
+.mail-agent-draft-row:hover {
+  border-color: var(--accent);
+}
+.mail-agent-draft-subject {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 28em;
+}
+.mail-agent-draft-account {
+  color: var(--text-secondary);
+}
+.mail-agent-mark {
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.mail-agent-mark.reader {
+  background: color-mix(in srgb, var(--warning, #d9a441) 30%, transparent);
+}
+.mail-agent-banner {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--warning, #d9a441) 60%, transparent);
+  background: color-mix(in srgb, var(--warning, #d9a441) 14%, transparent);
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.mail-agent-banner div {
+  margin-top: 4px;
+}

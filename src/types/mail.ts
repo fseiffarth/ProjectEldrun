@@ -99,6 +99,10 @@ export interface MailAiPrefs {
   /** Skip the review step for extracted events / to-do cards. **Default off** —
    *  mail must never quietly write to the user's own data. */
   auto_create?: boolean;
+  /** A **contained reader** agent may read this account's mail through the root
+   *  MCP tools. Unset = off. The opposite consent to every switch above: what
+   *  such an agent reads is sent to its cloud provider. */
+  agent_access?: boolean;
 }
 
 /**
@@ -551,6 +555,10 @@ export interface MailDraft {
   in_reply_to?: string;
   references?: string[];
   staged: StagedAttachment[];
+  /** Who wrote it, when that was not the user: `"agent"` (a root tab) or
+   *  `"reader"` (a contained reader, which reads mail from outside). A save
+   *  from the composer clears it. */
+  origin?: string;
 }
 
 export interface MailSendResult {

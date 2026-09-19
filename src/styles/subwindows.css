@@ -1024,3 +1024,18 @@
   background: var(--accent);
   pointer-events: none;
 }
+
+/* Root-agent proposals use the shared window and dialog controls. */
+.root-review-strip {
+  flex: 0 0 auto;
+  max-height: 45%;
+  overflow: auto;
+  color: var(--text-primary);
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.root-review-heading, .root-review-actions { display: flex; align-items: center; gap: 8px; }
+.root-review-card { padding: 10px 0; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+.root-review-row table { width: 100%; table-layout: fixed; text-align: left; }
+.root-review-row th, .root-review-row td { vertical-align: top; padding: 3px 6px; }
+.root-review-row pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }

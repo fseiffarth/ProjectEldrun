@@ -170,6 +170,9 @@ pub struct Settings {
     /// token, so the switch takes effect without closing a tab.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_mcp: Option<bool>,
+    /// Root-agent write review: absent/unknown = all, or destructive / off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_mcp_review: Option<String>,
     /// Root console: serve the MCP tools to **local-model tabs only**. Absent
     /// means off (every root agent gets them). On, a cloud agent CLI spawned
     /// from then on is handed no endpoint and the endpoint refuses the ones
@@ -177,6 +180,15 @@ pub struct Settings {
     /// reaches a hosted model through these tools. Subordinate to `root_mcp`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_mcp_local_only: Option<bool>,
+    /// Root console: whether the MCP endpoint serves its **mail** tools
+    /// (`services::root_mcp_mail`) — drafts to a root agent, reading to a
+    /// contained reader. **Absent means off**: mail is switched on separately
+    /// from the rest of the tools, never by `root_mcp` alone. Off, no mail tool
+    /// is listed, a call to one is refused, and a reader is served nothing;
+    /// read per request, so it takes effect without closing a tab.
+    /// Subordinate to `root_mcp`, and above every per-account `agent_access`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_mcp_mail: Option<bool>,
     /// Side panel: the opt-in **Alerts** group in the file viewer — urgent
     /// mail, the calendar entries about to start, and the to-do cards whose due
     /// date is here or past, in one time-ordered strip.
@@ -877,8 +889,7 @@ impl Settings {
     }
 
     /// Whether the experimental mail client is on — the one gate its overlay
-    /// host asks (`src/components/mail/MailOverlay.tsx`). Read by the root
-    /// console's `mail_open` tool so it can refuse instead of opening nothing.
+    /// host asks (`src/components/mail/MailOverlay.tsx`).
     pub fn mail_client(&self) -> bool {
         self.experimental(self.mail_client)
     }
@@ -895,6 +906,11 @@ impl Settings {
             .clone()
             .or_else(|| self.root_agents.clone())
             .unwrap_or_default()
+    }
+
+    /// Whether the root MCP endpoint serves its mail tools. Off unless set.
+    pub fn root_mcp_mail(&self) -> bool {
+        self.root_mcp_mail.unwrap_or(false)
     }
 
     /// Whether the root MCP tools are kept to local-model tabs. Off unless set.

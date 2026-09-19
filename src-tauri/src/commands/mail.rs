@@ -2145,8 +2145,13 @@ pub async fn mail_body(
     state: State<'_, MailState>,
 ) -> Result<MailBody, String> {
     let _ = allow_remote;
-    let rt = state.inner().clone();
+    body_inner(state.inner().clone(), message_id).await
+}
 
+/// `mail_body`'s whole body, shared with the root MCP's `mail_read`
+/// ([`AgentMail`]) so the two cannot drift: same cache, same `BODY.PEEK[]`
+/// (which is what keeps the message unread), same `decrypt → parse → sanitize`.
+async fn body_inner(rt: MailState, message_id: String) -> Result<MailBody, String> {
     // Cache first — sanitization is the expensive step, and the cache is keyed
     // by SANITIZER_VERSION so a sanitizer fix re-protects already-synced mail.
     let rt2 = rt.clone();
@@ -3179,6 +3184,9 @@ pub async fn mail_draft_save(
         if draft.id.trim().is_empty() {
             draft.id = uuid_v4();
         }
+        // A save from the composer is the user's: it takes the draft out of the
+        // reach of the agent that wrote it (`root_mcp_mail::own_draft`).
+        draft.origin = None;
         // The staged list is the store's, not the caller's: a draft cannot
         // invent an attachment it did not pick through `mail_attach_pick`.
         draft.staged = store.staged(&draft.id)?;
@@ -3187,6 +3195,139 @@ pub async fn mail_draft_save(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// The drafts an agent wrote through the root MCP and the user has not yet
+/// sent, discarded or edited — what the mail view lists with the agent mark.
+/// The user's own drafts are not listed anywhere yet; this does not change that.
+///
+/// **Never opens the store.** The root console asks this on mount, and opening
+/// the store is what resolves its unlock (and can migrate a database) — not a
+/// decision for a badge. A store not opened yet lists nothing; the mail pane
+/// asks again once it has opened it.
+#[tauri::command]
+pub async fn mail_agent_drafts(state: State<'_, MailState>) -> Result<Vec<MailDraft>, String> {
+    let rt = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let Ok(store) = AgentMail(rt).store() else {
+            return Ok(Vec::new());
+        };
+        let mut drafts = store.drafts()?;
+        drafts.retain(|d| d.origin.is_some());
+        Ok(drafts)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Discard one draft and whatever was staged for it.
+#[tauri::command]
+pub async fn mail_draft_discard(
+    draft_id: String,
+    state: State<'_, MailState>,
+) -> Result<(), String> {
+    let rt = state.inner().clone();
+    tokio::task::spawn_blocking(move || store_of(&rt)?.delete_draft(&draft_id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+// ── The root MCP's view of mail ─────────────────────────────────────────────
+
+/// Whether any account has `MailAiPrefs::agent_access` on — the root overlay
+/// badge's mail mark. An unreadable account list reads as "none".
+pub fn any_account_open_to_agents() -> bool {
+    read_accounts(&accounts_path()).is_ok_and(|list| {
+        list.accounts
+            .iter()
+            .any(|a| a.ai.as_ref().and_then(|ai| ai.agent_access) == Some(true))
+    })
+}
+
+/// `root_mcp_mail::MailAccess` over the live [`MailState`].
+///
+/// **Locked means refused.** This never opens the store: a store that was not
+/// opened this run, or that opened as the memory-only stand-in because its key
+/// could not be reached, answers `LOCKED`. An agent has no unlock tool and no
+/// call here raises a prompt — the silent-connect rule SSH and OpenVPN follow.
+pub struct AgentMail(pub MailState);
+
+impl AgentMail {
+    fn store(&self) -> Result<Arc<MailStore>, String> {
+        use crate::services::root_mcp_mail::LOCKED;
+        let rt = self.0.lock().map_err(|_| LOCKED.to_string())?;
+        match (&rt.store, &rt.unlock_note) {
+            (Some(store), None) => Ok(store.clone()),
+            _ => Err(LOCKED.to_string()),
+        }
+    }
+}
+
+impl crate::services::root_mcp_mail::MailAccess for AgentMail {
+    fn accounts(&self) -> Result<Vec<crate::services::root_mcp_mail::AgentAccount>, String> {
+        self.store()?;
+        Ok(read_accounts(&accounts_path())?
+            .accounts
+            .into_iter()
+            .map(|a| crate::services::root_mcp_mail::AgentAccount {
+                agent_access: a.ai.as_ref().and_then(|ai| ai.agent_access) == Some(true),
+                id: a.id,
+                name: a.label,
+                address: a.address,
+            })
+            .collect())
+    }
+
+    fn folders(&self, account_id: &str) -> Result<Vec<MailFolder>, String> {
+        self.store()?.folders(account_id)
+    }
+
+    fn headers(
+        &self,
+        folder_id: &str,
+        offset: u32,
+        limit: u32,
+        query: Option<&str>,
+        unread_only: bool,
+    ) -> Result<MailHeaderPage, String> {
+        self.store()?
+            .headers_page(folder_id, offset, limit, query, MailSort::Date, true, unread_only)
+    }
+
+    fn header(&self, message_id: &str) -> Result<Option<MailHeader>, String> {
+        self.store()?.header(message_id)
+    }
+
+    fn body(&self, message_id: &str) -> Result<MailBody, String> {
+        self.store()?;
+        // Called from the listener's `spawn_blocking` thread, where blocking on
+        // the runtime is allowed.
+        tauri::async_runtime::block_on(body_inner(self.0.clone(), message_id.to_string())).map_err(
+            |e| {
+                if e == no_password_message() {
+                    "open this account in Eldrun first".to_string()
+                } else {
+                    e
+                }
+            },
+        )
+    }
+
+    fn drafts(&self) -> Result<Vec<MailDraft>, String> {
+        self.store()?.drafts()
+    }
+
+    fn save_draft(&self, draft: &MailDraft) -> Result<(), String> {
+        self.store()?.save_draft(draft)
+    }
+
+    fn delete_draft(&self, draft_id: &str) -> Result<(), String> {
+        self.store()?.delete_draft(draft_id)
+    }
+
+    fn new_id(&self) -> String {
+        uuid_v4()
+    }
 }
 
 /// Send one draft. Nothing is ever sent without this explicit call — no read
@@ -3956,6 +4097,20 @@ mod tests {
                 "the frozen contract names `{name}`, which is missing"
             );
         }
+    }
+
+    /// A save from the composer is the user's: it must clear the agent mark, or
+    /// an agent could keep rewriting a draft the user already reviewed. And the
+    /// agent path must never open (or unlock) the store on its own.
+    #[test]
+    fn a_composer_save_clears_the_origin_and_the_agent_path_never_opens_the_store() {
+        let src = include_str!("mail.rs");
+        let save = &src[src.find("pub async fn mail_draft_save(").unwrap()..];
+        let save = &save[..save.find("#[tauri::command]").unwrap()];
+        assert!(save.contains("draft.origin = None;"));
+        let agent = &src[src.find("impl AgentMail {").unwrap()..];
+        let agent = &agent[..agent.find("/// Send one draft.").unwrap()];
+        assert!(!agent.contains(concat!("store_", "of(")), "AgentMail must not open the store");
     }
 
     /// `blocking_pick_*` on the main thread is the freeze this whole file is

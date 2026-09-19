@@ -8,6 +8,7 @@ import {
   mailAiErrorKey,
   mailAttachPick,
   mailAttachRemove,
+  mailDraftDiscard,
   mailDraftSave,
   mailDraftSend,
   mailFormalizeReply,
@@ -47,6 +48,9 @@ export interface MailComposeDialogProps {
   source?: { header: MailHeader; body: MailBody | null };
   /** Pre-filled recipient (a `mailto:` link the user confirmed). */
   toAddress?: string;
+  /** A stored draft an **agent** wrote (`origin` set), opened for review. The
+   *  composer is the only way it leaves: Send is bound to what is on screen. */
+  draft?: MailDraft;
   onClose: () => void;
 }
 
@@ -81,6 +85,7 @@ export function MailComposeDialog({
   mode,
   source,
   toAddress,
+  draft,
   onClose,
 }: MailComposeDialogProps) {
   const t = useT();
@@ -108,12 +113,13 @@ export function MailComposeDialog({
         ? `${t("mail.forwardPrefix")}${subjectBase}`
         : "";
 
-  const [from, setFrom] = useState(accountId);
-  const [to, setTo] = useState(initialTo);
-  const [cc, setCc] = useState(initialCc);
+  const [from, setFrom] = useState(draft?.account_id ?? accountId);
+  const [to, setTo] = useState(draft ? draft.to.join("\n") : initialTo);
+  const [cc, setCc] = useState(draft ? draft.cc.join("\n") : initialCc);
   const [bcc, setBcc] = useState("");
-  const [subject, setSubject] = useState(initialSubject);
+  const [subject, setSubject] = useState(draft ? stripFormatControls(draft.subject) : initialSubject);
   const [text, setText] = useState(() =>
+    draft ? draft.body_text :
     quotedBody(
       source,
       mode,
@@ -126,7 +132,7 @@ export function MailComposeDialog({
       t("mail.forwardedIntro"),
     ),
   );
-  const [draftId, setDraftId] = useState("");
+  const [draftId, setDraftId] = useState(draft?.id ?? "");
   const [staged, setStaged] = useState<StagedAttachment[]>([]);
   const [busy, setBusy] = useState<"" | "attach" | "save" | "send">("");
   const [status, setStatus] = useState("");
@@ -232,6 +238,9 @@ export function MailComposeDialog({
       ...(header?.rfc_message_id && mode !== "new" && mode !== "forward"
         ? { in_reply_to: header.rfc_message_id }
         : {}),
+      // An agent's reply draft carries the threading the backend read from the
+      // store; the composer passes it through and never invents it.
+      ...(draft?.in_reply_to ? { in_reply_to: draft.in_reply_to, references: draft.references } : {}),
       staged,
     };
   }
@@ -283,6 +292,20 @@ export function MailComposeDialog({
     if (id) setStatus(t("mail.draftSaved"));
   }
 
+  async function doDiscard() {
+    if (!draftId) return onClose();
+    setBusy("save");
+    const ok = await mailDraftDiscard(draftId).then(
+      () => true,
+      (err) => {
+        setError(typeof err === "string" ? err : String(err));
+        return false;
+      },
+    );
+    setBusy("");
+    if (ok) onClose();
+  }
+
   async function doSend() {
     if (parseRecipients(to).length === 0) {
       setError(t("mail.recipientsRequired"));
@@ -331,6 +354,15 @@ export function MailComposeDialog({
           </button>
         </div>
         <div className="dialog-scroll">
+          {draft?.origin && (
+            <div className="mail-agent-banner" role="note">
+              <strong>
+                {t(draft.origin === "reader" ? "mail.agentDraftReaderBanner" : "mail.agentDraftBanner")}
+              </strong>{" "}
+              {t("mail.agentDraftBannerHint")}
+              {parseRecipients(to).length === 0 && <div>{t("mail.agentDraftNoRecipient")}</div>}
+            </div>
+          )}
           {accounts.length > 1 && (
             <label className="mail-field">
               <span className="mail-field-label">{t("mail.from")}</span>
@@ -502,6 +534,16 @@ export function MailComposeDialog({
             <button type="button" className="settings-btn" onClick={onClose}>
               {t("common.cancel")}
             </button>
+            {draft && (
+              <button
+                type="button"
+                className="settings-btn"
+                disabled={busy !== ""}
+                onClick={() => void doDiscard()}
+              >
+                {t("mail.discardDraft")}
+              </button>
+            )}
             <button
               type="button"
               className="settings-btn"

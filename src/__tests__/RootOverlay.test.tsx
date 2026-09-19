@@ -15,7 +15,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn((cmd: string) =>
     cmd === "root_mcp_status"
       ? Promise.resolve({ running: true, tools: ["calendar_add_event"] })
-      : Promise.resolve(undefined),
+      : Promise.resolve(cmd === "root_mcp_review_list" ? [] : undefined),
   ),
 }));
 vi.mock("@tauri-apps/api/event", () => ({
@@ -54,8 +54,6 @@ vi.mock("../components/tabs/NewTabMenu", () => ({
 import { allGroups, useTabsStore } from "../stores/tabs";
 import { useProjectsStore } from "../stores/projects";
 import { useCalendarStore } from "../stores/calendar/calendar";
-import { useMailStore } from "../stores/mail";
-import { useTodoStore } from "../stores/todo";
 import {
   clampRootOverlayFrame,
   filledRootOverlayFrame,
@@ -221,6 +219,26 @@ describe("RootOverlayHost", () => {
     uninstall();
   });
 
+  it("a mail draft an agent wrote touches no calendar row and pushes nothing", async () => {
+    const announced: unknown[] = [];
+    const uninstall = setCalendarWriteHandler(async (event) => {
+      announced.push(event);
+    });
+    useCalendarStore.setState({ tasks: [], events: [] } as never);
+    render(<RootOverlayHost />);
+    await act(async () =>
+      listeners.get("root-mcp-changed")?.({
+        payload: { kind: "draft", op: "upsert", row: { id: "d1", account_id: "a1", origin: "agent" }, local: true },
+      }),
+    );
+    expect(useCalendarStore.getState().tasks).toHaveLength(0);
+    expect(useCalendarStore.getState().events).toHaveLength(0);
+    expect(announced).toHaveLength(0);
+    const { invoke } = await import("@tauri-apps/api/core");
+    expect(invoke).toHaveBeenCalledWith("mail_agent_drafts");
+    uninstall();
+  });
+
   it("moves a synced event: the old server copy is deleted, the row comes back in its new calendar", async () => {
     const announced: { op: string; row: { calendar_id: string } }[] = [];
     const uninstall = setCalendarWriteHandler(async (event) => {
@@ -265,24 +283,6 @@ describe("RootOverlayHost", () => {
     expect(useCalendarStore.getState().tasks).toHaveLength(0);
     expect(announced).toHaveLength(2);
     uninstall();
-  });
-
-  it("shows the overlay a root agent asked for and steps out of its way", async () => {
-    render(<RootOverlayHost />);
-    const open = async (payload: unknown) => {
-      useRootOverlayStore.setState({ open: true });
-      await act(async () => listeners.get("root-mcp-open")?.({ payload }));
-      expect(useRootOverlayStore.getState().open).toBe(false);
-    };
-    await open({ overlay: "mail" });
-    expect(useMailStore.getState().overlayOpen).toBe(true);
-    await open({ overlay: "calendar" });
-    expect(useCalendarStore.getState().overlayOpen).toBe(true);
-    await open({ overlay: "todo", task_id: "t9" });
-    expect(useTodoStore.getState()).toMatchObject({ overlayOpen: true, focusTaskId: "t9" });
-    useMailStore.setState({ overlayOpen: false });
-    useCalendarStore.setState({ overlayOpen: false });
-    useTodoStore.getState().closeOverlay();
   });
 });
 

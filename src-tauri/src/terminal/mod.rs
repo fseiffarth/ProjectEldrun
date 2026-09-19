@@ -915,6 +915,7 @@ impl PtyRegistry {
             // (best-effort, no-op for tabs that never containerized).
             crate::services::sandbox::kill_tab_process(id);
             crate::services::agent_fence::on_tab_gone(id);
+            crate::services::root_mcp_review::on_tab_gone(&crate::storage::state_dir(), id);
         }
     }
 
@@ -941,6 +942,7 @@ impl PtyRegistry {
             // exec client we just killed is not it).
             crate::services::sandbox::kill_tab_process(&id);
             crate::services::agent_fence::on_tab_gone(&id);
+            crate::services::root_mcp_review::on_tab_gone(&crate::storage::state_dir(), &id);
         }
         reap_pids(subtree, ReapMode::Immediate);
         invalidate_proc_tree_cache();
@@ -1082,6 +1084,7 @@ pub fn spawn_pty(
     let bind_seq = crate::services::codex_bind::current_seq(&opts.id);
     let resume_seq = crate::services::codex_bind::resume_seq(&opts.id);
     let route_seq = route_open(&opts.id);
+    let mcp_token = opts.env.get(crate::services::root_mcp::TOKEN_ENV).cloned();
     tokio::spawn(async move {
         let emitter = app.clone();
         batch_output(rx, |bytes| match route_chunk(&id, bytes, route_seq) {
@@ -1172,6 +1175,11 @@ pub fn spawn_pty(
         }
         if current_spawn_ended {
             crate::services::agent_fence::on_tab_gone(&id);
+            if let Some(token) = mcp_token {
+                let state = crate::storage::state_dir();
+                crate::services::root_mcp_review::on_spawn_gone(&state, &token);
+                let _ = app.emit("root-mcp-review-changed", crate::services::root_mcp_review::pending_count(&state));
+            }
             let _ = app.emit("terminal-exit", TerminalExit { id, code: None });
         }
     });

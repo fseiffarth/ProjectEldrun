@@ -1923,6 +1923,28 @@ impl MailStore {
         }
     }
 
+    /// Every stored draft. Callers filter by `origin`: the mail view lists the
+    /// agent-written ones, and the root MCP tools serve each caller class its
+    /// own. A row that does not open or parse is skipped rather than failing the
+    /// list — `draft()` is where that error is told.
+    pub fn drafts(&self) -> Result<Vec<MailDraft>, String> {
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        let mut stmt = conn
+            .prepare("SELECT id, account_id, json FROM drafts ORDER BY rowid")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                let id: String = r.get(0)?;
+                let account_id: String = r.get(1)?;
+                self.open_text(r, 2, &account_id, "drafts", "json", &id)
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(rows
+            .filter_map(|row| row.ok().flatten())
+            .filter_map(|json| serde_json::from_str(&json).ok())
+            .collect())
+    }
+
     pub fn delete_draft(&self, draft_id: &str) -> Result<(), String> {
         {
             let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
@@ -3431,6 +3453,31 @@ mod tests {
 
     /// A staged file is a **copy**. Deleting the draft removes it; nothing in
     /// the store ever points back at the file the user picked.
+    /// `origin` marks an agent's draft; a draft stored before the field existed
+    /// (no `origin` key) reads back as the user's own.
+    #[test]
+    fn drafts_list_and_carry_their_origin() {
+        let (_d, store) = store();
+        let old: MailDraft =
+            serde_json::from_str(r#"{"id":"old","account_id":"a1","subject":"mine"}"#).unwrap();
+        assert_eq!(old.origin, None);
+        assert!(!serde_json::to_string(&old).unwrap().contains("origin"));
+        store.save_draft(&old).unwrap();
+        store
+            .save_draft(&MailDraft {
+                id: "d2".into(),
+                account_id: "a1".into(),
+                origin: Some("agent".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        let all = store.drafts().unwrap();
+        assert_eq!(all.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(), ["old", "d2"]);
+        assert_eq!(all[1].origin.as_deref(), Some("agent"));
+        store.delete_draft("d2").unwrap();
+        assert_eq!(store.drafts().unwrap().len(), 1);
+    }
+
     #[test]
     fn deleting_a_draft_removes_its_staged_copies() {
         let (dir, store) = store();

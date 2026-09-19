@@ -740,3 +740,48 @@ no-MDC OpenPGP refused — is deliberately not re-listed here.*
       and off the rail's unread count; delete *in* Trash → the red-fenced
       confirm, then gone from the server; Ctrl/Shift-click a few rows → one
       delete moves all of them; right-click an unread row → it stays unread.
+
+### Mail tools for agents — root MCP (#859)
+
+- [x] **#859 Mail tools for the root agent and the contained reader** —
+  ✅ Done · 🧪 untested live (2026-09-19). Plan: `docs/mail_mcp_plan.md`;
+  rationale: `docs/context/root_console.md` §Mail, `docs/context/vm_projects.md`
+  §"The contained mail reader".
+    - A **root tab** writes mail drafts and never reads mail; a **contained
+      reader** (agent tab in a `mail_reader` VM under default Proxy egress)
+      reads and drafts. Nothing flags, moves, deletes or sends. Nine tools in
+      `services::root_mcp_mail`, class table in `root_mcp::served`.
+    - Per-account opt-in `MailAiPrefs.agent_access` (account dialog), VM switch
+      "Mail reader" (VM settings), knob guards in `vm_set_spec` /
+      `vm_allow_temporarily` / byte-sync, second `guestfwd`, `Reader` token at
+      `pty_spawn`, reader writes always staged + tainted.
+    - Frontend: composer banner (+ reader variant, empty-`to` note, Discard),
+      "Drafted by agents" strip in the mail view, agent drafts as rows in the
+      root review strip, ⚿ badge counts them and shows ✉ while an account is
+      open to agents.
+    - [x] 🤖 Automated tests — `root_mcp_mail::tests` (allowlist, schema scan,
+      default-off, locked, no-trace, caps, envelope, invisible corpus, no-URL,
+      encrypted, drafts, isolation, thread), `root_mcp::tests`
+      (class × tool table, reader wiring, per-tab tokens), `mail_reader::tests`,
+      `root_mcp_review::a_readers_writes_always_stage_and_carry_the_mark`,
+      `vm::netdev_reader_adds_the_mcp_guestfwd_beside_the_proxys`,
+      `MailAgentDrafts.test.tsx`, `RootOverlay.test.tsx`.
+    - **Needs a rebuild + restart** (backend). The reader half also needs the
+      VM tier's first live boot.
+    - **Live QA, root tab:** a root Claude tab lists the draft tools and no read
+      tool; "check my inbox" ends in "I have no tool for that". Ask for a draft
+      → it shows in the mail view's "Drafted by agents" strip and the root
+      review strip, opens with the banner, empty `to`, no attachment; Save, then
+      ask the agent to change it → refused. Lock the keyring / never open mail →
+      "mail is locked", no prompt. Check the mail overlay opens **above** the
+      root console when a draft is opened from the review strip.
+    - **Live QA, reader:** flag a VM project with default egress; with every
+      account's switch off `mail_accounts_list` is empty. Turn one on: search,
+      read — the message stays unread. `curl` from the reader fails and shows in
+      the blocked log. Allow GitHub → refused until the flag is cleared, and the
+      other way round. A subject with a bidi override / zero-width run and a
+      body holding the envelope's closing marker read inert. A reply draft has
+      the thread's recipients and the reader banner; an address outside the
+      thread is refused; a root tab does not list the reader's draft. Ask the
+      reader to add a board card → a proposal carrying the reader mark. An
+      ordinary project agent tab has no `eldrun` MCP server at all.

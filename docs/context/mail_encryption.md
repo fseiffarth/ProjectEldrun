@@ -197,6 +197,26 @@ perfectly good email-certificate validator remains correct and free.
 
 ---
 
+## What the agent path can and cannot read
+
+The root MCP's mail tools (`services::root_mcp_mail`, `docs/mail_mcp_plan.md`)
+reach mail through `commands::mail::AgentMail`, which **never opens or unlocks
+the store**: a store not opened this run, or opened as the memory-only
+stand-in, answers "mail is locked" and nothing prompts. `mail_read` shares
+`body_inner` with `mail_body` — same cache, same `BODY.PEEK[]`, same
+`decrypt → parse → sanitize` order — so the two cannot drift.
+
+**End-to-end encrypted mail is opaque to agents.** `mail_read` returns headers
+and the crypto verdict and drops the body, link texts and attachment names of
+any message with `crypto.encrypted`. The per-account `agent_access` switch
+consents to ordinary mail reaching a cloud model; the sender of an encrypted
+message chose its readers, and an agent's provider is not one of them. There is
+deliberately no second switch. Signed-only mail is readable, verdict attached.
+The local assistant's invariant (`mail_ai` refuses any non-loopback model) is
+untouched — the agent tools never call it.
+
+---
+
 ## The one thing that has not happened
 
 **None of this has run against a real server or a real correspondent.** The mail

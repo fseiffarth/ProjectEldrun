@@ -93,6 +93,13 @@ pub struct MailAiPrefs {
     /// **Default off** — mail must never quietly write to the user's own data.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_create: Option<bool>,
+    /// A **contained reader** agent (`services::mail_reader`) may read this
+    /// account's mail through the root MCP tools. Unset = off. The opposite
+    /// consent to every switch above: what such an agent reads is sent to its
+    /// cloud provider (`docs/mail_mcp_plan.md` §1). Draft-only access from a
+    /// root tab does not consult it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_access: Option<bool>,
     #[serde(flatten, default)]
     pub extra: HashMap<String, Value>,
 }
@@ -107,6 +114,7 @@ impl MailAiPrefs {
             && self.calendar.is_none()
             && self.todo.is_none()
             && self.auto_create.is_none()
+            && self.agent_access.is_none()
             && self.extra.is_empty()
     }
 }
@@ -1040,6 +1048,11 @@ pub struct MailDraft {
     pub references: Option<Vec<String>>,
     #[serde(default)]
     pub staged: Vec<StagedAttachment>,
+    /// Who wrote it, when that was not the user: `"agent"` for a root tab's
+    /// draft, `"reader"` for a contained reader's. Unset for the user's own, so
+    /// existing drafts round-trip; a composer save clears it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]

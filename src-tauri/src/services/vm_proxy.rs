@@ -241,6 +241,18 @@ pub fn allow_temporarily(project_id: &str, host: &str, duration: Duration) {
     }
 }
 
+/// A live proxy's standing allowlist and how many temporary allows are still
+/// in force — what `services::mail_reader` checks per mail call. `None` when no
+/// proxy runs for the project.
+pub fn live_state(project_id: &str) -> Option<(Vec<String>, usize)> {
+    let map = proxies().lock().unwrap();
+    let handle = map.get(project_id)?;
+    let allow = handle.shared.allow.lock().unwrap().clone();
+    let now = Instant::now();
+    let temp = handle.shared.temp_allow.lock().unwrap().iter().filter(|(_, until)| *until > now).count();
+    Some((allow, temp))
+}
+
 /// The blocked-connections report for the pill / settings dialog.
 pub fn blocked_report(project_id: &str) -> BlockedReport {
     let map = proxies().lock().unwrap();

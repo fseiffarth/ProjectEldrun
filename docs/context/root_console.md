@@ -78,9 +78,9 @@ project X". Those stores are Eldrun's own, so Eldrun serves them as MCP tools
 (`services::root_mcp`) over loopback HTTP (`POST /mcp`, one JSON-RPC message in
 and one reply out).
 
-**The boundary is one bearer token.**
+**The boundary is a bearer token per root-agent spawn.**
 
-- **Minted per run and never written to disk.** A fenced project agent sees `/`
+- **Minted per spawn and never written to disk.** A fenced project agent sees `/`
   read-only, so a token in a file would be a token it can read.
 - **Handed out in one place.** `pty_spawn` calls
   `root_mcp::apply_to_spawn` only when `is_agent && project_id.is_none()`.
@@ -124,9 +124,10 @@ what turning the fence off means, and the token does not pretend otherwise.
 that header on cross-origin POSTs and agent CLIs don't, so a web page cannot
 reach the tools through your own browser, DNS rebinding included.
 
-**Writes reach the window.** A tool that writes emits `root-mcp-changed` with
-the row it wrote. The overlay host merges the row into the calendar store and
-announces it through `notifyCalendarWrite`, so a CalDAV-backed calendar pushes
+**Approved writes reach the window.** By default a tool writes its tab's copy
+and records a proposal. Approval emits `root-mcp-changed` with the applied row
+(the lower review levels described below can also apply immediately). The
+overlay host merges the row into the calendar store and announces it through `notifyCalendarWrite`, so a CalDAV-backed calendar pushes
 it exactly as it would a dialog edit.
 
 **The board's tools are the board's gestures.** `todo_add`, `todo_update`,
@@ -190,21 +191,9 @@ it is refused. A batch is one atomic write: every event moves or none does.
 `calendar_create` makes a local calendar only. CalDAV calendars come from a
 subscription, and nothing here creates a collection on a server.
 
-**Showing is not writing.** `mail_open`, `calendar_open` and `todo_open` put the
-header's overlays on screen — "show me my mail", "open the board on that card".
-They travel as their own event, `root-mcp-open`, because there is no row to
-merge and nothing for CalDAV. Two details:
-
-- **The backend reads the overlay's settings gate first** (`mail_client`,
-  `calendar_global_app`, `todo_board`). Each overlay host applies that gate on
-  its own, so an ungated call would report success and show nothing.
-- **The console closes.** It is a modal mounted after the other three, so it
-  would sit on top of the overlay it was asked for. Closing it ends nothing, and
-  Ctrl+Shift+R brings it back.
-
 **Tools say what they do, not whether to ask.** Each tool carries MCP
-annotations: the `*_list` and `*_open` tools are `readOnlyHint` (an overlay
-writes no store and closes with Escape), and the deletes and
+annotations: the `*_list` tools and the read-only sweeps are `readOnlyHint`,
+and the deletes and
 `todo_update` are `destructiveHint`. Codex asks before any tool not marked
 read-only, so reads now go through without a prompt and writes still ask.
 Eldrun never passes `default_tools_approval_mode`: approval is the CLI's own,
@@ -223,16 +212,134 @@ them. Settings and the console's ⚿ badge are two doors onto that one key.
 **A second switch keeps the tools local.** `root_mcp_local_only` (absent means
 off; Settings, under the main switch) serves local-model tabs only, so the
 calendar and board never reach a hosted model through these tools. It closes
-both halves the same way, which is why there are two tokens: a local-model tab
-(Vibe carrying `ELDRUN_LOCAL_MODEL`/`VIBE_ACTIVE_MODEL`) is always handed
-`Runtime::local_token`, every other root agent `token`. On, a cloud agent is
-handed nothing at spawn and the endpoint answers `503` to the agents' token;
+both halves the same way. Each token maps to its PTY tab id and
+`Caller::{Agent, LocalModel}`; Vibe carrying
+`ELDRUN_LOCAL_MODEL`/`VIBE_ACTIVE_MODEL` gets the local class. On, a cloud agent
+is handed nothing at spawn and the endpoint answers `503` to its token;
 local tabs opened before the flip keep working. A model still needs its "MCP"
 chip to get tools at all.
 
-**Failure is safe.** If the listener cannot bind, or the OS has no entropy,
-root agents are ordinary agents. The ⚿ badge in the overlay says which case
-you are in.
+**Failure is safe.** If the listener cannot bind, the overlay's ⚿ badge reports
+it unavailable. If the OS cannot provide entropy at spawn, that agent is handed
+no token and no tools.
+
+## Mail
+
+Design and threat model: [`docs/mail_mcp_plan.md`](../mail_mcp_plan.md). The
+tools live in `services::root_mcp_mail` — nine names, pinned by a test — and
+are new entries in this same server, not a second one.
+
+**Mail is switched on separately, and starts off.** `root_mcp_mail` (absent
+means off; Settings, under the main switch) is the one gate above the whole
+mail surface: `root_mcp` alone never brings mail with it. Off, `tools/list`
+carries no mail tool, a call to one answers `root_mcp::MAIL_OFF` by name, a
+reader is handed no endpoint at spawn and `serves` refuses the readers already
+running (a reader exists for mail alone), and the ⚿ badge shows no ✉. Read per
+request like the other two switches. The per-account `agent_access` sits below
+it and still decides which accounts a reader may read.
+
+**The caller class is fixed at spawn, with the token.** `Caller::{Agent,
+LocalModel}` is a root tab; `Caller::Reader` is an agent tab in a `mail_reader`
+VM project (`docs/context/vm_projects.md`). `root_mcp::served` is the one class
+table: `tools/list` and dispatch both go through it, so a tool outside a class
+does not exist for it — the same "unknown tool" an invented name gets.
+
+- **A root tab never reads mail.** It has a shell and the open network, and
+  mail is text anyone can send you. It gets the draft tools and
+  `mail_accounts_list`, nothing else; its draft schema has no recipient and no
+  reply argument at all, so its drafts always have an empty `to`.
+- **A reader** gets the read tools (`mail_folders`, `mail_search`, `mail_read`,
+  `mail_thread`) and the draft tools, is served **no cross-project sweep**, and
+  its calendar/board writes **always stage** with `tainted: true`, whatever
+  `root_mcp_review` says. Each of its mail calls re-checks that its VM is still
+  narrow (`services::mail_reader::refusal`, gathered by
+  `commands::vm::mail_reader_refusal`).
+- Reading needs the per-account opt-in `MailAiPrefs.agent_access` (off by
+  default, in the account dialog). An account without it does not exist for a
+  reader: same `unknown account` as an invalid id.
+
+**What holds when the model ignores the envelope.** Every result carrying
+sender text (`mail_search`, `mail_thread`, `mail_read`) is wrapped whole in a
+per-call-nonce envelope — hygiene only. The load-bearing parts are the class
+dispatch, the missing arguments (no bcc, no attachment, no path, no URL),
+`strip_invisible` over every emitted string (so the transcript shows what the
+agent saw) and `redact_urls` (link *texts* only; a URL is a pre-built
+exfiltration target). Encrypted mail is opaque: headers and the verdict, no
+body.
+
+**Drafts.** `MailDraft.origin` is `"agent"` or `"reader"`; each class lists,
+updates and deletes only its own, and `mail_draft_save` (the composer) clears
+it, which puts the draft out of the agent's reach. A reader's recipients must
+already be on the replied-to message. A draft is not a staged `Proposal`: it
+lives in the mail store, shows in the review strip as a row that *opens the
+composer*, and `mail_draft_send` stays a Tauri command — nothing here sends.
+The `root-mcp-changed` event gains `kind: "draft"`, carrying the id and origin
+only.
+
+**Locked means refused.** `commands::mail::AgentMail` never opens the store: not
+opened this run, or opened as the memory-only stand-in, both answer "mail is
+locked, unlock it in Eldrun first". No tool unlocks and none prompts.
+
+**Residuals.** A reader's token rides the `ssh` command line's exports, so it is
+visible in the host's process list to same-uid unfenced processes — scoped to
+the `Reader` tool set and dead with the tab. `agent_warmup` builds its own
+`Command` and never reaches `pty_spawn`, so an unattended run gets no endpoint;
+a future scheduled-agent feature routed through `pty_spawn` must opt out.
+
+## Staged writes
+
+`settings.root_mcp_review` defaults to `all` (including unknown values): calendar
+and board tools write only a per-tab copy under
+`<state_dir>/root_mcp/sandboxes/<hash-of-pty-id>/calendar.json`. The copy is
+rebuilt when the real file's content hash or the tab's pending proposal sequence
+changes; its own hash detects a failed or incomplete tool write. Rebuild starts
+from the real store and replays pending rows in order. It never copies the
+sandbox back over the live file.
+
+`services::root_mcp_review` owns the immutable proposal rows and the atomic log
+at `<state_dir>/root_mcp/proposals.json`. It keeps every pending proposal and
+the newest 200 decided entries; unknown future statuses and extra fields
+round-trip. A first board move also records seeded columns, upgrade markers and
+normalized sibling rows, so applying or undoing it does not lose those effects.
+
+Only the Tauri review commands approve, reject, bulk-approve or undo. Approval
+binds to the digest of the displayed rows and their calendar routing context.
+All rows must pass under the calendar's existing RMW lock before one atomic
+write: creates require an absent id, edits/deletes require the original row.
+The only ignored row fields are `caldav_href` and `caldav_etag`, precisely the
+fields written by `set_caldav_identity_at`; current identity is retained on
+ordinary edits and deletes. A calendar relocation still deletes the old server
+copy before creating the new one. Calendar routing/access changes conflict too.
+A conflict cannot be force-applied. Rejection rebuilds the tab's view and
+conflicts dependent proposals. The next successful tool call reports their ids
+in `dropped_proposals`; `proposals_list` reports only its own tab's statuses.
+
+The console's review strip shows actual field changes, folds only sibling board
+reindex rows, strips invisible controls, and labels CalDAV outbound effects.
+The header carries a pending-count button while the console is closed. Bulk
+approval submits the explicit displayed id/digest pairs, so newly arriving
+proposals cannot join a click already in flight. Open reviews refresh conflict
+status every five seconds. These surfaces still carry `UntestedTag` until live QA.
+
+The `destructive` level stages tools with `destructiveHint`; other write tools
+apply immediately and appear in the log with conditional Undo. Undo uses inverse
+rows and the same preconditions, never overwriting a subsequent user edit. An
+automatic write depending on an unapproved row conflicts instead of bypassing
+that row's gate. `off` uses the original direct path. Changing levels affects
+the next request; already-pending proposals still need a decision.
+
+Tokens are fresh per spawn and revoked on tab teardown (including failed
+spawns). Teardown removes only the copy, retaining proposals as from a closed
+tab. The same PTY id on resume can find them with a fresh token. The runtime
+itself contains only the listener port, never a shared secret.
+
+This is a write-integrity gate, **not confidentiality protection**. Calendar
+visibility scoping is a separate read-gate feature and has not shipped here;
+fenced agents can still disclose what tools let them read. An unfenced agent
+can access the real store directly. Mail integration remains in
+`docs/mail_mcp_plan.md`: future agent drafts should share this surface, and its
+reader class must force staging and mark proposals regardless of the root's
+review setting. No mail reader, draft, send or approval tool was added here.
 
 ## Never the phone
 

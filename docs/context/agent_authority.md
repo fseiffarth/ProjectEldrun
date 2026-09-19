@@ -8,6 +8,14 @@ runs), and the default-on local-agent filesystem `fence`. All three are
 properties of the *process* — where it runs and what it can reach — which is
 what makes them Eldrun's to decide.
 
+A fourth thing looks like an axis and is narrower: the **root MCP caller
+class** (`root_mcp::Caller`, `docs/context/root_console.md` §Mail). It is fixed
+at spawn with the token and decides which of Eldrun's *own* tools exist for an
+agent — a root tab writes mail drafts and never reads mail; only a `Reader`, an
+agent in a `mail_reader` VM whose egress is the default allowlisting proxy,
+reads. It composes with the axes above rather than replacing them: the class is
+only handed out where `location` is that VM.
+
 ## The permission mode is not one of them
 
 An agent's permission mode — Claude's plan / accept-edits / bypass, Codex's

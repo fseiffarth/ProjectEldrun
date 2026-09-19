@@ -550,6 +550,16 @@ export function mailDraftSave(draft: MailDraft): Promise<MailDraft> {
   return invoke<MailDraft>("mail_draft_save", { draft });
 }
 
+/** The drafts an agent wrote through the root MCP that the user has not yet
+ *  sent, discarded or edited. */
+export function mailAgentDrafts(): Promise<MailDraft[]> {
+  return invoke<MailDraft[]>("mail_agent_drafts");
+}
+
+export function mailDraftDiscard(draftId: string): Promise<void> {
+  return invoke<void>("mail_draft_discard", { draftId });
+}
+
 /**
  * Send a draft, optionally signed and/or encrypted.
  *

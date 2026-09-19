@@ -18,6 +18,7 @@ import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { TRASH_PROJECT_ID } from "../../lib/projects/trashProject";
 import { ROOT_SCOPE, useTabsStore } from "../../stores/tabs";
 import { useRootOverlayStore } from "../../stores/rootOverlay";
+import { useRootReviewStore } from "../../stores/rootReview";
 import { useGitDirtyStore } from "../../stores/gitDirty";
 import { projectStations, useKeyboardSteeringStore } from "../../stores/keyboardSteering";
 import { useQuiesce, saverInterval } from "../../stores/power";
@@ -297,6 +298,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   // whatever is on screen (`stores/rootOverlay`), so picking it costs neither
   // the project in scope nor the slice. With no project open the root scope is
   // still what the center shows — the overlay simply floats over it.
+  const reviewCount = useRootReviewStore((s) => s.count);
   const selectRoot = () => {
     useRootOverlayStore.getState().show();
   };
@@ -553,6 +555,10 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
           />
           {/* Hairline between the fixed leading segment (★ · 🗑 · ▣) and the
               scrolling project strip, so the two zones read as two zones. */}
+          {reviewCount > 0 && <button className="root-overlay-rights on no-drag" onClick={selectRoot}
+            title={t("rootReview.title")} aria-label={t("rootReview.open", { count: reviewCount })}>
+            {t("rootConsole.rightsBadge")} {reviewCount}
+          </button>}
           <div className="pills-lead-sep" aria-hidden />
           <button
             type="button"

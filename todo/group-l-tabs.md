@@ -287,9 +287,7 @@ correctness/UX work atop the same layout model #42 detaches.*
     `calendar_delete_event`, and the whole to-do board — `todo_list`,
     `todo_add`, `todo_update`, `todo_complete`, `todo_reopen`, `todo_move`
     (column + position, through the drag's own `move_tasks_at`) and
-    `todo_delete` — plus `mail_open`, `calendar_open` and `todo_open` (optionally
-    on one card), which show the header's overlays and refuse while that
-    overlay's setting is off. The
+    `todo_delete`. The
     tools are served on loopback with a per-run token that only a root-scope
     agent spawn is given. The root console is never in Eldrun Mobile's catalog
     and its Claude tabs get no `--remote-control`. Design:
@@ -324,6 +322,18 @@ correctness/UX work atop the same layout model #42 detaches.*
       - The phone's project list never shows the root console.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+- [ ] **Root MCP staged writes — live QA** (implemented, not run live).
+  After the updated backend is running, ask a root agent to add an event: only
+  the header's pending count should change. Open Ctrl+Shift+R and approve: the
+  event appears and a CalDAV calendar pushes it. Add then move a card; approve
+  both in order, then repeat and reject the add to conflict the dependent move.
+  Edit a proposed row yourself: approval must conflict without overwriting it.
+  Verify per-tab `proposals_list`, persistence across tab close/resume, bulk
+  approval of only displayed cards, inert bidi titles, and the outbound warning.
+  In Settings → root MCP review, choose destructive: adds apply with Undo,
+  deletes wait; Undo after a user edit conflicts. Off restores direct writes.
+  Keep the strip/setting's `UntestedTag` until these checks are confirmed.
 
 2314. **The root console as a window: a docked file viewer, move, resize.** ✅
     Implemented · 🧪 Awaiting live QA. Three things the console lacked because

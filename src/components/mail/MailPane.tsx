@@ -5,6 +5,7 @@ import { onMailSync, mailAiAllowed, planMailDelete } from "../../lib/mail";
 import { useT } from "../../lib/i18n";
 import { Toggle } from "../common/Toggle";
 import { UntestedTag } from "../common/UntestedTag";
+import { stripFormatControls } from "../../lib/textSafety";
 import { useDialogs } from "../common/PromptDialogs";
 import type { MailAccount, MailHeader, MailPriority, MailSort } from "../../types/mail";
 import { MailList, type MailCheckMode } from "./MailList";
@@ -80,6 +81,8 @@ export function MailPane({ visible }: MailPaneProps) {
 
   const [accountDialog, setAccountDialog] = useState<{ account: MailAccount | null } | null>(null);
   const [compose, setCompose] = useState<{ mode: ComposeMode; toAddress?: string } | null>(null);
+  const agentDrafts = useMailStore((s) => s.agentDrafts);
+  const pendingDraft = useMailStore((s) => s.pendingDraft);
   // The local store's encryption. Read once when the pane first becomes visible
   // rather than on mount: the read *opens the store* (that is what resolves the
   // unlock), and a pane that is mounted-but-hidden must not be the thing that
@@ -122,6 +125,16 @@ export function MailPane({ visible }: MailPaneProps) {
   useEffect(() => {
     void useMailStore.getState().loadAccounts({ preferred: settings?.mail_default_account });
   }, [settings?.mail_default_account]);
+
+  // Agent-written drafts (root MCP). A local read; an event keeps it current
+  // while the pane is up (`RootOverlayHost` re-reads on `root-mcp-changed`).
+  // Keyed on `encryption` too: that read is what opens the store, and the list
+  // command never opens it itself, so a draft from an earlier run appears once
+  // the store is up.
+  useEffect(() => {
+    if (visible === false) return;
+    void useMailStore.getState().loadAgentDrafts();
+  }, [visible, encryption]);
 
   // Sync progress. Installed on mount so a sync started elsewhere (another
   // window, the header's interval check) still moves this pane's strip. The
@@ -599,6 +612,33 @@ export function MailPane({ visible }: MailPaneProps) {
             store's `sort`/`sortDesc` down and handing the answer back. */}
       </div>
 
+      {agentDrafts.length > 0 && (
+        <div className="mail-agent-drafts" aria-label={t("mail.agentDrafts")}>
+          <span className="mail-agent-drafts-title">
+            {t("mail.agentDrafts")} <UntestedTag />
+          </span>
+          {agentDrafts.map((d) => (
+            <button
+              key={d.id}
+              type="button"
+              className="mail-agent-draft-row"
+              title={t(d.origin === "reader" ? "mail.agentDraftReaderBanner" : "mail.agentDraftBanner")}
+              onClick={() => void useMailStore.getState().openAgentDraft(d)}
+            >
+              <span className={`mail-agent-mark${d.origin === "reader" ? " reader" : ""}`}>
+                {t(d.origin === "reader" ? "mail.agentMarkReader" : "mail.agentMark")}
+              </span>
+              <span className="mail-agent-draft-subject">
+                {stripFormatControls(d.subject) || t("mail.noSubject")}
+              </span>
+              <span className="mail-agent-draft-account">
+                {accounts.find((a) => a.id === d.account_id)?.address ?? ""}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
       {error && (
         <div className="mail-error-strip">
           <span>{error}</span>
@@ -774,6 +814,19 @@ export function MailPane({ visible }: MailPaneProps) {
           onDelete={(id) => {
             setAccountDialog(null);
             void useMailStore.getState().removeAccount(id);
+          }}
+        />
+      )}
+      {pendingDraft && (
+        <MailComposeDialog
+          key={pendingDraft.id}
+          accounts={accounts}
+          accountId={pendingDraft.account_id}
+          mode="new"
+          draft={pendingDraft}
+          onClose={() => {
+            void useMailStore.getState().openAgentDraft(null);
+            void useMailStore.getState().loadAgentDrafts();
           }}
         />
       )}

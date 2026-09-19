@@ -7,9 +7,9 @@
 //! the board for project X", "which projects are there". Those are Eldrun's own
 //! stores, so Eldrun serves them itself, as MCP tools over loopback HTTP.
 //!
-//! **Who may call it** is the whole design, and it is one bearer token:
+//! **Who may call it** is the whole design, and each spawn has a bearer token:
 //!
-//! - minted per app run from the OS CSPRNG, held in memory, **never written to
+//! - minted per agent spawn from the OS CSPRNG, held in memory, **never written to
 //!   disk** — a project agent's fence sees `/` read-only, so a token in a file
 //!   would be a token it can read;
 //! - handed out in exactly one place, [`apply_to_spawn`], which the PTY spawn
@@ -30,8 +30,8 @@
 //!
 //! This module is `AppHandle`-free: the HTTP listener and the frontend event
 //! live in `commands::root_mcp`. A write returns a [`Change`] describing the row
-//! it made, which the command layer emits so the window's calendar store (and
-//! its CalDAV push, which is frontend-owned) learns of it.
+//! it made. `root_mcp_review` stages those rows by default; only approval (or
+//! an explicitly lower review level) emits them to the window and CalDAV.
 //!
 //! **Never the phone.** Nothing here is reachable from `mobile_control`: the
 //! catalog is built from `projects.json` and `boxes.json`, the root scope is in
@@ -58,16 +58,32 @@ pub const SERVER_NAME: &str = "eldrun";
 
 const PROTOCOL_VERSION: &str = "2025-03-26";
 
-/// What the running app serves: where, and the secret that opens it.
+/// The listener endpoint. Secrets belong to individual root-agent spawns.
 #[derive(Debug, Clone)]
-pub struct Runtime {
-    pub port: u16,
-    pub token: String,
-    /// The token a **local-model** tab is handed instead of [`Self::token`].
-    /// Two secrets rather than one so the endpoint can tell the callers apart:
-    /// `Settings::root_mcp_local_only` has to refuse a cloud agent that was
-    /// spawned, and given its token, before the switch was flipped.
-    pub local_token: String,
+pub struct Runtime { pub port: u16 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Identity {
+    pub tab: String,
+    pub caller: Caller,
+    /// The project a [`Caller::Reader`] runs in — the VM whose narrowness every
+    /// one of its mail calls is checked against. `None` for a root agent.
+    pub project: Option<String>,
+}
+static TOKENS: OnceLock<std::sync::Mutex<HashMap<String, Identity>>> = OnceLock::new();
+fn tokens() -> &'static std::sync::Mutex<HashMap<String, Identity>> {
+    TOKENS.get_or_init(Default::default)
+}
+fn register_token(token: String, identity: Identity) {
+    let mut map = tokens().lock().unwrap_or_else(|p| p.into_inner());
+    map.retain(|_, old| old.tab != identity.tab);
+    map.insert(token, identity);
+}
+pub fn revoke_tab(tab: &str) {
+    tokens().lock().unwrap_or_else(|p| p.into_inner()).retain(|_, i| i.tab != tab);
+}
+pub fn tab_active(tab: &str) -> bool {
+    tokens().lock().unwrap_or_else(|p| p.into_inner()).values().any(|i| i.tab == tab)
 }
 
 /// Who a presented bearer token belongs to.
@@ -77,6 +93,11 @@ pub enum Caller {
     Agent,
     /// A local-model (Mistral Vibe on Ollama) tab.
     LocalModel,
+    /// An agent tab in a `mail_reader` VM project (`services::mail_reader`): the
+    /// one class that reads mail. Its taint is a property of the class, fixed at
+    /// spawn — it is served no cross-project sweep, and every calendar or board
+    /// write it makes is staged whatever `root_mcp_review` says.
+    Reader,
 }
 
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
@@ -102,16 +123,14 @@ pub fn endpoint_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}/mcp")
 }
 
-/// Which caller `header` authenticates as, if any. Both comparisons always
-/// run, so the answer's timing does not say which token came close.
-pub fn caller(header: Option<&str>, token: &str, local_token: &str) -> Option<Caller> {
-    let agent = authorized(header, token);
-    let local = authorized(header, local_token);
-    match (agent, local) {
-        (true, _) => Some(Caller::Agent),
-        (_, true) => Some(Caller::LocalModel),
-        _ => None,
+/// Compare every candidate; no shared process-wide token remains valid.
+pub fn caller(header: Option<&str>) -> Option<Identity> {
+    let map = tokens().lock().unwrap_or_else(|p| p.into_inner());
+    let mut found = None;
+    for (token, identity) in map.iter() {
+        if authorized(header, token) { found = Some(identity.clone()); }
     }
+    found
 }
 
 /// Constant-time bearer check. `header` is the raw `Authorization` value.
@@ -173,11 +192,11 @@ pub const WIRED_CLIS: &[&str] = &["claude", "codex"];
 ///   per-invocation way to name a server.
 ///
 /// `local_only` (`Settings::root_mcp_local_only`) hands a cloud agent nothing
-/// at all. A local-model tab always gets [`Runtime::local_token`], never the
-/// agents' token, so the endpoint can keep serving it while refusing them.
+/// at all. Each spawn gets its own secret; the token map retains its caller class.
 pub fn apply_to_spawn_with(
     opts: &mut PtyOptions,
     runtime: &Runtime,
+    token: &str,
     tool_agents: &[String],
     tool_models: &[String],
     local_only: bool,
@@ -196,8 +215,7 @@ pub fn apply_to_spawn_with(
         return;
     }
     let url = endpoint_url(runtime.port);
-    let token = if local { &runtime.local_token } else { &runtime.token };
-    opts.env.insert(TOKEN_ENV.to_string(), token.clone());
+    opts.env.insert(TOKEN_ENV.to_string(), token.to_string());
     opts.env.insert(URL_ENV.to_string(), url.clone());
     match basename(&opts.cmd) {
         "vibe" if local => {
@@ -213,7 +231,15 @@ pub fn apply_to_spawn_with(
                 json!([format!("{SERVER_NAME}_*")]).to_string(),
             );
         }
-        "claude" if !opts.args.iter().any(|a| a == "--mcp-config") => {
+        bin => wire_cli_args(bin, &mut opts.args, &url),
+    }
+}
+
+/// Name the server on a wired CLI's own command line ([`WIRED_CLIS`]); a no-op
+/// for every other binary, and for an argv that already names it.
+fn wire_cli_args(bin: &str, args: &mut Vec<String>, url: &str) {
+    match bin {
+        "claude" if !args.iter().any(|a| a == "--mcp-config") => {
             let config = json!({
                 "mcpServers": {
                     SERVER_NAME: {
@@ -223,17 +249,17 @@ pub fn apply_to_spawn_with(
                     }
                 }
             });
-            opts.args.push("--mcp-config".to_string());
-            opts.args.push(config.to_string());
+            args.push("--mcp-config".to_string());
+            args.push(config.to_string());
         }
-        "codex" if !opts.args.iter().any(|a| a.starts_with("mcp_servers.eldrun.")) => {
+        "codex" if !args.iter().any(|a| a.starts_with("mcp_servers.eldrun.")) => {
             let overrides = [
                 "-c".to_string(),
                 format!("mcp_servers.{SERVER_NAME}.url=\"{url}\""),
                 "-c".to_string(),
                 format!("mcp_servers.{SERVER_NAME}.bearer_token_env_var=\"{TOKEN_ENV}\""),
             ];
-            opts.args.splice(0..0, overrides);
+            args.splice(0..0, overrides);
         }
         _ => {}
     }
@@ -258,6 +284,23 @@ fn local_model_has_tools(opts: &PtyOptions, tool_models: &[String]) -> bool {
     })
 }
 
+/// Roll back a handed-out token if wrapping or spawning the PTY fails.
+pub struct SpawnTokenGuard { token: Option<String>, armed: bool }
+impl SpawnTokenGuard {
+    pub fn new(opts: &PtyOptions) -> Self { Self { token: opts.env.get(TOKEN_ENV).cloned(), armed: true } }
+    pub fn keep(&mut self) { self.armed = false; }
+}
+impl Drop for SpawnTokenGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            if let Some(token) = &self.token { revoke_token(token); }
+        }
+    }
+}
+pub fn revoke_token(token: &str) -> Option<Identity> {
+    tokens().lock().unwrap_or_else(|p| p.into_inner()).remove(token)
+}
+
 /// The global switch (`Settings::root_mcp`), read per use so flipping it needs
 /// no restart. A missing or unreadable file is a fresh install: on.
 pub fn enabled_in(settings: &Path) -> bool {
@@ -274,10 +317,25 @@ pub fn local_only_in(settings: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// `Settings::root_mcp_mail`, read per use like [`enabled_in`] — but a missing
+/// or unreadable file is **off**: mail is never served until switched on.
+pub fn mail_enabled_in(settings: &Path) -> bool {
+    crate::storage::read_json::<crate::schema::Settings>(settings)
+        .map(|settings| settings.root_mcp_mail())
+        .unwrap_or(false)
+}
+
+/// What a mail tool answers while [`mail_enabled_in`] is off.
+pub const MAIL_OFF: &str =
+    "Eldrun's mail tools are switched off in Eldrun's Settings; the user has to turn them on first";
+
 /// Whether the endpoint serves `caller` right now: the global switch, then the
-/// local-only one. Read per request so neither needs a tab closed.
+/// local-only one; a reader exists for mail alone, so the mail switch is its
+/// switch too. Read per request so none needs a tab closed.
 pub fn serves(settings: &Path, caller: Caller) -> bool {
-    enabled_in(settings) && (caller == Caller::LocalModel || !local_only_in(settings))
+    enabled_in(settings)
+        && (caller == Caller::LocalModel || !local_only_in(settings))
+        && (caller != Caller::Reader || mail_enabled_in(settings))
 }
 
 /// [`enabled_in`] against the live `settings.json`.
@@ -300,7 +358,69 @@ pub fn apply_to_spawn(opts: &mut PtyOptions) {
     let local_only = settings.as_ref().is_some_and(|s| s.root_mcp_local_only());
     let tool_agents = settings.as_ref().map(|s| s.root_mcp_agent_list()).unwrap_or_default();
     let tool_models = settings.and_then(|s| s.ollama_mcp_models).unwrap_or_default();
-    apply_to_spawn_with(opts, runtime, &tool_agents, &tool_models, local_only);
+    let Some(token) = mint_token() else { return };
+    let caller = if is_local_model(opts) { Caller::LocalModel } else { Caller::Agent };
+    apply_to_spawn_with(opts, runtime, &token, &tool_agents, &tool_models, local_only);
+    if opts.env.get(TOKEN_ENV) == Some(&token) {
+        register_token(token, Identity { tab: opts.id.clone(), caller, project: None });
+    }
+}
+
+/// The guest-side address of the root MCP port inside a `mail_reader` VM: a
+/// `guestfwd` channel `services::vm` adds for such a project only. Fixed, for
+/// the reason the proxy's is — the in-guest config survives a host port change.
+pub const READER_GUEST_HOST: &str = "10.0.2.101"; // privacy-check: ok — QEMU slirp, not a real host
+pub const READER_GUEST_PORT: u16 = 8765;
+
+pub fn reader_endpoint_url() -> String {
+    format!("http://{READER_GUEST_HOST}:{READER_GUEST_PORT}/mcp")
+}
+
+/// Hand a **contained reader** its endpoint: an agent spawn into a VM project
+/// whose trusted record carries `mail_reader`. `agent_cmd`/`agent_args` are the
+/// agent CLI's own command line (the one `ssh -tt` runs in the guest), so the
+/// server is named on it exactly as [`apply_to_spawn_with`] does for a root
+/// agent; the returned env pair travels in the remote command's environment.
+/// The token is visible to everything inside that VM — the VM is the unit of
+/// containment, the token is scoped to the `Reader` tool set, and it dies with
+/// the tab. `None` when the tools are off, local-only, mail is not switched on
+/// (`Settings::root_mcp_mail`), or the CLI is not wired.
+pub fn apply_reader_to_spawn(
+    tab: &str,
+    project: &str,
+    agent_cmd: &str,
+    agent_args: &mut Vec<String>,
+) -> Option<Vec<(String, String)>> {
+    runtime()?;
+    let settings = crate::storage::read_json::<crate::schema::Settings>(
+        &crate::storage::state_dir().join("settings.json"),
+    )
+    .ok();
+    if settings.as_ref().is_some_and(|s| !s.root_mcp() || s.root_mcp_local_only()) {
+        return None;
+    }
+    // Mail is off unless switched on, a missing settings file included.
+    if !settings.as_ref().is_some_and(|s| s.root_mcp_mail()) {
+        return None;
+    }
+    let token = mint_token()?;
+    let env = reader_wiring(agent_cmd, agent_args, &token)?;
+    register_token(
+        token,
+        Identity { tab: tab.to_string(), caller: Caller::Reader, project: Some(project.to_string()) },
+    );
+    Some(env)
+}
+
+/// The pure half of [`apply_reader_to_spawn`].
+pub fn reader_wiring(agent_cmd: &str, agent_args: &mut Vec<String>, token: &str) -> Option<Vec<(String, String)>> {
+    let bin = basename(agent_cmd);
+    if !WIRED_CLIS.contains(&bin) {
+        return None;
+    }
+    let url = reader_endpoint_url();
+    wire_cli_args(bin, agent_args, &url);
+    Some(vec![(TOKEN_ENV.to_string(), token.to_string()), (URL_ENV.to_string(), url)])
 }
 
 // ── Tools ───────────────────────────────────────────────────────────────────
@@ -308,7 +428,8 @@ pub fn apply_to_spawn(opts: &mut PtyOptions) {
 /// A row a tool wrote, for the window to merge and (CalDAV) push.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Change {
-    /// `"event"` | `"task"` | `"calendar"`.
+    /// `"event"` | `"task"` | `"calendar"` | `"draft"` (a mail draft an agent
+    /// wrote, `root_mcp_mail`; its row is the id and origin, never the text).
     pub kind: &'static str,
     /// `"upsert"` | `"delete"`.
     pub op: &'static str,
@@ -319,27 +440,15 @@ pub struct Change {
     pub local: bool,
 }
 
-/// An overlay a tool asked the window to show. Not a [`Change`]: nothing was
-/// written, so there is no row to merge and nothing for CalDAV.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
-pub struct OverlayOpen {
-    /// `"mail"` | `"calendar"` | `"todo"`.
-    pub overlay: &'static str,
-    /// `todo_open` only: the card to open the board on.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub task_id: Option<String>,
-}
-
 /// What a call leaves for the command layer to tell the window.
 #[derive(Debug, Default)]
 pub struct Effects {
     pub changes: Vec<Change>,
-    pub open: Option<OverlayOpen>,
 }
 
 impl Effects {
     fn wrote(changes: Vec<Change>) -> Self {
-        Effects { changes, open: None }
+        Effects { changes }
     }
 }
 
@@ -347,7 +456,7 @@ impl Effects {
 pub struct Stores<'a> {
     pub calendar: &'a Path,
     pub projects: &'a Path,
-    /// Read only, for the gates the `*_open` tools answer against.
+    /// Read only, for the review level the writes answer to.
     pub settings: &'a Path,
     /// The state directory itself (`~/.local/share/eldrun`), for the read-only
     /// stores addressed *per project id* — `remote-projects/<id>/{git_peer,sync,
@@ -356,10 +465,47 @@ pub struct Stores<'a> {
     /// than one per file: every store below is a read, and a new one must not
     /// cost a signature change in the command layer as well.
     pub state: &'a Path,
+    /// Who is asking. Fixed at spawn with the token; decides which tools exist
+    /// for this call ([`served`]) and whether its writes must stage.
+    pub caller: Caller,
+    /// Mail, when the store is open and unlocked. `None` refuses every mail
+    /// tool with `root_mcp_mail::LOCKED`; nothing here can unlock or prompt.
+    pub mail: Option<&'a dyn super::root_mcp_mail::MailAccess>,
+    /// For a [`Caller::Reader`]: why its VM is not narrow *right now*
+    /// (`services::mail_reader`), checked by the command layer per call.
+    pub reader_refusal: Option<&'a str>,
+}
+
+/// The cross-project sweeps. Each is private data an injected instruction could
+/// reach in the same breath as the mail that carried it, so a reader is served
+/// none of them.
+const SWEEPS: &[&str] =
+    &["projects_list", "projects_git_status", "sync_status", "time_summary", "usage_recap", "boxes_list"];
+
+/// Whether `name` exists for `caller`. `tools/list` and dispatch both go through
+/// this, so an agent is never shown a tool it would be refused — and a tool
+/// added later is served to nobody's surprise: `every_tool_has_a_class` fails
+/// until it is placed here on purpose.
+pub fn served(caller: Caller, name: &str) -> bool {
+    use super::root_mcp_mail as mail;
+    if !tool_names().contains(&name) {
+        return false;
+    }
+    match caller {
+        Caller::Agent | Caller::LocalModel => !mail::is_read_tool(name),
+        Caller::Reader => !SWEEPS.contains(&name),
+    }
 }
 
 pub fn tool_names() -> Vec<&'static str> {
+    let mut names = store_tool_names();
+    names.extend(super::root_mcp_mail::TOOLS);
+    names
+}
+
+fn store_tool_names() -> Vec<&'static str> {
     vec![
+        "proposals_list",
         "projects_list",
         "projects_git_status",
         "boxes_list",
@@ -379,9 +525,6 @@ pub fn tool_names() -> Vec<&'static str> {
         "time_summary",
         "usage_recap",
         "sync_status",
-        "mail_open",
-        "calendar_open",
-        "todo_open",
     ]
 }
 
@@ -389,12 +532,11 @@ pub fn tool_names() -> Vec<&'static str> {
 /// whether to ask. Codex prompts before any tool that does not say it is
 /// read-only; the annotation only describes the tool — the approval stays the
 /// CLI's own (`docs/context/root_console.md`).
-fn tool_annotations(name: &str) -> Value {
-    // An `*_open` tool shows an overlay the user closes with Escape: it reads
-    // and writes no store, which is what the hint is about.
+pub(crate) fn tool_annotations(name: &str) -> Value {
     let read_only = matches!(
         name,
-        "projects_list"
+        "proposals_list"
+            | "projects_list"
             | "projects_git_status"
             | "boxes_list"
             | "calendar_list"
@@ -402,9 +544,12 @@ fn tool_annotations(name: &str) -> Value {
             | "time_summary"
             | "usage_recap"
             | "sync_status"
-            | "mail_open"
-            | "calendar_open"
-            | "todo_open"
+            | "mail_accounts_list"
+            | "mail_folders"
+            | "mail_search"
+            | "mail_read"
+            | "mail_thread"
+            | "mail_drafts_list"
     );
     // Overwrites or removes what the user wrote. A complete/reopen/move is
     // undone by its opposite gesture; an add only adds. A *calendar* move is
@@ -418,6 +563,8 @@ fn tool_annotations(name: &str) -> Value {
             | "calendar_move_events"
             | "todo_delete"
             | "todo_update"
+            | "mail_draft_update"
+            | "mail_draft_delete"
     );
     if read_only {
         json!({ "readOnlyHint": true, "openWorldHint": false })
@@ -428,18 +575,24 @@ fn tool_annotations(name: &str) -> Value {
     }
 }
 
-fn tool_definitions() -> Value {
-    let mut tools = tool_schemas();
-    for tool in tools.as_array_mut().into_iter().flatten() {
+fn tool_definitions(caller: Caller, mail: bool) -> Value {
+    let mut tools = tool_schemas().as_array().cloned().unwrap_or_default();
+    if mail {
+        tools.extend(super::root_mcp_mail::tool_schemas(caller));
+    }
+    tools.retain(|tool| served(caller, tool["name"].as_str().unwrap_or_default()));
+    for tool in &mut tools {
         let name = tool["name"].as_str().unwrap_or_default().to_string();
         tool["annotations"] = tool_annotations(&name);
     }
-    tools
+    Value::Array(tools)
 }
 
 fn tool_schemas() -> Value {
     let stamp = "Local wall-clock time, \"YYYY-MM-DDTHH:MM\" (or \"YYYY-MM-DD\" when all_day).";
     json!([
+        { "name": "proposals_list", "description": "List only this tab's proposals and whether each is pending, applied, rejected or conflicted. A staged write is a proposal, not a completed change.",
+          "inputSchema": { "type": "object", "properties": {} } },
         {
             "name": "projects_list",
             "description": "List every Eldrun project: id, name, status (current/active/inactive), folder, and whether it runs on a remote host.",
@@ -670,24 +823,6 @@ fn tool_schemas() -> Value {
                     "project": { "type": "string", "description": "Only this project (id or name)." },
                     "include_acked": { "type": "boolean", "description": "Include local-loss warnings the user has already seen." }
                 }
-            }
-        },
-        {
-            "name": "mail_open",
-            "description": "Show the mail overlay in the Eldrun window, over whatever is open. The root console closes to make room (Ctrl+Shift+R brings it back). Fails when the mail client is switched off in Settings.",
-            "inputSchema": { "type": "object", "properties": {} }
-        },
-        {
-            "name": "calendar_open",
-            "description": "Show the calendar overlay in the Eldrun window, over whatever is open. The root console closes to make room (Ctrl+Shift+R brings it back). Fails when the calendar's header button is switched off in Settings.",
-            "inputSchema": { "type": "object", "properties": {} }
-        },
-        {
-            "name": "todo_open",
-            "description": "Show the to-do board overlay in the Eldrun window, over whatever is open; with `id`, open it on that card. The root console closes to make room (Ctrl+Shift+R brings it back). Fails when the to-do board is switched off in Settings.",
-            "inputSchema": {
-                "type": "object",
-                "properties": { "id": { "type": "string", "description": "A card id (see todo_list) to open the board on." } }
             }
         }
     ])
@@ -1814,37 +1949,7 @@ fn sync_status(stores: &Stores, args: &Value) -> Result<Value, String> {
     }))
 }
 
-/// Show one of the header overlays. Each has a settings gate the window's host
-/// applies on its own, so a call against a closed gate would report success and
-/// show nothing — the gate is read here to answer truthfully instead.
-fn overlay_open(stores: &Stores, overlay: &'static str, args: &Value) -> Result<(Value, OverlayOpen), String> {
-    // A missing or unreadable file is a fresh install: every gate at its default.
-    let settings: crate::schema::Settings = crate::storage::read_json(stores.settings).unwrap_or_default();
-    let (on, what) = match overlay {
-        "mail" => (settings.mail_client(), "the mail client"),
-        "calendar" => (settings.calendar_global_app.unwrap_or(false), "the calendar's header button"),
-        _ => (settings.todo_board.unwrap_or(false), "the to-do board"),
-    };
-    if !on {
-        return Err(format!("{what} is switched off in Eldrun's Settings; the user has to turn it on first"));
-    }
-    let task_id = match (overlay, str_arg(args, "id")) {
-        ("todo", Some(id)) => Some(find_task(stores, id)?.id),
-        _ => None,
-    };
-    Ok((json!({ "opened": overlay }), OverlayOpen { overlay, task_id }))
-}
-
-fn call_tool(stores: &Stores, name: &str, args: &Value) -> Result<(Value, Effects), String> {
-    let opened = |r: Result<(Value, OverlayOpen), String>| {
-        r.map(|(v, open)| (v, Effects { changes: Vec::new(), open: Some(open) }))
-    };
-    match name {
-        "mail_open" => return opened(overlay_open(stores, "mail", args)),
-        "calendar_open" => return opened(overlay_open(stores, "calendar", args)),
-        "todo_open" => return opened(overlay_open(stores, "todo", args)),
-        _ => {}
-    }
+pub(crate) fn call_tool(stores: &Stores, name: &str, args: &Value) -> Result<(Value, Effects), String> {
     call_store_tool(stores, name, args).map(|(v, changes)| (v, Effects::wrote(changes)))
 }
 
@@ -1882,7 +1987,7 @@ fn rpc_error(id: Value, code: i64, message: &str) -> Value {
 
 /// Answer one JSON-RPC message. `None` for a notification (no `id`), which MCP
 /// answers with `202 Accepted` and no body. Blocking: it reads and writes files.
-pub fn handle_message(stores: &Stores, message: &Value) -> (Option<Value>, Effects) {
+pub fn handle_message(stores: &Stores, tab: &str, message: &Value) -> (Option<Value>, Effects) {
     let Some(id) = message.get("id").filter(|v| !v.is_null()).cloned() else {
         return (None, Effects::default());
     };
@@ -1894,12 +1999,15 @@ pub fn handle_message(stores: &Stores, message: &Value) -> (Option<Value>, Effec
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": SERVER_NAME, "version": env!("CARGO_PKG_VERSION") },
-                "instructions": "Eldrun's cross-project console: the user's projects (their boxes, git state, tracked time and activity counters, and how remote ones stand with their hosts), the calendar and the to-do board, and the window's mail, calendar and to-do overlays. Event and card times are local wall-clock, never UTC; the rollups time_summary and usage_recap are bucketed by UTC date, as they were recorded.",
+                "instructions": "Eldrun's cross-project console: the user's projects (their boxes, git state, tracked time and activity counters, and how remote ones stand with their hosts), the calendar and the to-do board. Event and card times are local wall-clock, never UTC; the rollups time_summary and usage_recap are bucketed by UTC date, as they were recorded. Writes are normally staged proposals: when staged is true, say proposed, never done. Only the user can approve in Eldrun. Use proposals_list to check status; dropped_proposals no longer apply.",
             })),
             Effects::default(),
         ),
         "ping" => (ok(json!({})), Effects::default()),
-        "tools/list" => (ok(json!({ "tools": tool_definitions() })), Effects::default()),
+        "tools/list" => (
+            ok(json!({ "tools": tool_definitions(stores.caller, mail_enabled_in(stores.settings)) })),
+            Effects::default(),
+        ),
         "tools/call" => {
             let params = message.get("params").cloned().unwrap_or(Value::Null);
             let name = params.get("name").and_then(Value::as_str).unwrap_or("");
@@ -1907,10 +2015,27 @@ pub fn handle_message(stores: &Stores, message: &Value) -> (Option<Value>, Effec
             let args = params.get("arguments").unwrap_or(&empty);
             // A failed tool is a *result* with `isError`, not a protocol error:
             // that is what lets the model read the message and correct itself.
-            match call_tool(stores, name, args) {
+            // A tool outside the caller's class does not exist for it: the
+            // same answer an invented name gets.
+            let result = if !served(stores.caller, name) {
+                Err(format!("unknown tool '{name}'"))
+            } else if super::root_mcp_mail::is_mail_tool(name) && !mail_enabled_in(stores.settings) {
+                // Its own switch, off by default: unlisted, and named when
+                // called anyway so the agent can tell the user what to flip.
+                Err(MAIL_OFF.to_string())
+            } else if super::root_mcp_mail::is_mail_tool(name) {
+                // Mail touches no calendar row, so it has nothing to stage: the
+                // draft *is* the proposal and the composer's Send the approval.
+                super::root_mcp_mail::call(stores, name, args)
+            } else {
+                super::root_mcp_review::call(stores, tab, name, args)
+            };
+            match result {
                 Ok((value, effects)) => (
                     ok(json!({
-                        "content": [{ "type": "text", "text": value.to_string() }],
+                        // An enveloped mail result is already text; quoting it
+                        // again would bury its markers in escapes.
+                        "content": [{ "type": "text", "text": match value { Value::String(s) => s, v => v.to_string() } }],
                         "isError": false,
                     })),
                     effects,
@@ -1954,7 +2079,7 @@ mod tests {
     }
 
     fn rt() -> Runtime {
-        Runtime { port: 4321, token: "tok".into(), local_token: "loc".into() }
+        Runtime { port: 4321 }
     }
 
     /// The global switch: absent (and a missing file) means on, and only a
@@ -1962,6 +2087,7 @@ mod tests {
     #[test]
     fn the_switch_is_on_unless_stored_off() {
         let fx = Fixture::new();
+        std::fs::remove_file(&fx.settings).unwrap();
         assert!(enabled_in(&fx.settings), "no settings.json is a fresh install");
         fx.write_state("settings.json", json!({ "debug": true }));
         assert!(enabled_in(&fx.settings));
@@ -1990,6 +2116,8 @@ mod tests {
             )
             .unwrap();
             let settings = dir.path().join("settings.json");
+            // Mail is off by default; the class tables below cover every tool.
+            std::fs::write(&settings, r#"{"root_mcp_mail":true}"#).unwrap();
             Fixture { dir, calendar, projects, settings }
         }
         fn stores(&self) -> Stores<'_> {
@@ -1998,6 +2126,9 @@ mod tests {
                 projects: &self.projects,
                 settings: &self.settings,
                 state: self.dir.path(),
+                caller: Caller::Agent,
+                mail: None,
+                reader_refusal: None,
             }
         }
         /// Write one of the flat state files the read-only sweeps roll up.
@@ -2013,7 +2144,10 @@ mod tests {
         fn call_fx(&self, name: &str, args: Value) -> (Value, Effects) {
             let msg = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
                               "params": { "name": name, "arguments": args } });
-            let (reply, effects) = handle_message(&self.stores(), &msg);
+            let mut settings: Value = crate::storage::read_json(&self.settings).unwrap_or(json!({}));
+            settings["root_mcp_review"] = json!("off");
+            self.write_state("settings.json", settings);
+            let (reply, effects) = handle_message(&self.stores(), "root:test", &msg);
             (reply.unwrap()["result"].clone(), effects)
         }
         fn call(&self, name: &str, args: Value) -> (Value, Vec<Change>) {
@@ -2043,7 +2177,7 @@ mod tests {
     #[test]
     fn claude_gets_an_inline_config_last_in_argv() {
         let mut o = opts("claude", &["--resume", "abc"], None);
-        apply_to_spawn_with(&mut o, &rt(), &every_agent(), &[], false);
+        apply_to_spawn_with(&mut o, &rt(), "tok", &every_agent(), &[], false);
         assert_eq!(&o.args[..2], ["--resume", "abc"]);
         assert_eq!(o.args[2], "--mcp-config");
         let cfg: Value = serde_json::from_str(&o.args[3]).unwrap();
@@ -2053,7 +2187,7 @@ mod tests {
         assert_eq!(o.env[TOKEN_ENV], "tok");
         assert!(!o.args.iter().any(|a| a.contains("Bearer tok")), "the token is never in Claude's argv");
         // A respawn that re-runs the wiring must not stack the flag.
-        apply_to_spawn_with(&mut o, &rt(), &every_agent(), &[], false);
+        apply_to_spawn_with(&mut o, &rt(), "tok", &every_agent(), &[], false);
         assert_eq!(o.args.iter().filter(|a| *a == "--mcp-config").count(), 1);
     }
 
@@ -2061,19 +2195,19 @@ mod tests {
     fn every_wired_cli_is_named_the_server() {
         for cli in WIRED_CLIS {
             let mut o = opts(cli, &[], None);
-            apply_to_spawn_with(&mut o, &rt(), &every_agent(), &[], false);
+            apply_to_spawn_with(&mut o, &rt(), "tok", &every_agent(), &[], false);
             assert!(!o.args.is_empty(), "{cli} is listed as wired but gets no server");
         }
         // An unlisted CLI gets the env pair only — which is what the chip says.
         let mut o = opts("gemini", &[], None);
-        apply_to_spawn_with(&mut o, &rt(), &every_agent(), &[], false);
+        apply_to_spawn_with(&mut o, &rt(), "tok", &every_agent(), &[], false);
         assert!(o.args.is_empty() && o.env.contains_key(TOKEN_ENV));
     }
 
     #[test]
     fn codex_overrides_precede_the_resume_subcommand_and_name_the_token() {
         let mut o = opts("/usr/bin/codex", &["resume", "abc"], None);
-        apply_to_spawn_with(&mut o, &rt(), &every_agent(), &[], false);
+        apply_to_spawn_with(&mut o, &rt(), "tok", &every_agent(), &[], false);
         assert_eq!(o.args[0], "-c");
         assert_eq!(o.args[1], "mcp_servers.eldrun.url=\"http://127.0.0.1:4321/mcp\"");
         assert_eq!(o.args[3], "mcp_servers.eldrun.bearer_token_env_var=\"ELDRUN_ROOT_MCP_TOKEN\"");
@@ -2093,7 +2227,7 @@ mod tests {
         };
 
         let mut o = vibe(&[("ELDRUN_LOCAL_MODEL", "gemma4:e4b"), ("VIBE_ACTIVE_MODEL", "gemma4-e4b")]);
-        apply_to_spawn_with(&mut o, &rt(), &[], &tagged, false);
+        apply_to_spawn_with(&mut o, &rt(), "tok", &[], &tagged, false);
         let servers: Value = serde_json::from_str(&o.env["VIBE_MCP_SERVERS"]).unwrap();
         assert_eq!(servers[0]["name"], "eldrun");
         assert_eq!(servers[0]["url"], "http://127.0.0.1:4321/mcp");
@@ -2104,13 +2238,13 @@ mod tests {
 
         // A restored tab carries only the alias.
         let mut o = vibe(&[("VIBE_ACTIVE_MODEL", "gemma4-e4b")]);
-        apply_to_spawn_with(&mut o, &rt(), &[], &tagged, false);
+        apply_to_spawn_with(&mut o, &rt(), "tok", &[], &tagged, false);
         assert!(o.env.contains_key("VIBE_MCP_SERVERS"));
 
         // Untagged model ("Root" without "MCP"): tools stay off and it gets
         // nothing — not even the env pair, whichever agents wear the chip.
         let mut o = vibe(&[("ELDRUN_LOCAL_MODEL", "llama3:latest"), ("VIBE_ACTIVE_MODEL", "llama3-latest")]);
-        apply_to_spawn_with(&mut o, &rt(), &every_agent(), &tagged, false);
+        apply_to_spawn_with(&mut o, &rt(), "tok", &every_agent(), &tagged, false);
         assert!(!o.env.contains_key("VIBE_MCP_SERVERS"));
         assert!(!o.env.contains_key("VIBE_ENABLED_TOOLS"));
         assert!(!o.env.contains_key(URL_ENV) && !o.env.contains_key(TOKEN_ENV));
@@ -2120,7 +2254,7 @@ mod tests {
     fn local_only_hands_cloud_agents_nothing_and_local_models_their_own_token() {
         for cmd in ["claude", "codex", "gemini", "vibe"] {
             let mut o = opts(cmd, &[], None);
-            apply_to_spawn_with(&mut o, &rt(), &every_agent(), &[], true);
+            apply_to_spawn_with(&mut o, &rt(), "tok", &every_agent(), &[], true);
             assert!(o.args.is_empty(), "{cmd}");
             assert!(!o.env.contains_key(TOKEN_ENV), "{cmd}");
             assert!(!o.env.contains_key(URL_ENV), "{cmd}");
@@ -2128,23 +2262,42 @@ mod tests {
         let tagged = vec!["gemma4:e4b".to_string()];
         let mut o = opts("vibe", &[], None);
         o.env.insert("ELDRUN_LOCAL_MODEL".into(), "gemma4:e4b".into());
-        apply_to_spawn_with(&mut o, &rt(), &[], &tagged, true);
+        apply_to_spawn_with(&mut o, &rt(), "tok", &[], &tagged, true);
         assert!(o.env.contains_key("VIBE_MCP_SERVERS"));
-        assert_eq!(o.env[TOKEN_ENV], "loc");
+        assert_eq!(o.env[TOKEN_ENV], "tok");
         // The local token is the local tab's with the switch off too, so
         // flipping it on later keeps that tab served.
         let mut o = opts("vibe", &[], None);
         o.env.insert("ELDRUN_LOCAL_MODEL".into(), "gemma4:e4b".into());
-        apply_to_spawn_with(&mut o, &rt(), &[], &tagged, false);
-        assert_eq!(o.env[TOKEN_ENV], "loc");
+        apply_to_spawn_with(&mut o, &rt(), "tok", &[], &tagged, false);
+        assert_eq!(o.env[TOKEN_ENV], "tok");
+    }
+
+    #[test]
+    fn stale_spawn_teardown_cannot_revoke_a_replacement_token() {
+        let tab = "root:token-generation";
+        register_token("generation-old".into(), Identity { tab: tab.into(), caller: Caller::Agent, project: None });
+        register_token("generation-new".into(), Identity { tab: tab.into(), caller: Caller::LocalModel, project: None });
+        assert!(revoke_token("generation-old").is_none());
+        assert_eq!(caller(Some("Bearer generation-new")).unwrap().tab, tab);
+        let mut options = opts("vibe", &[], None);
+        options.env.insert(TOKEN_ENV.into(), "generation-new".into());
+        drop(SpawnTokenGuard::new(&options));
+        assert!(caller(Some("Bearer generation-new")).is_none());
     }
 
     #[test]
     fn the_endpoint_tells_callers_apart_and_local_only_refuses_agents() {
-        assert_eq!(caller(Some("Bearer tok"), "tok", "loc"), Some(Caller::Agent));
-        assert_eq!(caller(Some("Bearer loc"), "tok", "loc"), Some(Caller::LocalModel));
-        assert_eq!(caller(Some("Bearer nope"), "tok", "loc"), None);
-        assert_eq!(caller(None, "tok", "loc"), None);
+        register_token("tok".into(), Identity { tab: "root:auth-agent".into(), caller: Caller::Agent, project: None });
+        register_token("loc".into(), Identity { tab: "root:auth-local".into(), caller: Caller::LocalModel, project: None });
+        assert_eq!(caller(Some("Bearer tok")).unwrap().caller, Caller::Agent);
+        assert_eq!(caller(Some("Bearer loc")).unwrap().caller, Caller::LocalModel);
+        assert_eq!(caller(Some("Bearer nope")), None);
+        assert_eq!(caller(None), None);
+        revoke_tab("root:auth-agent");
+        assert_eq!(caller(Some("Bearer tok")), None);
+        assert!(caller(Some("Bearer loc")).is_some());
+        revoke_tab("root:auth-local");
 
         let fx = Fixture::new();
         assert!(serves(&fx.settings, Caller::Agent), "absent means every root agent");
@@ -2155,17 +2308,56 @@ mod tests {
         assert!(!serves(&fx.settings, Caller::LocalModel), "the global switch outranks it");
     }
 
+    /// Mail has its own switch and it starts off: `root_mcp` alone lists no
+    /// mail tool, refuses a call to one by name, and serves a reader nothing.
+    #[test]
+    fn mail_tools_are_off_until_switched_on_separately() {
+        use crate::services::root_mcp_mail::is_mail_tool;
+        let fx = Fixture::new();
+        let list = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
+        let draft = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                            "params": { "name": "mail_drafts_list", "arguments": {} } });
+        let listed_mail = |fx: &Fixture| {
+            let (reply, _) = handle_message(&fx.stores(), "t", &list);
+            reply.unwrap()["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|t| is_mail_tool(t["name"].as_str().unwrap()))
+                .count()
+        };
+        for off in [None, Some(json!({})), Some(json!({ "root_mcp": true })), Some(json!({ "root_mcp_mail": false }))] {
+            match &off {
+                Some(body) => fx.write_state("settings.json", body.clone()),
+                None => std::fs::remove_file(&fx.settings).unwrap(),
+            }
+            assert!(!mail_enabled_in(&fx.settings), "{off:?}");
+            assert_eq!(listed_mail(&fx), 0, "{off:?}");
+            let (reply, _) = handle_message(&fx.stores(), "t", &draft);
+            let result = reply.unwrap()["result"].clone();
+            assert_eq!(result["isError"], true, "{off:?}");
+            assert_eq!(result["content"][0]["text"], MAIL_OFF, "{off:?}");
+            assert!(serves(&fx.settings, Caller::Agent), "the other tools stay on: {off:?}");
+            assert!(!serves(&fx.settings, Caller::Reader), "a reader is mail only: {off:?}");
+        }
+        fx.write_state("settings.json", json!({ "root_mcp_mail": true }));
+        assert!(listed_mail(&fx) > 0);
+        assert!(serves(&fx.settings, Caller::Reader));
+        fx.write_state("settings.json", json!({ "root_mcp": false, "root_mcp_mail": true }));
+        assert!(!serves(&fx.settings, Caller::Reader), "the global switch outranks it");
+    }
+
     #[test]
     fn a_root_agent_without_the_mcp_chip_gets_nothing() {
         let only_codex = vec!["codex".to_string()];
         for cmd in ["claude", "/usr/bin/claude", "gemini"] {
             let mut o = opts(cmd, &["--resume", "abc"], None);
-            apply_to_spawn_with(&mut o, &rt(), &only_codex, &[], false);
+            apply_to_spawn_with(&mut o, &rt(), "tok", &only_codex, &[], false);
             assert_eq!(o.args, ["--resume", "abc"], "{cmd}");
             assert!(o.env.is_empty(), "{cmd}");
         }
         let mut o = opts("/usr/bin/codex", &[], None);
-        apply_to_spawn_with(&mut o, &rt(), &only_codex, &[], false);
+        apply_to_spawn_with(&mut o, &rt(), "tok", &only_codex, &[], false);
         assert_eq!(o.env[TOKEN_ENV], "tok");
     }
 
@@ -2182,7 +2374,7 @@ mod tests {
     #[test]
     fn other_agents_get_the_env_pair_only() {
         let mut o = opts("gemini", &[], None);
-        apply_to_spawn_with(&mut o, &rt(), &every_agent(), &[], false);
+        apply_to_spawn_with(&mut o, &rt(), "tok", &every_agent(), &[], false);
         assert!(o.args.is_empty());
         assert_eq!(o.env[URL_ENV], "http://127.0.0.1:4321/mcp");
     }
@@ -2205,23 +2397,98 @@ mod tests {
     #[test]
     fn notifications_get_no_reply_and_unknown_methods_an_error() {
         let f = Fixture::new();
-        let (reply, _) = handle_message(&f.stores(), &json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+        let (reply, _) = handle_message(&f.stores(), "root:test", &json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
         assert!(reply.is_none());
-        let (reply, _) = handle_message(&f.stores(), &json!({ "jsonrpc": "2.0", "id": 7, "method": "nope" }));
+        let (reply, _) = handle_message(&f.stores(), "root:test", &json!({ "jsonrpc": "2.0", "id": 7, "method": "nope" }));
         assert_eq!(reply.unwrap()["error"]["code"], -32601);
     }
 
     #[test]
     fn tools_list_matches_the_advertised_names() {
         let f = Fixture::new();
-        let (reply, _) = handle_message(&f.stores(), &json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }));
+        let (reply, _) = handle_message(&f.stores(), "root:test", &json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }));
         let listed: Vec<String> = reply.unwrap()["result"]["tools"]
             .as_array()
             .unwrap()
             .iter()
             .map(|t| t["name"].as_str().unwrap().to_string())
             .collect();
-        assert_eq!(listed, tool_names());
+        // A root tab is shown everything but the mail read tools.
+        let served_root: Vec<&str> = tool_names().into_iter().filter(|n| served(Caller::Agent, n)).collect();
+        assert_eq!(listed, served_root);
+        assert!(!listed.iter().any(|n| crate::services::root_mcp_mail::is_read_tool(n)));
+    }
+
+    /// Table-driven over every tool × every class: `tools/list` equals the
+    /// served set exactly, and a call outside it is an unknown tool. A tool
+    /// added later is in no class until someone places it on purpose.
+    #[test]
+    fn every_tool_has_a_class_and_dispatch_follows_it() {
+        use crate::services::root_mcp_mail::READ_TOOLS;
+        const SWEEP: &[&str] =
+            &["projects_list", "projects_git_status", "sync_status", "time_summary", "usage_recap", "boxes_list"];
+        let f = Fixture::new();
+        for caller in [Caller::Agent, Caller::LocalModel, Caller::Reader] {
+            let stores = Stores { caller, ..f.stores() };
+            let (reply, _) = handle_message(&stores, "t", &json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }));
+            let listed: Vec<String> = reply.unwrap()["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["name"].as_str().unwrap().to_string())
+                .collect();
+            for name in tool_names() {
+                let expected = if caller == Caller::Reader { !SWEEP.contains(&name) } else { !READ_TOOLS.contains(&name) };
+                assert_eq!(served(caller, name), expected, "{caller:?} × {name}");
+                assert_eq!(listed.iter().any(|l| l == name), expected, "tools/list: {caller:?} × {name}");
+                let msg = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                  "params": { "name": name, "arguments": {} } });
+                let (reply, _) = handle_message(&stores, "t", &msg);
+                let text = reply.unwrap()["result"]["content"][0]["text"].as_str().unwrap_or_default().to_string();
+                assert_eq!(!text.starts_with("unknown tool"), expected, "dispatch: {caller:?} × {name}: {text}");
+            }
+        }
+        // A root tab's draft tools have no recipient and no reply argument.
+        let (reply, _) = handle_message(&f.stores(), "t", &json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }));
+        let tools = reply.unwrap()["result"]["tools"].clone();
+        let create = tools.as_array().unwrap().iter().find(|t| t["name"] == "mail_draft_create").unwrap().clone();
+        for absent in ["to", "cc", "bcc", "reply_to_message_id"] {
+            assert!(create["inputSchema"]["properties"].get(absent).is_none(), "{absent}");
+        }
+    }
+
+    /// The reader wiring names the guest-side URL and the token only by name.
+    #[test]
+    fn a_reader_is_wired_to_the_guest_side_address_and_only_a_wired_cli() {
+        let mut args = vec!["resume".to_string(), "abc".to_string()];
+        let env = reader_wiring("codex", &mut args, "s3cret").unwrap();
+        assert!(args[1].contains(&reader_endpoint_url()), "{args:?}");
+        assert!(!args.iter().any(|a| a.contains("s3cret") || a.contains("127.0.0.1")), "{args:?}");
+        assert_eq!(args[args.len() - 2..], ["resume".to_string(), "abc".to_string()]);
+        assert!(env.contains(&(TOKEN_ENV.to_string(), "s3cret".to_string())));
+        let mut args = Vec::new();
+        reader_wiring("/usr/bin/claude", &mut args, "s3cret").unwrap();
+        assert_eq!(args[0], "--mcp-config");
+        assert!(args[1].contains(&reader_endpoint_url()) && !args[1].contains("s3cret"));
+        assert!(reader_wiring("bash", &mut Vec::new(), "s3cret").is_none(), "a plain shell is handed nothing");
+    }
+
+    /// Two spawns get different tokens, each bound to its own tab and class; a
+    /// closed tab's token is refused.
+    #[test]
+    fn tokens_are_per_tab_and_die_with_it() {
+        let (a, b) = (mint_token().unwrap(), mint_token().unwrap());
+        assert_ne!(a, b);
+        register_token(a.clone(), Identity { tab: "root:pt-a".into(), caller: Caller::Agent, project: None });
+        register_token(b.clone(), Identity { tab: "vm:pt-b".into(), caller: Caller::Reader, project: Some("p1".into()) });
+        let ida = caller(Some(&format!("Bearer {a}"))).unwrap();
+        let idb = caller(Some(&format!("Bearer {b}"))).unwrap();
+        assert_eq!((ida.tab.as_str(), ida.caller), ("root:pt-a", Caller::Agent));
+        assert_eq!((idb.tab.as_str(), idb.caller, idb.project.as_deref()), ("vm:pt-b", Caller::Reader, Some("p1")));
+        revoke_tab("root:pt-a");
+        assert!(caller(Some(&format!("Bearer {a}"))).is_none(), "a closed tab's token is refused");
+        assert!(caller(Some(&format!("Bearer {b}"))).is_some());
+        revoke_tab("vm:pt-b");
     }
 
     /// Codex prompts before any tool that does not say it is read-only, so the
@@ -2230,6 +2497,7 @@ mod tests {
     #[test]
     fn every_tool_is_deliberately_classified() {
         const READ_ONLY: &[&str] = &[
+            "proposals_list",
             "projects_list",
             "projects_git_status",
             "boxes_list",
@@ -2238,9 +2506,12 @@ mod tests {
             "time_summary",
             "usage_recap",
             "sync_status",
-            "mail_open",
-            "calendar_open",
-            "todo_open",
+            "mail_accounts_list",
+            "mail_folders",
+            "mail_search",
+            "mail_read",
+            "mail_thread",
+            "mail_drafts_list",
         ];
         const DESTRUCTIVE: &[&str] = &[
             "calendar_update_event",
@@ -2248,11 +2519,18 @@ mod tests {
             "calendar_delete_event",
             "todo_update",
             "todo_delete",
+            "mail_draft_update",
+            "mail_draft_delete",
         ];
-        let tools = tool_definitions();
-        let tools = tools.as_array().unwrap();
+        // The two classes between them list every tool.
+        let mut tools = tool_definitions(Caller::Agent, true).as_array().unwrap().clone();
+        for tool in tool_definitions(Caller::Reader, true).as_array().unwrap() {
+            if !tools.iter().any(|t| t["name"] == tool["name"]) {
+                tools.push(tool.clone());
+            }
+        }
         assert_eq!(tools.len(), tool_names().len());
-        for tool in tools {
+        for tool in &tools {
             let name = tool["name"].as_str().unwrap();
             let hints = &tool["annotations"];
             assert_eq!(hints["readOnlyHint"], READ_ONLY.contains(&name), "{name}");
@@ -2263,7 +2541,7 @@ mod tests {
         // Every listed tool is dispatched: a schema with no arm would be a tool
         // the agent can see and never call.
         let f = Fixture::new();
-        for name in tool_names() {
+        for name in tool_names().into_iter().filter(|n| served(Caller::Agent, n)) {
             let (result, _) = f.call_fx(name, json!({}));
             let error = result["content"][0]["text"].as_str().unwrap_or_default();
             assert!(!error.starts_with("unknown tool"), "{name}");
@@ -2459,44 +2737,6 @@ mod tests {
             assert_eq!(r["isError"], true, "{bad}");
             assert!(change.is_empty());
         }
-    }
-
-    #[test]
-    fn an_overlay_opens_only_behind_its_own_settings_gate() {
-        let f = Fixture::new();
-        // No settings file: every gate at its default, which is off.
-        for tool in ["mail_open", "calendar_open", "todo_open"] {
-            let (r, fx) = f.call_fx(tool, json!({}));
-            assert_eq!(r["isError"], true, "{tool}");
-            assert!(fx.open.is_none() && fx.changes.is_empty());
-        }
-
-        // Mail is experimental: unset follows debug mode, an explicit off wins.
-        std::fs::write(&f.settings, r#"{"debug":true,"calendar_global_app":true}"#).unwrap();
-        let (r, fx) = f.call_fx("mail_open", json!({}));
-        assert_eq!(text(&r)["opened"], "mail");
-        assert_eq!(fx.open, Some(OverlayOpen { overlay: "mail", task_id: None }));
-        let (_, fx) = f.call_fx("calendar_open", json!({}));
-        assert_eq!(fx.open.unwrap().overlay, "calendar");
-        assert_eq!(f.call_fx("todo_open", json!({})).0["isError"], true, "debug mode is not the board's gate");
-        std::fs::write(&f.settings, r#"{"debug":true,"mail_client":false}"#).unwrap();
-        assert_eq!(f.call_fx("mail_open", json!({})).0["isError"], true);
-    }
-
-    #[test]
-    fn the_board_opens_on_a_card_that_exists() {
-        let f = Fixture::new();
-        std::fs::write(&f.settings, r#"{"todo_board":true}"#).unwrap();
-        let id = add_card(&f, "Look here");
-        let (r, fx) = f.call_fx("todo_open", json!({ "id": id }));
-        assert_eq!(r["isError"], false);
-        assert!(fx.changes.is_empty(), "showing a card writes nothing");
-        assert_eq!(fx.open, Some(OverlayOpen { overlay: "todo", task_id: Some(id) }));
-        let (_, fx) = f.call_fx("todo_open", json!({}));
-        assert_eq!(fx.open, Some(OverlayOpen { overlay: "todo", task_id: None }));
-        let (r, fx) = f.call_fx("todo_open", json!({ "id": "nope" }));
-        assert_eq!(r["isError"], true);
-        assert!(fx.open.is_none());
     }
 
     #[test]

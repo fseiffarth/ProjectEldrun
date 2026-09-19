@@ -454,6 +454,27 @@ pub async fn pty_spawn(
     if root_agent {
         crate::services::root_mcp::apply_to_spawn(&mut opts);
     }
+    // The contained reader (`services::mail_reader`): an agent spawn into a VM
+    // project whose TRUSTED record carries `mail_reader` gets a per-tab token of
+    // class `Reader` and the guest-side URL, riding the remote command's
+    // environment. Every other project agent spawn — VM or not — is handed
+    // nothing. Whether the box is actually narrow is checked per mail call, not
+    // here: the flag is a request, not a fact.
+    let reader_project = opts
+        .project_id
+        .clone()
+        .filter(|_| agent_spawn && !root_agent && !opts.local_only)
+        .filter(|id| crate::services::vm::vm_spec_for(id).is_some_and(|spec| spec.mail_reader));
+    if let Some(project) = reader_project.as_deref() {
+        let cmd = opts.cmd.clone();
+        if let Some(env) =
+            crate::services::root_mcp::apply_reader_to_spawn(&opts.id, project, &cmd, &mut opts.args)
+        {
+            opts.env.extend(env);
+        }
+    }
+    let mut mcp_spawn_guard = (root_agent || reader_project.is_some())
+        .then(|| crate::services::root_mcp::SpawnTokenGuard::new(&opts));
 
     // A local OpenCode is offered exactly the models Ollama has loaded (see
     // `commands::ollama::opencode_loaded_models_config`) — handed over as an
@@ -692,6 +713,7 @@ pub async fn pty_spawn(
 
     let result = crate::terminal::spawn_pty(app, registry.inner().clone(), opts);
     if result.is_ok() {
+        if let Some(guard) = mcp_spawn_guard.as_mut() { guard.keep(); }
         if let Some(claim) = resume_claim {
             claim.keep();
         }
@@ -898,6 +920,7 @@ pub async fn pty_kill(registry: State<'_, RegistryState>, id: String) -> Result<
     crate::commands::credentials::forget_login_pty(&id);
     registry.lock().unwrap().kill(&id);
     crate::services::agent_fence::on_tab_gone(&id);
+    crate::services::root_mcp_review::on_tab_gone(&crate::storage::state_dir(), &id);
     crate::services::agent_turn::on_tab_gone(&id);
     Ok(())
 }
@@ -916,6 +939,7 @@ pub async fn pty_kill_scope(
         crate::terminal::route_remove_all_views(id);
         registry.lock().unwrap().kill(id);
         crate::services::agent_fence::on_tab_gone(id);
+        crate::services::root_mcp_review::on_tab_gone(&crate::storage::state_dir(), id);
         crate::services::agent_turn::on_tab_gone(id);
     }
     Ok(ids)

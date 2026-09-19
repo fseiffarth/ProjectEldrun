@@ -160,6 +160,12 @@ async fn resolve(
     pool: &RemotePoolState,
 ) -> Result<(RemoteTarget, Arc<Sftp>), String> {
     let target = remote_target_for(project_id).ok_or_else(|| "not a remote project".to_string())?;
+    // A contained mail reader has no mirror at all: "pull this to the host"
+    // would be the exfiltration path with the user's click on it
+    // (`services::mail_reader`). The trusted `projects.json` record decides.
+    if crate::services::vm::vm_spec_for(project_id).is_some_and(|spec| spec.mail_reader) {
+        return Err("this project is a mail reader and has no host-side mirror; turn \"mail reader\" off first".to_string());
+    }
     let sftp = pooled_sftp(pool, project_id)
         .await
         .ok_or_else(|| "remote project not connected — reconnect first".to_string())?;

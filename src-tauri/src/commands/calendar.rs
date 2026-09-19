@@ -64,6 +64,21 @@ fn write_data(path: &Path, data: &CalendarData) -> Result<(), String> {
     storage::write_json_atomic(path, data).map_err(|e| e.to_string())
 }
 
+/// Apply an entire reviewed proposal under the same lock as user edits and
+/// CalDAV merges. Failed preconditions never write even part of a batch.
+pub(crate) fn apply_change_at(
+    path: &Path,
+    rows: &[crate::services::root_mcp_review::Row],
+    calendars: &[serde_json::Value],
+) -> Result<Vec<crate::services::root_mcp::Change>, String> {
+    let _guard = lock_calendar();
+    let mut value = serde_json::to_value(read_data(path)?).map_err(|e| e.to_string())?;
+    let changes = crate::services::root_mcp_review::apply_rows(&mut value, rows, calendars)?;
+    let data: CalendarData = serde_json::from_value(value).map_err(|e| e.to_string())?;
+    write_data(path, &data)?;
+    Ok(changes)
+}
+
 /// Mint an id not already present among `existing` (guards against back-to-back
 /// time-based `uuid_v4` collisions, mirroring `create_box`).
 fn fresh_id(existing: &HashSet<&str>) -> String {

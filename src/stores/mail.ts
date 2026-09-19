@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import {
   mailAccountDelete,
+  mailAgentDrafts,
   mailAccountsList,
   mailBody,
   mailFlag,
@@ -21,6 +22,7 @@ import { translate, useI18nStore } from "../lib/i18n";
 import type {
   MailAccount,
   MailBody,
+  MailDraft,
   MailFlag,
   MailFolder,
   MailHeader,
@@ -174,6 +176,17 @@ interface MailStore {
   noteArrival: (accountId: string, count: number) => void;
   openOverlay: () => void;
   closeOverlay: () => void;
+
+  /** Drafts an agent wrote through the root MCP (`origin` set) that the user
+   *  has not yet sent, discarded or edited. Read by the pane's strip and by the
+   *  root console's review strip; refreshed on `root-mcp-changed` kind `draft`. */
+  agentDrafts: MailDraft[];
+  loadAgentDrafts: () => Promise<void>;
+  /** The agent draft the pane should open in the composer next. */
+  pendingDraft: MailDraft | null;
+  /** Open the overlay on an agent draft's account with the composer on it —
+   *  never an "approve": the composer's Send stays the only way out. */
+  openAgentDraft: (draft: MailDraft | null) => Promise<void>;
 
   /**
    * Open the overlay **on** a given account — the header dropdown's account rows.
@@ -368,6 +381,20 @@ export const useMailStore = create<MailStore>((set, get) => ({
     void get().refreshPriorityCounts();
   },
   closeOverlay: () => set({ overlayOpen: false }),
+
+  agentDrafts: [],
+  pendingDraft: null,
+  loadAgentDrafts: async () => {
+    // A locked or never-opened store lists nothing; that is not an error here.
+    const drafts = await mailAgentDrafts().catch(() => [] as MailDraft[]);
+    set({ agentDrafts: Array.isArray(drafts) ? drafts : [] });
+  },
+  openAgentDraft: async (draft) => {
+    if (!draft) return set({ pendingDraft: null });
+    get().openOverlay();
+    if (get().selectedAccountId !== draft.account_id) await get().selectAccount(draft.account_id);
+    set({ pendingDraft: draft });
+  },
 
   openAccountView: async (accountId) => {
     get().openOverlay();

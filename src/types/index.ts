@@ -249,9 +249,14 @@ export interface Settings {
    *  (`services::root_mcp`). **Default true** — absent means on. Off hands new
    *  root agents no endpoint and refuses the ones already holding the token. */
   root_mcp?: boolean;
+  root_mcp_review?: "all" | "destructive" | "off";
   /** Root console: serve the MCP tools to local-model tabs only. Absent means
    *  off. On, cloud agent CLIs get no endpoint and running ones are refused. */
   root_mcp_local_only?: boolean;
+  /** Root console: serve the MCP endpoint's mail tools. Absent means **off** —
+   *  switched on separately from `root_mcp`, and above every per-account
+   *  `agent_access`. */
+  root_mcp_mail?: boolean;
   /** Side panel: the **Alerts** group in the file viewer — urgent mail, the
    *  calendar entries about to start, and the to-do cards whose due date is here
    *  or past, merged into one time-ordered strip. **Default true.**
@@ -878,6 +883,10 @@ export interface VmSpec {
   /** Allow github.com (+ API/raw hosts) through the proxy. Opt-in, default
    *  off — the initial clone uses a *temporary* allow instead. */
   allow_github?: boolean;
+  /** This VM is a contained mail reader: its agent tabs are served the root
+   *  MCP's mail read tools while the box stays at the default proxy allowlist.
+   *  Trusted only from the state-dir record, never the in-folder project.json. */
+  mail_reader?: boolean;
 }
 
 /** `vm_doctor`'s verdict: can this machine boot project VMs, and if not, why

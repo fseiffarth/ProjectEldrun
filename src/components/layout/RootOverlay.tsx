@@ -13,8 +13,6 @@ import {
 import { useProjectsStore } from "../../stores/projects";
 import { useActivityStore } from "../../stores/activity";
 import { useCalendarStore } from "../../stores/calendar/calendar";
-import { useMailStore } from "../../stores/mail";
-import { useTodoStore } from "../../stores/todo";
 import { useSettingsStore } from "../../stores/settings";
 import {
   DEFAULT_MIN_SUBWINDOW_PX,
@@ -46,27 +44,27 @@ import { TabStatusMark } from "../tabs/TabLocalityBadges";
 import { pickEdge, previewInset } from "../tabs/dragGeometry";
 import { dragPreviewLayout } from "../tabs/dragPreview";
 import { StarIcon } from "./StarIcon";
+import { RootReviewStrip } from "./RootReviewStrip";
+import { useRootReviewStore } from "../../stores/rootReview";
+import { useMailStore } from "../../stores/mail";
 
 /** What the backend's `root-mcp-changed` event carries (`services::root_mcp::Change`). */
 type RootMcpChange = (
   | { kind: "event"; op: "upsert" | "delete"; row: CalendarEvent }
   | { kind: "task"; op: "upsert" | "delete"; row: CalendarTask }
-  | { kind: "calendar"; op: "upsert"; row: Calendar }
+  | { kind: "calendar"; op: "upsert" | "delete"; row: Calendar }
+  /** A mail draft an agent wrote: the id and origin only, never the text. */
+  | { kind: "draft"; op: "upsert" | "delete"; row: { id: string } }
 ) & {
   /** Board-only fields changed (a move's column/rank): merge, push nothing. */
   local?: boolean;
 };
 
-/** What `root-mcp-open` carries (`services::root_mcp::OverlayOpen`). */
-interface RootMcpOpen {
-  overlay: "mail" | "calendar" | "todo";
-  /** `todo_open` with a card: the board opens on it. */
-  task_id?: string;
-}
-
 interface RootMcpStatus {
   running: boolean;
   tools: string[];
+  /** At least one mail account is open to a contained reader agent. */
+  mail_open?: boolean;
 }
 
 /** A rect relative to the overlay's pane region. */
@@ -145,7 +143,21 @@ function filesReserveStyle(files: GroupFiles | undefined): React.CSSProperties |
  */
 export function RootOverlayHost() {
   const open = useRootOverlayStore((s) => s.open);
+  useEffect(() => {
+    const refresh = () => { void useRootReviewStore.getState().refresh(); };
+    const unlisten = listen<number>("root-mcp-review-changed", refresh);
+    void unlisten.then(refresh);
+    return () => { void unlisten.then((stop) => stop()); };
+  }, []);
   const rootTabs = useTabsStore((s) => s.tabsByScope[ROOT_SCOPE]);
+  useEffect(() => {
+    void useRootReviewStore.getState().refresh();
+  }, [rootTabs, open]);
+  useEffect(() => {
+    if (!open) return;
+    const timer = window.setInterval(() => { void useRootReviewStore.getState().refresh(); }, 5000);
+    return () => window.clearInterval(timer);
+  }, [open]);
   const rootLayout = useTabsStore((s) => s.layoutByScope[ROOT_SCOPE]);
   const activeScope = useTabsStore((s) => s.scope);
 
@@ -165,10 +177,16 @@ export function RootOverlayHost() {
         rows.some((r) => r.id === row.id)
           ? rows.map((r) => (r.id === row.id ? row : r))
           : [...rows, row];
+      // A mail draft lives in the mail store, not the calendar: re-read the
+      // list. It opens nothing and steals no focus; the row shows its mark.
+      if (payload.kind === "draft") {
+        void useMailStore.getState().loadAgentDrafts();
+        return;
+      }
       // A new calendar is Eldrun's own: merged, never pushed anywhere.
       if (payload.kind === "calendar") {
         const row = payload.row;
-        useCalendarStore.setState((s) => ({ calendars: upsert(s.calendars, row) }));
+        useCalendarStore.setState((s) => ({ calendars: payload.op === "delete" ? s.calendars.filter((c) => c.id !== row.id) : upsert(s.calendars, row) }));
         return;
       }
       useCalendarStore.setState((s) => {
@@ -190,22 +208,6 @@ export function RootOverlayHost() {
       }
       if (payload.local) return;
       void notifyCalendarWrite(payload).catch(() => {});
-    });
-    return () => {
-      void unlisten.then((stop) => stop());
-    };
-  }, []);
-
-  useEffect(() => {
-    // A root agent's `*_open` tool. The backend already checked the overlay's
-    // settings gate, so this only has to show it — and get out of its way: the
-    // console is a modal mounted after the other three, so it would sit on top.
-    const unlisten = listen<RootMcpOpen>("root-mcp-open", ({ payload }) => {
-      useRootOverlayStore.getState().close();
-      if (payload.overlay === "mail") useMailStore.getState().openOverlay();
-      else if (payload.overlay === "calendar") useCalendarStore.getState().openOverlay();
-      else if (payload.task_id) useTodoStore.getState().openCard(payload.task_id);
-      else useTodoStore.getState().openOverlay();
     });
     return () => {
       void unlisten.then((stop) => stop());
@@ -244,6 +246,10 @@ export function RootOverlayHost() {
  * in, so a console sized on an external display is still reachable without one.
  */
 function RootOverlay() {
+  // Agent drafts wait for the user exactly as proposals do, so the badge
+  // counts both.
+  const reviewCount =
+    useRootReviewStore((s) => s.count) + useMailStore((s) => s.agentDrafts.length);
   const t = useT();
   const tabs = useTabsStore((s) => s.tabsByScope[ROOT_SCOPE] ?? NO_TABS);
   const layout = useTabsStore((s) => s.layoutByScope[ROOT_SCOPE] ?? null);
@@ -293,6 +299,7 @@ function RootOverlay() {
 
   useEffect(() => {
     invoke<RootMcpStatus>("root_mcp_status").then(setStatus).catch(() => setStatus(null));
+    void useMailStore.getState().loadAgentDrafts();
   }, []);
 
   useEffect(() => {
@@ -715,10 +722,12 @@ function RootOverlay() {
               aria-pressed={toolsEnabled}
               title={`${agentsWithTools}${
                 toolsOn ? `\n${status?.tools.join(", ")}` : ""
-              }\n${t(toolsEnabled ? "rootConsole.rightsToggleOff" : "rootConsole.rightsToggleOn")}\n${t("rootConsole.noPhone")}`}
+              }\n${t(toolsEnabled ? "rootConsole.rightsToggleOff" : "rootConsole.rightsToggleOn")}\n${t("rootConsole.noPhone")}${
+                status?.mail_open ? `\n${t("rootConsole.mailOpen")}` : ""
+              }`}
               onClick={() => void updateSettings({ root_mcp: !toolsEnabled })}
             >
-              {t("rootConsole.rightsBadge")}
+              {t("rootConsole.rightsBadge")}{status?.mail_open ? " ✉" : ""}{reviewCount > 0 ? ` ${reviewCount}` : ""}
             </button>
             <UntestedTag />
             {!split && soleGroupId && soleGroupId !== EMPTY_GROUP_ID && (
@@ -736,6 +745,7 @@ function RootOverlay() {
             </button>
           </div>
         </div>
+        <RootReviewStrip />
         <div className="subwindow-body">
           <div className="subwindow-pane-region root-overlay-region" ref={regionRef}>
             {tabs.length === 0 || !renderLayout ? (
