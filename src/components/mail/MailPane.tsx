@@ -267,8 +267,17 @@ export function MailPane({ visible }: MailPaneProps) {
     (next: MailSort, desc: boolean) => void useMailStore.getState().setSort(next, desc),
     [],
   );
+  const setQuery = useCallback(
+    (next: string) => void useMailStore.getState().setQuery(next),
+    [],
+  );
+  const setUnreadOnly = useCallback(
+    (next: boolean) => void useMailStore.getState().setUnreadOnly(next),
+    [],
+  );
+  const clearFilters = useCallback(() => void useMailStore.getState().clearFilters(), []);
   const loadPage = useCallback(
-    (offset: number) => void useMailStore.getState().loadPage(offset),
+    (offset: number) => void useMailStore.getState().stepPage(offset),
     [],
   );
 
@@ -588,28 +597,6 @@ export function MailPane({ visible }: MailPaneProps) {
             read off the thing being ordered rather than off a dropdown at the
             other end of the toolbar. What stays this pane's job is passing the
             store's `sort`/`sortDesc` down and handing the answer back. */}
-        {/* Beside the search because it is the same kind of thing — it narrows
-            the list — and like the search it is the store's, so it survives a
-            folder switch instead of silently resetting. */}
-        <button
-          type="button"
-          className={`settings-btn${unreadOnly ? " primary" : ""}`}
-          aria-pressed={unreadOnly}
-          title={t("mail.unreadOnlyTitle")}
-          disabled={!selectedFolderId && !selectedPriority}
-          onClick={() => void useMailStore.getState().setUnreadOnly(!unreadOnly)}
-        >
-          {t("mail.unreadOnly")}
-        </button>
-        <UntestedTag />
-        <input
-          className="mail-input mail-search"
-          type="search"
-          placeholder={t("mail.searchPlaceholder")}
-          value={query}
-          disabled={!selectedFolderId && !selectedPriority}
-          onChange={(e) => void useMailStore.getState().setQuery(e.target.value)}
-        />
       </div>
 
       {error && (
@@ -718,6 +705,11 @@ export function MailPane({ visible }: MailPaneProps) {
               total={headerTotal}
               scanned={headerScanned}
               onPage={loadPage}
+              query={query}
+              unreadOnly={unreadOnly}
+              onQuery={setQuery}
+              onUnreadOnly={setUnreadOnly}
+              onClearFilters={clearFilters}
             />
             <MailMessageView
               header={selectedHeader}

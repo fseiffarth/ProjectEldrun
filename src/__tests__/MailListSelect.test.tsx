@@ -84,6 +84,11 @@ function renderList(over: { checkedIds?: string[]; purged?: number } = {}) {
       pageSize={100}
       total={HEADERS.length}
       onPage={() => {}}
+      query=""
+      unreadOnly={false}
+      onQuery={() => {}}
+      onUnreadOnly={() => {}}
+      onClearFilters={() => {}}
     />,
   );
   return calls;

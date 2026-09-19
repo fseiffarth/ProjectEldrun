@@ -230,7 +230,21 @@ interface MailStore {
    */
   setSort: (sort: MailSort, desc: boolean) => Promise<void>;
   setUnreadOnly: (unreadOnly: boolean) => Promise<void>;
+  /** Drop every narrowing at once — the search and the unread filter — in one
+   *  read rather than one per control. */
+  clearFilters: () => Promise<void>;
   loadPage: (offset: number) => Promise<void>;
+  /**
+   * The pager's step, as opposed to `loadPage`'s re-read in place.
+   *
+   * Under `unreadOnly` the offset counts rows of a set that **shrinks as it is
+   * read**: every message opened on this page has left the filter by the time
+   * "Older" is pressed, so the rows behind it have all moved up by that many.
+   * Stepping a whole page would skip exactly that many unread mails — silently,
+   * which for the one view whose job is "what have I not read" is the worst
+   * way to be wrong. So a forward step gives back the rows that left.
+   */
+  stepPage: (offset: number) => Promise<void>;
 
   selectMessage: (messageId: string | null) => Promise<void>;
   /** Tick exactly this row and nothing else, and anchor a later range on it. */
@@ -558,6 +572,11 @@ export const useMailStore = create<MailStore>((set, get) => ({
     await get().loadPage(0);
   },
 
+  clearFilters: async () => {
+    set({ query: "", unreadOnly: false, headerOffset: 0 });
+    await get().loadPage(0);
+  },
+
   loadPage: async (offset) => {
     const { selectedFolderId, selectedPriority, query, sort, sortDesc, unreadOnly } = get();
     if (!selectedFolderId && !selectedPriority) {
@@ -615,6 +634,13 @@ export const useMailStore = create<MailStore>((set, get) => ({
           }
         : {}),
     });
+  },
+
+  stepPage: async (offset) => {
+    const { unreadOnly, headerOffset, headers } = get();
+    const left =
+      unreadOnly && offset > headerOffset ? headers.filter((h) => h.seen).length : 0;
+    await get().loadPage(Math.max(0, offset - left));
   },
 
   selectMessage: async (messageId) => {

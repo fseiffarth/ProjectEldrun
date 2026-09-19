@@ -4596,6 +4596,8 @@ export const en = {
   "mail.searchPlaceholder": "Search this folder…",
   "mail.unreadOnly": "Unread",
   "mail.unreadOnlyTitle": "Show only unread messages",
+  "mail.clearFilters": "Clear search and filters",
+  "mail.noMatches": "No messages match the search or filter.",
   "mail.crypto.titlePgp": "OpenPGP",
   "mail.crypto.titleSmime": "S/MIME",
   "mail.crypto.signedOnly": "Signed by the sender",

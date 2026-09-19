@@ -4505,6 +4505,8 @@ export const dict: Dict = {
   "mail.unreadBadge": "{count} sin leer",
   "mail.unreadOnly": "No leídos",
   "mail.unreadOnlyTitle": "Mostrar solo los mensajes no leídos",
+  "mail.clearFilters": "Borrar búsqueda y filtros",
+  "mail.noMatches": "Ningún mensaje coincide con la búsqueda o el filtro.",
   "mail.indicator": "Correo",
   "mail.indicatorNew": "{count} nuevos",
   "mail.indicatorFailed": "la última comprobación falló: {reason}",

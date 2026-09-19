@@ -1,4 +1,4 @@
-import { memo, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { formatAddress, formatMailListDate, formatSize, stripFormatControls } from "../../lib/mail";
 import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import { useI18nStore, useT } from "../../lib/i18n";
@@ -125,6 +125,18 @@ export interface MailListProps {
    */
   scanned?: number;
   onPage: (offset: number) => void;
+  /**
+   * Everything that *narrows* the list, in one bar on the list itself: the
+   * search and the unread filter. They used to sit at the far end of the pane's
+   * toolbar, between the account verbs and the keyring — a row away from the
+   * rows they hide. Both are the store's, applied by the backend over the whole
+   * folder, so they survive a folder switch and the pager counts what is shown.
+   */
+  query: string;
+  unreadOnly: boolean;
+  onQuery: (query: string) => void;
+  onUnreadOnly: (unreadOnly: boolean) => void;
+  onClearFilters: () => void;
 }
 
 /** Where the context menu is, and which messages it is about. */
@@ -164,11 +176,27 @@ function MailListImpl({
   total,
   scanned,
   onPage,
+  query,
+  unreadOnly,
+  onQuery,
+  onUnreadOnly,
+  onClearFilters,
 }: MailListProps) {
   const t = useT();
   const lang = useI18nStore((s) => s.lang);
   const use24h = useUse24h();
-  const hasPaging = total > pageSize;
+  // `offset > 0` as well: under the unread filter the set shrinks as it is
+  // read, so a later page can be reached whose re-read total fits on one page —
+  // and a pager that vanished there would leave no way back to "Newer".
+  const filtered = unreadOnly || query.trim() !== "";
+  const hasPaging = total > pageSize || offset > 0;
+  // A pager step lands on the top of the new page. The buttons sit under the
+  // rows, so without this "Older" opens the next hundred scrolled to their end.
+  // Keyed on the offset alone: a re-read in place must not move the list.
+  const rowsRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (rowsRef.current) rowsRef.current.scrollTop = 0;
+  }, [offset]);
   const [menu, setMenu] = useState<RowMenu | null>(null);
   const checked = new Set(checkedIds);
   const order = headers.map((h) => h.id);
@@ -236,6 +264,37 @@ function MailListImpl({
 
   return (
     <div className="mail-list">
+      <div className="mail-list-filter" role="search">
+        <input
+          className="mail-input mail-search"
+          type="search"
+          placeholder={t("mail.searchPlaceholder")}
+          value={query}
+          onChange={(e) => onQuery(e.target.value)}
+        />
+        <button
+          type="button"
+          className={`settings-btn sm${unreadOnly ? " primary" : ""}`}
+          aria-pressed={unreadOnly}
+          title={t("mail.unreadOnlyTitle")}
+          onClick={() => onUnreadOnly(!unreadOnly)}
+        >
+          {t("mail.unreadOnly")}
+        </button>
+        {/* Only while something is narrowing the list: the way back to the whole
+            folder in one click, whichever of the two is hiding mail. */}
+        {filtered && (
+          <button
+            type="button"
+            className="settings-btn sm"
+            title={t("mail.clearFilters")}
+            aria-label={t("mail.clearFilters")}
+            onClick={onClearFilters}
+          >
+            ✕
+          </button>
+        )}
+      </div>
       {/* The sort lives on the list, each control sitting above the column it
           orders — the star over the stars, the clip over the clips — so the
           order is read off the rows rather than off a dropdown elsewhere. The
@@ -275,7 +334,8 @@ function MailListImpl({
       </div>
       {loading && headers.length === 0 && <div className="mail-empty">{t("mail.loading")}</div>}
       {!loading && headers.length === 0 && (
-        <div className="mail-empty">{t("mail.noMessages")}</div>
+        // An empty *filter* is not an empty folder, and must not read as one.
+        <div className="mail-empty">{t(filtered ? "mail.noMatches" : "mail.noMessages")}</div>
       )}
       {/* Only once more than one row is ticked: a single tick is what an
           ordinary click already leaves behind, and a strip appearing on every
@@ -295,7 +355,7 @@ function MailListImpl({
           </button>
         </div>
       )}
-      <div className="mail-list-rows">
+      <div className="mail-list-rows" ref={rowsRef}>
         {headers.map((h) => (
           <div
             key={h.id}

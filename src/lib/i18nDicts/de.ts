@@ -4510,6 +4510,8 @@ export const dict: Dict = {
   "mail.unreadBadge": "{count} ungelesen",
   "mail.unreadOnly": "Ungelesen",
   "mail.unreadOnlyTitle": "Nur ungelesene Nachrichten anzeigen",
+  "mail.clearFilters": "Suche und Filter zurücksetzen",
+  "mail.noMatches": "Keine Nachrichten entsprechen der Suche oder dem Filter.",
   "mail.indicator": "Mail",
   "mail.indicatorNew": "{count} neu",
   "mail.indicatorFailed": "die letzte Prüfung schlug fehl: {reason}",

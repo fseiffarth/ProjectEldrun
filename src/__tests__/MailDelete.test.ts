@@ -268,3 +268,34 @@ describe("deleteMessages", () => {
     expect(cmds()).toEqual([]);
   });
 });
+
+describe("paging the unread filter", () => {
+  // The filtered set shrinks as it is read: rows opened on this page have left
+  // it by the time "Older" is pressed, so a whole-page step would skip that
+  // many unread mails.
+  it("steps forward by the rows still unread, not by a whole page", async () => {
+    answers.mail_headers = page([]);
+    useMailStore.setState({
+      unreadOnly: true,
+      headerOffset: 0,
+      headers: [
+        header({ id: "m1", seen: true }),
+        header({ id: "m2", seen: true }),
+        header({ id: "m3" }),
+      ],
+    });
+    await useMailStore.getState().stepPage(100);
+    expect(invoked.find((i) => i.cmd === "mail_headers")?.args.offset).toBe(98);
+  });
+
+  it("steps a whole page backwards, and whenever the filter is off", async () => {
+    answers.mail_headers = page([]);
+    const headers = [header({ id: "m1", seen: true }), header({ id: "m2" })];
+    useMailStore.setState({ unreadOnly: true, headerOffset: 200, headers });
+    await useMailStore.getState().stepPage(100);
+    useMailStore.setState({ unreadOnly: false, headerOffset: 0, headers });
+    await useMailStore.getState().stepPage(100);
+    const offsets = invoked.filter((i) => i.cmd === "mail_headers").map((i) => i.args.offset);
+    expect(offsets).toEqual([100, 100]);
+  });
+});

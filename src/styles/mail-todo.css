@@ -1478,7 +1478,17 @@ handle — it swallows the pointer before the card ever sees it. */
   min-width: 0;
 }
 .mail-search {
-  width: 220px;
+  flex: 1;
+}
+/* The list's filter bar: everything that narrows the rows, above the sort
+   headers that order them. Fixed like the headers, so it never scrolls away. */
+.mail-list-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
 }
 .mail-textarea,
 .mail-compose-body {
