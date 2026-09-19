@@ -36,6 +36,7 @@ import {
   type StaticMenuItem,
 } from "./newTabItems";
 import { AddTabMenuList } from "./AddTabMenuList";
+import { localModelMenuGroup, useLocalModelPlacement } from "./localModelGroup";
 import { TabColorPicker } from "./TabColorPicker";
 import { tabColorCss } from "../../lib/theme/tabColors";
 import { useAddTabMenuData } from "./useAddTabMenuData";
@@ -304,6 +305,8 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
   const menuOpen = menuPos !== null;
+  // The local-model group's GPU gate; probes only while the menu is open.
+  const localModelGpu = useLocalModelPlacement(localModel, menuOpen);
 
   const updateScrollState = useCallback(() => {
     const el = stripRef.current;
@@ -1544,49 +1547,17 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                 : []),
               // Only offer agents whose binary is actually installed: Mistral/vibe
               // (checked against `vibeForLocalModel`) and the drivers the backend
-              // already marks `available` (which now includes an installed check).
-              ...(!trashScope ? [{
-                label: localModel
-                  ? t("newTabMenu.groupLocalModelWithName", { model: localModel })
-                  : t("newTabMenu.groupLocalModel"),
-                entries: localModel
-                  ? [
-                      // Mistral/vibe keeps its bespoke per-model VIBE_HOME path.
-                      ...(vibeForLocalModel
-                        ? [{
-                            key: "vibe",
-                            label: "Mistral",
-                            color: TAB_ACCENT["local_agent"],
-                            onPick: () => void handleOllamaModel(localModel),
-                          }]
-                        : []),
-                      // Other agents drive the same model via `ollama launch` / fallback.
-                      // `heavy_harness` cautions, it never withholds — see
-                      // lib/agents/localDrivers.ts. The row stays pickable because
-                      // which local models cope is not something the backend
-                      // can probe.
-                      ...localDrivers.filter((d) => d.available).map((d) => ({
-                        key: d.id,
-                        label: d.label,
-                        color: TAB_ACCENT["local_agent"],
-                        caution: d.heavy_harness
-                          ? t("newTabMenu.localDriverHeavyHarness", { agent: d.label })
-                          : undefined,
-                        onPick: () => void handleLocalLaunch(d.id, d.label, localModel),
-                      })),
-                    ]
-                  : [],
-                // Two causes, two sentences — see NewTabMenu: an empty list
-                // because the model can't drive tool-calling agents must not
-                // read as "you have no agents installed".
-                hint: localModelOffInRoot
-                  ? t("newTabMenu.localModelOffInRootHint", { model: localModelOffInRoot })
-                  : !localModel
-                    ? t("newTabMenu.noLocalModelHint")
-                    : localDrivers.some((d) => d.needs_tools_unsupported)
-                      ? t("newTabMenu.localModelNoToolsHint", { model: localModel })
-                      : t("newTabMenu.noLocalAgentHint"),
-              }] : []),
+              // already marks `available` — and only once the model is on the GPU.
+              ...(!trashScope ? [localModelMenuGroup({
+                localModel,
+                localModelOffInRoot,
+                localDrivers,
+                vibeForLocalModel,
+                gpu: localModelGpu,
+                onVibe: (model) => void handleOllamaModel(model),
+                onLaunch: (id, label, model) => void handleLocalLaunch(id, label, model),
+                t,
+              })] : []),
               ...(!trashScope ? [{
                 label: t("newTabMenu.groupShell"),
                 entries: SHELL_ITEMS.filter((i) => i.kind === "shell").map((item) => ({

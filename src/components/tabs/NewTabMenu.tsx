@@ -23,6 +23,7 @@ import {
 } from "./newTabItems";
 import { AddTabMenuList } from "./AddTabMenuList";
 import { useAddTabMenuData } from "./useAddTabMenuData";
+import { localModelMenuGroup, useLocalModelPlacement } from "./localModelGroup";
 import { useAgentWorktreePicker } from "./agentWorktrees";
 import { useExperimental } from "../../lib/experimental";
 import { useT } from "../../lib/i18n";
@@ -81,6 +82,8 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
     installedCustom,
     boxMembers,
   } = useAddTabMenuData(scope);
+  // This menu only exists while open, so the GPU gate probes for its lifetime.
+  const localModelGpu = useLocalModelPlacement(localModel, true);
 
   // "+ agent" on a project with linked worktrees asks which one first (#23).
   // The popout cannot tell a remote project from a local one (it is inert to
@@ -272,46 +275,16 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                 ]),
               }]
             : []),
-          {
-            label: localModel
-              ? t("newTabMenu.groupLocalModelWithName", { model: localModel })
-              : t("newTabMenu.groupLocalModel"),
-            entries: localModel
-              ? [
-                  ...(vibeForLocalModel
-                    ? [{
-                        key: "vibe",
-                        label: "Mistral",
-                        color: TAB_ACCENT["local_agent"],
-                        onPick: () => void pickOllamaModel(localModel),
-                      }]
-                    : []),
-                  // `heavy_harness` cautions, it never withholds — see
-                  // lib/agents/localDrivers.ts. The row stays pickable because which
-                  // local models cope is not something the backend can probe.
-                  ...localDrivers.filter((d) => d.available).map((d) => ({
-                    key: d.id,
-                    label: d.label,
-                    color: TAB_ACCENT["local_agent"],
-                    caution: d.heavy_harness
-                      ? t("newTabMenu.localDriverHeavyHarness", { agent: d.label })
-                      : undefined,
-                    onPick: () => void pickLocalLaunch(d.id, d.label, localModel),
-                  })),
-                ]
-              : [],
-            // An empty list has two causes and they need different sentences:
-            // no agent is installed, or the model can't drive the ones that
-            // are. Without the second, withholding the entries would read as a
-            // bug — the agent is right there in the Agents group above.
-            hint: localModelOffInRoot
-              ? t("newTabMenu.localModelOffInRootHint", { model: localModelOffInRoot })
-              : !localModel
-                ? t("newTabMenu.noLocalModelHint")
-                : localDrivers.some((d) => d.needs_tools_unsupported)
-                  ? t("newTabMenu.localModelNoToolsHint", { model: localModel })
-                  : t("newTabMenu.noLocalAgentHint"),
-          },
+          localModelMenuGroup({
+            localModel,
+            localModelOffInRoot,
+            localDrivers,
+            vibeForLocalModel,
+            gpu: localModelGpu,
+            onVibe: (model) => void pickOllamaModel(model),
+            onLaunch: (id, label, model) => void pickLocalLaunch(id, label, model),
+            t,
+          }),
           {
             label: t("newTabMenu.groupShell"),
             entries: SHELL_ITEMS.filter((i) => i.kind === "shell").map((item) => ({

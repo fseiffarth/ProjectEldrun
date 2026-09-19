@@ -123,6 +123,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `tabs/TabBar.tsx` | Per-subwindow tab strip (add/rename/close, pointer-based DnD). |
 | `tabs/TabColorPicker.tsx` + `lib/theme/tabColors.ts` | Tab user colour (#264): closed 8-hue palette (the calendar's); the id, not the hex, is persisted and crosses to the phone (`protocol::clean_tab_color`). |
 | `tabs/agentWorktrees.ts` + `lib/agents/agentWorktrees.ts` | Agent tab in a linked worktree (#23): `useAgentWorktreePicker` asks before spawning an agent only when a linked worktree exists (local `git_worktree_list`); worktree = cwd, branch in label. Local projects only. |
+| `tabs/localModelGroup.ts` | The "+" menus' local-model group (TabBar + popout share it). Agent rows only once the "tabs" model is on the GPU (`list_ollama_models_detailed` `size_vram`; CPU counts on a GPU-less machine); else one "Load onto GPU" row (`load_ollama_model` device `gpu`). Probes only while the menu is open. |
 | `tabs/Subwindow.tsx` | A single tiled subwindow (tab group). Its body is a row: the measured pane region + (when the group's `filesOpen` is set) the docked per-subwindow file viewer. |
 | `tabs/commitDrop.ts` / `tabs/commitFileDrop.ts` | Apply a tab/file drag-drop into the layout tree. |
 | `tabs/dragGeometry.ts` | Drop-zone/split geometry math for tab drags. |
