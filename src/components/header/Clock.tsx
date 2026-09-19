@@ -5,6 +5,7 @@ import { useUse24h } from "../../lib/timeFormat";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { AppTimerDisplay } from "./AppTimerDisplay";
 import { useT } from "../../lib/i18n";
+import { OPEN_STATS_EVENT } from "../stats/StatsRecapHost";
 
 const MENU_ID = "clock";
 
@@ -62,6 +63,13 @@ export function Clock() {
     closeTimer.current = window.setTimeout(() => setMenuOpen(false), 250);
   };
   const clock = `${h}:${m}${showSeconds ? `:${s}` : ""}${suffix}`;
+  // Like the mail and calendar triggers, a click opens the full view behind the
+  // hover menu — here the usage recap — and the menu goes with the click.
+  const openStats = () => {
+    window.clearTimeout(closeTimer.current);
+    setMenuOpen(false);
+    window.dispatchEvent(new CustomEvent(OPEN_STATS_EVENT));
+  };
 
   return (
     <div
@@ -76,13 +84,21 @@ export function Clock() {
         aria-label={clock}
         aria-haspopup="menu"
         aria-expanded={menuOpen}
+        onClick={openStats}
         onFocus={reveal}
       >
         <span className="header-clock">{clock}</span>
       </button>
       {menuOpen && (
         <div className="tab-new-menu clock-menu-popover" role="menu" aria-label={clock}>
-          <div className="tab-new-menu-group-label">{t("appTimer.todayStats")}</div>
+          <button
+            type="button"
+            className="tab-new-menu-group-label clock-menu-stats-link"
+            title={t("settings.openUsageStats")}
+            onClick={openStats}
+          >
+            {t("appTimer.todayStats")}
+          </button>
           <AppTimerDisplay inMenu />
         </div>
       )}

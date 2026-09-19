@@ -506,6 +506,21 @@ select option {
 .clock-menu-popover {
   min-width: 104px;
 }
+/* The "Today's stats" heading opens the usage recap: the shared accent group
+   label, stripped of button chrome. */
+.clock-menu-stats-link {
+  display: block;
+  width: 100%;
+  background: none;
+  border: none;
+  text-align: left;
+  font-family: inherit;
+  cursor: var(--cur-pointer, pointer);
+}
+.clock-menu-stats-link:hover,
+.clock-menu-stats-link:focus-visible {
+  text-decoration: underline;
+}
 
 /* ── App timer ───────────────────────────────────────────────────────── */
 .app-timer-btn {
