@@ -437,6 +437,14 @@ pub fn agent_bins() -> Vec<&'static str> {
     AGENTS.iter().map(|a| a.bin).collect()
 }
 
+/// The registry's display name for an agent CLI's binary ("claude" → "Claude"),
+/// or `None` for a command the registry does not list. It lets a surface say
+/// which agent a tab runs without publishing the command itself — the phone's
+/// tab list is one (`services::mobile_control::discovery`).
+pub fn agent_label_for_bin(bin: &str) -> Option<&'static str> {
+    AGENTS.iter().find(|a| a.bin == bin).map(|a| a.label)
+}
+
 /// POSIX login-shell script used by the explicit "install on remote machine"
 /// action. Agent ids resolve through the same registry as local installation,
 /// so the frontend never supplies executable text. Probe before and after: a
@@ -1321,8 +1329,9 @@ pub async fn agent_tab_recent_prompts(
 }
 
 /// The stored conversation of the tab launched as `agent` with launch id
-/// `session_id` — its prompts and answers, read from the CLI's own transcript
-/// (`services::agent_transcript`) for the phone's Focus view. `version` is
+/// `session_id` in `tab_dir` — its prompts and answers, read from the CLI's
+/// own transcript or session store (`services::agent_transcript`) for the
+/// phone's Focus view. `version` is
 /// the fingerprint the caller last saw; a matching one is answered
 /// `unchanged` without a parse. Always answers: an agent with no readable
 /// transcript comes back `available: false` with the reason, never an error.
@@ -1330,6 +1339,7 @@ pub async fn agent_tab_recent_prompts(
 pub async fn agent_tab_transcript(
     agent: String,
     project_id: Option<String>,
+    tab_dir: Option<String>,
     session_id: String,
     version: Option<String>,
     limit: Option<usize>,
@@ -1339,6 +1349,7 @@ pub async fn agent_tab_transcript(
         agent_transcript::agent_session_transcript(
             &agent,
             project_id.as_deref(),
+            tab_dir.as_deref(),
             &session_id,
             version.as_deref(),
             limit.unwrap_or(DEFAULT_LIMIT),

@@ -345,6 +345,17 @@ fn resumable(tab: &SavedTab) -> bool {
             || tab.resume_args.as_ref().is_some_and(|v| !v.is_empty()))
 }
 
+/// Which agent an agent tab runs, as the phone names it: the registry's name
+/// for the tab's CLI, so a tab renamed to "release review" still says it is
+/// Claude — and the phone's per-agent readers (mode walk, paste, prompt echo)
+/// still recognise it. The command itself never crosses the browser API; an
+/// agent the registry does not list keeps its tab label, as before.
+fn agent_label_of(tab: &SavedTab) -> String {
+    crate::commands::agents::agent_label_for_bin(&tab.cmd)
+        .map(str::to_string)
+        .unwrap_or_else(|| tab.label.chars().take(120).collect())
+}
+
 fn canonical_below_any(path: &Path, roots: &[PathBuf]) -> bool {
     path.canonicalize()
         .ok()
@@ -549,7 +560,7 @@ fn resolve_scope(
             id: key_id(host_key, "tab", &[&source.raw_id, tmux]),
             label: tab.label.chars().take(120).collect(),
             kind: tab.kind.clone(),
-            agent_label: (tab.kind == "agent").then(|| tab.label.chars().take(120).collect()),
+            agent_label: (tab.kind == "agent").then(|| agent_label_of(&tab)),
             agent_status: None,
             agent_model: None,
             working_at: None,
@@ -784,6 +795,28 @@ mod tests {
         assert!(catalog.projects.is_empty());
         assert!(is_root_scope_id("root"));
         assert!(!is_root_scope_id("rooted"));
+    }
+
+    /// The phone learns which agent a tab runs from the registry, not from the
+    /// tab's label, so a renamed tab still says "Claude"; an unlisted agent
+    /// keeps its label, and the command itself is never what is published.
+    #[test]
+    fn agent_label_names_the_cli_not_the_tab() {
+        let tab = |label: &str, cmd: &str| SavedTab {
+            label: label.to_string(),
+            cmd: cmd.to_string(),
+            cwd: String::new(),
+            kind: "agent".to_string(),
+            session_id: None,
+            resume_args: None,
+            tmux_session: None,
+            tmux_attach: None,
+            ephemeral: false,
+            color: None,
+        };
+        assert_eq!(agent_label_of(&tab("release review", "claude")), "Claude");
+        assert_eq!(agent_label_of(&tab("Codex", "codex")), "Codex");
+        assert_eq!(agent_label_of(&tab("My bot", "/opt/bot --x")), "My bot");
     }
 
     /// A mobile-enabled box is a scope of its own (#31aa): listed as `kind:

@@ -75,6 +75,7 @@ pub mod mail_sanitize;
 pub mod mail_store;
 pub mod mobile_control;
 pub mod net_usage;
+pub mod opencode_store;
 pub mod openvpn;
 pub mod project_runtime;
 pub mod prompt_blame;

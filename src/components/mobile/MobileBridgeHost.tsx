@@ -1578,6 +1578,9 @@ async function agentTranscriptFor(
   const transcript = await invoke<MobileAgentTranscript>("agent_tab_transcript", {
     agent: tab.cmd,
     projectId: scope.id,
+    // OpenCode records no session id Eldrun can follow; its session is the
+    // newest one of the folder the tab runs in.
+    tabDir: tab.cwd || scope.cwd,
     sessionId: tab.sessionId,
     version: version ?? null,
     limit: limit ?? null,
