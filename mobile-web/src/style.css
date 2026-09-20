@@ -93,6 +93,17 @@ nav button,.keys button { flex:1; }
 .tab-card-open:disabled { opacity:1; }
 .tab-card-name { position:relative; z-index:1; justify-self:start; min-width:0; margin:-4px -6px; padding:4px 6px; border:0; border-radius:6px; background:transparent; text-align:left; }
 .tab-card-name strong { text-decoration:underline dotted #6f7488; text-underline-offset:4px; overflow-wrap:anywhere; }
+/* The name and the model tag share one row: the tag is the fact one scans a
+   list of tabs for, and a line of its own would push every card's prompts down.
+   The name keeps the row's spare width (a long one wraps within it) and the tag
+   its own, so it is never the thing that gets cut. The stronger selector is
+   what beats `.card span:first-child`, which would otherwise stack the two. */
+.tab-card-head .tab-card-main .tab-card-title { display:flex; align-items:baseline; gap:8px; min-width:0; }
+/* The status pill's shape (`.agent-status`, which it shares the rule with) in
+   the muted weight a fact-not-a-state wears — the same pairing the desktop's
+   `.agent-prompts-model` makes beside its own. The card's own selector is what
+   holds against that shared rule, which is written further down. */
+.tab-card-main .tab-card-model { display:inline-block; flex:0 1 auto; max-width:45%; padding:2px 7px; color:#9498aa; font-size:.72rem; font-weight:600; text-transform:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .tab-card-grip { position:relative; z-index:1; flex:0 0 auto; width:44px; padding:0; border:0; border-left:1px solid #2d3040; border-radius:0 11px 0 0; background:transparent; color:#6f7488; font-size:1.05rem; touch-action:none; cursor:grab; }
 .tab-card-grip:active { cursor:grabbing; color:#d3d6e4; }
 /* A card that is only its head — the home screen's project rows, which wear the
@@ -140,7 +151,7 @@ nav button,.keys button { flex:1; }
 /* The same reading on the flat Agents list, where a row is one tap tall: two
    lines, then ellipsis. */
 .activity-prompt { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; color:#b6bacb; overflow-wrap:anywhere; }
-.agent-status { display:inline-flex; align-items:center; gap:5px; padding:4px 8px; border:1px solid currentColor; border-radius:0; font-weight:700; text-transform:capitalize; }
+.agent-status,.tab-card-model { display:inline-flex; align-items:center; gap:5px; padding:4px 8px; border:1px solid currentColor; border-radius:0; font-weight:700; text-transform:capitalize; }
 .agent-status.working { color:#6fe29c; background:#173827; }
 .agent-status.question { color:#ffd36b; background:#493b1d; }
 .agent-status.done { color:#91e6a9; background:#193a29; }
@@ -474,17 +485,12 @@ body.terminal-open { min-height:0; overflow:hidden; }
    in the UI face; an answer keeps its line breaks and wraps at the phone's
    edge. An answer is a bubble on the left, the mirror of the prompt's; tool
    output and raw screen rows (`.agent` without `.answer`) stay flat. */
-.readable-turn.agent.answer { width:auto; max-width:min(92%,calc(100% - 30px)); padding:8px 12px; border-radius:16px 16px 16px 4px; background:#1d2030; color:#e3e6f2; }
-/* Each message's copy button sits beside its bubble on the free side, level
-   with its last line, so it costs the chat no height. */
-.readable-turn.user,.readable-turn.agent.answer { position:relative; }
-.turn-copy { position:absolute; bottom:0; display:grid; place-items:center; width:26px; height:26px; padding:0; border:0; border-radius:8px; background:transparent; color:#6f768b; }
-.turn-copy.copied { color:#8fb6ff; }
-.turn-copy svg { width:15px; height:15px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
-.readable-turn.user > .turn-copy { right:100%; margin-right:3px; }
-.turn-copy.turn-speak { bottom:28px; }
-.turn-copy.turn-speak.speaking { color:#8fb6ff; }
-.readable-turn.agent.answer > .turn-copy { left:100%; margin-left:3px; }
+.readable-turn.agent.answer { width:auto; max-width:92%; padding:8px 12px; border-radius:16px 16px 16px 4px; background:#1d2030; color:#e3e6f2; }
+/* A message carries no buttons: what can be done with it — copy it, hear it
+   read — is a click-hold on the bubble away (`useMessageMenu`), so the chat
+   spends its width on words. The system's own long-press callout would fight
+   that press, so it is off over a bubble. */
+.readable-turn.user,.readable-turn.agent.answer { position:relative; -webkit-touch-callout:none; }
 .readable-turn.agent.answer .readable-line { padding-left:0; text-indent:0; }
 .readable-lines.transcript { font:400 .9rem/1.5 Inter,ui-sans-serif,system-ui,sans-serif; }
 /* The stored session holds one bubble per message the agent wrote, so the

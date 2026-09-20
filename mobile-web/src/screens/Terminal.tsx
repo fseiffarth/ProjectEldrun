@@ -1,9 +1,10 @@
 import { useT, type TranslationKey } from "../../../src/lib/i18n";
+import { useMessageMenu } from "../components/MessageMenu";
 import { OptionSheet, type SheetOption } from "../components/OptionSheet";
 import { SpeechLangSheet, speechLangSummary } from "../components/SpeechLangPicker";
 import { OutboxGallery } from "../components/OutboxGallery";
 import { OutboxViewer } from "../components/OutboxViewer";
-import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -91,7 +92,7 @@ import {
   type DictationProgress,
   type MobileSpeechRecognition,
 } from "../voiceInput";
-import { currentSpeechId, speak, speechOutputSupported, spokenText, stopSpeaking, subscribeSpeech, unlockSpeech } from "../speechOutput";
+import { speak, speechOutputSupported, spokenText, stopSpeaking, unlockSpeech } from "../speechOutput";
 
 /** A line the dictation strip shows: a key, not a sentence, so switching the
  * language retranslates what is already on screen. */
@@ -271,49 +272,9 @@ const ReadableRow = memo(function ReadableRow({ line, plain }: { line: ReadableL
   ))}</div>;
 });
 
-/** Copies one chat message — the chat has no copy-everything button, so the
- * reading view keeps its height for the messages. The text is read on the
- * tap, not on every render of the turn. */
-function CopyMessage({ text }: { text: () => string }) {
-  const t = useT();
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    if (!copied) return;
-    const timer = window.setTimeout(() => setCopied(false), 1_500);
-    return () => window.clearTimeout(timer);
-  }, [copied]);
-  const label = t(copied ? "mobile.focus.copied" : "mobile.focus.copyMessage");
-  return <button className={copied ? "turn-copy copied" : "turn-copy"} aria-label={label} title={label} onClick={async () => {
-    try {
-      await navigator.clipboard.writeText(text());
-      setCopied(true);
-    } catch {
-      setCopied(false);
-    }
-  }}>{copied
-    ? <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 13 4.5 4.5L19 7" /></svg>
-    : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V6a2 2 0 0 1 2-2h8" /></svg>}</button>;
-}
-
 /** More new answers than this at once is a session that was swapped in or
  * caught up on, not one that is talking: read-aloud leaves those to the eye. */
 const MAX_SPOKEN_AT_ONCE = 3;
-
-/** Reads one agent message aloud (`speechOutput`), or stops it: the same
- * button, since the one voice is either on this message or not. Absent in a
- * browser that cannot speak. */
-function SpeakMessage({ id, text }: { id: string; text: () => string }) {
-  const t = useT();
-  const speaking = useSyncExternalStore(subscribeSpeech, currentSpeechId) === id;
-  if (!speechOutputSupported()) return null;
-  const label = t(speaking ? "mobile.speech.stop" : "mobile.speech.read");
-  return <button className={speaking ? "turn-copy turn-speak speaking" : "turn-copy turn-speak"} aria-label={label} title={label} aria-pressed={speaking} onClick={() => {
-    if (speaking) stopSpeaking();
-    else speak(id, spokenText(text(), t("mobile.speech.code")), speechTag(), true);
-  }}>{speaking
-    ? <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1" /></svg>
-    : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4h3l5 4V6l-5 4zM16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11" /></svg>}</button>;
-}
 
 /** A block of session lines. On an agent tab they read as a chat: the
  * agent's turns on the left as printed, each prompt the user submitted as a
@@ -329,17 +290,18 @@ const ReadableTurns = memo(function ReadableTurns({ lines, chat, agent, promptLa
   /** The pane's width, for a CLI that wrapped its own rows against it. */
   columns?: number;
 }) {
+  const { hold, menu } = useMessageMenu();
   if (!chat) return <>{lines.map((line) => <ReadableRow key={line.key} line={line} />)}</>;
   return <>{chatTurns(lines, agent, columns).map((turn) => {
     const shown = turn.role === "user" ? (turn.prompt ?? turn.lines) : (turn.answer ?? turn.lines);
     const rows = shown.map((line) => <ReadableRow key={line.key} line={line} />);
     // A message is a bubble — a prompt or an answer; tool output and raw
-    // screen rows are not one, and stay flat without a copy button.
-    const copy = (turn.role === "user" || turn.answer) && <CopyMessage text={() => readableText(shown)} />;
+    // screen rows are not one, and a hold on them opens nothing.
+    const press = turn.role === "user" || turn.answer ? hold(`screen:${turn.key}`, () => readableText(shown)) : undefined;
     return turn.role === "user"
-      ? <div key={turn.key} className="readable-turn user" role="group" aria-label={promptLabel}>{rows}{copy}</div>
-      : <div key={turn.key} className={turn.answer ? "readable-turn agent answer" : "readable-turn agent"}>{rows}{copy}{turn.answer && <SpeakMessage id={`screen:${turn.key}`} text={() => readableText(shown)} />}</div>;
-  })}</>;
+      ? <div key={turn.key} className="readable-turn user" role="group" aria-label={promptLabel} {...press}>{rows}</div>
+      : <div key={turn.key} className={turn.answer ? "readable-turn agent answer" : "readable-turn agent"} {...press}>{rows}</div>;
+  })}{menu}</>;
 });
 
 /** One answer of the stored session as formatted text (`answerHtml`: the
@@ -362,20 +324,18 @@ const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promp
 }) {
   // One bubble per record, keyed by its time (`transcriptTurns`).
   const turns = useMemo(() => transcriptTurns(entries), [entries]);
+  const { hold, menu } = useMessageMenu();
   return <>{turns.map((turn) => <Fragment key={turn.key}>
     {turn.kind === "prompt"
-      ? <div className="readable-turn user" role="group" aria-label={promptLabel}>
+      ? <div className="readable-turn user" role="group" aria-label={promptLabel} {...hold(turn.key, () => turn.text)}>
           <p className="transcript-text">{turn.text}</p>
           {turn.cut && <small className="transcript-cut">{cutLabel}</small>}
-          <CopyMessage text={() => turn.text} />
         </div>
-      : <div className="readable-turn agent answer">
+      : <div className="readable-turn agent answer" {...hold(turn.key, () => turn.text)}>
           <AnswerText text={turn.text} />
           {turn.cut && <small className="transcript-cut">{cutLabel}</small>}
-          <CopyMessage text={() => turn.text} />
-          <SpeakMessage id={turn.key} text={() => turn.text} />
         </div>}
-  </Fragment>)}</>;
+  </Fragment>)}{menu}</>;
 });
 
 /** The stored preference key for a tab: the agent behind it, or the shell. */
@@ -2048,7 +2008,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     () => [...visibleChunks.flatMap((chunk) => chunk.lines), ...earlier.open, ...painted],
     [visibleChunks, earlier.open, painted],
   );
-  /** A shell's Focus has no messages to copy one by one (`CopyMessage`), so
+  /** A shell's Focus has no messages to hold for a menu (`useMessageMenu`), so
    * it copies what the reading view shows: the revealed history, the open
    * chunk, then the live tail. */
   const copyReadable = async () => {

@@ -161,15 +161,19 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     const again = fetchMock.mock.calls.map(([url]) => url as string).filter((url) => url.includes("/transcript"));
     expect(again[again.length - 1]).toBe("/api/v1/tabs/tab-7/transcript?version=1200%3A1&limit=120");
 
-    // Each message copies itself, as the agent wrote it; there is no
-    // copy-everything button over the chat.
+    // A click-hold on a message opens its menu, and the menu copies that one
+    // message as the agent wrote it; there is no copy-everything button over
+    // the chat, and none on the bubbles either.
     expect(screen.queryByRole("button", { name: "Copy the session text" })).toBeNull();
-    const copy = within(answers[1] as HTMLElement).getByRole("button", { name: "Copy message" });
-    fireEvent.click(copy);
+    fireEvent.contextMenu(answers[1] as HTMLElement);
+    const sheet = () => within(screen.getByRole("dialog", { name: "Message" }));
+    fireEvent.click(sheet().getByRole("button", { name: "Copy message" }));
     await settle();
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith("Done: the **✕** empties the draft. See [the docs](https://example.com).");
-    within(answers[1] as HTMLElement).getByRole("button", { name: "Copied" });
-    fireEvent.click(within(prompt).getByRole("button", { name: "Copy message" }));
+    sheet().getByText("Copied");
+    fireEvent.click(sheet().getByRole("button", { name: "Close" }));
+    fireEvent.contextMenu(prompt);
+    fireEvent.click(sheet().getByRole("button", { name: "Copy message" }));
     await settle();
     expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith("add a clear button");
   });

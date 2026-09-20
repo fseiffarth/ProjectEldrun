@@ -94,9 +94,12 @@ describe("Eldrun Mobile readable terminal view", () => {
     expect(screen.queryByText("╭────────╮")).toBeNull();
     expect(screen.queryByRole("button", { name: "Keep it" })).toBeNull();
 
-    // An agent's chat copies message by message; raw rows are no message.
+    // An agent's chat acts on one message at a time, through the menu a
+    // bubble opens; raw rows are no message, so a hold on one opens nothing.
     expect(screen.queryByRole("button", { name: "Copy the session text" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Copy message" })).toBeNull();
+    fireEvent.contextMenu(screen.getByText("I found the layout."));
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("lays an agent tab out as a chat: the echoed prompt on the right, the answer on the left", async () => {
@@ -121,11 +124,44 @@ describe("Eldrun Mobile readable terminal view", () => {
     expect(screen.getAllByRole("group", { name: "Your prompt" })).toHaveLength(1);
     expect(document.querySelector(".readable-lines")?.className).toBe("readable-lines chat");
 
-    // Each bubble copies its own message, as shown.
-    fireEvent.click(within(answer as HTMLElement).getByRole("button", { name: "Copy message" }));
+    // A bubble carries no buttons; the menu it opens copies that one message,
+    // as shown — the prompt's as readily as the answer's.
+    expect(within(answer as HTMLElement).queryByRole("button")).toBeNull();
+    fireEvent.contextMenu(answer as HTMLElement);
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Message" })).getByRole("button", { name: "Copy message" }));
+    await act(async () => {});
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith("Reading the test first.\nIt fails on the second assertion.");
-    fireEvent.click(within(prompt).getByRole("button", { name: "Copy message" }));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Message" })).getByRole("button", { name: "Close" }));
+    fireEvent.contextMenu(prompt);
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Message" })).getByRole("button", { name: "Copy message" }));
+    await act(async () => {});
     expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith("fix the failing test");
+  });
+
+  it("opens a message's menu on a click-hold, and leaves a flick of the chat alone", async () => {
+    render(<Terminal tab={{ id: "tab", label: "Claude", kind: "agent", available: true, viewer_busy: false }} back={() => {}} />);
+    await act(async () => {});
+
+    const bytes = new TextEncoder().encode("> fix the failing test\n\n⏺ Reading the test first.\n\n> ");
+    const payload = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(payload).set(bytes);
+    act(() => FakeWebSocket.instances[0].onmessage?.({ data: payload } as MessageEvent));
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 200)); });
+    const prompt = screen.getByRole("group", { name: "Your prompt" });
+
+    // A finger that wanders is scrolling the chat, and the hold is off.
+    fireEvent.pointerDown(prompt, { button: 0, pointerId: 1, clientX: 40, clientY: 200 });
+    fireEvent.pointerMove(prompt, { button: 0, pointerId: 1, clientX: 44, clientY: 130 });
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 500)); });
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    // A finger that stays opens the menu for that bubble.
+    fireEvent.pointerDown(prompt, { button: 0, pointerId: 1, clientX: 40, clientY: 200 });
+    fireEvent.pointerMove(prompt, { button: 0, pointerId: 1, clientX: 42, clientY: 203 });
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 500)); });
+    const sheet = within(screen.getByRole("dialog", { name: "Message" }));
+    sheet.getByText("fix the failing test");
+    sheet.getByRole("button", { name: "Copy message" });
   });
 
   it("paints a shell tab flat, with no turns", async () => {

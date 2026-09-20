@@ -106,17 +106,31 @@ describe("Eldrun Mobile Reader reads answers aloud", () => {
     vi.restoreAllMocks();
   });
 
-  it("speaks one message on its button, and stops on the same button", async () => {
+  it("speaks one message from its menu, and stops on the same row", async () => {
     vi.stubGlobal("fetch", sidecarFetch(() => ({ available: true, version: "1:1", truncated: false, entries: [FIRST, SECOND] })));
     render(<Terminal tab={TAB} back={() => {}} />);
     await settle();
     const answers = screen.getByTestId("session-transcript").querySelectorAll(".readable-turn.agent.answer");
-    fireEvent.click(within(answers[1] as HTMLElement).getByRole("button", { name: "Read aloud" }));
+    fireEvent.contextMenu(answers[1] as HTMLElement);
+    const sheet = () => within(screen.getByRole("dialog", { name: "Message" }));
+    fireEvent.click(sheet().getByRole("button", { name: "Read aloud" }));
     expect(spoken.map((utterance) => utterance.text)).toEqual(["Done: the ✕ empties the draft. code block."]);
 
-    fireEvent.click(within(answers[1] as HTMLElement).getByRole("button", { name: "Stop reading" }));
+    // The row that started the voice is the one that stops it.
+    fireEvent.click(sheet().getByRole("button", { name: "Stop reading" }));
     expect(cancel).toHaveBeenCalled();
-    within(answers[1] as HTMLElement).getByRole("button", { name: "Read aloud" });
+    sheet().getByRole("button", { name: "Read aloud" });
+  });
+
+  it("reads the reader's own prompt back, not only the agent's answers", async () => {
+    const prompt = { kind: "prompt", text: "add a clear button to the composer", at: "2026-09-15T05:49:30.000Z" };
+    vi.stubGlobal("fetch", sidecarFetch(() => ({ available: true, version: "1:1", truncated: false, entries: [prompt, FIRST] })));
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+    const bubble = screen.getByTestId("session-transcript").querySelector(".readable-turn.user") as HTMLElement;
+    fireEvent.contextMenu(bubble);
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Message" })).getByRole("button", { name: "Read aloud" }));
+    expect(spoken.map((utterance) => utterance.text)).toEqual(["add a clear button to the composer"]);
   });
 
   it("with read-aloud on, speaks the answer that arrives and none that were already there", async () => {
@@ -142,7 +156,13 @@ describe("Eldrun Mobile Reader reads answers aloud", () => {
     render(<Terminal tab={TAB} back={() => {}} />);
     await settle();
     const answer = screen.getByTestId("session-transcript").querySelector(".readable-turn.agent.answer") as HTMLElement;
-    fireEvent.click(within(answer).getByRole("button", { name: "Read aloud" }));
+    const read = () => {
+      fireEvent.contextMenu(answer);
+      const sheet = within(screen.getByRole("dialog", { name: "Message" }));
+      fireEvent.click(sheet.getByRole("button", { name: "Read aloud" }));
+      fireEvent.click(sheet.getByRole("button", { name: "Close" }));
+    };
+    read();
     expect(spoken.map((utterance) => utterance.lang)).toEqual(["en-GB"]);
 
     fireEvent.click(screen.getByRole("button", { name: "Reader" }));
@@ -152,7 +172,7 @@ describe("Eldrun Mobile Reader reads answers aloud", () => {
     expect(cancel).toHaveBeenCalled();
     expect(localStorage.getItem("eldrun.mobile.speechLang")).toBe("de");
 
-    fireEvent.click(within(answer).getByRole("button", { name: "Read aloud" }));
+    read();
     expect(spoken.map((utterance) => utterance.lang)).toEqual(["en-GB", "de-DE"]);
   });
 });

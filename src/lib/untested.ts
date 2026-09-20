@@ -240,8 +240,9 @@ export const UNTESTED = {
 
   // --- mobile — The phone PWA ---------------------------------------
   "mobile.boxAccess": { area: "mobile", what: "MobileSettings · Box access" },
+  "mobile.focus.messageMenu": { area: "mobile", what: "Terminal · Reader click-hold menu on a chat message (copy, read aloud)" },
   "mobile.focus.onScreen": { area: "mobile", what: "Terminal · Reader on-screen transcript note" },
-  "mobile.focus.readAloud": { area: "mobile", what: "Terminal · Reader read-aloud button and auto-read toggle" },
+  "mobile.focus.readAloud": { area: "mobile", what: "Terminal · Reader auto-read toggle" },
   "mobile.focus.session": { area: "mobile", what: "Terminal · Reader session card" },
   "mobile.focus.statusLine": { area: "mobile", what: "Terminal · Reader status-line strip" },
   "mobile.focus.workingFacts": { area: "mobile", what: "Terminal · Reader elapsed time and tokens while the agent works" },
