@@ -1,6 +1,6 @@
 import { useT } from "../../../src/lib/i18n";
-import { outboxFileUrl, type OutboxFile } from "../api";
-import { ageLabel, sizeLabel } from "../terminal/fileLabels";
+import { type OutboxFile, type OutboxScope } from "../api";
+import { OutboxGrid } from "./OutboxGrid";
 import { isUntested } from "../../../src/lib/untested";
 
 /**
@@ -11,10 +11,12 @@ import { isUntested } from "../../../src/lib/untested";
  * The files stay out of the chat — a picture pushed between the turns buries
  * the answer that mentions it, and a chat that rewrites itself as files arrive
  * is not a chat. The gallery is reached from the button beside the tab name,
- * which is there whenever the outbox holds anything, in both views.
+ * which is there whenever the outbox holds anything, in both views; the
+ * project screen shows the same files on a shelf under its tab cards and opens
+ * this sheet for the rest of them.
  */
-export function OutboxGallery({ tabId, files, onOpen, onDetails, onClose }: {
-  tabId: string;
+export function OutboxGallery({ scope, files, onOpen, onDetails, onClose }: {
+  scope: OutboxScope;
   /** Newest first, as the sidecar listed them. */
   files: readonly OutboxFile[];
   /** Opens one file: full screen here, or the browser's own PDF view. */
@@ -24,7 +26,6 @@ export function OutboxGallery({ tabId, files, onOpen, onDetails, onClose }: {
   onClose: () => void;
 }) {
   const t = useT();
-  const now = Math.floor(Date.now() / 1000);
   return <div className="sheet-backdrop" role="presentation" onClick={onClose}>
     <section className="option-sheet outbox-gallery" role="dialog" aria-modal="true" aria-label={t("mobile.outbox.region")} onClick={(event) => event.stopPropagation()}>
       <span className="sheet-grip" aria-hidden="true" />
@@ -37,28 +38,7 @@ export function OutboxGallery({ tabId, files, onOpen, onDetails, onClose }: {
         ? <p className="sheet-note">{t("mobile.outbox.galleryEmpty")}</p>
         : <>
           <p className="sheet-note">{t(files.length === 1 ? "mobile.outbox.countOne" : "mobile.outbox.count", { count: files.length })}</p>
-          <div className="outbox-gallery-grid">
-            {files.map((file) => {
-              const isImage = file.kind.startsWith("image/");
-              // A kind the browser neither shows nor reads is saved, not opened.
-              const download = !isImage && !file.kind.startsWith("text/") && file.kind !== "application/pdf";
-              const label = t("mobile.outbox.open", { name: file.name });
-              const meta = `${ageLabel(Math.max(0, now - file.modified))} · ${sizeLabel(file.size)}`;
-              const content = <>
-                {isImage
-                  ? <img src={outboxFileUrl(tabId, file.name)} alt="" loading="lazy" decoding="async" />
-                  : <span aria-hidden="true">{file.kind === "application/pdf" ? "PDF" : file.kind.startsWith("text/") ? "≡" : "↓"}</span>}
-                <strong>{file.name}</strong>
-                <span>{meta}</span>
-              </>;
-              return <div key={file.name} className="outbox-entry">
-                {download
-                  ? <a className="outbox-file" href={outboxFileUrl(tabId, file.name, true)} download={file.name} aria-label={label}>{content}</a>
-                  : <button className={isImage ? "outbox-thumb" : "outbox-file"} onClick={() => onOpen(file)} aria-label={label} title={file.name}>{content}</button>}
-                {!isImage && <button className="outbox-details" onClick={() => onDetails(file)} aria-label={t("mobile.outbox.actions", { name: file.name })}>⋯</button>}
-              </div>;
-            })}
-          </div>
+          <OutboxGrid scope={scope} files={files} onOpen={onOpen} onDetails={onDetails} />
         </>}
     </section>
   </div>;

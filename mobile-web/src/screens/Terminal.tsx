@@ -26,6 +26,7 @@ import {
   type TabRow,
 } from "../api";
 import { DRAFT_SAVE_DELAY, readDraft, writeDraft } from "../drafts";
+import { OUTBOX_POLL, sameOutbox } from "../outbox";
 import { readFlag, readTerminalView, writeFlag, writeTerminalView, type TerminalViewChoice } from "../prefs";
 import { readSpeechLang, speechTag, type SpeechLang } from "../speechLang";
 import { TERMINAL_PROTOCOL, TERMINAL_SIZE } from "../terminal/protocol";
@@ -220,28 +221,17 @@ interface InboxUpload {
   failure?: string;
 }
 
-/** How often the project's outbox is re-read while this screen is on — a
- * directory listing on the sidecar, no desktop round trip, and skipped while
- * the page is hidden. */
-const OUTBOX_POLL = 8_000;
-
 /** How often an agent tab re-reads its CLI's usage panel for the facts row's
  * 5h/week figures. The desktop answers from a 60 s cache and otherwise runs
  * the CLI once (`services::agent_usage`), so this stays well above that. */
 const LIMITS_POLL = 120_000;
 
-/** Whether two outbox listings would paint the same strip, so a poll that
- * found nothing new does not re-render every thumbnail. */
 /** Whether two reads of the stored session carry the same turns, so an
  * unchanged answer does not repaint the view. */
 function sameTranscript(a: SessionTranscript, b: SessionTranscript): boolean {
   return a.available === b.available && a.truncated === b.truncated && a.version === b.version
     && a.entries.length === b.entries.length
     && a.entries.every((entry, index) => entry.kind === b.entries[index].kind && entry.text === b.entries[index].text && entry.cut === b.entries[index].cut);
-}
-
-function sameOutbox(a: OutboxFile[], b: OutboxFile[]) {
-  return a.length === b.length && a.every((image, i) => image.name === b[i].name && image.modified === b[i].modified && image.size === b[i].size);
 }
 
 /** "Screenshots · 3 min ago · 1.2 MB", or "Clipboard · 1920×1080". */
@@ -561,6 +551,9 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
    * terminal carries none, and Focus classifies nothing, so a path printed
    * by the agent is never guessed at. */
   const [outbox, setOutbox] = useState<OutboxFile[]>([]);
+  /** This screen reads the project's outbox through its own tab — the project
+   * screen reads the same files through the project (`OutboxScope`). */
+  const outboxScope = useMemo(() => ({ tab: tab.id }), [tab.id]);
   /** Whether the gallery sheet is up (the button beside the tab name). */
   const [gallery, setGallery] = useState(false);
   /** The picture open full-screen. */
@@ -1304,7 +1297,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       inflight?.abort();
       const controller = new AbortController();
       inflight = controller;
-      void listOutbox(tab.id, controller.signal).then(
+      void listOutbox({ tab: tab.id }, controller.signal).then(
         (images) => {
           if (stopped || controller.signal.aborted || !Array.isArray(images)) return;
           setOutbox((current) => sameOutbox(current, images) ? current : images);
@@ -1368,7 +1361,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   }, [outboxOpen, gallery]);
   /** A PDF opens in the browser's own viewer; a picture or text full-screen here. */
   const openOutbox = useCallback((file: OutboxFile) => {
-    if (file.kind === "application/pdf") window.open(outboxFileUrl(tab.id, file.name), "_blank", "noopener");
+    if (file.kind === "application/pdf") window.open(outboxFileUrl({ tab: tab.id }, file.name), "_blank", "noopener");
     else setOutboxOpen(file);
   }, [tab.id]);
   /** Chunks above the revealed window stay in memory but out of the DOM — the
@@ -2405,8 +2398,8 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     {statusSheet && <StatusSheet tab={tab} live={status} onLimits={setLimits} onClose={() => setStatusSheet(false)} />}
     {/* The viewer covers the phone; the gallery stays chosen behind it, so
         closing the file lands back on the grid. */}
-    {gallery && !outboxOpen && <OutboxGallery tabId={tab.id} files={outbox} onOpen={openOutbox} onDetails={setOutboxOpen} onClose={() => setGallery(false)} />}
-    {outboxOpen && <OutboxViewer key={`${tab.id}/${outboxOpen.name}`} tabId={tab.id} file={outboxOpen} onClose={() => setOutboxOpen(null)} />}
+    {gallery && !outboxOpen && <OutboxGallery scope={outboxScope} files={outbox} onOpen={openOutbox} onDetails={setOutboxOpen} onClose={() => setGallery(false)} />}
+    {outboxOpen && <OutboxViewer key={`${tab.id}/${outboxOpen.name}`} scope={outboxScope} file={outboxOpen} onClose={() => setOutboxOpen(null)} />}
 
   </main>;
 }

@@ -111,6 +111,9 @@ export const dict: Dict = {
   "mobile.outbox.error": "No se pudo cargar el archivo. Inténtalo de nuevo o guárdalo.",
   "mobile.outbox.shareError": "No se pudo compartir el archivo. Guárdalo para compartirlo desde tu aplicación de archivos.",
   "mobile.outbox.whole": "Abrir el archivo completo",
+  "mobile.outbox.shelf": "Archivos del escritorio",
+  "mobile.outbox.fromDesktop": "Del escritorio",
+  "mobile.outbox.all": "Los {count} archivos",
 
   "settings.projectRemarks": "Observaciones de archivos del proyecto",
   "settings.projectRemarksHelp": "Adjunta notas de revisión y líneas opcionales a archivos del proyecto en un REMARKS.md apto para git.",

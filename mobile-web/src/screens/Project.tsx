@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AGENT_SORTS, DEFAULT_AGENT_SORT, isAgentSort, sortAgentTabs, type AgentSort } from "../../../shared/agentSort";
 import { promptClock, promptLines, promptsFromTranscript } from "../agentPrompts";
-import { ApiError, api, closeTab, reorderTab, type AgentRow, type ProjectDetail, type TabPlace, type TabRow, type TabSchedules } from "../api";
+import { ApiError, api, closeTab, listOutbox, outboxFileUrl, reorderTab, type AgentRow, type OutboxFile, type ProjectDetail, type TabPlace, type TabRow, type TabSchedules } from "../api";
+import { OUTBOX_POLL, sameOutbox } from "../outbox";
 import { readChoice, writeChoice } from "../prefs";
 import { useRowDrag } from "../rowDrag";
 import { applyServerOrder, placeBeside } from "../tabReorder";
@@ -11,7 +12,11 @@ import { PromptsSheet } from "./PromptsSheet";
 import { RenameSheet } from "./RenameSheet";
 import { ScheduleSheet } from "./ScheduleSheet";
 import { AgentStatusPill } from "../components/AgentStatusPill";
+import { OutboxGallery } from "../components/OutboxGallery";
+import { OutboxGrid } from "../components/OutboxGrid";
+import { OutboxViewer } from "../components/OutboxViewer";
 import { tabColorCss } from "../tabColors";
+import { useT } from "../../../src/lib/i18n";
 import { isUntested } from "../../../src/lib/untested";
 
 /** The orders this list offers, in the words this screen can use for them. The
@@ -32,6 +37,12 @@ const SORT_LABEL: Record<AgentSort, string> = {
  *  and a row hidden for ever would be a tab the reader can neither see nor
  *  close again. */
 const CLOSED_HELD_MS = 30_000;
+
+/** How many of the desktop's files the shelf under the tab cards shows. The
+ * sidecar lists up to forty, and a screen that ends in forty thumbnails is a
+ * screen whose tabs are three scrolls away — the rest are one tap behind the
+ * shelf's own button, in the gallery sheet the Focus screen opens. */
+const SHELF_FILES = 6;
 
 /** The line under an agent tab, in the words the desktop's Agents view uses:
  * how many prompts are scheduled and when the first one fires. The desktop
@@ -102,6 +113,7 @@ function withoutClosed(detail: ProjectDetail, closed: Map<string, number>): Proj
 }
 
 export function Project({ id, back, terminal }: { id: string; back: () => void; terminal: (tab: TabRow) => void }) {
+  const t = useT();
   const [detail, setDetail] = useState<ProjectDetail | null>(null);
   const [creating, setCreating] = useState(false);
   const [activating, setActivating] = useState(false);
@@ -118,6 +130,17 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
   /** The agent tab being renamed. The desktop owns the tab layout, so the sheet
    * writes through the bridge and the next poll brings the new label back. */
   const [renameTab, setRenameTab] = useState<TabRow | null>(null);
+  /** What the desktop sent this project (`eldrun-send` → `.eldrun/outbox/`),
+   * newest first — the shelf under the tab cards. The files belong to the
+   * project, not to a session, so this screen reads them by the project: a
+   * file sent from a tab that has since been closed is still here. */
+  const [outbox, setOutbox] = useState<OutboxFile[]>([]);
+  /** Whether the whole listing is up, in the same sheet the Focus screen's
+   * gallery button opens — the shelf shows `SHELF_FILES` of it. */
+  const [galleryOpen, setGalleryOpen] = useState(false);
+  /** The file open full screen (a picture or a text preview). */
+  const [fileOpen, setFileOpen] = useState<OutboxFile | null>(null);
+  const outboxScope = useMemo(() => ({ project: id }), [id]);
   /** The tab whose colour is being picked (#264), of any kind the phone lists —
    * colouring is how a row of look-alike sessions is told apart, which is as
    * true of five shells as of five agents. */
@@ -181,6 +204,56 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
       document.removeEventListener("visibilitychange", tick);
     };
   }, [load]);
+  /** Reads the outbox now and every `OUTBOX_POLL` while the page is visible;
+   * coming back to the page reads it at once. A listing that could not be
+   * fetched keeps what was shown — the next poll retries, and a missing shelf
+   * would read as "the desktop sent nothing", which is a different thing. */
+  useEffect(() => {
+    setOutbox([]);
+    setGalleryOpen(false);
+    setFileOpen(null);
+    let stopped = false;
+    let inflight: AbortController | undefined;
+    const poll = () => {
+      if (stopped || document.visibilityState === "hidden") return;
+      inflight?.abort();
+      const controller = new AbortController();
+      inflight = controller;
+      void listOutbox({ project: id }, controller.signal).then(
+        (files) => {
+          if (stopped || controller.signal.aborted || !Array.isArray(files)) return;
+          setOutbox((current) => sameOutbox(current, files) ? current : files);
+        },
+        () => {},
+      );
+    };
+    poll();
+    const timer = window.setInterval(poll, OUTBOX_POLL);
+    document.addEventListener("visibilitychange", poll);
+    return () => {
+      stopped = true;
+      inflight?.abort();
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", poll);
+    };
+  }, [id]);
+  useEffect(() => {
+    if (!fileOpen && !galleryOpen) return;
+    // The viewer opens over the gallery, so Escape closes the top one first.
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (fileOpen) setFileOpen(null);
+      else setGalleryOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [fileOpen, galleryOpen]);
+  /** A PDF opens in the browser's own viewer; a picture or text full screen
+   * here — the Focus screen's gallery does the same with the same files. */
+  const openFile = useCallback((file: OutboxFile) => {
+    if (file.kind === "application/pdf") window.open(outboxFileUrl({ project: id }, file.name), "_blank", "noopener");
+    else setFileOpen(file);
+  }, [id]);
   const create = async (kind: "shell" | "agent", agent?: AgentRow, mode?: string) => {
     setCreating(true); setError("");
     const action = `${kind}:${agent?.id ?? ""}:${mode ?? ""}`;
@@ -358,6 +431,26 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
           have not claimed — the › on the foot included — opens the session. */}
       <button className="tab-card-open" disabled={!tab.available} onClick={() => terminal(tab)} aria-label={`Open ${tab.label}`} />
     </div>)}</section>
+    {/* What the desktop sent this project, under the tabs: `eldrun-send` puts a
+        file in `.eldrun/outbox/` and it shows up here within a poll, whichever
+        tab it was sent from — the project is what the outbox belongs to. The
+        shelf is drawn only when there is something on it; the newest
+        `SHELF_FILES` stand here and the button below opens the rest in the same
+        sheet the Focus screen's gallery button does. */}
+    {outbox.length > 0 && <section className="outbox-shelf" aria-label={t("mobile.outbox.shelf")}>
+      <div className="outbox-shelf-head">
+        <h2>{t("mobile.outbox.fromDesktop")}</h2>
+        {isUntested("mobile.project.outbox") && <span className="untested">Untested</span>}
+        <small>{t(outbox.length === 1 ? "mobile.outbox.countOne" : "mobile.outbox.count", { count: outbox.length })}</small>
+      </div>
+      <OutboxGrid scope={outboxScope} files={outbox.slice(0, SHELF_FILES)} onOpen={openFile} onDetails={setFileOpen} />
+      {outbox.length > SHELF_FILES && <button
+        className="outbox-shelf-all"
+        onClick={() => setGalleryOpen(true)}
+        aria-haspopup="dialog"
+        aria-expanded={galleryOpen}
+      >{t("mobile.outbox.all", { count: outbox.length })}</button>}
+    </section>}
     {detail?.project.status === "inactive" && <section className="create"><button className="primary" disabled={activating || !detail.desktop_available} onClick={() => void activate()}>Activate project</button></section>}
     <section className="create"><button disabled={!detail} onClick={() => setPromptsOpen(true)} aria-haspopup="dialog" aria-expanded={promptsOpen}>◷ Collected prompts</button></section>
     {/* The shell and agent buttons that stood here are the header's ＋ now: a
@@ -385,5 +478,9 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     />}
     {renameTab && <RenameSheet tab={renameTab} onClose={() => setRenameTab(null)} onRenamed={() => { setRenameTab(null); void load(); }} />}
     {scheduleTab && <ScheduleSheet tabId={scheduleTab.tab.id} label={scheduleTab.tab.label} initialMessage={scheduleTab.initialMessage} onClose={() => setScheduleTab(null)} />}
+    {/* The viewer covers the phone; the gallery stays open behind it, so
+        closing the file comes back to the list it was opened from. */}
+    {galleryOpen && !fileOpen && <OutboxGallery scope={outboxScope} files={outbox} onOpen={openFile} onDetails={setFileOpen} onClose={() => setGalleryOpen(false)} />}
+    {fileOpen && <OutboxViewer key={`${id}/${fileOpen.name}`} scope={outboxScope} file={fileOpen} onClose={() => setFileOpen(null)} />}
   </main>;
 }

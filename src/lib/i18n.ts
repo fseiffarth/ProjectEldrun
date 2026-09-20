@@ -145,6 +145,9 @@ export const en = {
   "mobile.outbox.error": "The file could not be loaded. Try again or save it.",
   "mobile.outbox.shareError": "The file could not be shared. Save it to share from your files app.",
   "mobile.outbox.whole": "Open the whole file",
+  "mobile.outbox.shelf": "Files from the desktop",
+  "mobile.outbox.fromDesktop": "From the desktop",
+  "mobile.outbox.all": "All {count} files",
 
   // Common action words, shared across surfaces.
   "common.back": "Back",

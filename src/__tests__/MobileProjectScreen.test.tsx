@@ -23,7 +23,13 @@ afterEach(() => {
 describe("Mobile project screen — first load", () => {
   it("does not claim the desktop is unavailable before the host has answered", async () => {
     let release: (value: Response) => void = () => {};
-    fetchMock.mockImplementation(() => new Promise<Response>((resolve) => { release = resolve; }));
+    // The screen reads two things: the project itself and the outbox behind the
+    // shelf under the cards. Only the first is held open and released here —
+    // the shelf's read is left in flight, which is what it is when the phone
+    // has just opened the screen.
+    fetchMock.mockImplementation((input: string | URL | Request) => String(input).endsWith("/outbox")
+      ? new Promise<Response>(() => {})
+      : new Promise<Response>((resolve) => { release = resolve; }));
     render(<Project id="p 1" back={() => {}} terminal={() => {}} />);
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     expect(screen.queryByText(/Desktop unavailable/)).toBeNull();

@@ -111,6 +111,9 @@ export const dict: Dict = {
   "mobile.outbox.error": "Die Datei konnte nicht geladen werden. Erneut versuchen oder speichern.",
   "mobile.outbox.shareError": "Die Datei konnte nicht geteilt werden. Speichere sie, um sie über deine Dateien-App zu teilen.",
   "mobile.outbox.whole": "Ganze Datei öffnen",
+  "mobile.outbox.shelf": "Dateien vom Desktop",
+  "mobile.outbox.fromDesktop": "Vom Desktop",
+  "mobile.outbox.all": "Alle {count} Dateien",
 
   "settings.projectRemarks": "Projektdatei-Anmerkungen",
   "settings.projectRemarksHelp": "Hängt Prüfanmerkungen mit optionalen Zeilenhinweisen in einer git-freundlichen REMARKS.md an Projektdateien.",

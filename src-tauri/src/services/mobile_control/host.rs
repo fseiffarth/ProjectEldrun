@@ -2378,6 +2378,21 @@ fn outbox_root(
     Ok(project.root.clone())
 }
 
+/// The same root by the project itself, for the project screen's shelf. The
+/// outbox belongs to the project, not to one of its sessions: a project whose
+/// tabs are all closed — or one that never had an agent tab — still has the
+/// files the desktop sent, and the screen that lists them has no tab to name.
+fn project_outbox_root(
+    state: &HostState,
+    project_id: &str,
+) -> Result<PathBuf, (StatusCode, Json<serde_json::Value>)> {
+    let catalog = catalog(state)?;
+    let Some(project) = catalog.project(project_id) else {
+        return Err(api_error(StatusCode::NOT_FOUND, "project_not_found"));
+    };
+    Ok(project.root.clone())
+}
+
 fn outbox_error(error: outbox::OutboxError) -> (StatusCode, Json<serde_json::Value>) {
     api_error(
         match error {
@@ -2401,10 +2416,29 @@ async fn outbox_list(
     if let Err(error) = authenticate(&headers, &state) {
         return error;
     }
-    let root = match outbox_root(&state, &tab_id) {
-        Ok(root) => root,
-        Err(error) => return error,
-    };
+    match outbox_root(&state, &tab_id) {
+        Ok(root) => outbox_listing(root).await,
+        Err(error) => error,
+    }
+}
+
+/// `GET /api/v1/projects/{project_id}/outbox` — the same listing by the
+/// project, for the project screen's shelf under the tab cards.
+async fn project_outbox_list(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(project_id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    match project_outbox_root(&state, &project_id) {
+        Ok(root) => outbox_listing(root).await,
+        Err(error) => error,
+    }
+}
+
+async fn outbox_listing(root: PathBuf) -> (StatusCode, Json<serde_json::Value>) {
     // A directory walk that opens every candidate: off the connection executor.
     let listed = tokio::task::spawn_blocking(move || outbox::list(&root))
         .await
@@ -2431,13 +2465,35 @@ async fn outbox_file(
     if let Err(error) = authenticate(&headers, &state) {
         return error.into_response();
     }
-    if !outbox::valid_name(&name) {
-        return api_error(StatusCode::NOT_FOUND, "file_not_found").into_response();
-    }
     let root = match outbox_root(&state, &tab_id) {
         Ok(root) => root,
         Err(error) => return error.into_response(),
     };
+    outbox_bytes(root, name, query.get("download").is_some_and(|v| v == "1")).await
+}
+
+/// `GET /api/v1/projects/{project_id}/outbox/{name}` — the same bytes by the
+/// project, so the shelf's thumbnails load without naming a session.
+async fn project_outbox_file(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path((project_id, name)): Path<(String, String)>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response<Body> {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error.into_response();
+    }
+    let root = match project_outbox_root(&state, &project_id) {
+        Ok(root) => root,
+        Err(error) => return error.into_response(),
+    };
+    outbox_bytes(root, name, query.get("download").is_some_and(|v| v == "1")).await
+}
+
+async fn outbox_bytes(root: PathBuf, name: String, download: bool) -> Response<Body> {
+    if !outbox::valid_name(&name) {
+        return api_error(StatusCode::NOT_FOUND, "file_not_found").into_response();
+    }
     let filename = name.clone();
     let read = tokio::task::spawn_blocking(move || outbox::read(&root, &name))
         .await
@@ -2447,7 +2503,7 @@ async fn outbox_file(
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, kind)
             .header(header::CONTENT_LENGTH, bytes.len())
-            .header(header::CONTENT_DISPOSITION, if kind == "application/octet-stream" || query.get("download").is_some_and(|v| v == "1") { format!("attachment; filename=\"{filename}\"") } else { "inline".into() })
+            .header(header::CONTENT_DISPOSITION, if kind == "application/octet-stream" || download { format!("attachment; filename=\"{filename}\"") } else { "inline".into() })
             .body(Body::from(bytes))
             .unwrap_or_else(|_| {
                 api_error(StatusCode::INTERNAL_SERVER_ERROR, "read_failed").into_response()
@@ -2592,6 +2648,14 @@ fn router(state: HostState) -> Router {
         )
         .route("/api/v1/tabs/{tab_id}/outbox", get(outbox_list))
         .route("/api/v1/tabs/{tab_id}/outbox/{name}", get(outbox_file))
+        .route(
+            "/api/v1/projects/{project_id}/outbox",
+            get(project_outbox_list),
+        )
+        .route(
+            "/api/v1/projects/{project_id}/outbox/{name}",
+            get(project_outbox_file),
+        )
         .route("/", get(index))
         .route("/{*path}", get(static_asset))
         .layer(DefaultBodyLimit::max(MAX_CONTROL_MESSAGE))
@@ -4059,6 +4123,75 @@ mod tests {
         let (status, _, _) = host
             .send(get_as(&format!("{list}/plot.png"), "not-a-session"))
             .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn the_outbox_answers_by_the_project_too_for_the_screen_that_has_no_tab() {
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(34)).await.0;
+        let (_, _, body) = host
+            .send(get_as("/api/v1/projects?view=search&q=aurora", &cookie))
+            .await;
+        let project_id = json(&body)["projects"][0]["id"]
+            .as_str()
+            .expect("opaque project id")
+            .to_string();
+        let list = format!("/api/v1/projects/{project_id}/outbox");
+
+        // No outbox yet: an empty shelf, not an error — as by the tab.
+        let (status, _, body) = host.send(get_as(&list, &cookie)).await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(json(&body)["files"], serde_json::json!([]));
+
+        let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR-body".to_vec();
+        let dir = host.root.join(outbox::OUTBOX_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("plot.png"), &png).unwrap();
+
+        let (status, _, body) = host.send(get_as(&list, &cookie)).await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(json(&body)["files"][0]["name"], "plot.png");
+        assert_eq!(json(&body)["files"][0]["kind"], "image/png");
+        assert!(!body.contains(RAW_PROJECT));
+        assert!(!body.contains(host.root.to_str().unwrap()));
+
+        let (status, headers, body) = host
+            .send(get_as(&format!("{list}/plot.png"), &cookie))
+            .await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(headers.get(header::CONTENT_TYPE).unwrap(), "image/png");
+        assert_eq!(
+            headers.get(header::CONTENT_LENGTH).unwrap(),
+            png.len().to_string().as_str()
+        );
+        let (_, headers, _) = host
+            .send(get_as(&format!("{list}/plot.png?download=1"), &cookie))
+            .await;
+        assert_eq!(
+            headers.get(header::CONTENT_DISPOSITION).unwrap(),
+            "attachment; filename=\"plot.png\""
+        );
+
+        // Traversal and unlisted names read the same here as by the tab, and an
+        // unknown project is not a way to learn which ids exist.
+        for refused in ["..%2F..%2Fproject.json", "gone.png"] {
+            let (status, _, body) = host
+                .send(get_as(&format!("{list}/{refused}"), &cookie))
+                .await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{refused} answered: {body}");
+            assert_eq!(json(&body)["error"], "file_not_found");
+        }
+        let (status, _, body) = host
+            .send(get_as("/api/v1/projects/not-a-project/outbox", &cookie))
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "answered: {body}");
+        assert_eq!(json(&body)["error"], "project_not_found");
+        let (status, _, _) = host
+            .send(get_as("/api/v1/projects/not-a-project/outbox/plot.png", &cookie))
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _, _) = host.send(get_as(&list, "not-a-session")).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 

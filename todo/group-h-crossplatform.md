@@ -2180,3 +2180,34 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     *text* answers only — a turn that was all tool calls shows as nothing, and
     an interrupted one as a prompt with no reply. Either the reader learns to
     show OpenCode's tool/patch steps, or the tab is started `--mini`.
+
+- [~] **31ay — The project screen shows what the desktop sent** (2026-09-20; ✅
+  code-complete, automated tests passing — the sidecar's project-outbox route
+  test and `MobileProjectOutbox.test.tsx`; ⚠️ not verified on a phone, and it
+  needs a rebuild + restart first: the sidecar gained two routes and the phone
+  serves the bundle baked into the binary). 31x put the agent's files behind
+  the gallery button on one tab's Focus screen, which is where they are least
+  findable: `eldrun-send` is run from whichever tab is to hand, and the reader
+  who wants the file opened the *project*. A shelf under the tab cards shows
+  them where the project is.
+  - **Sidecar**: `GET /api/v1/projects/{id}/outbox` and `…/outbox/{name}`,
+    the same `outbox.rs` listing and bytes as the tab routes — the outbox
+    belongs to the project, so a file sent from a tab that has since been
+    closed is still listed, and a project with no agent tab at all still has
+    one. Unknown project → `project_not_found`; every refused name is still
+    one `file_not_found`.
+  - **Phone**: the project screen polls the listing every 8 s while the page
+    is visible (`OUTBOX_POLL`, the Focus screen's own cadence) and draws a
+    **From the desktop** shelf under the cards when there is something on it —
+    the gallery's own tiles (`OutboxGrid`), newest six, a picture full screen,
+    a PDF in the browser's viewer, anything else saved. Past six, **All N
+    files** opens the same gallery sheet the Focus button does.
+  - [ ] 🖐️ Manual phone QA — run `eldrun-send <file>` in a project tab (a PNG,
+    a PDF and a `.zip`), open that project on the phone: within ~8 s the shelf
+    stands under the tab cards with the newest first; tap the picture → full
+    screen, Close returns; the PDF opens in the browser; the zip saves. Send
+    seven more → the shelf still shows six and **All 10 files** opens the
+    sheet with all of them. Close the tab the files were sent from → the shelf
+    is unchanged. With Eldrun closed → the shelf still lists what is there.
+    - [ ] ✅ Works
+    - [ ] ❌ Doesn't work

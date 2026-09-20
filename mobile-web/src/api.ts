@@ -509,18 +509,30 @@ export async function attachDesktopImage(tabId: string, imageId: string): Promis
  * bytes say, not the extension; `modified` is unix seconds. */
 export interface OutboxFile { name: string; kind: string; size: number; modified: number }
 
-/** `GET /api/v1/tabs/{id}/outbox` — the images the agent put out for the
- * phone, newest first. Read from disk by the sidecar, so it answers with the
- * desktop closed too. */
-export async function listOutbox(tabId: string, signal?: AbortSignal): Promise<OutboxFile[]> {
-  const { files } = await api<{ files: OutboxFile[] }>(`/api/v1/tabs/${encodeURIComponent(tabId)}/outbox`, { signal });
+/** Which door onto one project's outbox a read goes through: the session the
+ * files were sent from (the Focus screen), or the project itself (the project
+ * screen's shelf, which has no tab to name and outlives every closed one).
+ * Both answer the same directory — the outbox belongs to the project. */
+export type OutboxScope = { tab: string } | { project: string };
+
+function outboxBase(scope: OutboxScope): string {
+  return "tab" in scope
+    ? `/api/v1/tabs/${encodeURIComponent(scope.tab)}/outbox`
+    : `/api/v1/projects/${encodeURIComponent(scope.project)}/outbox`;
+}
+
+/** `GET …/outbox` — the files the desktop put out for the phone, newest
+ * first. Read from disk by the sidecar, so it answers with the desktop closed
+ * too. */
+export async function listOutbox(scope: OutboxScope, signal?: AbortSignal): Promise<OutboxFile[]> {
+  const { files } = await api<{ files: OutboxFile[] }>(outboxBase(scope), { signal });
   return files;
 }
 
 /** The URL an `<img>` loads one outbox image from — same origin, so the
  * session cookie rides along and the CSP's `img-src 'self'` lets it render. */
-export function outboxFileUrl(tabId: string, name: string, download = false): string {
-  return `/api/v1/tabs/${encodeURIComponent(tabId)}/outbox/${encodeURIComponent(name)}${download ? "?download=1" : ""}`;
+export function outboxFileUrl(scope: OutboxScope, name: string, download = false): string {
+  return `${outboxBase(scope)}/${encodeURIComponent(name)}${download ? "?download=1" : ""}`;
 }
 
 export async function uploadToInbox(tabId: string, file: Blob, name: string): Promise<InboxAttachment> {
