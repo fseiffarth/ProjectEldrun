@@ -2141,6 +2141,61 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   - [ ] ✅ Works
   - [ ] ❌ Doesn't work
 
+- [ ] **31av — A box tab says which member it runs in** (planned 2026-09-20,
+  not built; plan: `docs/mobile_box_parity_plan.md`). A box's tabs run in
+  several roots — the box folder and each *local* member's tree — and the
+  phone shows no hint of which, so two `claude` tabs in a four-member box are
+  indistinguishable unless their labels differ. The desktop never has this
+  problem: its `+` menu names the member outright.
+  - `PublicTab` gains `member: Option<String>` (the member project's display
+    name; absent in the box folder and on every project scope), and the box's
+    Home row gains its local-member count. `resolve_scope` already
+    canonicalizes `roots` and tests each tab with `canonical_below_any`; the
+    only new input is a name per root, so `ScopeSource.roots` carries
+    `(PathBuf, Option<String>)` and `ResolvedProject` a parallel label vec —
+    `roots` itself keeps its shape so no existing check moves.
+  - The phone prints it as a chip beside the tab name, the same treatment the
+    model tag got in 99db99c — the working sibling, not a new one.
+  - **Decide before merging:** a member project's name currently never reaches
+    the phone unless that project has its own Mobile switch on. This publishes
+    it on the box's switch alone. Defensible (the switch already discloses
+    that member's tabs, labels and transcripts), but it widens what the switch
+    means — say so in `docs/context/project_boxes.md`. No path, project id or
+    member id leaves the desktop in this item.
+  - Tests: the `discovery.rs` box case gains a member-root tab, a box-folder
+    tab and the "raw ids never appear" assertion; a PWA render test beside
+    `MobileTabModel.test.tsx`.
+  - Blocked on 31aa's manual phone QA — that path has never run on a phone,
+    and this would put new UI on top of it.
+  - Needs a rebuild of the embedded PWA and a desktop restart to serve it.
+
+- [ ] **31aw — Open a tab in a box member's root from the phone** (planned
+  2026-09-20, not built; plan: `docs/mobile_box_parity_plan.md`). The phone's
+  `create` uses `scope.cwd`, which for a box is always the box folder, so the
+  more useful half of a box — start an agent *in that repo* — is unreachable
+  from the phone. The desktop offers **Files / Shell / ⟨agent⟩ — ⟨member⟩**
+  rows (`NewTabMenu.tsx`, `TabBar.tsx`, via `boxMembersOfScope`).
+  - A box row publishes `members: [{ id, name }]` with `id` opaque
+    (`key_id(host_key, "member", [scope, member project])`, which adds
+    `"member"` to `valid_opaque_control_domain` and its test), and the create
+    request gains an optional `member_id`. The sidecar resolves it to the
+    member's canonical root the same way it already rewrites `project_id` to
+    `raw_id`, checked against that scope's own `roots` so a member id from
+    another box cannot cross scopes; the bridge then takes `cwd` from it.
+    Unknown, cross-scope, or on a project scope → `invalid_request`.
+  - Phone side: a member selector on the create row, box scopes only, box
+    folder still the default so the one-tap flow is unchanged. Shell and agent
+    only — the phone has no files surface, so the desktop's "Files — ⟨member⟩"
+    row has no counterpart here.
+  - Supersedes 31av's plain member count (`members.len()`), and wants 31av
+    first: that item settles the name-disclosure question with fewer moving
+    parts.
+  - Tests: `host.rs` — a create naming a member lands in that member's root,
+    a member id from another box is refused, one on a project scope is
+    refused; `MobileBoxAccess.test.tsx` — the bridge builds the spec with the
+    member's cwd under the box's scope key.
+  - Needs a rebuild of the embedded PWA and a desktop restart to serve it.
+
 - [~] **31ax — The model chip works on a plain `opencode` tab** (2026-09-20; ✅
   code-complete, automated tests passing, ⚠️ not verified on a phone). 31aj
   read OpenCode's picker off `opencode --mini`, but the `+` menu launches plain
@@ -2211,3 +2266,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     is unchanged. With Eldrun closed → the shelf still lists what is there.
     - [ ] ✅ Works
     - [ ] ❌ Doesn't work
+
+*Not coming to the phone (decided, not forgotten — see
+`docs/mobile_box_parity_plan.md`): editing a box from the phone (membership,
+rename, Dissolve), listing a box's members as project rows, a per-member
+status column, and box-folder file browsing.*
