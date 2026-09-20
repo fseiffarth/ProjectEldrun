@@ -115,6 +115,41 @@ const MODES: [RegExp, string][] = [
   [/^[⏵⏩▶›>\s]*auto(?:\s+on)?$/iu, "auto"],
 ];
 
+/** Codex 0.155 leaves its ordinary permission mode out of the footer. A
+ * Shift+Tab change is confirmed once in history instead, immediately above
+ * the redrawn input box (`• Permissions updated to Ask for approval`). The
+ * phone's mode walk must read that confirmation: treating the footer's silence
+ * as "still Working" makes it press Shift+Tab again and undo the requested
+ * Auto switch. Both workspace reviewers are the phone's `auto` choice; they
+ * differ in who reviews a risky action, not in the workspace access it grants. */
+const CODEX_AGENT = /codex/iu;
+const CODEX_PERMISSION_UPDATE = /\bPermissions updated to (Read Only|Ask for approval|Approve for me|Default|Auto|Workspace|Full Access)\s*$/iu;
+const CODEX_UPDATE_REACH = 6;
+
+function codexUpdatedMode(
+  lines: readonly StatusLineLike[],
+  inputIndex: number,
+  agentLabel?: string,
+): string | undefined {
+  if (!agentLabel || !CODEX_AGENT.test(agentLabel)) return undefined;
+  let seen = 0;
+  for (let index = inputIndex - 1; index >= 0 && seen < CODEX_UPDATE_REACH; index -= 1) {
+    const text = lines[index].text.trim();
+    if (!text) continue;
+    seen += 1;
+    const match = CODEX_PERMISSION_UPDATE.exec(text);
+    if (!match) continue;
+    const mode = match[1].toLowerCase();
+    return mode === "ask for approval"
+      || mode === "approve for me"
+      || mode === "default"
+      || mode === "workspace"
+      ? "auto"
+      : mode;
+  }
+  return undefined;
+}
+
 /** Model families the chip recognizes. A token, never a sentence. */
 const MODEL =
   /\b(claude[\w.-]*|(?:opus|sonnet|haiku|fable|mythos)(?:[ -][\w.]+)?|gpt-[\w.-]+|codex(?:-[\w.-]+)?|o[134](?:-mini)?|gemini[\w.-]*|qwen[\w.:-]*|llama[\w.:-]*|deepseek[\w.:-]*|mistral[\w.:-]*)\b/iu;
@@ -330,6 +365,7 @@ export function sessionStatus(
     const mode = geminiIndicatorAbove(lines, inputIndex)?.mode;
     if (mode) status.mode = mode;
   }
+  if (!status.mode) status.mode = codexUpdatedMode(lines, inputIndex, agentLabel);
   return status;
 }
 

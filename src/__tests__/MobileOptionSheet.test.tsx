@@ -195,6 +195,30 @@ describe("Eldrun Mobile composer sheets", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+  it("confirms Codex Working to Auto from its permission update row", async () => {
+    // Codex keeps its ordinary mode silent in the footer. Shift+Tab confirms
+    // the applied permission profile in history, above the input box; Reader
+    // must see that row or it presses Shift+Tab again and cycles away from it.
+    render(<Terminal tab={{ ...TAB, id: "tab-codex", label: "Codex", agent_label: "Codex" }} back={() => {}} />);
+    await act(async () => {});
+    await paint("› \n? for shortcuts");
+
+    fireEvent.click(screen.getByTitle("Choose the permission mode"));
+    const modes = screen.getAllByRole("button").filter((button) => button.querySelector("strong"));
+    expect(modes.map((row) => row.querySelector("strong")?.textContent))
+      .toEqual(["Working", "Plan", "Read only", "Auto", "Full access"]);
+    expect(modes[0].getAttribute("aria-current")).toBe("true");
+
+    FakeWebSocket.keys = [];
+    fireEvent.click(modes[3]);
+    await settle(100);
+    expect(FakeWebSocket.keys).toEqual([`${ESC}[9;2u`]);
+    await paint("• Permissions updated to Ask for approval\n\n› \n? for shortcuts");
+    await settle(500);
+    expect(FakeWebSocket.keys).toEqual([`${ESC}[9;2u`]);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
   it("keeps cycling as before for a session no mode family claims", async () => {
     // Goose switches modes with a slash command, not Shift+Tab, so no family
     // lists it and the chip only presses the key.

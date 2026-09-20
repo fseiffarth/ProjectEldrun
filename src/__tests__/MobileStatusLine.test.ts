@@ -45,6 +45,30 @@ describe("Eldrun Mobile session status line", () => {
     });
   });
 
+  it("reads Codex permission updates above its otherwise silent footer", () => {
+    for (const label of ["Ask for approval", "Approve for me", "Default", "Workspace"]) {
+      expect(sessionStatus(lines(
+        `• Permissions updated to ${label}`,
+        "",
+        "› ",
+        "? for shortcuts",
+      ), "Codex")?.mode).toBe("auto");
+    }
+    expect(sessionStatus(lines(
+      "• Permissions updated to Read Only",
+      "",
+      "› ",
+      "? for shortcuts",
+    ), "Codex")?.mode).toBe("read only");
+    // The same prose in another agent's output is not a mode readout.
+    expect(sessionStatus(lines(
+      "• Permissions updated to Ask for approval",
+      "",
+      "> ",
+      "? for shortcuts",
+    ), "Claude")?.mode).toBeUndefined();
+  });
+
   it("never mistakes the cycle hint or a count for a branch", () => {
     const status = sessionStatus(lines(">", "~/proj (3) · plan mode on (shift+tab to cycle)"));
     expect(status?.branch).toBeUndefined();
