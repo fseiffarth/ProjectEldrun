@@ -1,4 +1,5 @@
 import { useT, type TranslationKey } from "../../../src/lib/i18n";
+import { OptionSheet, type SheetOption } from "../components/OptionSheet";
 import { OutboxGallery } from "../components/OutboxGallery";
 import { OutboxViewer } from "../components/OutboxViewer";
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
@@ -374,23 +375,6 @@ function initialView(tab: TabRow): TerminalViewChoice {
   return readTerminalView(viewAgentOf(tab)) ?? (tab.kind === "agent" ? "focus" : "terminal");
 }
 
-interface SheetOption {
-  key: string;
-  label: string;
-  description?: string;
-  /** The option the session is in right now. */
-  current: boolean;
-  /** The option a switch is being applied to. */
-  pending?: boolean;
-}
-
-/**
- * A choice the session offers, as a phone list: the sheet the facts row's buttons
- * open instead of leaving the reader to walk a TUI dialog with the arrow keys.
- * It renders what the caller resolved — the dialog's own rows, or the modes a
- * session's status line says it has — and reports taps back. No parsing, no
- * keystrokes.
- */
 /** Why an agent tab's stored session is not shown, for the dimmed toggle. */
 function noSessionReason(transcript: SessionTranscript | null): TranslationKey {
   if (!transcript) return "mobile.focus.sessionLoading";
@@ -400,39 +384,6 @@ function noSessionReason(transcript: SessionTranscript | null): TranslationKey {
     case "no_transcript": return "mobile.focus.sessionMissing";
     default: return "mobile.focus.sessionUnreadable";
   }
-}
-
-function OptionSheet({ title, note, options, waiting, busy, onPick, onClose }: {
-  title: string;
-  note?: { text: string; error?: boolean };
-  options: SheetOption[];
-  /** Shown while the list is still empty. */
-  waiting: string;
-  busy: boolean;
-  onPick: (key: string) => void;
-  onClose: () => void;
-}) {
-  return <div className="sheet-backdrop" role="presentation" onClick={onClose}>
-    <section className="option-sheet" role="dialog" aria-modal="true" aria-label={title} onClick={(event) => event.stopPropagation()}>
-      <span className="sheet-grip" aria-hidden="true" />
-      <header>
-        <button className="sheet-close" onClick={onClose} aria-label="Close">✕</button>
-        <h2>{title}</h2>
-        <span className="sheet-close" aria-hidden="true" />
-      </header>
-      {note && <p className={note.error ? "sheet-note error" : "sheet-note"} role={note.error ? "alert" : undefined}>{note.text}</p>}
-      {options.length === 0
-        ? <p className="sheet-note">{waiting}</p>
-        : <ul className="option-list">{options.map((option) => <li key={option.key}>
-            <button className={option.current ? "current" : ""} aria-current={option.current || undefined} disabled={busy} onClick={() => onPick(option.key)}>
-              <span><strong>{option.label}</strong>{option.description && <small>{option.description}</small>}</span>
-              {option.pending
-                ? <span className="sheet-pending" role="status">Switching…</span>
-                : option.current && <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 13 4.5 4.5L19 7" /></svg>}
-            </button>
-          </li>)}</ul>}
-    </section>
-  </div>;
 }
 
 /**
