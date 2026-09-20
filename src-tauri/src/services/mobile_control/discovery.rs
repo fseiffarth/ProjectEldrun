@@ -252,6 +252,16 @@ impl CatalogCache {
             Err(error) => self.last_valid.clone().ok_or(error),
         }
     }
+
+    /// Forget how old the snapshot is, so the next read goes to disk. For the
+    /// caller that has just changed what the snapshot describes and knows the
+    /// change is already written: a tab closed from the phone is out of the
+    /// session file by the time the desktop answers, and serving the rest of
+    /// the TTL from the pre-close snapshot puts the row back under the reader's
+    /// thumb. The snapshot itself is kept as the fallback for a failed read.
+    pub fn invalidate(&mut self) {
+        self.loaded_at = None;
+    }
 }
 
 fn enabled(value: &Option<Value>) -> bool {
@@ -698,6 +708,65 @@ mod tests {
         let b = catalog.projects.iter().find(|p| p.raw_id == "p-b").expect("B");
         assert_eq!(a.tabs.len(), 1, "the healthy project keeps its tabs");
         assert!(b.tabs.is_empty(), "the corrupt one has none, and is still listed");
+    }
+
+    /// The cache is what keeps an idle phone from forking `tmux ls` twice a
+    /// second, and it is also what could answer a poll with a tab the reader
+    /// has just closed: the desktop rewrites the session file before it says
+    /// "closed", so the only stale thing left is the snapshot's remaining TTL.
+    /// The close route drops it (`invalidate`) and the next read goes to disk.
+    #[test]
+    fn an_invalidated_cache_re_reads_within_the_ttl() {
+        let dir = tempfile::tempdir().expect("state dir");
+        let state = dir.path();
+        let root = state.join("p");
+        fs::create_dir_all(&root).expect("root dir");
+        fs::write(
+            state.join("projects.json"),
+            serde_json::to_vec(&serde_json::json!([{
+                "id": "p-1",
+                "name": "P",
+                "status": "active",
+                "directory": root.to_string_lossy(),
+                "eldrun_mobile_access": true,
+            }]))
+            .expect("projects"),
+        )
+        .expect("write projects");
+        let sessions = state.join("sessions").join("p-1");
+        fs::create_dir_all(&sessions).expect("session dir");
+        let write_tabs = |tabs: serde_json::Value| {
+            fs::write(
+                sessions.join("terminals.json"),
+                serde_json::to_vec(&serde_json::json!({ "tabLayout": tabs })).expect("session"),
+            )
+            .expect("write session");
+        };
+        write_tabs(serde_json::json!([{
+            "label": "Shell",
+            "cmd": "bash",
+            "cwd": root.to_string_lossy(),
+            "kind": "shell",
+            "tmuxSession": "eldrun-p-1--shell-123456789",
+        }]));
+
+        let mut cache = CatalogCache::default();
+        let tabs = |catalog: &Catalog| catalog.projects[0].tabs.len();
+        assert_eq!(tabs(&cache.load(state, &[7; 32]).expect("first read")), 1);
+
+        // The close: the tab leaves the session file the catalog is read from.
+        write_tabs(serde_json::json!([]));
+        assert_eq!(
+            tabs(&cache.load(state, &[7; 32]).expect("cached read")),
+            1,
+            "the snapshot is still young, so the closed tab is still in it"
+        );
+        cache.invalidate();
+        assert_eq!(
+            tabs(&cache.load(state, &[7; 32]).expect("re-read")),
+            0,
+            "an invalidated cache reads the file the close rewrote"
+        );
     }
 
     /// A tab colour (#264) is published as the palette id the desktop stored, so

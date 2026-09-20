@@ -10,7 +10,7 @@
  * next poll. And it must serve a shell tab, which the neighbouring rename and
  * schedule routes deliberately refuse.
  */
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -171,6 +171,9 @@ describe("Mobile project screen — the row's ✕", () => {
     { id: "t-shell", label: "Shell", kind: "shell", available: true, viewer_busy: false },
   ];
   let closed: string[] = [];
+  /** Rows the catalog grows between polls, so a test can tell a load that has
+   *  landed from one that has not yet been asked for. */
+  let extra: Record<string, unknown>[] = [];
   const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     if (init?.method === "DELETE") {
@@ -186,12 +189,23 @@ describe("Mobile project screen — the row's ✕", () => {
       agents: [],
       // The desktop persists asynchronously, so the poll deliberately keeps
       // answering with the tab that was just closed.
-      tabs: rows,
+      tabs: [...rows, ...extra],
     }), { status: 200 });
   });
 
+  /** One poll, driven the way the screen's own visibility handler drives it,
+   *  and awaited through a row the catalog only grew after the close — an
+   *  assertion about a row that is gone cannot tell "the load landed and it
+   *  stayed gone" from "the load has not happened yet". */
+  async function poll() {
+    extra = [{ id: "t-late", label: "Codex", kind: "agent", available: true, viewer_busy: false }];
+    document.dispatchEvent(new Event("visibilitychange"));
+    await screen.findByRole("button", { name: "Close Codex" });
+  }
+
   beforeEach(() => {
     closed = [];
+    extra = [];
     vi.stubGlobal("fetch", fetchMock);
   });
 
@@ -214,6 +228,35 @@ describe("Mobile project screen — the row's ✕", () => {
     await waitFor(() => expect((screen.getByRole("button", { name: "Close Claude" }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(screen.getByRole("button", { name: "Close Claude" }));
     await waitFor(() => expect(closed).toEqual(["/api/v1/tabs/t-shell", "/api/v1/tabs/t-agent"]));
+  });
+
+  it("keeps the closed row gone when the next poll is still carrying it", async () => {
+    render(<Project id="p1" back={() => {}} terminal={() => {}} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Close Shell" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Close Shell" })).toBeNull());
+
+    // The poll that was already in flight when the ✕ was pressed answers with
+    // the pre-close list; the row used to spring back under the reader's thumb.
+    await poll();
+    expect(screen.queryByRole("button", { name: "Close Shell" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Close Claude" })).toBeTruthy();
+  });
+
+  it("shows the row again once a close the desktop never carried out is past waiting for", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      render(<Project id="p1" back={() => {}} terminal={() => {}} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Close Shell" }));
+      await waitFor(() => expect(screen.queryByRole("button", { name: "Close Shell" })).toBeNull());
+
+      // Half a minute on, the catalog still lists it: the close plainly did not
+      // take, and a row nobody can see is worse than one that came back.
+      await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
+      await poll();
+      expect(screen.getByRole("button", { name: "Close Shell" })).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("says the desktop is needed rather than 'request failed'", async () => {

@@ -24,6 +24,14 @@ const SORT_LABEL: Record<AgentSort, string> = {
   native: "Manual (tab order)",
 };
 
+/** How long a closed row is held back from the catalog before the phone gives
+ *  up and shows it again. The desktop writes the session file before it answers
+ *  "closed", so the catalog agrees within one of its own reads — this is the
+ *  outer bound, not the expected wait. Past it the close plainly did not take,
+ *  and a row hidden for ever would be a tab the reader can neither see nor
+ *  close again. */
+const CLOSED_HELD_MS = 30_000;
+
 /** The line under an agent tab, in the words the desktop's Agents view uses:
  * how many prompts are scheduled and when the first one fires. The desktop
  * computed both against its own clock, so the phone only formats them. */
@@ -66,6 +74,32 @@ function PromptLines({ tab }: { tab: TabRow }) {
   </div>;
 }
 
+/**
+ * A freshly read catalog with the rows this phone has closed taken back out.
+ *
+ * The desktop persists its tab layout before it answers "closed", but the read
+ * that carries the answer back to this screen need not be the next one to
+ * arrive: the poll that was already in flight when the ✕ was pressed answers
+ * with the pre-close list, and the sidecar may serve its own snapshot for a
+ * moment longer. Dropping the row from the list in hand (`dropTab`) survives
+ * neither, so a closed card used to spring back for a whole poll cycle.
+ *
+ * An id is forgotten the moment a load no longer carries it — the catalog has
+ * agreed and nothing needs holding — and forgotten regardless after
+ * `CLOSED_HELD_MS`, so a close that never reached disk shows its row again
+ * rather than leaving a live tab invisible.
+ */
+function withoutClosed(detail: ProjectDetail, closed: Map<string, number>): ProjectDetail {
+  if (closed.size === 0) return detail;
+  const now = Date.now();
+  for (const [tabId, at] of closed) {
+    if (now - at > CLOSED_HELD_MS || !detail.tabs.some((row) => row.id === tabId)) closed.delete(tabId);
+  }
+  return closed.size === 0
+    ? detail
+    : { ...detail, tabs: detail.tabs.filter((row) => !closed.has(row.id)) };
+}
+
 export function Project({ id, back, terminal }: { id: string; back: () => void; terminal: (tab: TabRow) => void }) {
   const [detail, setDetail] = useState<ProjectDetail | null>(null);
   const [creating, setCreating] = useState(false);
@@ -89,6 +123,9 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
    *  answer is worth reading — closing leaves the session running. */
   /** The tab whose close is in flight — its ✕ is held until the desktop answers. */
   const [closingId, setClosingId] = useState<string | null>(null);
+  /** The tabs this phone has closed, each against the moment it was answered,
+   *  held back from every load until the catalog agrees (`withoutClosed`). */
+  const closed = useRef(new Map<string, number>());
   /** The reader's order for this project's tabs, kept on the phone. The
    * default is the desktop Agents view's, by the same shared function: a tab
    * asking something, then the ones working now, then the rest by their last
@@ -117,7 +154,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     if (inFlight.current || moving.current) return Promise.resolve();
     inFlight.current = true;
     return api<ProjectDetail>(`/api/v1/projects/${encodeURIComponent(id)}`)
-      .then((next) => { setDetail(next); setError(""); })
+      .then((next) => { setDetail(withoutClosed(next, closed.current)); setError(""); })
       // Keep the last good view rather than blanking the tab list: on a poll
       // this fast, one dropped packet used to wipe the screen and flash the
       // "Desktop unavailable" notice on every flaky-signal hiccup.
@@ -151,10 +188,12 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
       terminal(body.tab);
     } catch (reason) { setError(String(reason)); void load(); } finally { setCreating(false); }
   };
-  /** Drop the row here rather than reloading: the desktop persists its tab
-   *  layout asynchronously, so the next catalog read can still be carrying the
-   *  tab that was just closed, and the row would flicker back. */
+  /** Drop the row here rather than reloading, and remember that it is gone: the
+   *  next catalog read can still be carrying the tab that was just closed — the
+   *  poll in flight when the ✕ was pressed certainly is — and a row dropped from
+   *  the list in hand alone springs back with it (`withoutClosed`). */
   const dropTab = (id: string) => {
+    closed.current.set(id, Date.now());
     setDetail((prev) => prev ? { ...prev, tabs: prev.tabs.filter((row) => row.id !== id) } : prev);
   };
   /** Close on the tap, as the desktop's × does — no sheet in between. It is the

@@ -188,6 +188,16 @@ fn catalog_fresh(state: &HostState) -> Result<Catalog, (StatusCode, Json<serde_j
         .map_err(|_| api_error(StatusCode::SERVICE_UNAVAILABLE, "catalog_unavailable"))
 }
 
+/// Drop the cached catalog after a change the desktop has already written to
+/// disk, so the next read cannot answer from before it.
+fn catalog_stale(state: &HostState) {
+    state
+        .catalog
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .invalidate();
+}
+
 async fn security_headers(request: Request<Body>, next: Next) -> Response<Body> {
     let sensitive = request.uri().path().starts_with("/api/") || request.uri().path() == "/healthz";
     let mut response = next.run(request).await;
@@ -1540,11 +1550,14 @@ async fn close_tab(
     )
     .await
     {
-        // The desktop persists its layout asynchronously, so the catalog may
-        // still be carrying the closed tab for a moment. Nothing is read back
-        // here for that reason: the phone drops the row it closed, and the next
-        // poll agrees once the session file has been rewritten.
-        Ok(DesktopResponse::Closed) => (StatusCode::OK, Json(json!({ "closed": true }))),
+        // The desktop rewrites the session file before it answers, so the only
+        // thing that could still be carrying the closed tab is this cache —
+        // dropped here rather than read back, because nothing in this reply
+        // depends on the new catalog and the next poll is a second away.
+        Ok(DesktopResponse::Closed) => {
+            catalog_stale(&state);
+            (StatusCode::OK, Json(json!({ "closed": true })))
+        }
         Ok(DesktopResponse::Error { code, .. }) => api_error(
             match code.as_str() {
                 "desktop_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
