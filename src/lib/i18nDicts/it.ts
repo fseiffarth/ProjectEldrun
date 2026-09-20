@@ -75,6 +75,8 @@ export const dict: Dict = {
   "mobile.focus.untested": "Non testato",
   "mobile.focus.working": "L'agente sta lavorando…",
   "mobile.focus.workingTokens": "{count} token",
+  "mobile.model.effortTitle": "Sforzo per {model}",
+  "mobile.model.effortHint": "Antigravity applica insieme il modello e il suo sforzo",
   "mobile.facts.session": "5h {percent}%",
   "mobile.facts.week": "settimana {percent}%",
   "mobile.focus.statusLine": "Riga di stato",

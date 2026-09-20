@@ -414,6 +414,22 @@ clears with ctrl+u. A release that changes any of those degrades the phone's
 Focus view for OpenCode; a release that adds an agent switch to mini would let
 the `fixed` flag in `agentModes.ts` be dropped.
 
+**Antigravity's model and effort** are read by the phone since 2026-09-20
+(`mobile-web/src/terminal/antigravity.ts`, verified against 1.2.7 by a pty
+capture). It assumes, of `agy`: the footer row under the input box, with
+`? for shortcuts` on the left and the model right-aligned, the reasoning effort
+after a ` · ` where the model has one (`Gemini 3.8 Flash · high`); the `/model`
+dialog's heading `Switch Model` and its `Search:` field; unnumbered rows, two
+spaces in, the highlighted one marked `>` and the session's own noted
+`(current)`; the window note `[1-6 of 7 items]`, which is what numbers the rows;
+and the effort slider `Effort ◂ ●━━━◉───○ ▸` over a row of stop labels, moved
+one stop per ←/→ and applied with the model on Enter. The dialog is drawn
+*below* the input box, which is where `inputFrameStart` cuts. A release that
+changes any of those leaves the model chip on the tab's last known model and
+the sheet without its rows. `agy models` lists the model ids and their efforts
+(`gemini-3.1-pro-{high,low}` — no medium), which is the quickest check that the
+list still looks as the sheet expects.
+
 Vibe and Copilot are full-screen (alternate-screen) TUIs, as plain `opencode`
 is; the phone's Focus view cannot read them — a release that changes that is an
 *opportunity*, not a break. Copilot has been alt-screen unconditionally since 1.0.12 (its

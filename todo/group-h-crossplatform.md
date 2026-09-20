@@ -2069,3 +2069,44 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     swiping right shows the status line.
   - [ ] ✅ Works
   - [ ] ❌ Doesn't work
+
+- [~] **31at — Antigravity's model and effort reach the phone** (2026-09-20; ✅
+  code-complete, automated tests passing, ⚠️ not verified on a phone).
+  - The model chip on an `agy` tab read **"Gemini"**: Antigravity prints its
+    model as a phrase with the reasoning effort beside it (`Gemini 3.8 Flash ·
+    high`), and `statusLine` matched the family token and dropped the rest. The
+    footer's right-hand column is read whole now, `effort` is a status field of
+    its own, and the chip prints both.
+  - Tapping the chip opened an **empty sheet** that timed out over a dialog
+    left open in the session: Antigravity's `Switch Model` list carries no row
+    numbers and marks its highlight with the same `>` its input box draws, so
+    `selectPrompt` recognized nothing. It is read by its heading and its
+    `Search:` field now (`mobile-web/src/terminal/antigravity.ts`), and its
+    rows are numbered from the window note (`[1-6 of 7 items]`) — absolute
+    positions, so the existing walk-by-number answers it unchanged.
+  - **The effort is on that same dialog**, as a slider under the rows
+    (`◂ ●━━━◉───○ ▸` over `low medium high`), belonging to whichever model the
+    highlight is on, and Enter applies model and effort together. So the sheet
+    asks in two steps where the dialog draws one: the tap walks the highlight —
+    accepting nothing — the dialog redraws its slider for that model, and the
+    stops it then offers are the second step. A model with no slider (every
+    Claude model Antigravity offers) is accepted as soon as the walk lands.
+  - The dialog is drawn *under* the input box, so the reading view now cuts at
+    that box: without it a model row read as the input line and the dialog's
+    own rows as the status under it.
+  - Ground truth: `agy` 1.2.7 driven through a pty at 80×24 and replayed
+    through the phone's emulator; the surviving screens are the fixtures in
+    `src/__tests__/MobileAntigravity.test.ts` and
+    `src/__tests__/MobileAntigravityModel.test.tsx`
+    (`docs/mobile_focus_cli_survey.md` holds the shapes).
+  - Needs a rebuild of the embedded PWA (`npm run build` did it) and a desktop
+    restart to serve it.
+  - [ ] 🖐️ Manual phone QA — open an `agy` tab on the phone: the model chip
+    reads the model *and* its effort (`Gemini 3.8 Flash · high`). Tap it: the
+    sheet lists all seven models with the session's own marked. Tap a Gemini
+    model — the sheet then asks for the effort, with the stop the dialog is on
+    marked; tap another stop and the session's footer changes to it. Repeat
+    with a Claude model: it applies at once, with no effort step. Check that
+    closing the sheet closes the dialog in the session too.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work

@@ -58,6 +58,13 @@ import {
   readOpenCodePicker,
   OPENCODE_MODEL_KEYS,
 } from "../terminal/openCodeMini";
+import {
+  antigravityEffortKeys,
+  isAntigravityTab,
+  readAntigravityEffort,
+  readAntigravityPicker,
+  type AntigravityEffort,
+} from "../terminal/antigravity";
 import { currentMode, modeChoices, modeFixed, shiftTabKey } from "../terminal/agentModes";
 import { agentInputWrites, bracketsAgentMessage } from "../terminal/composer";
 import { agentWork } from "../terminal/agentBusy";
@@ -563,6 +570,13 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   /** A walk whose keys never showed on screen is not tried again until the
    * sheet reopens; the rows already seen stay listed. */
   const revealStuck = useRef(false);
+  /** Antigravity keeps the model and its effort on one dialog, and draws the
+   * effort slider only for the row its highlight is on: the model a tap chose,
+   * while the highlight is still walking there. Nothing is accepted until the
+   * walk lands and the effort it then offers has been read. */
+  const [effortFor, setEffortFor] = useState<{ number: number; label: string } | null>(null);
+  /** The model the sheet is asking the effort for, once the walk has landed. */
+  const [effortStep, setEffortStep] = useState<string | null>(null);
   const [modeSheet, setModeSheet] = useState(false);
   /** The status chip's sheet: the session's state and the CLI's own usage
    * panel. Opening it asks the desktop, which may run the CLI once. */
@@ -1538,6 +1552,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
    * of OpenCode's mini interface, whose frame has no marker to be found by. */
   const agentLabel = tab.agent_label ?? tab.label;
   const openCode = tab.kind === "agent" && isOpenCodeTab(agentLabel);
+  const antigravity = tab.kind === "agent" && isAntigravityTab(agentLabel);
   /** The facts the session prints below its own input box — the facts row's
    * labels. Absent fields leave a button on its generic label. */
   const status = useMemo(
@@ -1555,11 +1570,17 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   const shownLimits = limits.session || limits.week ? limits : sessionLimits(storedUsage, new Date(Date.now()));
   /** The picker the model chip opened, read off the screen while the sheet is
    * up — a list of the session's own rows, not a list of models Eldrun
-   * believes in. OpenCode's is not the numbered dialog the others draw, so it
-   * is read by its own shape (`openCodeMini`). */
+   * believes in. Neither OpenCode's nor Antigravity's is the numbered dialog
+   * the others draw, so each is read by its own shape (`openCodeMini`,
+   * `antigravity`). */
   const picker = useMemo(
-    () => (modelSheet ? (openCode ? readOpenCodePicker(liveScreen) : readSelectPrompt(liveScreen, agentLabel)) : null),
-    [modelSheet, openCode, liveScreen, agentLabel],
+    () => {
+      if (!modelSheet) return null;
+      if (openCode) return readOpenCodePicker(liveScreen);
+      if (antigravity) return readAntigravityPicker(liveScreen);
+      return readSelectPrompt(liveScreen, agentLabel);
+    },
+    [modelSheet, openCode, antigravity, liveScreen, agentLabel],
   );
   /** The step the sheet is showing: the picker on screen, unless it is the one
    * a tap just answered and the session has not redrawn yet. */
@@ -1574,6 +1595,13 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   useEffect(() => { if (listedStep && !openCode) setKnownStep(listedStep); }, [listedStep, openCode]);
   /** The printed number of the row the dialog highlights right now. */
   const pickerAt = pickerStep?.options[pickerStep.current]?.number;
+  /** The effort stops Antigravity's dialog is offering right now — the ones
+   * belonging to the model its highlight is on, which is why they are read
+   * again after every walk rather than kept with the row. */
+  const effortSlider = useMemo<AntigravityEffort | null>(
+    () => (modelSheet && antigravity ? readAntigravityEffort(liveScreen) : null),
+    [modelSheet, antigravity, liveScreen],
+  );
   useEffect(() => {
     if (!modelSheet) return;
     if (pickerStep) {
@@ -1636,6 +1664,28 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     // `deliver` is a fresh closure every render; the walk runs on the frames.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modelSheet, openCode, answered, pickerStep, listedStep, pickerAt, reveal]);
+  /** The highlight has reached the model an Antigravity tap chose, so the
+   * dialog has redrawn its slider for *that* model: a model with stops asks
+   * for one here, and a model with none — every Claude model it offers — is
+   * accepted now, because there is nothing left to ask. Until the walk lands
+   * the screen still shows the row it left, so nothing is pressed on a frame
+   * that has not caught up; a walk whose keys never show gives the list back. */
+  useEffect(() => {
+    if (!effortFor) return;
+    if (!pickerStep || pickerAt !== effortFor.number) {
+      const stuck = window.setTimeout(() => setEffortFor(null), MODEL_PICKER_WAIT);
+      return () => window.clearTimeout(stuck);
+    }
+    if (effortSlider && effortSlider.stops.length > 1) {
+      setEffortStep(effortFor.label);
+      setEffortFor(null);
+      return;
+    }
+    if (deliver(["\r"]) && listedStep) setAnswered(listedStep);
+    setEffortFor(null);
+    // `deliver` is a fresh closure every render; the step runs on the frames.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effortFor, pickerStep, pickerAt, effortSlider, listedStep]);
   /** `/model` opens the agent's own picker in the session; the sheet lists the
    * rows it drew, and a tap answers it with the same keys the arrow row sends —
    * so nothing here decides what the models are.
@@ -1651,6 +1701,8 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     setAnswered(null);
     setKnownStep(null);
     setReveal(null);
+    setEffortFor(null);
+    setEffortStep(null);
     if (openCode) {
       clearPending();
       if (!deliver(OPENCODE_MODEL_KEYS)) return;
@@ -1668,16 +1720,36 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
    * step. */
   const chooseModel = (key: string) => {
     // Mid-walk the highlight is not where the frame says; the sheet is busy.
-    if (!pickerStep || !listedStep || reveal) return;
+    if (!pickerStep || !listedStep || reveal || effortFor) return;
     clearPending();
     const picked = listedStep.options.find((option) => option.number === Number(key));
     if (!picked) return;
+    // Antigravity's dialog applies the model and its effort together, on one
+    // Enter: the tap only walks the highlight there, and what happens next is
+    // the effort the dialog then draws for it.
+    if (antigravity) {
+      if (pickerAt === undefined || !deliver(selectMoveKeys(pickerAt, picked.number))) return;
+      setEffortFor({ number: picked.number, label: picked.label });
+      return;
+    }
     // Walked by printed number: a windowed picker's rows on screen are a slice.
     const writes = openCode
       ? openCodePickKeys(picked.label)
       : pickerAt === undefined ? [] : selectKeys(pickerAt, picked.number);
     if (writes.length === 0 || !deliver(writes)) return;
     setAnswered(listedStep);
+  };
+  /** Answers Antigravity's effort step: the slider is moved with the same
+   * ←/→ its own keyboard row names, and the Enter that follows is the one
+   * that applies the model and the effort at once. */
+  const chooseEffort = (key: string) => {
+    if (!effortSlider || !listedStep) return;
+    clearPending();
+    const target = Number(key);
+    if (!effortSlider.stops[target]) return;
+    if (!deliver([...antigravityEffortKeys(effortSlider.current, target), "\r"])) return;
+    setAnswered(listedStep);
+    setEffortStep(null);
   };
   const closeModelSheet = () => {
     // The dialog is the session's own and still open: close it there too,
@@ -1686,6 +1758,8 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     setModelSheet(false);
     setAnswered(null);
     setReveal(null);
+    setEffortFor(null);
+    setEffortStep(null);
   };
   /** Shift+Tab — the mode cycle Claude Code, Codex and Qwen Code all bind,
    * encoded the way this family's TUI reads it (`shiftTabKey`). The chip label
@@ -2075,6 +2149,12 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   /** What the sheet paints: the live step, or — between the tap and the
    * session's redraw — the answered one, listed but not tappable, so the sheet
    * does not blink empty on the way to the next step. */
+  /** The model chip's label: the model the session prints, with the reasoning
+   * effort beside it where the session prints one too (Antigravity). Without a
+   * readable status it falls back to the model the tab last answered with. */
+  const modelChip = status?.model
+    ? (status.effort ? `${status.model} · ${status.effort}` : status.model)
+    : tab.agent_model ?? "Model";
   const shownStep = listedStep ?? (answered && picker ? answered : null);
   /** The highlighted row — where it was before a reveal walk moved it. */
   const shownAt = reveal?.origin ?? picker?.options[picker.current]?.number;
@@ -2083,6 +2163,14 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     label: option.label,
     description: option.description,
     current: option.number === shownAt,
+  }));
+  /** Antigravity's effort step: the stops its slider is drawing for the model
+   * the sheet just walked to, in its own words. */
+  const effortOptions: SheetOption[] = (effortStep && effortSlider ? effortSlider.stops : []).map((stop, index) => ({
+    key: String(index),
+    label: stop.label,
+    description: stop.description,
+    current: index === effortSlider?.current,
   }));
   const modeOptions: SheetOption[] = modes.map((choice) => ({
     key: choice.value,
@@ -2233,7 +2321,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
             the composer keeps the whole bar for the draft and its buttons. */}
         {tab.kind === "agent" && <>
           <button className="fact-action" onClick={() => setStatusSheet(true)} aria-haspopup="dialog" aria-expanded={statusSheet} title="Session status and the agent's own usage"><span className={`fact-lamp ${lamp}`} aria-hidden="true" /><span className="fact-action-label">Status</span></button>
-          <button className="fact-action" disabled={!connected} onClick={selectModel} aria-haspopup="dialog" aria-expanded={modelSheet} title="Choose the model (/model)"><span className="fact-action-label">{status?.model ?? tab.agent_model ?? "Model"}</span></button>
+          <button className="fact-action" disabled={!connected} onClick={selectModel} aria-haspopup="dialog" aria-expanded={modelSheet} title="Choose the model (/model)"><span className="fact-action-label">{modelChip}</span></button>
           <button className="fact-action" disabled={!connected} onClick={openModeSheet} aria-haspopup={modes.length > 0 ? "dialog" : undefined} aria-expanded={modes.length > 0 ? modeSheet : undefined} title={modes.length > 0 ? "Choose the permission mode" : "Switch mode (Shift+Tab)"}><span className="fact-action-label">{status?.mode ?? activeMode ?? "Mode"}</span></button>
         </>}
         {status?.branch && <span className="fact-branch">⎇ {status.branch}</span>}
@@ -2273,16 +2361,28 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       <button className={ctrl ? "selected" : ""} aria-pressed={ctrl} disabled={!connected} onClick={() => setCtrl((on) => !on)}>Ctrl</button><button disabled={!connected} onClick={() => press("\u001b")}>Esc</button><button disabled={!connected} onClick={() => press("\t")}>Tab</button><button disabled={!connected} onClick={() => press("\u001b[D")}>←</button><button disabled={!connected} onClick={() => press("\u001b[A")}>↑</button><button disabled={!connected} onClick={() => press("\u001b[B")}>↓</button><button disabled={!connected} onClick={() => press("\u001b[C")}>→</button><button disabled={!connected} onClick={() => press("\r")}>Enter</button><button disabled={!connected} onClick={() => press("\u007f")}>⌫</button><button className="danger" disabled={!connected} onClick={() => window.confirm("Send interrupt (Ctrl+C)?") && type("\u0003")}>Interrupt</button>
       </div>
     </div>
-    {modelSheet && <OptionSheet
-      title={shownStep?.title ?? "Select model"}
-      options={pickerOptions}
-      waiting={!connected
-        ? "Waiting for the connection…"
-        : answered ? "Waiting for the session…" : "Waiting for the session's model picker…"}
-      busy={shownStep != null && (pickerStep == null || reveal != null)}
-      onPick={chooseModel}
-      onClose={closeModelSheet}
-    />}
+    {modelSheet && (effortStep
+      ? <OptionSheet
+        title={t("mobile.model.effortTitle", { model: effortStep })}
+        note={{ text: isUntested("mobile.model.effort")
+          ? `${t("mobile.model.effortHint")} · ${t("mobile.focus.untested")}`
+          : t("mobile.model.effortHint") }}
+        options={effortOptions}
+        waiting={connected ? "Waiting for the session…" : "Waiting for the connection…"}
+        busy={effortOptions.length === 0}
+        onPick={chooseEffort}
+        onClose={closeModelSheet}
+      />
+      : <OptionSheet
+        title={shownStep?.title ?? "Select model"}
+        options={pickerOptions}
+        waiting={!connected
+          ? "Waiting for the connection…"
+          : answered ? "Waiting for the session…" : "Waiting for the session's model picker…"}
+        busy={shownStep != null && (pickerStep == null || reveal != null || effortFor != null)}
+        onPick={chooseModel}
+        onClose={closeModelSheet}
+      />)}
     {addSheet && <OptionSheet
       title="Add to the message"
       options={addOptions}

@@ -45,7 +45,7 @@ publishing it on `PublicTab` would let the phone match on the command instead.
 | Codex (`codex`) | 0.154.0 stable; 0.155.0-alpha.7 | inline (ratatui) | echo `›`, footer, modes; answers `•` stay plain | rollout already read |
 | Gemini CLI (`gemini`) | 0.60.0 (0.56.0 installed) | inline (`ui.useAlternateBuffer` false) | echo `>`, answers `✦`, **mode from the row above the box** | chat JSONL reader |
 | Qwen Code (`qwen`) | 0.23.4 | **alt screen by default** (`ui.useTerminalBuffer`) | only with `"ui":{"useTerminalBuffer":false}`; answers `◆︎` | chat JSONL reader |
-| Antigravity (`agy`) | 1.2.3 | picked at first run (`altScreenMode`) | glyphs U | `history.jsonl`, prompts only |
+| Antigravity (`agy`) | 1.2.7 (installed) | inline unless `altScreenMode` says otherwise | echo `>`; **model + effort footer and the `/model` dialog are read** (below) | `history.jsonl`, prompts only |
 | Grok (`grok`) | xAI Grok Build 1.0.32; `@vibe-kit/grok-cli` 0.0.34 (stale) | Grok Build: alt screen in plain tmux; `--minimal` / `--no-alt-screen` inline | none | launch flag, then a capture |
 | Kiro (`kiro`) | `kiro-cli` 2.21.4 — the binary is **`kiro-cli`** | inline | glyphs U; `NN% context used` | `data.sqlite3` `conversations_v2` |
 | Mistral Vibe (`vibe`) | 2.25.4 | alt screen (Textual) | none | `messages.jsonl` reader |
@@ -132,6 +132,42 @@ is not source-only. All of it is scoped to a tab whose label names OpenCode.
 - Still open: model **variants** (ctrl+t) are OpenCode's reasoning-effort
   equivalent and have no chip; the SQLite reader below would give Focus a
   history reaching past the pane's scrollback.
+
+### Antigravity's model and effort (2026-09-20)
+
+`agy` 1.2.7, read off captures of a live session driven through a pty at 80×24
+and replayed through the phone's own emulator — the second entry here that is
+not source-only. `mobile-web/src/terminal/antigravity.ts` holds both shapes,
+scoped to a tab whose label names it ("Google Antigravity").
+
+- **The footer** it keeps under its box is `? for shortcuts` on the left and
+  the model on the right, with the effort after a `·` where the model has one:
+  `Gemini 3.8 Flash · high`. `classify` read that as the *token* "Gemini" and
+  dropped the rest, so the chip named a family instead of a model. It is read
+  as a whole phrase now, `effort` is a `SessionStatus` field of its own, and the
+  chip prints both.
+- **`/model` opens one dialog for two choices.** Its rows carry no numbers and
+  its highlight is the same `>` the input box draws — so `selectPrompt` found
+  nothing and the sheet waited out its timeout over a dialog still open in the
+  session. It is found by its `Switch Model` heading and its `Search:` field
+  instead, and its rows are numbered here from the window note
+  (`[1-6 of 7 items]`), which makes them absolute: the same walk-by-number the
+  windowed Claude Code picker uses then works unchanged.
+- **The effort is a slider, not a list**: `Effort  ◂  ●━━━◉───○  ▸` over a row
+  of stops (`low  medium  high`) and one line about the stop it sits on. It
+  belongs to the row the highlight is on, is drawn only where that model has
+  more than one stop (Gemini 3.1 Pro has two, every Claude model none), and
+  moves one stop per ←/→. Enter applies the model *and* the effort together.
+- So the sheet asks in **two steps where the dialog draws one**: the tap walks
+  the highlight — nothing accepted — the dialog redraws its slider for that
+  model, and the stops it then offers are the second step. A model that draws
+  no slider is accepted as soon as the walk lands.
+- **The dialog is drawn under the box**, not over it, so `inputFrameStart` cuts
+  the frame at the box above the heading; otherwise a model row reads as the
+  input line and the rows under it as the status.
+- Still open: its permission mode (`--mode accept-edits|plan`) is on no row the
+  footer prints, so there is no mode family for it yet; the alternate-screen
+  setting (`altScreenMode`, picked at first run) hands the tab to Terminal view.
 
 ## Screen shapes not handled yet
 

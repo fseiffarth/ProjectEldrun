@@ -245,6 +245,7 @@ export const UNTESTED = {
   "mobile.focus.session": { area: "mobile", what: "Terminal · Reader session card" },
   "mobile.focus.statusLine": { area: "mobile", what: "Terminal · Reader status-line strip" },
   "mobile.focus.workingFacts": { area: "mobile", what: "Terminal · Reader elapsed time and tokens while the agent works" },
+  "mobile.model.effort": { area: "mobile", what: "Terminal · Antigravity effort step in the model sheet" },
   "mobile.home.reorder": { area: "mobile", what: "Home · Drag to reorder the project list" },
   "mobile.mailActions": { area: "mobile", what: "MobileSettings · Mark read and star from the phone" },
   "mobile.mailRead": { area: "mobile", what: "MobileSettings · Read mail on the phone" },

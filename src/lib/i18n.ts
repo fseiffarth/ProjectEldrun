@@ -109,6 +109,8 @@ export const en = {
   "mobile.focus.untested": "Untested",
   "mobile.focus.working": "Agent is working…",
   "mobile.focus.workingTokens": "{count} tokens",
+  "mobile.model.effortTitle": "Effort for {model}",
+  "mobile.model.effortHint": "Antigravity sets the model and its effort together",
   "mobile.facts.session": "5h {percent}%",
   "mobile.facts.week": "week {percent}%",
   "mobile.focus.statusLine": "Status line",

@@ -19,6 +19,11 @@
  */
 
 import {
+  antigravityFooter,
+  isAntigravityTab,
+  readAntigravityPicker,
+} from "./antigravity";
+import {
   isOpenCodeTab,
   isOpenCodePlaceholder,
   openCodeStatusRow,
@@ -32,6 +37,9 @@ export interface SessionStatus {
   branch?: string;
   /** Model name (claude/opus/sonnet/haiku/fable, gpt-*, codex, gemini, …). */
   model?: string;
+  /** Reasoning effort, where the session prints one beside its model
+   * (Antigravity: `Gemini 3.8 Flash · high`). */
+  effort?: string;
   /** Permission/approval mode (plan, accept edits, bypass permissions, …). */
   mode?: string;
   /** Remaining context, e.g. `85%` — a CLI that prints "used" is flipped. */
@@ -259,6 +267,37 @@ function openCodeFrame(
 }
 
 /**
+ * Google Antigravity's frame, for a tab whose label names it: the footer it
+ * keeps under its input box — `? for shortcuts` on the left, the model and its
+ * reasoning effort right-aligned — and, while `/model` has a dialog open,
+ * where that dialog begins.
+ *
+ * Both are here because Antigravity is read like no other family. Its footer
+ * prints the model as a *phrase* (`Gemini 3.8 Flash · high`), which `classify`
+ * read as the token "Gemini" with the rest dropped. And it draws the `/model`
+ * dialog *under* the box, with its highlight marked by the same `>` the box
+ * uses, so the input line the ordinary scan finds while one is open is a model
+ * row — with the dialog's own rows read as the status beneath it. The frame
+ * therefore starts at the box above the dialog, and everything below it is the
+ * dialog the model sheet is already showing.
+ */
+function antigravityFrame(
+  lines: readonly StatusLineLike[],
+  agentLabel?: string,
+): { start?: number; footer: number; status: SessionStatus } | null {
+  if (!isAntigravityTab(agentLabel)) return null;
+  let index = lines.length - 1;
+  while (index >= 0 && !lines[index].text.trim()) index -= 1;
+  if (index < 0) return null;
+  const footer = antigravityFooter(lines[index].text);
+  if (!footer) return null;
+  const status: SessionStatus = { model: footer.model };
+  if (footer.effort) status.effort = footer.effort;
+  const picker = readAntigravityPicker(lines);
+  return { ...(picker ? { start: picker.frameStart } : {}), footer: index, status };
+}
+
+/**
  * The status the session is showing right now, or `null` when the bottom of
  * the screen is not a TUI input frame (mid-scroll output, a full-screen
  * dialog, a shell).
@@ -269,6 +308,8 @@ export function sessionStatus(
 ): SessionStatus | null {
   const mini = openCodeFrame(lines, agentLabel);
   if (mini) return mini.status;
+  const antigravity = antigravityFrame(lines, agentLabel);
+  if (antigravity) return antigravity.status;
   let inputIndex = -1;
   for (let index = lines.length - 1; index >= 0 && index >= lines.length - SEARCH_WINDOW; index -= 1) {
     if (isInputLine(lines, index)) {
@@ -334,13 +375,16 @@ export function inputFrameStart(
 ): number {
   const mini = openCodeFrame(lines, agentLabel);
   if (mini) return mini.start;
-  let start = -1;
-  for (let index = lines.length - 1; index >= 0 && index >= lines.length - SEARCH_WINDOW; index -= 1) {
+  // Antigravity's picker is drawn under the box: the frame is both, and the
+  // sheet is already showing its rows. Without one the ordinary scan below
+  // finds the box on its own.
+  const antigravity = antigravityFrame(lines, agentLabel);
+  let start = antigravity?.start ?? -1;
+  for (let index = lines.length - 1; start < 0 && index >= 0 && index >= lines.length - SEARCH_WINDOW; index -= 1) {
     const text = lines[index].text;
     if (!isInputLine(lines, index)) continue;
     if (OPTION_ROW.test(text)) return lines.length;
     start = index;
-    break;
   }
   if (start < 0) return lines.length;
   // Gemini CLI draws its mode on a row over the box; it is the frame's too.
@@ -446,6 +490,12 @@ export function statusFrameLines(
     return lines.slice(mini.start)
       .map((line) => line.text.replace(/\s+$/u, ""))
       .filter((text) => text.trim() !== "" && !isOpenCodePlaceholder(text));
+  }
+  const antigravity = antigravityFrame(lines, agentLabel);
+  if (antigravity?.start !== undefined) {
+    // The rows under the box are the `/model` dialog's, not a status: the strip
+    // shows the one row the session keeps under it either way.
+    return [lines[antigravity.footer].text.replace(/\s+$/u, "")];
   }
   let inputIndex = -1;
   for (let index = lines.length - 1; index >= 0 && index >= lines.length - SEARCH_WINDOW; index -= 1) {
