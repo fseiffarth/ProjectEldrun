@@ -2,8 +2,8 @@
  * The terminal's header is the only way out of a session, and the document
  * underneath it must never be able to scroll it away.
  *
- * "New shell" lives at the bottom of the project screen, so the tap that opens
- * a session usually happens with the page scrolled down — and nothing in a
+ * A session is usually opened from a project screen scrolled well down its tab
+ * cards, so the tap that opens it happens with a page offset — and nothing in a
  * single-page app resets that on the way into the next screen. The terminal is
  * sized to the visual viewport while `body` keeps a 100dvh floor, so the
  * leftover offset had a real overflow to sit in: the header scrolled off the
@@ -90,7 +90,7 @@ describe("Eldrun Mobile — the terminal header stays on screen", () => {
     expect(document.body.classList.contains("terminal-open")).toBe(true);
   });
 
-  it("pulls a page scrolled down to 'New shell' back to the top on the way in", async () => {
+  it("pulls a page scrolled down the project's cards back to the top on the way in", async () => {
     const scrollTo = vi.fn();
     Object.defineProperty(window, "scrollY", { configurable: true, value: 480 });
     vi.stubGlobal("scrollTo", scrollTo);

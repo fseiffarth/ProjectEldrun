@@ -699,8 +699,8 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   // screen is sized to the visual viewport, so the document is taller than what
   // is on glass — and everything a phone does about that is a scroll that takes
   // the header with it. Three ways in practice: arriving from the bottom of a
-  // long project screen, where "New shell" sits, or from far down the agents
-  // list, keeps that scroll offset; focusing the composer makes the browser
+  // long project screen, or from far down the agents list, keeps that scroll
+  // offset; focusing the composer makes the browser
   // scroll the header away to seat the keyboard; and an agent tab has its own
   // way in, because `addContext` and the two attach paths focus the composer
   // *for* the reader, so the scroll arrives unasked after a tap on the ＋ sheet.

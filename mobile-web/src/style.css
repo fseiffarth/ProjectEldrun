@@ -175,6 +175,12 @@ small { color:#9498aa; }
 .create { display:grid; gap:9px; margin-top:22px; }
 .agent-create > button:first-child { flex:1; text-align:left; }
 .mode { text-transform:capitalize; }
+/* The same rows inside the ＋ sheet, where the heading and the note above them
+   are the space the margin used to buy. */
+.new-tab-sheet .create { margin-top:4px; }
+/* The ＋ at the end of the project header. Square against the back chevron
+   opposite it, and it never shrinks: the project's name is what gives way. */
+.new-tab { flex:0 0 auto; min-width:44px; padding:8px 12px; font-size:1.25rem; line-height:1.1; }
 .home-header { gap:10px; }
 .home-brand { display:flex; flex:1; align-items:center; gap:8px; min-width:0; }
 .home-brand strong { font-size:1.05rem; letter-spacing:.01em; }

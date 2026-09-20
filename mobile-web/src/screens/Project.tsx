@@ -6,6 +6,7 @@ import { readChoice, writeChoice } from "../prefs";
 import { useRowDrag } from "../rowDrag";
 import { applyServerOrder, placeBeside } from "../tabReorder";
 import { ColorSheet } from "./ColorSheet";
+import { NewTabSheet } from "./NewTabSheet";
 import { PromptsSheet } from "./PromptsSheet";
 import { RenameSheet } from "./RenameSheet";
 import { ScheduleSheet } from "./ScheduleSheet";
@@ -111,6 +112,9 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
   /** The project's collected prompts (no tab); "Schedule…" there hands a
    * prompt to the per-tab sheet above with the text prefilled. */
   const [promptsOpen, setPromptsOpen] = useState(false);
+  /** The header's ＋: what to open next — a shell, or one of the desktop's
+   * agents in one of its modes. */
+  const [newTabOpen, setNewTabOpen] = useState(false);
   /** The agent tab being renamed. The desktop owns the tab layout, so the sheet
    * writes through the bridge and the next poll brings the new label back. */
   const [renameTab, setRenameTab] = useState<TabRow | null>(null);
@@ -269,6 +273,19 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
           {AGENT_SORTS.map((value) => <option key={value} value={value}>{SORT_LABEL[value]}</option>)}
         </select>
       </label>}
+      {/* Opening a session is what this screen is for, so it sits where the
+          thumb already is rather than under however many cards the project has
+          (`NewTabSheet`). Disabled without the desktop, which is the same
+          condition the buttons down there carried — the notice below says why. */}
+      <button
+        className="primary new-tab"
+        disabled={creating || !detail?.desktop_available}
+        onClick={() => setNewTabOpen(true)}
+        aria-haspopup="dialog"
+        aria-expanded={newTabOpen}
+        aria-label="New tab"
+        title="New agent or shell"
+      ><span aria-hidden="true">＋</span></button>
     </header>
     {/* Only once the host has answered: `!detail?.desktop_available` was also
         true while the first load was in flight, so every project opened on a
@@ -343,9 +360,14 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     </div>)}</section>
     {detail?.project.status === "inactive" && <section className="create"><button className="primary" disabled={activating || !detail.desktop_available} onClick={() => void activate()}>Activate project</button></section>}
     <section className="create"><button disabled={!detail} onClick={() => setPromptsOpen(true)} aria-haspopup="dialog" aria-expanded={promptsOpen}>◷ Collected prompts</button></section>
-    <section className="create"><button className="primary" disabled={creating || !detail?.desktop_available} onClick={() => void create("shell")}>New shell</button>
-      {detail?.agents.map((agent) => <div className="agent-create" key={agent.id}><button disabled={creating || !detail.desktop_available} onClick={() => void create("agent", agent)}>{agent.label}</button>{agent.modes.map((mode) => <button className="mode" disabled={creating || !detail.desktop_available} key={mode} onClick={() => void create("agent", agent, mode)}>{mode}</button>)}</div>)}
-    </section>
+    {/* The shell and agent buttons that stood here are the header's ＋ now: a
+        project with a screenful of tabs put them past the end of the scroll. */}
+    {newTabOpen && detail && <NewTabSheet
+      agents={detail.agents}
+      busy={creating}
+      onClose={() => setNewTabOpen(false)}
+      onPick={(kind, agent, mode) => { setNewTabOpen(false); void create(kind, agent, mode); }}
+    />}
     {promptsOpen && detail && <PromptsSheet projectId={id} tabs={detail.tabs} onClose={() => setPromptsOpen(false)} onSchedule={(tab, initialMessage) => { setPromptsOpen(false); setScheduleTab({ tab, initialMessage }); }} />}
     {colorTab && <ColorSheet
       tab={colorTab}
