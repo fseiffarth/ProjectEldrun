@@ -212,6 +212,30 @@ pub fn read(root: &Path, name: &str) -> Result<(Vec<u8>, &'static str), OutboxEr
     Ok((bytes, kind))
 }
 
+/// Delete one listed file, by the leaf the listing handed out.
+///
+/// Exactly what [`read`] would serve is what this removes: `probe` re-proves
+/// the leaf, the bounds and the regular, non-symlink file under the *proven*
+/// outbox directory, so a name the phone could not see is `NotFound` rather
+/// than a deletion somewhere else. A symlink inside the outbox is refused as
+/// such here too — the difference between dropping a file the agent published
+/// and unlinking whatever it pointed at.
+///
+/// The folder is the one place in a project Eldrun publishes *for* the phone,
+/// and nothing pruned it: a picture the reader is done with could only be
+/// cleared from a shell on the desktop.
+pub fn remove(root: &Path, name: &str) -> Result<(), OutboxError> {
+    let Some(dir) = outbox_dir(root)? else {
+        return Err(OutboxError::NotFound);
+    };
+    let Some((_file, _meta, _kind)) = probe(&dir, name) else {
+        return Err(OutboxError::NotFound);
+    };
+    // `dir` is canonical and `name` is a validated leaf, so this is the file
+    // `probe` just held open; `remove_file` never follows a link.
+    fs::remove_file(dir.join(name)).map_err(|e| OutboxError::Io(e.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,5 +388,53 @@ mod tests {
         std::os::unix::fs::symlink(outside.path(), root.join(OUTBOX_DIR)).unwrap();
         assert_eq!(list(&root), Err(OutboxError::Unavailable));
         assert_eq!(read(&root, "private.png"), Err(OutboxError::Unavailable));
+    }
+
+    #[test]
+    fn a_listed_file_is_deletable_and_nothing_else_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let box_dir = outbox(dir.path());
+        touch(&box_dir, "plot.png", PNG, Duration::from_secs(1));
+        touch(&box_dir, "keep.png", JPEG, Duration::from_secs(2));
+
+        assert_eq!(remove(dir.path(), "plot.png"), Ok(()));
+        let names: Vec<String> = list(dir.path()).unwrap().into_iter().map(|i| i.name).collect();
+        assert_eq!(names, ["keep.png"]);
+        assert!(!box_dir.join("plot.png").exists());
+
+        // Gone, a name the listing never handed out, and a leaf the alphabet
+        // refuses: all the same answer, and none of them touch a file.
+        assert_eq!(remove(dir.path(), "plot.png"), Err(OutboxError::NotFound));
+        assert_eq!(remove(dir.path(), "absent.png"), Err(OutboxError::NotFound));
+        assert_eq!(remove(dir.path(), "../keep.png"), Err(OutboxError::NotFound));
+        assert!(box_dir.join("keep.png").exists());
+    }
+
+    #[test]
+    fn a_project_without_an_outbox_deletes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(remove(dir.path(), "plot.png"), Err(OutboxError::NotFound));
+        assert_eq!(
+            remove(&dir.path().join("missing"), "plot.png"),
+            Err(OutboxError::Unavailable)
+        );
+    }
+
+    /// The deletion path must not become the one door that follows a link out
+    /// of the project: a link inside the outbox is not a file the phone saw.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_inside_the_outbox_is_refused_rather_than_unlinked() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("private.png");
+        fs::write(&secret, PNG).unwrap();
+        let root = dir.path().join("linked-file");
+        let box_dir = outbox(&root);
+        std::os::unix::fs::symlink(&secret, box_dir.join("leak.png")).unwrap();
+
+        assert_eq!(remove(&root, "leak.png"), Err(OutboxError::NotFound));
+        assert!(box_dir.join("leak.png").symlink_metadata().is_ok());
+        assert!(secret.exists());
     }
 }

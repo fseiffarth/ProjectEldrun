@@ -535,6 +535,14 @@ export function outboxFileUrl(scope: OutboxScope, name: string, download = false
   return `${outboxBase(scope)}/${encodeURIComponent(name)}${download ? "?download=1" : ""}`;
 }
 
+/** `DELETE …/outbox/{name}` — drop one of those files. The sidecar deletes
+ * only a leaf its own listing handed out, and the route carries the
+ * exact-origin check every mutating one does; the caller drops the row it
+ * asked about rather than waiting for the next poll. */
+export async function deleteOutboxFile(scope: OutboxScope, name: string): Promise<void> {
+  await api<{ removed: boolean }>(`${outboxBase(scope)}/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
+
 export async function uploadToInbox(tabId: string, file: Blob, name: string): Promise<InboxAttachment> {
   let response: Response;
   try {

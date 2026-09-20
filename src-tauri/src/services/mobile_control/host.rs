@@ -2490,6 +2490,70 @@ async fn project_outbox_file(
     outbox_bytes(root, name, query.get("download").is_some_and(|v| v == "1")).await
 }
 
+/// `DELETE /api/v1/tabs/{tab_id}/outbox/{name}` — drop one of the files the
+/// desktop published to this phone.
+///
+/// What the reader can see, the reader can clear: nothing prunes
+/// `.eldrun/outbox/`, and a picture that has been looked at could only be
+/// removed from a shell on the desktop until now. Only a leaf the listing
+/// handed out is deletable (`outbox::remove` re-proves it exactly as a read
+/// does), and the exact-origin check every mutating route here carries applies
+/// — a `GET` is the session cookie alone, a delete is not.
+async fn outbox_delete(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path((tab_id, name)): Path<(String, String)>,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    if !exact_origin(&headers, &state) {
+        return api_error(StatusCode::FORBIDDEN, "invalid_origin");
+    }
+    match outbox_root(&state, &tab_id) {
+        Ok(root) => outbox_removal(root, name).await,
+        Err(error) => error,
+    }
+}
+
+/// `DELETE /api/v1/projects/{project_id}/outbox/{name}` — the same removal by
+/// the project, for the shelf on the project screen, whose files outlive every
+/// session they were sent from.
+async fn project_outbox_delete(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path((project_id, name)): Path<(String, String)>,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    if !exact_origin(&headers, &state) {
+        return api_error(StatusCode::FORBIDDEN, "invalid_origin");
+    }
+    match project_outbox_root(&state, &project_id) {
+        Ok(root) => outbox_removal(root, name).await,
+        Err(error) => error,
+    }
+}
+
+async fn outbox_removal(root: PathBuf, name: String) -> (StatusCode, Json<serde_json::Value>) {
+    if !outbox::valid_name(&name) {
+        return api_error(StatusCode::NOT_FOUND, "file_not_found");
+    }
+    let removed = tokio::task::spawn_blocking(move || outbox::remove(&root, &name))
+        .await
+        .unwrap_or_else(|error| Err(outbox::OutboxError::Io(error.to_string())));
+    match removed {
+        Ok(()) => (StatusCode::OK, Json(json!({ "removed": true }))),
+        // The shared code for an I/O error here is `read_failed`, which the
+        // phone words as "could not be loaded" — not what a delete failed at.
+        Err(outbox::OutboxError::Io(_)) => {
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "delete_failed")
+        }
+        Err(error) => outbox_error(error),
+    }
+}
+
 async fn outbox_bytes(root: PathBuf, name: String, download: bool) -> Response<Body> {
     if !outbox::valid_name(&name) {
         return api_error(StatusCode::NOT_FOUND, "file_not_found").into_response();
@@ -2647,14 +2711,17 @@ fn router(state: HostState) -> Router {
             get(desktop_images).post(attach_desktop_image),
         )
         .route("/api/v1/tabs/{tab_id}/outbox", get(outbox_list))
-        .route("/api/v1/tabs/{tab_id}/outbox/{name}", get(outbox_file))
+        .route(
+            "/api/v1/tabs/{tab_id}/outbox/{name}",
+            get(outbox_file).delete(outbox_delete),
+        )
         .route(
             "/api/v1/projects/{project_id}/outbox",
             get(project_outbox_list),
         )
         .route(
             "/api/v1/projects/{project_id}/outbox/{name}",
-            get(project_outbox_file),
+            get(project_outbox_file).delete(project_outbox_delete),
         )
         .route("/", get(index))
         .route("/{*path}", get(static_asset))

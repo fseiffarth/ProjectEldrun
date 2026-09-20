@@ -118,6 +118,37 @@ describe("Eldrun Mobile keeps the files the agent sent out of the chat", () => {
     }
   });
 
+  it("deletes one of the agent's files from the gallery, through this tab's scope", async () => {
+    const calls: string[] = [];
+    let files: unknown[] = [
+      { name: "run12.png", kind: "image/png", size: 48_000, modified: 200 },
+      { name: "paper.pdf", kind: "application/pdf", size: 400, modified: 100 },
+    ];
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+      calls.push(`${init?.method ?? "GET"} ${url}`);
+      if (url.endsWith("/outbox")) return Promise.resolve(jsonResponse(200, { files }));
+      if (url.includes("/outbox/")) {
+        files = (files as { name: string }[]).filter((file) => !url.endsWith(`/${file.name}`));
+        return Promise.resolve(jsonResponse(200, { removed: true }));
+      }
+      return Promise.resolve(jsonResponse(404, { error: "not_found" }));
+    }));
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+
+    fireEvent.click(screen.getByRole("button", { name: "Files from the agent (2)" }));
+    const gallery = screen.getByRole("dialog", { name: "Files from the agent" });
+    fireEvent.click(within(gallery).getByRole("button", { name: "Delete run12.png" }));
+    fireEvent.click(within(within(gallery).getByRole("group", { name: "Delete run12.png?" })).getByRole("button", { name: "Delete" }));
+    await settle();
+
+    expect(calls).toContain("DELETE /api/v1/tabs/tab-7/outbox/run12.png");
+    expect(Array.from(gallery.querySelectorAll(".outbox-entry strong")).map((name) => name.textContent))
+      .toEqual(["paper.pdf"]);
+    // The button beside the tab name counts what is left.
+    screen.getByRole("button", { name: "Files from the agent (1)" });
+  });
+
   it("keeps the files out of the screen's chat too, and the button in both views", async () => {
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     vi.stubGlobal("fetch", sidecarFetch([

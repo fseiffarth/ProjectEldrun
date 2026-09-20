@@ -788,6 +788,14 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .outbox-details,.outbox-save { border:0; background:transparent; color:#8fb8ff; font-size:.7rem; padding:5px 0; text-decoration:none; }
 .outbox-save { display:inline-flex; align-items:center; gap:3px; }
 .outbox-details { margin-left:auto; }
+.outbox-delete { margin-left:auto; border:0; background:transparent; color:#f2b8b5; font-size:.8rem; padding:5px 0; }
+.outbox-details + .outbox-delete { margin-left:0; }
+/* A gallery column is 112px wide, so the two answers wrap rather than run off
+   the tile when the name row leaves them nothing. */
+.outbox-confirm { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-left:auto; }
+.outbox-confirm button { border:1px solid #34384a; border-radius:999px; background:#141a26; color:#d8e2f5; font-size:.7rem; padding:4px 8px; }
+.outbox-confirm .outbox-delete-yes { border-color:#6b2f33; background:#2a1416; color:#f2b8b5; }
+.outbox-entry-error { padding:0 2px; color:#f2b8b5; font-size:.7rem; }
 .outbox-viewer-head a, .outbox-text-body a, .outbox-viewer > a { color:#8fb8ff; }
 .outbox-text-body { overflow:auto; padding:12px; }
 .outbox-text-body pre { margin:0 0 12px; white-space:pre-wrap; overflow-wrap:anywhere; font-size:.8rem; }

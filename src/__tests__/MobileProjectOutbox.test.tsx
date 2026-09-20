@@ -130,6 +130,70 @@ describe("Mobile project — the files the desktop sent", () => {
       .toBe("/api/v1/projects/p1/outbox/notes.txt?download=1");
   });
 
+  it("deletes a file from its tile, after asking, and drops the tile without waiting for a poll", async () => {
+    const calls: string[] = [];
+    let files = [
+      picture("plot.png", 1_770_000_000),
+      { name: "notes.txt", kind: "text/plain", size: 900, modified: 1_769_999_000 },
+    ];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      calls.push(`${init?.method ?? "GET"} ${url}`);
+      if (url === "/api/v1/projects/p1/outbox") return new Response(JSON.stringify({ files }), { status: 200 });
+      if (url.startsWith("/api/v1/projects/p1/outbox/")) {
+        files = files.filter((file) => !url.endsWith(`/${file.name}`));
+        return new Response(JSON.stringify({ removed: true }), { status: 200 });
+      }
+      return new Response(JSON.stringify({
+        project: { id: "p1", label: "Alpha", status: "active" },
+        desktop_available: true,
+        agents: [],
+        tabs: TABS,
+      }), { status: 200 });
+    }));
+    render(<Project id="p1" back={() => {}} terminal={() => {}} />);
+
+    const shelf = await screen.findByRole("region", { name: "Files from the desktop" });
+    // One tap does not delete: the 🗑 sits a thumb-width from the tile that
+    // opens the picture, and nothing here can be undone.
+    fireEvent.click(within(shelf).getByRole("button", { name: "Delete plot.png" }));
+    expect(calls.some((call) => call.startsWith("DELETE"))).toBe(false);
+    fireEvent.click(within(shelf).getByRole("button", { name: "Keep" }));
+    expect(within(shelf).getByRole("button", { name: "Delete plot.png" })).toBeTruthy();
+
+    fireEvent.click(within(shelf).getByRole("button", { name: "Delete plot.png" }));
+    fireEvent.click(within(within(shelf).getByRole("group", { name: "Delete plot.png?" })).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(calls).toContain("DELETE /api/v1/projects/p1/outbox/plot.png"));
+    // Gone from the shelf at once, and the count with it — the poll is 8 s away.
+    await waitFor(() => expect(Array.from(shelf.querySelectorAll(".outbox-entry strong")).map((n) => n.textContent)).toEqual(["notes.txt"]));
+    expect(shelf.textContent).toContain("1 file in the project's outbox");
+  });
+
+  it("keeps the tile when the sidecar refuses the delete", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/v1/projects/p1/outbox") {
+        return new Response(JSON.stringify({ files: [picture("plot.png", 1_770_000_000)] }), { status: 200 });
+      }
+      if (init?.method === "DELETE") return new Response(JSON.stringify({ error: "delete_failed" }), { status: 500 });
+      return new Response(JSON.stringify({
+        project: { id: "p1", label: "Alpha", status: "active" },
+        desktop_available: true,
+        agents: [],
+        tabs: TABS,
+      }), { status: 200 });
+    }));
+    render(<Project id="p1" back={() => {}} terminal={() => {}} />);
+
+    const shelf = await screen.findByRole("region", { name: "Files from the desktop" });
+    fireEvent.click(within(shelf).getByRole("button", { name: "Delete plot.png" }));
+    fireEvent.click(within(within(shelf).getByRole("group", { name: "Delete plot.png?" })).getByRole("button", { name: "Delete" }));
+
+    // A file that is still there must not read as gone.
+    expect((await within(shelf).findByRole("alert")).textContent).toBe("The file could not be deleted.");
+    expect(Array.from(shelf.querySelectorAll(".outbox-entry strong")).map((n) => n.textContent)).toEqual(["plot.png"]);
+  });
+
   it("draws no shelf at all when the desktop has sent nothing", async () => {
     vi.stubGlobal("fetch", hostWith([]));
     render(<Project id="p1" back={() => {}} terminal={() => {}} />);

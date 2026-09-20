@@ -1,3 +1,5 @@
+import { useState } from "react";
+
 import { useT } from "../../../src/lib/i18n";
 import { outboxFileUrl, type OutboxFile, type OutboxScope } from "../api";
 import { ageLabel, sizeLabel } from "../terminal/fileLabels";
@@ -14,8 +16,13 @@ import { ageLabel, sizeLabel } from "../terminal/fileLabels";
  *
  * Every tile carries Save, whatever its kind: what the desktop sent is usually
  * sent to be kept, and a thumbnail carries no ⋯ to reach the file sheet with.
+ *
+ * Delete is on the tile as well, behind a confirm that replaces the row rather
+ * than a dialog over it — a thumb reaching the ✕ of a picture it wanted to keep
+ * is exactly the tap that must cost a second one, and nothing here can be
+ * undone: the file is unlinked from the project's `.eldrun/outbox/`.
  */
-export function OutboxGrid({ scope, files, onOpen, onDetails }: {
+export function OutboxGrid({ scope, files, onOpen, onDetails, onDelete }: {
   scope: OutboxScope;
   /** Newest first, as the sidecar listed them. */
   files: readonly OutboxFile[];
@@ -23,8 +30,31 @@ export function OutboxGrid({ scope, files, onOpen, onDetails }: {
   onOpen: (file: OutboxFile) => void;
   /** The sheet for one file — where saving and sharing live. */
   onDetails: (file: OutboxFile) => void;
+  /** Removes one file for good. Left out where deleting is not offered; the
+   * caller drops the row and holds the poll's answer to it. */
+  onDelete?: (file: OutboxFile) => Promise<void>;
 }) {
   const t = useT();
+  /** The one tile whose 🗑 was pressed — the confirm is per tile, and asking
+   * about a second file drops the first question rather than stacking. */
+  const [asking, setAsking] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
+  const remove = async (file: OutboxFile) => {
+    setDeleting(file.name);
+    setFailed(null);
+    try {
+      await onDelete?.(file);
+      setAsking(null);
+    } catch {
+      // The row stays, with the question closed: a file that is still there
+      // must not read as gone, and the next poll will confirm either way.
+      setFailed(file.name);
+      setAsking(null);
+    } finally {
+      setDeleting(null);
+    }
+  };
   const now = Math.floor(Date.now() / 1000);
   return <div className="outbox-gallery-grid">
     {files.map((file) => {
@@ -51,7 +81,14 @@ export function OutboxGrid({ scope, files, onOpen, onDetails }: {
               the same `?download=1` byte stream the sheet's Save uses. */}
           <a className="outbox-save" href={outboxFileUrl(scope, file.name, true)} download={file.name} aria-label={t("mobile.outbox.saveFile", { name: file.name })}><span aria-hidden="true">⤓</span>{t("mobile.outbox.save")}</a>
           {!isImage && <button className="outbox-details" onClick={() => onDetails(file)} aria-label={t("mobile.outbox.actions", { name: file.name })}>⋯</button>}
+          {onDelete && (asking === file.name
+            ? <span className="outbox-confirm" role="group" aria-label={t("mobile.outbox.deleteAsk", { name: file.name })}>
+              <button className="outbox-delete-yes" disabled={deleting === file.name} onClick={() => void remove(file)}>{t("mobile.outbox.deleteYes")}</button>
+              <button onClick={() => setAsking(null)}>{t("mobile.outbox.deleteNo")}</button>
+            </span>
+            : <button className="outbox-delete" onClick={() => { setFailed(null); setAsking(file.name); }} aria-label={t("mobile.outbox.delete", { name: file.name })} title={t("mobile.outbox.deleteYes")}><span aria-hidden="true">🗑</span></button>)}
         </div>
+        {failed === file.name && <span className="outbox-entry-error" role="alert">{t("mobile.outbox.deleteError")}</span>}
       </div>;
     })}
   </div>;

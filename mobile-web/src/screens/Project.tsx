@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AGENT_SORTS, DEFAULT_AGENT_SORT, isAgentSort, sortAgentTabs, type AgentSort } from "../../../shared/agentSort";
 import { promptClock, promptLines, promptsFromTranscript } from "../agentPrompts";
-import { ApiError, api, closeTab, listOutbox, outboxFileUrl, reorderTab, type AgentRow, type OutboxFile, type ProjectDetail, type TabPlace, type TabRow, type TabSchedules } from "../api";
+import { ApiError, api, closeTab, deleteOutboxFile, listOutbox, outboxFileUrl, reorderTab, type AgentRow, type OutboxFile, type ProjectDetail, type TabPlace, type TabRow, type TabSchedules } from "../api";
 import { OUTBOX_POLL, sameOutbox } from "../outbox";
 import { readChoice, writeChoice } from "../prefs";
 import { useRowDrag } from "../rowDrag";
@@ -254,6 +254,19 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     if (file.kind === "application/pdf") window.open(outboxFileUrl({ project: id }, file.name), "_blank", "noopener");
     else setFileOpen(file);
   }, [id]);
+  /** Removes one file the desktop sent, from the tile's own confirm. The row is
+   * dropped here rather than by the next poll — an 8 s wait on a tile that has
+   * already been answered reads as the delete not having worked — and the sheet
+   * closes with the last file, where it would otherwise stand empty. */
+  const removeFile = useCallback(async (file: OutboxFile) => {
+    await deleteOutboxFile({ project: id }, file.name);
+    setOutbox((current) => {
+      const left = current.filter((row) => row.name !== file.name);
+      if (left.length === 0) setGalleryOpen(false);
+      return left;
+    });
+    setFileOpen((open) => open?.name === file.name ? null : open);
+  }, [id]);
   const create = async (kind: "shell" | "agent", agent?: AgentRow, mode?: string) => {
     setCreating(true); setError("");
     const action = `${kind}:${agent?.id ?? ""}:${mode ?? ""}`;
@@ -459,7 +472,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
         {isUntested("mobile.project.outbox") && <span className="untested">Untested</span>}
         <small>{t(outbox.length === 1 ? "mobile.outbox.countOne" : "mobile.outbox.count", { count: outbox.length })}</small>
       </div>
-      <OutboxGrid scope={outboxScope} files={outbox.slice(0, SHELF_FILES)} onOpen={openFile} onDetails={setFileOpen} />
+      <OutboxGrid scope={outboxScope} files={outbox.slice(0, SHELF_FILES)} onOpen={openFile} onDetails={setFileOpen} onDelete={removeFile} />
       <button
         className="outbox-shelf-all"
         onClick={() => setGalleryOpen(true)}
@@ -496,7 +509,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     {scheduleTab && <ScheduleSheet tabId={scheduleTab.tab.id} label={scheduleTab.tab.label} initialMessage={scheduleTab.initialMessage} onClose={() => setScheduleTab(null)} />}
     {/* The viewer covers the phone; the gallery stays open behind it, so
         closing the file comes back to the list it was opened from. */}
-    {galleryOpen && !fileOpen && <OutboxGallery scope={outboxScope} files={outbox} onOpen={openFile} onDetails={setFileOpen} onClose={() => setGalleryOpen(false)} />}
+    {galleryOpen && !fileOpen && <OutboxGallery scope={outboxScope} files={outbox} onOpen={openFile} onDetails={setFileOpen} onDelete={removeFile} onClose={() => setGalleryOpen(false)} />}
     {fileOpen && <OutboxViewer key={`${id}/${fileOpen.name}`} scope={outboxScope} file={fileOpen} onClose={() => setFileOpen(null)} />}
   </main>;
 }

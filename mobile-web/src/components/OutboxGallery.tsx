@@ -15,7 +15,7 @@ import { isUntested } from "../../../src/lib/untested";
  * project screen shows the same files on a shelf under its tab cards and opens
  * this sheet for the rest of them.
  */
-export function OutboxGallery({ scope, files, onOpen, onDetails, onClose }: {
+export function OutboxGallery({ scope, files, onOpen, onDetails, onDelete, onClose }: {
   scope: OutboxScope;
   /** Newest first, as the sidecar listed them. */
   files: readonly OutboxFile[];
@@ -23,6 +23,8 @@ export function OutboxGallery({ scope, files, onOpen, onDetails, onClose }: {
   onOpen: (file: OutboxFile) => void;
   /** The sheet for one file — where saving and sharing live. */
   onDetails: (file: OutboxFile) => void;
+  /** Removes one file for good, behind the tile's own confirm. */
+  onDelete?: (file: OutboxFile) => Promise<void>;
   onClose: () => void;
 }) {
   const t = useT();
@@ -38,7 +40,7 @@ export function OutboxGallery({ scope, files, onOpen, onDetails, onClose }: {
         ? <p className="sheet-note">{t("mobile.outbox.galleryEmpty")}</p>
         : <>
           <p className="sheet-note">{t(files.length === 1 ? "mobile.outbox.countOne" : "mobile.outbox.count", { count: files.length })}</p>
-          <OutboxGrid scope={scope} files={files} onOpen={onOpen} onDetails={onDetails} />
+          <OutboxGrid scope={scope} files={files} onOpen={onOpen} onDetails={onDetails} onDelete={onDelete} />
         </>}
     </section>
   </div>;

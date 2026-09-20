@@ -12,6 +12,7 @@ import {
   ApiError,
   api,
   attachDesktopImage,
+  deleteOutboxFile,
   getAgentStatus,
   getTranscript,
   listDesktopImages,
@@ -1371,6 +1372,19 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     if (file.kind === "application/pdf") window.open(outboxFileUrl({ tab: tab.id }, file.name), "_blank", "noopener");
     else setOutboxOpen(file);
   }, [tab.id]);
+  /** Removes one of the files the agent sent, from the tile's own confirm — the
+   * same removal the project screen's shelf does, through this tab's scope. The
+   * row goes now rather than at the next poll, and the sheet closes with the
+   * last file rather than standing empty over the session. */
+  const removeOutbox = useCallback(async (file: OutboxFile) => {
+    await deleteOutboxFile({ tab: tab.id }, file.name);
+    setOutbox((current) => {
+      const left = current.filter((row) => row.name !== file.name);
+      if (left.length === 0) setGallery(false);
+      return left;
+    });
+    setOutboxOpen((open) => open?.name === file.name ? null : open);
+  }, [tab.id]);
   /** Chunks above the revealed window stay in memory but out of the DOM — the
    * lazy half of the earlier-output log. */
   const hiddenChunks = Math.max(0, earlier.chunks.length - revealed);
@@ -2403,7 +2417,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     {statusSheet && <StatusSheet tab={tab} live={status} onLimits={setLimits} onClose={() => setStatusSheet(false)} />}
     {/* The viewer covers the phone; the gallery stays chosen behind it, so
         closing the file lands back on the grid. */}
-    {gallery && !outboxOpen && <OutboxGallery scope={outboxScope} files={outbox} onOpen={openOutbox} onDetails={setOutboxOpen} onClose={() => setGallery(false)} />}
+    {gallery && !outboxOpen && <OutboxGallery scope={outboxScope} files={outbox} onOpen={openOutbox} onDetails={setOutboxOpen} onDelete={removeOutbox} onClose={() => setGallery(false)} />}
     {outboxOpen && <OutboxViewer key={`${tab.id}/${outboxOpen.name}`} scope={outboxScope} file={outboxOpen} onClose={() => setOutboxOpen(null)} />}
 
   </main>;
