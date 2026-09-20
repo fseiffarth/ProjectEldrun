@@ -1,5 +1,6 @@
 import { useT, type TranslationKey } from "../../../src/lib/i18n";
 import { OptionSheet, type SheetOption } from "../components/OptionSheet";
+import { SpeechLangSheet, speechLangSummary } from "../components/SpeechLangPicker";
 import { OutboxGallery } from "../components/OutboxGallery";
 import { OutboxViewer } from "../components/OutboxViewer";
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
@@ -25,6 +26,7 @@ import {
 } from "../api";
 import { DRAFT_SAVE_DELAY, readDraft, writeDraft } from "../drafts";
 import { readFlag, readTerminalView, writeFlag, writeTerminalView, type TerminalViewChoice } from "../prefs";
+import { readSpeechLang, speechTag, type SpeechLang } from "../speechLang";
 import { TERMINAL_PROTOCOL, TERMINAL_SIZE } from "../terminal/protocol";
 import { dedentLines, readableRange, readableScreen, readableText, TRUNCATION_NOTICE, type ReadableLine } from "../terminal/readableScreen";
 import {
@@ -307,7 +309,7 @@ function SpeakMessage({ id, text }: { id: string; text: () => string }) {
   const label = t(speaking ? "mobile.speech.stop" : "mobile.speech.read");
   return <button className={speaking ? "turn-copy turn-speak speaking" : "turn-copy turn-speak"} aria-label={label} title={label} aria-pressed={speaking} onClick={() => {
     if (speaking) stopSpeaking();
-    else speak(id, spokenText(text(), t("mobile.speech.code")), navigator.language || "en-US", true);
+    else speak(id, spokenText(text(), t("mobile.speech.code")), speechTag(), true);
   }}>{speaking
     ? <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1" /></svg>
     : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4h3l5 4V6l-5 4zM16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11" /></svg>}</button>;
@@ -613,6 +615,12 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   const pendingId = useRef(0);
   const [focusSource, setFocusSource] = useState<"session" | "screen">("session");
   const [readAloud, setReadAloud] = useState(() => readFlag("focusReadAloud"));
+  /** The language read-aloud and dictation use, and whether its picker is
+   * open. Only the picker reads this state — the speaking and listening sites
+   * ask `speechTag()` for the stored value at the moment they need it, so a
+   * change reaches them without a re-render of anything. */
+  const [speechLang, setSpeechLang] = useState<SpeechLang>(() => readSpeechLang());
+  const [speechLangSheet, setSpeechLangSheet] = useState(false);
   /** Whether the list under the Focus button is open: where an agent tab's
    * Focus reads from, the stored session or the screen. A dimmed Session row
    * says why it cannot be read — a phone shows no tooltip. */
@@ -1309,7 +1317,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     const fresh = turns.slice(known + 1).filter((turn) => turn.kind === "answer");
     if (fresh.length === 0 || fresh.length > MAX_SPOKEN_AT_ONCE) return;
     const code = t("mobile.speech.code");
-    for (const turn of fresh) speak(turn.key, spokenText(turn.text, code), navigator.language || "en-US");
+    for (const turn of fresh) speak(turn.key, spokenText(turn.text, code), speechTag());
   }, [sessionShown, transcript, readAloud, listening, t]);
   useEffect(() => {
     if (listening || !sessionShown) stopSpeaking();
@@ -2069,7 +2077,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     }
     const request = voiceRequest.current + 1;
     voiceRequest.current = request;
-    const language = navigator.language || "en-US";
+    const language = speechTag();
     setPreparingVoice(true);
     setVoiceStatus({ key: "mobile.voice.checking" });
     setVoiceFailure(null);
@@ -2231,6 +2239,16 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
           <span><strong>{t("mobile.speech.auto")} {isUntested("mobile.focus.readAloud") && <em>{t("mobile.focus.untested")}</em>}</strong><small>{t(speechAvailable ? "mobile.speech.autoHint" : "mobile.speech.unavailable")}</small></span>
           {readAloud && speechAvailable && <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 13 4.5 4.5L19 7" /></svg>}
         </button>
+        {/* The one language for both directions — what an answer is read in
+            and what dictation is listened for. The phone's own is the default,
+            and the row says which language that turned out to be. */}
+        <button role="menuitem" aria-haspopup="dialog" aria-expanded={speechLangSheet} onClick={() => {
+          setFocusMenu(false);
+          setSpeechLangSheet(true);
+        }}>
+          <span><strong>{t("mobile.speech.language")} {isUntested("mobile.speech.language") && <em>{t("mobile.focus.untested")}</em>}</strong><small>{speechLangSummary(speechLang, t)}</small></span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
+        </button>
       </div>
     </div>}
     <div className="terminal-body">
@@ -2383,6 +2401,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
         onPick={chooseModel}
         onClose={closeModelSheet}
       />)}
+    {speechLangSheet && <SpeechLangSheet chosen={speechLang} onChoose={setSpeechLang} onClose={() => setSpeechLangSheet(false)} />}
     {addSheet && <OptionSheet
       title="Add to the message"
       options={addOptions}

@@ -178,8 +178,8 @@ small { color:#9498aa; }
 .tabbed > .screen { padding-bottom:calc(76px + max(24px,env(safe-area-inset-bottom))); }
 .projects-row { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:17px; }
 .projects-row h1 { font-size:1.2rem; }
-.mobile-alerts { display:grid; gap:10px; margin-top:28px; }
-.mobile-alerts h2 { margin:0; font-size:1.2rem; }
+.mobile-alerts,.phone-settings { display:grid; gap:10px; margin-top:28px; }
+.mobile-alerts h2,.phone-settings h2 { margin:0; font-size:1.2rem; }
 .mobile-alert-list { display:grid; gap:8px; }
 /* The ✓ rides beside the row, never inside it: a button in a button is invalid
    markup and would fold finishing the thing into the tap that opens it. */

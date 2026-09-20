@@ -109,6 +109,22 @@ describe("Eldrun Mobile terminal dictation", () => {
     expect(screen.getByRole("status").textContent).toContain("Heard: fix the mobile voice input");
   });
 
+  it("listens in the phone's language, or in the one the Reader's picker chose", async () => {
+    Object.defineProperty(window.navigator, "language", { configurable: true, value: "en-GB" });
+    render(<Terminal tab={{ id: "opaque-agent", label: "Claude", kind: "agent", available: true, viewer_busy: false }} back={() => {}} />);
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "Dictate" }));
+    await act(async () => {});
+    expect(FakeRecognition.instances[0].lang).toBe("en-GB");
+
+    // The picker writes one choice for both directions of voice.
+    localStorage.setItem("eldrun.mobile.speechLang", "de");
+    fireEvent.click(screen.getByRole("button", { name: "Stop dictation" }));
+    fireEvent.click(screen.getByRole("button", { name: "Dictate" }));
+    await act(async () => {});
+    expect(FakeRecognition.instances[1].lang).toBe("de-DE");
+  });
+
   it("forgets the dictated words once they are sent, while it keeps listening", async () => {
     render(<Terminal tab={{ id: "opaque-agent", label: "Claude", kind: "agent", available: true, viewer_busy: false }} back={() => {}} />);
     await act(async () => {});

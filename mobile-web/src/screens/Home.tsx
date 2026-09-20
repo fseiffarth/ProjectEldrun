@@ -12,6 +12,9 @@ import { formatBuildStamp } from "../buildInfo";
 // release bump, so the phone always reports the build it is running.
 import { version as APP_VERSION } from "../../../package.json";
 import { isUntested } from "../../../src/lib/untested";
+import { useT } from "../../../src/lib/i18n";
+import { SpeechLangSheet, speechLangSummary } from "../components/SpeechLangPicker";
+import { readSpeechLang, type SpeechLang } from "../speechLang";
 
 const BUILD_STAMP = formatBuildStamp();
 
@@ -133,6 +136,13 @@ export function Home({ open, openTab, todo, mail }: {
   mail: () => void;
 }) {
   const [view, setView] = useState<HomeView>(() => (readFlag("projectsAgents") ? "agents" : "active"));
+  const t = useT();
+  /** The language the phone speaks and listens in (`speechLang.ts`). It is
+   * reachable from inside a session too, under the Reader's menu, but it is
+   * the phone's setting rather than that session's — and a reader who has to
+   * fix it mid-answer has already been read to in the wrong voice. */
+  const [speechLang, setSpeechLang] = useState<SpeechLang>(() => readSpeechLang());
+  const [speechLangSheet, setSpeechLangSheet] = useState(false);
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<ProjectRow[]>([]);
   /** Whether any list has come back yet. Until it has, an empty `rows` is
@@ -263,5 +273,17 @@ export function Home({ open, openTab, todo, mail }: {
       </div>)}</section>
       {alerts && <AlertRows alerts={alerts} onAlerts={setAlerts} todo={todo} mail={mail} />}
     </>}
+    {/* What this phone does, as against what the desktop is doing — kept to the
+        end of the page, under whichever list the reader came for. */}
+    <section className="phone-settings" aria-labelledby="phone-settings-heading">
+      <h2 id="phone-settings-heading">{t("mobile.home.phoneSettings")}</h2>
+      <ul className="option-list">
+        <li><button aria-haspopup="dialog" aria-expanded={speechLangSheet} onClick={() => setSpeechLangSheet(true)}>
+          <span><strong>{t("mobile.speech.language")}{isUntested("mobile.speech.language") && <span className="untested">Untested</span>}</strong><small>{speechLangSummary(speechLang, t)}</small></span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
+        </button></li>
+      </ul>
+    </section>
+    {speechLangSheet && <SpeechLangSheet chosen={speechLang} onChoose={setSpeechLang} onClose={() => setSpeechLangSheet(false)} />}
   </main>;
 }

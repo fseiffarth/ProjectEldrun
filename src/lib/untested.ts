@@ -252,6 +252,7 @@ export const UNTESTED = {
   "mobile.mailReply": { area: "mobile", what: "MobileSettings · Reply from the phone" },
   "mobile.outbox.gallery": { area: "mobile", what: "OutboxGallery · Files the agent sent to the phone" },
   "mobile.project.reorder": { area: "mobile", what: "Project · Drag to reorder the desktop's tabs" },
+  "mobile.speech.language": { area: "mobile", what: "Terminal · Reader voice-language picker" },
   "mobile.windowsTerminalsNote": { area: "mobile", what: "MobileSettings · On Windows the phone cannot open this computer's terminals or agent tabs: they attach thr…" },
 
   // --- monitoring — System monitor ----------------------------------

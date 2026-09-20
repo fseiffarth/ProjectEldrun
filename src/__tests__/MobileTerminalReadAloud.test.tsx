@@ -135,4 +135,24 @@ describe("Eldrun Mobile Reader reads answers aloud", () => {
     await settle();
     expect(spoken.map((utterance) => utterance.text)).toEqual(["", "Done: the ✕ empties the draft. code block."]);
   });
+
+  it("speaks in the phone's language until the picker chooses another", async () => {
+    Object.defineProperty(window.navigator, "language", { configurable: true, value: "en-GB" });
+    vi.stubGlobal("fetch", sidecarFetch(() => ({ available: true, version: "1:1", truncated: false, entries: [FIRST] })));
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+    const answer = screen.getByTestId("session-transcript").querySelector(".readable-turn.agent.answer") as HTMLElement;
+    fireEvent.click(within(answer).getByRole("button", { name: "Read aloud" }));
+    expect(spoken.map((utterance) => utterance.lang)).toEqual(["en-GB"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Reader" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Voice language/ }));
+    // What is still being said was said in the old voice; the picker cuts it.
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Deutsch" }));
+    expect(cancel).toHaveBeenCalled();
+    expect(localStorage.getItem("eldrun.mobile.speechLang")).toBe("de");
+
+    fireEvent.click(within(answer).getByRole("button", { name: "Read aloud" }));
+    expect(spoken.map((utterance) => utterance.lang)).toEqual(["en-GB", "de-DE"]);
+  });
 });

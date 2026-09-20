@@ -3,7 +3,7 @@
  * under the "Projects" heading — a first open with no active project looked
  * broken, and there was no way to tell it from a list still on its way.
  */
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Home } from "../../mobile-web/src/screens/Home";
 
@@ -13,11 +13,13 @@ function answer(projects: unknown[]) {
   fetchMock.mockImplementation(async (input: string | URL | Request) => {
     const url = String(input);
     if (url.startsWith("/api/v1/alerts")) return new Response(JSON.stringify({ alerts: { enabled: false, items: [] } }), { status: 200 });
+    if (url.startsWith("/api/v1/activity")) return new Response(JSON.stringify({ tabs: [], desktop_available: true }), { status: 200 });
     return new Response(JSON.stringify({ projects }), { status: 200 });
   });
 }
 
 beforeEach(() => {
+  localStorage.clear();
   vi.stubGlobal("fetch", fetchMock);
 });
 
@@ -69,6 +71,25 @@ describe("Mobile home — project list states", () => {
     expect(await screen.findByText(/Type a project's name/)).toBeTruthy();
     fireEvent.change(screen.getByPlaceholderText("Project name"), { target: { value: "zeta" } });
     expect(await screen.findByText(/No project by that name/)).toBeTruthy();
+  });
+
+  it("sets the voice language from the start page, in any of its views", async () => {
+    Object.defineProperty(window.navigator, "language", { configurable: true, value: "en-GB" });
+    answer([{ id: "p1", label: "Alpha", status: "active", live_sessions: 1 }]);
+    render(<Home open={noop} openTab={noop} todo={noop} mail={noop} />);
+    await screen.findByText("Alpha");
+    const row = screen.getByRole("button", { name: /Voice language/ });
+    // Until it is set, the row says which language the phone itself reports.
+    expect(row.textContent).toContain("en-GB");
+
+    fireEvent.click(row);
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Deutsch" }));
+    expect(localStorage.getItem("eldrun.mobile.speechLang")).toBe("de");
+    expect(screen.getByRole("button", { name: /Voice language/ }).textContent).toContain("Deutsch");
+
+    // The agents mode replaces the project list, not the phone's own settings.
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Voice language/ }).textContent).toContain("Deutsch"));
   });
 
   it("keeps the last list, and no empty-state copy, when the host drops", async () => {
