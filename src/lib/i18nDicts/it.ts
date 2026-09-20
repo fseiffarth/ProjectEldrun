@@ -1265,7 +1265,7 @@ export const dict: Dict = {
   "agentPrompts.lastWorking": "ha lavorato {relative}",
   "agentPrompts.lastDone": "concluso {relative}",
   "agentPrompts.neverWorked": "non visto al lavoro in questa sessione",
-  "agentPrompts.modelTagTitle": "Il modello con cui questo agente ha risposto l'ultima volta, letto dalla sua trascrizione.",
+  "agentPrompts.modelTagTitle": "Il modello che questa sessione mostra sulla propria riga di stato; in mancanza, quello con cui ha risposto l'ultima volta, letto dalla sua trascrizione.",
   "agentPrompts.lastPrompt": "ultimo prompt: {prompt}",
   "agentPrompts.lastPromptTitle": "L'ultimo prompt ricevuto da questo agente \u2014 digitato nel terminale, incollato, inviato da qui o da una pianificazione \u2014 letto dalla sua trascrizione.",
   "agentContinue.toggle": "Continua",

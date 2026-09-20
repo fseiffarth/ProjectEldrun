@@ -2125,7 +2125,9 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
    * does not blink empty on the way to the next step. */
   /** The model chip's label: the model the session prints, with the reasoning
    * effort beside it where the session prints one too (Antigravity). Without a
-   * readable status it falls back to the model the tab last answered with. */
+   * readable status it falls back to the tab's published model — the desktop's
+   * reading of this same line, composed the same way, or the transcript's id
+   * behind it. */
   const modelChip = status?.model
     ? (status.effort ? `${status.model} · ${status.effort}` : status.model)
     : tab.agent_model ?? "Model";

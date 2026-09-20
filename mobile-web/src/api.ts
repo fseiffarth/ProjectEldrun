@@ -7,10 +7,14 @@ export type AgentStatus = "working" | "question" | "done";
  * Agents view prints under an agent tab, so the project overview says the same
  * thing without opening the sheet. `next` is desktop-local wall clock. */
 export interface TabSchedules { total: number; enabled: number; next?: string }
-/** `agent_model` is the model the tab last answered with, shortened by the
- * desktop; `working_at`/`done_at` are desktop wall-clock ms of the tab's last
- * working output and last finished turn. All three are the desktop's own
- * readings and absent while it is closed or before the tab has done either. */
+/** `agent_model` is the model the tab's session is showing, as the desktop
+ * reads it off the pane's own status line — the same words, and the same
+ * parse, as the model chip in Focus (`terminal/statusLine`); for a tab whose
+ * pane the desktop window does not hold it falls back to the model the tab
+ * last answered with, shortened from the transcript's id. `working_at`/
+ * `done_at` are desktop wall-clock ms of the tab's last working output and
+ * last finished turn. All three are the desktop's own readings and absent
+ * while it is closed or before the tab has done either. */
 /** One prompt an agent tab was given, as the desktop read it off the agent's
  * own transcript — typed into the terminal, pasted, sent from here or by a
  * schedule alike. `at` is the transcript record's ISO instant, which the phone

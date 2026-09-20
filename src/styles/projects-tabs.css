@@ -2932,8 +2932,8 @@
 .agent-prompts-tabs-head .settings-section-title { margin: 0; }
 .agent-prompts-sort { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-muted); }
 
-/* The model tag: the transcript's own model name, in the same pill the state
-   uses so the two read as one row of facts about the tab. */
+/* The model tag: the model the session itself is showing, in the same pill the
+   state uses so the two read as one row of facts about the tab. */
 .agent-prompts-model {
   padding: 1px 7px;
   border: 1px solid var(--border-color);

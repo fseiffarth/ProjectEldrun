@@ -12,6 +12,9 @@ import { useActivityStore } from "../stores/activity";
 import { useAgentPromptsStore } from "../stores/agents/agentPrompts";
 import { useAgentSchedulesStore } from "../stores/agents/agentSchedules";
 import { useTabsStore, type TabEntry } from "../stores/tabs";
+import { registerTerminal, unregisterTerminal } from "../lib/terminal/terminalRegistry";
+import type { ReadableBufferLike } from "../../mobile-web/src/terminal/readableScreen";
+import type { Terminal } from "@xterm/xterm";
 
 const agent: TabEntry = { key: "agent-1", label: "Claude", cmd: "claude", cwd: "/project", kind: "agent", sessionId: "session-abc", scheduleTargetId: "target-1" };
 const shell: TabEntry = { key: "shell", label: "Shell", cmd: "bash", cwd: "/project", kind: "shell" };
@@ -76,6 +79,30 @@ describe("AgentSchedulesView order and model tag", () => {
     expect(claudeTimes.startsWith("working now · finished ")).toBe(true);
     expect(codexTimes.startsWith("worked ")).toBe(true);
     expect(codexTimes).toContain(" · finished ");
+  });
+
+  it("prefers the model the session is showing to the one its transcript names", async () => {
+    // The tab has been switched to Sonnet since its last answer: the status
+    // line under its input box says so, the transcript still names the model
+    // that answered. The tag is what the session shows — the same words, off
+    // the same screen, as the phone's Focus chip.
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === "agent_tab_model") return (args as { agent: string }).agent === "claude" ? "claude-opus-4-1-20250805" : null;
+      return [];
+    });
+    const rows = ["● Done.", "", ">", "~/project (develop) · Sonnet 4.5 · 85% context left"];
+    const buffer: ReadableBufferLike = {
+      length: rows.length,
+      getLine: (row) => (rows[row] === undefined ? undefined : { translateToString: () => rows[row] }),
+    };
+    const term = { buffer: { active: buffer } } as unknown as Terminal;
+    registerTerminal("p:agent-1", term);
+    try {
+      await act(async () => { render(<AgentSchedulesView scope="p" active />); });
+      expect((await screen.findByTestId("agent-model")).textContent).toBe("Sonnet 4.5");
+    } finally {
+      unregisterTerminal("p:agent-1", term);
+    }
   });
 
   it("puts a tab that stopped to ask above one that is merely working", async () => {

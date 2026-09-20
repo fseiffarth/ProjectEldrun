@@ -139,7 +139,10 @@ pub struct PublicTab {
     /// This intentionally never stores or infers terminal text in the sidecar.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_status: Option<String>,
-    /// The model an agent tab last answered with, as the desktop shortened it.
+    /// The model an agent tab's session is showing, in the words the session
+    /// itself prints — the desktop reads them off the pane. A tab whose pane
+    /// the desktop window does not hold falls back to the model it last
+    /// answered with, shortened from the transcript's id.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_model: Option<String>,
     /// Desktop wall clock (ms) of the tab's last working output and of its last

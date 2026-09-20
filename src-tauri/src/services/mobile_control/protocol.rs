@@ -849,8 +849,11 @@ pub struct AgentTabStatus {
     pub tmux_session: String,
     /// `working`, `question`, or `done`.
     pub status: String,
-    /// The model this tab last answered with, already shortened for display
-    /// by the desktop (`lib/agents/agentModel`), when its transcript names one.
+    /// The model this tab's session shows on its own status line, read off
+    /// the pane by the desktop and already composed for display
+    /// (`lib/agents/agentModel`): the model, and the reasoning effort beside
+    /// it where the session prints one. Falls back to the shortened id of the
+    /// model the tab last answered with when no pane here has its screen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// Desktop wall clock (ms since the epoch) of the tab's last output while

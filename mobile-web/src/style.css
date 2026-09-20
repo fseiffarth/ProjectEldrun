@@ -99,11 +99,13 @@ nav button,.keys button { flex:1; }
    its own, so it is never the thing that gets cut. The stronger selector is
    what beats `.card span:first-child`, which would otherwise stack the two. */
 .tab-card-head .tab-card-main .tab-card-title { display:flex; align-items:baseline; gap:8px; min-width:0; }
-/* The status pill's shape (`.agent-status`, which it shares the rule with) in
-   the muted weight a fact-not-a-state wears — the same pairing the desktop's
-   `.agent-prompts-model` makes beside its own. The card's own selector is what
-   holds against that shared rule, which is written further down. */
-.tab-card-main .tab-card-model { display:inline-block; flex:0 1 auto; max-width:45%; padding:2px 7px; color:#9498aa; font-size:.72rem; font-weight:600; text-transform:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+/* Plain muted words beside the name, in no box at all: the status pill's
+   outline is how a *state* is marked, and wearing it made a fact that never
+   changes look like one more thing to read. It says what the session's own
+   status line says (`agentModel.screenModelTag`), so the tag and the chip over
+   the keyboard are one reading in two places. The name keeps the row's spare
+   width; it is the tag that gets cut. */
+.tab-card-main .tab-card-model { display:inline-block; flex:0 1 auto; max-width:45%; color:#9498aa; font-size:.72rem; font-weight:600; text-transform:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .tab-card-grip { position:relative; z-index:1; flex:0 0 auto; width:44px; padding:0; border:0; border-left:1px solid #2d3040; border-radius:0 11px 0 0; background:transparent; color:#6f7488; font-size:1.05rem; touch-action:none; cursor:grab; }
 .tab-card-grip:active { cursor:grabbing; color:#d3d6e4; }
 /* A card that is only its head — the home screen's project rows, which wear the
@@ -151,7 +153,7 @@ nav button,.keys button { flex:1; }
 /* The same reading on the flat Agents list, where a row is one tap tall: two
    lines, then ellipsis. */
 .activity-prompt { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; color:#b6bacb; overflow-wrap:anywhere; }
-.agent-status,.tab-card-model { display:inline-flex; align-items:center; gap:5px; padding:4px 8px; border:1px solid currentColor; border-radius:0; font-weight:700; text-transform:capitalize; }
+.agent-status { display:inline-flex; align-items:center; gap:5px; padding:4px 8px; border:1px solid currentColor; border-radius:0; font-weight:700; text-transform:capitalize; }
 .agent-status.working { color:#6fe29c; background:#173827; }
 .agent-status.question { color:#ffd36b; background:#493b1d; }
 .agent-status.done { color:#91e6a9; background:#193a29; }

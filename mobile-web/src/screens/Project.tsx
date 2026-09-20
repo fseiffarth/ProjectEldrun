@@ -256,20 +256,17 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
       {/* The card opens the session; on an agent tab its name renames it.
           A button cannot hold a button, so the opener is a sibling stretched
           over the whole card — head, prompts and foot — and the controls that
-          are not it sit above it. The line under the name says which agent runs
-          here — the registry's name for its CLI, which a renamed tab's label no
-          longer does. The model rides beside the name rather than in that line:
-          it is the fact one looks up a list for, and a line of its own for it
-          would push the prompts further down every card. */}
+          are not it sit above it. The name carries the model beside it and
+          nothing under it: the CLI's own name repeated under every card bought
+          little and pushed each card's prompts a line further down. */}
       <div className={`card tab-card-main${tab.available ? "" : " unavailable"}`}>
         <span>
           <span className="tab-card-title">
             {tab.kind === "agent"
               ? <button className="tab-card-name" onClick={() => setRenameTab(tab)} aria-haspopup="dialog" aria-expanded={renameTab?.id === tab.id} aria-label={`Rename ${tab.label}`} title="Rename"><strong>{tab.label}</strong></button>
               : <strong>{tab.label}</strong>}
-            {tab.agent_model && <small className="tab-card-model" title="The model this tab last answered with.">{tab.agent_model}</small>}
+            {tab.agent_model && <small className="tab-card-model" title="The model this session shows on its own status line.">{tab.agent_model}</small>}
           </span>
-          <small>{tab.kind === "agent" ? tab.agent_label ?? "agent" : tab.kind}{tab.viewer_busy ? " · open elsewhere" : tab.available ? " · live" : " · gone"}</small>
         </span>
         {/* A shell card is one row, so its › stays here; an agent card carries
             the same cluster on its foot instead, out of the ✕'s reach. */}

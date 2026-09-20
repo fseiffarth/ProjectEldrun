@@ -1269,7 +1269,7 @@ export const dict: Dict = {
   "agentPrompts.lastWorking": "gearbeitet {relative}",
   "agentPrompts.lastDone": "fertig {relative}",
   "agentPrompts.neverWorked": "in dieser Sitzung noch nicht bei der Arbeit gesehen",
-  "agentPrompts.modelTagTitle": "Das Modell, mit dem dieser Agent zuletzt geantwortet hat, aus seinem eigenen Protokoll gelesen.",
+  "agentPrompts.modelTagTitle": "Das Modell, das diese Sitzung in ihrer eigenen Statuszeile anzeigt; sonst das, mit dem sie zuletzt geantwortet hat, aus ihrem Protokoll gelesen.",
   "agentPrompts.lastPrompt": "letzter Prompt: {prompt}",
   "agentPrompts.lastPromptTitle": "Der letzte Prompt, den dieser Agent bekommen hat \u2014 im Terminal getippt, eingefügt, von hier oder per Zeitplan gesendet \u2014 aus seinem eigenen Protokoll gelesen.",
   "agentContinue.toggle": "Weiter",

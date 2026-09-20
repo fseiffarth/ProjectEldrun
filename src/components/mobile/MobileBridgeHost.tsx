@@ -12,7 +12,7 @@ import { closeTabInScope } from "../../lib/remote/closeRemoteTab";
 import { useSettingsStore } from "../../stores/settings";
 import { calendarColor, useCalendarStore, visibleCalendarIds } from "../../stores/calendar/calendar";
 import { lastTabReadAt, noteUserInput, useActivityStore } from "../../stores/activity";
-import { useAgentModelsStore } from "../../stores/agents/agentModels";
+import { agentTabModelTag, useAgentModelsStore } from "../../stores/agents/agentModels";
 import { persistScopeLayout } from "../../stores/agents/agentSchedules";
 import { sendCollectedPrompt, useAgentPromptsStore, type ProjectAgentPrompt, type SentAgentPrompt } from "../../stores/agents/agentPrompts";
 import { isTrashProject } from "../../lib/projects/trashProject";
@@ -393,10 +393,11 @@ function projectAgentStatuses(projectId: string): AgentTabStatus[] {
     const status: AgentTabStatus["status"] = state;
     // The phone sorts by these and tags the row with the model; the answer is
     // whatever the desktop knows at this poll (the model store throttles its
-    // own re-read), so the phone can be one poll behind, never wrong.
+    // own re-read), so the phone can be one poll behind, never wrong. The
+    // model is read off the pane first, which owes nothing to that throttle.
     void models.refresh(projectId, tab);
     const row: AgentTabStatus = { tmux_session: tab.tmuxSession, status };
-    const model = models.byTab[ptyId];
+    const model = agentTabModelTag(projectId, tab, models.byTab);
     if (model) row.model = model;
     const workingAt = status === "working" ? Date.now() : activity.lastWorkingByTab[ptyId];
     if (workingAt !== undefined) row.working_at = workingAt;

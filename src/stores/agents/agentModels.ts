@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
-import { shortModelName } from "../../lib/agents/agentModel";
+import { screenModelTag, shortModelName } from "../../lib/agents/agentModel";
+import { AGENT_ITEMS } from "../../components/tabs/newTabItems";
 import { adoptTranscriptPrompts, adoptTypedPrompt, type TranscriptPrompt } from "../../lib/agents/prompt/adopt";
 import { lastPromptEcho } from "../../lib/agents/prompt/echo";
 import { terminalFor } from "../../lib/terminal/terminalRegistry";
@@ -43,7 +44,9 @@ export function clearAgentModelFloorForTest(): void {
 
 interface AgentModelsStore {
   /** Composed PTY id → display label (`lib/agents/agentModel.shortModelName`). Absent
-   *  when the transcript names no model yet or the agent keeps none. */
+   *  when the transcript names no model yet or the agent keeps none. What the
+   *  views show is `agentTabModelTag` below, which puts the pane's own status
+   *  line in front of this. */
   byTab: Record<string, string>;
   /** Composed PTY id → the last prompt the tab was given, one cleaned line,
    *  however it was submitted. Absent when the transcript holds none Eldrun
@@ -65,6 +68,45 @@ interface AgentModelsStore {
 
 export function isModelTaggedTab(tab: TabEntry): boolean {
   return (tab.kind === "agent" || tab.kind === "local_agent") && !!tab.sessionId;
+}
+
+/** The CLI's own name for the agent a tab runs — what the shared screen
+ * parsers scope their family rules by (OpenCode's mini frame, Antigravity's
+ * footer). The registry's label for the binary, or the tab's own name for a
+ * custom command the registry has never heard of, which is the rule the
+ * sidecar publishes to the phone as `agent_label` (`discovery::agent_label_of`)
+ * — so both sides read one screen the same way. */
+export function agentTabLabel(tab: TabEntry): string {
+  return AGENT_ITEMS.find((item) => item.cmd === tab.cmd)?.label ?? tab.label;
+}
+
+/**
+ * The model tag one agent tab wears, for every surface that shows one: the
+ * Agents view here and the phone's tab cards through the mobile bridge.
+ *
+ * The pane's own status line comes first — the model in the words the session
+ * prints, with the reasoning effort beside it where it prints one
+ * (`lib/agents/agentModel.screenModelTag`), which is exactly what the phone's
+ * Focus chip reads off the same screen. Behind it stands `byTab`, the
+ * transcript's model id shortened: the transcript names the model of the last
+ * *answer*, so a `/model` switch is invisible there until the next one, and it
+ * names it as an API id rather than in the session's own words. A tab whose
+ * pane this window does not hold — popped out, or never mounted — has no
+ * screen to read and is tagged from the transcript alone.
+ *
+ * Read at display time rather than stored: the screen can change without a
+ * turn, which is precisely the case the transcript misses, and both callers
+ * re-render (or re-poll) often enough to follow it.
+ */
+export function agentTabModelTag(
+  scope: string,
+  tab: TabEntry,
+  byTab: Record<string, string>,
+): string | undefined {
+  const ptyId = `${scope}:${tab.key}`;
+  const term = terminalFor(ptyId);
+  const shown = term && screenModelTag(term.buffer.active, agentTabLabel(tab));
+  return shown || byTab[ptyId];
 }
 
 /** Prompts only ever arrive at the end of the tail (and fall off its front),

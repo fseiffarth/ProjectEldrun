@@ -63,7 +63,7 @@ describe("Mobile project — rename an agent tab", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("renames from the name, opens from the rest of the card, and says which agent runs", async () => {
+  it("renames from the name, opens from the rest of the card, and shows no agent line under it", async () => {
     tabs[0] = { ...tabs[0], agent_label: "Codex" } as typeof tabs[0];
     const terminal = vi.fn();
     try {
@@ -71,7 +71,9 @@ describe("Mobile project — rename an agent tab", () => {
       const name = await screen.findByRole("button", { name: "Rename Claude" });
       expect(name.textContent).toBe("Claude");
       expect(screen.queryByText(/✎/u)).toBeNull();
-      screen.getByText("Codex · live");
+      // The CLI's name and the tab's state used to sit under the name; the card
+      // now carries the name and its model, and nothing else on that row.
+      expect(screen.queryByText(/Codex/u)).toBeNull();
       fireEvent.click(screen.getByRole("button", { name: "Open Claude" }));
       expect(terminal).toHaveBeenCalledWith(expect.objectContaining({ id: "t-agent" }));
       fireEvent.click(name);
