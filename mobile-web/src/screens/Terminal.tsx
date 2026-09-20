@@ -1,7 +1,7 @@
 import { useT, type TranslationKey } from "../../../src/lib/i18n";
 import { OutboxGallery } from "../components/OutboxGallery";
 import { OutboxViewer } from "../components/OutboxViewer";
-import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -23,7 +23,7 @@ import {
   type TabRow,
 } from "../api";
 import { DRAFT_SAVE_DELAY, readDraft, writeDraft } from "../drafts";
-import { readTerminalView, writeTerminalView, type TerminalViewChoice } from "../prefs";
+import { readFlag, readTerminalView, writeFlag, writeTerminalView, type TerminalViewChoice } from "../prefs";
 import { TERMINAL_PROTOCOL, TERMINAL_SIZE } from "../terminal/protocol";
 import { readableRange, readableScreen, readableText, TRUNCATION_NOTICE, type ReadableLine } from "../terminal/readableScreen";
 import {
@@ -81,6 +81,7 @@ import {
   type DictationProgress,
   type MobileSpeechRecognition,
 } from "../voiceInput";
+import { currentSpeechId, speak, speechOutputSupported, spokenText, stopSpeaking, subscribeSpeech, unlockSpeech } from "../speechOutput";
 
 /** A line the dictation strip shows: a key, not a sentence, so switching the
  * language retranslates what is already on screen. */
@@ -277,6 +278,26 @@ function CopyMessage({ text }: { text: () => string }) {
     : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V6a2 2 0 0 1 2-2h8" /></svg>}</button>;
 }
 
+/** More new answers than this at once is a session that was swapped in or
+ * caught up on, not one that is talking: read-aloud leaves those to the eye. */
+const MAX_SPOKEN_AT_ONCE = 3;
+
+/** Reads one agent message aloud (`speechOutput`), or stops it: the same
+ * button, since the one voice is either on this message or not. Absent in a
+ * browser that cannot speak. */
+function SpeakMessage({ id, text }: { id: string; text: () => string }) {
+  const t = useT();
+  const speaking = useSyncExternalStore(subscribeSpeech, currentSpeechId) === id;
+  if (!speechOutputSupported()) return null;
+  const label = t(speaking ? "mobile.speech.stop" : "mobile.speech.read");
+  return <button className={speaking ? "turn-copy turn-speak speaking" : "turn-copy turn-speak"} aria-label={label} title={label} aria-pressed={speaking} onClick={() => {
+    if (speaking) stopSpeaking();
+    else speak(id, spokenText(text(), t("mobile.speech.code")), navigator.language || "en-US", true);
+  }}>{speaking
+    ? <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1" /></svg>
+    : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4h3l5 4V6l-5 4zM16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11" /></svg>}</button>;
+}
+
 /** A block of session lines. On an agent tab they read as a chat: the
  * agent's turns on the left as printed, each prompt the user submitted as a
  * bubble on the right — the TUI's own echo of it, see `chatTurns`. A shell has
@@ -300,7 +321,7 @@ const ReadableTurns = memo(function ReadableTurns({ lines, chat, agent, promptLa
     const copy = (turn.role === "user" || turn.answer) && <CopyMessage text={() => readableText(shown)} />;
     return turn.role === "user"
       ? <div key={turn.key} className="readable-turn user" role="group" aria-label={promptLabel}>{rows}{copy}</div>
-      : <div key={turn.key} className={turn.answer ? "readable-turn agent answer" : "readable-turn agent"}>{rows}{copy}</div>;
+      : <div key={turn.key} className={turn.answer ? "readable-turn agent answer" : "readable-turn agent"}>{rows}{copy}{turn.answer && <SpeakMessage id={`screen:${turn.key}`} text={() => readableText(shown)} />}</div>;
   })}</>;
 });
 
@@ -335,6 +356,7 @@ const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promp
           <AnswerText text={turn.text} />
           {turn.cut && <small className="transcript-cut">{cutLabel}</small>}
           <CopyMessage text={() => turn.text} />
+          <SpeakMessage id={turn.key} text={() => turn.text} />
         </div>}
   </Fragment>)}</>;
 });
@@ -537,6 +559,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   const [lastSent, setLastSent] = useState("");
   const [copied, setCopied] = useState(false);
   const [voiceAvailable] = useState(() => speechRecognitionSupported());
+  const [speechAvailable] = useState(() => speechOutputSupported());
   const [listening, setListening] = useState(false);
   const [preparingVoice, setPreparingVoice] = useState(false);
   const [voicePreview, setVoicePreview] = useState("");
@@ -596,6 +619,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   const [pending, setPending] = useState<PendingPrompt[]>([]);
   const pendingId = useRef(0);
   const [focusSource, setFocusSource] = useState<"session" | "screen">("session");
+  const [readAloud, setReadAloud] = useState(() => readFlag("focusReadAloud"));
   /** Whether the list under the Focus button is open: where an agent tab's
    * Focus reads from, the stored session or the screen. A dimmed Session row
    * says why it cannot be read — a phone shows no tooltip. */
@@ -1271,6 +1295,32 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   /** The session chat's entries: the stored ones, with each prompt sent
    * from here held in its place (`withPending`). */
   const sessionEntries = useMemo(() => withPending(transcript?.entries ?? [], pending), [transcript, pending]);
+  /** Read-aloud: each answer that arrives at the end of the stored session is
+   * spoken once. What the first read brought is history, as is anything
+   * "earlier" reveals above it or a whole other session swapped in — only a
+   * short new tail is news. Nothing is said over dictation: the microphone
+   * would hear it. */
+  const spokenKeys = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    spokenKeys.current = null;
+    return stopSpeaking;
+  }, [tab.id]);
+  useEffect(() => {
+    if (!sessionShown || !transcript) return;
+    const turns = transcriptTurns(transcript.entries);
+    const seen = spokenKeys.current;
+    spokenKeys.current = new Set(turns.map((turn) => turn.key));
+    if (!seen || !readAloud || listening) return;
+    let known = -1;
+    turns.forEach((turn, index) => { if (seen.has(turn.key)) known = index; });
+    const fresh = turns.slice(known + 1).filter((turn) => turn.kind === "answer");
+    if (fresh.length === 0 || fresh.length > MAX_SPOKEN_AT_ONCE) return;
+    const code = t("mobile.speech.code");
+    for (const turn of fresh) speak(turn.key, spokenText(turn.text, code), navigator.language || "en-US");
+  }, [sessionShown, transcript, readAloud, listening, t]);
+  useEffect(() => {
+    if (listening || !sessionShown) stopSpeaking();
+  }, [listening, sessionShown]);
   // A new turn in the stored session, or a file the agent sent into the
   // Focus chat, scrolls the view to it, as new screen output does, unless
   // the reader has scrolled up to read.
@@ -2087,6 +2137,20 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
         }}>
           <span><strong>{t("mobile.focus.screen")}</strong><small>{t("mobile.focus.screenHint")}</small></span>
           {!sessionShown && <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 13 4.5 4.5L19 7" /></svg>}
+        </button>
+        {/* Spoken from the stored session only: its answers arrive whole, where
+            the screen's are still being drawn. */}
+        <button role="menuitemcheckbox" aria-checked={readAloud && speechAvailable} aria-disabled={speechAvailable ? undefined : "true"} className={speechAvailable ? undefined : "unavailable"} onClick={() => {
+          if (!speechAvailable) return;
+          // The tap is the gesture a browser wants before a page may speak.
+          if (readAloud) stopSpeaking();
+          else unlockSpeech();
+          writeFlag("focusReadAloud", !readAloud);
+          setReadAloud(!readAloud);
+          setFocusMenu(false);
+        }}>
+          <span><strong>{t("mobile.speech.auto")} {isUntested("mobile.focus.readAloud") && <em>{t("mobile.focus.untested")}</em>}</strong><small>{t(speechAvailable ? "mobile.speech.autoHint" : "mobile.speech.unavailable")}</small></span>
+          {readAloud && speechAvailable && <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 13 4.5 4.5L19 7" /></svg>}
         </button>
       </div>
     </div>}

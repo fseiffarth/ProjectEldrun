@@ -14,8 +14,10 @@ type FlagStorage = Pick<Storage, "getItem" | "setItem">;
  * working, waiting or done. It is stored for the same reason as the others —
  * the section is re-mounted by every tab switch and by every trip into a
  * terminal, and re-picking the mode on each return is the whole cost of using
- * it as a triage list. */
-export type MobileFlag = "todoHideDone" | "todoHideArchived" | "projectsAgents";
+ * it as a triage list. `focusReadAloud` is the Reader speaking each new answer:
+ * whoever listens to one session while their hands are busy listens to the
+ * next one too. */
+export type MobileFlag = "todoHideDone" | "todoHideArchived" | "projectsAgents" | "focusReadAloud";
 
 /**
  * `fallback` is what an unset flag means, and it is a real parameter rather than

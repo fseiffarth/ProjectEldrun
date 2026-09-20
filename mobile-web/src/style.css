@@ -482,6 +482,8 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .turn-copy.copied { color:#8fb6ff; }
 .turn-copy svg { width:15px; height:15px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
 .readable-turn.user > .turn-copy { right:100%; margin-right:3px; }
+.turn-copy.turn-speak { bottom:28px; }
+.turn-copy.turn-speak.speaking { color:#8fb6ff; }
 .readable-turn.agent.answer > .turn-copy { left:100%; margin-left:3px; }
 .readable-turn.agent.answer .readable-line { padding-left:0; text-indent:0; }
 .readable-lines.transcript { font:400 .9rem/1.5 Inter,ui-sans-serif,system-ui,sans-serif; }
