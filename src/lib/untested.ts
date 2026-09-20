@@ -257,6 +257,8 @@ export const UNTESTED = {
   "mobile.project.reorder": { area: "mobile", what: "Project · Drag to reorder the desktop's tabs" },
   "mobile.setupTitle": { area: "mobile", what: "MobileSetupGuide · Set up Eldrun Mobile" },
   "mobile.speech.language": { area: "mobile", what: "Terminal · Reader voice-language picker" },
+  "mobile.voice.keepListening": { area: "mobile", what: "Terminal · Dictation keeps listening through pauses, holds the screen awake, shows the mic level" },
+  "mobile.voice.remote": { area: "mobile", what: "Terminal · Reader toggle: dictate with the phone's speech service instead of on-device" },
   "mobile.windowsTerminalsNote": { area: "mobile", what: "MobileSettings · On Windows the phone cannot open this computer's terminals or agent tabs: they attach thr…" },
 
   // --- monitoring — System monitor ----------------------------------

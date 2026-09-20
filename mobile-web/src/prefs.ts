@@ -16,8 +16,10 @@ type FlagStorage = Pick<Storage, "getItem" | "setItem">;
  * terminal, and re-picking the mode on each return is the whole cost of using
  * it as a triage list. `focusReadAloud` is the Reader speaking each new answer:
  * whoever listens to one session while their hands are busy listens to the
- * next one too. */
-export type MobileFlag = "todoHideDone" | "todoHideArchived" | "projectsAgents" | "focusReadAloud";
+ * next one too. `voiceRemote` sends dictation to the phone's speech service
+ * even where the browser could recognize on the device: often the better ear,
+ * at the price of the audio leaving the phone — so it is a choice, off unset. */
+export type MobileFlag = "todoHideDone" | "todoHideArchived" | "projectsAgents" | "focusReadAloud" | "voiceRemote";
 
 /**
  * `fallback` is what an unset flag means, and it is a real parameter rather than

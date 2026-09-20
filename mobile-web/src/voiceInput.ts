@@ -34,7 +34,10 @@ export interface MobileSpeechRecognition {
   onresult: ((event: MobileSpeechRecognitionResultEvent) => void) | null;
   onerror: ((event: MobileSpeechRecognitionErrorEvent) => void) | null;
   onend: (() => void) | null;
-  start(): void;
+  onspeechstart?: (() => void) | null;
+  onspeechend?: (() => void) | null;
+  /** With a track, the recognizer hears that capture instead of opening its own. */
+  start(track?: MediaStreamTrack): void;
   stop(): void;
   abort(): void;
 }

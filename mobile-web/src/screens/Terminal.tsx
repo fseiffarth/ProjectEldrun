@@ -83,7 +83,6 @@ import { isUntested } from "../../../src/lib/untested";
 import {
   prepareOnDeviceSpeech,
   speechRecognitionConstructor,
-  speechRecognitionError,
   speechRecognitionSupported,
   advanceDictation,
   DICTATION_START,
@@ -91,12 +90,19 @@ import {
   readDictation,
   settleDictation,
   type DictationProgress,
-  type MobileSpeechRecognition,
 } from "../voiceInput";
+import { startDictation, type DictationSession } from "../voiceSession";
 import { speak, speechOutputSupported, spokenText, stopSpeaking, unlockSpeech } from "../speechOutput";
 
 /** A line the dictation strip shows: a key, not a sentence, so switching the
  * language retranslates what is already on screen. */
+/** The microphone's level goes straight onto the dictate button as a CSS
+ * variable: it changes a dozen times a second, and nothing else reads it. */
+function paintMicLevel(button: HTMLElement | null, level: number | null) {
+  if (level === null) button?.style.removeProperty("--mic-level");
+  else button?.style.setProperty("--mic-level", level.toFixed(2));
+}
+
 type VoiceNote = { key: TranslationKey; language?: string };
 const PING_INTERVAL = 20_000;
 /** Floor between two rebuilds of the reading view. */
@@ -414,7 +420,8 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
    * reading view is current instead of waiting for the next output byte. */
   const refreshReadable = useRef<() => void>(() => {});
   const write = useRef<(value: string) => boolean>(() => false);
-  const recognition = useRef<MobileSpeechRecognition>();
+  const recognition = useRef<DictationSession>();
+  const dictateButton = useRef<HTMLButtonElement>(null);
   const connectedRef = useRef(false);
   const voiceRequest = useRef(0);
   const voiceProgress = useRef<DictationProgress>(DICTATION_START);
@@ -568,6 +575,9 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   const pendingId = useRef(0);
   const [focusSource, setFocusSource] = useState<"session" | "screen">("session");
   const [readAloud, setReadAloud] = useState(() => readFlag("focusReadAloud"));
+  const [voiceRemote, setVoiceRemote] = useState(() => readFlag("voiceRemote"));
+  /** Only a browser with an on-device recognizer has anything to choose. */
+  const [voiceLocalOffered] = useState(() => speechRecognitionConstructor()?.available !== undefined);
   /** The language read-aloud and dictation use, and whether its picker is
    * open. Only the picker reads this state — the speaking and listening sites
    * ask `speechTag()` for the stored value at the moment they need it, so a
@@ -948,11 +958,8 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
         const activeRecognition = recognition.current;
         if (activeRecognition) {
           recognition.current = undefined;
-          activeRecognition.onstart = null;
-          activeRecognition.onresult = null;
-          activeRecognition.onerror = null;
-          activeRecognition.onend = null;
           activeRecognition.abort();
+          paintMicLevel(dictateButton.current, null);
           setListening(false);
           setVoiceStatus(null);
           setVoiceFailure({ key: "mobile.voice.disconnected" });
@@ -2040,7 +2047,9 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     setPreparingVoice(true);
     setVoiceStatus({ key: "mobile.voice.checking" });
     setVoiceFailure(null);
-    const mode = await prepareOnDeviceSpeech(Recognition, language);
+    // Read at the tap, like the language: the menu's choice applies to the
+    // next dictation without this closure having to follow it.
+    const mode = readFlag("voiceRemote") ? "remote" : await prepareOnDeviceSpeech(Recognition, language);
     if (voiceRequest.current !== request) return;
     setPreparingVoice(false);
     if (!connectedRef.current) {
@@ -2052,57 +2061,45 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       setVoiceStatus({ key: "mobile.voice.installed", language });
       return;
     }
-    const next = new Recognition();
-    next.continuous = true;
-    next.interimResults = true;
-    next.lang = language;
-    next.maxAlternatives = 1;
-    next.processLocally = mode === "local";
     voiceProgress.current = DICTATION_START;
     setVoicePreview("");
     setVoiceFailure(null);
-    next.onstart = () => {
-      setListening(true);
-      setVoiceStatus({ key: mode === "local" ? "mobile.voice.listeningLocal" : "mobile.voice.listeningRemote" });
-    };
-    next.onresult = (event) => {
-      const reading = readDictation(event);
-      const step = advanceDictation(voiceProgress.current, reading.heard);
-      voiceProgress.current = step.progress;
-      // Speech is inserted into the current prompt but deliberately not
-      // submitted. The user can review/edit it before pressing Enter.
-      if (step.insert) setDraft((current) => `${current}${current && !current.endsWith(" ") ? " " : ""}${step.insert}`);
-      setVoicePreview(dictationPreview(step.progress, reading.interim));
-    };
-    next.onerror = (event) => {
-      setVoiceStatus(null);
-      const message = speechRecognitionError(event.error);
-      if (message) setVoiceFailure({ key: message });
-    };
-    next.onend = () => {
-      if (recognition.current === next) recognition.current = undefined;
-      setListening(false);
-      setVoiceStatus(null);
-    };
-    recognition.current = next;
-    try {
-      next.start();
-    } catch {
-      recognition.current = undefined;
-      setVoiceStatus(null);
-      setVoiceFailure({ key: "mobile.voice.startFailed" });
-    }
+    // The session restarts the browser's recognizer through pauses, so
+    // "listening" holds from the tap until the stop (`voiceSession.ts`).
+    const session: DictationSession = startDictation(Recognition, { lang: language, local: mode === "local" }, {
+      onStart: () => {
+        setListening(true);
+        setVoiceStatus({ key: mode === "local" ? "mobile.voice.listeningLocal" : "mobile.voice.listeningRemote" });
+      },
+      onResult: (event) => {
+        const reading = readDictation(event);
+        const step = advanceDictation(voiceProgress.current, reading.heard);
+        voiceProgress.current = step.progress;
+        // Speech is inserted into the current prompt but deliberately not
+        // submitted. The user can review/edit it before pressing Enter.
+        if (step.insert) setDraft((current) => `${current}${current && !current.endsWith(" ") ? " " : ""}${step.insert}`);
+        setVoicePreview(dictationPreview(step.progress, reading.interim));
+      },
+      // A new recognizer's result list starts empty: everything the last one
+      // heard is in the draft already, and none of it is read back.
+      onRestart: () => { voiceProgress.current = DICTATION_START; },
+      onError: (message) => setVoiceFailure({ key: message }),
+      onLevel: (level) => paintMicLevel(dictateButton.current, level),
+      onEnd: () => {
+        if (recognition.current === session) recognition.current = undefined;
+        setListening(false);
+        setVoiceStatus(null);
+      },
+    });
+    recognition.current = session;
   };
   useEffect(() => () => {
     voiceRequest.current += 1;
     const active = recognition.current;
     recognition.current = undefined;
     if (active) {
-      active.onstart = null;
-      active.onresult = null;
-      active.onerror = null;
-      active.onend = null;
       active.abort();
+      paintMicLevel(dictateButton.current, null);
     }
   }, [tab.id]);
   const dictateLabel = t(listening ? "mobile.voice.stop" : preparingVoice ? "mobile.voice.preparing" : "mobile.voice.dictate");
@@ -2200,6 +2197,14 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
           <span><strong>{t("mobile.speech.auto")} {isUntested("mobile.focus.readAloud") && <em>{t("mobile.focus.untested")}</em>}</strong><small>{t(speechAvailable ? "mobile.speech.autoHint" : "mobile.speech.unavailable")}</small></span>
           {readAloud && speechAvailable && <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 13 4.5 4.5L19 7" /></svg>}
         </button>
+        <button role="menuitemcheckbox" aria-checked={voiceRemote && voiceLocalOffered} aria-disabled={voiceLocalOffered ? undefined : "true"} className={voiceLocalOffered ? undefined : "unavailable"} onClick={() => {
+          if (!voiceLocalOffered) return;
+          writeFlag("voiceRemote", !voiceRemote);
+          setVoiceRemote(!voiceRemote);
+        }}>
+          <span><strong>{t("mobile.voice.remote")} {isUntested("mobile.voice.remote") && <em>{t("mobile.focus.untested")}</em>}</strong><small>{t(voiceLocalOffered ? "mobile.voice.remoteHint" : "mobile.voice.remoteOnly")}</small></span>
+          {voiceRemote && voiceLocalOffered && <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 13 4.5 4.5L19 7" /></svg>}
+        </button>
         {/* The one language for both directions — what an answer is read in
             and what dictation is listened for. The phone's own is the default,
             and the row says which language that turned out to be. */}
@@ -2288,7 +2293,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       </>}
     </div>
     <div className="terminal-controls">
-      {tab.kind === "agent" && voiceLine && <div className={voiceProblem ? "voice-feedback error" : "voice-feedback"} role={voiceProblem ? "alert" : "status"} aria-live="polite">{voiceLine}</div>}
+      {tab.kind === "agent" && voiceLine && <div className={voiceProblem ? "voice-feedback error" : "voice-feedback"} role={voiceProblem ? "alert" : "status"} aria-live="polite">{voiceLine}{listening && !voiceProblem && !voicePreview && isUntested("mobile.voice.keepListening") && <em>{t("mobile.focus.untested")}</em>}</div>}
       {stoppedReason && <div className="voice-feedback error" role="alert">{stoppedReason}</div>}
       {sendFailed && !stoppedReason && <div className="voice-feedback error" role="alert">That did not reach the desktop — the connection dropped. It will retry on its own.</div>}
       {lastSent && !sessionShown && <div className="last-sent"><span>Sent</span><p>{lastSent}</p></div>}
@@ -2332,7 +2337,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
             <button className="composer-add" disabled={!connected} onClick={() => setAddSheet(true)} aria-label="Add to the message" aria-haspopup="dialog" aria-expanded={addSheet} title="Add a photo or file from this phone, pictures from its gallery, an image from the desktop, or a project file (@)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg></button>
           </>}
           <span className="composer-spacer" />
-          {tab.kind === "agent" && <button className={`composer-dictate${listening ? " listening" : ""}`} disabled={!connected || !voiceAvailable || preparingVoice} title={t(voiceAvailable ? "mobile.voice.hint" : "mobile.voice.hintUnavailable")} aria-label={dictateLabel} aria-pressed={listening} onClick={listening ? stopVoice : () => void startVoice()}>{listening ? <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1" /></svg> : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M6 11a6 6 0 0 0 12 0M12 17v4M8 21h8" /></svg>}</button>}
+          {tab.kind === "agent" && <button className={`composer-dictate${listening ? " listening" : ""}`} disabled={!connected || !voiceAvailable || preparingVoice} title={t(voiceAvailable ? "mobile.voice.hint" : "mobile.voice.hintUnavailable")} aria-label={dictateLabel} aria-pressed={listening} ref={dictateButton} onClick={listening ? stopVoice : () => void startVoice()}>{listening ? <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1" /></svg> : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M6 11a6 6 0 0 0 12 0M12 17v4M8 21h8" /></svg>}</button>}
           <button className="send-icon" disabled={!connected || !draft.trim()} onClick={submitDraft} aria-label="Send" title="Send"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 16 8-16 8 3-8-3-8Z" /><path d="M7 12h13" /></svg></button>
         </div>
       </div>

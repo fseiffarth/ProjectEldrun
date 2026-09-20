@@ -144,6 +144,51 @@ describe("Eldrun Mobile terminal dictation", () => {
     expect(screen.getByRole("status").textContent).toBe("Heard: and add a test");
   });
 
+  it("keeps listening through the pause that ends the phone's recognizer", async () => {
+    render(<Terminal tab={{ id: "opaque-agent", label: "Claude", kind: "agent", available: true, viewer_busy: false }} back={() => {}} />);
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "Dictate" }));
+    await act(async () => {});
+    const speech = FakeRecognition.instances[0];
+    act(() => speech.onresult?.(finalResult("fix the login")));
+
+    // Chrome on Android ends a `continuous` recognizer after a breath.
+    act(() => speech.onend?.());
+    expect(screen.getByRole("button", { name: "Stop dictation" })).toBeTruthy();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+
+    // The new result list starts empty; its words join the draft, not replace it.
+    act(() => speech.onresult?.(finalResult("and add a test")));
+    expect((screen.getByRole("textbox", { name: "Message agent" }) as HTMLTextAreaElement).value).toBe("fix the login and add a test");
+    fireEvent.click(screen.getByRole("button", { name: "Stop dictation" }));
+    expect(screen.getByRole("button", { name: "Dictate" })).toBeTruthy();
+  });
+
+  it("dictates on the device where it can, and with the phone's service once the Reader menu says so", async () => {
+    const available = vi.fn(() => Promise.resolve("available" as const));
+    class LocalRecognition extends FakeRecognition {
+      static available = available;
+      processLocally?: boolean;
+    }
+    Object.defineProperty(window, "webkitSpeechRecognition", { configurable: true, value: LocalRecognition });
+    render(<Terminal tab={{ id: "opaque-agent", label: "Claude", kind: "agent", available: true, viewer_busy: false }} back={() => {}} />);
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "Dictate" }));
+    await act(async () => {});
+    expect((FakeRecognition.instances[0] as LocalRecognition).processLocally).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Stop dictation" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Reader" }));
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /phone's speech service/ }));
+    expect(localStorage.getItem("eldrun.mobile.voiceRemote")).toBe("1");
+    available.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Dictate" }));
+    await act(async () => {});
+    // The on-device model is not even asked about: no download is started for it.
+    expect(available).not.toHaveBeenCalled();
+    expect((FakeRecognition.instances[1] as LocalRecognition).processLocally).toBe(false);
+  });
+
   it("does not send earlier dictation again when the phone re-reads its results", async () => {
     render(<Terminal tab={{ id: "opaque-agent", label: "Claude", kind: "agent", available: true, viewer_busy: false }} back={() => {}} />);
     await act(async () => {});

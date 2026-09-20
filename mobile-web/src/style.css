@@ -635,6 +635,9 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .composer-dictate { color:#dcd6ff; background:transparent; }
 .composer-dictate.listening { color:#fff; background:#7a3151; box-shadow:0 0 0 2px rgba(227,107,154,.22); }
 .composer-dictate.listening svg rect { fill:currentColor; stroke:none; }
+/* The level ring: a static ring scaled by the measured level, never an animated shadow. */
+.composer-dictate { position:relative; }
+.composer-dictate.listening::after { content:""; position:absolute; inset:0; border-radius:inherit; border:2px solid #e36b9a; opacity:calc(.15 + var(--mic-level, 0) * .75); transform:scale(calc(1 + var(--mic-level, 0) * .35)); transition:transform 80ms linear, opacity 80ms linear; pointer-events:none; }
 .send-icon { color:#fff; background:#6c5ce7; }
 .send-icon svg { fill:currentColor; stroke:#fff; }
 .send-icon svg path:last-child { stroke:#6c5ce7; }
@@ -645,6 +648,7 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .keys button.selected { background:#8c7df4; color:#0b0d13; }
 .voice-feedback { margin:6px 6px 0; padding:9px 11px; border-radius:9px; background:#29253d; color:#e8e3ff; font-size:.86rem; overflow-wrap:anywhere; }
 .voice-feedback.error { background:#3b2027; color:#ffb4c0; }
+.voice-feedback em { margin-left:6px; color:#8fb8ff; font-size:.6rem; font-style:normal; text-transform:uppercase; letter-spacing:.05em; }
 .danger { color:#ff9aa6; }
 /* The facts row buttons' bottom sheet: a phone list in place of walking a TUI
    dialog with the arrow keys. */
