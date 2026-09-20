@@ -1038,25 +1038,25 @@
   pointer-events: none;
 }
 
-/* Root-agent proposals use the shared window and dialog controls. They hang
-   from the console's ⚿ badge as one of the shared menu surfaces (the portal
-   adds `.context-menu-portal`, which owns position and z-index), rather than
-   the permanent strip they used to be under the title bar. */
+/* Root-agent proposals hang from the console's ✓ Approvals button as one of the
+   shared menu surfaces (the portal adds `.context-menu-portal`, which owns
+   position and z-index), rather than the permanent strip they used to be under
+   the title bar. What they look like is not theirs: the panel is the menu
+   family's shape — a pinned `.tab-new-menu-group-label` title over a
+   `.menu-scroll-region`, as in the VPN and machines menus — and the proposals
+   inside are the settings design system's list of objects, a `.settings-list`
+   of `.settings-card`s with `.settings-btn` actions and `.ollama-badge` chips.
+   Only what is particular to a proposal (the diff table, the ✓/✗ glyphs) is
+   drawn below. */
 .root-review-panel {
   display: flex;
   flex-direction: column;
   width: min(560px, calc(100vw - 16px));
   /* The portal caps the height; the panel itself must not scroll — the shared
      menus' accent wash is an inset ::before, and a scrolled menu would drag it
-     off the rows below. The strip inside does the scrolling. */
+     off the rows below. The scroll region inside does the scrolling. */
   overflow: hidden;
   padding: 0;
-}
-.root-review-panel .root-review-strip {
-  flex: 1 1 auto;
-  min-height: 0;
-  max-height: none;
-  border-bottom: none;
 }
 /* The menu scheme's hover underline is for full-width rows; under a 22px glyph
    it reads as a stray rule. */
@@ -1064,23 +1064,141 @@
   content: none;
 }
 .root-review-strip {
-  flex: 0 0 auto;
-  max-height: 45%;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
   color: var(--text-primary);
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--border);
+}
+/* The pinned title. It is a group label, so the one action beside it has to
+   opt out of the label's small caps — a button is not a heading. The child
+   selectors are for the cascade: this file is imported before the menu rules
+   these two elements also read, so a bare class would lose the tie. */
+.root-review-strip > .root-review-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 7px 10px;
+}
+.root-review-heading-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.root-review-heading .settings-btn {
+  text-transform: none;
+  letter-spacing: normal;
+}
+.root-review-strip > .root-review-scroll {
+  gap: 6px;
+  padding: 0 10px 10px;
 }
 .root-review-empty {
-  margin: 6px 0 2px;
-  color: var(--text-secondary);
+  padding: 2px 0 4px;
 }
-.root-review-heading, .root-review-actions { display: flex; align-items: center; gap: 8px; }
-.root-review-advisory { margin: 4px 0; color: var(--warning, #e2b93b); }
-.root-review-card { padding: 10px 0; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
-.root-review-row table { width: 100%; table-layout: fixed; text-align: left; }
+/* Anything the user is being warned about — an outbound push, a tainted agent,
+   a conflict, the advisory — in one tone, rather than as body copy. */
+.root-review-notice {
+  margin: 0;
+  color: var(--warning);
+  font-size: var(--text-md);
+  line-height: 1.35;
+}
+.root-review-cards {
+  overflow-wrap: anywhere;
+}
+.root-review-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.root-review-card-head > .settings-list-label {
+  font-weight: 600;
+}
+/* A tool name is an identifier, not prose — same monospace a stored config or
+   a path gets in the menus. */
+.root-review-tool {
+  font-family: var(--mono-font, monospace);
+}
+.root-review-meta {
+  font-size: var(--text-sm);
+}
+/* Status and op ride the `.ollama-badge` chip; only the tone is ours. Pending
+   is the one that wants a decision, so it takes the accent. */
+.root-review-status.pending {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  color: var(--accent);
+}
+.root-review-status.applied {
+  border-color: color-mix(in srgb, var(--success) 55%, transparent);
+  color: var(--success);
+}
+.root-review-status.conflicted {
+  border-color: color-mix(in srgb, var(--warning) 55%, transparent);
+  color: var(--warning);
+}
+.root-review-status.rejected,
+.root-review-status.undone {
+  color: var(--text-muted);
+}
+.root-review-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.root-review-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.root-review-fold > summary {
+  color: var(--text-secondary);
+  font-size: var(--text-md);
+  cursor: var(--cur-pointer, pointer);
+}
+.root-review-fold > summary:hover {
+  color: var(--accent-secondary);
+}
+.root-review-fold > .root-review-row {
+  margin-top: 6px;
+}
+/* The change itself: a hairline table, headed like a settings section and set
+   in the mono the values are read in. Before is what it was (muted), after is
+   what it becomes (the reading eye's line). */
+.root-review-row table {
+  width: 100%;
+  table-layout: fixed;
+  text-align: left;
+  border-collapse: collapse;
+}
+.root-review-row thead th {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.root-review-row tbody th {
+  color: var(--text-secondary);
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+.root-review-row tbody tr + tr > * {
+  border-top: 1px solid var(--border-subtle);
+}
 .root-review-row th, .root-review-row td { vertical-align: top; padding: 3px 6px; }
-.root-review-row pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+.root-review-row th:first-child, .root-review-row td:first-child { padding-left: 0; }
+.root-review-row pre {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  font-family: var(--mono-font, monospace);
+  font-size: var(--text-md);
+}
+.root-review-before pre { color: var(--text-muted); }
+.root-review-after pre { color: var(--text-primary); }
 /* A decision is one glyph, drawn like the alerts strip's ✓ (file-tree.css
    `.alerts-done`): the same small square, the same status colours, so "finish
    this" looks the same wherever it appears. */

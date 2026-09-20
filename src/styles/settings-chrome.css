@@ -743,9 +743,11 @@ label.settings-toggle-card-row {
 }
 
 /* Rows stacked in one card read as a grouped list rather than as three
-   switches sharing a gap — the Resource-monitor / Remote-features cards. */
+   switches sharing a gap — the Resource-monitor / Remote-features cards, and
+   the changed entries stacked in one root-agent proposal. */
 .settings-card-row + .settings-card-row,
-.settings-toggle-card-row + .settings-toggle-card-row {
+.settings-toggle-card-row + .settings-toggle-card-row,
+.root-review-row + .root-review-row {
   border-top: 1px solid var(--border-subtle);
   padding-top: 8px;
 }
