@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { inputFrameStart } from "../../mobile-web/src/terminal/statusLine";
 import {
   MAX_LINES,
+  dedentLines,
   readableRange,
   readableScreen,
   readableText,
@@ -358,5 +359,31 @@ describe("Eldrun Mobile Codex sparkle", () => {
   it("keeps denser braille: spinners and plots are not sparkle", () => {
     const lines = readableScreen(plainBuffer(["⠋ Thinking", "⣿⣶⣤⣀ load"])).lines.map((row) => row.text);
     expect(lines).toEqual(["⠋ Thinking", "⣿⣶⣤⣀ load"]);
+  });
+
+  it("drops the indent a block shares, for text shown as the phone's own", () => {
+    // A dialog draws its question in from the frame; the phone's question
+    // heading lays it out itself (`QuestionList`). The deepest line keeps
+    // what it has beyond the shared indent, and a blank stays blank.
+    const lines = readableScreen(plainBuffer([
+      "  You’re now using Luna.",
+      "",
+      "    Add credits or upgrade.",
+    ])).lines;
+    expect(dedentLines(lines).map((line) => line.text)).toEqual([
+      "You’re now using Luna.",
+      "",
+      "  Add credits or upgrade.",
+    ]);
+    // Flush already, and the lines come back untouched.
+    const flush = readableScreen(plainBuffer(["Do you want to proceed?"])).lines;
+    expect(dedentLines(flush).map((line) => line.text)).toEqual(["Do you want to proceed?"]);
+  });
+
+  it("dedents the spans too, not just the text", () => {
+    const styled = readableScreen(styledBuffer([{ text: "  " }, { text: "Question", bold: true }])).lines;
+    const [line] = dedentLines(styled);
+    expect(line.text).toBe("Question");
+    expect(line.spans.map((span) => span.text).join("")).toBe("Question");
   });
 });

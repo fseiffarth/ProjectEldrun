@@ -402,6 +402,28 @@ export function readableScreen(buffer: ReadableBufferLike, maxRows = MAX_ROWS): 
   return { lines: lines.slice(-MAX_LINES), clipped };
 }
 
+/**
+ * The same lines without the indent they all share. A TUI draws a dialog's
+ * question two or four columns in, under its frame; a caller that shows that
+ * text as its own — the phone's question heading, where the rows below it are
+ * already a list of its own — wants it flush against the rest of its layout.
+ * Blank lines neither count towards the shared indent nor lose anything.
+ */
+export function dedentLines(lines: readonly ReadableLine[]): ReadableLine[] {
+  let indent = Number.POSITIVE_INFINITY;
+  for (const line of lines) {
+    if (!line.text.trim()) continue;
+    indent = Math.min(indent, line.text.length - line.text.trimStart().length);
+  }
+  if (!Number.isFinite(indent) || indent <= 0) return [...lines];
+  return lines.map((line) => {
+    if (!line.text.trim()) return line;
+    const spans = line.spans.map((span) => ({ ...span }));
+    trimSpansLeft(spans, indent);
+    return { ...line, text: line.text.slice(indent), spans };
+  });
+}
+
 /** The plain text of what the reading view is showing, for Copy. */
 export function readableText(lines: readonly ReadableLine[]) {
   return lines.map((line) => line.text).join("\n");

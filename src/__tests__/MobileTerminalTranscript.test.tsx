@@ -235,7 +235,7 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     // choice the agent is waiting on. A fullscreen agent draws it there and
     // nowhere else — no scrollback holds it — and it has to pass the same
     // shape check as a dialog on a scrolling screen.
-    within(screen.getByRole("group", { name: "On screen now" })).getByText("Yes");
+    within(screen.getByRole("group", { name: "Waiting for your answer" })).getByText("Yes");
 
     // Switched to the screen, the full-screen program says so, as before.
     fireEvent.click(screen.getByRole("button", { name: "Reader" }));

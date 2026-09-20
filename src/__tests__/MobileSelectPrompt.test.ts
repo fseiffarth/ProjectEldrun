@@ -27,6 +27,11 @@ describe("Eldrun Mobile select dialog", () => {
       // Where the rows start: what sits above them is the question they
       // answer, which a caller listing the rows itself still has to show.
       start: 3,
+      // …and where that question starts. Here the heading and its blurb are
+      // one block, so the question is both the dialog's own text and all the
+      // context there is.
+      question: 0,
+      context: 0,
       options: [
         { index: 0, number: 1, label: "Default (recommended)", description: "Opus for up to 50% of usage, then Sonnet" },
         { index: 1, number: 2, label: "Opus", description: "For complex tasks" },
@@ -244,6 +249,56 @@ describe("Eldrun Mobile select dialog", () => {
       { index: 0, number: 1, label: "Job: running/completed/failed/ expired (Recommended)", description: "Keep async job statuses for progress tracking." },
       { index: 1, number: 2, label: "Add a short status model", description: "Simpler labels." },
     ]);
+  });
+
+  it("bounds a Codex question to the dialog, not to the session above it", () => {
+    // The real screen of a codex 0.155.1 tab that had not been prompted yet
+    // (captured off the pane, replayed through xterm): its whole startup
+    // banner sits above the question, and used to be shown as what the rows
+    // answered. The question is the block right above them; the context stops
+    // at the line that says why it is being asked.
+    const prompt = readSelectPrompt(lines(
+      ">_ OpenAI Codex (v0.155.1)",
+      "model:     gpt-6-astra high   /model to change",
+      "directory: ~/eldrun/projects/projecteldrun",
+      "",
+      "  Tip: New Use /fast to enable our fastest inference with increased plan usage.",
+      "",
+      "⚠ clamping SessionEnd hook timeout to 3s in /home/florian/.codex/config.toml",
+      "",
+      "• Automatically switched to Luna Reserve high due to usage limits.",
+      "",
+      "  You’re now using Luna, a faster model for simpler tasks.",
+      "  Add credits or upgrade to continue using the most advanced models, or wait for usage to reset after 15:55.",
+      "",
+      "› 1. Upgrade",
+      "  2. Add Credits",
+      "  3. Continue with Luna Reserve",
+      "",
+      "  Press enter to confirm or esc to continue working",
+    ), "Codex");
+    expect(prompt?.options.map((option) => option.label)).toEqual(["Upgrade", "Add Credits", "Continue with Luna Reserve"]);
+    expect(prompt?.start).toBe(13);
+    expect(prompt?.question).toBe(10);
+    expect(prompt?.context).toBe(8);
+  });
+
+  it("keeps the block above a permission dialog's question — the file it asks about", () => {
+    // Claude Code's edit prompt: what is being approved stands above a blank
+    // line, so the question alone would not say what the answer applies to.
+    const prompt = readSelectPrompt(lines(
+      "I'll add the clear button.",
+      "",
+      "Edit file",
+      "  src/lib/i18n.ts",
+      "",
+      "Do you want to make this edit to i18n.ts?",
+      "❯ 1. Yes",
+      "  2. No",
+    ));
+    expect(prompt?.start).toBe(6);
+    expect(prompt?.question).toBe(5);
+    expect(prompt?.context).toBe(2);
   });
 
   it("reads a Codex list too narrow for two columns, its notes stacked under the rows", () => {

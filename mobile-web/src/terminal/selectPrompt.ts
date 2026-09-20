@@ -50,6 +50,15 @@ export interface SelectPrompt {
    * ask it — which a caller that replaces the rows with a list of its own
    * still has to show. */
   start: number;
+  /** Index of the dialog's own question: the block of text directly above its
+   * rows, of which `title` is the first line. It belongs to the list — a
+   * caller showing the rows in its own idiom shows this as their heading —
+   * while `[context, question)` is the screen the dialog was drawn onto.
+   * Equals `start` when the dialog drew no text above its rows. */
+  question: number;
+  /** Index of the first line worth showing above the question (`readContext`).
+   * A dialog answers what is right above it, not the whole session. */
+  context: number;
 }
 
 /** One step of a dialog as far as it is known: every row seen of it, in the
@@ -185,6 +194,38 @@ function readTitle(lines: readonly SelectLineLike[], start: number): string | un
   return /\p{L}/u.test(title) ? title : undefined;
 }
 
+/** Blank-separated blocks above the rows that are the dialog's, rather than the
+ * session's: the question itself, and the one block before it — in Claude
+ * Code's permission dialog what is being approved (the file, the diff), in
+ * Codex's the line that says why it is asking. */
+const CONTEXT_BLOCKS = 2;
+/** …and no more lines than a phone shows without pushing the rows off screen.
+ * Unbounded, a session that has not been prompted yet put its whole startup
+ * banner — version, model, directory, tips, warnings — above its first
+ * question, and a mid-turn one repeated the answer the reader already has. */
+const CONTEXT_LINES = 10;
+
+/** Where the dialog's own text starts, read upwards from its first row: the
+ * question is the contiguous block directly above the rows, the context that
+ * block and `CONTEXT_BLOCKS - 1` more, bounded by `CONTEXT_LINES`. Both are
+ * `start` when nothing but blanks sits above the rows. */
+function readContext(lines: readonly SelectLineLike[], start: number): { question: number; context: number } {
+  let index = start - 1;
+  let context = start;
+  let question = start;
+  let taken = 0;
+  for (let block = 0; block < CONTEXT_BLOCKS && taken < CONTEXT_LINES; block += 1) {
+    while (index >= 0 && !lines[index].text.trim()) index -= 1;
+    while (index >= 0 && lines[index].text.trim() && taken < CONTEXT_LINES) {
+      context = index;
+      taken += 1;
+      index -= 1;
+    }
+    if (block === 0) question = context;
+  }
+  return { question, context };
+}
+
 function readRow(text: string, option: RegExp): ReadRow | null {
   const match = option.exec(text);
   if (!match) return null;
@@ -287,6 +328,7 @@ export function readSelectPrompt(lines: readonly SelectLineLike[], agentLabel?: 
         current: candidate.marked[0],
         title: readTitle(lines, candidate.start),
         start: candidate.start,
+        ...readContext(lines, candidate.start),
         ...(candidate.hidden ? { hidden: candidate.hidden } : {}),
       };
     }

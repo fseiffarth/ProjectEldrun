@@ -1914,6 +1914,21 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   - The tapped row says "Sending…" and the list is closed to a second tap
     until the session redraws. If the answer never lands (6 s), the list goes
     live again rather than leaving a block that can no longer be answered.
+  - **Bounded to the dialog, 2026-09-20.** "Above the rows" was everything
+    since the last prompt echo, so a Codex tab that had not been prompted yet
+    put its whole startup banner — version, model, directory, the `/fast` tip,
+    a config warning — under "On screen now", and a mid-turn question repeated
+    the answer the conversation above already shows (measured against the live
+    pane: 16 of 21 lines were banner). `readSelectPrompt` now also reports
+    `question` (the block directly above the rows) and `context` (that block
+    and one more, ≤ 10 lines): the question is the list's own heading, the
+    context stays as the screen drew it — in Claude's permission dialog the
+    file and the diff — and nothing above it is shown. The block label says
+    **"Waiting for your answer"** rather than "On screen now".
+  - The heading is drawn in the reading view's type, dedented, with the
+    emphasis kept and the palette dropped: Codex paints its question on a
+    near-white card, which in this dark view was a white slab. Only the
+    heading — the screen around it keeps the colours the session sent.
   - Needs a rebuild of the embedded PWA (`npm run build` did it) and a desktop
     restart to serve it.
   - [ ] 🖐️ Manual phone QA — open a Claude tab in Focus → Session and ask it
@@ -1923,6 +1938,11 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     list is replaced by the turn. Repeat with a `/model`-style multi-row
     dialog and with Codex's approval prompt. Confirm a numbered list inside an
     agent's ordinary answer is *not* turned into tappable rows.
+  - [ ] 🖐️ Manual phone QA — a fresh Codex tab whose first screen is a
+    question (the "Luna Reserve / Upgrade / Add Credits" prompt does it): the
+    block holds the question and the line that says why it is asked, in the
+    reading view's own type — no white card, no startup banner — and the three
+    rows below it answer it.
   - [ ] ✅ Works
   - [ ] ❌ Doesn't work
 

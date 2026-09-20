@@ -121,7 +121,7 @@ export const en = {
   "mobile.transcript.cut": "Cut here — the full text is in the session.",
   "mobile.transcript.empty": "No turns yet",
   "mobile.transcript.emptyHint": "The stored conversation shows here once the agent has answered.",
-  "mobile.transcript.onScreen": "On screen now",
+  "mobile.transcript.question": "Waiting for your answer",
   "mobile.transcript.answering": "Sending…",
   "mobile.transcript.prompt": "Your prompt",
   "mobile.transcript.answer": "Answer",

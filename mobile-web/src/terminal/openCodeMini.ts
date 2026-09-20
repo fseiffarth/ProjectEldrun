@@ -345,7 +345,17 @@ export function readOpenCodePicker(lines: readonly { text: string }[]): SelectPr
     });
   }
   if (options.length === 0) return null;
-  return { options, current: -1, start: title, title: PICKER_TITLE.exec(lines[title].text)![1].trim() };
+  // The picker's own heading is the line `start` points at, so it has no
+  // question block above its rows: the model sheet reads the rows and the
+  // heading, never the screen around them.
+  return {
+    options,
+    current: -1,
+    start: title,
+    question: title,
+    context: title,
+    title: PICKER_TITLE.exec(lines[title].text)![1].trim(),
+  };
 }
 
 /** ctrl+p — the only way into OpenCode mini's commands. */

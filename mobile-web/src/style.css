@@ -704,6 +704,11 @@ body.terminal-open { min-height:0; overflow:hidden; }
    (`QuestionList`). It carries the number the dialog printed beside each row,
    so the list on the phone reads as the one on the screen — and a row the
    session highlights is the one Enter would take, not an answer given. */
+/* Its heading: the dialog's own question, in the reading view's own type
+   rather than the colours the TUI painted its card with (`ReadableRow`
+   `plain`). Flush left — the rows below it carry the indent. */
+.question-ask { display:grid; gap:2px; padding:0 2px 2px; }
+.question-ask .readable-line { padding-left:0; text-indent:0; }
 .question-list button:disabled { opacity:.6; }
 .question-list button > .question-number { flex:0 0 auto; display:grid; place-items:center; width:22px; height:22px; border-radius:7px; background:#2a3044; color:#9da3b6; font:600 .76rem/1 Inter,ui-sans-serif,system-ui,sans-serif; }
 .question-list button.current > .question-number { background:#2b3550; color:#8fb6ff; }

@@ -26,7 +26,7 @@ import {
 import { DRAFT_SAVE_DELAY, readDraft, writeDraft } from "../drafts";
 import { readFlag, readTerminalView, writeFlag, writeTerminalView, type TerminalViewChoice } from "../prefs";
 import { TERMINAL_PROTOCOL, TERMINAL_SIZE } from "../terminal/protocol";
-import { readableRange, readableScreen, readableText, TRUNCATION_NOTICE, type ReadableLine } from "../terminal/readableScreen";
+import { dedentLines, readableRange, readableScreen, readableText, TRUNCATION_NOTICE, type ReadableLine } from "../terminal/readableScreen";
 import {
   absorbHistory,
   emptyHistory,
@@ -245,12 +245,19 @@ function desktopImageDescription(image: DesktopImage) {
 }
 
 /** One logical line of the session, with the colours the program actually
- * emitted. Style is never inferred from the text — see `readableScreen`. */
-const ReadableRow = memo(function ReadableRow({ line }: { line: ReadableLine }) {
+ * emitted. Style is never inferred from the text — see `readableScreen`.
+ *
+ * `plain` keeps the emphasis and drops the palette, for the one place the
+ * phone shows a line as its own text rather than as the screen: a dialog's
+ * question, whose rows below it are already the phone's list (`QuestionList`).
+ * A TUI paints a dialog in its own theme — Codex draws its question on a
+ * near-white card — and that card transplanted into this dark view is a white
+ * slab with the reading view's own type inside it. */
+const ReadableRow = memo(function ReadableRow({ line, plain }: { line: ReadableLine; plain?: boolean }) {
   if (line.spans.length === 0) return <div className="readable-blank" aria-hidden="true" />;
   return <div className="readable-line">{line.spans.map((span, index) => (
-    span.className || span.color || span.background
-      ? <span key={index} className={span.className} style={{ color: span.color, background: span.background }}>{span.text}</span>
+    span.className || (!plain && (span.color || span.background))
+      ? <span key={index} className={span.className} style={plain ? undefined : { color: span.color, background: span.background }}>{span.text}</span>
       : <span key={index}>{span.text}</span>
   ))}</div>;
 });
@@ -396,25 +403,46 @@ function noSessionReason(transcript: SessionTranscript | null): TranslationKey {
  * back: no parsing, no keystrokes. The row the dialog highlights is marked as
  * the one Enter would take, not as an answer already given.
  */
-function QuestionList({ prompt, sent, sendingLabel, onPick }: {
+/** A range of read lines without the blank rows at its ends — the gutter a
+ * dialog leaves around its own text, which is a paragraph break only when
+ * there is something on both sides of it. */
+function withoutEdgeBlanks(lines: readonly ReadableLine[]): ReadableLine[] {
+  let first = 0;
+  let end = lines.length;
+  while (first < end && lines[first].text === "") first += 1;
+  while (end > first && lines[end - 1].text === "") end -= 1;
+  return lines.slice(first, end);
+}
+
+function QuestionList({ prompt, question, sent, sendingLabel, onPick }: {
   prompt: SelectPrompt;
+  /** The dialog's own question — the lines `prompt.question` points at. It is
+   * the list's heading here, so it is shown in the reading view's own voice
+   * (`plain`): a TUI paints its dialog in its own theme, and Codex's light
+   * card dropped into this dark view is a white slab. */
+  question: readonly ReadableLine[];
   /** The printed number of the row a tap answered with, while the session has
    * not redrawn yet: that row says so, and no row can be tapped again. */
   sent?: number;
   sendingLabel: string;
   onPick: (option: SelectOption) => void;
 }) {
-  return <ul className="option-list question-list">{prompt.options.map((option) => <li key={option.number}>
-    <button
-      className={option.index === prompt.current ? "current" : ""}
-      aria-current={option.index === prompt.current || undefined}
-      disabled={sent !== undefined}
-      onClick={() => onPick(option)}>
-      <span className="question-number" aria-hidden="true">{option.number}</span>
-      <span><strong>{option.label}</strong>{option.description && <small>{option.description}</small>}</span>
-      {sent === option.number && <span className="sheet-pending" role="status">{sendingLabel}</span>}
-    </button>
-  </li>)}</ul>;
+  return <>
+    {question.length > 0 && <div className="question-ask">
+      {question.map((line) => <ReadableRow key={line.key} line={line} plain />)}
+    </div>}
+    <ul className="option-list question-list">{prompt.options.map((option) => <li key={option.number}>
+      <button
+        className={option.index === prompt.current ? "current" : ""}
+        aria-current={option.index === prompt.current || undefined}
+        disabled={sent !== undefined}
+        onClick={() => onPick(option)}>
+        <span className="question-number" aria-hidden="true">{option.number}</span>
+        <span><strong>{option.label}</strong>{option.description && <small>{option.description}</small>}</span>
+        {sent === option.number && <span className="sheet-pending" role="status">{sendingLabel}</span>}
+      </button>
+    </li>)}</ul>
+  </>;
 }
 
 export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
@@ -1877,6 +1905,18 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     () => (liveTail.length > 0 ? readSelectPrompt(liveTail, agentLabel) : null),
     [liveTail, agentLabel],
   );
+  /** The dialog's own question — the block right above its rows, which the
+   * list below shows as its heading — and the screen it was drawn onto, which
+   * stays as the session drew it. Blank rows at either seam are the dialog's
+   * own gutter, not a paragraph of anybody's. */
+  const questionAsk = useMemo(
+    () => (liveQuestion ? dedentLines(withoutEdgeBlanks(liveTail.slice(liveQuestion.question, liveQuestion.start))) : []),
+    [liveQuestion, liveTail],
+  );
+  const questionContext = useMemo(
+    () => (liveQuestion ? withoutEdgeBlanks(liveTail.slice(liveQuestion.context, liveQuestion.question)) : []),
+    [liveQuestion, liveTail],
+  );
   /** What the list on screen *is*, as a string: a stable dep for the effects
    * below, which must not restart on every repaint of the same question. */
   const questionSignature = liveQuestion ? selectSignature(liveQuestion) : "";
@@ -2123,15 +2163,19 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
               : <div className="readable-lines chat transcript" data-testid="session-transcript">
                   {transcript?.truncated && <button className="readable-earlier" onClick={() => setTranscriptLimit((limit) => limit + TRANSCRIPT_STEP)}>{t("mobile.transcript.earlier")}</button>}
                   <TranscriptTurns entries={sessionEntries} cutLabel={t("mobile.transcript.cut")} promptLabel={t("mobile.transcript.prompt")} />
-                  {liveQuestion && <div className="transcript-screen" role="group" aria-label={t("mobile.transcript.onScreen")}>
-                    <small>{t("mobile.transcript.onScreen")}{isUntested("mobile.focus.onScreen") && <> · {t("mobile.focus.untested")}</>}</small>
-                    {/* What the rows answer — the question and whatever the
-                        agent printed to ask it — as the screen drew it. The
-                        rows themselves are replaced by the list below: a
-                        highlight walked with arrow keys is not something a
-                        phone can do. */}
-                    {liveQuestion.start > 0 && <ReadableTurns lines={liveTail.slice(0, liveQuestion.start)} chat={chat} agent={agentLabel} promptLabel={t("mobile.transcript.prompt")} columns={paneColumns.current} />}
-                    <QuestionList prompt={liveQuestion} sent={sentSignature === questionSignature ? questionSent?.number : undefined} sendingLabel={t("mobile.transcript.answering")} onPick={answerQuestion} />
+                  {liveQuestion && <div className="transcript-screen" role="group" aria-label={t("mobile.transcript.question")}>
+                    <small>{t("mobile.transcript.question")}{isUntested("mobile.focus.onScreen") && <> · {t("mobile.focus.untested")}</>}</small>
+                    {/* The screen the dialog was drawn onto, as the screen drew
+                        it — in Claude Code's permission dialog the file and the
+                        diff it is asking about. Bounded by `readSelectPrompt`
+                        to what the rows answer: the turn above it is already in
+                        the conversation, and an unprompted session's banner is
+                        not a question. The rows themselves are replaced by the
+                        list below — a highlight walked with arrow keys is not
+                        something a phone can do — and the question above them
+                        is that list's heading. */}
+                    {questionContext.length > 0 && <ReadableTurns lines={questionContext} chat={chat} agent={agentLabel} promptLabel={t("mobile.transcript.prompt")} columns={paneColumns.current} />}
+                    <QuestionList prompt={liveQuestion} question={questionAsk} sent={sentSignature === questionSignature ? questionSent?.number : undefined} sendingLabel={t("mobile.transcript.answering")} onPick={answerQuestion} />
                   </div>}
                   {sessionBusy && <div className="transcript-working" role="status">
                     <span className="transcript-working-dots" aria-hidden="true"><i /><i /><i /></span>

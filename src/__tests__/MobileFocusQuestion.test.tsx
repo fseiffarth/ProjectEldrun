@@ -14,6 +14,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const terminalState = vi.hoisted(() => ({ lines: [] as string[], type: "normal" as "normal" | "alternate" }));
 
+/** Marks a row a TUI painted on a card of its own — Codex draws its question
+ * on a near-white one, bold and dark inside. The buffer then offers cells, the
+ * way xterm does, and `readableScreen` reads the colours off them. */
+const CARD = "\u0001";
+/** The same colours, as the DOM reports them back. */
+const CARD_BG = "rgb(244, 244, 244)";
+const CARD_FG = "rgb(36, 41, 47)";
+
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     cols = 80;
@@ -26,7 +34,34 @@ vi.mock("@xterm/xterm", () => ({
         get length() { return terminalState.lines.length; },
         getLine(row: number) {
           const value = terminalState.lines[row];
-          return value == null ? undefined : { isWrapped: false, translateToString: () => value };
+          if (value == null) return undefined;
+          if (!value.startsWith("\u0001")) return { isWrapped: false, translateToString: () => value };
+          const text = value.slice(1);
+          const cell = (char: string) => ({
+            getChars: () => char,
+            getWidth: () => 1,
+            isBold: () => 1,
+            isItalic: () => 0,
+            isDim: () => 0,
+            isUnderline: () => 0,
+            isStrikethrough: () => 0,
+            isInverse: () => 0,
+            isInvisible: () => 0,
+            isFgDefault: () => false,
+            isBgDefault: () => false,
+            isFgPalette: () => false,
+            isBgPalette: () => false,
+            isFgRGB: () => true,
+            isBgRGB: () => true,
+            getFgColor: () => 0x24292f,
+            getBgColor: () => 0xf4f4f4,
+          });
+          return {
+            isWrapped: false,
+            length: text.length,
+            translateToString: () => text,
+            getCell: (x: number) => (x < text.length ? cell(text[x]) : undefined),
+          };
         },
       },
     };
@@ -81,8 +116,18 @@ const STORED = {
 };
 
 /** The permission prompt, as the reading view has it once the box frame is
- * stripped: what is asked, then the rows that answer it. */
+ * stripped: the session it was drawn onto, what is asked, then the rows that
+ * answer it. The banner stands for everything the dialog is *not* about — a
+ * session that has not been prompted yet put its whole startup header here. */
+const BANNER = [
+  "> Claude Code v2.1.278",
+  "  cwd: ~/eldrun/projects/projecteldrun",
+  "",
+  "Tip: run /doctor to check your setup",
+];
 const QUESTION = [
+  ...BANNER,
+  "",
   "Edit file",
   "  src/lib/i18n.ts",
   "",
@@ -92,6 +137,32 @@ const QUESTION = [
   "  3. No, and tell Claude what to do differently",
   "",
   "  esc to cancel",
+].join("\n");
+
+const CODEX_TAB = { ...TAB, id: "tab-codex", label: "Codex", agent_label: "Codex" };
+
+/** codex 0.155.1, captured off a live pane: the startup banner, the line that
+ * says why it is asking, then the question — which Codex paints on its own
+ * light card (`CARD`) — and the rows. */
+const CODEX_QUESTION = [
+  ">_ OpenAI Codex (v0.155.1)",
+  "model:     gpt-6-astra high   /model to change",
+  "directory: ~/eldrun/projects/projecteldrun",
+  "",
+  "⚠ clamping SessionEnd hook timeout to 3s in /home/florian/.codex/config.toml",
+  "",
+  // Carries the card too, though Codex draws this line plain: it is what says
+  // the palette is dropped for the question alone, not for the screen.
+  `${CARD}• Automatically switched to Luna Reserve high due to usage limits.`,
+  "",
+  `${CARD}  You’re now using Luna, a faster model for simpler tasks.`,
+  `${CARD}  Add credits or upgrade to continue using the most advanced models.`,
+  "",
+  "› 1. Upgrade",
+  "  2. Add Credits",
+  "  3. Continue with Luna Reserve",
+  "",
+  "  Press enter to confirm or esc to continue working",
 ].join("\n");
 
 function jsonResponse(status: number, body: unknown) {
@@ -116,7 +187,7 @@ const settle = async (ms: number) => {
   await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, ms)); });
 };
 
-const question = () => screen.getByRole("group", { name: "On screen now" });
+const question = () => screen.getByRole("group", { name: "Waiting for your answer" });
 const rows = () => Array.from(question().querySelectorAll(".option-list button"), (row) => row.textContent ?? "");
 
 describe("Eldrun Mobile Focus — the question an agent is waiting on", () => {
@@ -141,8 +212,14 @@ describe("Eldrun Mobile Focus — the question an agent is waiting on", () => {
     screen.getByTestId("session-transcript");
 
     await paint(QUESTION);
-    // What the rows answer is still shown as the screen drew it…
+    // What the rows answer is still shown — the question, and the block above
+    // it that says what the answer applies to…
     within(question()).getByText(/Do you want to make this edit/);
+    within(question()).getByText(/src\/lib\/i18n.ts/);
+    // …but not the session above that: the conversation is already the view
+    // behind this block, and a startup banner is not a question.
+    expect(within(question()).queryByText(/Claude Code v2/)).toBeNull();
+    expect(within(question()).queryByText(/run \/doctor/)).toBeNull();
     // …and the rows themselves are a list, under the dialog's own numbers.
     expect(rows()).toHaveLength(3);
     expect(rows()[0]).toContain("1");
@@ -181,6 +258,34 @@ describe("Eldrun Mobile Focus — the question an agent is waiting on", () => {
     fireEvent.click(within(question()).getByText("Yes, allow all edits during this session"));
     await settle(400);
     expect(FakeWebSocket.sent).toEqual([DOWN, "\r"]);
+  });
+
+  it("shows a Codex question in the reading view's own type, without its card", async () => {
+    render(<Terminal tab={CODEX_TAB} back={() => {}} />);
+    await act(async () => {});
+    await paint(CODEX_QUESTION);
+
+    const ask = question().querySelector(".question-ask")!;
+    expect(ask.textContent).toContain("You’re now using Luna");
+    expect(ask.textContent).toContain("Add credits or upgrade");
+    // The dialog's rows are the list, and the line that says why it is asking
+    // is context; the banner above it is neither.
+    expect(within(question()).getByText(/Automatically switched to Luna Reserve/)).toBeTruthy();
+    expect(within(question()).queryByText(/OpenAI Codex \(v0/)).toBeNull();
+    expect(rows().map((row) => row.replace(/^\d/, ""))).toEqual(["Upgrade", "Add Credits", "Continue with Luna Reserve"]);
+    // Codex paints that question on a near-white card. Dropped into this dark
+    // view it was a white slab: the emphasis survives, the palette does not.
+    const painted = Array.from(ask.querySelectorAll("span"));
+    expect(painted.length).toBeGreaterThan(0);
+    for (const span of painted) {
+      expect(span.style.background).toBe("");
+      expect(span.style.color).toBe("");
+      expect(span.className).toContain("b");
+    }
+    // …while the screen around it still reads as the session painted it.
+    const context = within(question()).getByText(/Automatically switched to Luna Reserve/);
+    expect(context.style.background).toBe(CARD_BG);
+    expect(context.style.color).toBe(CARD_FG);
   });
 
   it("gives the list back when the answer never lands", async () => {

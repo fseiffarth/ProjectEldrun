@@ -87,7 +87,7 @@ export const dict: Dict = {
   "mobile.transcript.cut": "Cortado aquí: el texto completo está en la sesión.",
   "mobile.transcript.empty": "Aún no hay turnos",
   "mobile.transcript.emptyHint": "La conversación guardada aparecerá aquí cuando el agente haya respondido.",
-  "mobile.transcript.onScreen": "Ahora en pantalla",
+  "mobile.transcript.question": "Esperando tu respuesta",
   "mobile.transcript.answering": "Enviando…",
   "mobile.transcript.prompt": "Tu prompt",
   "mobile.transcript.answer": "Respuesta",
