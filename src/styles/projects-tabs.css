@@ -2397,11 +2397,12 @@
 }
 
 /* A context-menu caption that quotes CONTENT rather than naming a section — a
-   message's subject over the actions that file it. Not the uppercase treatment
-   the ordinary label gets: this is the mail's own text, and shouting it would
-   both misrepresent it and lose the casing the sender chose. Truncated, because
-   a subject has no length limit and a menu does. */
-.mail-menu-subject {
+   message's subject over the actions that file it, a calendar entry's title
+   over Copy and Delete. Not the uppercase treatment the ordinary label gets:
+   this is the user's (or the sender's) own text, and shouting it would both
+   misrepresent it and lose the casing it was written in. Truncated, because a
+   subject or a title has no length limit and a menu does. */
+.context-menu-quote {
   max-width: 240px;
   text-transform: none;
   letter-spacing: normal;

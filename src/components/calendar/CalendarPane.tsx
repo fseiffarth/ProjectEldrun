@@ -32,6 +32,9 @@ import { TasksView } from "./TasksView";
 import { CalendarSidebar } from "./CalendarSidebar";
 import { CalDavAccountDialog } from "./CalDavAccountDialog";
 import { EventDialog, type EditScope, type EventDialogTarget } from "./EventDialog";
+import { CalendarContextMenu, type CalendarMenuTarget } from "./CalendarContextMenu";
+import { useCalendarClipboardStore } from "../../stores/calendar/clipboard";
+import { copyOfOccurrence, pastedAt, type PasteTarget } from "../../lib/calendar/calendarClipboard";
 import { isCalDavConflict, useCalDavStore } from "../../stores/calendar/caldav";
 import type { CalDavAccount } from "../../types/caldav";
 import { useI18nStore, useT, type TranslationKey } from "../../lib/i18n";
@@ -118,6 +121,13 @@ export function CalendarPane({ visible }: Props) {
   } | null>(null);
   /** `null` = closed; `{account}` = editing (a `null` account is "add new"). */
   const [caldavDialog, setCaldavDialog] = useState<{ account: CalDavAccount | null } | null>(null);
+  /** The open right-click menu: where it is, and what it is about. */
+  const [menu, setMenu] = useState<CalendarMenuTarget | null>(null);
+
+  // The clipboard is a module store, not pane state: a copy made here pastes in
+  // another calendar tab, and survives navigating away from the source day.
+  const clipboard = useCalendarClipboardStore((s) => s.entry);
+  const copyToClipboard = useCalendarClipboardStore((s) => s.copy);
 
   useEffect(() => {
     if (!loaded) void load();
@@ -372,6 +382,73 @@ export function CalendarPane({ visible }: Props) {
       await updateEvent({ ...event, end: newEnd });
     },
     [events, updateEvent, updateOccurrence],
+  );
+
+  // ── Copy / paste ──────────────────────────────────────────────────────────
+  //
+  // The narrow promise of the feature: a pasted entry is the copied one again on
+  // another day. Only its start — and the end its own duration puts after it —
+  // is new; see `lib/calendar/calendarClipboard` for what is deliberately left
+  // behind (the identity fields, and the repeat rule).
+
+  const copyOccurrence = useCallback(
+    (occ: Occurrence) => {
+      const event = events.find((e) => e.id === occ.eventId);
+      if (!event) return;
+      copyToClipboard(copyOfOccurrence(event, occ));
+    },
+    [events, copyToClipboard],
+  );
+
+  const pasteInto = useCallback(
+    async (slot: PasteTarget) => {
+      // Read through the store rather than close over `clipboard`: the copy may
+      // have been made in another calendar tab a moment ago.
+      const entry = useCalendarClipboardStore.getState().entry;
+      if (!entry) return;
+      let draft = pastedAt(entry, slot);
+
+      // Never into a subscribed or read-only calendar: a refresh replaces those
+      // rows wholesale (`calendar_replace_events`), so the paste would appear to
+      // work and then be gone. It goes to the first writable calendar instead —
+      // said out loud, because that IS a second thing the paste changed.
+      const target = calendars.find((c) => c.id === draft.calendar_id);
+      if (!target || target.readonly) {
+        const writable = calendars.find((c) => !c.readonly);
+        if (!writable) {
+          setNotice(t("calendarMenu.pasteNoCalendar"));
+          return;
+        }
+        draft = { ...draft, calendar_id: writable.id };
+        setNotice(t("calendarMenu.pastedElsewhere", { name: writable.name }));
+      }
+
+      try {
+        await createEvent(draft);
+      } catch (err) {
+        setNotice(t("calendarMenu.pasteFailed", { error: String(err) }));
+      }
+    },
+    [calendars, createEvent, t],
+  );
+
+  /** Delete straight from the menu, by the dialog's rule rather than a second
+   *  one: a plain event goes at once, a repeating one only with a scope. */
+  const deleteFromMenu = useCallback(
+    async (occ: Occurrence, scope: EditScope) => {
+      try {
+        if (scope === "this" && occ.recurring) {
+          await deleteOccurrence(occ.eventId, occ.occurrenceStart);
+          return;
+        }
+        await deleteEvent(occ.eventId);
+      } catch (err) {
+        // A CalDAV refusal is already being asked about in the conflict dialog;
+        // it is the one failure this does not repeat as a notice.
+        if (!isCalDavConflict(err)) setNotice(String(err));
+      }
+    },
+    [deleteEvent, deleteOccurrence],
   );
 
   // ── ICS ───────────────────────────────────────────────────────────────────
@@ -633,6 +710,7 @@ export function CalendarPane({ visible }: Props) {
               calendars={calendars}
               use24h={use24h}
               onOpen={openOccurrence}
+              onMenu={setMenu}
               emptyLabel={
                 search.trim()
                   ? t("calendar.noEventsMatch", { query: search.trim() })
@@ -650,6 +728,7 @@ export function CalendarPane({ visible }: Props) {
               onSelect={(date) => setAnchor(date)}
               onCreateOn={(date) => openCreate(date)}
               onOpen={openOccurrence}
+              onMenu={setMenu}
               weekStart={weekStart}
             />
           ) : (
@@ -658,6 +737,7 @@ export function CalendarPane({ visible }: Props) {
                 dates={windowDates}
                 occurrences={shown}
                 onOpen={openOccurrence}
+                onMenu={setMenu}
                 selected={datePart(anchor)}
                 onSelect={(date) => setAnchor(date)}
               />
@@ -670,11 +750,27 @@ export function CalendarPane({ visible }: Props) {
                 onCreate={onCreateSpan}
                 onMove={(occ, start) => void onMove(occ, start)}
                 onResize={(occ, end) => void onResize(occ, end)}
+                onMenu={setMenu}
               />
             </div>
           )}
         </div>
       </div>
+
+      {menu ? (
+        <CalendarContextMenu
+          target={menu}
+          clipboard={clipboard}
+          onClose={() => setMenu(null)}
+          onEdit={openOccurrence}
+          onCopy={copyOccurrence}
+          onDelete={(occ, scope) => void deleteFromMenu(occ, scope)}
+          onPaste={(slot) => void pasteInto(slot)}
+          onCreate={(slot) =>
+            openCreate(slot.date, slot.start, slot.start ? shiftBy(slot.start, 60) : undefined)
+          }
+        />
+      ) : null}
 
       {dialog ? (
         <EventDialog
@@ -733,12 +829,16 @@ function AllDayBar({
   dates,
   occurrences,
   onOpen,
+  onMenu,
   selected,
   onSelect,
 }: {
   dates: string[];
   occurrences: Occurrence[];
   onOpen: (o: Occurrence) => void;
+  /** Right-click, on a column or on an all-day chip. No minute is reported:
+   *  this strip is the part of the day view that has no clock. */
+  onMenu: (target: CalendarMenuTarget) => void;
   selected: string;
   onSelect: (date: string) => void;
 }) {
@@ -765,6 +865,10 @@ function AllDayBar({
                 (date === selected ? " cal-allday-col-selected" : "")
               }
               onClick={() => onSelect(date)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                onMenu({ x: e.clientX, y: e.clientY, occ: null, slot: { date } });
+              }}
             >
               <div className="cal-allday-head">
                 <span className="cal-allday-dow">
@@ -779,6 +883,11 @@ function AllDayBar({
                   onClick={(e) => {
                     e.stopPropagation();
                     onOpen(o);
+                  }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onMenu({ x: e.clientX, y: e.clientY, occ: o, slot: { date } });
                   }}
                   title={o.title}
                 >

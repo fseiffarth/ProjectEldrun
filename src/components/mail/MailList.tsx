@@ -556,7 +556,7 @@ function MailListImpl({
                     CSS, stripped of format controls like every other place a
                     subject is printed — a menu label is as attacker-reachable as
                     a row is. */}
-                <div className="context-menu-group-label mail-menu-subject">
+                <div className="context-menu-group-label context-menu-quote">
                   {menu.targets.length > 1
                     ? t("mail.selectedCount", { count: menu.targets.length })
                     : stripFormatControls(menu.header.subject) || t("mail.noSubject")}

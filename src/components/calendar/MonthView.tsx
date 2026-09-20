@@ -11,6 +11,7 @@ import {
 import { eventColor } from "../../lib/calendar/calendarCategories";
 import { calendarColor } from "../../stores/calendar/calendar";
 import { useI18nStore, useT } from "../../lib/i18n";
+import type { CalendarMenuTarget } from "./CalendarContextMenu";
 
 /** Rows of chips a cell shows before collapsing the rest into "+N more". */
 const MAX_ROWS = 4;
@@ -29,6 +30,10 @@ interface Props {
   /** Double-click a day → create an all-day event on it. */
   onCreateOn: (date: string) => void;
   onOpen: (occurrence: Occurrence) => void;
+  /** Right-click, on a day cell or on a bar. A bar reports the day under the
+   *  cursor, not the event's first day: a week-long bar is right-clicked
+   *  somewhere, and that somewhere is where a paste belongs. */
+  onMenu: (target: CalendarMenuTarget) => void;
   weekStart: 0 | 1;
 }
 
@@ -147,6 +152,7 @@ export function MonthView({
   onSelect,
   onCreateOn,
   onOpen,
+  onMenu,
   weekStart,
 }: Props) {
   const t = useT();
@@ -199,6 +205,10 @@ export function MonthView({
                     style={{ left: `${(ci / 7) * 100}%`, width: `${100 / 7}%` }}
                     onClick={() => onSelect(date)}
                     onDoubleClick={() => onCreateOn(date)}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      onMenu({ x: e.clientX, y: e.clientY, occ: null, slot: { date } });
+                    }}
                   >
                     <span className="cal-month-daynum">{Number(date.slice(8, 10))}</span>
                     {overflow.has(ci) ? (
@@ -250,6 +260,23 @@ export function MonthView({
                       // Keep a habitual double-click off the cell underneath,
                       // which would open a *new* event on this day.
                       onDoubleClick={(e) => e.stopPropagation()}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        // Bars float above the cells, so the day has to come
+                        // from the cursor's column in the week row.
+                        const row = (e.currentTarget as HTMLElement).parentElement;
+                        const rect = row?.getBoundingClientRect();
+                        const ci = rect
+                          ? Math.min(6, Math.max(0, Math.floor(((e.clientX - rect.left) / rect.width) * 7)))
+                          : bar.col;
+                        onMenu({
+                          x: e.clientX,
+                          y: e.clientY,
+                          occ,
+                          slot: { date: week[ci] ?? week[bar.col] },
+                        });
+                      }}
                       title={`${occ.title}${occ.location ? ` — ${occ.location}` : ""}`}
                     >
                       {!spanning ? <span className="cal-month-bar-dot">●</span> : null}

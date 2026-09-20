@@ -78,6 +78,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `calendar/AgendaView.tsx` / `calendar/TasksView.tsx` | Flat upcoming list; to-do (VTODO) list. |
 | `calendar/EventDialog.tsx` | Event editor (repeat, reminders, category, this-vs-all occurrences) + video-call field (`lib/calendar/conference.ts`). A link derived from location/notes is only hinted, never written into the field. |
 | `calendar/CalendarSidebar.tsx` | Mini-month + calendar list (color, visibility); CalDAV calendars carry their own sync affordance (⇅ / … / amber ! with the backend's error as tooltip). |
+| `calendar/CalendarContextMenu.tsx` | The calendar's one right-click menu, in every view: Edit/Copy, New here/Paste, and the delete scopes. A click on a block is both an event and a slot, so a full day can still be pasted into. |
 | `calendar/CalDavAccountDialog.tsx` | CalDAV account editor (`docs/caldav_plan.md`), `MailAccountDialog`'s twin (`SavePasswordRow`, `true \| null` never `false`) plus server discovery → pick collections. No server presets. |
 | `calendar/CalDavSyncHost.tsx` | Scheduled CalDAV sync (renders nothing), mounted once at the shell. Mail's rules: free with no account, first tick one interval away, `0` = never. |
 | `calendar/CalDavConflictDialog.tsx` | The one answer to a CalDAV 412, mounted at the shell: keep mine (conditional overwrite on fresh ETag), use the server's, or decide later. No merge. |
@@ -210,6 +211,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `hpcJobs.ts` | In-memory list of SLURM jobs this session submitted (for the Jobs view before the next `squeue`). `squeue` is the truth; no persistence. |
 | `caldav.ts` | CalDAV accounts + sync, a second store beside `calendar.ts`. Sync merges via `caldav_apply` (never a replace); failures visible per collection. |
 | `calendar.ts` | Global calendars/events/tasks (one `calendar.json`); the only owner of task persistence (`moveTasks` = one write per drag, `setColumns`). |
+| `calendar/clipboard.ts` | The calendar clipboard (one copied entry, a snapshot). Module-level, so a copy pastes in another calendar tab and outlives the navigation. |
 | `todo.ts` | To-do board session state only (overlay flag, filters — never persisted, drag, optimistic overlay, mail cache, `collapsedSteps`, `focusTaskId`). |
 | `browser.ts` | In-app browser store (#61). Nothing reaches the network on its own (`load`/`openLive` only, both clicks), actions tolerate a rejected invoke, downloads refused by default. |
 | `mail.ts` | Global mail store. Every action tolerates a rejected invoke (lands in `error`); only `checkMail` reaches a server. Owns list order (`setSort` → `mail_headers`). |
@@ -287,6 +289,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `lib/calendar/conference.ts` | The video-call link verdict every Join button reads: explicit field exact; derived only from a recognized meeting host or a URL-only location. |
 | `lib/calendar/caldavPush.ts` | What bytes a CalDAV resource holds (pure): a resource groups a master + overrides by `caldav_href` (`resourceRows`, master first via `orderComponents`, `resourceIcs`). |
 | `lib/calendar/calendarWriteHook.ts` | One-slot seam between calendar edits and CalDAV push (avoids a store import cycle). Upsert announced after the local write; delete before it, and a rejection stops the delete. |
+| `lib/calendar/calendarClipboard.ts` | Copy/paste of an entry (pure): the copy keeps everything typed, drops identity (`id`/`uid`/`caldav_*`/`recurrence_id`) and the repeat rule; the paste rewrites only start/end. |
 | `lib/calendar/icsSafety.ts` | Lists what's in an `.ics` before import (alarms with actions, `ATTACH`, app-scheme links, …) — pure. Not a scanner. |
 | `lib/calendar/calendarTime.ts` | Calendar date math (local stamps, exclusive ends, overlap layout). `formatTime`/`formatStampTime` are the two clock renderers (via `lib/timeFormat`). |
 | `lib/timeFormat.ts` | The one 12h/24h answer (`Settings.time_format_24h`), read by every surface that prints a wall clock. |

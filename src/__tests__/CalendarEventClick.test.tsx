@@ -50,6 +50,7 @@ function grid() {
       onCreate={onCreate}
       onMove={onMove}
       onResize={vi.fn()}
+      onMenu={vi.fn()}
     />,
   );
   const block = view.container.querySelector(".cal-block") as HTMLElement;
@@ -95,6 +96,7 @@ describe("calendar event click", () => {
         onSelect={vi.fn()}
         onCreateOn={onCreateOn}
         onOpen={onOpen}
+        onMenu={vi.fn()}
         weekStart={1}
       />,
     );
@@ -108,7 +110,14 @@ describe("calendar event click", () => {
   it("opens an agenda row on click", () => {
     const onOpen = vi.fn();
     const view = render(
-      <AgendaView occurrences={[occ]} calendars={[]} use24h onOpen={onOpen} emptyLabel="" />,
+      <AgendaView
+        occurrences={[occ]}
+        calendars={[]}
+        use24h
+        onOpen={onOpen}
+        onMenu={vi.fn()}
+        emptyLabel=""
+      />,
     );
     fireEvent.click(view.container.querySelector(".cal-agenda-row") as HTMLElement);
     expect(onOpen).toHaveBeenCalledWith(occ);

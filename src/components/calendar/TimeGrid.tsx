@@ -15,6 +15,7 @@ import {
 import { eventColor } from "../../lib/calendar/calendarCategories";
 import { calendarColor } from "../../stores/calendar/calendar";
 import { useT } from "../../lib/i18n";
+import type { CalendarMenuTarget } from "./CalendarContextMenu";
 
 /** Pixel height of one hour row. The whole grid's geometry derives from this. */
 const HOUR_PX = 44;
@@ -45,6 +46,10 @@ interface Props {
   onMove: (occurrence: Occurrence, newStart: string) => void;
   /** A block's bottom edge was dragged — same start, new end. */
   onResize: (occurrence: Occurrence, newEnd: string) => void;
+  /** Right-click: on a block, on empty grid, or (on a block) both at once —
+   *  the cursor is always at a minute of a day, so a paste has a target even
+   *  where every pixel of the column is covered by an event. */
+  onMenu: (target: CalendarMenuTarget) => void;
 }
 
 /** Snap a minute offset to the grid, clamped into the day. */
@@ -94,6 +99,7 @@ export function TimeGrid({
   onCreate,
   onMove,
   onResize,
+  onMenu,
 }: Props) {
   const t = useT();
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -256,6 +262,15 @@ export function TimeGrid({
                 className={`cal-timegrid-col${isToday ? " cal-timegrid-col-today" : ""}`}
                 style={{ left: `${(ci / dates.length) * 100}%`, width: `${100 / dates.length}%` }}
                 onPointerDown={(e) => beginCreate(e, date)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  onMenu({
+                    x: e.clientX,
+                    y: e.clientY,
+                    occ: null,
+                    slot: { date, start: stampAt(date, minutesAt(e.clientY)) },
+                  });
+                }}
               >
                 {isToday ? (
                   <div
@@ -301,6 +316,18 @@ export function TimeGrid({
                         color,
                       }}
                       onPointerDown={(e) => beginMove(e, occ, date)}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        // Not the column's menu underneath: that one would
+                        // offer Paste without naming the event clicked on.
+                        e.stopPropagation();
+                        onMenu({
+                          x: e.clientX,
+                          y: e.clientY,
+                          occ,
+                          slot: { date, start: stampAt(date, minutesAt(e.clientY)) },
+                        });
+                      }}
                       title={`${occ.title}${occ.location ? ` — ${occ.location}` : ""}`}
                     >
                       <div className="cal-block-title">{occ.title || t("calendar.untitled")}</div>

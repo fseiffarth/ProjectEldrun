@@ -49,6 +49,13 @@ export const UNTESTED = {
   "calDavAccountDialog.1": { area: "calendar", what: "CalDavAccountDialog · Send my changes to this server" },
   "caldavConflict.title": { area: "calendar", what: "CalDavConflictDialog · Changed somewhere else too" },
   "calendar.overlayTitle": { area: "calendar", what: "CalendarOverlay · Calendar" },
+  "calendarContextMenu.1": { area: "calendar", what: "CalendarContextMenu · Edit" },
+  "calendarContextMenu.2": { area: "calendar", what: "CalendarContextMenu · Copy" },
+  "calendarContextMenu.3": { area: "calendar", what: "CalendarContextMenu · Delete" },
+  "calendarContextMenu.4": { area: "calendar", what: "CalendarContextMenu · Delete this occurrence" },
+  "calendarContextMenu.5": { area: "calendar", what: "CalendarContextMenu · Delete the whole series" },
+  "calendarContextMenu.6": { area: "calendar", what: "CalendarContextMenu · Paste" },
+  "calendarMenu.newHere": { area: "calendar", what: "CalendarContextMenu · New event here" },
   "eventDialog.repeatOnField": { area: "calendar", what: "EventDialog · Repeats on" },
   "icsReview.title": { area: "calendar", what: "IcsImportReviewDialog · Before importing this calendar file" },
 

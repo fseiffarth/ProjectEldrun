@@ -4,12 +4,17 @@ import { datePart, formatLongDate, formatTime, spanDates, todayStr } from "../..
 import { eventColor } from "../../lib/calendar/calendarCategories";
 import { calendarColor } from "../../stores/calendar/calendar";
 import { useI18nStore, useT } from "../../lib/i18n";
+import type { CalendarMenuTarget } from "./CalendarContextMenu";
 
 interface Props {
   occurrences: Occurrence[];
   calendars: Calendar[];
   use24h: boolean;
   onOpen: (occurrence: Occurrence) => void;
+  /** Right-click, on a row or on a day heading. A row reports the day it is
+   *  listed under, so a multi-day event copied from Thursday pastes as
+   *  Thursday's entry rather than as its first day's. */
+  onMenu: (target: CalendarMenuTarget) => void;
   /** What the list is showing, for the empty state (e.g. a search with no hits). */
   emptyLabel?: string;
 }
@@ -20,7 +25,7 @@ interface Props {
  * This is also the view a search falls back to: filtering in a month grid hides
  * the matches among empty cells, whereas a list shows exactly the hits.
  */
-export function AgendaView({ occurrences, calendars, use24h, onOpen, emptyLabel }: Props) {
+export function AgendaView({ occurrences, calendars, use24h, onOpen, onMenu, emptyLabel }: Props) {
   const t = useT();
   const lang = useI18nStore((s) => s.lang);
   const today = todayStr();
@@ -52,6 +57,10 @@ export function AgendaView({ occurrences, calendars, use24h, onOpen, emptyLabel 
         <div key={date} className="cal-agenda-day">
           <div
             className={`cal-agenda-date${date === today ? " cal-agenda-date-today" : ""}`}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              onMenu({ x: e.clientX, y: e.clientY, occ: null, slot: { date } });
+            }}
           >
             {formatLongDate(date, lang)}
             {date === today ? <span className="cal-agenda-today-tag">{t("calendar.today")}</span> : null}
@@ -69,6 +78,10 @@ export function AgendaView({ occurrences, calendars, use24h, onOpen, emptyLabel 
                   (occ.status === "cancelled" ? " cal-block-cancelled" : "")
                 }
                 onClick={() => onOpen(occ)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  onMenu({ x: e.clientX, y: e.clientY, occ, slot: { date } });
+                }}
               >
                 <span className="cal-agenda-swatch" style={{ color }}>●</span>
                 <span className="cal-agenda-time">

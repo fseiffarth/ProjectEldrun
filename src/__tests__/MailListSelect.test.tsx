@@ -144,7 +144,7 @@ describe("right-clicking a row", () => {
   it("names one subject for one row", async () => {
     renderList();
     await userEvent.pointer({ keys: "[MouseRight]", target: row("m2") });
-    expect(screen.getByText("subject m2", { selector: ".mail-menu-subject" })).toBeTruthy();
+    expect(screen.getByText("subject m2", { selector: ".context-menu-quote" })).toBeTruthy();
   });
 
   it("names the count when the menu covers the whole selection", async () => {
@@ -154,7 +154,7 @@ describe("right-clicking a row", () => {
     // count above the rows.
     expect(
       screen.getByText(t("mail.selectedCount", { count: 2 }), {
-        selector: ".mail-menu-subject",
+        selector: ".context-menu-quote",
       }),
     ).toBeTruthy();
   });
