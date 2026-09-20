@@ -3588,8 +3588,9 @@ export const en = {
   "mcpSecurity.protocol": "Protocol request",
   "mcpSecurity.reviewScope": "Session access: {calendars} calendars, {projects} projects; caller: {caller}",
   "mcpSecurity.allScopes": "all",
-  "rootReview.open": "Review {count} agent proposals",
   "rootReview.title": "Agent proposals",
+  "rootReview.badge": "✓ Approvals",
+  "rootReview.badgeHint": "The agent proposals waiting for a decision. Click for the rows; the count is what is still pending.",
   "rootReview.approveAll": "Approve all ({count})",
   "rootReview.empty": "No agent proposals waiting.",
   "rootReview.approve": "Approve",
@@ -6905,7 +6906,7 @@ export const en = {
     "Eldrun's tools are not running — agents opened here are ordinary agents until Eldrun is restarted.",
   "rootConsole.rightsDisabled":
     "Eldrun's tools (MCP) are switched off — agents here are ordinary agents, and the ones already running are refused.",
-  "rootConsole.rightsOpenReview": "Click for the agent proposals waiting for a decision. The tools themselves are switched on and off in Settings.",
+  "rootConsole.rightsInSettings": "What a root tab may do with these tools is switched on and off in Settings.",
   "rootConsole.noPhone": "The root console is never offered to Eldrun Mobile or to Claude's remote control.",
   "rootConsole.mailOpen": "✉ At least one mail account is open to a contained reader agent. A root tab still reads no mail; it can only write drafts.",
   "rootConsole.reviewAdvisory":

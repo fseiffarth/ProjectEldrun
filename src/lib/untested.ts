@@ -165,7 +165,7 @@ export const UNTESTED = {
   "projectSwitcher.addProjectsToBox": { area: "layout", what: "ProjectSwitcher · Add projects to Box" },
   "projectSwitcher.hpcPipeline": { area: "layout", what: "ProjectSwitcher · HPC pipeline…" },
   "projectSwitcher.newBox": { area: "layout", what: "ProjectSwitcher · New Box" },
-  "rootOverlay.1": { area: "layout", what: "RootOverlay · ⚿ Eldrun tools" },
+  "rootOverlay.1": { area: "layout", what: "RootOverlay · ⚿ Eldrun tools + ✓ Approvals" },
   "rootReview.setting": { area: "layout", what: "SettingsPanel · Review root-agent writes" },
   "rootReview.title": { area: "layout", what: "RootReviewStrip · Agent proposals" },
   "screenshotSave.title": { area: "layout", what: "ScreenshotSaveOverlay · Save screenshot" },

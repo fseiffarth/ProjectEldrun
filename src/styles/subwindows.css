@@ -985,8 +985,14 @@
   line-height: inherit;
   cursor: var(--cur-pointer, pointer);
 }
-/* Switched off in Settings (or by a click here): struck through, so it reads
-   as a deliberate off rather than the listener's "not running". */
+/* The tools chip is a report, not a control — the ✓ button beside it is what
+   you click — so it drops the pointer cursor the pill shape otherwise promises. */
+.root-overlay-rights.status {
+  cursor: var(--cur-default, default);
+  user-select: none;
+}
+/* Switched off in Settings: struck through, so it reads as a deliberate off
+   rather than the listener's "not running". */
 .root-overlay-rights.off {
   text-decoration: line-through;
   opacity: 0.7;
@@ -994,6 +1000,13 @@
 .root-overlay-rights.on {
   color: var(--accent);
   border-color: var(--accent);
+}
+/* The count rides inside the pill, so its figures are tabular: a queue counting
+   down must not jiggle the label beside it. Nothing waiting is not an off
+   state — the pill stays neutral and only takes the accent (`.on`) once
+   something is actually pending. */
+.root-overlay-approvals {
+  font-variant-numeric: tabular-nums;
 }
 /* The root layout's tree fills the pane region the way a project's fills the
    center panel; panes are positioned over each group body by RootOverlay. */

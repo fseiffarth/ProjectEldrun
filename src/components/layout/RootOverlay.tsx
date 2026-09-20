@@ -254,11 +254,12 @@ function RootOverlay() {
   // counts both.
   const reviewCount =
     useRootReviewStore((s) => s.count) + useMailStore((s) => s.agentDrafts.length);
-  // The proposals panel the ⚿ badge drops. Open/closed is the review store's,
-  // because the project bar's ⚿ button opens the console straight onto it.
+  // The proposals panel the ✓ Approvals button drops. Open/closed is the review
+  // store's, so a flow that floats the console can also open it at the rows;
+  // the console clears it on the way out (below).
   const reviewPanel = useRootReviewStore((s) => s.panel);
   const setReviewPanel = useRootReviewStore((s) => s.setPanel);
-  const rightsRef = useRef<HTMLButtonElement | null>(null);
+  const approvalsRef = useRef<HTMLButtonElement | null>(null);
   const [reviewAnchor, setReviewAnchor] = useState<{ x: number; y: number } | null>(null);
   const t = useT();
   const tabs = useTabsStore((s) => s.tabsByScope[ROOT_SCOPE] ?? NO_TABS);
@@ -339,13 +340,20 @@ function RootOverlay() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  const frame =
-    liveFrame ??
-    (filled
-      ? filledRootOverlayFrame(viewport.w, viewport.h)
-      : storedFrame
-        ? clampRootOverlayFrame(storedFrame, viewport.w, viewport.h)
-        : null);
+  // Memoised because the proposals panel's anchor effect below depends on it:
+  // both helpers build a NEW frame object, so an inline expression would make
+  // the effect run on every render, set a new anchor, and render again — the
+  // update loop React aborts the whole tree over (#185, a white window).
+  const frame = useMemo(
+    () =>
+      liveFrame ??
+      (filled
+        ? filledRootOverlayFrame(viewport.w, viewport.h)
+        : storedFrame
+          ? clampRootOverlayFrame(storedFrame, viewport.w, viewport.h)
+          : null),
+    [liveFrame, filled, storedFrame, viewport.w, viewport.h],
+  );
 
   // The panel hangs from the badge, so its point is re-read whenever the badge
   // moves: a console dragged, resized or filled with the panel open would
@@ -355,8 +363,13 @@ function RootOverlay() {
       setReviewAnchor(null);
       return;
     }
-    const rect = rightsRef.current?.getBoundingClientRect();
-    setReviewAnchor(rect ? { x: rect.left, y: rect.bottom + 4 } : null);
+    const rect = approvalsRef.current?.getBoundingClientRect();
+    const next = rect ? { x: rect.left, y: rect.bottom + 4 } : null;
+    // Same point, same object: a fresh {x,y} every run would re-render, re-run
+    // this effect and loop, whatever its dependencies happen to be.
+    setReviewAnchor((prev) =>
+      prev && next && prev.x === next.x && prev.y === next.y ? prev : next,
+    );
   }, [reviewPanel, frame, filled, viewport.w, viewport.h]);
 
   // A closed console has no badge for the panel to hang from.
@@ -762,24 +775,32 @@ function RootOverlay() {
             className="tab-controls root-overlay-controls"
             style={soleFiles ? filesReserveStyle(sole ?? undefined) : undefined}
           >
-            {/* The badge is the door to the proposals — the strip it used to
-                open with is gone from the body, so the terminals keep that
-                height and the rows come when asked for. Switching the tools
-                themselves on and off stays in Settings, the other door onto
-                that one key; the badge still *reports* the state. */}
-            <button
-              type="button"
-              ref={rightsRef}
-              className={`root-overlay-rights${toolsOn ? " on" : ""}${toolsEnabled ? "" : " off"}`}
-              aria-expanded={reviewPanel}
+            {/* The badge only REPORTS what the tools are — which of them a root
+                tab gets, whether mail is open, whether the review gate is
+                enforced. It used to double as the door to the proposals, so one
+                control answered two questions and the count read as part of the
+                tools' own state; the ✓ button beside it is that door now, and
+                the panel hangs from the button that counts it. Switching the
+                tools on and off stays in Settings, where it always was. */}
+            <span
+              className={`root-overlay-rights status${toolsOn ? " on" : ""}${toolsEnabled ? "" : " off"}`}
               title={`${agentsWithTools}${
                 toolsOn ? `\n${status?.tools.join(", ")}` : ""
-              }\n${t("rootConsole.rightsOpenReview")}\n${t("rootConsole.noPhone")}${
+              }\n${t("rootConsole.rightsInSettings")}\n${t("rootConsole.noPhone")}${
                 status?.mail_open ? `\n${t("rootConsole.mailOpen")}` : ""
               }${reviewAdvisory ? `\n${t("rootConsole.reviewAdvisory")}` : ""}`}
+            >
+              {t("rootConsole.rightsBadge")}{reviewAdvisory ? " ⚠" : ""}{status?.mail_open ? " ✉" : ""}
+            </span>
+            <button
+              type="button"
+              ref={approvalsRef}
+              className={`root-overlay-rights root-overlay-approvals${reviewCount > 0 ? " on" : ""}`}
+              aria-expanded={reviewPanel}
+              title={t("rootReview.badgeHint")}
               onClick={() => setReviewPanel(!reviewPanel)}
             >
-              {t("rootConsole.rightsBadge")}{reviewAdvisory ? " ⚠" : ""}{status?.mail_open ? " ✉" : ""}{reviewCount > 0 ? ` ${reviewCount}` : ""} ▾
+              {t("rootReview.badge")}{reviewCount > 0 ? ` ${reviewCount}` : ""} ▾
             </button>
             <UntestedTag id="rootOverlay.1" />
             {!split && soleGroupId && soleGroupId !== EMPTY_GROUP_ID && (

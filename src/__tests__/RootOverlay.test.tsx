@@ -222,21 +222,39 @@ describe("RootOverlayHost", () => {
     expect(tabs.filter((t) => t.kind === "network")).toHaveLength(2);
   });
 
-  it("the ⚿ badge drops the proposals panel instead of the console wearing a strip", async () => {
+  it("the ✓ button drops the proposals panel; the ⚿ chip beside it only reports", async () => {
     seedRootTabs();
     render(<RootOverlayHost />);
     await act(async () => useRootOverlayStore.getState().show());
     // Closed, the console body carries no review surface at all.
     expect(screen.queryByRole("region", { name: "Agent proposals" })).toBeNull();
-    const badge = screen.getByRole("button", { name: /Eldrun tools/ });
-    await act(async () => { fireEvent.click(badge); });
+    // The tools chip is a report, not a door: it is not a control at all, so a
+    // click on it can neither open the panel nor flip a setting.
+    expect(screen.queryByRole("button", { name: /Eldrun tools/ })).toBeNull();
+    const approvals = screen.getByRole("button", { name: /Approvals/ });
+    await act(async () => { fireEvent.click(approvals); });
     expect(useRootReviewStore.getState().panel).toBe(true);
     expect(screen.getByRole("region", { name: "Agent proposals" })).toBeTruthy();
-    // The tools' own switch moved out: the badge writes no settings.
+    // The tools' own switch stays in Settings: the console writes none.
     const { invoke } = await import("@tauri-apps/api/core");
     expect(invoke).not.toHaveBeenCalledWith("update_settings", expect.anything());
-    await act(async () => { fireEvent.click(badge); });
+    await act(async () => { fireEvent.click(approvals); });
     expect(useRootReviewStore.getState().panel).toBe(false);
+  });
+
+  // The panel's anchor is re-read from the button whenever the console's frame
+  // changes. A frame rebuilt on every render (both helpers return a new object)
+  // made that effect run on every render and set a new anchor object, which
+  // rendered again: React aborts the tree over that loop (#185) and the window
+  // goes white. A console with a REMEMBERED frame is what exposes it.
+  it("a moved console still opens the panel — the anchor effect does not loop", async () => {
+    seedRootTabs();
+    useRootOverlayStore.setState({ frame: { x: 40, y: 60, width: 900, height: 600 } });
+    render(<RootOverlayHost />);
+    await act(async () => useRootOverlayStore.getState().show());
+    const approvals = screen.getByRole("button", { name: /Approvals/ });
+    await act(async () => { fireEvent.click(approvals); });
+    expect(screen.getByRole("region", { name: "Agent proposals" })).toBeTruthy();
   });
 
   it("a closed console leaves no panel behind", async () => {

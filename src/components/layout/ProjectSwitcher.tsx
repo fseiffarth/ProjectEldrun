@@ -18,7 +18,6 @@ import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { TRASH_PROJECT_ID } from "../../lib/projects/trashProject";
 import { ROOT_SCOPE, useTabsStore } from "../../stores/tabs";
 import { useRootOverlayStore } from "../../stores/rootOverlay";
-import { useRootReviewStore } from "../../stores/rootReview";
 import { useGitDirtyStore } from "../../stores/gitDirty";
 import { projectStations, useKeyboardSteeringStore } from "../../stores/keyboardSteering";
 import { useQuiesce, saverInterval } from "../../stores/power";
@@ -307,12 +306,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   // whatever is on screen (`stores/rootOverlay`), so picking it costs neither
   // the project in scope nor the slice. With no project open the root scope is
   // still what the center shows — the overlay simply floats over it.
-  const reviewCount = useRootReviewStore((s) => s.count);
   const selectRoot = () => {
-    useRootOverlayStore.getState().show();
-  };
-  const openReview = () => {
-    useRootReviewStore.getState().setPanel(true);
     useRootOverlayStore.getState().show();
   };
   const selectTrash = () => {
@@ -572,13 +566,11 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
           />
           {/* Hairline between the fixed leading segment (★ · 🗑 · ▣) and the
               scrolling project strip, so the two zones read as two zones. */}
-          {/* The count's own button opens the console *at* the proposals: the
-              panel is what it counts, and a click that only floated the console
-              would leave the rows one more click away. */}
-          {reviewCount > 0 && <button className="root-overlay-rights on no-drag" onClick={openReview}
-            title={t("rootReview.title")} aria-label={t("rootReview.open", { count: reviewCount })}>
-            {t("rootConsole.rightsBadge")} {reviewCount}
-          </button>}
+          {/* The pending-proposals count used to stand here as a second copy of
+              the console's own badge. Eldrun's tools and what they propose are
+              the root console's subject, so both live there and only there
+              (RootOverlay's ⚿ chip and the ✓ button beside it); the project bar
+              keeps its width for the projects. */}
           <div className="pills-lead-sep" aria-hidden />
           <button
             type="button"

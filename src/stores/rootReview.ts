@@ -29,9 +29,9 @@ interface RootReviewState {
   count: number;
   error: string | null;
   busy: boolean;
-  /** Whether the console's ⚿ badge has its proposals panel dropped. It lives
-   *  here rather than in `RootOverlay` because the project bar's ⚿ button opens
-   *  the console *at* the proposals — one click from the count to the rows. */
+  /** Whether the console's ✓ Approvals button has its panel dropped. It lives
+   *  here rather than in `RootOverlay` so a flow that floats the console can
+   *  open it *at* the rows; the console clears it when it closes. */
   panel: boolean;
   setPanel: (panel: boolean) => void;
   refresh: () => Promise<void>;
