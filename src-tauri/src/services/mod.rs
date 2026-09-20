@@ -9,6 +9,8 @@ pub mod agent_turn;
 pub mod agent_transcript;
 pub mod agent_bin;
 pub mod agent_tasks;
+pub mod schedule_mcp;
+pub mod schedule_usage;
 // One agent CLI's own usage panel (Claude's `/usage`), read in print mode
 // without a tab: recipe table, envelope parsing, and the short-lived cache
 // that keeps a phone reopening the status sheet from spawning a CLI each

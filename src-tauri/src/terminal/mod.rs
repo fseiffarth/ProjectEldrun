@@ -628,6 +628,8 @@ pub struct PtyOptions {
     /// still applies. Harmless for local projects — they resolve to no remote.
     #[serde(default)]
     pub project_id: Option<String>,
+    #[serde(default)]
+    pub schedule_target_id: Option<String>,
     /// Which of the project's remote hosts this tab runs on
     /// (`docs/multi_host_remote_plan.md`): `None`/`"primary"` = the primary remote
     /// (`Project.remote`), any other id = an extra "worker" host from
@@ -1084,7 +1086,8 @@ pub fn spawn_pty(
     let bind_seq = crate::services::codex_bind::current_seq(&opts.id);
     let resume_seq = crate::services::codex_bind::resume_seq(&opts.id);
     let route_seq = route_open(&opts.id);
-    let mcp_token = opts.env.get(crate::services::root_mcp::TOKEN_ENV).cloned();
+    let mcp_token = opts.env.get(crate::services::root_mcp::TOKEN_ENV)
+        .or_else(|| opts.env.get(crate::services::root_mcp::SCHEDULE_TOKEN_ENV)).cloned();
     tokio::spawn(async move {
         let emitter = app.clone();
         batch_output(rx, |bytes| match route_chunk(&id, bytes, route_seq) {

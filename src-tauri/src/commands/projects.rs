@@ -1900,6 +1900,16 @@ pub fn set_project_agent_fence(
     Ok(agent_fence)
 }
 
+/// Authority stays in projects.json; never copy this grant into the project tree.
+#[tauri::command]
+pub fn set_project_schedule_mcp(project_id: String, level: String) -> Result<(), String> {
+    if !matches!(level.as_str(), "off" | "propose" | "apply") { return Err("invalid schedule MCP level".into()); }
+    patch_project_entry(&project_id, |entry| {
+        entry.extra.insert("schedule_mcp".into(), serde_json::Value::String(level));
+        Ok(())
+    })
+}
+
 /// Persist a container spec into both stores: the `projects.json` entry's
 /// flattened `sandbox` (the always-local mirror the spawn path reads) and the
 /// project's own `project.json` (best effort — the list is the source of truth).

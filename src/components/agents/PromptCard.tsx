@@ -3,6 +3,7 @@ import { formatTags, parseTags } from "../../lib/agents/prompt/tags";
 import { useI18nStore, useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
 import { localWallClock } from "../../lib/agents/agentSchedule";
+import { AgentScheduleProposal } from "./AgentScheduleProposal";
 import type { PromptChartCard } from "../../lib/agents/prompt/chart";
 import { formatTimelineInstant } from "../../lib/agents/prompt/timeline";
 import type { PromptLink } from "../../stores/agents/agentPrompts";
@@ -18,6 +19,7 @@ export interface PromptCardTarget {
 }
 
 interface Props {
+  projectId?: string;
   card: PromptChartCard;
   matched: boolean;
   selected: boolean;
@@ -110,6 +112,7 @@ function stateFact(
 }
 
 export function PromptCard({
+  projectId,
   card,
   matched,
   selected,
@@ -203,6 +206,7 @@ export function PromptCard({
       className={className}
       data-prompt-card={occurrence ? undefined : card.id}
       data-testid={`prompt-chart-card-${card.state}`}
+      data-agent-authored={card.schedule?.origin || card.history?.schedule_origin ? "true" : undefined}
       style={{ "--prompt-strand": color } as React.CSSProperties}
       // The keyboard route: a card is reached with Tab and opened with Enter
       // or Space, which is what makes its Send/Schedule/Link buttons reachable.
@@ -246,6 +250,11 @@ export function PromptCard({
         )}
         <span className={`agent-prompt-lamp is-${card.history?.result ?? card.state}`} aria-hidden="true" />
       </div>
+      {projectId && card.targetId && card.schedule?.origin && <AgentScheduleProposal projectId={projectId} targetId={card.targetId} schedule={card.schedule} />}
+      {card.history?.schedule_origin && <div className="agent-schedule-attribution">
+        <span className="agent-schedule-pill" title={card.history.schedule_origin.session}>{t("scheduleMcp.authored")}</span>
+        {card.history.schedule_origin.from_delivery && <small>{t("scheduleMcp.lineage", { id: card.history.schedule_origin.from_delivery })}</small>}
+      </div>}
       <div className="agent-prompt-card-agent" onClick={(event) => event.stopPropagation()}>
         {readOnly || pickOptions.length === 0
           ? <small>{targetLabel ?? targets.find((target) => target.id === card.targetId)?.label ?? t("promptChart.noAgent")}</small>

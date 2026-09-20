@@ -846,6 +846,7 @@ export function PromptChart({ scope, active, tabs, stateOf }: Props) {
         : onCardPointerDown(card, onLane ? liftKeysFor(itemKey) : undefined);
     return (
       <PromptCard
+        projectId={scope}
         key={itemKey}
         card={card}
         occurrence={occurrence}
@@ -926,7 +927,7 @@ export function PromptChart({ scope, active, tabs, stateOf }: Props) {
 
   return (
     <section className="agent-prompts-section agent-prompt-chart-section">
-      <h3 className="settings-section-title">{t("promptChart.heading")} <UntestedTag /></h3>
+      <h3 className="settings-section-title">{t("promptChart.heading")} <UntestedTag id="promptChart.heading" /></h3>
       <div className="agent-prompt-chart-toolbar">
         {/* One composer: the board's own, opened in place. */}
         <button className="settings-btn sm primary" type="button" aria-label={t("promptChart.newDraft")} title={t("promptChart.newDraft")} onClick={() => draftBoard.current?.compose()}>＋</button>

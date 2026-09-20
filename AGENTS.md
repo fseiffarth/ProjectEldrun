@@ -59,8 +59,8 @@ tool is unavailable, say so — never skip silently.
   `CLAUDE.md`/`AGENTS.md`: agents auto-load those. Why a file is the way it
   is: grep `docs/filemap_rationale/` (frozen, verify against code).
 - Design rationale, one file per subsystem in `docs/context/` — open only the
-  one you're touching: agent_authority, agent_sessions, caldav, dev_builds,
-  docker_containers, git_sync, hpc_careful_mode, mail_encryption,
+  one you're touching: agent_authority, agent_schedule_mcp, agent_sessions,
+  caldav, dev_builds, docker_containers, git_sync, hpc_careful_mode, mail_encryption,
   multi_host_remote, openvpn, project_boxes, remote_autoconnect,
   remote_credentials, remote_projects, root_console, tmux_sessions,
   usage_stats, vm_projects.

@@ -22,6 +22,7 @@ export interface ScheduleLastRun {
 }
 
 export interface ScheduledAgentPrompt {
+  origin?: { by: "agent"; session: string; at: string; from_delivery?: string };
   id: string;
   enabled: boolean;
   message: string;
@@ -30,6 +31,10 @@ export interface ScheduledAgentPrompt {
    *  composer's prefix chips and its `/model` pick. See `lib/agents/agentPrefaces`. */
   preface?: string[];
   last?: ScheduleLastRun;
+}
+
+export function isAgentProposal(schedule: ScheduledAgentPrompt): boolean {
+  return schedule.origin?.by === "agent" && !schedule.enabled && !schedule.last;
 }
 
 export interface ScheduleOccurrence {

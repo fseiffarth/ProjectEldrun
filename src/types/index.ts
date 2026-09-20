@@ -249,6 +249,7 @@ export interface Settings {
    *  (`services::root_mcp`). **Default true** — absent means on. Off hands new
    *  root agents no endpoint and refuses the ones already holding the token. */
   root_mcp?: boolean;
+  schedule_mcp?: boolean;
   root_mcp_review?: "all" | "destructive" | "off";
   /** Root console: serve the MCP tools to local-model tabs only. Absent means
    *  off. On, cloud agent CLIs get no endpoint and running ones are refused. */
@@ -1032,6 +1033,7 @@ export interface SshTooling {
 }
 
 export interface ProjectEntry {
+  schedule_mcp?: "off" | "propose" | "apply";
   id: string;
   name: string;
   /** "current" | "active" | "inactive" */

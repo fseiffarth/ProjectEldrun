@@ -222,6 +222,7 @@ fn validate_sent(input: SentAgentPromptInput) -> Result<SentAgentPromptInput, St
         }
     }
     Ok(SentAgentPromptInput {
+        schedule_origin: input.schedule_origin,
         tab_label,
         session_id: input.session_id,
         tab_id: input.tab_id,
@@ -287,6 +288,7 @@ fn apply_archive(
     }
     file.projects.retain(|_, prompts| !prompts.is_empty());
     let sent = SentAgentPrompt {
+        schedule_origin: input.schedule_origin.clone(),
         id: prompt.id,
         message: prompt.message,
         created_at: prompt.created_at,
@@ -350,6 +352,7 @@ fn apply_record(
             .unwrap_or_default(),
     };
     let sent = SentAgentPrompt {
+        schedule_origin: input.schedule_origin.clone(),
         id: entry.id.clone(),
         message: entry.message.clone(),
         created_at,
@@ -1268,6 +1271,7 @@ mod tests {
 
     fn sent(label: &str) -> SentAgentPromptInput {
         SentAgentPromptInput {
+            schedule_origin: None,
             tab_label: label.into(),
             session_id: Some("session-1".into()),
             tab_id: None,

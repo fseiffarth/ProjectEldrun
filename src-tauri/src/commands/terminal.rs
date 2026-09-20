@@ -473,7 +473,10 @@ pub async fn pty_spawn(
             opts.env.extend(env);
         }
     }
-    let mut mcp_spawn_guard = (root_agent || reader_project.is_some())
+    if agent_spawn && !root_agent && reader_project.is_none() {
+        crate::services::root_mcp::apply_schedule_to_spawn(&mut opts);
+    }
+    let mut mcp_spawn_guard = agent_spawn
         .then(|| crate::services::root_mcp::SpawnTokenGuard::new(&opts));
 
     // A local OpenCode is offered exactly the models Ollama has loaded (see

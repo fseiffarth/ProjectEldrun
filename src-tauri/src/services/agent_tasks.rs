@@ -55,6 +55,7 @@ pub(crate) fn validate_id(label: &str, value: &str) -> Result<(), String> {
 }
 
 fn parse_date_time(value: &str) -> Option<(i32, u32, u32, u32, u32)> {
+    if !value.is_ascii() { return None; }
     if value.len() != 16
         || value.as_bytes().get(4) != Some(&b'-')
         || value.as_bytes().get(7) != Some(&b'-')
@@ -81,13 +82,13 @@ fn parse_date_time(value: &str) -> Option<(i32, u32, u32, u32, u32)> {
 }
 
 fn valid_time(value: &str) -> bool {
-    value.len() == 5
+    value.is_ascii() && value.len() == 5
         && value.as_bytes().get(2) == Some(&b':')
         && value[0..2].parse::<u8>().is_ok_and(|v| v <= 23)
         && value[3..5].parse::<u8>().is_ok_and(|v| v <= 59)
 }
 
-fn validate_rule(rule: &AgentScheduleRule) -> Result<(), String> {
+pub(crate) fn validate_rule(rule: &AgentScheduleRule) -> Result<(), String> {
     match rule {
         AgentScheduleRule::Once { at } if parse_date_time(at).is_none() => {
             Err("invalid one-time date/time".into())
@@ -160,6 +161,10 @@ fn validate_prompt(mut prompt: ScheduledAgentPrompt) -> Result<ScheduledAgentPro
     validate_rule(&prompt.rule)?;
     prompt.preface = validate_preface(std::mem::take(&mut prompt.preface))?;
     prompt.message = sanitize_message(&prompt.message);
+    if prompt.origin.is_some() {
+        if !prompt.preface.is_empty() { return Err("agent schedules cannot carry prefix commands".into()); }
+        prompt.message = super::schedule_mcp::sanitize_prompt(&prompt.message)?;
+    }
     if prompt.message.trim().is_empty() {
         return Err("scheduled prompt is empty".into());
     }
@@ -192,13 +197,28 @@ pub fn list(project_id: &str, target_id: &str) -> Result<Vec<ScheduledAgentPromp
     validate_id("project id", project_id)?;
     validate_id("schedule target id", target_id)?;
     let _guard = lock();
-    Ok(read()?
+    let mut file = read()?;
+    if super::schedule_mcp::prune_proposals(&mut file, &chrono::Utc::now().to_rfc3339()) {
+        write(&file)?;
+    }
+    Ok(file
         .projects
         .get(project_id)
         .and_then(|project| project.get(target_id))
         .map(|target| target.schedules.clone())
         .unwrap_or_default())
 }
+
+/// Schedule MCP uses the same transaction lock for validation, quotas and writes.
+pub(crate) fn mutate<T>(f: impl FnOnce(&mut AgentTasksFile) -> Result<T, String>) -> Result<T, String> {
+    let _guard = lock();
+    let mut file = read()?;
+    let result = f(&mut file)?;
+    write(&file)?;
+    Ok(result)
+}
+
+pub(crate) fn drain_mutations() { drop(lock()); }
 
 /// The refusal an edit of an existing rule gets when the rule it was drawn
 /// from is no longer there to edit: the id is gone, or it is a one-time rule
@@ -242,7 +262,7 @@ fn check_live(
 /// Pure core of [`upsert`]. `expect_existing_on` names the target the edited
 /// rule must still be live on ([`check_live`]); the write itself goes to
 /// `target_id`, which differs from it when a rule moves to another tab.
-fn apply_upsert(
+pub(crate) fn apply_upsert(
     file: &mut AgentTasksFile,
     project_id: &str,
     target_id: &str,
@@ -263,6 +283,8 @@ fn apply_upsert(
             // but cannot erase at-most-once history by omitting `last`.
             let mut next = prompt;
             next.last = target.schedules[index].last.clone();
+            next.origin = target.schedules[index].origin.clone();
+            let next = validate_prompt(next)?;
             target.schedules[index] = next;
         }
         None => {
@@ -302,7 +324,7 @@ pub fn upsert(
 }
 
 /// Pure core of [`delete`]; `expect_undelivered` refuses as [`check_live`] does.
-fn apply_delete(
+pub(crate) fn apply_delete(
     file: &mut AgentTasksFile,
     project_id: &str,
     target_id: &str,
@@ -387,6 +409,7 @@ pub fn claim(
     {
         return Ok(false);
     }
+    if !reserve_agent_delivery(target, schedule_id, occurrence, chrono::Local::now()) { return Ok(false); }
     target
         .claims
         .insert(schedule_id.to_string(), occurrence.to_string());
@@ -427,6 +450,10 @@ pub fn complete(
         result,
         at: storage::iso_now(),
     });
+    let record_id = delivery_id(prompt, occurrence);
+    if let Some(delivery) = target.agent_deliveries.iter_mut().find(|r| r.id == record_id) {
+        delivery.result = Some(result);
+    }
     target.claims.remove(schedule_id);
     let schedules = target.schedules.clone();
     write(&file)?;
@@ -435,9 +462,28 @@ pub fn complete(
 
 fn prune_empty(file: &mut AgentTasksFile) {
     for project in file.projects.values_mut() {
-        project.retain(|_, target| !target.schedules.is_empty() || !target.claims.is_empty());
+        project.retain(|_, target| !target.schedules.is_empty() || !target.claims.is_empty() || !target.agent_deliveries.is_empty());
     }
     file.projects.retain(|_, project| !project.is_empty());
+}
+
+fn delivery_id(prompt: &ScheduledAgentPrompt, occurrence: &str) -> String {
+    if matches!(prompt.rule, AgentScheduleRule::Once { .. }) { prompt.id.clone() }
+    else { format!("{}@{occurrence}", prompt.id) }
+}
+
+fn reserve_agent_delivery(target: &mut AgentPromptTarget, schedule_id: &str, occurrence: &str, now: chrono::DateTime<chrono::Local>) -> bool {
+    let Some(prompt) = target.schedules.iter().find(|s| s.id == schedule_id) else { return false };
+    if prompt.origin.is_none() { return true; }
+    let day = now.format("%Y-%m-%d").to_string();
+    if super::schedule_mcp::delivery_count(target, &day) >= 6 { return false; }
+    let id = delivery_id(prompt, occurrence);
+    let cutoff = (now - chrono::Duration::days(7)).format("%Y-%m-%d").to_string();
+    target.agent_deliveries.retain(|r| r.day >= cutoff);
+    target.agent_deliveries.push(crate::schema::agent_tasks::AgentScheduleDelivery {
+        id, day, at: now.to_rfc3339(), result: None,
+    });
+    true
 }
 
 fn saved_bindings(file: &AgentTasksFile) -> HashSet<(String, String)> {
@@ -494,6 +540,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn claim_budget_survives_retirement_reload_and_preserves_user_delivery() {
+        use crate::schema::agent_tasks::{ScheduleOrigin, ScheduleAuthor};
+        let now = chrono::Local::now();
+        let mut target = AgentPromptTarget::default();
+        for i in 0..6 {
+            let mut row = once(&format!("agent-{i}"));
+            row.origin = Some(ScheduleOrigin { by: ScheduleAuthor::Agent, session: "s".into(), at: now.to_rfc3339(), from_delivery: None });
+            target.schedules.push(row.clone());
+            assert!(reserve_agent_delivery(&mut target, &row.id, "2026-09-20T12:00", now));
+            target.schedules.clear();
+        }
+        let mut target: AgentPromptTarget = serde_json::from_value(serde_json::to_value(target).unwrap()).unwrap();
+        let mut row = once("next");
+        row.origin = Some(ScheduleOrigin { by: ScheduleAuthor::Agent, session: "new-spawn".into(), at: now.to_rfc3339(), from_delivery: None });
+        target.schedules.push(row);
+        target.schedules.push(once("user"));
+        assert!(!reserve_agent_delivery(&mut target, "next", "2026-09-20T12:00", now));
+        assert!(reserve_agent_delivery(&mut target, "user", "2026-09-20T12:00", now));
+        assert!(reserve_agent_delivery(&mut target, "next", "2026-09-21T12:00", now + chrono::Duration::days(1)));
+    }
+
+    #[test]
     fn sanitizer_preserves_newlines_and_drops_terminal_controls() {
         assert_eq!(
             sanitize_message("one\r\ntwo\u{1b}[31m\u{7f}"),
@@ -537,6 +605,7 @@ mod tests {
             rule,
             preface: Vec::new(),
             last: None,
+            origin: None,
         }
     }
 

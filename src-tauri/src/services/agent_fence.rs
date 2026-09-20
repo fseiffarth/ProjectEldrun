@@ -1329,6 +1329,7 @@ pub fn status_for_scope(scope_id: &str) -> AgentFenceStatus {
         tmux_session: None,
         tmux_attach: None,
         host_bound_uid: None,
+        schedule_target_id: None,
     };
     crate::services::sandbox::enforce_spawn_authority(&mut opts);
     let remote_run =
@@ -1398,6 +1399,7 @@ pub fn claude_config_staged(scope_id: Option<&str>, sandbox: bool, local_only: b
         tmux_session: None,
         tmux_attach: None,
         host_bound_uid: None,
+        schedule_target_id: None,
     };
     crate::services::sandbox::enforce_spawn_authority(&mut opts);
     let remote_run = !opts.local_only
@@ -1669,6 +1671,7 @@ mod tests {
             tmux_session: None,
             tmux_attach: None,
             host_bound_uid: None,
+            schedule_target_id: None,
         }
     }
 

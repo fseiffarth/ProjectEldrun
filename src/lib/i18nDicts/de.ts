@@ -7,6 +7,19 @@
 import type { Dict } from "../i18n";
 
 export const dict: Dict = {
+  "scheduleMcp.title": "Projekt-Agenten dürfen Prompts vorschlagen und planen (MCP)",
+  "scheduleMcp.help": "Standardmäßig aus. Neue lokale Claude-, Codex- und MCP-fähige Vibe-Tabs können Prompts für sich selbst planen. Vorschläge brauchen eine Freigabe, wiederkehrende Prompts immer. Erfordert das aktualisierte Backend. Remote-, VM- und Container-Tabs werden nicht unterstützt.",
+  "scheduleMcp.level": "Zeitplanung durch Agenten",
+  "scheduleMcp.off": "Aus",
+  "scheduleMcp.propose": "Zur Freigabe vorschlagen",
+  "scheduleMcp.apply": "Einmalige Prompts sofort übernehmen",
+  "scheduleMcp.proposed": "Vom Agenten vorgeschlagen",
+  "scheduleMcp.authored": "Vom Agenten erstellt",
+  "scheduleMcp.approve": "Freigeben",
+  "scheduleMcp.dismiss": "Verwerfen",
+  "scheduleMcp.lineage": "Nach Zustellung {id}",
+  "scheduleMcp.removeProposals": "Auch die nicht freigegebenen Vorschläge dieser Sitzung entfernen",
+  "mcpSecurity.scheduler": "Zeitplan-Agent",
   "mobile.outbox.countOne": "1 Datei im Projektausgang",
   "mobile.outbox.actions": "Dateiaktionen für {name}",
   "mobile.outbox.region": "Dateien vom Agenten",

@@ -9,6 +9,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { GLOBAL_APP_ROLES } from "./GlobalAppBar";
 import { Dropdown } from "../common/Dropdown";
 import { useSettingsStore } from "../../stores/settings";
+import { AgentScheduleMcpSettings } from "../agents/AgentScheduleMcpSettings";
 import { PLATFORM } from "../../lib/platform";
 import { runInstallInTab, type InstallShellKind } from "../../lib/installCommand";
 import {
@@ -702,7 +703,7 @@ function AgentFenceCard() {
   return (
     <SettingsCard className="agent-fence-card">
       <div className="settings-subheader">
-        {t("settings.agentFenceTitle")} <UntestedTag />
+        {t("settings.agentFenceTitle")} <UntestedTag id="settings.agentFenceTitle" />
       </div>
       <label className="settings-toggle-card-row">
         <span>{t("settings.agentFenceEnabled")}</span>
@@ -715,7 +716,7 @@ function AgentFenceCard() {
       <p className="settings-help">{t("settings.agentFenceLimits")}</p>
       <p className="settings-help">{t("settings.agentFenceSharedState")}</p>
       <label className="settings-toggle-card-row">
-        <span>{t("settings.agentFenceCargoCredentials")} <UntestedTag /></span>
+        <span>{t("settings.agentFenceCargoCredentials")} <UntestedTag id="settings.agentFenceCargoCredentials" /></span>
         <Toggle
           checked={settings?.agent_fence_cargo_credentials ?? false}
           onChange={(e) => void updateSettings({ agent_fence_cargo_credentials: e.target.checked })}
@@ -793,7 +794,7 @@ function NodeRuntimeNotice() {
             ? t("agents.nodeTooOld", { version: status.version ?? "", min: status.min_major })
             : t("agents.nodeNotDetected")}
         </span>
-        {tooOld && <UntestedTag />}
+        {tooOld && <UntestedTag id="settingsSubPanels.1" />}
       </div>
       {tooOld ? (
         <p className="settings-help">
@@ -1085,7 +1086,7 @@ function AgentComposerCard({ agents }: { agents: AgentInfo[] | null }) {
     <SettingsCard>
       <div className="settings-subheader">
         {t("agents.composerHeading")}
-        <UntestedTag />
+        <UntestedTag id="settingsSubPanels.2" />
       </div>
       <p className="settings-help">{t("agents.composerHelp")}</p>
       <div className="settings-card-row">
@@ -1158,7 +1159,7 @@ function AgentCronSection({ agents }: { agents: AgentInfo[] | null }) {
   return (
     <SettingsCard>
       <div className="settings-subheader">
-        {t("agentCron.title")} <UntestedTag />
+        {t("agentCron.title")} <UntestedTag id="agentCron.title" />
       </div>
       <p className="settings-help">{t("agentCron.help", { message: AGENT_CRON_MESSAGE })}</p>
       <p className="settings-help">{t("agentCron.runningNote")}</p>
@@ -1533,7 +1534,7 @@ export function AgentsPanel({ onBack, onClose }: SubPanelProps) {
                 : t("agents.versionRecheck")}
             </button>
           )}
-          <UntestedTag />
+          <UntestedTag id="settingsSubPanels.3" />
         </div>
         {moved && (
           <div className="agent-version-drift">
@@ -1635,7 +1636,7 @@ export function AgentsPanel({ onBack, onClose }: SubPanelProps) {
         >
           {t("agents.installOnRemoteTerminal")}
         </button>
-        <UntestedTag />
+        <UntestedTag id="settingsSubPanels.4" />
       </div>
       {remoteResults[a.id] && (
         <div className="agent-remote-result">{remoteResults[a.id]}</div>
@@ -1894,6 +1895,7 @@ export function AgentsPanel({ onBack, onClose }: SubPanelProps) {
       <SettingsAdvanced>
         <AgentFenceCard />
         <AgentCronSection agents={agents} />
+        <AgentScheduleMcpSettings />
         <AgentComposerCard agents={agents} />
       </SettingsAdvanced>
       </div>
@@ -2727,7 +2729,7 @@ export function OllamaPanel({ onBack, onClose }: SubPanelProps) {
       {error && <div className="project-dialog-error">{error}</div>}
 
       <div className="settings-section-title">
-        {t("ollama.modelLocationTitle")} <UntestedTag />
+        {t("ollama.modelLocationTitle")} <UntestedTag id="ollama.modelLocationTitle" />
       </div>
       <p className="settings-help">{t("ollama.modelLocationHelp")}</p>
       <div className="ollama-install-cmd-row">
@@ -2991,7 +2993,7 @@ export function OllamaPanel({ onBack, onClose }: SubPanelProps) {
       {/* Load-on-start: the models Eldrun warms into memory at launch, plus the
           Energy Saver opt-out. See `stores/agents/ollamaAutoload` for the rules. */}
       <div className="settings-section-title">
-        {t("ollama.autostartTitle")} <UntestedTag />
+        {t("ollama.autostartTitle")} <UntestedTag id="ollama.autostartTitle" />
       </div>
       <p className="settings-help">{t("ollama.autostartHelp")}</p>
       {models.length === 0 ? (

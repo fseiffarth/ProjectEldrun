@@ -170,6 +170,8 @@ pub struct Settings {
     /// token, so the switch takes effect without closing a tab.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_mcp: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule_mcp: Option<bool>,
     /// Root-agent write review: absent/unknown = all, or destructive / off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_mcp_review: Option<String>,

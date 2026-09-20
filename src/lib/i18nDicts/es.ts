@@ -7,6 +7,19 @@
 import type { Dict } from "../i18n";
 
 export const dict: Dict = {
+  "scheduleMcp.title": "Permitir que los agentes del proyecto propongan instrucciones programadas (MCP)",
+  "scheduleMcp.help": "Desactivado por defecto. Las nuevas pestañas locales de Claude, Codex y Vibe con MCP pueden programar instrucciones para sí mismas. Las propuestas requieren aprobación; las recurrentes siempre. Requiere el backend actualizado. No admite pestañas remotas, de máquinas virtuales ni de contenedores.",
+  "scheduleMcp.level": "Programación por agentes",
+  "scheduleMcp.off": "Desactivada",
+  "scheduleMcp.propose": "Proponer para aprobación",
+  "scheduleMcp.apply": "Aplicar instrucciones únicas inmediatamente",
+  "scheduleMcp.proposed": "Propuesto por el agente",
+  "scheduleMcp.authored": "Creado por el agente",
+  "scheduleMcp.approve": "Aprobar",
+  "scheduleMcp.dismiss": "Descartar",
+  "scheduleMcp.lineage": "Tras la entrega {id}",
+  "scheduleMcp.removeProposals": "Eliminar también las propuestas sin aprobar de esta sesión",
+  "mcpSecurity.scheduler": "Agente de programación",
   "mobile.outbox.countOne": "1 archivo en la bandeja de salida del proyecto",
   "mobile.outbox.actions": "Acciones de archivo para {name}",
   "mobile.outbox.region": "Archivos del agente",

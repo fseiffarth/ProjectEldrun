@@ -1381,6 +1381,7 @@ pub fn run() {
             commands::vm::remote_download_to,
             commands::projects::set_project_remote_control,
             commands::projects::set_project_agent_fence,
+            commands::projects::set_project_schedule_mcp,
             commands::projects::set_project_mobile_access,
             commands::projects::sandbox_preflight,
             commands::python::python_interpreters,

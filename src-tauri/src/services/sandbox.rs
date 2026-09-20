@@ -3851,6 +3851,7 @@ mod tests {
             tmux_session: None,
             tmux_attach: None,
             host_bound_uid: None,
+            schedule_target_id: None,
         };
         wrap_pty_options_docker(&mut opts).unwrap();
         assert_eq!(opts.cmd, "claude");
@@ -3877,6 +3878,7 @@ mod tests {
             tmux_session: None,
             tmux_attach: None,
             host_bound_uid: None,
+            schedule_target_id: None,
         };
         enforce_spawn_authority(&mut opts);
         assert!(!opts.sandbox, "box tabs must never spawn containerized");

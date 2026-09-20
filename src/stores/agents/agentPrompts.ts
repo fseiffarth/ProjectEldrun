@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import { buildSendNowSchedule, schedulesToPruneForSend } from "../../lib/agents/prompt/send";
 import { useAgentSchedulesStore } from "./agentSchedules";
+import type { ScheduledAgentPrompt } from "../../lib/agents/agentSchedule";
 
 /**
  * A prompt collected for a project without a tab binding. It lives in the
@@ -29,6 +30,7 @@ export interface ProjectAgentPrompt {
  * tab is closed.
  */
 export interface SentAgentPrompt {
+  schedule_origin?: ScheduledAgentPrompt["origin"];
   id: string;
   message: string;
   created_at: string;
@@ -78,6 +80,7 @@ export interface PromptLink {
 
 /** Send-time facts a history entry records. */
 export interface SentPromptFacts {
+  scheduleOrigin?: ScheduledAgentPrompt["origin"];
   tabLabel: string;
   /** The tab's `sessionId` — its launch id. The backend files the row under
    *  the live session the hook recorded for it and keeps this as `tab_id`. */
@@ -93,6 +96,7 @@ export interface SentPromptFacts {
 
 function sentPayload(sent: SentPromptFacts) {
   return {
+    ...(sent.scheduleOrigin ? { schedule_origin: sent.scheduleOrigin } : {}),
     tab_label: sent.tabLabel,
     session_id: sent.sessionId ?? null,
     preface: sent.preface ?? [],

@@ -882,6 +882,7 @@ interface ProjectsStore {
   /** Force the local-agent filesystem fence on/off, or clear to inherit the
    * global default. Running tabs keep their current boundary until respawn. */
   setProjectAgentFence: (id: string, agentFence: boolean | null) => Promise<void>;
+  setProjectScheduleMcp: (id: string, level: "off" | "propose" | "apply") => Promise<void>;
   /** Opt a remote project in/out of auto-connect (connect it silently on launch
    *  and activation). Only offered once the connect can complete with no prompt —
    *  a saved SSH password, or a host recorded as `key_auth`; `autoConnectRemote`
@@ -1665,6 +1666,11 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       agentFence,
     });
     patchProject(id, (project) => ({ ...project, agent_fence: saved ?? undefined }));
+  },
+
+  setProjectScheduleMcp: async (id, level) => {
+    await invoke("set_project_schedule_mcp", { projectId: id, level });
+    patchProject(id, (project) => ({ ...project, schedule_mcp: level }));
   },
 
   setProjectAutoConnect: async (id, enabled) => {

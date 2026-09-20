@@ -1861,6 +1861,7 @@ mod tests {
             tmux_session: None,
             tmux_attach: None,
             host_bound_uid: None,
+            schedule_target_id: None,
         }
     }
 

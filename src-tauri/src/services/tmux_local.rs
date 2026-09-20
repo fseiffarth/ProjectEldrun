@@ -379,7 +379,7 @@ pub(crate) fn launcher_script(
 /// Env values that must never be written into a [`launcher_script`]: the script
 /// sits on disk for the session's lifetime (and past a crash), and the root
 /// console's MCP token is documented as never written to disk.
-const SECRET_ENV: &[&str] = &[crate::services::root_mcp::TOKEN_ENV];
+const SECRET_ENV: &[&str] = &[crate::services::root_mcp::TOKEN_ENV, crate::services::root_mcp::SCHEDULE_TOKEN_ENV];
 
 /// The tmux command line that runs a launcher `path`. With `-e` the session env
 /// carries every variable; without it the script exports them, except the
@@ -852,6 +852,7 @@ mod tests {
             tmux_session: None,
             tmux_attach: None,
             host_bound_uid: None,
+            schedule_target_id: None,
         };
         wrap_pty_options_local(&mut opts);
         assert_eq!(opts.cmd, "bash");

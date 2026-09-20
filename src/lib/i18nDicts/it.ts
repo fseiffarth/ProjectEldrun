@@ -7,6 +7,19 @@
 import type { Dict } from "../i18n";
 
 export const dict: Dict = {
+  "scheduleMcp.title": "Consenti agli agenti del progetto di proporre istruzioni programmate (MCP)",
+  "scheduleMcp.help": "Disattivato per impostazione predefinita. Le nuove schede locali di Claude, Codex e Vibe con MCP possono programmare istruzioni per sé. Le proposte richiedono approvazione; quelle ricorrenti sempre. Richiede il backend aggiornato. Le schede remote, VM e container non sono supportate.",
+  "scheduleMcp.level": "Programmazione degli agenti",
+  "scheduleMcp.off": "Disattivata",
+  "scheduleMcp.propose": "Proponi per approvazione",
+  "scheduleMcp.apply": "Applica subito le istruzioni singole",
+  "scheduleMcp.proposed": "Proposto dall’agente",
+  "scheduleMcp.authored": "Creato dall’agente",
+  "scheduleMcp.approve": "Approva",
+  "scheduleMcp.dismiss": "Scarta",
+  "scheduleMcp.lineage": "Dopo l’invio {id}",
+  "scheduleMcp.removeProposals": "Rimuovi anche le proposte non approvate di questa sessione",
+  "mcpSecurity.scheduler": "Agente di programmazione",
   "mobile.outbox.countOne": "1 file nella posta in uscita del progetto",
   "mobile.outbox.actions": "Azioni per il file {name}",
   "mobile.outbox.region": "File dell’agente",

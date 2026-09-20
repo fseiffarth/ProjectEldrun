@@ -44,6 +44,33 @@ pub struct ScheduledAgentPrompt {
     pub preface: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last: Option<AgentScheduleLastRun>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<ScheduleOrigin>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleAuthor { Agent }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScheduleOrigin {
+    pub by: ScheduleAuthor,
+    pub session: String,
+    pub at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_delivery: Option<String>,
+}
+
+/// Kept independently of retired rules; claims reserve budget before any PTY write.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentScheduleDelivery {
+    pub id: String,
+    pub day: String,
+    pub at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<AgentScheduleResult>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -56,6 +83,8 @@ pub struct AgentPromptTarget {
     /// is never retried after a reload.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub claims: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_deliveries: Vec<AgentScheduleDelivery>,
 }
 
 fn agent_tasks_version() -> u8 {

@@ -585,6 +585,20 @@ unchanged; the new agents are additive.
   - [ ] ✅ Works
   - [ ] ❌ Doesn't work
 
+- [~] **Agent Schedule MCP** (2026-09-20; ✅ desktop v1 code-complete, ❌ never
+  live-verified — `UntestedTag` id `scheduleMcp`): project agents propose rows
+  in their own tab's schedule list over a separate `/mcp/schedule` path —
+  self-target only, staged by default, no preface, no `/`·`!`·`#`·`$`·`@`
+  messages, quotas. Plan: `docs/agent_schedule_mcp_plan.md`; runtime notes and
+  the click-through: `docs/context/agent_schedule_mcp.md`.
+  - [ ] 🖐️ Live QA — the six steps in `docs/context/agent_schedule_mcp.md`
+    (needs a build with the new backend): propose → approve → idle delivery in
+    Claude, Codex and a fenced tab; refusals; Apply level; revoke; restart.
+  - [ ] Follow-ups: phone Approve / Dismiss; Gemini/Qwen/OpenCode flag
+    recipes; remote/container reach; root-console scheduling tool.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+
 - [~] **250 — Per-tab prompt composer + collected-prompt history** (2026-09-02;
   ✅ code-complete, ❌ never live-verified). The Agents view grew the field that
   makes it usable without a detour through the schedule dialog, and lost the one

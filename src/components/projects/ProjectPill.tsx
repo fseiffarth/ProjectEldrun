@@ -46,6 +46,7 @@ import { useBoxEditorStore } from "../../stores/boxEditor";
 import { useBoxesStore } from "../../stores/boxes";
 import { bindDragRelease, dragPlatform } from "../../lib/window/dragPlatform";
 import { useT } from "../../lib/i18n";
+import { AgentScheduleMcpLevel } from "../agents/AgentScheduleMcpSettings";
 import { isTrashProject } from "../../lib/projects/trashProject";
 import { TrashProjectIcon } from "./TrashProjectIcon";
 import {
@@ -307,7 +308,7 @@ function RenameWindow({
           <>
             <label className="settings-switch-row">
               <span>
-                {t("pill.alsoRenameFolder")} <UntestedTag />
+                {t("pill.alsoRenameFolder")} <UntestedTag id="pill.alsoRenameFolder" />
               </span>
               <Toggle
                 checked={renameFolder}
@@ -476,7 +477,7 @@ function PublishWindow({
             provider login, which is why it is the default. */}
         {isRemoteWork && (
           <label>
-            {t("pill.publishFrom")} <UntestedTag />
+            {t("pill.publishFrom")} <UntestedTag id="pill.publishFrom" />
             <Dropdown
               className="dropdown-block"
               value={publishFrom}
@@ -989,7 +990,7 @@ function ContainerSettingsWindow({
             labelled "agents only" reads as a weakening of a default that is not
             obviously the safer one for every project. */}
         <fieldset className="container-scope-fieldset">
-          <legend>{t("pill.containerScopeLegend")} <UntestedTag /></legend>
+          <legend>{t("pill.containerScopeLegend")} <UntestedTag id="pill.containerScopeLegend" /></legend>
           <label className="container-scope-option">
             <input
               type="radio"
@@ -1298,7 +1299,7 @@ function MigrateProviderWindow({
         </label>
         {isRemoteWork && (
           <label>
-            {t("pill.publishFrom")} <UntestedTag />
+            {t("pill.publishFrom")} <UntestedTag id="pill.publishFrom#2" />
             <Dropdown
               className="dropdown-block"
               value={publishFrom}
@@ -1976,7 +1977,7 @@ export function ProjectPill({
                 title={t("pill.movePillTitle")}
               >
                 {t("pill.moveProjectEllipsis")}
-                <UntestedTag />
+                <UntestedTag id="projectPill.1" />
               </button>
             )}
             <button
@@ -1996,7 +1997,7 @@ export function ProjectPill({
               title={t("pill.categoriesMenuTitle")}
             >
               {t("blob.categoriesEllipsis")}
-              <UntestedTag />
+              <UntestedTag id="projectPill.2" />
             </button>
             <button
               className="untested"
@@ -2007,7 +2008,7 @@ export function ProjectPill({
               title={t("pill.repairScaffoldTitle")}
             >
               {t("pill.repairScaffold")}
-              <UntestedTag />
+              <UntestedTag id="projectPill.3" />
             </button>
             {!project.remote && (
               <button
@@ -2038,7 +2039,7 @@ export function ProjectPill({
                 }}
               >
                 {t("pill.boxTheseEllipsis", { count: selectedPills.length })}
-                <UntestedTag />
+                <UntestedTag id="projectPill.4" />
               </button>
             )}
             {boxesForMenu.slice(0, 6).map((b) => {
@@ -2070,7 +2071,7 @@ export function ProjectPill({
               }}
             >
               {t("pill.newBoxWithEllipsis", { name: project.name })}
-              <UntestedTag />
+              <UntestedTag id="projectPill.5" />
             </button>
             {boxesForMenu.length > 6 && (
               <button
@@ -2081,7 +2082,7 @@ export function ProjectPill({
                 }}
               >
                 {t("pill.editBoxesEllipsis")}
-                <UntestedTag />
+                <UntestedTag id="projectPill.6" />
               </button>
             )}
           </div>
@@ -2100,7 +2101,7 @@ export function ProjectPill({
                   title={t("pill.gitInitTitle")}
                 >
                   {t("pill.enableGit")}
-                  <UntestedTag />
+                  <UntestedTag id="projectPill.7" />
                 </button>
               )
             ) : trulyPublished ? (
@@ -2115,7 +2116,7 @@ export function ProjectPill({
                   title={t("pill.makePrivateTitle")}
                 >
                   {project.git_type === "remote-public" ? t("pill.makePrivate") : t("pill.makePublic")}
-                  <UntestedTag />
+                  <UntestedTag id="projectPill.8" />
                 </button>
                 <button
                   className="untested"
@@ -2126,7 +2127,7 @@ export function ProjectPill({
                   title={t("pill.moveProviderMenuTitle")}
                 >
                   {project.git_provider === "gitlab" ? t("pill.moveToGithub") : t("pill.moveToGitlab")}
-                  <UntestedTag />
+                  <UntestedTag id="projectPill.9" />
                 </button>
                 <button
                   className="untested"
@@ -2137,7 +2138,7 @@ export function ProjectPill({
                   title={t("pill.unpublishMenuTitle")}
                 >
                   {t("pill.unpublishKeepRepoEllipsis")}
-                  <UntestedTag />
+                  <UntestedTag id="projectPill.10" />
                 </button>
                 <button
                   className="untested"
@@ -2148,7 +2149,7 @@ export function ProjectPill({
                   title={t("pill.gitHostingMenuTitle")}
                 >
                   {t("pill.gitHostingEllipsis")}
-                  <UntestedTag />
+                  <UntestedTag id="projectPill.11" />
                 </button>
               </>
             ) : (
@@ -2168,7 +2169,7 @@ export function ProjectPill({
                   }}
                 >
                   {t("pill.publishEllipsis")}
-                  <UntestedTag />
+                  <UntestedTag id="projectPill.12" />
                 </button>
               </>
             )}
@@ -2192,7 +2193,7 @@ export function ProjectPill({
               >
                 {vmRunning ? "▣ " : "▢ "}
                 {t("pill.vmSettingsEllipsis")}
-                <UntestedTag />
+                <UntestedTag id="projectPill.13" />
               </button>
             )}
             {/* Project container (#38): local projects only (a remote project's
@@ -2281,8 +2282,12 @@ export function ProjectPill({
                     })}
                   </span>
                 )}
-              <UntestedTag />
+              <UntestedTag id="projectPill.14" />
             </button>
+            <div className="ctx-inline-control" onClick={(event) => event.stopPropagation()}>
+              <span>{t("scheduleMcp.level")} <UntestedTag id="scheduleMcp" /></span>
+              <AgentScheduleMcpLevel projectId={project.id} />
+            </div>
             {IS_LINUX && agentFenceInstallCommand(agentFenceStatus) && (
                 <button
                   className="untested"
@@ -2294,7 +2299,7 @@ export function ProjectPill({
                   }}
                 >
                   {t("pill.agentFenceInstall")}
-                  <UntestedTag />
+                  <UntestedTag id="projectPill.15" />
                 </button>
               )}
             {project.remote && (
@@ -2356,7 +2361,7 @@ export function ProjectPill({
                 {project.compute_hosts?.length
                   ? t("pill.remoteMachinesCount", { count: project.compute_hosts.length })
                   : t("pill.remoteMachinesEllipsis")}
-                <UntestedTag />
+                <UntestedTag id="projectPill.16" />
               </button>
             )}
             {/* The explicit half of the layout move: a project's tabs now live in
@@ -2409,7 +2414,7 @@ export function ProjectPill({
                 }}
               >
                 {t("pill.adoptFolderLayout")}
-                <UntestedTag />
+                <UntestedTag id="projectPill.17" />
               </button>
             )}
             <button

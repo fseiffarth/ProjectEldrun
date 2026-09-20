@@ -7,6 +7,7 @@ import { lastPtyOutputAt, useActivityStore } from "../../stores/activity";
 import { recordScheduledDelivery } from "../../stores/agents/agentPrompts";
 import { continueKey, useAgentContinueStore } from "../../stores/agents/agentContinue";
 import { useTabsStore, type TabEntry } from "../../stores/tabs";
+import { scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agents/agentSchedules";
 
 /**
  * Keeps an agent tab going across its own CLI's rate-limit windows.
@@ -235,6 +236,14 @@ export function AgentContinueHost() {
           const status = useAgentContinueStore.getState().byTarget[key];
           const now = Date.now();
           if (status?.armedAt !== undefined) {
+            // An approved agent prompt around this rollover owns the send.
+            // Disabled proposals do not suppress the user's auto-continue.
+            const rows = useAgentSchedulesStore.getState().byTarget[scheduleCacheKey(binding.projectId, binding.scheduleTargetId)] ?? [];
+            if (rows.some((row) => row.origin && row.enabled && row.rule.type === "once"
+                && Math.abs(new Date(row.rule.at).getTime() - status.armedAt!) < 60_000)) {
+              useAgentContinueStore.getState().patch(key, { phase: "reading", armedAt: undefined, checkAt: status.armedAt + REARM_AFTER_SEND_MS });
+              continue;
+            }
             if (now >= status.armedAt) await send(binding, key, status.armedAt);
             continue;
           }

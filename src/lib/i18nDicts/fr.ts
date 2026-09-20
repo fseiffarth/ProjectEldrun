@@ -7,6 +7,19 @@
 import type { Dict } from "../i18n";
 
 export const dict: Dict = {
+  "scheduleMcp.title": "Autoriser les agents du projet à proposer des instructions planifiées (MCP)",
+  "scheduleMcp.help": "Désactivé par défaut. Les nouveaux onglets locaux Claude, Codex et Vibe avec MCP peuvent planifier leurs propres instructions. Les propositions doivent être approuvées, les récurrentes toujours. Nécessite le backend mis à jour. Les onglets distants, VM et conteneurs ne sont pas pris en charge.",
+  "scheduleMcp.level": "Planification par les agents",
+  "scheduleMcp.off": "Désactivée",
+  "scheduleMcp.propose": "Proposer pour approbation",
+  "scheduleMcp.apply": "Appliquer immédiatement les instructions ponctuelles",
+  "scheduleMcp.proposed": "Proposé par l’agent",
+  "scheduleMcp.authored": "Créé par l’agent",
+  "scheduleMcp.approve": "Approuver",
+  "scheduleMcp.dismiss": "Rejeter",
+  "scheduleMcp.lineage": "Après l’envoi {id}",
+  "scheduleMcp.removeProposals": "Supprimer aussi les propositions non approuvées de cette session",
+  "mcpSecurity.scheduler": "Agent de planification",
   "mobile.outbox.countOne": "1 fichier dans la boîte d’envoi du projet",
   "mobile.outbox.actions": "Actions pour le fichier {name}",
   "mobile.outbox.region": "Fichiers de l’agent",

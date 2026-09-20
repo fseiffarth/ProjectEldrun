@@ -14,6 +14,7 @@ import { isResumableAgentTab, useTabsStore, type TabEntry } from "../../stores/t
 import { Dropdown } from "../common/Dropdown";
 import { MarkdownPromptField } from "../common/MarkdownPromptField";
 import { AgentScheduleDialog } from "./AgentScheduleDialog";
+import { AgentScheduleProposal } from "./AgentScheduleProposal";
 import { isPromptTargetTab } from "./PromptChartTab";
 
 interface Props { scope: string; active: boolean }
@@ -263,6 +264,10 @@ export function AgentSchedulesView({ scope, active }: Props) {
             <button className="agent-composer-chip" type="button" onClick={() => jumpToTab(scope, tab.key)}>↗ {t("agentPrompts.jump")}</button>
             <button className={`agent-composer-chip${open ? " active" : ""}`} type="button" aria-pressed={open} onClick={() => setUnfolded((keys) => keys.includes(tab.key) ? keys.filter((key) => key !== tab.key) : [...keys, tab.key])}>{t("agentPrompts.composerToggle")}</button>
             <button className={`agent-composer-chip${tab.autoContinue ? " active" : ""}`} type="button" aria-pressed={!!tab.autoContinue} data-testid="agent-continue-toggle" onClick={() => { setAutoContinue(scope, tab.key, !tab.autoContinue); void persistScopeLayout(scope); }}>⟳ {t("agentContinue.toggle")}</button>
+            {schedules.filter((s) => s.origin).map((schedule) => <div key={schedule.id}>
+              <small>{schedule.message}</small>
+              <AgentScheduleProposal projectId={scope} targetId={tab.scheduleTargetId!} schedule={schedule} />
+            </div>)}
             <button className="settings-btn sm" type="button" onClick={() => setDialog(tab)}>◷ {t("agentPrompts.schedulesButton")}</button>
           </div>
         </div>;

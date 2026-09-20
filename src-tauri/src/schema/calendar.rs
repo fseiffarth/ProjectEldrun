@@ -1084,7 +1084,7 @@ fn days_in_month(y: i32, m: u32) -> u32 {
 }
 
 /// Parse `"YYYY-MM-DD"` (ignoring any `T…` suffix) into `(y, m, d)`.
-fn parse_date(s: &str) -> Option<(i32, u32, u32)> {
+pub(crate) fn parse_date(s: &str) -> Option<(i32, u32, u32)> {
     let date = s.split('T').next()?;
     let mut parts = date.split('-');
     let y: i32 = parts.next()?.parse().ok()?;
