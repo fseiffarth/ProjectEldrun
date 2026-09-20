@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useT, useI18nStore, type TranslationKey } from "../../lib/i18n";
+import { useSettingsStore } from "../../stores/settings";
 
 interface Props {
   data: Record<string, number>; // "YYYY-MM-DD" -> seconds (full history, all years)
@@ -41,24 +42,30 @@ const GAP = 2;
 const STEP = CELL + GAP;
 const LABEL_H = 16;
 const DAY_LABEL_W = 28;
-const DAY_LABEL_KEYS: (TranslationKey | null)[] = [
-  null,
-  "activityCal.dayMon",
-  null,
-  "activityCal.dayWed",
-  null,
-  "activityCal.dayFri",
-  null,
-];
+// Every other row carries a name, the way a contribution graph does. Which
+// rows those are follows `Settings.calendar_week_start`: Monday is row 0 of a
+// Monday-first grid, row 1 of a Sunday-first one.
+function dayLabelKeys(weekStart: 0 | 1): (TranslationKey | null)[] {
+  const named: Record<number, TranslationKey> = {
+    1: "activityCal.dayMon",
+    3: "activityCal.dayWed",
+    5: "activityCal.dayFri",
+  };
+  return Array.from({ length: 7 }, (_, row) => named[(row + weekStart) % 7] ?? null);
+}
 
-function buildWeeks(year: number, data: Record<string, number>): Cell[][] {
+function buildWeeks(
+  year: number,
+  data: Record<string, number>,
+  weekStart: 0 | 1,
+): Cell[][] {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const currentYear = today.getFullYear();
 
-  // Start: Sunday on or before Jan 1 of the year
+  // Start: the week's first day on or before Jan 1 of the year
   const start = new Date(year, 0, 1);
-  start.setDate(start.getDate() - start.getDay());
+  start.setDate(start.getDate() - ((start.getDay() - weekStart + 7) % 7));
 
   // End: Dec 31 of the selected year, or today if it's the current year
   const end = year === currentYear ? today : new Date(year, 11, 31);
@@ -66,7 +73,7 @@ function buildWeeks(year: number, data: Record<string, number>): Cell[][] {
   const weeks: Cell[][] = [];
   const cur = new Date(start);
   while (cur <= end) {
-    if (cur.getDay() === 0) weeks.push([]);
+    if (cur.getDay() === weekStart) weeks.push([]);
     const ds = toDateStr(cur);
     const future = cur > today;
     weeks[weeks.length - 1].push({ date: ds, secs: future ? 0 : (data[ds] ?? 0), future });
@@ -85,6 +92,7 @@ function buildWeeks(year: number, data: Record<string, number>): Cell[][] {
 export function ActivityCalendar({ data }: Props) {
   const t = useT();
   const lang = useI18nStore((s) => s.lang);
+  const weekStart = useSettingsStore((s) => (s.settings?.calendar_week_start ?? 1) as 0 | 1);
   const currentYear = new Date().getFullYear();
 
   const availableYears = useMemo(() => {
@@ -99,7 +107,11 @@ export function ActivityCalendar({ data }: Props) {
   const [selectedYear, setSelectedYear] = useState(currentYear);
 
   const todayStr = toDateStr(new Date());
-  const weeks = useMemo(() => buildWeeks(selectedYear, data), [selectedYear, data]);
+  const weeks = useMemo(
+    () => buildWeeks(selectedYear, data, weekStart),
+    [selectedYear, data, weekStart],
+  );
+  const dayLabels = useMemo(() => dayLabelKeys(weekStart), [weekStart]);
 
   const [tooltip, setTooltip] = useState<{
     date: string;
@@ -143,7 +155,7 @@ export function ActivityCalendar({ data }: Props) {
       <div style={{ display: "flex" }}>
         {/* Day-of-week labels */}
         <div style={{ width: DAY_LABEL_W, paddingTop: LABEL_H, flexShrink: 0 }}>
-          {DAY_LABEL_KEYS.map((key, i) => (
+          {dayLabels.map((key, i) => (
             <div
               key={i}
               style={{
