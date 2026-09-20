@@ -92,6 +92,10 @@ function pick(files: File[]) {
 
 describe("Eldrun Mobile composer + and the frozen reading view", () => {
   beforeEach(() => {
+    // The composer's draft is kept on the phone now (`drafts.ts`), and the
+    // unmount that flushes it runs in Testing Library's own cleanup — after this
+    // file's `afterEach` — so the slate is wiped here rather than there.
+    localStorage.clear();
     terminalState.lines = [];
     FakeWebSocket.instances = [];
     vi.stubGlobal("WebSocket", FakeWebSocket);

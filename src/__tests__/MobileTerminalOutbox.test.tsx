@@ -55,12 +55,10 @@ function outboxFetch(images: () => unknown[]) {
     : Promise.resolve(jsonResponse(404, { error: "not_found" })));
 }
 
-describe("Eldrun Mobile Focus shows the pictures the agent left in the project's outbox", () => {
+describe("Eldrun Mobile reaches the files the agent sent through the gallery", () => {
   beforeEach(() => {
     FakeWebSocket.instances = [];
     vi.stubGlobal("WebSocket", FakeWebSocket);
-    // The strip is Terminal view's; Focus shows the pictures in the chat
-    // (MobileFocusOutboxMessages), and an agent tab opens in Focus by default.
     localStorage.setItem("eldrun.mobile.view.agent", "terminal");
     vi.spyOn(Date, "now").mockReturnValue(NOW * 1000);
     Object.defineProperty(HTMLElement.prototype, "scrollTo", { configurable: true, value: vi.fn() });
@@ -70,6 +68,12 @@ describe("Eldrun Mobile Focus shows the pictures the agent left in the project's
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
+
+  /** The gallery sheet, opened from the button beside the tab name. */
+  function openGallery(count: number) {
+    fireEvent.click(screen.getByRole("button", { name: `Files from the agent (${count})` }));
+    return screen.getByRole("dialog", { name: "Files from the agent" });
+  }
 
   it("lists the outbox on open, renders each image from the tab's own route, and opens one full-screen", async () => {
     const fetchMock = outboxFetch(() => [
@@ -82,46 +86,47 @@ describe("Eldrun Mobile Focus shows the pictures the agent left in the project's
 
     // The facts row's usage read (`/status`) is not this test's concern.
     expect(fetchMock.mock.calls.map(([url]) => url).filter((url) => !url.endsWith("/status"))).toEqual(["/api/v1/tabs/tab-7/outbox"]);
-    const strip = screen.getByRole("region", { name: "Files from the agent" });
-    expect(strip.textContent).toContain("From the agent");
-    expect(strip.textContent).toContain("2 files");
+    const gallery = openGallery(2);
+    expect(gallery.textContent).toContain("From the agent");
+    expect(gallery.textContent).toContain("2 files");
     // The thumbnails load from the sidecar's own route — same origin, the
     // session cookie is the credential — never from a path.
-    const thumbs = Array.from(strip.querySelectorAll("img")).map((img) => img.getAttribute("src"));
+    const thumbs = Array.from(gallery.querySelectorAll("img")).map((img) => img.getAttribute("src"));
     expect(thumbs).toEqual(["/api/v1/tabs/tab-7/outbox/plot.png", "/api/v1/tabs/tab-7/outbox/shot-1.jpg"]);
-    expect(strip.textContent).toContain("2 min ago");
-    expect(strip.textContent).toContain("2 h ago");
+    expect(gallery.textContent).toContain("2 min ago");
+    expect(gallery.textContent).toContain("2 h ago");
 
     fireEvent.click(screen.getByRole("button", { name: "Open plot.png" }));
     const viewer = screen.getByRole("dialog", { name: "plot.png" });
     expect(viewer.querySelector("img")?.getAttribute("src")).toBe("/api/v1/tabs/tab-7/outbox/plot.png");
     expect(viewer.textContent).toContain("47 KB");
+    // Closing the picture lands back on the grid it was opened from.
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    screen.getByRole("dialog", { name: "Files from the agent" });
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("hides the strip on ✕ and shows it again only for a picture that arrived afterwards", async () => {
-    const images: unknown[] = [{ name: "plot.png", kind: "image/png", size: 48_000, modified: NOW - 90 }];
+  it("shows no button until something arrives, and counts what the next poll brings", async () => {
+    const images: unknown[] = [];
     vi.stubGlobal("fetch", outboxFetch(() => images));
     render(<Terminal tab={TAB} back={() => {}} />);
     await settle();
-    expect(screen.getByRole("region", { name: "Files from the agent" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Files from the agent/ })).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Hide these files" }));
-    expect(screen.queryByRole("region", { name: "Files from the agent" })).toBeNull();
-
-    // Coming back to the page re-reads the folder; the same picture stays
-    // hidden, a new one shows on its own.
+    images.unshift({ name: "plot.png", kind: "image/png", size: 48_000, modified: NOW - 90 });
     act(() => { document.dispatchEvent(new Event("visibilitychange")); });
     await settle();
-    expect(screen.queryByRole("region", { name: "Files from the agent" })).toBeNull();
+    screen.getByRole("button", { name: "Files from the agent (1)" });
 
+    // Coming back to the page re-reads the folder; a new picture joins the
+    // gallery on its own — nothing to dismiss, nothing pushed into the chat.
     images.unshift({ name: "diagram.png", kind: "image/png", size: 9_000, modified: NOW - 5 });
     act(() => { document.dispatchEvent(new Event("visibilitychange")); });
     await settle();
-    const strip = screen.getByRole("region", { name: "Files from the agent" });
-    expect(strip.textContent).toContain("1 file");
-    expect(Array.from(strip.querySelectorAll("img")).map((img) => img.getAttribute("src"))).toEqual(["/api/v1/tabs/tab-7/outbox/diagram.png"]);
+    const gallery = openGallery(2);
+    expect(Array.from(gallery.querySelectorAll("img")).map((img) => img.getAttribute("src")))
+      .toEqual(["/api/v1/tabs/tab-7/outbox/diagram.png", "/api/v1/tabs/tab-7/outbox/plot.png"]);
   });
 
   it("opens text as inert text, PDFs in a new tab, and binary files as downloads", async () => {
@@ -134,6 +139,7 @@ describe("Eldrun Mobile Focus shows the pictures the agent left in the project's
       ] }) : new Response("<svg onload='alert(1)'>inert text</svg>"))));
     render(<Terminal tab={TAB} back={() => {}} />);
     await settle();
+    openGallery(3);
     fireEvent.click(screen.getByRole("button", { name: "Open notes.svg" }));
     await settle();
     const dialog = screen.getByRole("dialog", { name: "notes.svg" });
@@ -157,6 +163,7 @@ describe("Eldrun Mobile Focus shows the pictures the agent left in the project's
         : new Response(new Uint8Array([80, 75, 0, 1])))));
       render(<Terminal tab={TAB} back={() => {}} />);
       await settle();
+      openGallery(1);
       fireEvent.click(screen.getByRole("button", { name: "File actions for data.zip" }));
       await settle();
       fireEvent.click(screen.getByRole("button", { name: "Share…" }));
@@ -177,16 +184,17 @@ describe("Eldrun Mobile Focus shows the pictures the agent left in the project's
       : new Response("x".repeat(2 * 1024 * 1024)))));
     render(<Terminal tab={TAB} back={() => {}} />);
     await settle();
+    openGallery(1);
     fireEvent.click(screen.getByRole("button", { name: "Open large.log" }));
     await settle();
     expect(screen.getByRole("dialog").querySelector("pre")?.textContent?.length).toBe(1024 * 1024);
     expect(screen.getByRole("link", { name: "Open the whole file" }).getAttribute("target")).toBe("_blank");
   });
 
-  it("shows nothing for an empty or unreachable outbox", async () => {
+  it("shows no gallery button for an empty or unreachable outbox", async () => {
     vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new TypeError("offline"))));
     render(<Terminal tab={TAB} back={() => {}} />);
     await settle();
-    expect(screen.queryByRole("region", { name: "Files from the agent" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Files from the agent/ })).toBeNull();
   });
 });

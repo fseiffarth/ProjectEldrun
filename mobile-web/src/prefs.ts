@@ -70,6 +70,48 @@ export function writeChoice(name: MobileChoice, value: string, storage?: FlagSto
   }
 }
 
+/** An ordered list of ids, kept the way the flags are. `projectOrder` is the
+ * home list's hand-arranged project order (`projectOrder.ts`): ids in the order
+ * the reader dragged them into, which is this phone's own and never the
+ * desktop's. It can name projects the list is not showing right now — see
+ * `mergeProjectOrder`. */
+export type MobileOrder = "projectOrder";
+
+/** `todoCollapsedColumns` is a set rather than an order — the ids of the to-do
+ * board's columns the reader has folded shut — and it rides on the same storage
+ * because it is the same shape: a short list of ids this phone keeps to itself,
+ * of which only membership is ever read back. */
+export type MobileIdList = MobileOrder | "todoCollapsedColumns";
+
+/** How many ids one order keeps. A phone that has been used for a year should
+ * not carry a list of every project it ever saw, and the ids that matter are
+ * the ones near the front: a drag rewrites the block it touched and the tail is
+ * what has not been looked at in longest. */
+const ORDER_CAP = 200;
+
+/** The stored order, or an empty list — which means "nothing has been placed",
+ * and leaves every row in the order the host sent. Anything that is not an
+ * array of strings (a hand-edited value, a half-written entry) is read as that
+ * same empty list rather than being trusted into the sort. */
+export function readOrder(name: MobileIdList, storage?: FlagStorage): string[] {
+  try {
+    const stored = (storage ?? localStorage).getItem(`${PREFIX}${name}`);
+    if (!stored) return [];
+    const parsed: unknown = JSON.parse(stored);
+    return Array.isArray(parsed) && parsed.every((id): id is string => typeof id === "string") ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function writeOrder(name: MobileIdList, ids: readonly string[], storage?: FlagStorage): void {
+  try {
+    (storage ?? localStorage).setItem(`${PREFIX}${name}`, JSON.stringify(ids.slice(0, ORDER_CAP)));
+  } catch {
+    // See readFlag.
+  }
+}
+
 /** Which output view a terminal opens in: whatever the reader last chose for
  * that *agent* — keyed by the
  * agent behind the tab ("Claude Code", "Codex"; shells share one key), since

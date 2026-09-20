@@ -61,3 +61,35 @@ describe("Mobile project screen — tab order", () => {
     expect(order).toEqual(["asking", "working", "new-done", "old-done", "shell"]);
   });
 });
+
+describe("Mobile project screen — the header line", () => {
+  const detail = (tabs: unknown[]) => new Response(JSON.stringify({
+    project: { id: "p", label: "Alpha", status: "active", live_sessions: 1 },
+    desktop_available: true,
+    tabs,
+    agents: [],
+  }), { status: 200 });
+
+  it("carries the back chevron, the project's name and the tab order on one line, the way an agent tab's header does", async () => {
+    fetchMock.mockResolvedValue(detail([
+      { id: "a", label: "claude 1", kind: "agent", available: true, viewer_busy: false },
+      { id: "b", label: "claude 2", kind: "agent", available: true, viewer_busy: false },
+    ]));
+    const { container } = render(<Project id="p" back={() => {}} terminal={() => {}} />);
+    await screen.findByText("claude 2");
+    const header = container.querySelector("header");
+    expect(header?.querySelector(".back")).toBeTruthy();
+    expect(header?.querySelector("h1")?.textContent).toBe("Alpha");
+    expect(header?.querySelector(".activity-sort select")).toBe(screen.getByLabelText("Sort tabs"));
+    // Nothing is left standing between the header and the cards: the order used
+    // to cost a row of its own above them.
+    expect(container.querySelectorAll(".activity-sort")).toHaveLength(1);
+  });
+
+  it("spends nothing on the order when there is only one tab to order", async () => {
+    fetchMock.mockResolvedValue(detail([{ id: "a", label: "claude 1", kind: "agent", available: true, viewer_busy: false }]));
+    render(<Project id="p" back={() => {}} terminal={() => {}} />);
+    await screen.findByText("claude 1");
+    expect(screen.queryByLabelText("Sort tabs")).toBeNull();
+  });
+});

@@ -55,7 +55,7 @@ function sidecarFetch(files: unknown[], transcript?: unknown) {
   });
 }
 
-describe("Eldrun Mobile Focus posts the files the agent sent into the chat", () => {
+describe("Eldrun Mobile keeps the files the agent sent out of the chat", () => {
   beforeEach(() => {
     FakeWebSocket.instances = [];
     localStorage.clear();
@@ -69,7 +69,7 @@ describe("Eldrun Mobile Focus posts the files the agent sent into the chat", () 
     vi.restoreAllMocks();
   });
 
-  it("places a picture between the stored turns by time, as an agent message that opens full-screen", async () => {
+  it("leaves the stored chat to the turns and opens the picture from the gallery beside the tab name", async () => {
     vi.stubGlobal("fetch", sidecarFetch([
       { name: "run12.png", kind: "image/png", size: 48_000, modified: secs("2026-09-15T05:03:00Z") },
     ], {
@@ -85,22 +85,23 @@ describe("Eldrun Mobile Focus posts the files the agent sent into the chat", () 
     render(<Terminal tab={TAB} back={() => {}} />);
     await settle();
 
-    // No strip above the composer: the picture is in the chat instead.
-    expect(screen.queryByRole("region", { name: "Files from the agent" })).toBeNull();
+    // The chat holds turns only: no picture, no file card, no strip.
     const chat = screen.getByTestId("session-transcript");
-    const turns = Array.from(chat.querySelectorAll(".readable-turn"));
-    expect(turns.map((turn) => turn.classList.contains("outbox-message") ? "file" : turn.textContent))
-      .toEqual(["plot run 12", "Here is the plot.", "file", "thanks"]);
-    const message = within(chat).getByRole("group", { name: "From the agent" });
-    expect(message.className).toContain("readable-turn agent");
-    expect(message.querySelector("img")?.getAttribute("src")).toBe("/api/v1/tabs/tab-7/outbox/run12.png");
-    expect(message.textContent).toContain("run12.png");
+    expect(Array.from(chat.querySelectorAll(".readable-turn")).map((turn) => turn.textContent))
+      .toEqual(["plot run 12", "Here is the plot.", "thanks"]);
+    expect(chat.querySelector("img")).toBeNull();
+    expect(screen.queryByRole("region", { name: "Files from the agent" })).toBeNull();
 
-    fireEvent.click(within(message).getByRole("button", { name: "Open run12.png" }));
+    fireEvent.click(screen.getByRole("button", { name: "Files from the agent (1)" }));
+    const gallery = screen.getByRole("dialog", { name: "Files from the agent" });
+    expect(gallery.textContent).toContain("run12.png");
+    expect(gallery.querySelector("img")?.getAttribute("src")).toBe("/api/v1/tabs/tab-7/outbox/run12.png");
+
+    fireEvent.click(within(gallery).getByRole("button", { name: "Open run12.png" }));
     expect(screen.getByRole("dialog", { name: "run12.png" }).querySelector("img")?.getAttribute("src")).toBe("/api/v1/tabs/tab-7/outbox/run12.png");
   });
 
-  it("closes the screen's chat with the files, oldest first, and keeps the strip for the Terminal view", async () => {
+  it("keeps the files out of the screen's chat too, and the button in both views", async () => {
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     vi.stubGlobal("fetch", sidecarFetch([
       { name: "paper.pdf", kind: "application/pdf", size: 400, modified: 200 },
@@ -109,16 +110,20 @@ describe("Eldrun Mobile Focus posts the files the agent sent into the chat", () 
     render(<Terminal tab={TAB} back={() => {}} />);
     await settle();
 
-    const messages = screen.getAllByRole("group", { name: "From the agent" });
-    expect(messages.map((message) => message.querySelector("img") ? "plot.png" : message.querySelector("strong")?.textContent))
-      .toEqual(["plot.png", "paper.pdf"]);
-    fireEvent.click(within(messages[1]).getByRole("button", { name: "Open paper.pdf" }));
+    expect(screen.queryAllByRole("group", { name: "From the agent" })).toEqual([]);
+    fireEvent.click(screen.getByRole("button", { name: "Files from the agent (2)" }));
+    const gallery = screen.getByRole("dialog", { name: "Files from the agent" });
+    // Listed as the sidecar listed them, newest first.
+    expect(Array.from(gallery.querySelectorAll(".outbox-entry strong")).map((name) => name.textContent))
+      .toEqual(["paper.pdf", "plot.png"]);
+    fireEvent.click(within(gallery).getByRole("button", { name: "Open paper.pdf" }));
     expect(open).toHaveBeenCalledWith("/api/v1/tabs/tab-7/outbox/paper.pdf", "_blank", "noopener");
-    expect(screen.queryByRole("region", { name: "Files from the agent" })).toBeNull();
+    fireEvent.click(within(gallery).getByRole("button", { name: "Close" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Terminal" }));
     await settle();
     expect(screen.queryAllByRole("group", { name: "From the agent" })).toEqual([]);
-    screen.getByRole("region", { name: "Files from the agent" });
+    expect(screen.queryByRole("region", { name: "Files from the agent" })).toBeNull();
+    screen.getByRole("button", { name: "Files from the agent (2)" });
   });
 });

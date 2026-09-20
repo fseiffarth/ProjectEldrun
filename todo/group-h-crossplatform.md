@@ -1509,8 +1509,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       arrive at the sender.
     - [ ] 🖐️ Manual test — flip a switch off while the phone has the message
       open; tap the control; expect the "Switched off in Eldrun" explanation.
-- [~] **31s — The phone's `done` tag clears when the tab is read** (2026-09-02;
-  ✅ code-complete and automated tests passing, ⚠️ phone QA pending). The
+- [x] **31s — The phone's `done` tag clears when the tab is read** (2026-09-02;
+  ✅ verified live on the phone 2026-09-20). The
   `done` pill on the project screen is the desktop's own attention flag, and
   nothing on the phone ever retired it: opening the tab, reading the finished
   turn and backing out left the pill exactly where it was, so every tab the
@@ -1527,12 +1527,15 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   needs a rebuild + restart, and the embedded PWA is compiled in. Locked by
   `MobileTabSeen.test.tsx`, `MobileTerminalStatusLamp.test.tsx` and the
   `protocol.rs` seen-request test.
-  - [ ] 🖐️ Manual phone QA — let an agent finish a turn with the phone
-    elsewhere, see `done` on the project screen, open the tab and back out: the
-    pill is gone (and gone on the desktop tab bar too); a tab still waiting on a
-    question keeps its `question` pill after a look; with desktop Eldrun closed
-    the terminal still attaches normally.
-  - [ ] ✅ Works
+  - [ ] 🖐️ Manual phone QA — verified live 2026-09-20 on the running dev
+    build: a finished Claude tab reported `done` by the desktop's own catalog
+    answer dropped out of it one poll after the phone opened it, and the tab's
+    finished ring was gone on the desktop tab bar. Traced with a same-user
+    client on `desktop-control.sock`: a hand-sent `TabSeen` answers `seen` and
+    retires the tag, and the phone's own attach does the same. Still unchecked:
+    a `question` pill surviving a look, and attaching with desktop Eldrun
+    closed.
+  - [x] ✅ Works
   - [ ] ❌ Doesn't work
 - [~] **31r — The phone comes back where it was** (2026-09-02; ✅ code-complete
   and automated tests passing, ⚠️ phone QA pending). Eldrun Mobile saved only
@@ -1826,4 +1829,187 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   - [ ] ✅ Works
   - [ ] ❌ Doesn't work
 
+- [~] **31am — The agent's files live in a gallery, not in the chat** (2026-09-20;
+  ✅ code-complete, automated tests passing, ⚠️ not verified on a phone).
+  - What `eldrun-send` puts in `.eldrun/outbox/` no longer renders in the
+    Focus chat, and the **From the agent** strip above the composer is gone:
+    a picture between the turns buried the answer that mentioned it, and the
+    chat rewrote itself every time a file arrived.
+  - Instead a button beside the tab name counts what the agent sent and opens
+    the gallery (`mobile-web/src/components/OutboxGallery.tsx`): a grid of
+    thumbnails and file cards, newest first, in both Focus and Terminal. A tap
+    opens the file full screen (`OutboxViewer`, unchanged: save, share, inert
+    text, PDFs in a new tab, other kinds as downloads) and ✕ lands back on the
+    grid. The strip's ✕ ("hide these files") is gone with it — nothing to
+    dismiss when nothing intrudes.
+  - `terminal/outboxTimeline.ts` (which placed a file after the turn it
+    followed) is deleted; `terminal/fileLabels.ts` now holds the age/size
+    wording the composer and the gallery share.
+  - Needs a rebuild of the embedded PWA (`npm run build` did it) and a
+    desktop restart to serve it.
+  - [ ] 🖐️ Manual phone QA — on a tab whose agent ran `eldrun-send`: the chat
+    holds turns only (no pictures, no cards), and the button beside the tab
+    name shows the count. Tap it → the grid, newest first → tap a picture →
+    full screen → ✕ → back on the grid → ✕ → back to the chat. Switch to
+    Terminal → the same button, no strip above the composer. Send another file
+    → the count rises within ~8 s without the chat moving.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+
+- [~] **31an — Arrange the phone's project list by hand** (2026-09-20; ✅
+  code-complete, automated tests passing, ⚠️ not verified on a phone). The
+  Projects list came in the host's order only — live sessions first, then last
+  activity, then name — so the two projects a day is spent in kept swapping
+  places under the thumb. Every row in the **Active** list now carries the same
+  **⠿ grip** the tab cards wear, and drags into place.
+  - The order is **this phone's**, not the desktop's: it is a `localStorage`
+    preference (`prefs.ts` → `readOrder`/`writeOrder`, `projectOrder.ts`), so a
+    drag needs no desktop Eldrun, cannot be refused, and leaves the Eldrun
+    window's own project pills exactly where their owner put them. Unlike 31ak
+    (tab order), nothing crosses the bridge — no route, no sidecar, no protocol
+    change, and no desktop restart is needed for it.
+  - The host's order stays the fallback: a project that has never been placed
+    keeps it and follows the placed ones, which is also where a project that has
+    only just become active arrives rather than in the middle of an arranged
+    list. A project the list is not carrying right now (its sessions ended)
+    keeps its stored place around the block of listed rows, so an unrelated drag
+    does not demote it (`mergeProjectOrder`).
+  - Grips are drawn in the **Active** list only, and only with more than one row:
+    a search result is an answer to a query, where the best match belongs at the
+    top. The stored order is capped at 200 ids.
+  - The drag itself is now one implementation for both lists
+    (`mobile-web/src/rowDrag.ts`, lifted out of the project screen): pointer
+    captured to the grip, edge scrolling, and the arrow keys for a keyboard or a
+    screen reader. The project screen's tab drag is unchanged in behaviour.
+  - Needs a rebuild of the embedded PWA (`npm run build` did it) and a desktop
+    restart to serve it.
+  - [ ] 🖐️ Manual phone QA — with three or more active projects: drag the
+    bottom row to the top and confirm it stays there through a poll, a trip into
+    a project and back, and an app relaunch; confirm the desktop's project pills
+    did **not** move; hold a grip and drag past the bottom edge and confirm the
+    page scrolls under the finger; switch to **Search**, confirm no grips;
+    start a session in a project that was not listed and confirm it joins the
+    end rather than jumping into the arranged block.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+
 ---
+
+- [~] **31ao — A question in Focus is a list to tap, not a highlight to walk**
+  (2026-09-20; ✅ code-complete, automated tests passing, ⚠️ not verified on a
+  phone). The stored session cannot carry a choice the agent has not been given
+  yet, so Focus → Session shows the live screen under it ("On screen now").
+  It showed the dialog as **text** — Claude's permission prompt, an
+  `AskUserQuestion`, Codex's approval — rows and all, answerable only by
+  walking the highlight with the arrow keys, which is what the phone has no
+  room for.
+  - The rows are now a list (`QuestionList`), numbered as the dialog numbered
+    them, each row a tap. What sits *above* the rows — the question and
+    whatever the agent printed to ask it — is still shown as the screen drew
+    it; `readSelectPrompt` now reports where the rows start (`start`) so the
+    two can be told apart, and the rows are not printed twice.
+  - A tap sends the same arrow keys and Enter the on-screen key row sends
+    (`selectKeys`), so a tapped row lands exactly as a walked one. Nothing
+    here decides what the options are.
+  - The tapped row says "Sending…" and the list is closed to a second tap
+    until the session redraws. If the answer never lands (6 s), the list goes
+    live again rather than leaving a block that can no longer be answered.
+  - Needs a rebuild of the embedded PWA (`npm run build` did it) and a desktop
+    restart to serve it.
+  - [ ] 🖐️ Manual phone QA — open a Claude tab in Focus → Session and ask it
+    for an edit it must request permission for: the question shows with
+    **1 / 2 / 3** as tappable rows, the row Claude highlights marked. Tap row
+    2 → it says "Sending…", the desktop's dialog takes that answer, and the
+    list is replaced by the turn. Repeat with a `/model`-style multi-row
+    dialog and with Codex's approval prompt. Confirm a numbered list inside an
+    agent's ordinary answer is *not* turned into tappable rows.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+
+---
+
+- [~] **31ap — Fold a column away on the phone's to-do board** (2026-09-20; ✅
+  code-complete, automated tests passing, ⚠️ not verified on a phone). The board
+  is one column under another on a phone, so a board of six is mostly scrolling
+  past the four that are not today's problem — Done and the archive worst of
+  all, since both are read once a week and neither can be removed.
+  - Tapping a **column's name** folds it shut and tapping it again opens it
+    (`aria-expanded` on the name, a caret beside it). The head stays whole while
+    folded — the name, the count, and the four verbs — so a folded column can
+    still be renamed, reordered or deleted without opening it.
+  - The fold is **this phone's**, like the two hide switches beside it: a
+    `localStorage` set of column ids (`prefs.ts` → `readOrder`/`writeOrder`,
+    `todoCollapsedColumns`), so it needs no desktop round trip and the desktop
+    board is untouched. Ids of columns the board no longer has are dropped as
+    the set is written.
+  - A folded column with cards behind it says so ("3 cards folded away"), which
+    is what keeps a search honest: the head's badge counts every matching card
+    and the line counts the ones the fold is holding, so a search whose only
+    hits are in a folded column does not read as a search that found nothing.
+  - Needs a rebuild of the embedded PWA (`npm run build` did it) and a desktop
+    restart to serve it.
+  - [ ] 🖐️ Manual phone QA — fold Done and the archive: both heads keep their
+    counts, the cards go, and the fold survives a poll, a trip into another tab
+    and an app relaunch. Search for a word that only matches a card in a folded
+    column and confirm the column says how many it is holding; open it and the
+    card is there. Rename and reorder a folded column from its head. Delete a
+    folded column and confirm the fold does not come back on a new column.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+
+- [~] **31aq — The phone keeps a half-typed message** (2026-09-20; ✅
+  code-complete, automated tests passing, ⚠️ not verified on a phone). The
+  composer's text lived in React state and nowhere else, so every way out of a
+  session took it: the back chevron unmounts the terminal screen, and a phone
+  puts a PWA away and cold-starts it whenever it likes. A message typed on the
+  way to the desk — the long ones are exactly the ones typed away from it — was
+  gone by the time the reader came back to finish it.
+  - The draft is now kept on the phone (`mobile-web/src/drafts.ts`,
+    `eldrun.mobile.drafts`), **keyed by tab**: two agent tabs each hold their own
+    half-finished thought, and a draft never surfaces in the session it was not
+    meant for. Opening a tab restores its own text; an empty composer — sent or
+    cleared — forgets it, because there is then nothing to come back to.
+  - Never crosses the bridge. An unsent message is not something the desktop is
+    told about; this sits beside the view preferences (`prefs.ts`) for that
+    reason and is read by nothing else.
+  - Written 400 ms after the typing stops, and flushed again on unmount and on
+    `pagehide` — a store write is synchronous and re-serializes the record, so
+    per keystroke would put it between the reader and their next letter, and
+    `pagehide` is the last word a phone gives a PWA it is killing.
+  - Bounded: the newest 20 tabs' drafts, 20 000 characters each, and anything
+    that is not the written shape reads as no draft at all rather than being
+    trusted into a composer.
+  - Needs a rebuild of the embedded PWA (`npm run build` did it) and a desktop
+    restart to serve it.
+  - [ ] 🖐️ Manual phone QA — type half a message into an agent tab, go back to
+    the tab list and open the tab again: the text is there, and a second tab's
+    composer is empty. Send it and re-open the tab: the composer is empty.
+    Type again, switch to another app and let the phone kill the PWA, then
+    relaunch: the text is back. Type into a shell tab and confirm the same.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+
+- [~] **31ar — A project's header carries its tab order** (2026-09-20; ✅
+  code-complete, automated tests passing, ⚠️ not verified on a phone). The
+  project screen spent two rows on its own chrome: the back chevron and the
+  project's name, and under them a **Sort** row for a picker set about once a
+  week. A phone screen holds five tab cards, so that row cost a card.
+  - The header is now one line — chevron, name, order — read the way an agent
+    tab's header is (`.terminal-title` beside the back button, the control on the
+    right, which is where that screen's view switch sits). The name takes the
+    room it needs and ellipsizes; the select takes the width its own value needs,
+    and under 420 px the word "Sort" goes, the select keeping its label for a
+    screen reader.
+  - Still only drawn when there are two or more tabs to order, and the order is
+    still this phone's own (`projectTabsSort`), unchanged.
+  - Needs a rebuild of the embedded PWA (`npm run build` did it) and a desktop
+    restart to serve it.
+  - [ ] 🖐️ Manual phone QA — open a project with several tabs: the chevron, the
+    project's name and the picker are on one line, the cards start right under
+    it, and changing the order still rearranges them and survives a relaunch.
+    Open a project whose name is long and confirm the name ellipsizes rather than
+    pushing the picker off the screen; on a narrow phone confirm the picker is
+    still reachable with one thumb. Open a project with one tab and confirm the
+    header carries no picker.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work

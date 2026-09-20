@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const terminalState = vi.hoisted(() => ({
@@ -76,7 +76,7 @@ describe("Eldrun Mobile readable terminal view", () => {
 
   afterEach(() => vi.unstubAllGlobals());
 
-  it("renders the session text as it was emitted and copies it", async () => {
+  it("renders the session text as it was emitted", async () => {
     render(<Terminal tab={{ id: "tab", label: "Codex", kind: "agent", available: true, viewer_busy: false }} back={() => {}} />);
     await act(async () => {});
 
@@ -94,8 +94,9 @@ describe("Eldrun Mobile readable terminal view", () => {
     expect(screen.queryByText("╭────────╮")).toBeNull();
     expect(screen.queryByRole("button", { name: "Keep it" })).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Copy the session text" }));
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("Read src/App.tsx\nI found the layout.\n1. Keep it\n2. Change it");
+    // An agent's chat copies message by message; raw rows are no message.
+    expect(screen.queryByRole("button", { name: "Copy the session text" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Copy message" })).toBeNull();
   });
 
   it("lays an agent tab out as a chat: the echoed prompt on the right, the answer on the left", async () => {
@@ -120,9 +121,11 @@ describe("Eldrun Mobile readable terminal view", () => {
     expect(screen.getAllByRole("group", { name: "Your prompt" })).toHaveLength(1);
     expect(document.querySelector(".readable-lines")?.className).toBe("readable-lines chat");
 
-    // Copy still copies the transcript as the session printed it.
-    fireEvent.click(screen.getByRole("button", { name: "Copy the session text" }));
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("> fix the failing test\n\n⏺ Reading the test first.\n  It fails on the second assertion.");
+    // Each bubble copies its own message, as shown.
+    fireEvent.click(within(answer as HTMLElement).getByRole("button", { name: "Copy message" }));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("Reading the test first.\nIt fails on the second assertion.");
+    fireEvent.click(within(prompt).getByRole("button", { name: "Copy message" }));
+    expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith("fix the failing test");
   });
 
   it("paints a shell tab flat, with no turns", async () => {
@@ -138,6 +141,9 @@ describe("Eldrun Mobile readable terminal view", () => {
     expect(screen.queryByRole("group", { name: "Your prompt" })).toBeNull();
     expect(document.querySelector(".readable-turn")).toBeNull();
     expect(document.querySelector(".readable-lines")?.className).toBe("readable-lines");
+    // A shell has no messages, so it keeps the one Copy for what is shown.
+    fireEvent.click(screen.getByRole("button", { name: "Copy the session text" }));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("$ cat notes\n> not a prompt, a shell's here-doc continuation");
   });
 
   it("keeps xterm output-only and disables its hidden text entry", async () => {

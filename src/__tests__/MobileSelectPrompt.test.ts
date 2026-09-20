@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readSelectPrompt, selectKeys, selectSignature } from "../../mobile-web/src/terminal/selectPrompt";
+import { mergeSelectRows, missingSelectRow, readSelectPrompt, sameSelectStep, selectKeys, selectMoveKeys, selectSignature } from "../../mobile-web/src/terminal/selectPrompt";
 import { currentMode, modeChoices } from "../../mobile-web/src/terminal/agentModes";
 import { inputFrameStart, sessionStatus } from "../../mobile-web/src/terminal/statusLine";
 
@@ -24,6 +24,9 @@ describe("Eldrun Mobile select dialog", () => {
       // only thing on screen that says which one.
       title: "Select Model",
       current: 1,
+      // Where the rows start: what sits above them is the question they
+      // answer, which a caller listing the rows itself still has to show.
+      start: 3,
       options: [
         { index: 0, number: 1, label: "Default (recommended)", description: "Opus for up to 50% of usage, then Sonnet" },
         { index: 1, number: 2, label: "Opus", description: "For complex tasks" },
@@ -283,6 +286,79 @@ describe("Eldrun Mobile select dialog", () => {
     expect(selectKeys(1, 3)).toEqual([`${ESC}[B`, `${ESC}[B`, "\r"]);
     expect(selectKeys(2, 0)).toEqual([`${ESC}[A`, `${ESC}[A`, "\r"]);
     expect(selectKeys(1, 1)).toEqual(["\r"]);
+  });
+
+  // Claude Code 2.1.278's `/model` in an 80×24 pane — the size a phone attach
+  // leaves it — draws three of its five rows and scrolls that window with the
+  // highlight, marking the hidden side with ↑/↓ and counting under it.
+  const WINDOW_TOP = lines(
+    "   Select model",
+    "   Switch between Claude models. Your pick becomes the default for new",
+    "   sessions. For other/previous model names, specify with --model.",
+    "",
+    "     1. Default (recommended)  Opus 5 with 1M context · Best for everyday,",
+    "                               complex tasks",
+    "     2. Opus (1M context)      Opus 5 with 1M context · Best for everyday,",
+    "                               complex tasks",
+    "   ❯ 3. Fable ✔                Fable 5.1 · Most capable for your hardest and",
+    "                               longest-running tasks",
+    "      … +2 models",
+    "",
+    "   ● High effort (default) ←/→ to adjust",
+  );
+  const WINDOW_MIDDLE = lines(
+    "   Select model",
+    "   Switch between Claude models. Your pick becomes the default for new",
+    "   sessions. For other/previous model names, specify with --model.",
+    "",
+    "   ↑ 2. Opus (1M context)      Opus 5 with 1M context · Best for everyday,",
+    "                               complex tasks",
+    "   ❯ 3. Fable ✔                Fable 5.1 · Most capable for your hardest and",
+    "                               longest-running tasks",
+    "   ↓ 4. Sonnet                 Sonnet 5 · Efficient for routine tasks",
+    "      … +2 models",
+  );
+
+  it("reads a windowed picker's slice and how many rows it hides", () => {
+    const top = readSelectPrompt(WINDOW_TOP, "Claude");
+    expect(top?.title).toBe("Select model");
+    expect(top?.hidden).toBe(2);
+    expect(top?.current).toBe(2);
+    expect(top?.options.map((option) => option.label)).toEqual(["Default (recommended)", "Opus (1M context)", "Fable ✔"]);
+    expect(top?.options[2].description).toBe("Fable 5.1 · Most capable for your hardest and longest-running tasks");
+
+    // A slice from the middle: ↑/↓ mark the edges, never the highlight.
+    const middle = readSelectPrompt(WINDOW_MIDDLE, "Claude");
+    expect(middle?.hidden).toBe(2);
+    expect(middle?.options.map((option) => option.number)).toEqual([2, 3, 4]);
+    expect(middle?.current).toBe(1);
+  });
+
+  it("still refuses a run that starts past 1 without a window's marks", () => {
+    expect(readSelectPrompt(lines("❯ 2. Opus", "  3. Sonnet"))).toBeNull();
+  });
+
+  it("adds a windowed picker's slices up to the whole list, and asks for what is missing", () => {
+    const top = readSelectPrompt(WINDOW_TOP, "Claude")!;
+    const middle = readSelectPrompt(WINDOW_MIDDLE, "Claude")!;
+    let step = mergeSelectRows(null, top);
+    expect(missingSelectRow(step, top)).toBe(4);
+    step = mergeSelectRows(step, middle);
+    expect(step.options.map((option) => `${option.index}:${option.number}`)).toEqual(["0:1", "1:2", "2:3", "3:4"]);
+    expect(missingSelectRow(step, middle)).toBe(5);
+    // Nothing new: the same object, so state holding it does not re-render.
+    expect(mergeSelectRows(step, middle)).toBe(step);
+    // A list that is not a slice of it (the next step) starts over.
+    const next = readSelectPrompt(lines("Select effort", "", "❯ 1. Low", "  2. High"))!;
+    expect(sameSelectStep(step, next)).toBe(false);
+    expect(mergeSelectRows(step, next).options.map((option) => option.label)).toEqual(["Low", "High"]);
+    // A picker that draws every row has nothing missing.
+    expect(missingSelectRow(mergeSelectRows(null, next), next)).toBeUndefined();
+  });
+
+  it("moves the highlight without accepting it", () => {
+    expect(selectMoveKeys(3, 5)).toEqual([`${ESC}[B`, `${ESC}[B`]);
+    expect(selectMoveKeys(3, 1)).toEqual([`${ESC}[A`, `${ESC}[A`]);
   });
 });
 

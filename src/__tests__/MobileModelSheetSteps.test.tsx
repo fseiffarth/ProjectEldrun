@@ -186,6 +186,58 @@ describe("Eldrun Mobile — a multi-step /model picker", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+  it("lists every model of a picker that draws only a window of them", async () => {
+    // Claude Code 2.1.278's `/model` in an 80×24 pane: three rows of five,
+    // the window following the highlight.
+    const claudeWindow = (rows: string[]) => [
+      "   Select model",
+      "   Switch between Claude models.",
+      "",
+      ...rows,
+      "      … +2 models",
+      "",
+      "   Enter to set as default · s to use this session only · Esc to cancel",
+    ].join("\n");
+    const DEFAULT = "1. Default (recommended)  Opus 5 with 1M context";
+    const OPUS = "2. Opus (1M context)      Opus 5 with 1M context";
+    const FABLE = "3. Fable ✔                Fable 5.1";
+    const SONNET = "4. Sonnet                 Sonnet 5";
+    const HAIKU = "5. Haiku                  Haiku 4.5";
+    render(<Terminal tab={{ id: "tab", label: "Claude", kind: "agent", agent_model: "Fable 5.1", available: true, viewer_busy: false }} back={() => {}} />);
+    await act(async () => {});
+
+    // A status line too narrow to name the model: the chip says the last one
+    // the tab answered with, not "Model".
+    fireEvent.click(screen.getByRole("button", { name: "Fable 5.1" }));
+    await settle(400);
+    expect(FakeWebSocket.sent.slice(-2)).toEqual(["/model", "\r"]);
+    FakeWebSocket.sent = [];
+    await paint(claudeWindow([`     ${DEFAULT}`, `     ${OPUS}`, `   ❯ ${FABLE}`]));
+    // The highlight is walked onto the first hidden row — arrows only.
+    await settle(300);
+    expect(FakeWebSocket.sent).toEqual([DOWN]);
+    FakeWebSocket.sent = [];
+    await paint(claudeWindow([`   ↑ ${OPUS}`, `     ${FABLE}`, `   ❯ ${SONNET}`]));
+    await settle(300);
+    expect(FakeWebSocket.sent).toEqual([DOWN]);
+    FakeWebSocket.sent = [];
+    await paint(claudeWindow([`   ↑ ${FABLE}`, `     ${SONNET}`, `   ❯ ${HAIKU}`]));
+    // Every row seen: back to where the highlight was.
+    await settle(300);
+    expect(FakeWebSocket.sent).toEqual([UP, UP]);
+    await paint(claudeWindow([`   ❯ ${FABLE}`, `     ${SONNET}`, `     ${HAIKU}`]));
+
+    expect(Array.from(document.querySelectorAll(".option-list strong"), (label) => label.textContent))
+      .toEqual(["Default (recommended)", "Opus (1M context)", "Fable ✔", "Sonnet", "Haiku"]);
+    expect(document.querySelector(".option-list button.current")?.textContent).toContain("Fable");
+
+    // A hidden row is picked by its number, from where the highlight is.
+    FakeWebSocket.sent = [];
+    pick("Default (recommended)");
+    await settle(400);
+    expect(FakeWebSocket.sent).toEqual([UP, UP, "\r"]);
+  });
+
   it("sends /clear from the empty field's button at once, without a confirm dialog", async () => {
     const confirm = vi.fn(() => false);
     vi.stubGlobal("confirm", confirm);

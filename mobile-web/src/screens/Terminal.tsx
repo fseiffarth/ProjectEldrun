@@ -1,6 +1,7 @@
 import { useT, type TranslationKey } from "../../../src/lib/i18n";
+import { OutboxGallery } from "../components/OutboxGallery";
 import { OutboxViewer } from "../components/OutboxViewer";
-import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -21,6 +22,7 @@ import {
   type SessionTranscript,
   type TabRow,
 } from "../api";
+import { DRAFT_SAVE_DELAY, readDraft, writeDraft } from "../drafts";
 import { readTerminalView, writeTerminalView, type TerminalViewChoice } from "../prefs";
 import { TERMINAL_PROTOCOL, TERMINAL_SIZE } from "../terminal/protocol";
 import { readableRange, readableScreen, readableText, TRUNCATION_NOTICE, type ReadableLine } from "../terminal/readableScreen";
@@ -37,7 +39,18 @@ import { installWideOutputHint, type WideOutputHint } from "../terminal/wideOutp
 import { inputFrameStart, sessionStatus, statusFrameLines, type SessionStatus } from "../terminal/statusLine";
 import { sessionLimits } from "../terminal/sessionUsage";
 import { installFocusSwipe } from "../terminal/focusSwipe";
-import { readSelectPrompt, selectKeys, selectSignature } from "../terminal/selectPrompt";
+import {
+  mergeSelectRows,
+  missingSelectRow,
+  readSelectPrompt,
+  sameSelectStep,
+  selectKeys,
+  selectMoveKeys,
+  selectSignature,
+  type SelectOption,
+  type SelectPrompt,
+  type SelectStep,
+} from "../terminal/selectPrompt";
 import {
   isOpenCodeTab,
   openCodePickKeys,
@@ -51,9 +64,10 @@ import { chatTurns, isPromptEcho } from "../terminal/chatTurns";
 import { answerHtml } from "../terminal/answerMarkdown";
 import { transcriptTurns } from "../terminal/transcriptTurns";
 import { MAX_PENDING, pendingPrompt, withPending, type PendingPrompt } from "../terminal/pendingPrompts";
-import { oldestFirst, placeOutbox, type OutboxPlacement } from "../terminal/outboxTimeline";
+import { ageLabel, sizeLabel } from "../terminal/fileLabels";
 import { resetText, StatusSheet } from "./StatusSheet";
 import { limitMeters, parseUsageReport, type LimitMeters } from "../../../shared/usageReport";
+import { isUntested } from "../../../src/lib/untested";
 import {
   prepareOnDeviceSpeech,
   speechRecognitionConstructor,
@@ -194,19 +208,6 @@ interface InboxUpload {
   failure?: string;
 }
 
-function ageLabel(seconds: number) {
-  if (seconds < 60) return "just now";
-  if (seconds < 3_600) return `${Math.round(seconds / 60)} min ago`;
-  if (seconds < 86_400) return `${Math.round(seconds / 3_600)} h ago`;
-  return `${Math.round(seconds / 86_400)} d ago`;
-}
-
-function sizeLabel(size: number) {
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-}
-
 /** How often the project's outbox is re-read while this screen is on — a
  * directory listing on the sidecar, no desktop round trip, and skipped while
  * the page is hidden. */
@@ -252,6 +253,30 @@ const ReadableRow = memo(function ReadableRow({ line }: { line: ReadableLine }) 
   ))}</div>;
 });
 
+/** Copies one chat message — the chat has no copy-everything button, so the
+ * reading view keeps its height for the messages. The text is read on the
+ * tap, not on every render of the turn. */
+function CopyMessage({ text }: { text: () => string }) {
+  const t = useT();
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(false), 1_500);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+  const label = t(copied ? "mobile.focus.copied" : "mobile.focus.copyMessage");
+  return <button className={copied ? "turn-copy copied" : "turn-copy"} aria-label={label} title={label} onClick={async () => {
+    try {
+      await navigator.clipboard.writeText(text());
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
+  }}>{copied
+    ? <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 13 4.5 4.5L19 7" /></svg>
+    : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V6a2 2 0 0 1 2-2h8" /></svg>}</button>;
+}
+
 /** A block of session lines. On an agent tab they read as a chat: the
  * agent's turns on the left as printed, each prompt the user submitted as a
  * bubble on the right — the TUI's own echo of it, see `chatTurns`. A shell has
@@ -267,13 +292,16 @@ const ReadableTurns = memo(function ReadableTurns({ lines, chat, agent, promptLa
   columns?: number;
 }) {
   if (!chat) return <>{lines.map((line) => <ReadableRow key={line.key} line={line} />)}</>;
-  return <>{chatTurns(lines, agent, columns).map((turn) => turn.role === "user"
-    ? <div key={turn.key} className="readable-turn user" role="group" aria-label={promptLabel}>
-        {(turn.prompt ?? turn.lines).map((line) => <ReadableRow key={line.key} line={line} />)}
-      </div>
-    : <div key={turn.key} className={turn.answer ? "readable-turn agent answer" : "readable-turn agent"}>
-        {(turn.answer ?? turn.lines).map((line) => <ReadableRow key={line.key} line={line} />)}
-      </div>)}</>;
+  return <>{chatTurns(lines, agent, columns).map((turn) => {
+    const shown = turn.role === "user" ? (turn.prompt ?? turn.lines) : (turn.answer ?? turn.lines);
+    const rows = shown.map((line) => <ReadableRow key={line.key} line={line} />);
+    // A message is a bubble — a prompt or an answer; tool output and raw
+    // screen rows are not one, and stay flat without a copy button.
+    const copy = (turn.role === "user" || turn.answer) && <CopyMessage text={() => readableText(shown)} />;
+    return turn.role === "user"
+      ? <div key={turn.key} className="readable-turn user" role="group" aria-label={promptLabel}>{rows}{copy}</div>
+      : <div key={turn.key} className={turn.answer ? "readable-turn agent answer" : "readable-turn agent"}>{rows}{copy}</div>;
+  })}</>;
 });
 
 /** One answer of the stored session as formatted text (`answerHtml`: the
@@ -289,57 +317,27 @@ const AnswerText = memo(function AnswerText({ text }: { text: string }) {
  * reader's own prompts, the agent's answers on the left — from the record the
  * agent itself keeps, which reaches back past the pane's scrollback and
  * carries no tool status. `cut` marks text the desktop bounded. */
-const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promptLabel, placement, renderFiles }: {
+const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promptLabel }: {
   entries: SessionTranscript["entries"];
   cutLabel: string;
   promptLabel: string;
-  /** Where the files the agent sent sit between the turns (`placeOutbox`). */
-  placement: OutboxPlacement;
-  renderFiles: (files: readonly OutboxFile[]) => ReactNode;
 }) {
   // One bubble per record, keyed by its time (`transcriptTurns`).
   const turns = useMemo(() => transcriptTurns(entries), [entries]);
-  return <>{renderFiles(placement.before)}{turns.map((turn) => <Fragment key={turn.key}>
+  return <>{turns.map((turn) => <Fragment key={turn.key}>
     {turn.kind === "prompt"
       ? <div className="readable-turn user" role="group" aria-label={promptLabel}>
           <p className="transcript-text">{turn.text}</p>
           {turn.cut && <small className="transcript-cut">{cutLabel}</small>}
+          <CopyMessage text={() => turn.text} />
         </div>
       : <div className="readable-turn agent answer">
           <AnswerText text={turn.text} />
           {turn.cut && <small className="transcript-cut">{cutLabel}</small>}
+          <CopyMessage text={() => turn.text} />
         </div>}
-    {renderFiles(placement.after.get(turn.index) ?? [])}
   </Fragment>)}</>;
 });
-
-/** One file the agent sent (`eldrun-send`) as a message of its own in the
- * Focus chat, on the agent's side: a picture shows itself and opens full
- * screen on a tap, like an image in a messenger; any other file is a card
- * that opens, or downloads, the way the strip's entry does. Where it sits in
- * the chat is `outboxTimeline`'s call. */
-function OutboxMessage({ tabId, file, onOpen, onDetails }: { tabId: string; file: OutboxFile; onOpen: (file: OutboxFile) => void; onDetails: (file: OutboxFile) => void }) {
-  const t = useT();
-  const isImage = file.kind.startsWith("image/");
-  const download = !isImage && !file.kind.startsWith("text/") && file.kind !== "application/pdf";
-  const label = t("mobile.outbox.open", { name: file.name });
-  const card = <>
-    <span aria-hidden="true">{file.kind === "application/pdf" ? "PDF" : file.kind.startsWith("text/") ? "≡" : "↓"}</span>
-    <strong>{file.name}</strong>
-  </>;
-  return <div className="readable-turn agent outbox-message" role="group" aria-label={t("mobile.outbox.from")}>
-    {isImage
-      ? <button className="outbox-message-image" onClick={() => onOpen(file)} aria-label={label} title={file.name}><img src={outboxFileUrl(tabId, file.name)} alt="" loading="lazy" decoding="async" /></button>
-      : download
-        ? <a className="outbox-message-file" href={outboxFileUrl(tabId, file.name, true)} download={file.name} aria-label={label}>{card}</a>
-        : <button className="outbox-message-file" onClick={() => onOpen(file)} aria-label={label} title={file.name}>{card}</button>}
-    <small className="outbox-message-meta">
-      <span>{isImage ? `${file.name} · ` : ""}{ageLabel(Math.max(0, Math.floor(Date.now() / 1000) - file.modified))}{!isImage && ` · ${sizeLabel(file.size)}`}</span>
-      <em>{t("mobile.outbox.untested")}</em>
-      {!isImage && <button className="outbox-details" onClick={() => onDetails(file)} aria-label={t("mobile.outbox.actions", { name: file.name })}>⋯</button>}
-    </small>
-  </div>;
-}
 
 /** The stored preference key for a tab: the agent behind it, or the shell. */
 function viewAgentOf(tab: TabRow): string {
@@ -415,6 +413,37 @@ function OptionSheet({ title, note, options, waiting, busy, onPick, onClose }: {
   </div>;
 }
 
+/**
+ * The question the session is waiting on, as a phone list: the dialog's own
+ * rows, under the number it printed beside each one, each a tap that answers
+ * it. It sits inline in the reading view rather than in a sheet — the question
+ * is part of the conversation, and a modal over it would hide what it asks.
+ *
+ * Like `OptionSheet` it renders what the caller resolved and reports taps
+ * back: no parsing, no keystrokes. The row the dialog highlights is marked as
+ * the one Enter would take, not as an answer already given.
+ */
+function QuestionList({ prompt, sent, sendingLabel, onPick }: {
+  prompt: SelectPrompt;
+  /** The printed number of the row a tap answered with, while the session has
+   * not redrawn yet: that row says so, and no row can be tapped again. */
+  sent?: number;
+  sendingLabel: string;
+  onPick: (option: SelectOption) => void;
+}) {
+  return <ul className="option-list question-list">{prompt.options.map((option) => <li key={option.number}>
+    <button
+      className={option.index === prompt.current ? "current" : ""}
+      aria-current={option.index === prompt.current || undefined}
+      disabled={sent !== undefined}
+      onClick={() => onPick(option)}>
+      <span className="question-number" aria-hidden="true">{option.number}</span>
+      <span><strong>{option.label}</strong>{option.description && <small>{option.description}</small>}</span>
+      {sent === option.number && <span className="sheet-pending" role="status">{sendingLabel}</span>}
+    </button>
+  </li>)}</ul>;
+}
+
 export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   const t = useT();
   const host = useRef<HTMLDivElement>(null);
@@ -454,7 +483,15 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     setView(next);
     writeTerminalView(viewAgentOf(tab), next);
   };
-  const [draft, setDraft] = useState("");
+  /** The composer's text, restored from the phone's own store (`drafts.ts`):
+   * leaving for the tab list unmounts this screen and the phone cold-starts the
+   * PWA whenever it likes, and a message half-typed on the way to the desk was
+   * gone by the time the reader came back to finish it. */
+  const [draft, setDraft] = useState(() => readDraft(tab.id));
+  /** The draft as it stands, for the two writers below — neither of them may
+   * re-subscribe per keystroke. */
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
   const [lines, setLines] = useState<ReadableLine[]>([]);
   const [clipped, setClipped] = useState(false);
   /** The absorbed earlier output, republished for render whenever it grows.
@@ -494,11 +531,22 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   /** Whether the model sheet is up. It opens on the tap that sends `/model`,
    * before the session has drawn the picker it lists. */
   const [modelSheet, setModelSheet] = useState(false);
-  /** The step a tap answered (`selectSignature`), while the session is still
-   * painting it. A multi-step dialog draws its next list in the same place, so
-   * the sheet holds until what is on screen is a *different* list — or until
-   * nothing is, which is where the dialog ends. */
-  const [answered, setAnswered] = useState("");
+  /** The step a tap answered, while the session is still painting it. A
+   * multi-step dialog draws its next list in the same place, so the sheet
+   * holds until what is on screen is a *different* list (`sameSelectStep`) —
+   * or until nothing is, which is where the dialog ends. */
+  const [answered, setAnswered] = useState<SelectStep | null>(null);
+  /** Every row of the step on screen seen since the sheet opened. A windowed
+   * picker (Claude Code's, at 24 lines, draws three of its five models) is
+   * only ever a slice, so the list is what the slices add up to. */
+  const [knownStep, setKnownStep] = useState<SelectStep | null>(null);
+  /** The walk that makes a windowed picker draw the rows it hides: the row the
+   * highlight started on, and the row the last arrow keys were sent to. The
+   * highlight goes back where it was once every row is listed. */
+  const [reveal, setReveal] = useState<{ origin: number; target: number } | null>(null);
+  /** A walk whose keys never showed on screen is not tried again until the
+   * sheet reopens; the rows already seen stay listed. */
+  const revealStuck = useRef(false);
   const [modeSheet, setModeSheet] = useState(false);
   /** The status chip's sheet: the session's state and the CLI's own usage
    * panel. Opening it asks the desktop, which may run the CLI once. */
@@ -521,8 +569,8 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
    * terminal carries none, and Focus classifies nothing, so a path printed
    * by the agent is never guessed at. */
   const [outbox, setOutbox] = useState<OutboxFile[]>([]);
-  /** Names the strip's ✕ hid; a picture that arrives afterwards still shows. */
-  const [outboxHidden, setOutboxHidden] = useState<Set<string>>(() => new Set());
+  /** Whether the gallery sheet is up (the button beside the tab name). */
+  const [gallery, setGallery] = useState(false);
   /** The picture open full-screen. */
   const [outboxOpen, setOutboxOpen] = useState<OutboxFile | null>(null);
   /** The stored session behind an agent tab (`getTranscript`): `null` until
@@ -534,9 +582,10 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   const [pending, setPending] = useState<PendingPrompt[]>([]);
   const pendingId = useRef(0);
   const [focusSource, setFocusSource] = useState<"session" | "screen">("session");
-  /** Whether the tools row says why the Session toggle is dimmed. A phone
-   * shows no tooltip, so the reason is spelled out on a tap instead. */
-  const [sessionWhy, setSessionWhy] = useState(false);
+  /** Whether the list under the Focus button is open: where an agent tab's
+   * Focus reads from, the stored session or the screen. A dimmed Session row
+   * says why it cannot be read — a phone shows no tooltip. */
+  const [focusMenu, setFocusMenu] = useState(false);
   /** Whether Focus shows the strip with the rows the agent draws under its
    * input box (cwd, model, mode, context…). A left→right swipe opens it, a
    * right→left swipe or its ✕ closes it; never persisted. */
@@ -583,11 +632,13 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   useEffect(() => {
     setView(initialView(tab));
     viewChosen.current = readTerminalView(viewAgentOf(tab)) !== null;
-    setDraft("");
+    // The draft is the tab's, not the screen's: this tab's own half-typed
+    // message, which is nothing at all for most of them (`drafts.ts`).
+    setDraft(readDraft(tab.id));
     setTranscript(null);
     setPending([]);
     setFocusSource("session");
-    setSessionWhy(false);
+    setFocusMenu(false);
     setStatusStrip(false);
     setTranscriptLimit(TRANSCRIPT_STEP);
     setLines([]);
@@ -612,7 +663,9 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     uploadRun.current += 1;
     setSwitching("");
     setSwitchFailed("");
-    setAnswered("");
+    setAnswered(null);
+    setKnownStep(null);
+    setReveal(null);
     sawPicker.current = false;
     // Dictation belongs to the tab it was started in. Its recognizer is aborted
     // by the effect beside `startVoice` with the handlers detached first, so no
@@ -1197,16 +1250,16 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   // Focus chat, scrolls the view to it, as new screen output does, unless
   // the reader has scrolled up to read.
   useLayoutEffect(() => {
-    if (!(sessionShown || (view === "focus" && outbox.length > 0)) || !atBottom) return;
+    if (!sessionShown || !atBottom) return;
     const stream = readableHost.current;
     if (stream) stream.scrollTo({ top: stream.scrollHeight });
-  }, [sessionShown, transcript, pending, outbox, view, atBottom]);
+  }, [sessionShown, transcript, pending, atBottom]);
   /** Reads the outbox now and every `OUTBOX_POLL` while the page is visible;
    * coming back to the page reads it at once. A listing that could not be
    * fetched keeps what was shown — the next poll retries. */
   useEffect(() => {
     setOutbox([]);
-    setOutboxHidden(new Set());
+    setGallery(false);
     setOutboxOpen(null);
     let stopped = false;
     let inflight: AbortController | undefined;
@@ -1267,29 +1320,21 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     };
   }, [tab.id, tab.kind]);
   useEffect(() => {
-    if (!outboxOpen) return;
-    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") setOutboxOpen(null); };
+    if (!outboxOpen && !gallery) return;
+    // The viewer opens from the gallery, so Escape closes the top one first.
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (outboxOpen) setOutboxOpen(null);
+      else setGallery(false);
+    };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [outboxOpen]);
-  const outboxShown = useMemo(() => outbox.filter((image) => !outboxHidden.has(image.name)), [outbox, outboxHidden]);
-  const hideOutbox = () => setOutboxHidden(new Set(outbox.map((image) => image.name)));
+  }, [outboxOpen, gallery]);
   /** A PDF opens in the browser's own viewer; a picture or text full-screen here. */
   const openOutbox = useCallback((file: OutboxFile) => {
     if (file.kind === "application/pdf") window.open(outboxFileUrl(tab.id, file.name), "_blank", "noopener");
     else setOutboxOpen(file);
   }, [tab.id]);
-  /** The files as messages in the Focus chat (`OutboxMessage`). The strip's ✕
-   * does not reach them: a message stays where it was posted. */
-  const renderOutbox = useCallback((files: readonly OutboxFile[]) => files.map((file) => (
-    <OutboxMessage key={`outbox:${file.name}`} tabId={tab.id} file={file} onOpen={openOutbox} onDetails={setOutboxOpen} />
-  )), [tab.id, openOutbox]);
-  const outboxPlacement = useMemo(
-    () => placeOutbox(sessionEntries, outbox, transcript?.truncated === true),
-    [sessionEntries, transcript?.truncated, outbox],
-  );
-  /** The screen has no times to place a file by, so the files close its chat. */
-  const screenOutbox = useMemo(() => oldestFirst(outbox), [outbox]);
   /** Chunks above the revealed window stay in memory but out of the DOM — the
    * lazy half of the earlier-output log. */
   const hiddenChunks = Math.max(0, earlier.chunks.length - revealed);
@@ -1415,6 +1460,25 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     forgetDictation();
     composerInput.current?.focus();
   };
+  /** Keep the draft a moment after the typing stops. Per keystroke would put a
+   * synchronous store write between the reader and their next letter, and the
+   * only thing the delay can cost is text that is still on the screen. */
+  useEffect(() => {
+    const timer = window.setTimeout(() => writeDraft(tab.id, draftRef.current), DRAFT_SAVE_DELAY);
+    return () => window.clearTimeout(timer);
+  }, [tab.id, draft]);
+  /** …and once more when this screen goes away, which the delay above would
+   * otherwise eat: leaving for the tab list unmounts it, and a phone putting the
+   * PWA away kills it without unmounting anything (`pagehide` is the last word
+   * either way — `beforeunload` never fires on iOS). */
+  useEffect(() => {
+    const flush = () => writeDraft(tab.id, draftRef.current);
+    window.addEventListener("pagehide", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      flush();
+    };
+  }, [tab.id]);
   /** The tab's own name for its agent, which is what every family rule is
    * scoped by: the mode tables, the prompt echo Kimi Code draws, and the whole
    * of OpenCode's mini interface, whose frame has no marker to be found by. */
@@ -1445,7 +1509,17 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   );
   /** The step the sheet is showing: the picker on screen, unless it is the one
    * a tap just answered and the session has not redrawn yet. */
-  const pickerStep = picker && selectSignature(picker) === answered ? null : picker;
+  const pickerStep = picker && answered && sameSelectStep(answered, picker) ? null : picker;
+  /** The step as far as it is known: the rows on screen plus those an earlier
+   * slice of the same picker drew. OpenCode's list is never windowed, and a
+   * tapped group heading narrows it into a list of its own. */
+  const listedStep = useMemo<SelectStep | null>(
+    () => (!pickerStep ? null : openCode ? pickerStep : mergeSelectRows(knownStep, pickerStep)),
+    [pickerStep, openCode, knownStep],
+  );
+  useEffect(() => { if (listedStep && !openCode) setKnownStep(listedStep); }, [listedStep, openCode]);
+  /** The printed number of the row the dialog highlights right now. */
+  const pickerAt = pickerStep?.options[pickerStep.current]?.number;
   useEffect(() => {
     if (!modelSheet) return;
     if (pickerStep) {
@@ -1453,7 +1527,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       // A step is up, so nothing is left to hold for: a dialog that comes back
       // to a list already answered (Codex's "More reasoning…" has an esc back)
       // is a step again, not the stale paint of the answer.
-      if (answered) setAnswered("");
+      if (answered) setAnswered(null);
       return;
     }
     // The answered list, still on screen: the session has not read the Enter
@@ -1461,7 +1535,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     // session never moves off it, the answer did not land: give the list back
     // rather than hold a sheet the tap can no longer leave.
     if (answered && picker) {
-      const stuck = window.setTimeout(() => setAnswered(""), MODEL_PICKER_WAIT);
+      const stuck = window.setTimeout(() => setAnswered(null), MODEL_PICKER_WAIT);
       return () => window.clearTimeout(stuck);
     }
     if (sawPicker.current) {
@@ -1473,7 +1547,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       }
       const next = window.setTimeout(() => {
         setModelSheet(false);
-        setAnswered("");
+        setAnswered(null);
       }, SELECT_NEXT_WAIT);
       return () => window.clearTimeout(next);
     }
@@ -1482,6 +1556,32 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     const timer = window.setTimeout(() => setModelSheet(false), MODEL_PICKER_WAIT);
     return () => window.clearTimeout(timer);
   }, [modelSheet, picker, pickerStep, answered]);
+  /** A windowed picker says how many rows it is not drawing: the highlight is
+   * walked to each one it hides, which scrolls it into view, and back. Only
+   * arrow keys — nothing is accepted — and only while nothing was tapped. */
+  useEffect(() => {
+    if (!modelSheet || openCode || answered || !pickerStep || !listedStep || pickerAt === undefined || revealStuck.current) return;
+    if (reveal && pickerAt !== reveal.target) {
+      // The keys have not landed yet. If they never do, stop walking.
+      const stuck = window.setTimeout(() => {
+        revealStuck.current = true;
+        setReveal(null);
+      }, MODEL_PICKER_WAIT);
+      return () => window.clearTimeout(stuck);
+    }
+    const target = missingSelectRow(listedStep, pickerStep) ?? reveal?.origin;
+    if (target === undefined || target === pickerAt) {
+      if (reveal) setReveal(null);
+      return;
+    }
+    if (!deliver(selectMoveKeys(pickerAt, target))) {
+      setReveal(null);
+      return;
+    }
+    setReveal({ origin: reveal?.origin ?? pickerAt, target });
+    // `deliver` is a fresh closure every render; the walk runs on the frames.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modelSheet, openCode, answered, pickerStep, listedStep, pickerAt, reveal]);
   /** `/model` opens the agent's own picker in the session; the sheet lists the
    * rows it drew, and a tap answers it with the same keys the arrow row sends —
    * so nothing here decides what the models are.
@@ -1493,7 +1593,10 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   const selectModel = () => {
     if (modelSheet) return;
     sawPicker.current = false;
-    setAnswered("");
+    revealStuck.current = false;
+    setAnswered(null);
+    setKnownStep(null);
+    setReveal(null);
     if (openCode) {
       clearPending();
       if (!deliver(OPENCODE_MODEL_KEYS)) return;
@@ -1510,21 +1613,25 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
    * its group headings narrows the list, which the sheet reads as the next
    * step. */
   const chooseModel = (key: string) => {
-    if (!pickerStep) return;
+    // Mid-walk the highlight is not where the frame says; the sheet is busy.
+    if (!pickerStep || !listedStep || reveal) return;
     clearPending();
-    const picked = pickerStep.options.find((option) => option.index === Number(key));
+    const picked = listedStep.options.find((option) => option.number === Number(key));
+    if (!picked) return;
+    // Walked by printed number: a windowed picker's rows on screen are a slice.
     const writes = openCode
-      ? (picked ? openCodePickKeys(picked.label) : [])
-      : selectKeys(pickerStep.current, Number(key));
+      ? openCodePickKeys(picked.label)
+      : pickerAt === undefined ? [] : selectKeys(pickerAt, picked.number);
     if (writes.length === 0 || !deliver(writes)) return;
-    setAnswered(selectSignature(pickerStep));
+    setAnswered(listedStep);
   };
   const closeModelSheet = () => {
     // The dialog is the session's own and still open: close it there too,
     // rather than leaving a modal behind that the reader can no longer see.
     if (picker) type("\u001b");
     setModelSheet(false);
-    setAnswered("");
+    setAnswered(null);
+    setReveal(null);
   };
   /** Shift+Tab — the mode cycle Claude Code, Codex and Qwen Code all bind,
    * encoded the way this family's TUI reads it (`shiftTabKey`). The chip label
@@ -1591,7 +1698,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     setSwitching("");
     setSwitchFailed(value);
   };
-  const sheetUp = modelSheet || modeSheet || statusSheet || desktopSheet || outboxOpen !== null;
+  const sheetUp = modelSheet || modeSheet || statusSheet || desktopSheet || gallery || outboxOpen !== null;
   useLayoutEffect(() => {
     setFrozenLines(sheetUp ? linesRef.current : null);
   }, [sheetUp]);
@@ -1730,7 +1837,42 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     painted.forEach((line, index) => { if (isPromptEcho(line, agentLabel)) start = index + 1; });
     return painted.slice(start);
   }, [sessionShown, altScreen, painted, agentLabel]);
-  const liveQuestion = useMemo(() => liveTail.length > 0 && readSelectPrompt(liveTail, agentLabel) != null, [liveTail, agentLabel]);
+  /** The choice the session is waiting on, read off the live screen. On the
+   * phone it is answered by tapping a row, so what is kept is the dialog
+   * itself — its rows, and where on the tail they start — not just that there
+   * is one. */
+  const liveQuestion = useMemo(
+    () => (liveTail.length > 0 ? readSelectPrompt(liveTail, agentLabel) : null),
+    [liveTail, agentLabel],
+  );
+  /** What the list on screen *is*, as a string: a stable dep for the effects
+   * below, which must not restart on every repaint of the same question. */
+  const questionSignature = liveQuestion ? selectSignature(liveQuestion) : "";
+  /** The question a tap just answered, while the session has not redrawn yet:
+   * its rows stay listed, but nothing can be tapped twice. */
+  const [questionSent, setQuestionSent] = useState<{ signature: string; number: number } | null>(null);
+  const sentSignature = questionSent?.signature ?? "";
+  useEffect(() => {
+    if (!sentSignature) return;
+    // Redrawn as something else — answered, or moved on: the list is live again.
+    if (questionSignature !== sentSignature) {
+      setQuestionSent(null);
+      return;
+    }
+    // Still the same question after the keys had time to land: the answer did
+    // not arrive. Give the list back rather than leave a dead block on screen.
+    const stuck = window.setTimeout(() => setQuestionSent(null), MODEL_PICKER_WAIT);
+    return () => window.clearTimeout(stuck);
+  }, [sentSignature, questionSignature]);
+  /** Answers the question on screen with the row tapped — the same arrow keys
+   * and Enter the on-screen key row sends, so a tapped row lands exactly as a
+   * walked one. Nothing here decides what the options are. */
+  const answerQuestion = (option: SelectOption) => {
+    if (!liveQuestion || questionSent) return;
+    clearPending();
+    if (!deliver(selectKeys(liveQuestion.current, option.index))) return;
+    setQuestionSent({ signature: questionSignature, number: option.number });
+  };
   /** The stored session only grows at message boundaries, so a turn busy in
    * tool calls looked finished. The live screen's interrupt hint says it is
    * not; a choice on screen is waiting on the reader instead. */
@@ -1741,13 +1883,12 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     () => [...visibleChunks.flatMap((chunk) => chunk.lines), ...earlier.open, ...painted],
     [visibleChunks, earlier.open, painted],
   );
+  /** A shell's Focus has no messages to copy one by one (`CopyMessage`), so
+   * it copies what the reading view shows: the revealed history, the open
+   * chunk, then the live tail. */
   const copyReadable = async () => {
     try {
-      // Copy exactly what the reading view is showing: the stored session's
-      // turns, or the revealed history, the open chunk, then the live tail.
-      await navigator.clipboard.writeText(sessionShown
-        ? (transcript?.entries ?? []).map((entry) => entry.kind === "prompt" ? `> ${entry.text}` : entry.text).join("\n\n")
-        : readableText(screenStream));
+      await navigator.clipboard.writeText(readableText(screenStream));
       setCopied(true);
       window.clearTimeout(copiedTimer.current);
       copiedTimer.current = window.setTimeout(() => setCopied(false), 1_500);
@@ -1851,12 +1992,14 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   /** What the sheet paints: the live step, or — between the tap and the
    * session's redraw — the answered one, listed but not tappable, so the sheet
    * does not blink empty on the way to the next step. */
-  const shownStep = pickerStep ?? (answered ? picker : null);
+  const shownStep = listedStep ?? (answered && picker ? answered : null);
+  /** The highlighted row — where it was before a reveal walk moved it. */
+  const shownAt = reveal?.origin ?? picker?.options[picker.current]?.number;
   const pickerOptions: SheetOption[] = (shownStep?.options ?? []).map((option) => ({
-    key: String(option.index),
+    key: String(option.number),
     label: option.label,
     description: option.description,
-    current: option.index === shownStep?.current,
+    current: option.number === shownAt,
   }));
   const modeOptions: SheetOption[] = modes.map((choice) => ({
     key: choice.value,
@@ -1878,7 +2021,33 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     description: desktopImageDescription(image),
     current: false,
   }));
-  return <main className={`terminal-screen ${tab.kind}-tab`} style={viewportHeight ? { height: viewportHeight } : undefined}><header><button className="back" onClick={back}>‹</button><div className="terminal-title"><h1>{tab.label}</h1><small>{tab.kind === "agent" ? "Agent session" : "Shell session"}</small></div><div className="terminal-view-switch" aria-label="Output view"><button className={view === "focus" ? "selected" : ""} aria-pressed={view === "focus"} onClick={() => chooseView("focus")}>Focus</button><button className={view === "terminal" ? "selected" : ""} aria-pressed={view === "terminal"} onClick={() => chooseView("terminal")}>Terminal</button></div><span className={connected ? "lamp" : "lamp off"} /></header>
+  return <main className={`terminal-screen ${tab.kind}-tab`} style={viewportHeight ? { height: viewportHeight } : undefined}><header><button className="back" onClick={back}>‹</button><div className="terminal-title"><h1>{tab.label}</h1><small>{tab.kind === "agent" ? "Agent session" : "Shell session"}</small></div>{outbox.length > 0 && <button className="terminal-gallery" onClick={() => setGallery(true)} aria-label={t("mobile.outbox.galleryOpen", { count: outbox.length })} title={t("mobile.outbox.region")}><span aria-hidden="true">🖼</span><small>{outbox.length}</small></button>}<div className="terminal-view-switch" aria-label="Output view"><button className={view === "focus" ? "selected" : ""} aria-pressed={view === "focus"} aria-haspopup={chat ? "menu" : undefined} aria-expanded={chat ? focusMenu : undefined} onClick={() => {
+      // An agent tab's Focus is a list once it is up: where it reads from.
+      if (chat && view === "focus") setFocusMenu((open) => !open);
+      else chooseView("focus");
+    }}>Focus{chat && <span className="view-caret" aria-hidden="true" />}</button><button className={view === "terminal" ? "selected" : ""} aria-pressed={view === "terminal"} onClick={() => { setFocusMenu(false); chooseView("terminal"); }}>Terminal</button></div><span className={connected ? "lamp" : "lamp off"} /></header>
+    {focusMenu && chat && view === "focus" && <div className="focus-menu-backdrop" role="presentation" onClick={() => setFocusMenu(false)}>
+      <div className="focus-menu" role="menu" aria-label={t("mobile.focus.source")} onClick={(event) => event.stopPropagation()}>
+        {/* Dimmed when the stored session cannot be read (an agent whose
+            transcript Eldrun does not read, no session id yet); the row then
+            says which, rather than doing nothing. */}
+        <button role="menuitemradio" aria-checked={sessionShown} aria-disabled={transcript?.available ? undefined : "true"} className={transcript?.available ? undefined : "unavailable"} onClick={() => {
+          if (!transcript?.available) return;
+          setFocusSource("session");
+          setFocusMenu(false);
+        }}>
+          <span><strong>{t("mobile.focus.session")} {isUntested("mobile.focus.session") && <em>{t("mobile.focus.untested")}</em>}</strong><small>{transcript?.available ? t("mobile.focus.sessionHint") : t(noSessionReason(transcript))}</small></span>
+          {sessionShown && <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 13 4.5 4.5L19 7" /></svg>}
+        </button>
+        <button role="menuitemradio" aria-checked={!sessionShown} onClick={() => {
+          setFocusSource("screen");
+          setFocusMenu(false);
+        }}>
+          <span><strong>{t("mobile.focus.screen")}</strong><small>{t("mobile.focus.screenHint")}</small></span>
+          {!sessionShown && <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 13 4.5 4.5L19 7" /></svg>}
+        </button>
+      </div>
+    </div>}
     <div className="terminal-body">
       <div ref={host} className={`terminal${view === "focus" ? " focus-source" : ""}`} />
       <div ref={wideHint} className="terminal-wide-hint" aria-hidden="true" />
@@ -1892,21 +2061,27 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
             followReadable(stream.scrollHeight - stream.scrollTop - stream.clientHeight < 120);
           }}>
           {sessionShown
-            ? (transcript && sessionEntries.length === 0 && !liveQuestion && !sessionBusy && outbox.length === 0
+            ? (transcript && sessionEntries.length === 0 && !liveQuestion && !sessionBusy
               ? <div className="readable-empty"><strong>{t("mobile.transcript.empty")}</strong><span>{t("mobile.transcript.emptyHint")}</span></div>
               : <div className="readable-lines chat transcript" data-testid="session-transcript">
                   {transcript?.truncated && <button className="readable-earlier" onClick={() => setTranscriptLimit((limit) => limit + TRANSCRIPT_STEP)}>{t("mobile.transcript.earlier")}</button>}
-                  <TranscriptTurns entries={sessionEntries} cutLabel={t("mobile.transcript.cut")} promptLabel={t("mobile.transcript.prompt")} placement={outboxPlacement} renderFiles={renderOutbox} />
+                  <TranscriptTurns entries={sessionEntries} cutLabel={t("mobile.transcript.cut")} promptLabel={t("mobile.transcript.prompt")} />
                   {liveQuestion && <div className="transcript-screen" role="group" aria-label={t("mobile.transcript.onScreen")}>
-                    <small>{t("mobile.transcript.onScreen")}</small>
-                    <ReadableTurns lines={liveTail} chat={chat} agent={agentLabel} promptLabel={t("mobile.transcript.prompt")} columns={paneColumns.current} />
+                    <small>{t("mobile.transcript.onScreen")}{isUntested("mobile.focus.onScreen") && <> · {t("mobile.focus.untested")}</>}</small>
+                    {/* What the rows answer — the question and whatever the
+                        agent printed to ask it — as the screen drew it. The
+                        rows themselves are replaced by the list below: a
+                        highlight walked with arrow keys is not something a
+                        phone can do. */}
+                    {liveQuestion.start > 0 && <ReadableTurns lines={liveTail.slice(0, liveQuestion.start)} chat={chat} agent={agentLabel} promptLabel={t("mobile.transcript.prompt")} columns={paneColumns.current} />}
+                    <QuestionList prompt={liveQuestion} sent={sentSignature === questionSignature ? questionSent?.number : undefined} sendingLabel={t("mobile.transcript.answering")} onPick={answerQuestion} />
                   </div>}
                   {sessionBusy && <div className="transcript-working" role="status">
                     <span className="transcript-working-dots" aria-hidden="true"><i /><i /><i /></span>
-                    {t("mobile.focus.working")} <small>{t("mobile.focus.untested")}</small>
+                    {t("mobile.focus.working")}
                   </div>}
                 </div>)
-            : painted.length === 0 && visibleChunks.length === 0 && earlier.open.length === 0 && outbox.length === 0
+            : painted.length === 0 && visibleChunks.length === 0 && earlier.open.length === 0
             ? <div className="readable-empty"><strong>Waiting for output</strong><span>The exact terminal is running behind this view.</span></div>
             : <div className={chat ? "readable-lines chat" : "readable-lines"}>
                 {clipped && <div className="readable-notice">{TRUNCATION_NOTICE}</div>}
@@ -1924,24 +2099,17 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
                     <ReadableTurns lines={earlier.open} chat={false} promptLabel={t("mobile.transcript.prompt")} />
                     <ReadableTurns lines={painted} chat={false} promptLabel={t("mobile.transcript.prompt")} />
                   </>}
-                {renderOutbox(screenOutbox)}
               </div>}
         </section>
         {statusStrip && statusSwipe && <div className="focus-statusline" role="status" aria-label={t("mobile.focus.statusLine")}>
-          <div className="focus-statusline-head"><strong>{t("mobile.focus.statusLine")} <small>{t("mobile.focus.untested")}</small></strong><button onClick={() => setStatusStrip(false)} aria-label={t("mobile.focus.statusLineHide")}>✕</button></div>
+          <div className="focus-statusline-head"><strong>{t("mobile.focus.statusLine")} {isUntested("mobile.focus.statusLine") && <small>{t("mobile.focus.untested")}</small>}</strong><button onClick={() => setStatusStrip(false)} aria-label={t("mobile.focus.statusLineHide")}>✕</button></div>
           {frameStatus.length
             ? frameStatus.map((row, i) => <div key={i} className="focus-statusline-row">{row}</div>)
             : <div className="focus-statusline-empty">{t("mobile.focus.statusLineEmpty")}</div>}
         </div>}
-        {(lines.length > 0 || sessionShown) && <div className="readable-tools">
-          {chat && <small>{sessionShown ? `${t("mobile.focus.session")} · ${t("mobile.focus.untested")}` : sessionWhy && !transcript?.available ? t(noSessionReason(transcript)) : "Chat layout · Untested"}</small>}
-          {/* On every agent tab, so the choice is where the reader looks for
-              it; dimmed when the stored session cannot be read (an agent
-              whose transcript Eldrun does not read, no session id yet), and a
-              tap then says which rather than doing nothing. */}
-          {chat && (transcript?.available
-            ? <button onClick={() => setFocusSource((source) => source === "session" ? "screen" : "session")} aria-pressed={sessionShown} title={sessionShown ? t("mobile.focus.screenHint") : t("mobile.focus.sessionHint")}>{sessionShown ? t("mobile.focus.screen") : t("mobile.focus.session")}</button>
-            : <button className="unavailable" aria-disabled="true" aria-expanded={sessionWhy} title={t(noSessionReason(transcript))} onClick={() => setSessionWhy((shown) => !shown)}>{t("mobile.focus.session")}</button>)}
+        {/* A chat copies message by message and picks its source under the
+            Focus button, so nothing floats over its newest lines. */}
+        {!chat && lines.length > 0 && <div className="readable-tools">
           <button onClick={() => void copyReadable()} aria-label="Copy the session text">{copied ? "Copied" : "Copy"}</button>
         </div>}
         {!atBottom && <button className="readable-jump" onClick={jumpToLatest}>Jump to latest ↓</button>}
@@ -1951,28 +2119,6 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       {tab.kind === "agent" && voiceLine && <div className={voiceProblem ? "voice-feedback error" : "voice-feedback"} role={voiceProblem ? "alert" : "status"} aria-live="polite">{voiceLine}</div>}
       {stoppedReason && <div className="voice-feedback error" role="alert">{stoppedReason}</div>}
       {sendFailed && !stoppedReason && <div className="voice-feedback error" role="alert">That did not reach the desktop — the connection dropped. It will retry on its own.</div>}
-      {/* Focus posts the files into its chat instead (`OutboxMessage`); the
-          strip is for the Terminal view, and a full-screen program's notice. */}
-      {outboxShown.length > 0 && !(view === "focus" && (!altScreen || sessionShown)) && <div className="outbox-strip" role="region" aria-label={t("mobile.outbox.region")}>
-        <div className="outbox-strip-head"><strong>{t("mobile.outbox.from")} <small>{t("mobile.outbox.untested")}</small></strong><span>{t(outboxShown.length === 1 ? "mobile.outbox.countOne" : "mobile.outbox.count", { count: outboxShown.length })}</span><button onClick={hideOutbox} aria-label={t("mobile.outbox.hide")}>✕</button></div>
-        <div className="outbox-thumbs">
-          {outboxShown.map((file) => {
-            const isImage = file.kind.startsWith("image/");
-            const download = !isImage && !file.kind.startsWith("text/") && file.kind !== "application/pdf";
-            const label = t("mobile.outbox.open", { name: file.name });
-            const content = <>
-              {isImage ? <img src={outboxFileUrl(tab.id, file.name)} alt="" loading="lazy" decoding="async" /> : <span aria-hidden="true">{file.kind === "application/pdf" ? "PDF" : file.kind.startsWith("text/") ? "≡" : "↓"}</span>}
-              {!isImage && <strong>{file.name}</strong>}
-              <span>{ageLabel(Math.max(0, Math.floor(Date.now() / 1000) - file.modified))}{!isImage && ` · ${sizeLabel(file.size)}`}</span>
-            </>;
-            return <div key={file.name} className="outbox-entry">
-              {download ? <a className="outbox-file" href={outboxFileUrl(tab.id, file.name, true)} download={file.name} aria-label={label}>{content}</a>
-                : <button className={isImage ? "outbox-thumb" : "outbox-file"} onClick={() => openOutbox(file)} aria-label={label} title={file.name}>{content}</button>}
-              {!isImage && <button className="outbox-details" onClick={() => setOutboxOpen(file)} aria-label={t("mobile.outbox.actions", { name: file.name })}>⋯</button>}
-            </div>;
-          })}
-        </div>
-      </div>}
       {lastSent && !sessionShown && <div className="last-sent"><span>Sent</span><p>{lastSent}</p></div>}
       {uploads.map((upload) => upload.failure
         ? <div key={upload.id} className="inbox-upload error" role="alert"><strong>{upload.name}</strong><span>{upload.failure}</span><button onClick={() => dismissUpload(upload.id)} aria-label={`Dismiss ${upload.name}`}>✕</button></div>
@@ -1982,7 +2128,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
             the composer keeps the whole bar for the draft and its buttons. */}
         {tab.kind === "agent" && <>
           <button className="fact-action" onClick={() => setStatusSheet(true)} aria-haspopup="dialog" aria-expanded={statusSheet} title="Session status and the agent's own usage"><span className={`fact-lamp ${lamp}`} aria-hidden="true" /><span className="fact-action-label">Status</span></button>
-          <button className="fact-action" disabled={!connected} onClick={selectModel} aria-haspopup="dialog" aria-expanded={modelSheet} title="Choose the model (/model)"><span className="fact-action-label">{status?.model ?? "Model"}</span></button>
+          <button className="fact-action" disabled={!connected} onClick={selectModel} aria-haspopup="dialog" aria-expanded={modelSheet} title="Choose the model (/model)"><span className="fact-action-label">{status?.model ?? tab.agent_model ?? "Model"}</span></button>
           <button className="fact-action" disabled={!connected} onClick={openModeSheet} aria-haspopup={modes.length > 0 ? "dialog" : undefined} aria-expanded={modes.length > 0 ? modeSheet : undefined} title={modes.length > 0 ? "Choose the permission mode" : "Switch mode (Shift+Tab)"}><span className="fact-action-label">{status?.mode ?? activeMode ?? "Mode"}</span></button>
         </>}
         {status?.branch && <span className="fact-branch">⎇ {status.branch}</span>}
@@ -2028,7 +2174,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       waiting={!connected
         ? "Waiting for the connection…"
         : answered ? "Waiting for the session…" : "Waiting for the session's model picker…"}
-      busy={shownStep != null && pickerStep == null}
+      busy={shownStep != null && (pickerStep == null || reveal != null)}
       onPick={chooseModel}
       onClose={closeModelSheet}
     />}
@@ -2065,6 +2211,9 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       onClose={() => { if (!switching) setModeSheet(false); }}
     />}
     {statusSheet && <StatusSheet tab={tab} live={status} onLimits={setLimits} onClose={() => setStatusSheet(false)} />}
+    {/* The viewer covers the phone; the gallery stays chosen behind it, so
+        closing the file lands back on the grid. */}
+    {gallery && !outboxOpen && <OutboxGallery tabId={tab.id} files={outbox} onOpen={openOutbox} onDetails={setOutboxOpen} onClose={() => setGallery(false)} />}
     {outboxOpen && <OutboxViewer key={`${tab.id}/${outboxOpen.name}`} tabId={tab.id} file={outboxOpen} onClose={() => setOutboxOpen(null)} />}
 
   </main>;

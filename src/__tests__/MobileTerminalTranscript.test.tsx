@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const terminalState = vi.hoisted(() => ({ lines: [] as string[], alternate: false }));
@@ -161,10 +161,17 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     const again = fetchMock.mock.calls.map(([url]) => url as string).filter((url) => url.includes("/transcript"));
     expect(again[again.length - 1]).toBe("/api/v1/tabs/tab-7/transcript?version=1200%3A1&limit=120");
 
-    // Copy copies the stored turns, prompts marked the way the screen marks them.
-    fireEvent.click(screen.getByRole("button", { name: "Copy the session text" }));
+    // Each message copies itself, as the agent wrote it; there is no
+    // copy-everything button over the chat.
+    expect(screen.queryByRole("button", { name: "Copy the session text" })).toBeNull();
+    const copy = within(answers[1] as HTMLElement).getByRole("button", { name: "Copy message" });
+    fireEvent.click(copy);
     await settle();
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("> add a clear button\n\nLooking at the composer.\n\nDone: the **✕** empties the draft. See [the docs](https://example.com).");
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("Done: the **✕** empties the draft. See [the docs](https://example.com).");
+    within(answers[1] as HTMLElement).getByRole("button", { name: "Copied" });
+    fireEvent.click(within(prompt).getByRole("button", { name: "Copy message" }));
+    await settle();
+    expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith("add a clear button");
   });
 
   it("falls back to the screen when the session is unavailable, and can be switched to it", async () => {
@@ -181,22 +188,30 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 200)); });
     expect(screen.queryByTestId("session-transcript")).toBeNull();
     expect(screen.getByText("Hi there.").closest(".readable-turn")?.className).toBe("readable-turn agent answer");
-    // The toggle is still there, dimmed; a tap says why instead of switching.
-    const dimmed = screen.getByRole("button", { name: "Session" });
+    // The choice is a list under the Focus button; Session is there, dimmed,
+    // saying why, and a tap on it does not switch.
+    expect(screen.queryByRole("menu")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Focus" }));
+    const dimmed = screen.getByRole("menuitemradio", { name: /Session/ });
     expect(dimmed.getAttribute("aria-disabled")).toBe("true");
-    expect(screen.queryByText("No session id for this tab yet")).toBeNull();
+    expect(dimmed.textContent).toContain("No session id for this tab yet");
+    expect(screen.getByRole("menuitemradio", { name: /Screen/ }).getAttribute("aria-checked")).toBe("true");
     fireEvent.click(dimmed);
-    screen.getByText("No session id for this tab yet");
     expect(screen.queryByTestId("session-transcript")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Focus" }));
+    expect(screen.queryByRole("menu")).toBeNull();
 
     stored = STORED;
     act(() => { document.dispatchEvent(new Event("visibilitychange")); });
     await settle();
     screen.getByTestId("session-transcript");
-    fireEvent.click(screen.getByRole("button", { name: "Screen" }));
+    fireEvent.click(screen.getByRole("button", { name: "Focus" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Screen/ }));
+    expect(screen.queryByRole("menu")).toBeNull();
     expect(screen.queryByTestId("session-transcript")).toBeNull();
     expect(screen.getByText("Hi there.")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Session" }));
+    fireEvent.click(screen.getByRole("button", { name: "Focus" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Session/ }));
     screen.getByTestId("session-transcript");
   });
 
@@ -220,7 +235,8 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     expect(screen.queryByRole("group", { name: "On screen now" })).toBeNull();
 
     // Switched to the screen, the full-screen program says so, as before.
-    fireEvent.click(screen.getByRole("button", { name: "Screen" }));
+    fireEvent.click(screen.getByRole("button", { name: "Focus" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Screen/ }));
     screen.getByText("Full-screen program");
     expect(screen.queryByTestId("session-transcript")).toBeNull();
 

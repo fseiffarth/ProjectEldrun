@@ -31,6 +31,15 @@ nav button,.keys button { flex:1; }
    the select taking the width the label leaves. */
 .activity-sort { display:flex; align-items:center; gap:10px; margin:-8px 0 12px; color:#9aa0b4; font-size:.9rem; }
 .activity-sort select { flex:1; width:auto; padding:8px 30px 8px 10px; background-position:right 10px center; }
+/* The same control in a screen's header instead, beside the name and the back
+   chevron, the way an agent tab's header carries its view switch: a phone screen
+   holds about five cards, and the order is set once a week. The select takes the
+   width its own value needs rather than everything the name is not using, and on
+   a narrow phone the word "Sort" goes — an order reads as one from its value, and
+   the select keeps its label for a screen reader. */
+.activity-sort.in-header { flex:0 1 auto; min-width:0; margin:0; }
+.activity-sort.in-header select { flex:0 1 auto; max-width:11rem; }
+@media (max-width:420px) { .activity-sort.in-header > span { display:none; } }
 .cards { display:grid; gap:10px; }
 .card { width:100%; text-align:left; justify-content:space-between; padding:16px; background:rgba(28,31,43,.92); }
 .card span:first-child { display:grid; gap:4px; }
@@ -85,6 +94,11 @@ nav button,.keys button { flex:1; }
 .tab-card-name strong { text-decoration:underline dotted #6f7488; text-underline-offset:4px; overflow-wrap:anywhere; }
 .tab-card-grip { flex:0 0 auto; width:44px; padding:0; border:0; border-left:1px solid #2d3040; border-radius:0 11px 0 0; background:transparent; color:#6f7488; font-size:1.05rem; touch-action:none; cursor:grab; }
 .tab-card-grip:active { cursor:grabbing; color:#d3d6e4; }
+/* A card that is only its head — the home screen's project rows, which wear the
+   same row so their grip sits beside the opener rather than on it. With no
+   prompts or schedule line under it the grip reaches the card's bottom edge, so
+   it is that corner it has to round rather than a rule running into nothing. */
+.tab-card.one-row .tab-card-grip { border-radius:0 11px 11px 0; }
 .tab-card.dragging { opacity:.65; }
 /* The slot the dropped card would land in, drawn on the card it lands beside.
    An outline rather than a moved card: the list itself does not rearrange until
@@ -219,6 +233,11 @@ button.mobile-alert-row { cursor:pointer; }
 .todo-mobile-column-head button { min-width:32px; padding:6px 7px; border-color:transparent; background:transparent; color:#8b90a3; }
 .todo-mobile-column-head button:active { background:#232838; }
 .todo-mobile-column-head button.danger { color:#c08b93; }
+/* The fold sits inside the head's <h2>, so it has to opt out of the head's
+   own button treatment and read as the heading it is wrapping. */
+.todo-mobile-column-head .todo-column-fold { display:flex; align-items:center; gap:7px; min-width:0; padding:7px 4px 7px 0; border:0; background:transparent; color:inherit; text-align:left; }
+.todo-fold-caret { flex:0 0 auto; color:#8b90a3; font-size:.75rem; }
+.todo-mobile-column.folded { gap:6px; }
 .todo-column-empty { margin:0; padding:10px 2px; color:#767b8d; font-size:.85rem; }
 .todo-mobile-card { display:grid; gap:8px; padding:12px; background:#161a25; border:1px solid #272c3a; border-radius:11px; }
 .todo-mobile-card.done { opacity:.62; }
@@ -359,6 +378,18 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .terminal-title h1,.terminal-title small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .terminal-view-switch { display:flex; gap:3px; padding:3px; border:1px solid #34384a; border-radius:10px; background:#151822; }
 .terminal-view-switch button { padding:6px 9px; border:0; border-radius:7px; background:transparent; font-size:.76rem; }
+/* An agent tab's Focus opens a list once it is up: where Focus reads from. */
+.view-caret { display:inline-block; width:5px; height:5px; margin:0 1px 2px 6px; border-right:1.5px solid currentColor; border-bottom:1.5px solid currentColor; transform:rotate(45deg); opacity:.75; }
+.focus-menu-backdrop { position:fixed; inset:0; z-index:12; }
+.focus-menu { position:absolute; top:calc(env(safe-area-inset-top) + 50px); right:10px; display:grid; gap:3px; width:min(300px,calc(100vw - 20px)); padding:6px; border:1px solid #383c4d; border-radius:14px; background:#171a24; color:#e7e9f2; box-shadow:0 12px 28px rgba(4,5,9,.6); }
+.focus-menu button { display:flex; align-items:center; gap:12px; width:100%; padding:11px 12px; border:0; border-radius:10px; background:#1e2230; text-align:left; }
+.focus-menu button[aria-checked="true"] { color:#8fb6ff; background:#1c2336; }
+.focus-menu button.unavailable { opacity:.6; }
+.focus-menu button > span { display:grid; flex:1; gap:3px; min-width:0; }
+.focus-menu strong { font-weight:600; }
+.focus-menu em { margin-left:6px; color:#8fb8ff; font-size:.6rem; font-style:normal; text-transform:uppercase; letter-spacing:.05em; }
+.focus-menu small { color:#98a0b4; font-size:.8rem; overflow-wrap:anywhere; }
+.focus-menu svg { width:19px; height:19px; flex:0 0 auto; fill:none; stroke:currentColor; stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; }
 .terminal-body { position:relative; min-height:0; overflow:hidden; }
 /* tmux sizes a window to its widest client, so the phone's emulator is a
    desktop-width screen (see terminal/wideOutput.ts). Terminal view pans across
@@ -438,7 +469,15 @@ body.terminal-open { min-height:0; overflow:hidden; }
    in the UI face; an answer keeps its line breaks and wraps at the phone's
    edge. An answer is a bubble on the left, the mirror of the prompt's; tool
    output and raw screen rows (`.agent` without `.answer`) stay flat. */
-.readable-turn.agent.answer { width:auto; max-width:92%; padding:8px 12px; border-radius:16px 16px 16px 4px; background:#1d2030; color:#e3e6f2; }
+.readable-turn.agent.answer { width:auto; max-width:min(92%,calc(100% - 30px)); padding:8px 12px; border-radius:16px 16px 16px 4px; background:#1d2030; color:#e3e6f2; }
+/* Each message's copy button sits beside its bubble on the free side, level
+   with its last line, so it costs the chat no height. */
+.readable-turn.user,.readable-turn.agent.answer { position:relative; }
+.turn-copy { position:absolute; bottom:0; display:grid; place-items:center; width:26px; height:26px; padding:0; border:0; border-radius:8px; background:transparent; color:#6f768b; }
+.turn-copy.copied { color:#8fb6ff; }
+.turn-copy svg { width:15px; height:15px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+.readable-turn.user > .turn-copy { right:100%; margin-right:3px; }
+.readable-turn.agent.answer > .turn-copy { left:100%; margin-left:3px; }
 .readable-turn.agent.answer .readable-line { padding-left:0; text-indent:0; }
 .readable-lines.transcript { font:400 .9rem/1.5 Inter,ui-sans-serif,system-ui,sans-serif; }
 /* The stored session holds one bubble per message the agent wrote, so the
@@ -496,15 +535,12 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .transcript-screen small { color:#8fb8ff; font-size:.62rem; text-transform:uppercase; letter-spacing:.05em; }
 /* Under the stored session while the live screen shows the agent mid-turn. */
 .transcript-working { display:flex; align-items:center; gap:8px; padding:6px 10px; color:#9da3b6; font:500 .78rem/1.4 Inter,ui-sans-serif,system-ui,sans-serif; }
-.transcript-working small { color:#747b90; font-size:.62rem; text-transform:uppercase; letter-spacing:.05em; }
 .transcript-working-dots { display:inline-flex; gap:3px; }
 .transcript-working-dots i { width:5px; height:5px; border-radius:50%; background:#8fb8ff; animation:transcript-working 1.2s ease-in-out infinite; }
 .transcript-working-dots i:nth-child(2) { animation-delay:.2s; }
 .transcript-working-dots i:nth-child(3) { animation-delay:.4s; }
 @keyframes transcript-working { 0%, 80%, 100% { opacity:.25; } 40% { opacity:1; } }
 @media (prefers-reduced-motion: reduce) { .transcript-working-dots i { animation:none; opacity:.7; } }
-.readable-tools button[aria-pressed="true"] { border-color:#6c5ce7; color:#dcd6ff; }
-.readable-tools button.unavailable { opacity:.55; }
 .readable-notice { margin-bottom:10px; padding:8px 10px; border-left:3px solid #747b90; border-radius:8px; background:#14161e; color:#9298aa; font:400 .78rem/1.45 Inter,ui-sans-serif,system-ui,sans-serif; }
 .readable-earlier { display:block; width:100%; margin-bottom:10px; padding:9px 10px; border:1px solid #34384a; border-radius:9px; background:#151823; color:#9da3b6; font:500 .78rem/1.4 Inter,ui-sans-serif,system-ui,sans-serif; text-align:center; }
 .readable-earlier:active { background:#1c2030; color:#c8cdda; }
@@ -514,7 +550,6 @@ body.terminal-open { min-height:0; overflow:hidden; }
    looking at, and the stream reserves room below it so nothing is covered. */
 .readable-tools { position:absolute; right:10px; bottom:12px; display:flex; gap:6px; }
 .readable-tools button { padding:5px 10px; border:1px solid #34384a; border-radius:9px; background:rgba(16,19,27,.86); color:#9da3b6; font-size:.72rem; backdrop-filter:blur(6px); }
-.readable-tools small { align-self:center; padding:3px 8px; border-radius:999px; background:rgba(16,19,27,.86); color:#8fb8ff; font-size:.6rem; text-transform:uppercase; letter-spacing:.05em; backdrop-filter:blur(6px); }
 /* The rows an agent draws under its input box (cwd, model, mode, context…),
    which Focus otherwise cuts away: swiped in from the left over the bottom of
    the reading view, above its tools. Inside `.terminal-body`, so it can never
@@ -653,6 +688,13 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .option-list button.current small { color:#7ea3dd; }
 .option-list svg { width:21px; height:21px; flex:0 0 auto; fill:none; stroke:currentColor; stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; }
 .sheet-pending { flex:0 0 auto; color:#c8cdda; font-size:.78rem; }
+/* The same list, inline in the reading view: the choice an agent is waiting on
+   (`QuestionList`). It carries the number the dialog printed beside each row,
+   so the list on the phone reads as the one on the screen — and a row the
+   session highlights is the one Enter would take, not an answer given. */
+.question-list button:disabled { opacity:.6; }
+.question-list button > .question-number { flex:0 0 auto; display:grid; place-items:center; width:22px; height:22px; border-radius:7px; background:#2a3044; color:#9da3b6; font:600 .76rem/1 Inter,ui-sans-serif,system-ui,sans-serif; }
+.question-list button.current > .question-number { background:#2b3550; color:#8fb6ff; }
 /* Launch curtain — the desktop app's `.startup-splash` ported (see base.css):
    the Eldrun mark inside two counter-rotating orbit rings, over the brand name,
    the state, and a sweeping progress hairline. The colours are literals rather
@@ -689,25 +731,21 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .inbox-upload strong { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:650; }
 .inbox-upload span { flex:1 1 auto; min-width:0; overflow-wrap:anywhere; }
 .inbox-upload button { flex:0 0 auto; padding:4px 9px; border:0; border-radius:7px; background:rgba(255,255,255,.09); color:inherit; font-size:.8rem; }
-/* The pictures the agent left in the project's outbox: a thumbnail strip
-   above the composer, one tap to a full-screen view. */
-.outbox-strip { margin:6px 7px 0; padding:8px 10px 9px; border-radius:9px; background:#1b2333; color:#d8e2f5; font-size:.78rem; }
-.outbox-strip-head { display:flex; align-items:center; gap:8px; min-width:0; }
-.outbox-strip-head strong { flex:0 0 auto; font-weight:650; }
-.outbox-strip-head strong small { margin-left:6px; color:#8fb8ff; font-size:.62rem; text-transform:uppercase; }
-.outbox-strip-head span { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#95a6c8; }
-.outbox-strip-head button { flex:0 0 auto; padding:4px 9px; border:0; border-radius:7px; background:rgba(255,255,255,.09); color:inherit; font-size:.8rem; }
-.outbox-thumbs { display:flex; gap:8px; margin-top:8px; overflow-x:auto; overscroll-behavior-x:contain; -webkit-overflow-scrolling:touch; scroll-snap-type:x proximity; }
-.outbox-thumb { flex:0 0 auto; display:grid; gap:3px; width:96px; padding:0; border:0; background:transparent; color:#95a6c8; font-size:.68rem; text-align:left; scroll-snap-align:start; }
-.outbox-thumb img { display:block; width:96px; height:72px; object-fit:cover; border:1px solid #34384a; border-radius:7px; background:#0f131c; }
-.outbox-thumb span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* What the agent sent this tab, as a sheet of its own: the button beside the
+   tab name opens it, in both views — the files never sit in the chat. */
+.terminal-gallery { flex:0 0 auto; display:flex; align-items:center; gap:4px; padding:4px 8px; border:1px solid #34384a; border-radius:999px; background:#1b2333; color:#d8e2f5; font-size:.82rem; line-height:1; }
+.terminal-gallery small { color:#8fb8ff; font-size:.72rem; font-weight:650; }
+.outbox-gallery-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(112px,1fr)); gap:10px; padding:0 4px 4px; }
+.outbox-gallery-grid .outbox-thumb,.outbox-gallery-grid .outbox-file { width:100%; }
+.outbox-gallery-grid .outbox-thumb img { width:100%; height:84px; }
+.outbox-gallery-grid .outbox-thumb strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#d8e2f5; font-size:.72rem; font-weight:600; }
 .outbox-viewer { position:fixed; inset:0; z-index:13; display:grid; grid-template-rows:auto minmax(0,1fr); background:rgba(4,5,9,.94); color:#e6e9f2; }
 .outbox-viewer-head { display:flex; align-items:center; gap:8px; min-height:0; padding:calc(8px + env(safe-area-inset-top)) 10px 8px; }
 .outbox-viewer-head h2 { flex:1; margin:0; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.95rem; }
 .outbox-viewer-head small { flex:0 0 auto; color:#95a6c8; font-size:.72rem; }
 .outbox-viewer img { justify-self:center; align-self:center; max-width:100%; max-height:100%; object-fit:contain; }
 
-.outbox-entry { flex:0 0 auto; scroll-snap-align:start; }
+.outbox-entry { display:grid; gap:2px; min-width:0; }
 .outbox-file { display:grid; gap:5px; width:160px; padding:9px; border:1px solid #34384a; border-radius:7px; background:#0f131c; color:#d8e2f5; text-align:left; text-decoration:none; font-size:.75rem; }
 .outbox-file strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .outbox-file span { color:#95a6c8; }
@@ -716,16 +754,3 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .outbox-text-body { overflow:auto; padding:12px; }
 .outbox-text-body pre { margin:0 0 12px; white-space:pre-wrap; overflow-wrap:anywhere; font-size:.8rem; }
 .outbox-viewer:has(> [role=alert]) { grid-template-rows:auto auto minmax(0,1fr); }
-/* A file the agent sent, as a message of its own in the Focus chat
-   (`OutboxMessage`), on the agent's side: a picture at its own shape up to
-   the bubble width, any other file a card; name, age and size under it in
-   the UI face. The corner the user bubble squares off is mirrored here. */
-.readable-turn.outbox-message { justify-items:start; gap:4px; font:400 .9rem/1.45 Inter,ui-sans-serif,system-ui,sans-serif; }
-.outbox-message-image { display:block; max-width:88%; padding:0; border:1px solid #34384a; border-radius:16px 16px 16px 4px; overflow:hidden; background:#0f131c; }
-.outbox-message-image img { display:block; min-width:96px; min-height:72px; max-width:100%; max-height:60vh; object-fit:contain; }
-.outbox-message-file { display:flex; align-items:center; gap:10px; max-width:88%; min-width:0; padding:10px 12px; border:1px solid #34384a; border-radius:16px 16px 16px 4px; background:#1b2333; color:#d8e2f5; text-align:left; text-decoration:none; font:inherit; }
-.outbox-message-file span { flex:0 0 auto; color:#8fb8ff; font-weight:650; }
-.outbox-message-file strong { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
-.outbox-message-meta { display:flex; align-items:center; gap:6px; max-width:100%; color:#95a6c8; font-size:.72rem; }
-.outbox-message-meta span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.outbox-message-meta em { flex:0 0 auto; color:#8fb8ff; font-style:normal; font-size:.62rem; text-transform:uppercase; }

@@ -3,13 +3,15 @@ import { AGENT_SORTS, DEFAULT_AGENT_SORT, isAgentSort, sortAgentTabs, type Agent
 import { promptClock, promptLines, promptsFromTranscript } from "../agentPrompts";
 import { ApiError, api, closeTab, reorderTab, type AgentRow, type ProjectDetail, type TabPlace, type TabRow, type TabSchedules } from "../api";
 import { readChoice, writeChoice } from "../prefs";
-import { applyServerOrder, dropSlot, placeBeside, type RowBox } from "../tabReorder";
+import { useRowDrag } from "../rowDrag";
+import { applyServerOrder, placeBeside } from "../tabReorder";
 import { ColorSheet } from "./ColorSheet";
 import { PromptsSheet } from "./PromptsSheet";
 import { RenameSheet } from "./RenameSheet";
 import { ScheduleSheet } from "./ScheduleSheet";
 import { AgentStatusPill } from "../components/AgentStatusPill";
 import { tabColorCss } from "../tabColors";
+import { isUntested } from "../../../src/lib/untested";
 
 /** The orders this list offers, in the words this screen can use for them. The
  * cross-project Agents list calls `native` "Status", because there the arrival
@@ -21,13 +23,6 @@ const SORT_LABEL: Record<AgentSort, string> = {
   lastDone: "Last done",
   native: "Manual (tab order)",
 };
-
-/** How close to the top or bottom edge a dragged row must come before the
- * screen starts scrolling under it, and how far it scrolls per frame. Without
- * this a list longer than the screen could only be rearranged within the part
- * of it the finger could reach. */
-const EDGE_MARGIN = 84;
-const EDGE_STEP = 12;
 
 /** The line under an agent tab, in the words the desktop's Agents view uses:
  * how many prompts are scheduled and when the first one fires. The desktop
@@ -56,7 +51,7 @@ function scheduleLine(schedules: TabSchedules | undefined): string {
 function PromptLines({ tab }: { tab: TabRow }) {
   const lines = promptLines(tab);
   return <div className="tab-card-prompts">
-    <small className="tab-card-prompts-label">Last prompts <span className="untested">Untested</span></small>
+    <small className="tab-card-prompts-label">Last prompts</small>
     {lines.length === 0
       ? <p className="tab-card-prompt empty">{promptsFromTranscript(tab)
         ? "Nothing read from this session's transcript yet."
@@ -180,19 +175,6 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
       setClosingId(null);
     }
   };
-  /** The cards' rectangles, in the order they are listed — what a drop position
-   * is read off. Taken at the moment it is needed rather than kept, because the
-   * page scrolls under the finger while the drag is running. */
-  const rowRefs = useRef(new Map<string, HTMLDivElement>());
-  const rowBoxes = (): RowBox[] => tabs.flatMap((tab) => {
-    const rect = rowRefs.current.get(tab.id)?.getBoundingClientRect();
-    return rect ? [{ id: tab.id, top: rect.top, bottom: rect.bottom }] : [];
-  });
-  /** The row under the finger and the slot it would land in, for the moved
-   *  card's own styling and the line drawn on the card it is being dropped
-   *  beside. */
-  const [drag, setDrag] = useState<{ key: string; slot: { anchor: string; place: TabPlace } | null } | null>(null);
-
   /** Move one tab beside another and tell the desktop, which owns the layout
    *  this order is. The list is rearranged first — a drop that waits for a
    *  round trip before it moves anything reads as a dropped gesture — and then
@@ -216,57 +198,12 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     }
   };
 
-  /** Drag one card by its grip. Pointer-driven and captured to the grip, so the
-   *  gesture cannot be stolen by the page's own scrolling (the grip also sets
-   *  `touch-action:none`), and the page scrolls itself when the finger reaches
-   *  either edge — a list of ten tabs is taller than the phone. */
-  const startDrag = (event: React.PointerEvent<HTMLButtonElement>, key: string) => {
-    if (!canReorder || (event.pointerType === "mouse" && event.button !== 0)) return;
-    event.preventDefault();
-    const handle = event.currentTarget;
-    handle.setPointerCapture(event.pointerId);
-    let pointerY = event.clientY;
-    let slot = dropSlot(rowBoxes(), key, pointerY);
-    let frame = 0;
-    const track = () => { slot = dropSlot(rowBoxes(), key, pointerY); setDrag({ key, slot }); };
-    const edgeScroll = () => {
-      frame = 0;
-      const dy = pointerY < EDGE_MARGIN ? -EDGE_STEP : pointerY > window.innerHeight - EDGE_MARGIN ? EDGE_STEP : 0;
-      if (!dy) return;
-      window.scrollBy(0, dy);
-      track();
-      frame = requestAnimationFrame(edgeScroll);
-    };
-    const onMove = (move: PointerEvent) => {
-      pointerY = move.clientY;
-      track();
-      if (!frame) edgeScroll();
-    };
-    const finish = (commit: boolean) => {
-      handle.removeEventListener("pointermove", onMove);
-      handle.removeEventListener("pointerup", onUp);
-      handle.removeEventListener("pointercancel", onCancel);
-      if (frame) cancelAnimationFrame(frame);
-      setDrag(null);
-      if (commit && slot) void commitMove(key, slot.anchor, slot.place);
-    };
-    const onUp = () => finish(true);
-    const onCancel = () => finish(false);
-    handle.addEventListener("pointermove", onMove);
-    handle.addEventListener("pointerup", onUp);
-    handle.addEventListener("pointercancel", onCancel);
-    setDrag({ key, slot });
-  };
-
-  /** The same move, one step at a time, from the grip's arrow keys — a drag is
-   *  not reachable by a keyboard or a screen reader, and this list is also read
-   *  on a tablet with one attached. */
-  const nudge = (key: string, delta: -1 | 1) => {
-    const index = tabs.findIndex((row) => row.id === key);
-    const target = tabs[index + delta];
-    if (index < 0 || !target) return;
-    void commitMove(key, target.id, delta < 0 ? "before" : "after");
-  };
+  /** The gesture around that move — the captured pointer, the edge scrolling and
+   *  the arrow keys — which the home screen's project cards wear too
+   *  (`rowDrag.ts`). Under the computed orders the grips are not drawn at all;
+   *  `canReorder` also makes them inert, so a stale one cannot move a row that
+   *  the next agent's turn would spring back. */
+  const drag = useRowDrag(tabs.map((row) => row.id), (key, anchorId, place) => void commitMove(key, anchorId, place), canReorder);
 
   const activate = async () => {
     setActivating(true); setError("");
@@ -276,27 +213,34 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     } catch (reason) { setError(String(reason)); void load(); } finally { setActivating(false); }
   };
   return <main className="screen">
-    <header><button className="back" onClick={back}>‹</button><h1>{detail?.project.label ?? "Project"}</h1></header>
+    {/* One line, read the way an agent tab's header reads: the chevron out, the
+        name in the middle with the room a long one needs, and this list's own
+        control on the right. The order was a row of its own above the cards, and
+        a phone screen has about five of those to spend on tab cards.
+
+        The same three orders the desktop Agents view offers, remembered per
+        phone. "Manual" is this screen's name for the arrival order, because here
+        that order is the desktop's own tab order — the one a drag writes into. */}
+    <header>
+      <button className="back" onClick={back}>‹</button>
+      <div className="terminal-title"><h1>{detail?.project.label ?? "Project"}</h1></div>
+      {tabs.length > 1 && <label className="activity-sort in-header">
+        <span>Sort</span>
+        <select aria-label="Sort tabs" value={sort} onChange={(event) => { if (isAgentSort(event.target.value)) chooseSort(event.target.value); }}>
+          {AGENT_SORTS.map((value) => <option key={value} value={value}>{SORT_LABEL[value]}</option>)}
+        </select>
+      </label>}
+    </header>
     {/* Only once the host has answered: `!detail?.desktop_available` was also
         true while the first load was in flight, so every project opened on a
         "Desktop unavailable" notice that vanished a moment later. */}
     {detail && !detail.desktop_available && <p className="notice">Desktop unavailable — existing sessions can still be opened, but activating a project and creating tabs require Eldrun.</p>}
     {error && <p className="error">{error}</p>}
-    {/* The same three orders the desktop Agents view offers, remembered per
-        phone. "Manual" is this screen's name for the arrival order, because
-        here that order is the desktop's own tab order — the one a drag writes
-        into. */}
-    {tabs.length > 1 && <label className="activity-sort">
-      <span>Sort</span>
-      <select aria-label="Sort tabs" value={sort} onChange={(event) => { if (isAgentSort(event.target.value)) chooseSort(event.target.value); }}>
-        {AGENT_SORTS.map((value) => <option key={value} value={value}>{SORT_LABEL[value]}</option>)}
-      </select>
-    </label>}
-    {canReorder && <p className="reorder-hint">Drag <span aria-hidden="true">⠿</span> to arrange — this is the desktop's own tab order, so the Eldrun window follows. <span className="untested">Untested</span></p>}
+    {canReorder && <p className="reorder-hint">Drag <span aria-hidden="true">⠿</span> to arrange — this is the desktop's own tab order, so the Eldrun window follows. {isUntested("mobile.project.reorder") && <span className="untested">Untested</span>}</p>}
     <section className="cards">{tabs.map((tab) => <div
-      className={`tab-card${tabColorCss(tab.color) ? " has-tab-color" : ""}${drag?.key === tab.id ? " dragging" : ""}${drag?.slot?.anchor === tab.id ? ` drop-${drag.slot.place}` : ""}`}
+      className={`tab-card${tabColorCss(tab.color) ? " has-tab-color" : ""}${drag.rowClass(tab.id)}`}
       key={tab.id}
-      ref={(node) => { if (node) rowRefs.current.set(tab.id, node); else rowRefs.current.delete(tab.id); }}
+      ref={drag.rowRef(tab.id)}
       // The desktop marks a coloured tab with its bottom rule; a phone card has
       // no such edge to spend, so the colour becomes the card's left border —
       // the same "which of these five is which" job, in the shape this surface
@@ -334,12 +278,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
         className="tab-card-grip"
         aria-label={`Move ${tab.label}`}
         title="Drag to move this tab, or use the arrow keys"
-        onPointerDown={(event) => startDrag(event, tab.id)}
-        onKeyDown={(event) => {
-          if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
-          event.preventDefault();
-          nudge(tab.id, event.key === "ArrowUp" ? -1 : 1);
-        }}
+        {...drag.gripProps(tab.id)}
       ><span aria-hidden="true">⠿</span></button>}
       </div>
       {tab.kind === "agent" && <PromptLines tab={tab} />}

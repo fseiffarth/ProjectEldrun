@@ -183,3 +183,52 @@ describe("mobile todo hide-done persistence", () => {
     expect((screen.getByLabelText("Hide done") as HTMLInputElement).checked).toBe(false);
   });
 });
+
+describe("mobile todo column folding", () => {
+  it("folds a column away, says what it is holding, and remembers it", async () => {
+    vi.mocked(api).mockResolvedValue(boardWithOneDoneCard());
+
+    render(createElement(Todo));
+    await waitFor(() => expect(screen.getByText("Finished")).toBeTruthy());
+    const fold = screen.getByRole("button", { name: "Done" });
+    expect(fold.getAttribute("aria-expanded")).toBe("true");
+
+    fireEvent.click(fold);
+    expect(screen.queryByText("Finished")).toBeNull();
+    // The head still counts the card, and the fold says the count is behind it.
+    expect(screen.getByRole("heading", { name: "Done 1" })).toBeTruthy();
+    expect(screen.getByText("1 card folded away")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Done" }).getAttribute("aria-expanded")).toBe("false");
+    // The other column is untouched: folding is per column, not a board mode.
+    expect(screen.getByRole("button", { name: "Today" }).getAttribute("aria-expanded")).toBe("true");
+    cleanup();
+
+    render(createElement(Todo));
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Done 1" })).toBeTruthy());
+    expect(screen.queryByText("Finished")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(screen.getByText("Finished")).toBeTruthy();
+  });
+
+  it("keeps a folded column quiet when its cards are filtered out", async () => {
+    vi.mocked(api).mockResolvedValue(boardWithOneDoneCard());
+    localStorage.setItem("eldrun.mobile.todoCollapsedColumns", JSON.stringify(["done"]));
+    localStorage.setItem("eldrun.mobile.todoHideDone", "1");
+
+    render(createElement(Todo));
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Done 1" })).toBeTruthy());
+    expect(screen.queryByText("1 card folded away")).toBeNull();
+  });
+
+  it("drops a fold set on a column the board no longer has", async () => {
+    vi.mocked(api).mockResolvedValue(boardWithOneDoneCard());
+    localStorage.setItem("eldrun.mobile.todoCollapsedColumns", JSON.stringify(["done", "gone"]));
+
+    render(createElement(Todo));
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Done 1" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Today" }));
+
+    expect(JSON.parse(localStorage.getItem("eldrun.mobile.todoCollapsedColumns") ?? "[]")).toEqual(["done", "today"]);
+  });
+});

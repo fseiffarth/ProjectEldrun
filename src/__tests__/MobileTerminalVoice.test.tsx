@@ -70,6 +70,10 @@ function finalResult(transcript: string): MobileSpeechRecognitionResultEvent {
 
 describe("Eldrun Mobile terminal dictation", () => {
   beforeEach(() => {
+    // The composer's draft is kept on the phone now (`drafts.ts`), and the
+    // unmount that flushes it runs in Testing Library's own cleanup — after this
+    // file's `afterEach` — so the slate is wiped here rather than there.
+    localStorage.clear();
     FakeRecognition.instances = [];
     FakeWebSocket.instances = [];
     Object.defineProperty(window, "webkitSpeechRecognition", { configurable: true, value: FakeRecognition });

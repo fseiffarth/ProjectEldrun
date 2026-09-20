@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, api, normalizeTodoBoard, type TodoBoard, type TodoCard, type TodoColumn, type TodoTaskInput } from "../api";
-import { readFlag, writeFlag } from "../prefs";
+import { readFlag, readOrder, writeFlag, writeOrder } from "../prefs";
 import { COLUMN_FOLLOWS_DATE, intakeColumn, localDate, moveAccepted } from "../todoDates";
 
 type Editing = TodoCard | "new" | null;
@@ -87,6 +87,12 @@ export function Todo({ card }: { card?: string }) {
   // between the columns that are actually being worked.
   const [hideArchived, setHideArchived] = useState(() => readFlag("todoHideArchived", true));
   const toggleHideArchived = (value: boolean) => { setHideArchived(value); writeFlag("todoHideArchived", value); };
+  // Which columns are folded shut. A phone reads the board as one long column of
+  // columns, so a board of six is mostly scrolling past the four that are not
+  // today's problem. The fold is remembered for the same reason "hide done" is —
+  // the tab is re-mounted by every visit — and unlike the filters it hides
+  // nothing the head does not still count.
+  const [folded, setFolded] = useState<string[]>(() => readOrder("todoCollapsedColumns"));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const load = useCallback(() => {
@@ -117,6 +123,15 @@ export function Todo({ card }: { card?: string }) {
     } catch (reason) { setError(boardError(reason)); return false; } finally { setBusy(false); }
   };
   const columns = [...(board?.columns ?? [])].sort((a, b) => a.position - b.position || a.id.localeCompare(b.id));
+  // Ids of columns the board no longer has come off as we write: a fold would
+  // otherwise outlive the column it was set on, and the stored list is capped.
+  const fold = (id: string, value: boolean) => {
+    const known = new Set(columns.map((entry) => entry.id));
+    const next = [...new Set(value ? [...folded, id] : folded.filter((entry) => entry !== id))]
+      .filter((entry) => known.has(entry));
+    setFolded(next);
+    writeOrder("todoCollapsedColumns", next);
+  };
   const move = (task: TodoCard, column: string, index?: number) => void mutate({ type: "move", task_id: task.id, column, index });
   // The ✓ is completion, not placement. It used to be sent as a *move* into the
   // Done column (and back into the intake one), which the desktop board refuses
@@ -154,6 +169,9 @@ export function Todo({ card }: { card?: string }) {
         but costs nothing at the top. */}
     <input className="todo-mobile-search" type="search" value={search} placeholder="Search cards" onChange={(event) => setSearch(event.target.value)} />
     <div className="todo-mobile-filters"><select value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)}><option value="">Any project</option><option value="none">No project</option>{board?.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select><select value={tagFilter} onChange={(event) => setTagFilter(event.target.value)}><option value="">Any tag</option>{tags.map((tag) => <option key={tag} value={tag}>#{tag}</option>)}</select><label className="todo-inline-check"><input type="checkbox" checked={hideDone} onChange={(event) => toggleHideDone(event.target.checked)} /> Hide done</label><label className="todo-inline-check"><input type="checkbox" checked={hideArchived} onChange={(event) => toggleHideArchived(event.target.checked)} /> Hide archived</label></div>
+    {/* The fold is a gesture with no affordance of its own beyond the caret, so
+        it is said once, in the sibling of the two drag hints. */}
+    <p className="reorder-hint">Tap a column’s name to fold it away — the fold is kept on this phone, and the count beside the name still tells you what is behind it. <span className="untested">Untested</span></p>
     {/* Adding a column is a structural act, and it used to sit in a bar of its
         own between the filters and the board — a full row of top chrome above
         the first thing anyone came here to read. At the foot of the column list
@@ -162,6 +180,7 @@ export function Todo({ card }: { card?: string }) {
       key={column.id} column={column} index={index} columns={columns}
       tasks={shown.filter((task) => task.column === column.id).sort((a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity) || a.title.localeCompare(b.title))}
       cardCount={matching.filter((task) => task.column === column.id).length} busy={busy}
+      folded={folded.includes(column.id)} fold={(value) => fold(column.id, value)}
       move={move} toggle={toggle} edit={setEditing} columnAction={columnAction}
     />)}<button className="todo-add-column" disabled={busy} onClick={() => {
       const name = window.prompt("Column name");
@@ -186,9 +205,9 @@ export function Todo({ card }: { card?: string }) {
   </main>;
 }
 
-function TodoColumnView({ column, index, columns, tasks, cardCount, busy, move, toggle, edit, columnAction }: {
+function TodoColumnView({ column, index, columns, tasks, cardCount, busy, folded, fold, move, toggle, edit, columnAction }: {
   column: TodoColumn; index: number; columns: TodoColumn[]; tasks: TodoCard[]; busy: boolean;
-  cardCount: number;
+  cardCount: number; folded: boolean; fold: (value: boolean) => void;
   move: (task: TodoCard, column: string, index?: number) => void; toggle: (task: TodoCard) => void;
   edit: (task: TodoCard) => void; columnAction: (body: unknown) => void;
 }) {
@@ -202,17 +221,24 @@ function TodoColumnView({ column, index, columns, tasks, cardCount, busy, move, 
     }
   };
   const accent = column.color || "#7c6cff";
-  return <section className="todo-mobile-column" style={{ borderTopColor: accent }}>
-    <div className="todo-mobile-column-head"><h2>{column.name} <small className="todo-column-count">{cardCount}</small></h2><div>
+  // The name is the fold's target rather than the caret beside it: a thumb aims
+  // at a word, not at a chevron, and the controls to its right stay reachable on
+  // a folded column — reordering and renaming are most of what is done to one.
+  return <section className={folded ? "todo-mobile-column folded" : "todo-mobile-column"} style={{ borderTopColor: accent }}>
+    <div className="todo-mobile-column-head"><h2><button type="button" className="todo-column-fold" aria-expanded={!folded} onClick={() => fold(!folded)}><span className="todo-fold-caret" aria-hidden="true">{folded ? "▸" : "▾"}</span>{column.name}</button> <small className="todo-column-count">{cardCount}</small></h2><div>
       <button onClick={rename} disabled={busy} aria-label={`Rename ${column.name}`}>✎</button>
       <button onClick={() => columnAction({ type: "column_move", column_id: column.id, delta: -1 })} disabled={busy || index === 0} aria-label={`Move ${column.name} left`}>‹</button>
       <button onClick={() => columnAction({ type: "column_move", column_id: column.id, delta: 1 })} disabled={busy || index === columns.length - 1} aria-label={`Move ${column.name} right`}>›</button>
       <button className="danger" onClick={remove} disabled={busy || columns.length <= 1} aria-label={`Delete ${column.name}`}>×</button>
     </div></div>
+    {/* A folded column says how many cards are behind it, so a search whose hits
+        are all in one still reads as a search that found something. The head's
+        count is every matching card; this one is what the fold is holding. */}
+    {folded && tasks.length > 0 && <p className="todo-column-empty">{tasks.length} card{tasks.length === 1 ? "" : "s"} folded away</p>}
     {/* An empty column says which kind of empty it is: a column with cards the
         filters are holding back reads as a broken board otherwise. */}
-    {tasks.length === 0 && <p className="todo-column-empty">{cardCount > 0 ? "Hidden by the filters above" : "No cards"}</p>}
-    {tasks.map((task, index) => <article className={task.done ? "todo-mobile-card done" : "todo-mobile-card"} key={task.id}>
+    {!folded && tasks.length === 0 && <p className="todo-column-empty">{cardCount > 0 ? "Hidden by the filters above" : "No cards"}</p>}
+    {!folded && tasks.map((task, index) => <article className={task.done ? "todo-mobile-card done" : "todo-mobile-card"} key={task.id}>
       <div className="todo-mobile-card-title"><button className="todo-check" onClick={() => toggle(task)} disabled={busy} aria-label={task.done ? `Mark ${task.title} not done` : `Mark ${task.title} done`}>{task.done ? "✓" : ""}</button><strong>{task.title}</strong></div>
       {task.notes.trim() && <p className="todo-mobile-notes">{task.notes.trim()}</p>}
       <TodoMeta task={task} />

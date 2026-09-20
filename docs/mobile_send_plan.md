@@ -19,16 +19,16 @@ then runs one command:
 eldrun-send plots/run12-loss.png
 ```
 
-The file lands in the project's `.eldrun/outbox/`. The Focus view polls that
+The file lands in the project's `.eldrun/outbox/`. The screen polls that
 folder every 8 s while the page is visible (`mobile-web/src/screens/
-Terminal.tsx`, `OUTBOX_POLL`), so within about eight seconds the picture is
-posted into the Focus chat as a message on the agent's side — placed after the
-stored-session turn written before it (`terminal/outboxTimeline.ts`), or at the
-end of the chat when Focus reads the screen, which carries no times — and one
-tap opens it full screen. The Terminal view shows the same files as a **From
-the agent** strip above the composer. The same works for a log (`cargo test 2>&1 | eldrun-send -n
-tests.log`), a PDF, a CSV: the phone shows what a browser can show and offers
-the rest as a download or a share.
+Terminal.tsx`, `OUTBOX_POLL`), so within about eight seconds a button appears
+beside the tab name, counting what the agent sent; it opens the **gallery**
+(`components/OutboxGallery.tsx`), a grid of thumbnails and file cards, newest
+first, and one tap opens a file full screen. The files stay out of the chat —
+a picture pushed between the turns buries the answer that mentions it — and
+the button is the same in both views. The same works for a log (`cargo test
+2>&1 | eldrun-send -n tests.log`), a PDF, a CSV: the phone shows what a browser
+can show and offers the rest as a download or a share.
 
 **The one condition** is that the agent knows the command exists. It learns it
 from the project's `AGENTS.md` (the scaffold paragraph, imported by `CLAUDE.md`
@@ -46,7 +46,7 @@ Built (todo #31x, 2026-09-05, never seen on a phone):
 `services::mobile_control::outbox` lists `<project>/.eldrun/outbox/` and
 serves one file by leaf name (`GET /api/v1/tabs/{id}/outbox[/{name}]`,
 `host.rs`), read off disk by the sidecar itself so it answers with the desktop
-closed; the PWA shows a thumbnail strip and a full-screen viewer; the scaffold
+closed; the PWA shows a thumbnail gallery and a full-screen viewer; the scaffold
 `AGENTS.md` tells agents to copy pictures into the folder.
 
 What stops the round trip in §1 from being reliable:
@@ -290,17 +290,18 @@ Live QA for the user (a restart first, then the phone on the tailnet):
 
 1. **The §1 round trip.** From the phone's Focus composer on a fenced Claude
    tab: "render a small matplotlib plot and show me the image" → the tab
-   runs `eldrun-send …png` on its own → within ~8 s the picture appears in
-   the chat, under the answer that sent it → tap → full screen. Switch to
-   Terminal → the same file is in the **From the agent** strip.
+   runs `eldrun-send …png` on its own → within ~8 s the gallery button
+   beside the tab name counts it, and nothing changes in the chat → tap the
+   button → the picture in the grid → tap → full screen → ✕ lands back on the
+   grid. Switch to Terminal → the same button, the same grid.
 2. `cargo test 2>&1 | eldrun-send -n tests.log` → a text chip → the sheet
    shows the log.
 3. A PDF from the project → chip → opens in a new tab on the phone.
 4. `cp` a PNG into `.eldrun/outbox/` by hand → still a thumbnail (unchanged).
 5. In a container tab of a containerized project: step 2 again.
 6. A `.zip` → chip → Save downloads it; Share… offers other apps.
-7. `eldrun-send --clear` → the chat's file messages and the strip empty. With
-   Eldrun closed → both still list what is there.
+7. `eldrun-send --clear` → the gallery button disappears. With Eldrun closed
+   → the gallery still lists what is there.
 8. A `.txt` renamed to `.png`, and an `.svg` → both listed as **text**, never
    rendered.
 

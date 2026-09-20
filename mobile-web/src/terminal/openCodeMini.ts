@@ -345,7 +345,7 @@ export function readOpenCodePicker(lines: readonly { text: string }[]): SelectPr
     });
   }
   if (options.length === 0) return null;
-  return { options, current: -1, title: PICKER_TITLE.exec(lines[title].text)![1].trim() };
+  return { options, current: -1, start: title, title: PICKER_TITLE.exec(lines[title].text)![1].trim() };
 }
 
 /** ctrl+p — the only way into OpenCode mini's commands. */
