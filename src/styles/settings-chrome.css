@@ -1227,7 +1227,11 @@ label.settings-toggle-card-row {
   padding-left: 20px;
 }
 
-.mobile-settings-guide code {
+/* The command block is also used outside the settings fold (MobileSetupGuide's
+   step 3), so it carries the mono look itself instead of inheriting it from
+   `.mobile-settings-guide code`. */
+.mobile-settings-guide code,
+.mobile-settings-guide-command {
   color: var(--text-primary);
   font-family: var(--font-mono, monospace);
 }

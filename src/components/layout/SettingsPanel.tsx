@@ -64,6 +64,7 @@ import type { StoredVpnConfig } from "../../types";
 import { MobileSettings } from "../mobile/MobileSettings";
 import { UpdatesPanel } from "./UpdatesPanel";
 import {
+  SETTINGS_ANCHORS,
   SettingRow,
   SettingsCard,
   SettingsAdvanced,
@@ -836,9 +837,14 @@ const SETTINGS_NAV: Exclude<SettingsPanelKind, "main" | "ollama">[] = [
 export function SettingsDialog({
   onClose,
   initialPanel = "main",
+  initialAnchor,
 }: {
   onClose: () => void;
   initialPanel?: SettingsPanelKind;
+  /** A `SETTINGS_ANCHORS` id to open scrolled to, for a deep link from another
+   *  surface (the Mobile setup guide's "Open Mobile settings"). The main panel
+   *  is a very long scroll; landing at its top is landing nowhere. */
+  initialAnchor?: string;
 }) {
   const { settings, setTheme, setLanguage, updateSettings } = useSettingsStore();
   const [panel, setPanel] = useState<SettingsPanelKind>(initialPanel);
@@ -872,6 +878,14 @@ export function SettingsDialog({
     }
     return energyMode === "off" ? t("settings.energyOff") : t("settings.energyInactive");
   })();
+
+  // Deep link: jump the scroll to the requested section once it is on screen.
+  // Runs on the panel too, not just on mount, so a ‹ Back out of a sub-panel
+  // returns to the section the link asked for rather than to the top.
+  useEffect(() => {
+    if (!initialAnchor || panel !== "main") return;
+    document.getElementById(initialAnchor)?.scrollIntoView({ block: "start" });
+  }, [initialAnchor, panel]);
 
   if (showCustomizer) {
     return (
@@ -1003,7 +1017,7 @@ export function SettingsDialog({
             {/* Eldrun Mobile runs its host sidecar on every desktop (systemd
                 user unit, launchd agent, or the Windows Run key), so the
                 section is not platform-gated. */}
-            <SettingsSection title={t("settings.mobile")} />
+            <SettingsSection title={t("settings.mobile")} anchor={SETTINGS_ANCHORS.mobile} />
             <MobileSettings />
             <ToggleCard
               label={t("settings.mobileIndicator")}

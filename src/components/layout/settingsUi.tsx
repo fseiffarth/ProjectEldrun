@@ -54,21 +54,32 @@ export function SettingsHeader({
   );
 }
 
+/** Scroll targets inside the main settings panel. `eldrun:open-settings` may
+ *  carry one as `{ panel, anchor }`, which is how a deep link from elsewhere in
+ *  the app lands on its section instead of at the top of a very long scroll. */
+export const SETTINGS_ANCHORS = {
+  mobile: "settings-anchor-mobile",
+} as const;
+
 /** A section header, optionally introduced by a line of copy. Renders a
  *  fragment: the panel's scroll is a flex column and owns the spacing, so a
- *  wrapper element here would only add a second gap to reason about. */
+ *  wrapper element here would only add a second gap to reason about. The
+ *  header carries the `anchor` id for the same reason: an extra wrapper purely
+ *  to be scrolled to would change that spacing. */
 export function SettingsSection({
   title,
   help,
+  anchor,
   children,
 }: {
   title: ReactNode;
   help?: ReactNode;
+  anchor?: string;
   children?: ReactNode;
 }) {
   return (
     <>
-      <div className="settings-section-title">{title}</div>
+      <div className="settings-section-title" id={anchor}>{title}</div>
       {help && <p className="settings-help">{help}</p>}
       {children}
     </>

@@ -72,6 +72,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   const scope = useTabsStore((s) => s.scope);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsPanel, setSettingsPanel] = useState<SettingsPanelKind>("main");
+  const [settingsAnchor, setSettingsAnchor] = useState<string | undefined>(undefined);
   // "clone" is the import dialog opened straight onto its GitHub/GitLab source —
   // the same dialog, so the source can still be switched back inside it.
   const [dialog, setDialog] = useState<"new" | "import" | "clone" | null>(null);
@@ -131,8 +132,16 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   // settings dialog on a specific panel via a window event.
   useEffect(() => {
     const onOpenSettings = (e: Event) => {
-      const panel = (e as CustomEvent).detail as SettingsPanelKind | undefined;
-      setSettingsPanel(panel ?? "main");
+      // Either a bare panel name, or `{ panel, anchor }` when the caller also
+      // wants the main panel scrolled to one of its sections (the Mobile setup
+      // guide's "Open Mobile settings").
+      const detail = (e as CustomEvent).detail as
+        | SettingsPanelKind
+        | { panel?: SettingsPanelKind; anchor?: string }
+        | undefined;
+      const named = typeof detail === "string" ? { panel: detail } : detail;
+      setSettingsPanel(named?.panel ?? "main");
+      setSettingsAnchor(named?.anchor);
       setShowSettings(true);
     };
     window.addEventListener("eldrun:open-settings", onOpenSettings);
@@ -483,7 +492,11 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   return (
     <>
       {showSettings && createPortal(
-        <SettingsDialog onClose={() => setShowSettings(false)} initialPanel={settingsPanel} />,
+        <SettingsDialog
+          onClose={() => setShowSettings(false)}
+          initialPanel={settingsPanel}
+          initialAnchor={settingsAnchor}
+        />,
         document.body,
       )}
 

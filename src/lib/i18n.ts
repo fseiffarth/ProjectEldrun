@@ -558,9 +558,29 @@ export const en = {
   "mobile.indUploading": "Uploading…",
   "mobile.indLock": "Lock down",
   "mobile.indLocking": "Locking…",
+  "mobile.indSetUpTitle": "Eldrun Mobile is not set up",
   "mobile.indUploadReady": "The current Eldrun Mobile version is ready. Refresh the app on your phone to install it.",
   "mobile.indUploadError": "Could not publish the Mobile version: {reason}",
   "mobile.indRevokeError": "Could not revoke paired devices",
+
+  // Eldrun Mobile — the setup instruction behind the header's phone icon while
+  // Mobile is off (mobile/MobileSetupGuide). Same ground as the fold in Mobile
+  // settings, written as the six things you do, in order.
+  "mobile.setupTitle": "Set up Eldrun Mobile",
+  "mobile.setupIntro": "Eldrun Mobile puts this computer's projects, terminals and agents on your phone. It travels over your own private Tailscale network: nothing is published to the internet, and the phone still has to be paired.",
+  "mobile.setupStep1Title": "Install Tailscale on this computer",
+  "mobile.setupStep1Body": "Install Tailscale here and sign in. It is what carries the phone's connection — Eldrun itself only ever listens on loopback.",
+  "mobile.setupStep2Title": "Install Tailscale on the phone",
+  "mobile.setupStep2Body": "Install the Tailscale app on the phone or tablet and sign in to the same tailnet as this computer.",
+  "mobile.setupStep3Title": "Publish Eldrun privately",
+  "mobile.setupStep3Body": "Point Tailscale Serve at Eldrun's loopback port. Use Serve, never Funnel: Funnel would make it public and Eldrun refuses to start. If Tailscale asks for approval or HTTPS setup, complete it in the browser it opens.",
+  "mobile.setupStep4Title": "Turn Eldrun Mobile on",
+  "mobile.setupStep4Body": "In Settings → Mobile press “Detect Tailscale Serve settings”, check the computer name, port and origin it fills in, then switch Eldrun Mobile on. Eldrun verifies the mapping before it starts the host.",
+  "mobile.setupStep5Title": "Choose what the phone may open",
+  "mobile.setupStep5Body": "Under “Project access” in the same settings, enable the projects and boxes the phone may open. Everything is off until you enable it.",
+  "mobile.setupStep6Title": "Pair the phone",
+  "mobile.setupStep6Body": "Press “Show install QR” and scan it with the phone, then create a pairing code and enter it there. A code is valid for five minutes.",
+  "mobile.setupOpenSettings": "Open Mobile settings",
 
   // Settings — usage stats.
   "settings.usageStats": "Usage stats",
