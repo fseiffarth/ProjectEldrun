@@ -220,6 +220,42 @@ elif [ -z "$served_entry" ] && [ -n "$mobile_dist" ] && [ "$started" != "0" ] &&
 $probe_note"
 fi
 
+# --- the sidecar's own copy of the backend ---------------------------------
+# The phone's HTTP API is not this window's process. `mobile_host_apply` copies
+# the running image to bin/<version>/eldrun-mobile-host and the service manager
+# runs that copy — and the directory is keyed by the version ALONE, so every
+# build between two pushes shares one, and the copy answering the phone is
+# whichever of them installed first. Nothing said so, in either direction: the
+# version strings matched, so Settings → Mobile did not offer the update either,
+# while a route added after that copy 404s with its code plainly in the window.
+# That is how the project screen's outbox shelf stayed invisible (2026-09-20) —
+# and why this seam is reported even in --mobile-only: it is not the expected
+# pile-up of unbuilt src-tauri edits, it is two installed artifacts disagreeing.
+sidecar_msg=""
+host_pid="$(pgrep -f -- '--mobile-host' | head -n 1 || true)"
+if [ -n "$host_pid" ] && [ -n "$app_pid" ]; then
+  host_exe="$(readlink -f "/proc/$host_pid/exe" 2>/dev/null || true)"
+  app_exe="$(readlink -f "/proc/$app_pid/exe" 2>/dev/null || true)"
+  if [ -n "$host_exe" ] && [ -r "$host_exe" ] && [ -n "$app_exe" ] && [ -r "$app_exe" ]; then
+    host_size="$(stat -c %s "$host_exe" 2>/dev/null || echo 0)"
+    app_size="$(stat -c %s "$app_exe" 2>/dev/null || echo 0)"
+    host_built="$(stat -c %Y "$host_exe" 2>/dev/null || echo 0)"
+    app_built="$(stat -c %Y "$app_exe" 2>/dev/null || echo 0)"
+    if [ "$host_size" != "0" ] && [ "$app_size" != "0" ] \
+       && { [ "$host_size" != "$app_size" ] || [ "$host_built" -lt "$app_built" ]; }; then
+      stale=1
+      sidecar_msg="THE PHONE'S API IS STALE — the sidecar answering the phone is an older copy of
+  the backend than the window itself, so a mobile feature whose backend half is
+  newer than that copy renders and then 404s.
+  window  : $app_exe ($(date -d "@$app_built" '+%F %T'), $app_size bytes)
+  sidecar : $host_exe ($(date -d "@$host_built" '+%F %T'), $host_size bytes)
+  Settings -> Mobile -> \"Update mobile host\" reinstalls it from this window and
+  restarts the sidecar alone — the window keeps its tabs, and the phone needs
+  only a pull-to-refresh afterwards."
+    fi
+  fi
+fi
+
 # --- the desktop frontend seam ---------------------------------------------
 # Only the hot-reload session gets `src/` for free: vite serves it and HMR pushes
 # every edit into the window. Every other shape — the frozen "Eldrun (dev)"
@@ -311,7 +347,7 @@ if [ "$stale" = "0" ]; then
 fi
 
 first=1
-for msg in "$backend_msg" "$mobile_msg" "$ahead_msg" "$desktop_msg"; do
+for msg in "$backend_msg" "$mobile_msg" "$sidecar_msg" "$ahead_msg" "$desktop_msg"; do
   [ -n "$msg" ] || continue
   [ "$first" = "1" ] || echo
   echo "$msg"
