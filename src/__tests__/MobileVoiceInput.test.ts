@@ -101,6 +101,44 @@ describe("Eldrun Mobile voice input", () => {
     expect(readDictation(event)).toEqual({ heard: ["Fix", "the", "login,", "and", "test"], interim: "and" });
   });
 
+  it("collapses a later utterance that is finalized again as it grows", () => {
+    const event = {
+      resultIndex: 3,
+      results: {
+        0: result("fix the login", true),
+        1: result("how are", true),
+        2: result("how are you", true),
+        3: result("How are you today", true),
+        4: result("how are you today and", false),
+        length: 5,
+      },
+    } as unknown as MobileSpeechRecognitionResultEvent;
+
+    expect(readDictation(event)).toEqual({
+      heard: ["fix", "the", "login", "How", "are", "you", "today"],
+      interim: "and",
+    });
+  });
+
+  it("takes a re-read utterance with a revised word as the same one", () => {
+    const event = {
+      resultIndex: 0,
+      results: {
+        0: result("fix a login page", true),
+        1: result("fix the login page now", true),
+        length: 2,
+      },
+    } as unknown as MobileSpeechRecognitionResultEvent;
+
+    expect(readDictation(event).heard).toEqual(["fix", "the", "login", "page", "now"]);
+  });
+
+  it("does not take a shorter, unrelated list for the old one because a word matches", () => {
+    const before = advanceDictation(DICTATION_START, ["the", "login", "page", "is", "broken"]).progress;
+    const step = advanceDictation(before, ["the", "tests"]);
+    expect(step.insert).toBe("the tests");
+  });
+
   it("inserts each heard word once, and none of them again after a send", () => {
     let step = advanceDictation(DICTATION_START, ["fix", "the"]);
     expect(step.insert).toBe("fix the");

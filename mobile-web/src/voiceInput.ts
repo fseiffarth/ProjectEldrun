@@ -141,44 +141,78 @@ function wordsOf(text: string): string[] {
   return clean ? clean.split(" ") : [];
 }
 
+/** How many of `a`'s words turn up in `b`, in order. */
+function wordsInOrder(a: string[], b: string[]): number {
+  let count = 0;
+  let from = 0;
+  for (const word of a) {
+    const at = b.findIndex((other, index) => index >= from && wordKey(other) === wordKey(word));
+    if (at < 0) continue;
+    count += 1;
+    from = at + 1;
+  }
+  return count;
+}
+
+/** Whether `next` is `prev` said again: extended, or re-read with a word or
+ * two revised. One word is too little to call a revision of. */
+function sameSpeech(prev: string[], next: string[]): boolean {
+  if (prev.length === 0) return false;
+  if (startsWithWords(next, prev)) return true;
+  return prev.length > 1 && wordsInOrder(prev, next) * 5 >= prev.length * 3;
+}
+
 /**
  * Everything the recognizer has said in this session, read off the WHOLE
  * result list and never from `resultIndex` alone. Chrome on Android hands back
- * results it already finalized with every later event, and may repeat the
- * words it finalized as the head of its next final result; appending each
- * final from `resultIndex` put an earlier dictated message back into the next.
+ * results it already finalized with every later event, and finalizes one
+ * utterance several times over as it grows ("how are", "how are you", each
+ * final). A final that repeats the whole list so far, or only the utterance
+ * before it, replaces what it repeats: comparing against the whole list alone
+ * caught the first utterance of a session and doubled every later one.
  */
 export function readDictation(
   event: MobileSpeechRecognitionResultEvent,
 ): { heard: string[]; interim: string } {
   let heard: string[] = [];
+  /** Where the last utterance starts in `heard`. */
+  let utterance = 0;
   let interim: string[] = [];
   for (let index = 0; index < event.results.length; index += 1) {
     const result = event.results[index];
     const words = wordsOf(result?.[0]?.transcript ?? "");
     if (words.length === 0) continue;
     if (!result.isFinal) interim = [...interim, ...words];
-    else heard = heard.length > 0 && startsWithWords(words, heard) ? words : [...heard, ...words];
+    else if (heard.length > 0 && startsWithWords(words, heard)) heard = words;
+    else if (sameSpeech(heard.slice(utterance), words)) heard = [...heard.slice(0, utterance), ...words];
+    else {
+      utterance = heard.length;
+      heard = [...heard, ...words];
+    }
   }
+  const last = heard.slice(utterance);
   if (interim.length > 0 && startsWithWords(interim, heard)) interim = interim.slice(heard.length);
+  else if (interim.length > 0 && startsWithWords(interim, last)) interim = interim.slice(last.length);
   return { heard, interim: interim.join(" ") };
 }
 
 /**
  * Folds a new reading into the progress: the words not yet in the composer
  * (`insert`, possibly empty) and the progress once they are. A reading that
- * shares its first words with the last one is the same speech, extended or
- * revised, so only the words past the inserted count are new — a revised word
- * already in the composer stays as it was put there, rather than the whole
- * sentence going in a second time. A reading with nothing in common at its
- * head is a new result list (Chrome on Android starts one after a pause), so
- * none of it is inserted yet.
+ * is the last one extended or revised is the same speech, so only the words
+ * past the inserted count are new — a revised word already in the composer
+ * stays as it was put there, rather than the whole sentence going in a second
+ * time. A reading that starts elsewhere, or came back shorter, and has little
+ * in common with the last is a new result list (Chrome on Android starts one
+ * after a pause), so none of it is inserted yet.
  */
 export function advanceDictation(
   progress: DictationProgress,
   heard: string[],
 ): { progress: DictationProgress; insert: string } {
-  const restarted = progress.heard.length > 0 && heard.length > 0 && sharedHead(heard, progress.heard) === 0;
+  const restarted = progress.heard.length > 0 && heard.length > 0
+    && (sharedHead(heard, progress.heard) === 0 || heard.length < progress.heard.length)
+    && wordsInOrder(progress.heard, heard) * 5 < progress.heard.length * 3;
   const inserted = restarted ? 0 : progress.inserted;
   return {
     insert: heard.slice(inserted).join(" "),
