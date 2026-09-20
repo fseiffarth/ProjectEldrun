@@ -242,9 +242,80 @@ describe("Eldrun Mobile OpenCode model picker", () => {
     expect(read?.options.map((option) => option.label))
       .toEqual(["OpenCode Zen", "Big Pickle", "Muse Spark 1.3 Free"]);
     expect(read?.options[1].description).toBe("Free");
-    // The highlight is drawn in colour alone, which is not read: no row is
+    // Mini draws its highlight in colour alone, which is not read: no row is
     // reported as the session's current one.
     expect(read?.current).toBe(-1);
+  });
+
+  it("keeps a provider group that the blank row under the list opens", () => {
+    // Mini's list is one block per provider, blank-separated like the full
+    // TUI's. Ending the list at the first blank stopped it at the first group.
+    const read = readOpenCodePicker(lines(
+      "  Select model 25                                                          esc",
+      "",
+      "  Search",
+      "",
+      "  OpenCode Zen",
+      "  Big Pickle                                                              Free",
+      "",
+      "  GitHub Copilot",
+      "  Grok 4.6",
+    ));
+    expect(read?.options.map((option) => option.label))
+      .toEqual(["OpenCode Zen", "Big Pickle", "GitHub Copilot", "Grok 4.6"]);
+  });
+
+  /** The same overlay as the *full* TUI draws it — the interface an `opencode`
+   * tab runs unless it was started `--mini`. From a capture of 1.18.31 on a
+   * 215-column pane, moved left to the dialog's own band (the rules are all
+   * relative to the title's column): the dialog is centred rather than two
+   * columns in, its highlight is a `●` two columns left of the labels, its
+   * groups are blank-separated, its rows carry the provider in the label, and
+   * it is painted over the composer box and the status bar — whose `┃`, whose
+   * text and whose `ctrl+p commands` show up on either side of it. */
+  const fullPicker = lines(
+    "            Select model                         esc",
+    "",
+    "            Search",
+    "",
+    "            Recent",
+    "          ● Muse Spark 1.3 Free OpenCode Zen    Free",
+    "            MAI-Code-1.1-Flash GitHub Copilot",
+    "",
+    "            OpenCode Zen",
+    "  Ask a   ┃ Ling 3.0 Flash Fin Free             Free",
+    "  Build   ┃ Nemotron 3.5 Lightning Free         Free",
+    "",
+    "            GitHub Copilot                          ommands",
+    "            Gemini 3.8 Flash",
+    "",
+    "            Connect provider ctrl+a  Favorite ctrl+f",
+  );
+
+  it("reads the full TUI's centred picker, its groups and its highlight", () => {
+    const read = readOpenCodePicker(fullPicker);
+    expect(read?.title).toBe("Select model");
+    expect(read?.options.map((option) => option.label)).toEqual([
+      "Recent",
+      "Muse Spark 1.3 Free OpenCode Zen",
+      "MAI-Code-1.1-Flash GitHub Copilot",
+      "OpenCode Zen",
+      "Ling 3.0 Flash Fin Free",
+      "Nemotron 3.5 Lightning Free",
+      "GitHub Copilot",
+      "Gemini 3.8 Flash",
+    ]);
+    // The row the dialog is on, which mini never says.
+    expect(read?.current).toBe(1);
+    // What the screen behind the overlay left on either side is not the row's:
+    // not the composer box's `┃ Build`, not the status bar's `commands`.
+    expect(read?.options[4].description).toBe("Free");
+    expect(read?.options[6].description).toBeUndefined();
+  });
+
+  it("stops at the picker's key hints rather than listing them", () => {
+    expect(readOpenCodePicker(fullPicker)?.options.some((option) => /ctrl\+/u.test(option.label)))
+      .toBe(false);
   });
 
   it("is not a picker when none is on screen", () => {

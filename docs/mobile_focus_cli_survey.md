@@ -133,6 +133,34 @@ is not source-only. All of it is scoped to a tab whose label names OpenCode.
   equivalent and have no chip; the SQLite reader below would give Focus a
   history reaching past the pane's scrollback.
 
+#### …and the full TUI's picker (2026-09-20)
+
+A tab started as plain `opencode` — which is what the `+` menu launches — runs
+the full-screen TUI, and everything above applies to `--mini` alone. The one
+thing the phone can still do there is the model chip: the palette (ctrl+p,
+`model`, Enter) opens the *same* picker, and typing answers it the same way.
+Read off a pty capture of 1.18.31 at 60 and 215 columns; only the geometry
+differs, so `readOpenCodePicker` reads both by the title's column rather than
+by an indent.
+
+- **Centred**, not two columns in: 82 columns in on a 215-column pane. The old
+  `^\s{1,4}` title match never fired, so the sheet listed nothing and timed
+  out — the tab's model could not be changed from the phone at all.
+- **Groups**: `Recent`, then one block per provider, blank-separated. Mini's
+  list is blank-separated too once it is long enough, so the list ends at the
+  key hints (`Connect provider ctrl+a  Favorite ctrl+f`), not at the first
+  blank row.
+- **The highlight is a `●`** two columns left of the labels — the session's
+  current model, which mini never says.
+- **Rows carry the provider in the label** (`Grok 4.5 GitHub Copilot`). The
+  search filters on the label as printed, so the answer needs no splitting.
+- It is drawn **over the composer box and the status bar**, whose `┃`, whose
+  text and whose `ctrl+p commands` land left and right of the dialog's own
+  band. Both are cut by column — which is why `readableScreen` no longer reads
+  a bar deep inside a row as that row's left frame.
+- `/models` is the full TUI's command (`/model` only opens the completion), so
+  the chip goes through the palette there too.
+
 ### Antigravity's model and effort (2026-09-20)
 
 `agy` 1.2.7, read off captures of a live session driven through a pty at 80×24

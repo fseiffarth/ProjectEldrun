@@ -136,6 +136,21 @@ describe("Eldrun Mobile readable terminal view", () => {
     ]))).toEqual(["> run the tests"]);
   });
 
+  it("leaves a frame edge that is not the row's own, indent and all", () => {
+    // OpenCode's full TUI paints a centred dialog over its composer box, so
+    // each of the dialog's rows carries the box's `┃` far in from the margin.
+    // Read as this row's left edge it took the whole indent with it, which
+    // pulled those rows out of column with the rest of the dialog — and every
+    // reader of the overlay works by column.
+    expect(texts(plainBuffer([
+      "                    Muse Spark 1.2 Free",
+      "          ┃         Nemotron 3 Ultra Free",
+    ]))).toEqual([
+      "                    Muse Spark 1.2 Free",
+      "          ┃         Nemotron 3 Ultra Free",
+    ]);
+  });
+
   it("removes Codex's labelled divider strokes even across wrapped rows", () => {
     const screen = readableScreen(plainBuffer([
       "• The change is ready.",

@@ -2140,3 +2140,43 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     no sheet opens, and no text gets selected.
   - [ ] ✅ Works
   - [ ] ❌ Doesn't work
+
+- [~] **31ax — The model chip works on a plain `opencode` tab** (2026-09-20; ✅
+  code-complete, automated tests passing, ⚠️ not verified on a phone). 31aj
+  read OpenCode's picker off `opencode --mini`, but the `+` menu launches plain
+  `opencode` — the full-screen TUI — and that is what every OpenCode tab here
+  actually runs. Its picker is the same overlay drawn with different geometry,
+  and none of it was read: the sheet listed nothing and timed out after six
+  seconds, so the tab's model could not be changed from the phone.
+  - Ground truth is a pty capture of 1.18.31 at 60 and 215 columns, replayed
+    through the phone's own emulator and run through the real parsers
+    (`docs/mobile_focus_cli_survey.md` holds the shapes). The keys were right
+    all along — ctrl+p, `model`, Enter opens it in the full TUI too, and ctrl+u
+    plus the row's label answers it; only the reading was wrong.
+  - `readOpenCodePicker` now reads the overlay **by the title's column** rather
+    than by an indent: centred dialogs, provider groups separated by a blank
+    row, the `●` that marks the session's current model, the key-hints footer
+    that ends the list, and the composer box and status bar the dialog is
+    painted over — whose `┃` and whose `ctrl+p commands` land on either side of
+    it and are cut by column. Mini gains the same two fixes it needed (a list
+    that runs past its first group, and the row it is on).
+  - `readableScreen` no longer reads a box-drawing bar deep inside a row as
+    that row's left frame. Stripping it took the whole indent with it, which
+    pulled the overlaid rows out of column with the rest of the dialog. The
+    status strip is dedented instead (`dedentRows`), so a centred fullscreen
+    box still reads flush on a phone.
+  - [ ] 🖐️ Manual phone QA — on a plain `opencode` tab, tap the model chip:
+    the sheet lists the models by provider with the current one marked, a tap
+    switches it (the status row says `model <id>`, and the footer under the box
+    names the new one), the sheet closes by itself, and its ✕ closes the
+    dialog in the session too. Then confirm a `--mini` tab still lists and
+    answers its own picker.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+  - Needs a rebuild of the embedded PWA and a desktop restart to serve it.
+  - **Still open for a plain `opencode` tab**: the Reader view. The full TUI
+    has no scrollback, so Reader falls back to the stored session
+    (`services::opencode_store`), which carries the prompts and the agent's
+    *text* answers only — a turn that was all tool calls shows as nothing, and
+    an interrupted one as a prompt with no reply. Either the reader learns to
+    show OpenCode's tool/patch steps, or the tab is started `--mini`.

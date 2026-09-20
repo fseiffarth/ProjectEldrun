@@ -287,18 +287,34 @@ function dropLeading(spans: readonly ReadableSpan[], count: number): ReadableSpa
 }
 
 /**
- * OpenCode's own picker, which `--mini` opens from its command palette
- * (ctrl+p) rather than from a slash command — there is no `/model` in mini,
- * and sending one would post the words to the model as a prompt.
+ * OpenCode's own picker, which it opens from its command palette (ctrl+p)
+ * rather than from a slash command — mini has no `/model` at all, and sending
+ * one there would post the words to the model as a prompt.
  *
- * The overlay is not the numbered dialog `selectPrompt` reads: a title, a
- * search field, then the rows, each a label with an optional tag in a second
- * column, with the highlight drawn in colour alone. So it is read here and
- * answered by *typing* — `openCodePickKeys` clears the search field, types the
- * row's label and submits, which is how a person uses it and what a capture of
- * a live session confirms. No row is reported as current: the highlight is a
- * colour this deliberately does not read, and marking the first row as the
- * session's model would be a guess.
+ * Both interfaces draw the same overlay, and it is not the numbered dialog
+ * `selectPrompt` reads: a title, a search field, then the rows, each a label
+ * with an optional tag in a second column. So it is read here and answered by
+ * *typing* — `openCodePickKeys` clears the search field, types the row's label
+ * and submits, which is how a person uses it and what a capture of a live
+ * session confirms. The picker filters on the label as printed, provider and
+ * all (`Grok 4.5 GitHub Copilot` finds the one row), so nothing has to be
+ * taken apart to answer with it.
+ *
+ * Where the two differ is the geometry, and the geometry is all this reads:
+ *
+ *   - **mini** draws the overlay full width, two columns in, and marks the
+ *     highlighted row in colour alone.
+ *   - the **full TUI** centres it — 82 columns in on a 215-column pane — and
+ *     marks the highlight with a `●` two columns left of the labels. It also
+ *     paints the dialog over its own composer box, so rows can carry that
+ *     box's `┃` and fragments of its text to the *left* of the dialog.
+ *
+ * So the rows are read by column rather than by indent: the title's column is
+ * the dialog's, everything left of it on a row is the screen behind it, and
+ * everything from it is the row. That is also what holds the full TUI's rows
+ * together across the blank line it leaves between provider groups — mini's
+ * list is one block, the full TUI's is several, and a blank row in the middle
+ * of the dialog's own column band is a separator, not the end of the list.
  *
  * A group header (`OpenCode Zen`) is listed like any other row — nothing but
  * its colour tells it from a model. Tapping one types its name, which filters
@@ -306,23 +322,51 @@ function dropLeading(spans: readonly ReadableSpan[], count: number): ReadableSpa
  * the narrowed list as the next step. That is the graceful end of the one
  * ambiguity here.
  */
-const PICKER_TITLE = /^\s{1,4}(Select [a-z][\w ]{0,30}?)(?:\s+\d+(?:\/\d+)?)?(?:\s+esc)?$/u;
-/** Rows read out of one picker. Its window is a dozen at most; the cap only
- * bounds a misread. */
-const MAX_PICKER_ROWS = 24;
+const PICKER_TITLE = /^(\s+)(Select [a-z][\w ]{0,30}?)(?:\s+\d+(?:\/\d+)?)?(?:\s+esc)?$/u;
+/** Rows read out of one picker. The full TUI lists every provider's models on
+ * a tall pane; the cap only bounds a misread. */
+const MAX_PICKER_ROWS = 40;
+/** Blank rows the dialog may leave inside its own list — one between provider
+ * groups, and `readableScreen` collapses any run to one. A second in a row is
+ * the end of the overlay. */
+const MAX_LIST_GAP = 1;
+/** The dialog's own key hints, under the rows (`Connect provider ctrl+a
+ * Favorite ctrl+f`). No model is named after a key. */
+const PICKER_FOOTER = /(?:^|\s)ctrl\+\p{L}\b/u;
+/** The full TUI's highlight, drawn left of the labels' column. Mini draws no
+ * marker at all, so a picker without one simply reports no current row. */
+const PICKER_MARK = /[●▸❯>]/u;
+/** Narrower than any picker OpenCode draws: a title row that ends before this
+ * is not the overlay's right edge. */
+const MIN_PICKER_WIDTH = 24;
 /** Two or more spaces — the gap before a row's tag (`Free`). */
 const COLUMN_SPLIT = /\s{2,}/u;
 const MAX_LABEL = 80;
 
 export function readOpenCodePicker(lines: readonly { text: string }[]): SelectPrompt | null {
   let title = -1;
+  let heading: RegExpExecArray | null = null;
   for (let index = lines.length - 1; index >= 0; index -= 1) {
-    if (PICKER_TITLE.test(lines[index].text)) {
+    heading = PICKER_TITLE.exec(lines[index].text);
+    if (heading) {
       title = index;
       break;
     }
   }
-  if (title < 0) return null;
+  if (title < 0 || !heading) return null;
+  /** The column the dialog's own text starts at — the title's. */
+  const column = heading[1].length;
+  /** …and where it ends: the title row spans the overlay's whole width (its
+   * `esc` sits at the far edge), so its own end is the dialog's. The full TUI
+   * paints over the session's status bar as well as its composer box, and
+   * without this the bar's tail rode into a row's second column (`GitHub
+   * Copilot` · `ommands`). A title too short to bound anything — a dialog this
+   * has misread, or one drawn without the hint — bounds nothing. */
+  const right = lines[title].text.trimEnd().length;
+  const end = right >= column + MIN_PICKER_WIDTH ? right : Number.POSITIVE_INFINITY;
+  /** The row as the dialog drew it: what stands between the dialog's own two
+   * columns, with whatever the screen behind it left on either side dropped. */
+  const cell = (text: string) => (text.length > column ? text.slice(column, end).trimEnd() : "");
   let index = title + 1;
   const skipBlank = () => { while (index < lines.length && !lines[index].text.trim()) index += 1; };
   skipBlank();
@@ -331,12 +375,26 @@ export function readOpenCodePicker(lines: readonly { text: string }[]): SelectPr
   index += 1;
   skipBlank();
   const options: SelectPrompt["options"] = [];
+  let current = -1;
+  let gap = 0;
   for (; index < lines.length && options.length < MAX_PICKER_ROWS; index += 1) {
     const text = lines[index].text;
-    if (!text.trim()) break;
-    const columns = text.trim().split(COLUMN_SPLIT);
+    if (!text.trim()) {
+      // Between two groups of the same list; past the list, the end of it.
+      gap += 1;
+      if (gap > MAX_LIST_GAP || options.length === 0) break;
+      continue;
+    }
+    const row = cell(text);
+    // A line that reaches the dialog's column with nothing on it is the screen
+    // behind the overlay showing past its left edge, not a row of the list.
+    if (!row) break;
+    if (PICKER_FOOTER.test(row)) break;
+    const columns = row.split(COLUMN_SPLIT);
     const label = columns[0].trim();
     if (!label) break;
+    gap = 0;
+    if (PICKER_MARK.test(text.slice(0, column))) current = options.length;
     options.push({
       index: options.length,
       number: options.length + 1,
@@ -350,11 +408,11 @@ export function readOpenCodePicker(lines: readonly { text: string }[]): SelectPr
   // heading, never the screen around them.
   return {
     options,
-    current: -1,
+    current,
     start: title,
     question: title,
     context: title,
-    title: PICKER_TITLE.exec(lines[title].text)![1].trim(),
+    title: heading[2].trim(),
   };
 }
 

@@ -149,8 +149,17 @@ function sameStyle(a: Omit<ReadableSpan, "text">, b: Omit<ReadableSpan, "text">)
 /** Everything an agent draws its frames with. A line made only of these is
  * decoration, and on a phone it reflows into nonsense. */
 const BORDER_ONLY = /^[\s─-╿▀-▟―—]+$/u;
-/** A leading/trailing frame edge around real content on the same row. */
-const LEFT_EDGE = /^\s*[│┃┆┇┊┋]\s?/u;
+/** A leading/trailing frame edge around real content on the same row.
+ *
+ * The left edge is bounded to the first few columns on purpose. A bar deeper
+ * than that is not this row's frame: it is one drawn beside or behind the
+ * content — OpenCode's full TUI paints its centred dialogs over the composer
+ * box, so each dialog row carries the box's `┃` at column 70 with the dialog's
+ * own text 12 columns further right. Stripping `^\s*┃\s?` there took the whole
+ * indent with it, which dropped those rows out of column with the rest of the
+ * dialog (and glued the box's own bleed-through onto them). Left in place the
+ * bar costs one glyph and every column downstream still lines up. */
+const LEFT_EDGE = /^ {0,7}[│┃┆┇┊┋]\s?/u;
 const RIGHT_EDGE = /\s*[│┃┆┇┊┋]\s*$/u;
 /** Labelled horizontal rules (e.g. `─ Worked for 2m ─────`). Keeping their
  * desktop-width strokes makes one divider wrap into many bright phone rows.
@@ -422,6 +431,21 @@ export function dedentLines(lines: readonly ReadableLine[]): ReadableLine[] {
     trimSpansLeft(spans, indent);
     return { ...line, text: line.text.slice(indent), spans };
   });
+}
+
+/** `dedentLines` for rows that are already plain text — the status strip's
+ * (`statusFrameLines`). A fullscreen TUI centres its box, so those rows can
+ * arrive 70 columns in on a wide pane; the strip is a phone-width readout of
+ * them, not a scale model of the desktop window. Rows that start at the margin
+ * lose nothing. */
+export function dedentRows(rows: readonly string[]): string[] {
+  let indent = Number.POSITIVE_INFINITY;
+  for (const row of rows) {
+    if (!row.trim()) continue;
+    indent = Math.min(indent, row.length - row.trimStart().length);
+  }
+  if (!Number.isFinite(indent) || indent <= 0) return [...rows];
+  return rows.map((row) => (row.trim() ? row.slice(indent) : row));
 }
 
 /** The plain text of what the reading view is showing, for Copy. */

@@ -29,7 +29,7 @@ import { DRAFT_SAVE_DELAY, readDraft, writeDraft } from "../drafts";
 import { readFlag, readTerminalView, writeFlag, writeTerminalView, type TerminalViewChoice } from "../prefs";
 import { readSpeechLang, speechTag, type SpeechLang } from "../speechLang";
 import { TERMINAL_PROTOCOL, TERMINAL_SIZE } from "../terminal/protocol";
-import { dedentLines, readableRange, readableScreen, readableText, TRUNCATION_NOTICE, type ReadableLine } from "../terminal/readableScreen";
+import { dedentLines, dedentRows, readableRange, readableScreen, readableText, TRUNCATION_NOTICE, type ReadableLine } from "../terminal/readableScreen";
 import {
   absorbHistory,
   emptyHistory,
@@ -1658,10 +1658,12 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
    * rows it drew, and a tap answers it with the same keys the arrow row sends —
    * so nothing here decides what the models are.
    *
-   * OpenCode mini has no `/model`: the words would be submitted to the model
-   * as a prompt, which is a turn the reader never asked for. Its picker lives
-   * behind the command palette, so the chip presses the keys that open it
-   * there (`OPENCODE_MODEL_KEYS`) instead of typing a command. */
+   * Neither OpenCode interface has a `/model`. In mini the words would be
+   * submitted to the model as a prompt, a turn the reader never asked for; in
+   * the full TUI the command is `/models`, so `/model` only opened the slash
+   * completion and left it sitting in the composer. Both open the same picker
+   * from the command palette, so the chip presses the keys that get there
+   * (`OPENCODE_MODEL_KEYS`) instead of typing a command. */
   const selectModel = () => {
     if (modelSheet) return;
     sawPicker.current = false;
@@ -1909,7 +1911,11 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   const frameStatus = useMemo(
     // A fullscreen agent's rows are on its frame instead, where nothing is
     // frozen behind a sheet: the frame is what the session is drawing now.
-    () => (tab.kind === "agent" ? statusFrameLines(altScreen ? liveScreen : shown, agentLabel) : []),
+    // Dedented, because a fullscreen TUI centres its box — OpenCode's sits 70
+    // columns in on a wide pane — and the strip is a phone-width readout of
+    // those rows, not a scale model of the desktop window. On the scrollback,
+    // where the rows start at the margin, this takes nothing away.
+    () => (tab.kind === "agent" ? dedentRows(statusFrameLines(altScreen ? liveScreen : shown, agentLabel)) : []),
     [tab.kind, altScreen, liveScreen, shown, agentLabel],
   );
   const statusSwipe = tab.kind === "agent" && view === "focus" && (!altScreen || liveScreen.length > 0);
