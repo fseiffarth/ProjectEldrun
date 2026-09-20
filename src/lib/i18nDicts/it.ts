@@ -109,6 +109,7 @@ export const dict: Dict = {
   "mobile.outbox.open": "Apri {name}",
   "mobile.outbox.close": "Chiudi",
   "mobile.outbox.save": "Salva",
+  "mobile.outbox.saveFile": "Salva {name}",
   "mobile.outbox.share": "Condividi…",
   "mobile.outbox.loading": "Caricamento…",
   "mobile.outbox.error": "Impossibile caricare il file. Riprova o salvalo.",

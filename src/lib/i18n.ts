@@ -143,6 +143,7 @@ export const en = {
   "mobile.outbox.open": "Open {name}",
   "mobile.outbox.close": "Close",
   "mobile.outbox.save": "Save",
+  "mobile.outbox.saveFile": "Save {name}",
   "mobile.outbox.share": "Share…",
   "mobile.outbox.loading": "Loading…",
   "mobile.outbox.error": "The file could not be loaded. Try again or save it.",

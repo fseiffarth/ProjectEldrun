@@ -11,6 +11,9 @@ import { ageLabel, sizeLabel } from "../terminal/fileLabels";
  *
  * A kind the browser neither shows nor reads is saved, not opened: the tile is
  * a download link, and no viewer is offered for bytes it would only garble.
+ *
+ * Every tile carries Save, whatever its kind: what the desktop sent is usually
+ * sent to be kept, and a thumbnail carries no ⋯ to reach the file sheet with.
  */
 export function OutboxGrid({ scope, files, onOpen, onDetails }: {
   scope: OutboxScope;
@@ -40,7 +43,15 @@ export function OutboxGrid({ scope, files, onOpen, onDetails }: {
         {download
           ? <a className="outbox-file" href={outboxFileUrl(scope, file.name, true)} download={file.name} aria-label={label}>{content}</a>
           : <button className={isImage ? "outbox-thumb" : "outbox-file"} onClick={() => onOpen(file)} aria-label={label} title={file.name}>{content}</button>}
-        {!isImage && <button className="outbox-details" onClick={() => onDetails(file)} aria-label={t("mobile.outbox.actions", { name: file.name })}>⋯</button>}
+        <div className="outbox-entry-actions">
+          {/* Saving is on the tile itself, for every kind — a picture included.
+              It used to live one screen in, in the sheet the ⋯ opens, and a
+              thumbnail has no ⋯: the only way to keep a picture the agent sent
+              was to open it full screen first and find Save there. The link is
+              the same `?download=1` byte stream the sheet's Save uses. */}
+          <a className="outbox-save" href={outboxFileUrl(scope, file.name, true)} download={file.name} aria-label={t("mobile.outbox.saveFile", { name: file.name })}><span aria-hidden="true">⤓</span>{t("mobile.outbox.save")}</a>
+          {!isImage && <button className="outbox-details" onClick={() => onDetails(file)} aria-label={t("mobile.outbox.actions", { name: file.name })}>⋯</button>}
+        </div>
       </div>;
     })}
   </div>;

@@ -101,6 +101,23 @@ describe("Eldrun Mobile keeps the files the agent sent out of the chat", () => {
     expect(screen.getByRole("dialog", { name: "run12.png" }).querySelector("img")?.getAttribute("src")).toBe("/api/v1/tabs/tab-7/outbox/run12.png");
   });
 
+  it("saves any file from its tile, the picture that has no ⋯ included", async () => {
+    vi.stubGlobal("fetch", sidecarFetch([
+      { name: "run12.png", kind: "image/png", size: 48_000, modified: 200 },
+      { name: "paper.pdf", kind: "application/pdf", size: 400, modified: 100 },
+    ]));
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+
+    fireEvent.click(screen.getByRole("button", { name: "Files from the agent (2)" }));
+    const gallery = screen.getByRole("dialog", { name: "Files from the agent" });
+    for (const name of ["run12.png", "paper.pdf"]) {
+      const save = within(gallery).getByRole("link", { name: `Save ${name}` });
+      expect(save.getAttribute("href")).toBe(`/api/v1/tabs/tab-7/outbox/${name}?download=1`);
+      expect(save.getAttribute("download")).toBe(name);
+    }
+  });
+
   it("keeps the files out of the screen's chat too, and the button in both views", async () => {
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     vi.stubGlobal("fetch", sidecarFetch([

@@ -321,7 +321,9 @@ does not have to ship a phone app for the agent you are running.
   a screenshot it took, a plot it rendered — it runs `eldrun-send <file>`, and
   the phone shows it. Local and container tabs can send any file up to 24 MiB:
   images open full screen, text opens a preview, PDFs open a browser tab, and
-  other files download. Share is available where the phone browser supports
+  other files download. Every tile offers Save, and the project screen reaches
+  the whole gallery from its header as well as from the shelf under its tab
+  cards. Share is available where the phone browser supports
   file sharing; stdin works with `command | eldrun-send -n tests.log`.
 - The phone gets a touch terminal (readable-screen mode, touch scrolling, a
   composer, voice input), a to-do board, Alerts with Done actions, opt-in mail

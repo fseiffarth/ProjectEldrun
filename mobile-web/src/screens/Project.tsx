@@ -340,6 +340,19 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     <header>
       <button className="back" onClick={back}>‹</button>
       <div className="terminal-title"><h1>{detail?.project.label ?? "Project"}</h1></div>
+      {/* The same 🖼 the Focus screen carries, in the same place and the same
+          class: the shelf below stands under however many tab cards the project
+          has, so on a project with a screenful of them everything the desktop
+          sent was past the end of the scroll — and the outbox is the project's,
+          not a session's. */}
+      {outbox.length > 0 && <button
+        className="terminal-gallery"
+        onClick={() => setGalleryOpen(true)}
+        aria-haspopup="dialog"
+        aria-expanded={galleryOpen}
+        aria-label={t("mobile.outbox.galleryOpen", { count: outbox.length })}
+        title={t("mobile.outbox.region")}
+      ><span aria-hidden="true">🖼</span><small>{outbox.length}</small></button>}
       {tabs.length > 1 && <label className="activity-sort in-header">
         <span>Sort</span>
         <select aria-label="Sort tabs" value={sort} onChange={(event) => { if (isAgentSort(event.target.value)) chooseSort(event.target.value); }}>
@@ -435,8 +448,11 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
         file in `.eldrun/outbox/` and it shows up here within a poll, whichever
         tab it was sent from — the project is what the outbox belongs to. The
         shelf is drawn only when there is something on it; the newest
-        `SHELF_FILES` stand here and the button below opens the rest in the same
-        sheet the Focus screen's gallery button does. */}
+        `SHELF_FILES` stand here and the button below opens the whole listing in
+        the same sheet the Focus screen's gallery button does — it is there
+        whenever the shelf is, not only once the shelf has to cut something off.
+        Reaching everything the desktop sent was otherwise a thing only a
+        session could do, and the outbox belongs to the project. */}
     {outbox.length > 0 && <section className="outbox-shelf" aria-label={t("mobile.outbox.shelf")}>
       <div className="outbox-shelf-head">
         <h2>{t("mobile.outbox.fromDesktop")}</h2>
@@ -444,12 +460,12 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
         <small>{t(outbox.length === 1 ? "mobile.outbox.countOne" : "mobile.outbox.count", { count: outbox.length })}</small>
       </div>
       <OutboxGrid scope={outboxScope} files={outbox.slice(0, SHELF_FILES)} onOpen={openFile} onDetails={setFileOpen} />
-      {outbox.length > SHELF_FILES && <button
+      <button
         className="outbox-shelf-all"
         onClick={() => setGalleryOpen(true)}
         aria-haspopup="dialog"
         aria-expanded={galleryOpen}
-      >{t("mobile.outbox.all", { count: outbox.length })}</button>}
+      >{t("mobile.outbox.all", { count: outbox.length })}</button>
     </section>}
     {detail?.project.status === "inactive" && <section className="create"><button className="primary" disabled={activating || !detail.desktop_available} onClick={() => void activate()}>Activate project</button></section>}
     <section className="create"><button disabled={!detail} onClick={() => setPromptsOpen(true)} aria-haspopup="dialog" aria-expanded={promptsOpen}>◷ Collected prompts</button></section>

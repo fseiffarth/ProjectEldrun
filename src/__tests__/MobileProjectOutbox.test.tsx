@@ -89,11 +89,53 @@ describe("Mobile project — the files the desktop sent", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Files from the agent" })).toBeNull());
   });
 
+  it("reaches the whole gallery from the shelf and from the header, however few files there are", async () => {
+    vi.stubGlobal("fetch", hostWith([
+      picture("plot.png", 1_770_000_000),
+      { name: "notes.txt", kind: "text/plain", size: 900, modified: 1_769_999_000 },
+    ]));
+    render(<Project id="p1" back={() => {}} terminal={() => {}} />);
+
+    const shelf = await screen.findByRole("region", { name: "Files from the desktop" });
+    // Two files fit on the shelf, and the gallery is still one tap away: the
+    // whole listing used to be reachable only once the shelf had to cut
+    // something off, which left the project screen with no gallery at all.
+    fireEvent.click(within(shelf).getByRole("button", { name: "All 2 files" }));
+    const shelfGallery = await screen.findByRole("dialog", { name: "Files from the agent" });
+    expect(shelfGallery.querySelectorAll(".outbox-entry").length).toBe(2);
+    fireEvent.click(within(shelfGallery).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Files from the agent" })).toBeNull());
+
+    // And from the header, where the Focus screen keeps the same button: the
+    // shelf sits under however many tab cards the project has.
+    const header = document.querySelector("header") as HTMLElement;
+    fireEvent.click(within(header).getByRole("button", { name: "Files from the agent (2)" }));
+    expect((await screen.findByRole("dialog", { name: "Files from the agent" })).querySelectorAll(".outbox-entry").length).toBe(2);
+  });
+
+  it("offers Save on every tile, the picture included", async () => {
+    vi.stubGlobal("fetch", hostWith([
+      picture("plot.png", 1_770_000_000),
+      { name: "notes.txt", kind: "text/plain", size: 900, modified: 1_769_999_000 },
+    ]));
+    render(<Project id="p1" back={() => {}} terminal={() => {}} />);
+
+    const shelf = await screen.findByRole("region", { name: "Files from the desktop" });
+    // A thumbnail carries no ⋯, so saving a picture the desktop sent meant
+    // opening it full screen first and finding Save in there.
+    const save = within(shelf).getByRole("link", { name: "Save plot.png" });
+    expect(save.getAttribute("href")).toBe("/api/v1/projects/p1/outbox/plot.png?download=1");
+    expect(save.getAttribute("download")).toBe("plot.png");
+    expect(within(shelf).getByRole("link", { name: "Save notes.txt" }).getAttribute("href"))
+      .toBe("/api/v1/projects/p1/outbox/notes.txt?download=1");
+  });
+
   it("draws no shelf at all when the desktop has sent nothing", async () => {
     vi.stubGlobal("fetch", hostWith([]));
     render(<Project id="p1" back={() => {}} terminal={() => {}} />);
 
     await screen.findByRole("button", { name: "Open Claude" });
     expect(screen.queryByRole("region", { name: "Files from the desktop" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Files from the agent/ })).toBeNull();
   });
 });
