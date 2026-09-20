@@ -200,6 +200,32 @@ describe("Eldrun Mobile select dialog", () => {
     expect(readSelectPrompt(lines("  1. Red", "     Warm and loud", "❯ 2. Green", "     Calm"))?.current).toBe(1);
   });
 
+  it("keeps a question's preview panel out of its rows", () => {
+    // Claude Code 2.1.278's AskUserQuestion with previews, captured off a real
+    // session at 215 columns and read back through `readableScreen`: the rows
+    // stay on the left and the highlighted row's preview is drawn in a panel
+    // beside them. What stands in the rows' second column is that panel's
+    // frame, not a note — and the panel's own rows, which `readableScreen`
+    // strips the left edge off, end the run.
+    const prompt = readSelectPrompt(lines(
+      " ☐ Status strip",
+      "",
+      "In fullscreen Claude, Focus also loses the swipe-in status strip. Restore it from the same frame?",
+      "",
+      "\u276f 1. Restore it too               \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510",
+      "  2. Just the question            \u2502 swipe \u2192 on the reading view",
+      "\u250c\u2500 Status line \u2500\u2500\u2500\u2500\u2500\u2715\u2510",
+      "\u2502 ~/eldrun/\u2026/projecteldrun       \u2502",
+      "",
+      "Enter to select \u00b7 \u2191/\u2193 to navigate \u00b7 n to add notes \u00b7 Esc to cancel",
+    ), "Claude Code");
+    expect(prompt?.current).toBe(0);
+    expect(prompt?.options).toEqual([
+      { index: 0, number: 1, label: "Restore it too", description: undefined },
+      { index: 1, number: 2, label: "Just the question", description: undefined },
+    ]);
+  });
+
   it("keeps reading a Codex question whose label wraps beside its note", () => {
     // codex-rs request_user_input `long_option_text` snapshot, narrowed: the
     // label wraps at its own column while the note wraps at the note's.

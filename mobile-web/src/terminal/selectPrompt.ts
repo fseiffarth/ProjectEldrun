@@ -97,6 +97,17 @@ export function radioMarkerAgent(agentLabel?: string): boolean {
 /** Two or more spaces — what both CLIs put between a row's label and its
  * note. A single space is inside the label. */
 const COLUMN_SPLIT = /\s{2,}/u;
+/** A second column that opens with a frame edge is not the row's note: it is
+ * a panel drawn beside the list — Claude Code puts a question's previews
+ * there, one panel for the highlighted row, so its rows are the panel's and
+ * belong to no option:
+ *
+ *   ❯ 1. Restore it too               ┌──────────────────────────────┐
+ *     2. Just the question            │ swipe → on the reading view  │
+ *
+ * A note is text, so a column that starts with a frame is dropped whole
+ * rather than read as one. */
+const PANEL_COLUMN = /^[│┃┆┇┊┋┌┏╭╔└┗╰╚├┣┤┫─━═]/u;
 const MAX_LABEL = 80;
 const MAX_DESCRIPTION = 200;
 /** Non-blank rows a heading may occupy above the list: the heading itself and
@@ -181,7 +192,8 @@ function readRow(text: string, option: RegExp): ReadRow | null {
   const columns = rest.split(COLUMN_SPLIT);
   const label = columns[0].trim();
   if (!label) return null;
-  const description = columns.slice(1).join(" · ").trim();
+  const beside = columns.slice(1).join(" · ").trim();
+  const description = PANEL_COLUMN.test(beside) ? "" : beside;
   const split = description ? COLUMN_SPLIT.exec(rest) : null;
   return {
     marked: marker !== undefined && !EDGE.test(marker),
@@ -236,8 +248,8 @@ export function readSelectPrompt(lines: readonly SelectLineLike[], agentLabel?: 
       const more = run ? readContinuation(text, run.labelColumn, run.column) : null;
       const last = run?.options[run.options.length - 1];
       if (more && last) {
-        if (more.label) last.label = `${last.label} ${more.label}`.slice(0, MAX_LABEL);
-        if (more.description) {
+        if (more.label && !PANEL_COLUMN.test(more.label)) last.label = `${last.label} ${more.label}`.slice(0, MAX_LABEL);
+        if (more.description && !PANEL_COLUMN.test(more.description)) {
           last.description = (last.description ? `${last.description} ${more.description}` : more.description)
             .slice(0, MAX_DESCRIPTION);
         }
