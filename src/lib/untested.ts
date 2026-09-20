@@ -113,6 +113,7 @@ export const UNTESTED = {
   "fileTree.4": { area: "files", what: "FileTree · Send to project…" },
   "fileTree.5": { area: "files", what: "FileTree · Download to…" },
   "gitHistory.1": { area: "files", what: "GitHistory · Worktrees" },
+  "gitHistory.loadMoreCommits": { area: "files", what: "GitHistory · Load older commits" },
   "importDrop.title": { area: "files", what: "importDrop · File already exists" },
   "projectFilesPane.1": { area: "files", what: "ProjectFilesPane · Project settings" },
   "projectFilesPane.2": { area: "files", what: "ProjectFilesPane · Large folders…" },

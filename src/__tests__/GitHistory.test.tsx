@@ -5,6 +5,8 @@
  * - #8 (Group D.3): clicking HEAD opens an editable commit window with a
  *   "Save (amend)" action (git_reword_head); an older commit is read-only;
  *   "Checkout" checks the commit out (detached).
+ * - Lazy history: the list asks for one page and pages the rest in from the
+ *   bottom row, instead of stopping at the first 100 commits.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, act } from "@testing-library/react";
@@ -104,5 +106,67 @@ describe("#8 commit-message window", () => {
     await screen.findByDisplayValue(/feat: add widget/);
     await user.click(screen.getByRole("button", { name: "Checkout" }));
     expect(mockInvoke).toHaveBeenCalledWith("git_checkout", { projectDir: "/p", target: "bbb222" });
+  });
+});
+
+describe("lazy commit history", () => {
+  /** A full page, so the panel knows there is probably more behind it. */
+  function page(from: number, n: number) {
+    return Array.from({ length: n }, (_, i) => ({
+      hash: `h${from + i}`,
+      short: `h${from + i}`,
+      subject: `commit ${from + i}`,
+      author: "me",
+      date: "1d ago",
+      refs: "",
+      is_head: from + i === 0,
+      parents: [],
+    }));
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("pages older commits in from the bottom row, once, without duplicates", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ limit: number; skip: number }> = [];
+    mockInvoke.mockImplementation((cmd: string, args: Record<string, unknown>) => {
+      if (cmd === "git_log") {
+        const limit = args.limit as number;
+        const skip = (args.skip as number) ?? 0;
+        calls.push({ limit, skip });
+        // 150 commits in all: a full page, then a short one.
+        return Promise.resolve(page(skip, Math.min(limit, Math.max(0, 150 - skip))));
+      }
+      if (cmd === "git_branches") return Promise.resolve(BRANCHES);
+      return Promise.resolve(null);
+    });
+
+    await act(async () => {
+      render(<GitHistory projectDir="/p" />);
+    });
+    expect(calls[0]).toEqual({ limit: 100, skip: 0 });
+    expect(screen.getByText("commit 99")).toBeTruthy();
+    expect(screen.queryByText("commit 100")).toBeNull();
+
+    // jsdom has no IntersectionObserver, so the sentinel is reached by click —
+    // the same path as a pane too short to ever scroll it into view.
+    await user.click(screen.getByRole("button", { name: /Load older commits/ }));
+    expect(calls.some((c) => c.skip === 100 && c.limit === 100)).toBe(true);
+    expect(screen.getByText("commit 149")).toBeTruthy();
+    // The short page is the end of the history: no row left to click.
+    expect(screen.queryByRole("button", { name: /Load older commits/ })).toBeNull();
+    // Each commit is rendered once, even though page boundaries overlap nothing.
+    expect(screen.getAllByText("commit 100").length).toBe(1);
+  });
+
+  it("a repo shorter than a page offers nothing to load", async () => {
+    setupInvoke();
+    await act(async () => {
+      render(<GitHistory projectDir="/p" />);
+    });
+    await screen.findByText("feat: add widget");
+    expect(screen.queryByRole("button", { name: /Load older commits/ })).toBeNull();
   });
 });

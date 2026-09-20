@@ -3954,6 +3954,8 @@ export const dict: Dict = {
   "gitHistory.newBranchLabel": "neuer Branch",
   "gitHistory.create": "Erstellen",
   "gitHistory.noCommitsYet": "Noch keine Commits",
+  "gitHistory.loadMoreCommits": "Ältere Commits laden",
+  "gitHistory.loadingMoreCommits": "Ältere Commits werden geladen …",
   "gitHistory.confirmResolve": "{authority} als maßgebliche Quelle verwenden?\n\nDie abweichenden Commits von {other} werden auf {authority} zurückgesetzt (zuerst gesichert nach refs/eldrun/backup/*).",
   "gitHistory.resolveAction": "{authority} verwenden",
   "gitHistory.resolveTitle": "Maßgebliche Seite wählen",

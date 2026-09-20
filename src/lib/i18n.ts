@@ -4114,6 +4114,8 @@ export const en = {
   "gitHistory.newBranchLabel": "new branch",
   "gitHistory.create": "Create",
   "gitHistory.noCommitsYet": "No commits yet",
+  "gitHistory.loadMoreCommits": "Load older commits",
+  "gitHistory.loadingMoreCommits": "Loading older commits…",
   "gitHistory.confirmResolve": "Use {authority} as the source of truth?\n\nThe {other}'s diverging commits will be reset to match {authority} (backed up to refs/eldrun/backup/* first).",
   "gitHistory.resolveAction": "Use {authority}",
   "gitHistory.resolveTitle": "Choose the source of truth",

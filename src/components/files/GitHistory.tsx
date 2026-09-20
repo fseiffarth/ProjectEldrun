@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Toggle } from "../common/Toggle";
 import { invoke } from "@tauri-apps/api/core";
@@ -301,6 +301,13 @@ function CommitGraphCell({
 
 const GRAPH_MODE_KEY = "eldrun.gitHistoryGraph";
 
+/**
+ * How many commits one page of history is. The list used to ask for exactly this
+ * many and stop there, which silently truncated any repo with a longer history;
+ * it now pages the rest in as the bottom of the list comes into view.
+ */
+const COMMIT_PAGE = 100;
+
 const LOCKSTEP_STATUS_KEY: Record<LockstepStatus, TranslationKey> = {
   synchronized: "gitHistory.statusSynchronized",
   syncing: "gitHistory.statusSyncing",
@@ -316,6 +323,22 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
   // to one unreadable line.
   const { promptText, confirmAction, dialogs } = useDialogs();
   const [commits, setCommits] = useState<GitCommit[]>([]);
+  /** A full page came back, so there is probably at least one more to fetch. */
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  /** Cleared when a page fails, so the observer stops retrying on every scroll. */
+  const [autoPage, setAutoPage] = useState(true);
+  // Read inside `loadMore` rather than closed over, so paging never re-creates
+  // (and re-fires) the callback the scroll sentinel is watching with.
+  const commitsRef = useRef<GitCommit[]>([]);
+  const loadingMoreRef = useRef(false);
+  const sentinelRef = useRef<HTMLButtonElement | null>(null);
+  /**
+   * How many commits a plain refresh re-fetches. A reload after a commit, a
+   * checkout or a lockstep sync would otherwise snap a history the user had
+   * paged deep into back to its first page.
+   */
+  const loadedRef = useRef(COMMIT_PAGE);
   const [branches, setBranches] = useState<GitBranch[]>([]);
   const [worktrees, setWorktrees] = useState<Worktree[]>([]);
   // Git lockstep (#28n): only meaningful for SSH remote projects.
@@ -366,12 +389,18 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
     // `git_worktree_list`, or a worktree probe that failed on its own, blanked the
     // commit list and the branch pills too. Each result now stands or falls alone
     // and only the failures are reported.
+    const want = loadedRef.current;
     const [log, br, wt] = await Promise.allSettled([
-      invoke<GitCommit[]>("git_log", { projectDir, limit: 100 }),
+      invoke<GitCommit[]>("git_log", { projectDir, limit: want, skip: 0 }),
       invoke<GitBranch[]>("git_branches", { projectDir }),
       invoke<Worktree[]>("git_worktree_list", { projectDir, site: wtSite }),
     ]);
-    if (log.status === "fulfilled") setCommits(log.value ?? []);
+    if (log.status === "fulfilled") {
+      const list = log.value ?? [];
+      setCommits(list);
+      setHasMore(list.length >= want);
+      setAutoPage(true);
+    }
     if (br.status === "fulfilled") setBranches(br.value ?? []);
     if (wt.status === "fulfilled") setWorktrees(wt.value ?? []);
     const failed = [log, br, wt].filter((r) => r.status === "rejected");
@@ -379,9 +408,73 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
     setLoading(false);
   }, [projectDir, wtSite]);
 
+  // Back to one page when the project changes, so a small repo opened after a big
+  // one does not re-ask for the big one's page depth. Declared *before* the load
+  // effect: effects run in order, and `load` reads this depth when it is called.
+  useEffect(() => {
+    loadedRef.current = COMMIT_PAGE;
+    setHasMore(false);
+    setAutoPage(true);
+  }, [projectDir]);
+
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    commitsRef.current = commits;
+  }, [commits]);
+
+  const loadMore = useCallback(async () => {
+    if (!projectDir || loadingMoreRef.current) return;
+    loadingMoreRef.current = true;
+    setLoadingMore(true);
+    try {
+      const skip = commitsRef.current.length;
+      const more = await invoke<GitCommit[]>("git_log", {
+        projectDir,
+        limit: COMMIT_PAGE,
+        skip,
+      });
+      const page = more ?? [];
+      // A commit landing between two pages shifts every later one down by a row,
+      // which `--skip` would hand us twice; hashes settle it.
+      setCommits((prev) => {
+        const seen = new Set(prev.map((c) => c.hash));
+        const next = [...prev, ...page.filter((c) => !seen.has(c.hash))];
+        loadedRef.current = Math.max(loadedRef.current, next.length);
+        return next;
+      });
+      setHasMore(page.length >= COMMIT_PAGE);
+    } catch (e) {
+      setError(String(e));
+      // Stop the observer re-firing against a backend that just refused — the
+      // row stays, and clicking it arms the automatic paging again.
+      setAutoPage(false);
+    } finally {
+      setLoadingMore(false);
+      loadingMoreRef.current = false;
+    }
+  }, [projectDir]);
+
+  // Page the next chunk in when the end of the list comes into view. `root: null`
+  // because the scroller is an ancestor (the side panel's body), and an observer
+  // against the viewport already accounts for every clipping ancestor — which is
+  // also what keeps it quiet in a hidden pane. Re-armed on each page: an observer
+  // reports a *change*, so a sentinel still on screen after the new rows mount
+  // would never fire again and the list would stall one page in.
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el || !hasMore || !autoPage || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) loadMore();
+      },
+      { rootMargin: "200px" },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [hasMore, autoPage, loadMore, commits.length]);
 
   // Load git-lockstep status + subscribe to backend status pushes (#28n).
   useEffect(() => {
@@ -1241,6 +1334,26 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
             </button>
           );
         })}
+        {/* The sentinel *is* the button (as in `BibCards`): scrolling to it pages
+            the next chunk in, and clicking it does the same where there is no
+            IntersectionObserver (jsdom) or where the pane is too short to ever
+            scroll it into view. */}
+        {hasMore && (
+          <button
+            ref={sentinelRef}
+            className="git-commit-row git-commit-more"
+            onClick={() => {
+              setAutoPage(true);
+              loadMore();
+            }}
+            disabled={loadingMore}
+          >
+            {loadingMore
+              ? t("gitHistory.loadingMoreCommits")
+              : t("gitHistory.loadMoreCommits")}
+            <UntestedTag id="gitHistory.loadMoreCommits" />
+          </button>
+        )}
       </div>
 
       {selected && createPortal(

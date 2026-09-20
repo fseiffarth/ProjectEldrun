@@ -3949,6 +3949,8 @@ export const dict: Dict = {
   "gitHistory.newBranchLabel": "nuovo branch",
   "gitHistory.create": "Crea",
   "gitHistory.noCommitsYet": "Nessun commit ancora",
+  "gitHistory.loadMoreCommits": "Carica i commit più vecchi",
+  "gitHistory.loadingMoreCommits": "Caricamento dei commit più vecchi…",
   "gitHistory.confirmResolve": "Usare {authority} come fonte di verità?\n\nI commit divergenti di {other} verranno ripristinati per corrispondere a {authority} (prima salvati in refs/eldrun/backup/*).",
   "gitHistory.resolveAction": "Usa {authority}",
   "gitHistory.resolveTitle": "Scegli la fonte di verità",

@@ -1567,6 +1567,19 @@
   border-left: 2px solid var(--accent);
 }
 
+/* The lazy tail of the commit list: one more row, which is also the sentinel
+   that pages the next chunk in as it scrolls into view. */
+.git-commit-more {
+  justify-content: center;
+  color: var(--text-muted);
+  border-bottom: none;
+}
+
+.git-commit-list.graph .git-commit-more {
+  height: auto;
+  padding: 3px 6px;
+}
+
 /* Graph mode: rows are a fixed height with no vertical padding so the lane
    lines drawn per-row meet seamlessly across row boundaries. */
 .git-commit-list.graph .git-commit-row {

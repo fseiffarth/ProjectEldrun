@@ -1545,24 +1545,35 @@ fn git_head_hash(target: Option<&RemoteTarget>, project_dir: &str) -> Option<Str
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
 
-/// Returns the most recent commits (default 100) as one-line summaries.
-/// Returns an empty vec for a non-git directory or a repo with no commits yet.
+/// Returns commits as one-line summaries, newest first: `limit` of them (default
+/// 100) starting `skip` commits back from HEAD, so the panel can page a long
+/// history in instead of stopping at the first page. Returns an empty vec for a
+/// non-git directory, a repo with no commits yet, or a `skip` past the root.
 #[tauri::command]
-pub async fn git_log(project_dir: String, limit: Option<u32>) -> Result<Vec<GitCommit>, String> {
-    run_off_thread(move || git_log_blocking(project_dir, limit)).await
+pub async fn git_log(
+    project_dir: String,
+    limit: Option<u32>,
+    skip: Option<u32>,
+) -> Result<Vec<GitCommit>, String> {
+    run_off_thread(move || git_log_blocking(project_dir, limit, skip)).await
 }
 
-fn git_log_blocking(project_dir: String, limit: Option<u32>) -> Result<Vec<GitCommit>, String> {
+fn git_log_blocking(
+    project_dir: String,
+    limit: Option<u32>,
+    skip: Option<u32>,
+) -> Result<Vec<GitCommit>, String> {
     let target = remote_target_for_dir(&project_dir);
     if local_non_repo(target.as_ref(), &project_dir) {
         return Ok(vec![]);
     }
     let max = limit.unwrap_or(100);
     let max_count = format!("--max-count={max}");
+    let skipped = format!("--skip={}", skip.unwrap_or(0));
     let out = run_git(
         target.as_ref(),
         &project_dir,
-        &["log", &max_count, GIT_LOG_FMT],
+        &["log", &max_count, &skipped, GIT_LOG_FMT],
     )?;
     if !out.status.success() {
         // Empty repository (no commits) — not an error for our purposes.
@@ -3291,6 +3302,56 @@ filename note.txt
             .expect("git_file_statuses should override the user's untracked-files setting");
 
         assert_eq!(statuses.get("cache").map(String::as_str), Some("ignored"));
+    }
+
+    #[test]
+    fn git_log_pages_the_history_with_skip() {
+        if !git_available() {
+            eprintln!("git not on PATH — skipping git_log_pages_the_history_with_skip");
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        init_repo(dir);
+        let run = |args: &[&str]| {
+            let ok = crate::paths::command_no_window("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git command should run")
+                .status
+                .success();
+            assert!(ok, "git {args:?} failed");
+        };
+        for i in 0..5 {
+            fs::write(dir.join("f.txt"), format!("{i}\n")).expect("write");
+            run(&["add", "f.txt"]);
+            run(&["commit", "-m", &format!("c{i}")]);
+        }
+        let project_dir = dir.to_string_lossy().to_string();
+        let page = |limit, skip| {
+            git_log_blocking(project_dir.clone(), Some(limit), Some(skip))
+                .expect("git_log should read this repo")
+                .into_iter()
+                .map(|c| c.subject)
+                .collect::<Vec<_>>()
+        };
+
+        // Newest first, and `skip` steps back from HEAD rather than re-serving
+        // the first page — the whole point of paging the list in.
+        assert_eq!(page(2, 0), vec!["c4", "c3"]);
+        assert_eq!(page(2, 2), vec!["c2", "c1"]);
+        assert_eq!(page(2, 4), vec!["c0"]);
+        // Past the root commit the log is simply empty — not an error, which is
+        // what tells the panel there is nothing more to page in.
+        assert!(page(2, 6).is_empty());
+        // No `skip` is the old call, unchanged.
+        assert_eq!(
+            git_log_blocking(project_dir, Some(2), None)
+                .expect("git_log should read this repo")
+                .len(),
+            2
+        );
     }
 
     #[test]
