@@ -12,7 +12,7 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const terminalState = vi.hoisted(() => ({ lines: [] as string[] }));
+const terminalState = vi.hoisted(() => ({ lines: [] as string[], type: "normal" as "normal" | "alternate" }));
 
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
@@ -22,7 +22,7 @@ vi.mock("@xterm/xterm", () => ({
     textarea = document.createElement("textarea");
     buffer = {
       active: {
-        type: "normal",
+        get type() { return terminalState.type; },
         get length() { return terminalState.lines.length; },
         getLine(row: number) {
           const value = terminalState.lines[row];
@@ -122,6 +122,7 @@ const rows = () => Array.from(question().querySelectorAll(".option-list button")
 describe("Eldrun Mobile Focus — the question an agent is waiting on", () => {
   beforeEach(() => {
     terminalState.lines = [];
+    terminalState.type = "normal";
     FakeWebSocket.instances = [];
     FakeWebSocket.sent = [];
     localStorage.clear();
@@ -161,6 +162,25 @@ describe("Eldrun Mobile Focus — the question an agent is waiting on", () => {
     fireEvent.click(within(question()).getByText("No, and tell Claude what to do differently"));
     await settle(400);
     expect(FakeWebSocket.sent).toEqual([]);
+  });
+
+  it("reads the question off a fullscreen agent's own frame", async () => {
+    // Claude Code under `"tui": "fullscreen"` draws its whole session on the
+    // alternate screen. There is no scrollback there for the reading view to
+    // grow from — Focus reads the stored session instead — but the choice the
+    // agent is waiting on is on that frame and nowhere else, so the frame is
+    // read for it.
+    terminalState.type = "alternate";
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await act(async () => {});
+    await paint(QUESTION);
+
+    within(question()).getByText(/Do you want to make this edit/);
+    expect(rows()).toHaveLength(3);
+    FakeWebSocket.sent = [];
+    fireEvent.click(within(question()).getByText("Yes, allow all edits during this session"));
+    await settle(400);
+    expect(FakeWebSocket.sent).toEqual([DOWN, "\r"]);
   });
 
   it("gives the list back when the answer never lands", async () => {

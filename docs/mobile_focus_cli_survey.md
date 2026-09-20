@@ -10,7 +10,15 @@ Focus reads an agent tab two ways. From the **screen** — `readableScreen` →
 `agentModes` for the mode sheet and `selectPrompt` for dialogs — and from the
 **stored session** (`src-tauri/src/services/agent_transcript.rs`), which today
 reads Claude Code and Codex only. A full-screen (alternate-screen) TUI has no
-scrollback, so for it the stored session is the only route.
+scrollback, so for it the stored session is the only route for the conversation
+— but not for what the session is doing *now*. Measured 2026-09-20 on Claude
+Code 2.1.278: `"tui": "fullscreen"` in `~/.claude/settings.json` puts Claude
+itself on the alternate screen, and the choice a question dialog is waiting on
+lives on that frame and nowhere else. So Focus reads the visible frame for the
+live facts alone — the question (`selectPrompt`), whether the turn is still
+running (`agentBusy`), the status row and the model picker — while the reading
+view and the history stay on the stored session; a repaint is never absorbed as
+session output.
 
 Everything below was read out of published bundles, wheels, binaries' strings
 and source trees — **nothing was run live**. Tags: **S** read in source or the

@@ -231,8 +231,11 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 200)); });
     screen.getByTestId("session-transcript");
     expect(screen.queryByText("Full-screen program")).toBeNull();
-    // The frame is not read as a question the stored session lacks.
-    expect(screen.queryByRole("group", { name: "On screen now" })).toBeNull();
+    // The frame is read for the one thing the stored session cannot carry: the
+    // choice the agent is waiting on. A fullscreen agent draws it there and
+    // nowhere else — no scrollback holds it — and it has to pass the same
+    // shape check as a dialog on a scrolling screen.
+    within(screen.getByRole("group", { name: "On screen now" })).getByText("Yes");
 
     // Switched to the screen, the full-screen program says so, as before.
     fireEvent.click(screen.getByRole("button", { name: "Focus" }));

@@ -2013,3 +2013,39 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     header carries no picker.
   - [ ] ✅ Works
   - [ ] ❌ Doesn't work
+
+- [~] **31as — The open mark leaves the ✕'s corner, and a fullscreen agent's
+  question reaches the phone** (2026-09-20; ✅ code-complete, automated tests
+  passing, ⚠️ not verified on a phone).
+  - An agent card's status pill and the `›` that says the card opens the
+    session sat in its top-right corner, a few pixels from the ✕ that closes
+    the tab — the one tap on that card nobody wants to miss. They now sit on
+    the card's foot, right end, beside the schedule line; the opener itself is
+    stretched over the whole card (head, prompts and foot), so a tap anywhere
+    the ✕, the grip, the colour dot, the name or the ◷ has not claimed still
+    opens the session. A shell card is one row and keeps its `›` where it was.
+  - Focus showed no question for a Claude tab run with `"tui": "fullscreen"`:
+    Claude then draws its whole session on the alternate screen, and Focus
+    dropped every live screen read there — the frame is repainted whole and has
+    no scrollback, so it was absorbed nowhere and read for nothing. The stored
+    session cannot carry a choice the agent has not been given yet, so the
+    question reached the phone in no way at all. The frame is now read for the
+    live facts only — the question, the working row, the status row and the
+    model picker — while the reading view and the history stay on the stored
+    session (`docs/mobile_focus_cli_survey.md`).
+  - Claude Code's AskUserQuestion draws the highlighted row's **preview** in a
+    panel beside the rows. Its frame stood in the rows' second column, so every
+    option carried a note of box-drawing characters; a second column that opens
+    with a frame edge is now dropped as the panel it is. Ground truth: a real
+    215-column capture, replayed through `readableScreen`, now a fixture in
+    `src/__tests__/MobileSelectPrompt.test.ts`.
+  - Needs a rebuild of the embedded PWA and a desktop restart to serve it.
+  - [ ] 🖐️ Manual phone QA — open a project: on an agent card the pill and `›`
+    are at the bottom right, and tapping the card (including that corner) opens
+    the session while ✕ still only closes it. Then, in a Claude tab running
+    fullscreen, have the agent ask a question: in Focus the question and its
+    rows appear under the stored session, the rows carry no box-drawing notes,
+    and tapping one answers it. While the turn runs, the "Working" dots show;
+    swiping right shows the status line.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work

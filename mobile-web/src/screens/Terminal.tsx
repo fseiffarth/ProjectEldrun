@@ -469,6 +469,12 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   const [connected, setConnected] = useState(false);
   const [stoppedReason, setStoppedReason] = useState("");
   const [altScreen, setAltScreen] = useState(false);
+  /** The alternate screen's visible frame, on an agent tab. It is not session
+   * output — it is repainted whole and has no scrollback behind it — so it
+   * reaches neither the reading view nor the history; it is read for the two
+   * facts only the live screen carries: the choice the session is waiting on,
+   * and whether its turn is still running. */
+  const [altFrame, setAltFrame] = useState<ReadableLine[]>([]);
   const [ctrl, setCtrl] = useState(false);
   const [sendFailed, setSendFailed] = useState(false);
   /** `initialView`: the reader's choice for this agent, else Focus on an
@@ -494,6 +500,14 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   draftRef.current = draft;
   const [lines, setLines] = useState<ReadableLine[]>([]);
   const [clipped, setClipped] = useState(false);
+  /** The screen the live readers look at: the scrollback's tail, or — while a
+   * fullscreen agent draws on the alternate screen — the frame it is holding.
+   * Everything read off the screen rather than out of the stored session (the
+   * status facts, the model picker, the question waiting on the reader,
+   * whether the turn is still running) reads this. The reading view and the
+   * history never do: an alternate screen has no scrollback to grow them
+   * from. */
+  const liveScreen = useMemo(() => (altScreen ? altFrame : lines), [altScreen, altFrame, lines]);
   /** The absorbed earlier output, republished for render whenever it grows.
    * The log itself lives in a ref inside the terminal effect; this is only the
    * render snapshot (chunk references are stable, so revealing is cheap). */
@@ -651,6 +665,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     setCopied(false);
     setStoppedReason("");
     setAltScreen(false);
+    setAltFrame([]);
     setCtrl(false);
     setSendFailed(false);
     setModelSheet(false);
@@ -798,7 +813,17 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       // program's repaints, not session output.
       const alternate = buffer.type === "alternate";
       setAltScreen(alternate);
-      if (alternate) return;
+      if (alternate) {
+        // An agent CLI can draw its whole session here — Claude Code does under
+        // `"tui": "fullscreen"`, OpenCode's full TUI always — and then a
+        // question it is waiting on sits on this frame and nowhere else: the
+        // stored session only grows at message boundaries, and there is no
+        // scrollback the reading view could grow from. So the frame is read for
+        // the live readers, and still absorbed nowhere.
+        if (tab.kind === "agent") setAltFrame(readableScreen(buffer).lines);
+        return;
+      }
+      setAltFrame((held) => (held.length > 0 ? [] : held));
       if (trimWatch) {
         // Rows that left the tail window are converted once and kept; only the
         // tail — the live screen plus a margin — is re-read per frame.
@@ -1487,8 +1512,8 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   /** The facts the session prints below its own input box — the facts row's
    * labels. Absent fields leave a button on its generic label. */
   const status = useMemo(
-    () => (tab.kind === "agent" ? sessionStatus(lines, agentLabel) : null),
-    [tab.kind, lines, agentLabel],
+    () => (tab.kind === "agent" ? sessionStatus(liveScreen, agentLabel) : null),
+    [tab.kind, liveScreen, agentLabel],
   );
   // The mode walk reads the status between two presses, outside React's render.
   useEffect(() => { statusRef.current = status; }, [status]);
@@ -1504,8 +1529,8 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
    * believes in. OpenCode's is not the numbered dialog the others draw, so it
    * is read by its own shape (`openCodeMini`). */
   const picker = useMemo(
-    () => (modelSheet ? (openCode ? readOpenCodePicker(lines) : readSelectPrompt(lines, agentLabel)) : null),
-    [modelSheet, openCode, lines, agentLabel],
+    () => (modelSheet ? (openCode ? readOpenCodePicker(liveScreen) : readSelectPrompt(liveScreen, agentLabel)) : null),
+    [modelSheet, openCode, liveScreen, agentLabel],
   );
   /** The step the sheet is showing: the picker on screen, unless it is the one
    * a tap just answered and the session has not redrawn yet. */
@@ -1811,10 +1836,12 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
    * frame frozen behind a sheet stays consistent; always the xterm screen,
    * even while Focus reads the stored session. */
   const frameStatus = useMemo(
-    () => (tab.kind === "agent" ? statusFrameLines(shown, agentLabel) : []),
-    [tab.kind, shown, agentLabel],
+    // A fullscreen agent's rows are on its frame instead, where nothing is
+    // frozen behind a sheet: the frame is what the session is drawing now.
+    () => (tab.kind === "agent" ? statusFrameLines(altScreen ? liveScreen : shown, agentLabel) : []),
+    [tab.kind, altScreen, liveScreen, shown, agentLabel],
   );
-  const statusSwipe = tab.kind === "agent" && view === "focus" && !altScreen;
+  const statusSwipe = tab.kind === "agent" && view === "focus" && (!altScreen || liveScreen.length > 0);
   useEffect(() => {
     const stream = readableHost.current;
     if (!statusSwipe || !stream) return;
@@ -1830,13 +1857,17 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
    * drawing right now. Shown under the stored session while it holds a
    * choice the session is waiting on, which the transcript cannot carry. */
   const liveTail = useMemo(() => {
-    // A full-screen program's frame has no prompt echo to cut at, and its
-    // rows are not a question the transcript is missing.
-    if (!sessionShown || altScreen) return [];
+    if (!sessionShown) return [];
+    // On the alternate screen that tail is the frame itself, cut at its input
+    // box the way `painted` cuts the scrollback's: a fullscreen agent draws its
+    // session there, so a question of its own reaches the phone in no other
+    // way. A frame that holds no dialog reaches the reader in no other way
+    // either — only `liveQuestion` reads this, never the view.
+    const screen = altScreen ? liveScreen.slice(0, inputFrameStart(liveScreen, agentLabel)) : painted;
     let start = 0;
-    painted.forEach((line, index) => { if (isPromptEcho(line, agentLabel)) start = index + 1; });
-    return painted.slice(start);
-  }, [sessionShown, altScreen, painted, agentLabel]);
+    screen.forEach((line, index) => { if (isPromptEcho(line, agentLabel)) start = index + 1; });
+    return screen.slice(start);
+  }, [sessionShown, altScreen, liveScreen, painted, agentLabel]);
   /** The choice the session is waiting on, read off the live screen. On the
    * phone it is answered by tapping a row, so what is kept is the dialog
    * itself — its rows, and where on the tail they start — not just that there
