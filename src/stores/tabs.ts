@@ -5032,6 +5032,36 @@ export function isRestorableKind(kind: TabKind): boolean {
   );
 }
 
+/**
+ * Whether a second tab of this kind, in one scope, would show the same thing as
+ * the first — so opening it should focus the one that exists instead of stacking
+ * a copy. The reason is the same one each sentinel `cmd` above states for itself:
+ * the view is the MACHINE's (the system monitor's processes, the print queues) or
+ * the SCOPE's (the skills catalog and its install target, the prompt chart's
+ * columns, the calendar's global store, the 3D cloud of every project). Nothing
+ * a second tab could be pointed at differs.
+ *
+ * Deliberately NOT here, though they sit in the same menus: `diskusage` (each tab
+ * holds its own scan root, and comparing two folders side by side is the point),
+ * `browser` (each tab holds its own page) and `network` (its filters, interface
+ * pick and rolling graph are the tab's own — the same bargain diskusage makes).
+ *
+ * `TabBar` spells this rule out one handler at a time, as `ensureTab` calls with
+ * a `kind` matcher; the root console (`layout/RootOverlay`) asks here instead,
+ * because its "+" resolves a payload through `NewTabMenu` and never sees which
+ * handler built it. Adding a singleton kind means adding it in both places.
+ */
+export function isSingletonTabKind(kind: TabKind): boolean {
+  return (
+    kind === "monitor" ||
+    kind === "printing" ||
+    kind === "skillslibrary" ||
+    kind === "promptchart" ||
+    kind === "calendar" ||
+    kind === "projects3d"
+  );
+}
+
 /** Whether a tab owns a backend PTY. Pure frontend panes must never be sent
  * through terminal spawn/kill/activity paths merely because they are not files. */
 export function isPtyTabKind(kind: TabKind): boolean {

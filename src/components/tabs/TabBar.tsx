@@ -1,5 +1,4 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import {
   BLOB_TAB_CMD,
@@ -55,7 +54,6 @@ import {
   type LocalityMenuState,
 } from "./TabLocalityBadges";
 import { texPdfPartner, useTexPdfCandidates } from "../../lib/viewers/tex/texPdfLink";
-import { useClampToViewport } from "../../hooks/useClampToViewport";
 import { startCursorPoll, desktopCursor, type PhysPoint } from "../../lib/window/coords";
 import { bindDragRelease, dragPlatform } from "../../lib/window/dragPlatform";
 import { useProjectsStore } from "../../stores/projects";
@@ -63,8 +61,9 @@ import { useSettingsStore } from "../../stores/settings";
 import { useExperimental } from "../../lib/experimental";
 import { closeTabWithConfirm } from "../../lib/remote/closeRemoteTab";
 import { registerHostBoundTab } from "../../lib/remote/hostBound";
-import { useActivityStore } from "../../stores/activity";
+import { busyStateClass, useActivityStore } from "../../stores/activity";
 import { UntestedTag } from "../common/UntestedTag";
+import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import { useT } from "../../lib/i18n";
 import { useChordHint } from "../../lib/shortcuts/shortcutHint";
 import { TRASH_PROJECT_ID } from "../../lib/projects/trashProject";
@@ -233,6 +232,9 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // Both maps are keyed by the composed PTY id (`<scope>:<tabKey>`), since tab
   // keys alone can collide across projects.
   const busyByTab = useActivityStore((s) => s.busyByTab);
+  // What each busy tab is busy WITH, so an agent turn, a command and the two at
+  // once are drawn apart (`busyStateClass`).
+  const busyKindByTab = useActivityStore((s) => s.busyKindByTab);
   // Per-tab "needs attention" map: an agent tab that finished its turn, or that
   // is waiting on a decision, while not being looked at pulses until it's viewed.
   const attentionByTab = useActivityStore((s) => s.attentionByTab);
@@ -287,7 +289,6 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   const [tabMenu, setTabMenu] = useState<
     { x: number; y: number; key: string; index: number } | null
   >(null);
-  const tabMenuRef = useRef<HTMLDivElement>(null);
   // #56: Shift+right-click on a tab enters inline rename mode for that key (no
   // menu, no prompt dialog). The label becomes a focused, text-selected <input>.
   const [editingKey, setEditingKey] = useState<string | null>(null);
@@ -295,7 +296,6 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   const [agentDialogOpen, setAgentDialogOpen] = useState(false);
   const [scheduleDialogKey, setScheduleDialogKey] = useState<string | null>(null);
   const schedulesByTarget = useAgentSchedulesStore((s) => s.byTarget);
-  const addMenuRef = useRef<HTMLDivElement>(null);
   const addBtnRef = useRef<HTMLButtonElement>(null);
   // The tabs live in their own horizontally-scrolling strip; chevrons flank it
   // and appear only when the strip overflows in that direction (the native
@@ -394,52 +394,12 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
     if (activeKey) clearAttention(`${scope}:${activeKey}`);
   }, [scope, activeKey, clearAttention]);
 
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onDown = (e: MouseEvent) => {
-      const t = e.target as Node;
-      if (addBtnRef.current?.contains(t)) return;
-      if (addMenuRef.current?.contains(t)) return;
-      setMenuPos(null);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setMenuPos(null);
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [menuOpen]);
-
-  // Keep the add menu inside the viewport: it's positioned at the +'s left/bottom
-  // and grows rightward/downward, so a + near the right (or bottom) edge would push
-  // it past the window border and clip it off-screen.
-  useClampToViewport(addMenuRef, menuPos, setMenuPos);
-
-  // Dismiss the tab context menu on an outside click or Escape (mirrors the add
-  // menu). Clicks inside the menu itself are ignored so its items can fire.
-  useEffect(() => {
-    if (!tabMenu) return;
-    const onDown = (e: MouseEvent) => {
-      if (tabMenuRef.current?.contains(e.target as Node)) return;
-      setTabMenu(null);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setTabMenu(null);
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [tabMenu]);
-
-  // Keep the tab context menu inside the viewport: it opens at the cursor and
-  // grows right/down, so one near the right/bottom edge would clip.
-  useClampToViewport(tabMenuRef, tabMenu, setTabMenu);
+  // Dismissal (outside click, Escape) and viewport clamping for BOTH menus —
+  // the "+" menu and the tab context menu — belong to `ContextMenuPortal` (see
+  // their renders below). Both used to hand-roll it off a document `mousedown`
+  // listener, which never hears the press when it lands in a pane the document
+  // can't see into — a sandboxed viewer/mail/reader <iframe>, or a terminal
+  // that swallowed the event — so the menu sat there open over the app.
 
   // Drop inline-rename mode if the edited tab disappears (closed / moved away).
   useEffect(() => {
@@ -1221,9 +1181,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             : null;
         const attn = !isActive || rawAttn === "decision" ? rawAttn : null;
         const stateClass = working
-          ? tab.kind === "shell"
-            ? " working shell"
-            : " working"
+          ? busyStateClass(busyKindByTab[ptyId], tab.kind)
           : attn === "decision"
             ? " needs-decision"
             : attn === "done"
@@ -1471,11 +1429,16 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
           </button>
         )}
       </div>
-      {menuOpen && menuPos && createPortal(
-        <div
+      {menuOpen && menuPos && (
+        <ContextMenuPortal
+          x={menuPos.x}
+          y={menuPos.y}
+          onClose={() => setMenuPos(null)}
           className="tab-new-menu tab-add-menu"
-          ref={addMenuRef}
-          style={{ position: "fixed", left: menuPos.x, top: menuPos.y }}
+          // Dropped from the "+" button, so it hangs under it whatever its
+          // height — a long entry list scrolls inside instead of sliding the
+          // menu up over the tab strip it came from.
+          keepBelow
         >
           <AddTabMenuList
             groups={[
@@ -1522,14 +1485,14 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                         label: t("newTabMenu.boxMemberFiles", { name: m.name }),
                         dot: "▤",
                         color: TAB_ACCENT.projectfiles,
-                        untested: true,
+                        untested: "newTabMenu.boxMemberFiles#2",
                         onPick: () => handleAddBoxMemberFiles(m),
                       },
                       {
                         key: `boxshell:${m.id}`,
                         label: t("newTabMenu.boxMemberShell", { name: m.name }),
                         color: TAB_ACCENT.shell,
-                        untested: true,
+                        untested: "newTabMenu.boxMemberShell#2",
                         onPick: () => handleAddBoxMemberShell(m),
                       },
                       ...(enabledAgents?.has("claude")
@@ -1537,7 +1500,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                             key: `boxagent:${m.id}`,
                             label: t("newTabMenu.boxMemberAgent", { name: m.name }),
                             color: TAB_ACCENT.agent,
-                            untested: true,
+                            untested: "newTabMenu.boxMemberAgent",
                             onPick: () => handleAddBoxMemberAgent(m),
                           }]
                         : []),
@@ -1576,9 +1539,12 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   onPick: () => handleAdd(item),
                 })),
               }] : []),
-              // System Monitor is whole-machine and Disk Usage picks its own scan
-              // root, so both are offered in every scope; Network Traffic is
-              // per-project (host/SSH link), so root has none.
+              // All three are offered in every scope. System Monitor is
+              // whole-machine and Disk Usage picks its own scan root; Network
+              // Traffic used to be withheld from root as "per-project", but its
+              // project half is only the remote one — a root tab renders exactly
+              // what a LOCAL project's does, this machine's interfaces and
+              // sockets, which is the one place a machine-wide question belongs.
               ...(!trashScope ? [{
                 label: t("newTabMenu.groupMonitoring"),
                 entries: [
@@ -1595,14 +1561,17 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                     color: TAB_ACCENT.diskusage,
                     onPick: handleAddDiskUsage,
                   },
-                  ...(scope !== "root"
-                    ? [{
-                        key: "network",
-                        label: t("newTabMenu.itemNetworkTraffic"),
-                        color: TAB_ACCENT.network,
-                        onPick: handleAddNetwork,
-                      }]
-                    : []),
+                  {
+                    key: "network",
+                    label: t("newTabMenu.itemNetworkTraffic"),
+                    color: TAB_ACCENT.network,
+                    // No pill here: this one entry serves every scope, and a
+                    // project's network tab is old, live-verified ground — the
+                    // badge would read as untested everywhere. The register
+                    // carries the root variant once, on the root console's own
+                    // copy of the entry (`NewTabMenu`).
+                    onPick: handleAddNetwork,
+                  },
                 ],
               }] : []),
               ...(!trashScope && showBlobItem
@@ -1624,7 +1593,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   label: t("printing.title"),
                   dot: "⎙",
                   color: TAB_ACCENT.printing,
-                  untested: true,
+                  untested: "printing.title#3",
                   onPick: handleAddPrinting,
                 }],
               }] : []),
@@ -1639,7 +1608,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   label: t("skillsLibrary.title"),
                   dot: "◧",
                   color: TAB_ACCENT.skillslibrary,
-                  untested: true,
+                  untested: "skillsLibrary.title#2",
                   onPick: handleAddSkills,
                 }],
               }] : []),
@@ -1652,7 +1621,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   label: t("promptChart.heading"),
                   dot: "⧗",
                   color: TAB_ACCENT.promptchart,
-                  untested: true,
+                  untested: "promptChart.heading#3",
                   onPick: handleAddPromptChart,
                 }],
               }] : []),
@@ -1664,7 +1633,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                       label: t("newTabMenu.browser"),
                       dot: "🌐",
                       color: TAB_ACCENT.browser,
-                      untested: true,
+                      untested: "newTabMenu.browser#2",
                       onPick: handleAddBrowser,
                     }],
                   }]
@@ -1685,8 +1654,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
               },
             ]}
           />
-        </div>,
-        document.body,
+        </ContextMenuPortal>
       )}
       {agentDialogOpen && (
         <CustomAgentDialog onClose={() => setAgentDialogOpen(false)} />
@@ -1709,11 +1677,12 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
           onChoose={(key, loc) => setTabLocation(key, loc)}
         />
       )}
-      {tabMenu && createPortal(
-        <div
+      {tabMenu && (
+        <ContextMenuPortal
+          x={tabMenu.x}
+          y={tabMenu.y}
+          onClose={() => setTabMenu(null)}
           className="tab-new-menu"
-          ref={tabMenuRef}
-          style={{ position: "fixed", left: tabMenu.x, top: tabMenu.y }}
         >
           <button
             className="tab-new-menu-item"
@@ -1739,7 +1708,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             >
               <span className="tab-new-menu-dot tab-new-menu-dot--accent">⧉</span>
               {t("tabBar.duplicate")}
-              <UntestedTag />
+              <UntestedTag id="tabBar.1" />
             </button>
           )}
           {tabs.some((tab) => tab.key === tabMenu.key && (tab.kind === "agent" || tab.kind === "local_agent")) && (
@@ -1752,7 +1721,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             >
               <span className="tab-new-menu-dot tab-new-menu-dot--accent">◷</span>
               {t("agentSchedule.menu")}
-              <UntestedTag />
+              <UntestedTag id="tabBar.2" />
             </button>
           )}
           <button
@@ -1798,8 +1767,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             <span className="tab-new-menu-dot tab-new-menu-dot--danger">×</span>
             {t("tabBar.closeToRight")}
           </button>
-        </div>,
-        document.body,
+        </ContextMenuPortal>
       )}
       {/* Styled tab hover card (matches the project pill popup). Suppressed
           mid-drag and while a menu is open so it never overlaps them. The card

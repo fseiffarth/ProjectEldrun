@@ -59,6 +59,31 @@ actions would have filed the console's file column onto the project on screen.
 Unsplit, the ◫ sits in the console's title bar and the control cluster reserves
 the column's width the way `TabBar` does; split, each subwindow carries its own.
 
+The console's "+" is `NewTabMenu`, the popout's menu — and its **Monitoring**
+group is the whole of it: System Monitor, Disk Usage and Network Traffic. The
+first two ask about this machine and always did; Network Traffic was withheld
+from root as "per-project", but only its *remote* half is a project's. Without
+one, `NetworkTrafficPane` renders what a **local** project's tab renders — this
+machine's interfaces, rates and sockets — and drops the host/link switch, the
+SSH-link totals and the files-synced totals, which have nothing to answer for.
+The backend needs no root case: an id no project carries is an id
+`remote::remote_target_for` finds no host for, which is already the local read.
+Only `get_net_usage` is skipped outright, because its empty id means *every*
+project's link usage (the recap's reading), not "no project".
+
+The console's "+" also keeps `TabBar`'s ensure bargain, which it could not
+inherit: `NewTabMenu` hands back a resolved payload and no hint of which handler
+built it, where `TabBar` spells the rule out one `ensureTab` call at a time. So
+`addTab` reads it off the kind (`isSingletonTabKind` — the monitor, the print
+queues, the skills catalog, the prompt chart, the calendar, the 3D cloud) and
+focuses the tab that exists instead of stacking a copy. It focuses through
+`revealTabInScope`, not `setActive`: root is not the active scope while the
+console floats, and the boolean says whether it landed. A false means the tab is
+somewhere this console cannot show it — a parked or detached subwindow — and the
+console opens its own rather than leaving the button doing nothing. A popout's
+copy of the menu gets none of this: the tab it would focus may live in another
+window entirely, where focusing it is not an answer.
+
 Two jobs moved into the overlay's always-mounted host because root no longer
 becomes the active scope:
 

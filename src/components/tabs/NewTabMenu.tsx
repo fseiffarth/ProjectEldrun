@@ -1,10 +1,9 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import {
   BROWSER_TAB_CMD,
   PRINTING_TAB_CMD,
   DISKUSAGE_TAB_CMD,
+  MONITOR_TAB_CMD,
   NETWORK_TAB_CMD,
   SKILLSLIBRARY_TAB_CMD,
   PROMPTCHART_TAB_CMD,
@@ -22,6 +21,7 @@ import {
   type StaticMenuItem,
 } from "./newTabItems";
 import { AddTabMenuList } from "./AddTabMenuList";
+import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import { useAddTabMenuData } from "./useAddTabMenuData";
 import { localModelMenuGroup, useLocalModelPlacement } from "./localModelGroup";
 import { useAgentWorktreePicker } from "./agentWorktrees";
@@ -30,8 +30,10 @@ import { useT } from "../../lib/i18n";
 import { registerHostBoundTab } from "../../lib/remote/hostBound";
 
 interface Props {
-  /** Scope (project id or "root") the new tab belongs to. Gates the project-only
-   *  sections (Network Traffic, which needs a host/SSH link). */
+  /** Scope (project id or "root") the new tab belongs to. Feeds the shared
+   *  entry data (`useAddTabMenuData`) and the host-bound registration; no
+   *  section is gated on it — the monitoring trio answers for the machine, so
+   *  the root console offers all three. */
   scope: string;
   /** cwd for the new tab (the popout group's project directory). */
   projectCwd: string;
@@ -60,8 +62,6 @@ interface Props {
  */
 export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onClose, onManageAgents }: Props) {
   const t = useT();
-  const menuRef = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState(anchor);
 
   // Experimental — off for users, on in debug. This menu is the DETACHED
   // window's, and it is a separate React root: an entry added only to `TabBar`
@@ -91,43 +91,13 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
   const worktreePicker = useAgentWorktreePicker({ projectCwd, projectName, enabled: true });
   const { asking } = worktreePicker;
 
-  // Outside-click / Escape closes the menu — except while the worktree question
-  // is up: its dialog is portaled outside the menu, so a click into it would
+  // Outside-click / Escape dismissal and the viewport clamp are the shared
+  // `ContextMenuPortal`'s — the same one TabBar's "+" menu and tab context menu
+  // use, so the popout's copy can't drift from theirs. The one local rule: while
+  // the worktree question is up, dismissal is suspended (`dismiss={!asking}`).
+  // Its dialog is portaled outside the menu, so a click into it would otherwise
   // read as an outside click, unmount this menu, and take the pending answer
   // (and the tab) with it. The dialog owns Escape for that stretch.
-  useEffect(() => {
-    if (asking) return;
-    const onDown = (e: MouseEvent) => {
-      if (menuRef.current?.contains(e.target as Node)) return;
-      onClose();
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [asking, onClose]);
-
-  // Keep the menu inside the viewport (mirrors TabBar's clamp).
-  useLayoutEffect(() => {
-    const el = menuRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const margin = 8;
-    let nx = pos.x;
-    let ny = pos.y;
-    if (rect.right > window.innerWidth - margin) {
-      nx = Math.max(margin, window.innerWidth - margin - rect.width);
-    }
-    if (rect.bottom > window.innerHeight - margin) {
-      ny = Math.max(margin, window.innerHeight - margin - rect.height);
-    }
-    if (nx !== pos.x || ny !== pos.y) setPos({ x: nx, y: ny });
-  }, [pos]);
 
   const pickStatic = (item: StaticMenuItem) => {
     void worktreePicker.specFor(item).then((spec) => {
@@ -194,13 +164,17 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
     }
   };
 
-  return createPortal(
+  return (
     <>
     {worktreePicker.dialogs}
-    <div
+    <ContextMenuPortal
+      x={anchor.x}
+      y={anchor.y}
+      onClose={onClose}
       className="tab-new-menu tab-add-menu"
-      ref={menuRef}
-      style={{ position: "fixed", left: pos.x, top: pos.y }}
+      dismiss={!asking}
+      // Same as the main bar's "+": stays under its button, scrolls when tall.
+      keepBelow
     >
       <AddTabMenuList
         groups={[
@@ -242,7 +216,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                     label: t("newTabMenu.boxMemberFiles", { name: m.name }),
                     dot: "▤",
                     color: TAB_ACCENT.projectfiles,
-                    untested: true,
+                    untested: "newTabMenu.boxMemberFiles",
                     onPick: () => {
                       onPick({
                         label: t("newTabMenu.boxMemberFiles", { name: m.name }),
@@ -259,7 +233,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                     key: `boxshell:${m.id}`,
                     label: t("newTabMenu.boxMemberShell", { name: m.name }),
                     color: TAB_ACCENT.shell,
-                    untested: true,
+                    untested: "newTabMenu.boxMemberShell",
                     onPick: () => {
                       onPick({
                         label: t("newTabMenu.boxMemberShell", { name: m.name }),
@@ -304,11 +278,28 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
               onPick: () => pickStatic(item),
             })),
           },
-          // Disk Usage can scan anywhere, so it is offered in every scope; Network
-          // Traffic is per-project (host/SSH link), so the root scope has none.
+          // The same three `TabBar` offers, in the same order — this menu is the
+          // ROOT CONSOLE's and every popout's, and System Monitor was missing
+          // from both: a whole-machine view with nowhere to open it when no
+          // project is on screen. Network Traffic joins it for the same reason;
+          // without a project its remote half simply does not render, leaving
+          // this machine's interfaces and sockets (see `NetworkTrafficPane`).
           {
             label: t("newTabMenu.groupMonitoring"),
             entries: [
+              {
+                key: "monitor",
+                label: t("newTabMenu.itemSystemMonitor"),
+                color: TAB_ACCENT.monitor,
+                untested: "newTabMenu.itemSystemMonitor",
+                onPick: () =>
+                  pickFixed({
+                    label: t("newTabMenu.itemSystemMonitor"),
+                    cmd: MONITOR_TAB_CMD,
+                    cwd: projectCwd,
+                    kind: "monitor",
+                  }),
+              },
               {
                 key: "diskusage",
                 label: t("newTabMenu.itemDiskUsage"),
@@ -322,20 +313,19 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                     kind: "diskusage",
                   }),
               },
-              ...(scope !== "root"
-                ? [{
-                    key: "network",
+              {
+                key: "network",
+                label: t("newTabMenu.itemNetworkTraffic"),
+                color: TAB_ACCENT.network,
+                untested: "newTabMenu.itemNetworkTraffic",
+                onPick: () =>
+                  pickFixed({
                     label: t("newTabMenu.itemNetworkTraffic"),
-                    color: TAB_ACCENT.network,
-                    onPick: () =>
-                      pickFixed({
-                        label: t("newTabMenu.itemNetworkTraffic"),
-                        cmd: NETWORK_TAB_CMD,
-                        cwd: projectCwd,
-                        kind: "network",
-                      }),
-                  }]
-                : []),
+                    cmd: NETWORK_TAB_CMD,
+                    cwd: projectCwd,
+                    kind: "network",
+                  }),
+              },
             ],
           },
           {
@@ -345,7 +335,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
               label: t("printing.title"),
               dot: "⎙",
               color: TAB_ACCENT.printing,
-              untested: true,
+              untested: "printing.title#2",
               onPick: () =>
                 pickFixed({
                   label: t("printing.title"),
@@ -367,7 +357,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
               label: t("skillsLibrary.title"),
               dot: "◧",
               color: TAB_ACCENT.skillslibrary,
-              untested: true,
+              untested: "skillsLibrary.title",
               onPick: () =>
                 pickFixed({
                   label: t("skillsLibrary.title"),
@@ -387,7 +377,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
               label: t("promptChart.heading"),
               dot: "⧗",
               color: TAB_ACCENT.promptchart,
-              untested: true,
+              untested: "promptChart.heading#2",
               onPick: () =>
                 pickFixed({
                   label: t("promptChart.heading"),
@@ -405,7 +395,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                   label: t("newTabMenu.browser"),
                   dot: "🌐",
                   color: TAB_ACCENT.browser,
-                  untested: true,
+                  untested: "newTabMenu.browser",
                   onPick: () =>
                     pickFixed({
                       label: t("newTabMenu.browser"),
@@ -419,8 +409,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
             : []),
         ]}
       />
-    </div>
-    </>,
-    document.body,
+    </ContextMenuPortal>
+    </>
   );
 }
