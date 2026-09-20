@@ -216,7 +216,7 @@ export interface Settings {
    *  the root style the moment it is loaded. Round-trips through the backend's
    *  `extra` catch-all — no Rust field needed. */
   ui_theme_presets?: ThemePreset[];
-  /** Calendar: first column of the week — `0` = Sunday (default), `1` = Monday. */
+  /** Calendar: first column of the week — `0` = Sunday, `1` = Monday (default). */
   calendar_week_start?: 0 | 1;
   /** Calendar: the view a fresh calendar tab opens on. Default `"month"`. */
   calendar_default_view?: CalendarViewKind;

@@ -119,7 +119,7 @@ pub struct Settings {
     /// round-trips the value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui_corners: Option<String>,
-    /// Calendar: first column of the week — `0` = Sunday (default), `1` = Monday.
+    /// Calendar: first column of the week — `0` = Sunday, `1` = Monday (default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calendar_week_start: Option<u8>,
     /// Calendar: the view a fresh calendar tab opens on

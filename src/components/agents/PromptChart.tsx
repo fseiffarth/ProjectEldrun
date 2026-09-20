@@ -144,7 +144,7 @@ function noneReason(drop: PromptTimelineDrop | undefined): string | undefined {
 export function PromptChart({ scope, active, tabs, stateOf }: Props) {
   const t = useT();
   const lang = useI18nStore((s) => s.lang);
-  const weekStart = useSettingsStore((s) => (s.settings?.calendar_week_start ?? 0) as 0 | 1);
+  const weekStart = useSettingsStore((s) => (s.settings?.calendar_week_start ?? 1) as 0 | 1);
   const prompts = useAgentPromptsStore((state) => state.byProject[scope] ?? EMPTY_PROMPTS);
   const history = useAgentPromptsStore((state) => state.historyByProject[scope] ?? EMPTY_HISTORY);
   const links = useAgentPromptsStore((state) => state.linksByProject[scope] ?? EMPTY_LINKS);

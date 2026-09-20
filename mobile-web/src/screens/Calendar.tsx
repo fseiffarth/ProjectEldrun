@@ -35,7 +35,7 @@ export function Calendar() {
   const load = useCallback(async () => { setBusy(true); setError(""); try { const { calendar } = await api<{ calendar: MobileCalendar }>(`/api/v1/calendar?month=${month}`); setData(calendar); setSelected((d) => d.startsWith(month) ? d : `${month}-01`); } catch (e) { setError(`Desktop calendar unavailable: ${String(e)}`); } finally { setBusy(false); } }, [month]);
   useEffect(() => { void load(); }, [load]);
   const mutate = async (action: CalendarAction) => { setBusy(true); setError(""); try { const { calendar } = await api<{ calendar: MobileCalendar }>(`/api/v1/calendar?month=${month}`, { method: "POST", body: JSON.stringify(action) }); setData(calendar); return true; } catch (e) { setError(String(e)); return false; } finally { setBusy(false); } };
-  const weekStart = data?.week_start ?? 0; const days = useMemo(() => grid(month, weekStart), [month, weekStart]);
+  const weekStart = data?.week_start ?? 1; const days = useMemo(() => grid(month, weekStart), [month, weekStart]);
   const events = useCallback((date: string) => (data?.events ?? []).filter((event) => happensOn(event, date)), [data]);
   const selectedEvents = useMemo(() => events(selected).sort((a, b) => Number(b.all_day) - Number(a.all_day) || a.start.localeCompare(b.start)), [events, selected]);
   const label = useMemo(() => new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(new Date(`${month}-01T12:00`)), [month]);

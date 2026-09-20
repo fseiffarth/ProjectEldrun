@@ -1212,7 +1212,7 @@ async function calendarSnapshot(month: string): Promise<MobileCalendar> {
     await calendar.load();
     calendar = useCalendarStore.getState();
   }
-  const weekStart: 0 | 1 = useSettingsStore.getState().settings?.calendar_week_start === 1 ? 1 : 0;
+  const weekStart: 0 | 1 = useSettingsStore.getState().settings?.calendar_week_start === 0 ? 0 : 1;
   const grid = monthGrid(Number(month.slice(0, 4)), Number(month.slice(5, 7)), weekStart, 6);
   const windowStart = grid[0][0];
   const windowEnd = addDays(grid[5][6], 1);

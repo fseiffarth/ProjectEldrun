@@ -101,7 +101,7 @@ export function DateField({
 }: Props) {
   const t = useT();
   const lang = useI18nStore((state) => state.lang);
-  const weekStart = (useSettingsStore((state) => state.settings?.calendar_week_start) ?? 0) as 0 | 1;
+  const weekStart = (useSettingsStore((state) => state.settings?.calendar_week_start) ?? 1) as 0 | 1;
   const [anchor, setAnchor] = useState<{ x: number; y: number } | null>(null);
   const today = todayStr();
   // The day the keyboard sits on, which is also the month the grid shows. Seeded

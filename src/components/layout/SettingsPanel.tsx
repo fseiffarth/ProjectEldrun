@@ -1271,9 +1271,9 @@ export function SettingsDialog({
               <div className="settings-card-row">
                 <span>{t("settings.weekStartsOn")}</span>
                 <Dropdown
-                  value={String(settings?.calendar_week_start ?? 0)}
+                  value={String(settings?.calendar_week_start ?? 1)}
                   onChange={(v) =>
-                    void updateSettings({ calendar_week_start: Number(v) === 1 ? 1 : 0 })
+                    void updateSettings({ calendar_week_start: Number(v) === 0 ? 0 : 1 })
                   }
                   options={[
                     { value: "0", label: t("day.sunday") },

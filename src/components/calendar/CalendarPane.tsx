@@ -90,7 +90,7 @@ export function CalendarPane({ visible }: Props) {
 
   const settings = useSettingsStore((s) => s.settings);
 
-  const weekStart = (settings?.calendar_week_start ?? 0) as 0 | 1;
+  const weekStart = (settings?.calendar_week_start ?? 1) as 0 | 1;
   // App-wide now, not the calendar's own switch — the grid, the header clock,
   // the to-do cards and the reminder popup are one app's idea of the time.
   const use24h = useUse24h();
