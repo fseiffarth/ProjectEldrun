@@ -169,8 +169,17 @@ still be addressed.
 `sync_status`, `time_summary`, `usage_recap` and `boxes_list` are the questions
 a *project* agent structurally cannot answer — which projects have uncommitted
 work, whether anything is out of step with its host, how long last week went.
-All five are pure reads of files Eldrun already owns, and none of them opens a
-connection. The git sweep runs `git` on the **local** working copy only: a
+`project_activity` is the sixth: one project's git state and latest commits.
+All of them read files Eldrun already owns and none opens a connection — with
+the one caveat every git call here carries: `hookless_git_command_in` first
+strips program-naming keys from the repo's `.git/config`, and the tool
+descriptions say so rather than claim a pure read. `project_activity` passes
+`--no-show-signature`, since a repo's `log.showSignature` would run its own
+`gpg.program`. A sweep that runs short of its request deadline answers with the
+rows it has and lists the unreached projects under `skipped` (`incomplete`):
+a snapshot is only started while it can still finish. The sweeps run *before*
+the review lock is taken, so a long one never stalls a review decision or a
+tab teardown. The git sweep runs `git` on the **local** working copy only: a
 remote project through its mirror, and reported as skipped, with the reason,
 when it has none. `sync_status` reports what the last pass recorded rather than
 probing the host. A synchronous SSH round trip inside a tool call would stall
@@ -185,6 +194,22 @@ The two rollups are bucketed by **UTC** date, since that is how
 say so rather than passing them off as local days. Eldrun's own window time is
 reported as `app_seconds` and never inside a project's total, and a scope whose
 project has since been deleted keeps its bare id — the hours are still real.
+
+**A read is a view, never the stored row.** A root agent is kept from mail
+because mail is text anyone can send you, and an invitation's title or a
+subscribed calendar's notes is the same kind of text. So `calendar_list`,
+`todo_list` and every write's reply go through `event_view`/`task_view`: an
+explicit field list (no `caldav_href`, etag or other server-parked `extra`),
+`strip_invisible` over every string, `external: true` plus `redact_urls` for a
+row in a read-only calendar, and `synced: true` for one that lives on a CalDAV
+server, where invitations land beside the user's own entries. The `Change` rows
+the window and the review layer use stay complete. `calendar_list` matches an
+event while any of it overlaps the range, and `expand` adds a series'
+occurrences (at most 92 days; `occurrences` in `root_mcp.rs` walks daily /
+weekly / monthly / yearly rules and says so when it meets a numbered weekday or
+an imported RRULE it cannot). `calendar_free_busy` is built on the same walker.
+Pagination cuts only the array a tool is about (`paged_key`), and a cut page
+says `truncated` in words.
 
 **An event is edited, not re-created.** `calendar_update_event` closes the gap
 that made rescheduling a delete plus an add, which loses the row's identity: a
@@ -232,7 +257,10 @@ endpoint answers `503` to the agents that already hold the token. The check
 sits after the bearer check, so an unauthenticated caller learns nothing from
 it. The listener itself stays bound; rebinding would mint a port the running
 agents were never told about, and turning the tools back on would not reach
-them. Settings and the console's ⚿ badge are two doors onto that one key.
+them. Settings is now the one door onto that key: the console's ⚿ badge became
+the door to the proposals panel, since a badge that both reported the switch and
+flipped it on a plain click was one click away from silently disarming the tools
+while the user was reaching for the pending rows.
 
 **A second switch keeps the tools local.** `root_mcp_local_only` (absent means
 off; Settings, under the main switch) serves local-model tabs only, so the
@@ -299,7 +327,7 @@ changes compare the previous row atomically under the mail database lock: a
 composer save also defeats an already-running agent update or delete. Older
 class-only drafts remain available to the user in the composer. A reader's recipients must
 already be on the replied-to message. A draft is not a staged `Proposal`: it
-lives in the mail store, shows in the review strip as a row that *opens the
+lives in the mail store, shows in the review panel as a row that *opens the
 composer*, and `mail_draft_send` stays a Tauri command — nothing here sends.
 The `root-mcp-changed` event gains `kind: "draft"`, carrying the id and origin
 only.
@@ -349,11 +377,18 @@ A conflict cannot be force-applied. Rejection rebuilds the tab's view and
 conflicts dependent proposals. The next successful tool call reports their ids
 in `dropped_proposals`; `proposals_list` reports only its own tab's statuses.
 
-The console's review strip shows actual field changes, folds only sibling board
-reindex rows, strips invisible controls, and labels CalDAV outbound effects.
-The header carries a pending-count button while the console is closed. Bulk
-approval submits the explicit displayed id/digest pairs, so newly arriving
-proposals cannot join a click already in flight. Open reviews refresh conflict
+The proposals hang from the console's ⚿ badge as a panel (the shared
+`ContextMenuPortal`: click-away, Escape, viewport clamp), not as a strip under
+the title bar — that strip took a slice of the terminals' height to say "(0)"
+most of the time. The panel shows actual field changes, folds only sibling board
+reindex rows, strips invisible controls, and labels CalDAV outbound effects; a
+decision is one glyph, ✓ or ✗ (a conflict's ✗ discards), each still *named*
+"Approve"/"Reject" for the tooltip and the screen reader. The badge therefore no
+longer toggles the tools: Settings is the one door onto that switch, and the
+badge reports its state as before. The project bar carries a pending-count ⚿
+button while the console is closed, and it opens the console with the panel
+already down. Bulk approval submits the explicit displayed id/digest pairs, so
+newly arriving proposals cannot join a click already in flight. Open reviews refresh conflict
 status every five seconds. These surfaces still carry `UntestedTag` until live QA.
 
 The `destructive` level stages tools with `destructiveHint`; other write tools
@@ -367,6 +402,12 @@ Tokens are fresh per spawn and revoked on tab teardown (including failed
 spawns). Teardown removes only the copy, retaining proposals as from a closed
 tab. The same PTY id on resume can find them with a fresh token. The runtime
 itself contains only the listener port, never a shared secret.
+
+The gate holds only while root agents are fenced. `root_mcp_status` carries
+`review_enforced` (fence policy on for root, platform fenceable, bubblewrap
+present); when it is false the ⚿ badge shows ⚠ and the review panel says that
+review is advisory, because an unfenced agent can edit the store or
+`root_mcp_review` itself.
 
 This is a write-integrity gate, **not confidentiality protection**. Calendar
 visibility scoping is a separate read-gate feature and has not shipped here;
@@ -420,7 +461,9 @@ The HTTP server authenticates before collecting a body, rejects all Origins,
 and accepts only its loopback authority or the fixed reader guest authority
 (the latter for readers only). Bounds: 32 sockets with 30-second lifetimes (one HTTP/1 request per socket; replies
 close the connection so a later write cannot outlive an old keep-alive socket),
-8 workers, 2 requests per spawn, 120 requests per spawn per minute, 128 KiB
+8 workers, 2 requests per spawn (a third queues for up to 8 seconds rather than
+drawing a `429`, which a CLI firing parallel calls reads as a broken server; the
+15-second work deadline counts from admission), 120 requests per spawn per minute, 128 KiB
 request bodies with a 5-second upload deadline, and 512 KiB serialized replies.
 A worker retains its permit even if HTTP disconnects. Work has a 15-second
 cooperative deadline; git subprocesses have a 3-second deadline and bounded

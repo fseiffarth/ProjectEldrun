@@ -302,6 +302,10 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   const selectRoot = () => {
     useRootOverlayStore.getState().show();
   };
+  const openReview = () => {
+    useRootReviewStore.getState().setPanel(true);
+    useRootOverlayStore.getState().show();
+  };
   const selectTrash = () => {
     if (!trashProject) return;
     usePillSelectionStore.getState().clear();
@@ -555,7 +559,10 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
           />
           {/* Hairline between the fixed leading segment (★ · 🗑 · ▣) and the
               scrolling project strip, so the two zones read as two zones. */}
-          {reviewCount > 0 && <button className="root-overlay-rights on no-drag" onClick={selectRoot}
+          {/* The count's own button opens the console *at* the proposals: the
+              panel is what it counts, and a click that only floated the console
+              would leave the rows one more click away. */}
+          {reviewCount > 0 && <button className="root-overlay-rights on no-drag" onClick={openReview}
             title={t("rootReview.title")} aria-label={t("rootReview.open", { count: reviewCount })}>
             {t("rootConsole.rightsBadge")} {reviewCount}
           </button>}
@@ -668,7 +675,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
               {currentBox ? (
                 <>
                   <div className="project-switcher-box-add-title">
-                    {t("projectSwitcher.addProjectsToBox")} <UntestedTag />
+                    {t("projectSwitcher.addProjectsToBox")} <UntestedTag id="projectSwitcher.addProjectsToBox" />
                   </div>
                   <input
                     className="project-switcher-box-add-filter"
@@ -711,7 +718,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
                     className="untested"
                     onClick={() => { closeHeaderMenu(ADD_MENU_ID); openHpcWizard(); }}
                   >
-                    {t("projectSwitcher.hpcPipeline")} <UntestedTag />
+                    {t("projectSwitcher.hpcPipeline")} <UntestedTag id="projectSwitcher.hpcPipeline" />
                   </button>
                   <button
                     className="untested"
@@ -720,7 +727,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
                       useBoxEditorStore.getState().openCreate();
                     }}
                   >
-                    {t("projectSwitcher.newBox")} <UntestedTag />
+                    {t("projectSwitcher.newBox")} <UntestedTag id="projectSwitcher.newBox" />
                   </button>
                 </>
               )}

@@ -29,6 +29,11 @@ interface RootReviewState {
   count: number;
   error: string | null;
   busy: boolean;
+  /** Whether the console's ⚿ badge has its proposals panel dropped. It lives
+   *  here rather than in `RootOverlay` because the project bar's ⚿ button opens
+   *  the console *at* the proposals — one click from the count to the rows. */
+  panel: boolean;
+  setPanel: (panel: boolean) => void;
   refresh: () => Promise<void>;
   decide: (proposal: RootProposal, action: "apply" | "reject" | "undo") => Promise<void>;
   applyAll: (proposals: RootProposal[]) => Promise<void>;
@@ -48,7 +53,8 @@ async function action(command: string, args: Record<string, unknown>) {
   }
 }
 export const useRootReviewStore = create<RootReviewState>((set) => ({
-  proposals: [], count: 0, error: null, busy: false,
+  proposals: [], count: 0, error: null, busy: false, panel: false,
+  setPanel: (panel) => set({ panel }),
   refresh: async () => {
     const version = ++refreshVersion;
     try {

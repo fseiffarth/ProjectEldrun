@@ -24,7 +24,7 @@ describe("root-agent write review", () => {
     expect(screen.getAllByText("After").length).toBe(3);
     fireEvent.click(screen.getByRole("button", { name: "Approve" }));
     expect(decide).toHaveBeenCalledWith(expect.objectContaining({ id: "p", digest: "digest" }), "apply");
-    fireEvent.click(screen.getByRole("button", { name: "Approve all (1)" }));
+    fireEvent.click(screen.getByRole("button", { name: "✓ Approve all (1)" }));
     expect(applyAll).toHaveBeenCalledWith([expect.objectContaining({ id: "p", digest: "digest" })]);
   });
   it("disables approval for conflicts and offers discard", () => {
@@ -44,6 +44,22 @@ describe("root-agent write review", () => {
     expect(screen.getByText("And 1 cards reordered")).toBeTruthy();
     expect(screen.queryByText("Hidden sibling")).toBeNull();
     expect(screen.getAllByText("Visible change").length).toBeGreaterThan(0);
+  });
+  it("says so when it opens on nothing, since it is now a panel and not a strip", () => {
+    useRootReviewStore.setState({ proposals: [], count: 0 });
+    render(<RootReviewStrip />);
+    expect(screen.getByText("No agent proposals waiting.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+  });
+  it("decides with a ✓ / ✗ that still name themselves", () => {
+    render(<RootReviewStrip />);
+    const approve = screen.getByRole("button", { name: "Approve" });
+    expect(approve.textContent).toBe("✓");
+    expect(approve.getAttribute("title")).toBe("Approve");
+    const reject = screen.getByRole("button", { name: "Reject" });
+    expect(reject.textContent).toBe("✗");
+    fireEvent.click(reject);
+    expect(decide).toHaveBeenCalledWith(expect.objectContaining({ id: "p" }), "reject");
   });
   it("shows outbound effects and strips invisible text without interpreting HTML", () => {
     const p = proposal({ calendars: [{ id: "work", name: "Work\u202e", caldav_account_id: "account" }] });

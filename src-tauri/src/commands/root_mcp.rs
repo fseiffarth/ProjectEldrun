@@ -82,6 +82,9 @@ struct ServerState {
 }
 
 static REQUESTS: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+/// How long a request may wait for a worker slot. With the 5 s upload and the
+/// 15 s of work it stays inside a socket's 30 s lifetime.
+const PERMIT_WAIT: Duration = Duration::from_secs(8);
 
 /// Runs before body collection or JSON parsing. Kept independent of Tauri for
 /// adversarial transport tests using real request bodies.
@@ -102,6 +105,7 @@ async fn admit(request: Request, port: u16) -> Result<(root_mcp::Session, Value,
     if headers.get_all(header::AUTHORIZATION).iter().count() != 1 { return Err(StatusCode::UNAUTHORIZED); }
     let session = root_mcp::authenticate(headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()))
         .ok_or(StatusCode::UNAUTHORIZED)?;
+    if !path_serves(request.uri().path(), session.identity.caller) { return Err(StatusCode::UNAUTHORIZED); }
     if authority == Some(guest.as_str()) && session.identity.caller != root_mcp::Caller::Reader {
         return Err(StatusCode::FORBIDDEN);
     }
@@ -110,9 +114,17 @@ async fn admit(request: Request, port: u16) -> Result<(root_mcp::Session, Value,
         return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }
     if !session.admit_rate() { return Err(StatusCode::TOO_MANY_REQUESTS); }
-    let global = REQUESTS.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(8))).clone()
-        .try_acquire_owned().map_err(|_| StatusCode::TOO_MANY_REQUESTS)?;
-    let own = session.permits.clone().try_acquire_owned().map_err(|_| StatusCode::TOO_MANY_REQUESTS)?;
+    // Queue briefly rather than refuse: a CLI fires its parallel tool calls at
+    // once, and a `429` reads to it as a broken server, not as "one moment".
+    // The rate limit above and the socket bound still cap what can queue.
+    let permits = async {
+        let own = session.permits.clone().acquire_owned().await.ok()?;
+        let global = REQUESTS.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(8))).clone()
+            .acquire_owned().await.ok()?;
+        Some((global, own))
+    };
+    let (global, own) = tokio::time::timeout(PERMIT_WAIT, permits).await
+        .ok().flatten().ok_or(StatusCode::TOO_MANY_REQUESTS)?;
     let body = tokio::time::timeout(Duration::from_secs(5), axum::body::to_bytes(request.into_body(), security::MAX_BODY))
         .await.map_err(|_| StatusCode::REQUEST_TIMEOUT)?
         .map_err(|_| StatusCode::PAYLOAD_TOO_LARGE)?;
@@ -130,6 +142,27 @@ async fn handle(State(state): State<ServerState>, request: Request) -> Response 
     };
     let tool = message["params"]["name"].as_str().unwrap_or("").to_string();
     let audit_session = session.clone();
+    if session.identity.caller == root_mcp::Caller::Scheduler {
+        if session.identity.project.as_deref().is_none_or(|p| crate::services::schedule_mcp::level(p).is_err()) || session.check().is_err() {
+            security::audit_reason(&session, &tool, "denied", started.elapsed(), Some("policy_disabled"));
+            return StatusCode::FORBIDDEN.into_response();
+        }
+        let reset = if message["method"] == "tools/call" && message["params"]["name"] == "schedule_prompt"
+            && message["params"]["arguments"]["when"]["type"] == "after_usage_reset" {
+            let agent = session.identity.schedule_target.as_ref().map(|b| b.agent.clone()).unwrap_or_default();
+            let report = tokio::time::timeout(Duration::from_secs(8), crate::commands::agents::agent_usage(agent, Some(false))).await.ok();
+            report.and_then(|r| r.raw).as_deref().and_then(|raw| crate::services::schedule_usage::next_reset(raw, chrono::Utc::now()))
+        } else { None };
+        let outcome = tokio::task::spawn_blocking(move || {
+            let (_global, _own) = (global, own);
+            crate::services::schedule_mcp::handle_message(&session, &message, reset)
+        }).await;
+        let Ok((reply, changed)) = outcome else { return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
+        let failed = reply.as_ref().is_some_and(|r| r.get("error").is_some() || r["result"]["isError"] == true);
+        security::audit_reason(&audit_session, &tool, if failed { "refused" } else { "allowed" }, started.elapsed(), reply.as_ref().and_then(crate::services::schedule_mcp::refusal_reason));
+        if changed { let _ = state.app.emit("agent-schedules-changed", ()); }
+        return match reply { Some(reply) => Json(reply).into_response(), None => StatusCode::ACCEPTED.into_response() };
+    }
     let mail = state
         .app
         .try_state::<crate::commands::mail::MailState>()
@@ -138,6 +171,8 @@ async fn handle(State(state): State<ServerState>, request: Request) -> Response 
         // Permits live in the worker: an HTTP disconnect cannot free capacity
         // while blocking work is still running.
         let (_global, _own) = (global, own);
+        // From admission, not arrival: time spent queued is not time worked.
+        let deadline = Instant::now() + Duration::from_secs(15);
         let caller = &session.identity;
         let state = storage::state_dir();
         let calendar = crate::commands::calendar::calendar_path();
@@ -163,7 +198,7 @@ async fn handle(State(state): State<ServerState>, request: Request) -> Response 
                 mail: mail.as_ref().map(|m| m as &dyn crate::services::root_mcp_mail::MailAccess),
                 reader_refusal: reader_refusal.as_deref(),
                 policy, access: session.access.clone(), session: Some(&session),
-                deadline: Some(started + Duration::from_secs(15)),
+                deadline: Some(deadline),
             },
             &caller.tab,
             &message,
@@ -222,6 +257,7 @@ pub fn start(app: AppHandle) {
         root_mcp::set_runtime(Runtime { port: addr.port() });
         let router = Router::new()
             .route("/mcp", post(handle))
+            .route("/mcp/schedule", post(handle))
             .layer(axum::middleware::map_response(close_connection))
             .with_state(ServerState { app, port: addr.port() });
         let listener = BoundedListener { tcp: listener, slots: Arc::new(tokio::sync::Semaphore::new(32)) };
@@ -246,6 +282,12 @@ pub struct RootMcpStatus {
     /// and at least one mail account is open to a contained reader
     /// (`MailAiPrefs::agent_access`) — the badge's mail mark.
     pub mail_open: bool,
+    /// A root agent started now would run inside the fence, so the staged-write
+    /// review is a gate it cannot walk around. False (fence switched off, or a
+    /// platform with none) means the agent shares the user's files and can edit
+    /// the calendar store or the review setting itself — the review strip is
+    /// then a courtesy, and the badge has to say so rather than imply a gate.
+    pub review_enforced: bool,
 }
 
 /// What the overlay's rights badge shows. Deliberately carries neither the port
@@ -259,6 +301,9 @@ pub fn root_mcp_status() -> RootMcpStatus {
         wired_clis: root_mcp::WIRED_CLIS,
         mail_open: root_mcp::mail_enabled_in(&storage::state_dir().join("settings.json"))
             && crate::commands::mail::any_account_open_to_agents(),
+        review_enforced: crate::services::agent_fence::policy_enabled(None)
+            && crate::services::agent_fence::platform_fenceable()
+            && crate::services::agent_fence::bwrap_available(),
     }
 }
 
@@ -376,16 +421,41 @@ pub async fn root_mcp_session_access(id: String, access: Access) -> Result<(), S
     tokio::task::spawn_blocking(move || root_mcp::set_access(&id, access)).await.map_err(|e| e.to_string())?
 }
 #[tauri::command]
-pub async fn root_mcp_session_revoke(id: String) -> Result<(), String> {
+pub async fn root_mcp_session_revoke(app: AppHandle, id: String, remove_proposals: Option<bool>) -> Result<(), String> {
     // Invalidate first, before waiting on the review lock to clean the sandbox.
     let tab = root_mcp::revoke_session(&id)?;
     tokio::task::spawn_blocking(move || {
         crate::services::root_mcp_review::cleanup_tab(&storage::state_dir(), &tab);
-    }).await.map_err(|e| e.to_string())
+        crate::services::agent_tasks::drain_mutations();
+        if remove_proposals == Some(true) { crate::services::schedule_mcp::remove_proposals(&id)?; }
+        let _ = app.emit("agent-schedules-changed", ());
+        Ok(())
+    }).await.map_err(|e| e.to_string())?
+}
+
+fn path_serves(path: &str, caller: root_mcp::Caller) -> bool {
+    match path {
+        "/mcp" => caller != root_mcp::Caller::Scheduler,
+        "/mcp/schedule" => caller == root_mcp::Caller::Scheduler,
+        _ => false,
+    }
 }
 
 #[cfg(test)]
 mod security_tests {
+    #[tokio::test]
+    async fn routes_refuse_wrong_token_class_before_reading_body() {
+        for caller in [root_mcp::Caller::Agent, root_mcp::Caller::LocalModel, root_mcp::Caller::Reader, root_mcp::Caller::Scheduler] {
+            let (token, session) = root_mcp::test_session(caller);
+            let wrong = if caller == root_mcp::Caller::Scheduler { "/mcp" } else { "/mcp/schedule" };
+            let req = Request::builder().method("POST").uri(wrong).header("host", "127.0.0.1:8765")
+                .header("authorization", format!("Bearer {token}"))
+                .body(axum::body::Body::from("not json")).unwrap();
+            assert!(matches!(admit(req, 8765).await, Err(StatusCode::UNAUTHORIZED)));
+            assert!(path_serves(if caller == root_mcp::Caller::Scheduler { "/mcp/schedule" } else { "/mcp" }, caller));
+            root_mcp::revoke_tab(&session.identity.tab);
+        }
+    }
     use super::*;
     use axum::body::Body;
     fn request(token: &str, body: Body) -> Request {

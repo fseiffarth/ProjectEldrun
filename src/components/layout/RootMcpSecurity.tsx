@@ -14,7 +14,7 @@ interface Access {
   calendars: Scope; projects: Scope; accounts: Scope;
   families: string[]; write: boolean;
 }
-interface Session { id: string; tab: string; caller: "agent" | "local_model" | "reader"; access: Access }
+interface Session { id: string; tab: string; caller: "agent" | "local_model" | "reader" | "scheduler"; access: Access; project?: string }
 interface Audit { session: string; caller: Session["caller"]; tool: string; outcome: "allowed" | "denied" | "refused"; elapsed_ms: number; time: number }
 interface Status { sessions: Session[]; audit: Audit[] }
 
@@ -38,6 +38,12 @@ function SessionCard({ session, update, busy, accounts }: { session: Session; up
   const [access, setAccess] = useState(session.access);
   const calendars = useCalendarStore((s) => s.calendars);
   const projects = useProjectsStore((s) => s.projects);
+  const [removeProposals, setRemoveProposals] = useState(false);
+  if (session.caller === "scheduler") return <SettingsCard>
+    <strong>{stripInvisible(session.tab)} · {t("mcpSecurity.scheduler")} · {stripInvisible(projects.find((p) => p.id === session.project)?.name ?? session.project ?? "")}</strong>
+    <ToggleRow label={t("scheduleMcp.removeProposals")} checked={removeProposals} disabled={busy} onChange={(e) => setRemoveProposals(e.target.checked)} />
+    <button className="settings-btn" disabled={busy} onClick={() => void update("root_mcp_session_revoke", { id: session.id, removeProposals })}>{t("mcpSecurity.revoke")}</button>
+  </SettingsCard>;
   return <SettingsCard>
     <strong>{stripInvisible(session.tab)} · {t(`mcpSecurity.${session.caller}`)}</strong>
     <ToggleRow label={t("mcpSecurity.write")} checked={access.write} disabled={busy}
@@ -87,7 +93,7 @@ export function RootMcpSecurity() {
     finally { setBusy(false); }
   };
   return <>
-    <SettingRow label={<>{t("mcpSecurity.title")} <UntestedTag /></>} help={t("mcpSecurity.help")}
+    <SettingRow label={<>{t("mcpSecurity.title")} <UntestedTag id="mcpSecurity.title" /></>} help={t("mcpSecurity.help")}
       control={<button className="settings-btn" disabled={busy} onClick={() => void refresh()}>{t("mcpSecurity.refresh")}</button>} />
     {error && <SettingsCard><p role="alert">{stripInvisible(error)}</p></SettingsCard>}
     {status?.sessions.length === 0 && <SettingsCard>{t("mcpSecurity.empty")}</SettingsCard>}

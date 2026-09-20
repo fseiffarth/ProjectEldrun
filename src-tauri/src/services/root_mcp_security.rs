@@ -20,6 +20,8 @@ pub struct Audit {
     pub outcome: &'static str,
     pub elapsed_ms: u64,
     pub time: u64,
+    pub target: Option<String>,
+    pub reason: Option<&'static str>,
 }
 static AUDIT: std::sync::Mutex<std::collections::VecDeque<Audit>> =
     std::sync::Mutex::new(std::collections::VecDeque::new());
@@ -29,15 +31,21 @@ pub fn audit(
     outcome: &'static str,
     elapsed: std::time::Duration,
 ) {
+    audit_reason(session, name, outcome, elapsed, None);
+}
+
+pub fn audit_reason(session: &super::root_mcp::Session, name: &str, outcome: &'static str, elapsed: std::time::Duration, reason: Option<&'static str>) {
     let mut rows = AUDIT.lock().unwrap_or_else(|p| p.into_inner());
     if rows.len() >= 500 {
         rows.pop_front();
     }
     rows.push_back(Audit {
+        target: session.identity.schedule_target.as_ref().map(|b| b.target.clone()),
+        reason,
         session: session.id.clone(),
         caller: session.identity.caller,
         // Do not echo arbitrary method names (which may contain private text).
-        tool: if tool(name).is_some() {
+        tool: if tool(name).is_some() || super::schedule_mcp::tool_names().contains(&name) {
             name
         } else {
             "protocol"
@@ -89,6 +97,7 @@ impl Policy {
         }
     }
     pub fn serves(&self, caller: Caller) -> bool {
+        if caller == Caller::Scheduler { return false; }
         self.enabled
             && (!self.local_only || caller == Caller::LocalModel)
             && (caller != Caller::Reader || self.mail)
@@ -207,6 +216,7 @@ pub struct ToolPolicy {
 }
 impl ToolPolicy {
     pub fn serves(&self, caller: Caller) -> bool {
+        if caller == Caller::Scheduler { return false; }
         if caller == Caller::Reader {
             self.reader
         } else {
@@ -224,8 +234,9 @@ pub fn tool(name: &str) -> Option<ToolPolicy> {
         | "sync_status"
         | "time_summary"
         | "usage_recap"
+        | "project_activity"
         | "boxes_list" => ("projects", false, false, true, false),
-        "calendar_list" => ("calendar", false, false, true, true),
+        "calendar_list" | "calendar_free_busy" => ("calendar", false, false, true, true),
         "calendar_create" | "calendar_add_event" => ("calendar", true, false, true, true),
         "calendar_update_event" | "calendar_move_events" | "calendar_delete_event" => {
             ("calendar", true, true, true, true)

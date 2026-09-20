@@ -1025,7 +1025,31 @@
   pointer-events: none;
 }
 
-/* Root-agent proposals use the shared window and dialog controls. */
+/* Root-agent proposals use the shared window and dialog controls. They hang
+   from the console's ⚿ badge as one of the shared menu surfaces (the portal
+   adds `.context-menu-portal`, which owns position and z-index), rather than
+   the permanent strip they used to be under the title bar. */
+.root-review-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(560px, calc(100vw - 16px));
+  /* The portal caps the height; the panel itself must not scroll — the shared
+     menus' accent wash is an inset ::before, and a scrolled menu would drag it
+     off the rows below. The strip inside does the scrolling. */
+  overflow: hidden;
+  padding: 0;
+}
+.root-review-panel .root-review-strip {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  border-bottom: none;
+}
+/* The menu scheme's hover underline is for full-width rows; under a 22px glyph
+   it reads as a stray rule. */
+.root-review-panel .root-review-btn::after {
+  content: none;
+}
 .root-review-strip {
   flex: 0 0 auto;
   max-height: 45%;
@@ -1034,8 +1058,67 @@
   padding: 6px 10px;
   border-bottom: 1px solid var(--border);
 }
+.root-review-empty {
+  margin: 6px 0 2px;
+  color: var(--text-secondary);
+}
 .root-review-heading, .root-review-actions { display: flex; align-items: center; gap: 8px; }
+.root-review-advisory { margin: 4px 0; color: var(--warning, #e2b93b); }
 .root-review-card { padding: 10px 0; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
 .root-review-row table { width: 100%; table-layout: fixed; text-align: left; }
 .root-review-row th, .root-review-row td { vertical-align: top; padding: 3px 6px; }
 .root-review-row pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+/* A decision is one glyph, drawn like the alerts strip's ✓ (file-tree.css
+   `.alerts-done`): the same small square, the same status colours, so "finish
+   this" looks the same wherever it appears. */
+.root-review-btn {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--text-secondary) 60%, transparent);
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-secondary);
+  cursor: var(--cur-pointer, pointer);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 20px;
+}
+.root-review-btn.approve {
+  border-color: color-mix(in srgb, var(--success) 72%, transparent);
+  background:
+    linear-gradient(135deg, transparent 3px, color-mix(in srgb, var(--success) 10%, transparent) 0)
+    top left;
+  color: var(--success);
+  box-shadow:
+    2px 2px 0 color-mix(in srgb, var(--success) 22%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--success) 8%, transparent);
+}
+.root-review-btn.reject {
+  border-color: color-mix(in srgb, var(--danger) 72%, transparent);
+  background:
+    linear-gradient(135deg, transparent 3px, color-mix(in srgb, var(--danger) 10%, transparent) 0)
+    top left;
+  color: var(--danger);
+  box-shadow:
+    2px 2px 0 color-mix(in srgb, var(--danger) 22%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--danger) 8%, transparent);
+}
+.root-review-btn.approve:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--success) 22%, transparent);
+  border-color: var(--success);
+}
+.root-review-btn.reject:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 22%, transparent);
+  border-color: var(--danger);
+}
+.root-review-btn.undo:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text-secondary) 18%, transparent);
+  border-color: var(--text-primary);
+  color: var(--text-primary);
+}
+.root-review-btn:disabled {
+  opacity: 0.45;
+  cursor: var(--cur-default, default);
+}

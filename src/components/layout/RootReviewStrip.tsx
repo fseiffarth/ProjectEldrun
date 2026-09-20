@@ -41,18 +41,27 @@ function RowDiff({ row }: { row: ReviewRow }) {
     </table>
   </div>;
 }
-export function RootReviewStrip() {
+/**
+ * The proposals themselves. It used to sit under the console's title bar as a
+ * permanent strip, taking a slice of the terminals' height to say "(0)" most of
+ * the time; it is now the body of the panel the ⚿ badge drops (`RootOverlay`),
+ * which is why it keeps its own heading and empty line — a panel that opens on
+ * nothing must still say so.
+ */
+export function RootReviewStrip({ advisory = false }: { advisory?: boolean }) {
   const t = useT();
   const { proposals, count, error, busy, decide, applyAll } = useRootReviewStore();
   const pending = proposals.filter((p) => p.status === "pending");
   const drafts = useMailStore((s) => s.agentDrafts);
   return <section className="root-review-strip" aria-label={t("rootReview.title")}>
     <div className="root-review-heading">
-      <strong>{t("rootReview.title")} ({count})</strong> <UntestedTag />
+      <strong>{t("rootReview.title")} ({count})</strong> <UntestedTag id="rootReview.title" />
       {count > 0 && <button className="dialog-btn" disabled={busy} onClick={() => void applyAll(pending)}>
-        {t("rootReview.approveAll", { count })}
+        ✓ {t("rootReview.approveAll", { count })}
       </button>}
     </div>
+    {proposals.length === 0 && drafts.length === 0 && <p className="root-review-empty">{t("rootReview.empty")}</p>}
+    {advisory && <p role="note" className="root-review-advisory">{t("rootConsole.reviewAdvisory")}</p>}
     {error && <p role="alert">{stripInvisible(error)}</p>}
     {/* A draft is not a proposal and has no Approve: the row opens the
         composer, whose Send is bound to exactly what it shows. */}
@@ -94,12 +103,22 @@ export function RootReviewStrip() {
             ? rows.map((row, index) => <RowDiff key={index} row={row} />)
             : <details><summary>{t("rootReview.details")}</summary>{rows.map((row, index) => <RowDiff key={index} row={row} />)}</details>}
           {folded > 0 && <p>{t("rootReview.reordered", { count: folded })}</p>}
+          {/* A decision is one glyph: ✓ approve, ✗ reject (a conflict's ✗ is a
+              discard, and says so). The word stays as the button's name, so a
+              screen reader and a tooltip still read "Approve", never "check". */}
           <div className="root-review-actions">
             {(proposal.status === "pending" || proposal.status === "conflicted") && <>
-              <button className="dialog-btn" disabled={busy || proposal.status !== "pending"} onClick={() => void decide(proposal, "apply")}>{t("rootReview.approve")}</button>
-              <button className="dialog-btn" disabled={busy} onClick={() => void decide(proposal, "reject")}>{t(proposal.status === "conflicted" ? "rootReview.discard" : "rootReview.reject")}</button>
+              <button className="root-review-btn approve" disabled={busy || proposal.status !== "pending"}
+                title={t("rootReview.approve")} aria-label={t("rootReview.approve")}
+                onClick={() => void decide(proposal, "apply")}>✓</button>
+              <button className="root-review-btn reject" disabled={busy}
+                title={t(proposal.status === "conflicted" ? "rootReview.discard" : "rootReview.reject")}
+                aria-label={t(proposal.status === "conflicted" ? "rootReview.discard" : "rootReview.reject")}
+                onClick={() => void decide(proposal, "reject")}>✗</button>
             </>}
-            {proposal.status === "applied" && proposal.undo && <button className="dialog-btn" disabled={busy} onClick={() => void decide(proposal, "undo")}>{t("rootReview.undo")}</button>}
+            {proposal.status === "applied" && proposal.undo && <button className="root-review-btn undo" disabled={busy}
+              title={t("rootReview.undo")} aria-label={t("rootReview.undo")}
+              onClick={() => void decide(proposal, "undo")}>↩</button>}
           </div>
         </article>;
       })}

@@ -42,13 +42,36 @@ vi.mock("../components/files/SubwindowFilesSidebar", () => ({
   ),
 }));
 vi.mock("../components/tabs/NewTabMenu", () => ({
-  NewTabMenu: (props: { scope: string; onPick: (spec: Record<string, unknown>) => void }) => (
-    <button
-      data-testid="pick-shell"
-      data-scope={props.scope}
-      onClick={() => props.onPick({ label: "Shell", cmd: "", cwd: "", kind: "shell" })}
-    />
-  ),
+  NewTabMenu: (props: {
+    scope: string;
+    onPick: (spec: Record<string, unknown>) => void;
+    onClose: () => void;
+  }) => {
+    // The real menu closes on every pick (`pickFixed`), and the "+" is a toggle —
+    // without that, a second "New tab" click would only dismiss the open menu.
+    const pick = (spec: Record<string, unknown>) => {
+      props.onPick(spec);
+      props.onClose();
+    };
+    return (
+      <>
+        <button
+          data-testid="pick-shell"
+          data-scope={props.scope}
+          onClick={() => pick({ label: "Shell", cmd: "", cwd: "", kind: "shell" })}
+        />
+        {/* A singleton kind and a stacking one, to hold the console's ensure rule. */}
+        <button
+          data-testid="pick-monitor"
+          onClick={() => pick({ label: "System Monitor", cmd: "__eldrun_monitor__", cwd: "", kind: "monitor" })}
+        />
+        <button
+          data-testid="pick-network"
+          onClick={() => pick({ label: "Network Traffic", cmd: "__eldrun_network__", cwd: "", kind: "network" })}
+        />
+      </>
+    );
+  },
 }));
 
 import { allGroups, useTabsStore } from "../stores/tabs";
@@ -64,6 +87,7 @@ import {
   MIN_ROOT_OVERLAY_WIDTH,
 } from "../stores/rootOverlay";
 import { setCalendarWriteHandler } from "../lib/calendar/calendarWriteHook";
+import { useRootReviewStore } from "../stores/rootReview";
 import { RootOverlayHost } from "../components/layout/RootOverlay";
 import { SHORTCUT_DEFS, chordMatches, resolveChord } from "../lib/shortcuts/shortcuts";
 
@@ -87,6 +111,7 @@ beforeEach(() => {
   useProjectsStore.setState({ rootDir: "/r", activeId: "p1" });
   useRootOverlayStore.setState({ open: false, frame: null, filled: false });
   useCalendarStore.setState({ events: [], tasks: [] });
+  useRootReviewStore.setState({ proposals: [], count: 0, panel: false, busy: false, error: null });
 });
 
 describe("the rootConsole shortcut", () => {
@@ -158,6 +183,69 @@ describe("RootOverlayHost", () => {
     fireEvent.click(pick);
     expect(useTabsStore.getState().tabsByScope.root).toHaveLength(1);
     expect(useTabsStore.getState().tabsByScope.p1 ?? []).toHaveLength(0);
+  });
+
+  it("focuses the singleton tab that exists instead of stacking a second copy", async () => {
+    seedRootTabs();
+    render(<RootOverlayHost />);
+    await act(async () => useRootOverlayStore.getState().show());
+
+    fireEvent.click(screen.getByTitle("New tab"));
+    fireEvent.click(screen.getByTestId("pick-monitor"));
+    const first = useTabsStore.getState().tabsByScope.root ?? [];
+    const monitor = first.find((t) => t.kind === "monitor");
+    expect(monitor).toBeTruthy();
+
+    // Something else is on screen, so the second pick has a focus to move.
+    const [group] = allGroups(useTabsStore.getState().layoutByScope.root ?? null);
+    useTabsStore.getState().setGroupActiveInScope("root", group.id, first[0].key);
+
+    fireEvent.click(screen.getByTitle("New tab"));
+    fireEvent.click(screen.getByTestId("pick-monitor"));
+    const after = useTabsStore.getState().tabsByScope.root ?? [];
+    expect(after.filter((t) => t.kind === "monitor")).toHaveLength(1);
+    expect(after).toHaveLength(first.length);
+    const [groupAfter] = allGroups(useTabsStore.getState().layoutByScope.root ?? null);
+    expect(groupAfter.activeKey).toBe(monitor!.key);
+  });
+
+  it("still stacks a kind whose tabs hold their own state", async () => {
+    render(<RootOverlayHost />);
+    await act(async () => useRootOverlayStore.getState().show());
+
+    fireEvent.click(screen.getByTitle("New tab"));
+    fireEvent.click(screen.getByTestId("pick-network"));
+    fireEvent.click(screen.getByTitle("New tab"));
+    fireEvent.click(screen.getByTestId("pick-network"));
+
+    const tabs = useTabsStore.getState().tabsByScope.root ?? [];
+    expect(tabs.filter((t) => t.kind === "network")).toHaveLength(2);
+  });
+
+  it("the ⚿ badge drops the proposals panel instead of the console wearing a strip", async () => {
+    seedRootTabs();
+    render(<RootOverlayHost />);
+    await act(async () => useRootOverlayStore.getState().show());
+    // Closed, the console body carries no review surface at all.
+    expect(screen.queryByRole("region", { name: "Agent proposals" })).toBeNull();
+    const badge = screen.getByRole("button", { name: /Eldrun tools/ });
+    await act(async () => { fireEvent.click(badge); });
+    expect(useRootReviewStore.getState().panel).toBe(true);
+    expect(screen.getByRole("region", { name: "Agent proposals" })).toBeTruthy();
+    // The tools' own switch moved out: the badge writes no settings.
+    const { invoke } = await import("@tauri-apps/api/core");
+    expect(invoke).not.toHaveBeenCalledWith("update_settings", expect.anything());
+    await act(async () => { fireEvent.click(badge); });
+    expect(useRootReviewStore.getState().panel).toBe(false);
+  });
+
+  it("a closed console leaves no panel behind", async () => {
+    seedRootTabs();
+    render(<RootOverlayHost />);
+    await act(async () => useRootOverlayStore.getState().show());
+    await act(async () => useRootReviewStore.getState().setPanel(true));
+    await act(async () => useRootOverlayStore.getState().close());
+    expect(useRootReviewStore.getState().panel).toBe(false);
   });
 
   it("Escape outside a pane closes it; the project stays where it was", async () => {

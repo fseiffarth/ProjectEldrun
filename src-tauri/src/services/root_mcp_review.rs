@@ -423,12 +423,16 @@ pub fn call(
     name: &str,
     args: &Value,
 ) -> Result<(Value, Effects), String> {
-    let _guard = lock();
     stores.check()?;
     if !stores.access.allows(stores.caller, name) { return Err("unknown tool".into()); }
+    // Before the lock: the sweeps touch no calendar row, and a git sweep can run
+    // for its whole deadline — held across it, the lock would stall every
+    // review decision and every tab teardown for that long.
     if security::tool(name).is_some_and(|t| t.family == "projects") {
         return root_mcp::call_tool(stores, name, args);
     }
+    let _guard = lock();
+    stores.check()?;
     // A reader's taint is its class: every write it makes stages, additive ones
     // included, and `off` cannot lower that.
     let reader = stores.caller == root_mcp::Caller::Reader;
@@ -445,7 +449,10 @@ pub fn call(
             return Err("MCP pending proposal limit reached; review existing proposals".into());
         }
     }
-    // Rebuild on a changed real file or proposal sequence.
+    // Rebuild on a changed real file or proposal sequence. Its one edit to the
+    // log is a status; an untouched log is not rewritten on every read.
+    let statuses = |ps: &[Proposal]| ps.iter().map(|p| p.status.clone()).collect::<Vec<_>>();
+    let loaded = statuses(&proposals);
     let path = if level != "off" {
         Some(rebuild(stores, tab, &mut proposals)?)
     } else {
@@ -456,19 +463,23 @@ pub fn call(
         .filter(|p| p.tab == tab && p.status == "conflicted" && !p.notified)
         .map(|p| p.id.clone())
         .collect();
-    save(stores.state, &proposals)?;
+    if statuses(&proposals) != loaded {
+        save(stores.state, &proposals)?;
+    }
     if name == "proposals_list" {
         let own: Vec<Value> = proposals
             .iter()
             .filter(|p| p.tab == tab)
             .map(|p| json!({"id": p.id, "tool": p.tool, "status": p.status}))
             .collect();
-        for p in &mut proposals {
-            if dropped.contains(&p.id) {
-                p.notified = true;
+        if !dropped.is_empty() {
+            for p in &mut proposals {
+                if dropped.contains(&p.id) {
+                    p.notified = true;
+                }
             }
+            save(stores.state, &proposals)?;
         }
-        save(stores.state, &proposals)?;
         return Ok((
             json!({"proposals": own, "dropped_proposals": dropped}),
             Effects::default(),
@@ -708,8 +719,12 @@ pub fn cleanup_tab(state: &Path, tab: &str) {
     }
 }
 pub fn on_tab_gone(state: &Path, tab: &str) {
-    root_mcp::revoke_tab(tab);
-    cleanup_tab(state, tab);
+    // Every tab teardown lands here, MCP or not, and some callers are async
+    // commands: a tab that held no token and left no view has no lock to wait for.
+    let held = root_mcp::revoke_tab(tab);
+    if held || sandbox(state, tab).parent().is_some_and(Path::exists) {
+        cleanup_tab(state, tab);
+    }
 }
 
 /// Invalidate the generation before waiting for queued review operations.

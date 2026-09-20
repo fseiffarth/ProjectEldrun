@@ -72,6 +72,7 @@ pub fn origin_of(caller: Caller) -> &'static str {
     match caller {
         Caller::Reader => "reader",
         Caller::Agent | Caller::LocalModel => "agent",
+        Caller::Scheduler => "scheduler",
     }
 }
 
@@ -218,7 +219,7 @@ pub fn strip_invisible(s: &str) -> String {
 }
 
 /// [`strip_invisible`] over every string in a value.
-fn strip_value(v: &mut Value) {
+pub(crate) fn strip_value(v: &mut Value) {
     match v {
         Value::String(s) => *s = strip_invisible(s),
         Value::Array(a) => a.iter_mut().for_each(strip_value),

@@ -334,6 +334,17 @@ correctness/UX work atop the same layout model #42 detaches.*
   In Settings → root MCP review, choose destructive: adds apply with Undo,
   deletes wait; Undo after a user edit conflicts. Off restores direct writes.
   Keep the strip/setting's `UntestedTag` until these checks are confirmed.
+- [ ] **Root MCP usefulness + read hygiene — live QA** (implemented 2026-09-20,
+  not run live). In a root Claude tab ask for "my calendar, my board and my
+  projects" in one turn: three parallel calls, none may fail with a 429. Ask
+  "which projects have uncommitted work" (partial answer + `skipped` if slow,
+  never an error) and "what happened in <project> lately" (`project_activity`).
+  Ask for "a free hour next week" (`calendar_free_busy`), a weekly event with a
+  reminder, and a card with a priority. Check that a subscribed (read-only)
+  calendar's events arrive `external` with `[link]` for URLs and that no reply
+  shows `caldav_href`. Switch the agent fence off for root: the ⚿ badge gains ⚠
+  and the review strip says review is not enforced. Open a reader draft with
+  recipients: the composer shows the recipients warning.
 
 2314. **The root console as a window: a docked file viewer, move, resize.** ✅
     Implemented · 🧪 Awaiting live QA. Three things the console lacked because

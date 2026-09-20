@@ -11,7 +11,7 @@ import {
   type RootOverlayFrame,
 } from "../../stores/rootOverlay";
 import { useProjectsStore } from "../../stores/projects";
-import { useActivityStore } from "../../stores/activity";
+import { busyStateClass, useActivityStore } from "../../stores/activity";
 import { useCalendarStore } from "../../stores/calendar/calendar";
 import { useSettingsStore } from "../../stores/settings";
 import {
@@ -22,6 +22,7 @@ import {
   dividerFraction,
   findGroupOfTab,
   isPtyTabKind,
+  isSingletonTabKind,
   useTabsStore,
   type DropEdge,
   type LayoutNode,
@@ -43,6 +44,7 @@ import { TabPane } from "../tabs/TabPane";
 import { TabStatusMark } from "../tabs/TabLocalityBadges";
 import { pickEdge, previewInset } from "../tabs/dragGeometry";
 import { dragPreviewLayout } from "../tabs/dragPreview";
+import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import { StarIcon } from "./StarIcon";
 import { RootReviewStrip } from "./RootReviewStrip";
 import { useRootReviewStore } from "../../stores/rootReview";
@@ -65,6 +67,8 @@ interface RootMcpStatus {
   tools: string[];
   /** At least one mail account is open to a contained reader agent. */
   mail_open?: boolean;
+  /** Root agents run fenced, so the staged-write review cannot be bypassed. */
+  review_enforced?: boolean;
 }
 
 /** A rect relative to the overlay's pane region. */
@@ -250,6 +254,12 @@ function RootOverlay() {
   // counts both.
   const reviewCount =
     useRootReviewStore((s) => s.count) + useMailStore((s) => s.agentDrafts.length);
+  // The proposals panel the ⚿ badge drops. Open/closed is the review store's,
+  // because the project bar's ⚿ button opens the console straight onto it.
+  const reviewPanel = useRootReviewStore((s) => s.panel);
+  const setReviewPanel = useRootReviewStore((s) => s.setPanel);
+  const rightsRef = useRef<HTMLButtonElement | null>(null);
+  const [reviewAnchor, setReviewAnchor] = useState<{ x: number; y: number } | null>(null);
   const t = useT();
   const tabs = useTabsStore((s) => s.tabsByScope[ROOT_SCOPE] ?? NO_TABS);
   const layout = useTabsStore((s) => s.layoutByScope[ROOT_SCOPE] ?? null);
@@ -308,13 +318,16 @@ function RootOverlay() {
       // Escape inside a pane is the pane's (an agent TUI's cancel key); the
       // toggle chord closes from there. A menu or a drag of ours goes first.
       if (regionRef.current && e.target instanceof Node && regionRef.current.contains(e.target)) return;
-      if (addMenu || manageAgents || dragging || framing) return;
+      // The proposals panel takes Escape first (the portal's own handler, on the
+      // document, marks it handled) — closing the console under an open panel
+      // would take the pending decision with it.
+      if (addMenu || manageAgents || dragging || framing || reviewPanel || e.defaultPrevented) return;
       e.stopPropagation();
       close();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [close, addMenu, manageAgents, dragging, framing]);
+  }, [close, addMenu, manageAgents, dragging, framing, reviewPanel]);
 
   // ── The console's own frame ─────────────────────────────────────────────
   // A remembered frame is re-clamped against the window it actually opens in,
@@ -333,6 +346,21 @@ function RootOverlay() {
       : storedFrame
         ? clampRootOverlayFrame(storedFrame, viewport.w, viewport.h)
         : null);
+
+  // The panel hangs from the badge, so its point is re-read whenever the badge
+  // moves: a console dragged, resized or filled with the panel open would
+  // otherwise leave it behind. The portal clamps it into the viewport.
+  useLayoutEffect(() => {
+    if (!reviewPanel) {
+      setReviewAnchor(null);
+      return;
+    }
+    const rect = rightsRef.current?.getBoundingClientRect();
+    setReviewAnchor(rect ? { x: rect.left, y: rect.bottom + 4 } : null);
+  }, [reviewPanel, frame, filled, viewport.w, viewport.h]);
+
+  // A closed console has no badge for the panel to hang from.
+  useEffect(() => () => useRootReviewStore.getState().setPanel(false), []);
 
   /**
    * Move or resize the console. The release is bound synchronously inside
@@ -564,6 +592,22 @@ function RootOverlay() {
       if (addMenu?.groupId && addMenu.groupId !== EMPTY_GROUP_ID) {
         store.focusGroupInScope(ROOT_SCOPE, addMenu.groupId);
       }
+      // `TabBar`'s ensure bargain, addressed to root: a kind whose second tab
+      // would show exactly what the first shows (the system monitor, the print
+      // queues, the skills catalog, the prompt chart) focuses the one that
+      // exists rather than stacking a copy. `NewTabMenu` hands over a resolved
+      // payload and no hint of which handler built it, so the rule is read off
+      // the kind (`isSingletonTabKind`).
+      //
+      // `revealTabInScope` rather than `setActive`: root is not the active scope
+      // while the console floats, and it answers whether it actually landed. A
+      // false means that tab sits somewhere this console cannot show it — a
+      // parked subwindow, a detached one — and then a "+" that focused nothing
+      // would read as a broken button, so the console opens its own.
+      if (isSingletonTabKind(spec.kind)) {
+        const existing = store.tabsByScope[ROOT_SCOPE]?.find((t) => t.kind === spec.kind);
+        if (existing && store.revealTabInScope(ROOT_SCOPE, existing.key)) return;
+      }
       store.addTabToScope(ROOT_SCOPE, spec);
     },
     [addMenu],
@@ -572,9 +616,11 @@ function RootOverlay() {
   // The global switch is the settings store's, so the badge follows a flip made
   // in Settings at once; `running` is the listener's and only a restart moves it.
   const toolsEnabled = useSettingsStore((s) => s.settings?.root_mcp ?? true);
-  const updateSettings = useSettingsStore((s) => s.updateSettings);
   const localOnly = useSettingsStore((s) => s.settings?.root_mcp_local_only ?? false);
   const toolsOn = toolsEnabled && !!status?.running;
+  // `=== false`: a backend that predates the field says nothing, which is not
+  // a claim that the gate is off.
+  const reviewAdvisory = toolsOn && status?.review_enforced === false;
   const agentsWithTools = !toolsEnabled
     ? t("rootConsole.rightsDisabled")
     : status?.running
@@ -716,20 +762,26 @@ function RootOverlay() {
             className="tab-controls root-overlay-controls"
             style={soleFiles ? filesReserveStyle(sole ?? undefined) : undefined}
           >
+            {/* The badge is the door to the proposals — the strip it used to
+                open with is gone from the body, so the terminals keep that
+                height and the rows come when asked for. Switching the tools
+                themselves on and off stays in Settings, the other door onto
+                that one key; the badge still *reports* the state. */}
             <button
               type="button"
+              ref={rightsRef}
               className={`root-overlay-rights${toolsOn ? " on" : ""}${toolsEnabled ? "" : " off"}`}
-              aria-pressed={toolsEnabled}
+              aria-expanded={reviewPanel}
               title={`${agentsWithTools}${
                 toolsOn ? `\n${status?.tools.join(", ")}` : ""
-              }\n${t(toolsEnabled ? "rootConsole.rightsToggleOff" : "rootConsole.rightsToggleOn")}\n${t("rootConsole.noPhone")}${
+              }\n${t("rootConsole.rightsOpenReview")}\n${t("rootConsole.noPhone")}${
                 status?.mail_open ? `\n${t("rootConsole.mailOpen")}` : ""
-              }`}
-              onClick={() => void updateSettings({ root_mcp: !toolsEnabled })}
+              }${reviewAdvisory ? `\n${t("rootConsole.reviewAdvisory")}` : ""}`}
+              onClick={() => setReviewPanel(!reviewPanel)}
             >
-              {t("rootConsole.rightsBadge")}{status?.mail_open ? " ✉" : ""}{reviewCount > 0 ? ` ${reviewCount}` : ""}
+              {t("rootConsole.rightsBadge")}{reviewAdvisory ? " ⚠" : ""}{status?.mail_open ? " ✉" : ""}{reviewCount > 0 ? ` ${reviewCount}` : ""} ▾
             </button>
-            <UntestedTag />
+            <UntestedTag id="rootOverlay.1" />
             {!split && soleGroupId && soleGroupId !== EMPTY_GROUP_ID && (
               filesToggle(soleGroupId, !!sole?.filesOpen)
             )}
@@ -745,7 +797,6 @@ function RootOverlay() {
             </button>
           </div>
         </div>
-        <RootReviewStrip />
         <div className="subwindow-body">
           <div className="subwindow-pane-region root-overlay-region" ref={regionRef}>
             {tabs.length === 0 || !renderLayout ? (
@@ -817,6 +868,22 @@ function RootOverlay() {
           {soleFiles && sole && filesColumn(sole)}
         </div>
       </div>
+      {/* The proposals, dropped from the badge (`common/ContextMenuPortal`, the
+          one popover: click-away, Escape, viewport clamp, no z-index here).
+          `keepBelow` keeps it under the badge and caps it to the room beneath,
+          so a long queue scrolls inside the panel instead of sliding up over
+          the bar it came from. */}
+      {reviewPanel && reviewAnchor && (
+        <ContextMenuPortal
+          x={reviewAnchor.x}
+          y={reviewAnchor.y}
+          keepBelow
+          className="context-menu root-review-panel"
+          onClose={() => setReviewPanel(false)}
+        >
+          <RootReviewStrip advisory={reviewAdvisory} />
+        </ContextMenuPortal>
+      )}
       {drag &&
         createPortal(
           <>
@@ -890,6 +957,7 @@ function GroupStrip({
 }) {
   const t = useT();
   const busyByTab = useActivityStore((s) => s.busyByTab);
+  const busyKindByTab = useActivityStore((s) => s.busyKindByTab);
   const attentionByTab = useActivityStore((s) => s.attentionByTab);
   const clearAttention = useActivityStore((s) => s.clearAttention);
   return (
@@ -903,9 +971,7 @@ function GroupStrip({
         const rawAttn = isAgent ? (attentionByTab[ptyId] ?? null) : null;
         const attn = !isActive || rawAttn === "decision" ? rawAttn : null;
         const stateClass = working
-          ? tab.kind === "shell"
-            ? " working shell"
-            : " working"
+          ? busyStateClass(busyKindByTab[ptyId], tab.kind)
           : attn === "decision"
             ? " needs-decision"
             : attn === "done"

@@ -3536,6 +3536,7 @@ export const en = {
   "rootReview.open": "Review {count} agent proposals",
   "rootReview.title": "Agent proposals",
   "rootReview.approveAll": "Approve all ({count})",
+  "rootReview.empty": "No agent proposals waiting.",
   "rootReview.approve": "Approve",
   "rootReview.reject": "Reject",
   "rootReview.discard": "Discard",
@@ -4976,6 +4977,8 @@ export const en = {
   "mail.agentDraftBanner": "Drafted by an agent.",
   "mail.agentDraftReaderBanner": "Drafted by an agent that reads mail from outside.",
   "mail.agentDraftBannerHint": "Read it before sending: nothing leaves until you press Send, and Send sends exactly what is shown here. Saving makes the draft yours; the agent can no longer change it.",
+  "mail.agentDraftReaderRecipients":
+    "⚠ The recipients come from the mail this replies to — mail the agent read, and whose sender may have steered it. Check that the text quotes nothing from your other messages before you send it to them.",
   "mail.agentDraftNoRecipient": "The agent cannot choose who receives this. Type the recipient yourself.",
   "mail.recipientsRequired": "Add at least one recipient.",
   "mail.quotedIntro": "On {date}, {sender} wrote:",
@@ -6834,10 +6837,11 @@ export const en = {
     "Eldrun's tools are not running — agents opened here are ordinary agents until Eldrun is restarted.",
   "rootConsole.rightsDisabled":
     "Eldrun's tools (MCP) are switched off — agents here are ordinary agents, and the ones already running are refused.",
-  "rootConsole.rightsToggleOn": "Click to switch the tools on.",
-  "rootConsole.rightsToggleOff": "Click to switch the tools off.",
+  "rootConsole.rightsOpenReview": "Click for the agent proposals waiting for a decision. The tools themselves are switched on and off in Settings.",
   "rootConsole.noPhone": "The root console is never offered to Eldrun Mobile or to Claude's remote control.",
   "rootConsole.mailOpen": "✉ At least one mail account is open to a contained reader agent. A root tab still reads no mail; it can only write drafts.",
+  "rootConsole.reviewAdvisory":
+    "⚠ Review is not enforced: root agents run without the agent fence, so an agent can change the calendar, the board or this review setting directly, without a proposal. Switch the fence on to make review a gate.",
   "rootConsole.moveHint": "Drag the bar to move the console · double-click to fill the window",
   "rootConsole.resizeHint": "Drag to resize the console",
   "rootConsole.fill": "Fill the window",

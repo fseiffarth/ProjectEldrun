@@ -347,7 +347,7 @@ export function MailComposeDialog({
                 : mode === "forward"
                   ? t("mail.composeForward")
                   : t("mail.composeNew")}{" "}
-            <UntestedTag />
+            <UntestedTag id="mailComposeDialog.1" />
           </h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>
             ×
@@ -361,6 +361,12 @@ export function MailComposeDialog({
               </strong>{" "}
               {t("mail.agentDraftBannerHint")}
               {parseRecipients(to).length === 0 && <div>{t("mail.agentDraftNoRecipient")}</div>}
+              {/* A reader's recipients are the people on the replied-to mail —
+                  the sender of a hostile message among them. The one thing Send
+                  cannot check is whose text the body carries. */}
+              {draft.origin === "reader" && parseRecipients(to).length > 0 && (
+                <div>{t("mail.agentDraftReaderRecipients")}</div>
+              )}
             </div>
           )}
           {accounts.length > 1 && (
@@ -421,7 +427,7 @@ export function MailComposeDialog({
             <div className="mail-ai-notes">
               <label className="mail-field">
                 <span className="mail-field-label">
-                  {t("mailAi.notesLabel")} <UntestedTag />
+                  {t("mailAi.notesLabel")} <UntestedTag id="mailAi.notesLabel" />
                 </span>
                 <textarea
                   className="mail-input mail-textarea"
