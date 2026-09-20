@@ -276,11 +276,27 @@ describe("Group B — two heaps, one protocol", () => {
       { [`p:${b.key}`]: true },
       {},
     );
-    expect(status[b.key]).toBe("working");
+    // A shell tab: busy with a command, which is its own colour.
+    expect(status[b.key]).toBe("working-shell");
 
     popout.activity.applyDetachedStatus("p", status);
     // The popout's strip reads exactly what `TabBar` reads.
     expect(popout.activity.useActivityStore.getState().busyByTab[`p:${b.key}`]).toBe(true);
+    expect(popout.activity.useActivityStore.getState().busyKindByTab[`p:${b.key}`]).toBe("shell");
+
+    // What the tab is busy WITH rides along too, so a popped-out agent working
+    // with a shell of its own wears the same two marks a docked one does.
+    const both = main.detached.statusForEntry(
+      "p",
+      rec,
+      main.tabs.useTabsStore.getState().tabsByScope["p"]!,
+      { [`p:${b.key}`]: true },
+      {},
+      { [`p:${b.key}`]: "both" },
+    );
+    expect(both[b.key]).toBe("working-both");
+    popout.activity.applyDetachedStatus("p", both);
+    expect(popout.activity.useActivityStore.getState().busyKindByTab[`p:${b.key}`]).toBe("both");
   });
 
   it("a popout's usage bumps leave its own accumulator empty and reach the main one", async () => {

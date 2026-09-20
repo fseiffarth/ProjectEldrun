@@ -540,3 +540,61 @@ correctness/UX work atop the same layout model #42 detaches.*
         colour a tab." rather than a generic failure.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+2319. **A shell the agent started is its own mark, beside the agent's.**
+    ✅ Implemented · 🧪 Awaiting live QA (2026-09-20). The shell status colour
+    (`--status-shell-working`, 0d8036e) stopped at shell *tabs*: an agent tab
+    whose turn had ended while a command
+    of its own kept running reached the window as a held `working` verdict and
+    wore the agent's green, saying "this agent is thinking" about a tab that had
+    stopped thinking an hour ago. The backend now reports the two facts apart —
+    `services::agent_turn` polls `/proc` for the tool shells every bound tab is
+    running (one walk for the whole fleet, every 2 s) and puts a `job` flag on
+    every `agent-turn` event beside the hook's own state, instead of rewriting a
+    `done` into a `working`. Only a **backgrounded** command counts: either it
+    outlived the turn (`done`, the reading this started as, and Codex's only
+    one) or Claude's wrapper says so — `run_in_background` is the one spelling
+    that redirects stdin, so the eval'd command is followed by `< /dev/null`
+    before the wrapper's `pwd -P` (measured against a live tab, 2026-09-20).
+    The tool call an agent is sitting and waiting on is NOT a job: that is the
+    turn, and it is already green. The window reads both halves: a `done` over a
+    running job keeps the tab busy but paints it in the shell colour (and holds
+    the "finished" flag and the scheduled-prompt gate, as the held verdict used
+    to), and a `working` with a job is **both at once** — the green ring the
+    agent has earned, plus a *second* ▶ mark in the shell colour for the
+    command. One helper (`busyStateClass`) resolves the class for all three
+    strips (docked, root console, popout), and the busy kind rides the popout
+    mirror so a detached tab says the same thing.
+    *Files: `src-tauri/src/services/agent_turn.rs`, `src/stores/activity.ts`,
+    `src/stores/detached.ts`, `src/components/layout/{AppShell,SidePanel,RootOverlay,DetachedCenterPanel}.tsx`,
+    `src/components/tabs/{TabBar,TabLocalityBadges}.tsx`,
+    `src/styles/projects-tabs.css`, `src/lib/i18n.ts` (+ the four dictionaries).*
+    - [x] 🤖 Automated test — `services::agent_turn` (two live shells of the
+      real wrapper's two spellings: the backgrounded one is announced once,
+      beside the state its hooks last reported, the foreground tool call is not
+      — until its turn ends; the seam is not matched when the USER's command
+      ends in `< /dev/null`; a tab with no job says nothing; a session end
+      forgets both), `PillRunningIndicator`
+      (a finished turn stays busy as a *command* and raises no "finished" flag
+      nor opens the delivery gate until the shell exits; an agent working with
+      one is `both`; a verdict whose silence is the job's is not retired),
+      `TabStatusMark` (one mark, the shell's mark, or two), `DetachedTwoHeap`
+      (the busy kind crosses to the popout).
+    - [ ] 🖐️ Manual test (needs a restart: backend change — the `job` flag on
+      the `agent-turn` event)
+      - In a Claude tab, run something long in the background
+        (`run_in_background`, or `npm test &`), then let the turn end and switch
+        away: the tab's ring and ▶ are the shell colour, not the agent green,
+        and it does **not** read as finished. When the command exits the tab
+        turns green-solid ✓ (finished, unread) without the agent doing anything.
+      - While the agent is working AND a command it backgrounded is running, the
+        tab shows **two ▶ marks** — green then shell-coloured — with the ring
+        still green.
+      - An ordinary long foreground tool call (a `cargo build` the agent is
+        waiting on) shows **one** green ▶, not two: the turn is what is running.
+      - A scheduled prompt aimed at that tab waits for the command, not just for
+        the Stop.
+      - Pop the tab out: the popout's strip shows the same colour and marks.
+      - A plain shell tab running a build is unchanged (shell colour, one mark).
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

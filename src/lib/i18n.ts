@@ -3167,6 +3167,7 @@ export const en = {
   "tabBar.newTabTitle": "New tab",
   "tabBar.renameAriaLabel": "Rename tab",
   "tabBar.statusWorking": "Working",
+  "tabBar.statusRunning": "Running a command",
   "tabBar.statusDecision": "Waiting for your answer",
   "tabBar.statusDone": "Finished",
   "tabBar.closeTabTitle": "Close tab",

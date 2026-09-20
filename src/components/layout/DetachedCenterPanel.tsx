@@ -78,7 +78,7 @@ import {
   type TabEntry,
   type TabLocation,
 } from "../../stores/tabs";
-import { useActivityStore } from "../../stores/activity";
+import { busyStateClass, useActivityStore } from "../../stores/activity";
 import type { DetachedRemoteInfo } from "../../stores/detached";
 import {
   TabSourceBadge,
@@ -465,6 +465,7 @@ export function DetachedCenterPanel({
   // Per-tab lamps (#234), mirrored from the main window's classifier — the same
   // two maps `TabBar` reads, keyed by the composed PTY id.
   const busyByTab = useActivityStore((s) => s.busyByTab);
+  const busyKindByTab = useActivityStore((s) => s.busyKindByTab);
   const attentionByTab = useActivityStore((s) => s.attentionByTab);
   const clearAttention = useActivityStore((s) => s.clearAttention);
 
@@ -1533,9 +1534,7 @@ export function DetachedCenterPanel({
                 : null;
             const attn = !isActive || rawAttn === "decision" ? rawAttn : null;
             const stateClass = working
-              ? tab.kind === "shell"
-                ? " working shell"
-                : " working"
+              ? busyStateClass(busyKindByTab[ptyId], tab.kind)
               : attn === "decision"
                 ? " needs-decision"
                 : attn === "done"
@@ -2013,7 +2012,7 @@ export function DetachedCenterPanel({
             return tab && (tab.kind === "agent" || tab.kind === "local_agent") ? (
               <button className="tab-new-menu-item" onClick={() => { setScheduleDialogKey(tab.key); setTabMenu(null); }}>
                 <span className="tab-new-menu-dot tab-new-menu-dot--accent">◷</span>
-                {t("agentSchedule.menu")} <UntestedTag />
+                {t("agentSchedule.menu")} <UntestedTag id="agentSchedule.menu" />
               </button>
             ) : null;
           })()}

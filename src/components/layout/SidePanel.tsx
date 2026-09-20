@@ -213,6 +213,7 @@ export function SidePanel({
   // hidden subwindow's tabs are still running underneath the pane, so they keep
   // reporting status even while parked.
   const busyByTab = useActivityStore((s) => s.busyByTab);
+  const busyKindByTab = useActivityStore((s) => s.busyKindByTab);
   const attentionByTab = useActivityStore((s) => s.attentionByTab);
   // One status per hidden group's tab, rolled up per group and overall, so the
   // Hidden section still says "something's running in there" without needing
@@ -346,8 +347,12 @@ export function SidePanel({
                     {keys.map((k, ki) => {
                       const label = scopeTabs?.find((t) => t.key === k)?.label ?? k;
                       const status = tabStatuses[ki];
+                      // A chip has one border, so it says the same thing the
+                      // pill's bars do: the shell colour when a COMMAND is all
+                      // the tab is running (`BusyKind` "shell"), the agent's
+                      // otherwise — a tab doing both is drawn as the agent.
                       const shell =
-                        status === "working" && scopeTabs?.find((t) => t.key === k)?.kind === "shell";
+                        status === "working" && busyKindByTab[`${scope}:${k}`] === "shell";
                       return (
                         <button
                           key={k}

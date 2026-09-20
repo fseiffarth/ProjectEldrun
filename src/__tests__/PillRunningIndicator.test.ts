@@ -11,6 +11,9 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import {
   useActivityStore,
+  agentDeliveryReady,
+  busyStateClass,
+  noteAgentTurn,
   notePtyOutput,
   notePtySpawn,
   noteUserInput,
@@ -722,6 +725,83 @@ describe("activity store per-scope status counts (pill status bars)", () => {
     vi.advanceTimersByTime(1000);
     useActivityStore.getState().recompute();
     expect(useActivityStore.getState().statusTabsByScope["proj-a"]).toBeUndefined();
+  });
+});
+
+// ── A shell the agent started (`services::agent_turn`'s `job` flag) ─────────
+// The backend reports the agent's turn and whether a shell of its own is
+// running as two independent facts. The store reads both: a turn that ended
+// over a running command is not a finished tab, and a turn worked WITH one is
+// two things at once — which is what the tab's two marks say.
+describe("activity store agent tabs with a command of their own", () => {
+  const id = "proj-a:agent-1";
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    seedTabs();
+    _clearPtyActivityForTest();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("keeps a finished turn busy while its command runs, as a command", () => {
+    noteAgentTurn(id, "working");
+    expect(useActivityStore.getState().busyKindByTab[id]).toBe("agent");
+
+    // Stop fires, but the shell the agent backgrounded is still going.
+    noteAgentTurn(id, "done", true);
+    expect(useActivityStore.getState().busyByTab[id]).toBe(true);
+    expect(useActivityStore.getState().busyKindByTab[id]).toBe("shell");
+    // Not "finished": the turn ended, the work did not.
+    expect(useActivityStore.getState().attentionByTab[id]).toBeUndefined();
+    expect(useActivityStore.getState().statusTabsByScope["proj-a"]).toEqual([
+      { key: "agent-1", state: "working", shell: true },
+    ]);
+    // And a prompt must not be typed into a tab mid-job.
+    expect(agentDeliveryReady(id, 0)).toBe(false);
+
+    // The shell exits: now it is a finished turn nobody has read.
+    noteAgentTurn(id, "done", false);
+    expect(useActivityStore.getState().busyByTab[id] ?? false).toBe(false);
+    expect(useActivityStore.getState().attentionByTab[id]).toBe("done");
+    expect(agentDeliveryReady(id, 0)).toBe(true);
+  });
+
+  it("marks an agent working alongside its own command as both", () => {
+    noteAgentTurn(id, "working", true);
+    expect(useActivityStore.getState().busyKindByTab[id]).toBe("both");
+    // The pill's bar still reads as the agent: one bar cannot say two things,
+    // and the tab's second mark is what carries the command.
+    expect(useActivityStore.getState().statusTabsByScope["proj-a"]).toEqual([
+      { key: "agent-1", state: "working" },
+    ]);
+  });
+
+  it("does not retire a verdict whose silence is the job's", () => {
+    // A backgrounded job paints nothing in the agent's own TUI, so the
+    // paint-silence rule that retires a stale "working" must not fire while the
+    // backend is still reporting the shell as alive.
+    noteAgentTurn(id, "working", true);
+    vi.advanceTimersByTime(25_000); // past HOOK_WORK_SILENCE_MS (20 s)
+    useActivityStore.getState().recompute();
+    expect(useActivityStore.getState().busyByTab[id]).toBe(true);
+
+    // Once no job stands behind it, the same silence retires it as before.
+    noteAgentTurn(id, "working", false);
+    vi.advanceTimersByTime(25_000);
+    useActivityStore.getState().recompute();
+    expect(useActivityStore.getState().busyByTab[id] ?? false).toBe(false);
+  });
+
+  it("names the ring and mark classes for each busy kind", () => {
+    expect(busyStateClass("agent", "agent")).toBe(" working");
+    expect(busyStateClass("shell", "agent")).toBe(" working shell");
+    expect(busyStateClass("both", "agent")).toBe(" working job");
+    // No classification yet (a popout mirrored from an older window): the tab's
+    // own kind answers.
+    expect(busyStateClass(undefined, "shell")).toBe(" working shell");
+    expect(busyStateClass(undefined, "agent")).toBe(" working");
   });
 });
 

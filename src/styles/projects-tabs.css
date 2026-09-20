@@ -1267,6 +1267,15 @@
 .tab-status-mark.working {
   font-size: 9px;
 }
+/* A mark for a COMMAND rather than an agent turn, in the shell colour the ring
+   uses for the same thing (`--status-shell-working`). It is the tab's only mark
+   when the command is all the tab is doing, and the SECOND of two when an agent
+   is working with a BACKGROUNDED command of its own (`.tab.working.job`): the
+   ring can only paint one state, so the pair of marks is what says "both at
+   once". */
+.tab-status-mark.working.shell {
+  color: var(--status-shell-working);
+}
 
 /* ── Project pill status bars ────────────────────────────────────────────
    A strip of little bars along the pill's bottom edge — ONE PER NON-IDLE TAB of
@@ -1956,7 +1965,11 @@
 
 /* The "+" add-tab menu (main bar, popouts, root overlay): never taller than
    the window. Its search box stays pinned and the entries below it scroll in a
-   `.menu-scroll-region` — the shape described next. */
+   `.menu-scroll-region` — the shape described next. The real cap is tighter and
+   comes from the portal (`keepBelow` in ContextMenuPortal): the room between
+   the "+" button and the bottom edge, so the menu hangs under its button rather
+   than being pushed up over the tab strip. This is the floor for any renderer
+   that doesn't set one. */
 .tab-add-menu {
   max-height: calc(100vh - 16px);
 }
@@ -2718,6 +2731,17 @@
 }
 
 .agent-schedule-pill.is-delivered { color: var(--text-secondary); }
+
+.agent-schedule-attribution {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0;
+}
+.agent-schedule-attribution small { overflow-wrap: anywhere; }
+.agent-schedule-attribution .agent-schedule-pill { color: var(--accent); border: 1px dashed currentColor; }
+.agent-prompt-card[data-agent-authored="true"] { border-style: dashed; }
 
 /* ── Agent-tab state, painted on the row ─────────────────────────────────
    What an AGENT TAB is doing, in the tab ring's own palette (`--status-*`, see

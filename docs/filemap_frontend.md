@@ -201,7 +201,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `detached.ts` | Detached subwindow protocol (#42): channels, pure reducers, main-window host (`listenDetachedHost`) that reseeds popouts on store changes and mirrors tab statuses back. |
 | `detachedContext.ts` | Popout store seam (#231): a popout's stores hold no tabs, so store actions consult this module and forward writes to the main window. Don't add per-call-site window logic. |
 | `drag.ts` | Isolated per-frame drag state (reference for fine-grained selectors). |
-| `activity.ts` | Working / decision / finished state of every PTY tab, published on a 300 ms tick. Agent hooks (`turnByPty`, from `services::agent_turn`) are authoritative; byte heuristics only as fallback. |
+| `activity.ts` | Working / decision / finished state of every PTY tab, published on a 300 ms tick. Agent hooks (`turnByPty`, from `services::agent_turn`) are authoritative; byte heuristics only as fallback. `busyKindByTab` says what a busy tab is busy *with* — agent turn, command, or both — and `busyStateClass` turns that into the strips' state class. |
 | `timer.ts` | Per-project time-tracking state. |
 | `usage.ts` | Usage counters: in-memory accumulator (`bumpUsage`) flushed in batches to `usage_bump`, + the recap's read store. |
 | `hpcPipeline.ts` | Open/closed state of the HPC pipeline wizard (`HpcPipelineWizardHost` in `AppShell`). Mirrors `remoteMachines`. |

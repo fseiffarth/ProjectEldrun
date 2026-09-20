@@ -3073,6 +3073,7 @@ export const dict: Dict = {
   "tabBar.newTabTitle": "Nuova scheda",
   "tabBar.renameAriaLabel": "Rinomina scheda",
   "tabBar.statusWorking": "In corso",
+  "tabBar.statusRunning": "Esegue un comando",
   "tabBar.statusDecision": "In attesa della tua risposta",
   "tabBar.statusDone": "Completato",
   "tabBar.closeTabTitle": "Chiudi scheda",

@@ -44,7 +44,7 @@ import {
   type HostConnState,
 } from "./remote/remoteStatus";
 import { BOX_SCOPE_PREFIX, useBoxesStore } from "./boxes";
-import { useActivityStore, noteUserInput } from "./activity";
+import { useActivityStore, noteUserInput, type BusyKind } from "./activity";
 import { bumpUsage } from "./usage";
 import { useRemoteMachinesStore } from "./remote/remoteMachines";
 import { useBigFoldersStore } from "./bigFolders";
@@ -181,7 +181,12 @@ export interface DetachedUsageEnvelope {
  * popout's strip paints the same lamps `TabBar` does.
  */
 export const detachedStatusEvent = (label: string) => `detached-status-${label}`;
-export type DetachedTabStatus = "working" | "needs-decision" | "finished";
+export type DetachedTabStatus =
+  | "working"
+  | "working-shell"
+  | "working-both"
+  | "needs-decision"
+  | "finished";
 export interface DetachedStatusPayload {
   scope: string;
   /** tab key → status; a tab with nothing to say is absent. */
@@ -873,6 +878,7 @@ export function statusForEntry(
   tabs: TabEntry[],
   busyByTab: Record<string, boolean>,
   attentionByTab: Record<string, "decision" | "done">,
+  busyKindByTab: Record<string, BusyKind> = {},
 ): Record<string, DetachedTabStatus> {
   const out: Record<string, DetachedTabStatus> = {};
   const byKey = new Map(tabs.map((t) => [t.key, t] as const));
@@ -881,7 +887,10 @@ export function statusForEntry(
     if (!tab) continue;
     const ptyId = `${scope}:${key}`;
     if (isPtyTabKind(tab.kind) && busyByTab[ptyId]) {
-      out[key] = "working";
+      // The busy KIND rides along, so a popout paints a running command and an
+      // agent's own turn apart exactly as the docked strip does.
+      const kind = busyKindByTab[ptyId] ?? (tab.kind === "shell" ? "shell" : "agent");
+      out[key] = kind === "shell" ? "working-shell" : kind === "both" ? "working-both" : "working";
       continue;
     }
     if (tab.kind !== "agent" && tab.kind !== "local_agent") continue;
@@ -1172,13 +1181,13 @@ export async function listenDetachedHost(): Promise<() => void> {
   const lastStatus = new Map<string, string>();
   publishStatus = (force = false) => {
     const store = useTabsStore.getState();
-    const { busyByTab, attentionByTab } = useActivityStore.getState();
+    const { busyByTab, busyKindByTab, attentionByTab } = useActivityStore.getState();
     const live = new Set<string>();
     for (const [scope, entries] of Object.entries(store.detachedGroupsByScope)) {
       const tabs = store.tabsByScope[scope] ?? [];
       for (const entry of entries ?? []) {
         live.add(entry.label);
-        const status = statusForEntry(scope, entry, tabs, busyByTab, attentionByTab);
+        const status = statusForEntry(scope, entry, tabs, busyByTab, attentionByTab, busyKindByTab);
         const sig = JSON.stringify(status);
         if (!force && lastStatus.get(entry.label) === sig) continue;
         lastStatus.set(entry.label, sig);

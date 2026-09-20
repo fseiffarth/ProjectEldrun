@@ -255,7 +255,7 @@ export function LocalityMenu({
             >
               <span className="tab-new-menu-dot">‹</span>
               {t("tabLocality.runOnMachine")}
-              <UntestedTag />
+              <UntestedTag id="tabLocalityBadges.1" />
             </button>
             {machineItem(
               "remote",
@@ -349,8 +349,16 @@ export function RunHostPicker({
 /** The status glyph leading a tab's label, in its ring's colour: ▶ working,
  *  ? waiting on a decision, ✓ finished unseen. The ring alone left the three
  *  states to be told apart by colour and stroke; the glyph names them. Takes the
- *  strip's already-resolved state class so every strip marks exactly the tabs
- *  its ring marks. */
+ *  strip's already-resolved state class (`busyStateClass`) so every strip marks
+ *  exactly the tabs its ring marks.
+ *
+ *  A tab running a COMMAND wears the ▶ in the shell colour instead
+ *  (`--status-shell-working`) — a shell tab, or an agent whose turn is over
+ *  while a shell it started keeps going. When an agent is working AND has a
+ *  BACKGROUNDED command of its own running (`working job`), it gets BOTH marks,
+ *  one per colour: the two things are happening at once, and a single glyph
+ *  could only name one of them. (The tool call an agent waits on is not a second
+ *  thing — it IS the turn.) */
 export function TabStatusMark({ stateClass }: { stateClass: string }) {
   const t = useT();
   const state = stateClass.includes("working")
@@ -369,9 +377,27 @@ export function TabStatusMark({ stateClass }: { stateClass: string }) {
         ? "tabBar.statusDecision"
         : "tabBar.statusDone",
   );
-  return (
-    <span className={`tab-status-mark ${state}`} title={label} aria-label={label}>
-      {glyph}
+  const shellLabel = t("tabBar.statusRunning");
+  // `shell` alone: the command IS what the tab is doing, so the one mark is the
+  // shell's. `job`: the agent's mark, then the command's beside it.
+  const commandOnly = stateClass.includes("shell");
+  const alsoCommand = stateClass.includes("job");
+  const shellMark = (
+    <span
+      className="tab-status-mark working shell"
+      title={shellLabel}
+      aria-label={shellLabel}
+    >
+      ▶
     </span>
+  );
+  if (commandOnly) return shellMark;
+  return (
+    <>
+      <span className={`tab-status-mark ${state}`} title={label} aria-label={label}>
+        {glyph}
+      </span>
+      {alsoCommand && shellMark}
+    </>
   );
 }

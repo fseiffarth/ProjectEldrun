@@ -882,8 +882,8 @@ export function AppShell() {
     // script writes. The authority for the tab's marks wherever it speaks; the
     // byte classifier above stays for agents that fire no hooks.
     let unlistenTurn: (() => void) | undefined;
-    listen<{ id: string; state: AgentTurnState }>("agent-turn", (ev) => {
-      noteAgentTurn(ev.payload.id, ev.payload.state);
+    listen<{ id: string; state: AgentTurnState; job?: boolean }>("agent-turn", (ev) => {
+      noteAgentTurn(ev.payload.id, ev.payload.state, !!ev.payload.job);
     })
       .then((fn) => { unlistenTurn = fn; })
       .catch(() => {});

@@ -101,11 +101,18 @@ const onsetByPty: Record<string, number> = {};
 const tailByPty: Record<string, string> = {};
 /// The tab's own hook verdict (see the header comment), stamped at receipt.
 /// Absent for a tab whose agent fires no hooks, or once a verdict was retired.
-const turnByPty: Record<string, { state: AgentTurnState; at: number }> = {};
+const turnByPty: Record<string, { state: AgentTurnState; at: number; job: boolean }> = {};
 // Automation must not inherit the UI's silence fallback or unread state.
-const deliveryTurns: Record<string, { state: AgentTurnState; at: number; startedAt?: number }> = {};
+const deliveryTurns: Record<string, { state: AgentTurnState; at: number; startedAt?: number; job: boolean }> = {};
 const seenAtByPty: Record<string, number> = {};
 const bellByPty: Record<string, number> = {};
+const proposalByPty: Record<string, number> = {};
+
+/** A schedule proposal lights the existing unread affordance until the next look. */
+export function noteScheduleProposal(ptyId: string): void {
+  proposalByPty[ptyId] = Date.now();
+  useActivityStore.getState().recompute();
+}
 const inputByPty: Record<string, number> = {};
 /// When the tab was last DELIBERATELY opened — switched to in a tab bar, or put
 /// on a phone's screen (`clearAttention`). Deliberately not the same as
@@ -157,6 +164,7 @@ const PTY_MAPS: Record<string, unknown>[] = [
   deliveryTurns,
   seenAtByPty,
   bellByPty,
+  proposalByPty,
   inputByPty,
   readAtByPty,
   busySinceMarkByPty,
@@ -235,14 +243,23 @@ export type AgentTurnState = "working" | "decision" | "done" | "idle";
 /** Record a hook verdict for a PTY (the backend's `agent-turn` event, keyed by
  *  the composed PTY id). Stamped at receipt so it compares with the store's
  *  own clock (`seenAtByPty`, `inputByPty`). Recomputes at once: a verdict is
- *  the one input here that is exact, and the 300 ms tick would only delay it. */
-export function noteAgentTurn(ptyId: string, state: AgentTurnState) {
+ *  the one input here that is exact, and the 300 ms tick would only delay it.
+ *
+ *  `job` is the second half of the event (`services::agent_turn`): whether a
+ *  shell the agent put in the BACKGROUND — Claude's `run_in_background`, or
+ *  anything of its own still running after its turn ended — was alive at the
+ *  backend's last scan. The tool call an agent is sitting and waiting on is not
+ *  one; that is what "working" already says. It is independent of the turn, and
+ *  both halves are read here: a `done` with a job still running is not a
+ *  finished tab (the turn ended, the work did not), and a `working` with one is
+ *  an agent and a command of its own going at once. */
+export function noteAgentTurn(ptyId: string, state: AgentTurnState, job = false) {
   if (isDetachedWindow()) return;
   if (!splitPtyId(ptyId)) return;
   const at = Date.now();
-  deliveryTurns[ptyId] = { state, at, startedAt: state === "working" ? at : deliveryTurns[ptyId]?.startedAt };
+  deliveryTurns[ptyId] = { state, at, job, startedAt: state === "working" ? at : deliveryTurns[ptyId]?.startedAt };
   if (state === "idle") delete turnByPty[ptyId];
-  else turnByPty[ptyId] = { state, at: Date.now() };
+  else turnByPty[ptyId] = { state, at, job };
   useActivityStore.getState().recompute();
 }
 
@@ -280,16 +297,24 @@ export function agentDeliveryTurn(ptyId: string) {
  * going to arrive for such a tab to wait on. */
 export function agentDeliveryReady(ptyId: string, stableMs: number): boolean {
   const turn = agentDeliveryTurn(ptyId);
-  return turn ? turn.state === "done" && Date.now() - turn.at >= stableMs : !inputPendingVerdict(ptyId, 0);
+  // A shell the agent left running keeps the gate shut for as long as it runs:
+  // the turn is over, but whatever it started is not, and a prompt typed into
+  // that tab would land mid-job.
+  return turn
+    ? turn.state === "done" && !turn.job && Date.now() - turn.at >= stableMs
+    : !inputPendingVerdict(ptyId, 0);
 }
 
 /** The hook verdict for a PTY, if one stands: absent for a tab with no hooks,
  *  and dropped here once a "working" has outlived all paint (see
  *  `HOOK_WORK_SILENCE_MS`). Test-visible through the store's derived maps. */
-function turnVerdict(ptyId: string, now: number): { state: AgentTurnState; at: number } | undefined {
+function turnVerdict(ptyId: string, now: number): { state: AgentTurnState; at: number; job: boolean } | undefined {
   const turn = turnByPty[ptyId];
   if (!turn) return undefined;
-  if (turn.state === "working") {
+  // A verdict standing over a running job is not one that outlived its turn:
+  // the backend polls that shell and says when it exits, so silence under it is
+  // expected (a background job paints nothing in the agent's own TUI).
+  if (turn.state === "working" && !turn.job) {
     const paintedAt = Math.max(lastRawByPty[ptyId] ?? 0, turn.at);
     if (now - paintedAt >= HOOK_WORK_SILENCE_MS) {
       delete turnByPty[ptyId];
@@ -387,24 +412,34 @@ export function isInterruptInput(data: string): boolean {
  */
 export function applyDetachedStatus(
   scope: string,
-  status: Record<string, "working" | "needs-decision" | "finished">,
+  status: Record<string, "working" | "working-shell" | "working-both" | "needs-decision" | "finished">,
 ): void {
   const prefix = `${scope}:`;
   const busyByTab: Record<string, boolean> = {};
+  const busyKindByTab: Record<string, BusyKind> = {};
   const attentionByTab: Record<string, AttentionKind> = {};
   const cur = useActivityStore.getState();
   for (const [id, v] of Object.entries(cur.busyByTab)) if (!id.startsWith(prefix)) busyByTab[id] = v;
+  for (const [id, v] of Object.entries(cur.busyKindByTab)) {
+    if (!id.startsWith(prefix)) busyKindByTab[id] = v;
+  }
   for (const [id, v] of Object.entries(cur.attentionByTab)) {
     if (!id.startsWith(prefix)) attentionByTab[id] = v;
   }
   for (const [key, state] of Object.entries(status)) {
     const ptyId = `${prefix}${key}`;
-    if (state === "working") busyByTab[ptyId] = true;
-    else if (state === "needs-decision") attentionByTab[ptyId] = "decision";
+    // The three busy words carry the main window's `BusyKind` across, so a
+    // popped-out tab's ring and marks say what the docked one's would.
+    if (state.startsWith("working")) {
+      busyByTab[ptyId] = true;
+      busyKindByTab[ptyId] =
+        state === "working-shell" ? "shell" : state === "working-both" ? "both" : "agent";
+    } else if (state === "needs-decision") attentionByTab[ptyId] = "decision";
     else if (state === "finished") attentionByTab[ptyId] = "done";
   }
   useActivityStore.setState({
     busyByTab,
+    busyKindByTab,
     attentionByTab,
     attentionByScope: rollupAttentionScopes(attentionByTab),
   });
@@ -462,6 +497,7 @@ export function _clearPtyActivityForTest() {
   useActivityStore.setState({
     busyByScope: {},
     busyByTab: {},
+    busyKindByTab: {},
     attentionByTab: {},
     attentionByScope: {},
     statusCountsByScope: {},
@@ -497,7 +533,7 @@ function attentionFor(
   tab: TabEntry,
   ptyId: string,
   now: number,
-  turn: { state: AgentTurnState; at: number } | undefined,
+  turn: { state: AgentTurnState; at: number; job: boolean } | undefined,
 ): AttentionKind | null {
   // Only AI agent tabs raise attention; a shell finishing a build doesn't.
   if (tab.kind !== "agent" && tab.kind !== "local_agent") return null;
@@ -527,10 +563,14 @@ function attentionFor(
   // Past here everything is inferred from silence, which a watched tab's own
   // screen already tells the user better than a lamp could.
   if (lookedAt) return null;
+  if ((proposalByPty[ptyId] ?? 0) > seen) return "done";
   // With a hook verdict the question is only whether the finish is unread:
   // Stop fired after the user last had eyes on the tab. A verdict needs no
   // commanded-this-session gate — a restored session's replay fires no Stop.
-  if (turn) return turn.state === "done" && turn.at > seen ? "done" : null;
+  // A shell the agent left running is the exception: the turn ended, but the
+  // tab is still doing something, and "finished" would be the wrong word for it
+  // until that shell exits (it then says so without the agent saying anything).
+  if (turn) return turn.state === "done" && !turn.job && turn.at > seen ? "done" : null;
   // The agent has done no work since the user last had eyes on the tab. A
   // repaint, or a bell replayed with one, is not a turn: without a sustained
   // burst after the look there is nothing unread to report.
@@ -585,6 +625,29 @@ function sameCounts(a: TabStatusCounts, b: TabStatusCounts): boolean {
   return a.working === b.working && a.decision === b.decision && a.done === b.done;
 }
 
+/** What a busy tab is busy WITH, for the surfaces that paint an agent's own
+ *  turn and a running command in different colours:
+ *  - `agent`: an agent tab working a turn.
+ *  - `shell`: a command and nothing else — a shell tab producing output, or an
+ *    agent tab whose turn is over while a shell it started keeps running.
+ *  - `both`: an agent working a turn WITH a backgrounded command of its own
+ *    running alongside. Two things at once, and the only state drawn with two
+ *    marks. (The tool call an agent is waiting on is not one of them: that is
+ *    the turn itself, and it is already green.) */
+export type BusyKind = "agent" | "shell" | "both";
+
+/** The state class a tab strip puts on a busy tab — the ring's word plus what
+ *  the busy is made of: `working` (green, the agent's own turn), `working shell`
+ *  (the shell colour: a command and nothing else) or `working job` (green ring,
+ *  and a second mark for the command running beside the turn). One helper for
+ *  the three strips that draw it (docked, root overlay, popout), so a tab reads
+ *  the same wherever it is. A popout mirrored from an older main window, or a
+ *  tick that has not classified yet, falls back to the tab's own kind. */
+export function busyStateClass(kind: BusyKind | undefined, tabKind: TabEntry["kind"]): string {
+  const busy = kind ?? (tabKind === "shell" ? "shell" : "agent");
+  return busy === "shell" ? " working shell" : busy === "both" ? " working job" : " working";
+}
+
 /** One non-idle tab of a scope: WHICH tab a status bar stands for, so the bar
  *  can be clicked to jump to it. The `state` is the bar's own CSS class, i.e.
  *  the same three words the tab glow uses. */
@@ -592,8 +655,10 @@ export interface StatusTab {
   /** The tab's key within its scope (not the composed PTY id). */
   key: string;
   state: "working" | "needs-decision" | "finished";
-  /** A working SHELL tab — running a command, not an agent working a turn. The
-   *  bar paints it in its own colour (`--status-shell-working`). */
+  /** A tab busy with a COMMAND rather than an agent turn (`BusyKind` "shell").
+   *  The bar paints it in its own colour (`--status-shell-working`). A tab doing
+   *  both is drawn as the agent it is: one bar cannot say two things, and the
+   *  tab's own mark carries the second. */
   shell?: boolean;
 }
 
@@ -641,6 +706,7 @@ function sameCountMaps(
  *  tab going busy in one project doesn't re-render every other project's pill. */
 function computeStatusScopes(
   busyByTab: Record<string, boolean>,
+  busyKindByTab: Record<string, BusyKind>,
   attentionByTab: Record<string, AttentionKind>,
   prevCounts: Record<string, TabStatusCounts>,
   prevTabs: Record<string, StatusTab[]>,
@@ -660,7 +726,9 @@ function computeStatusScopes(
       if (isPtyTabKind(t.kind) && busyByTab[ptyId]) {
         tally.working++;
         working.push(
-          t.kind === "shell" ? { key: t.key, state: "working", shell: true } : { key: t.key, state: "working" },
+          busyKindByTab[ptyId] === "shell"
+            ? { key: t.key, state: "working", shell: true }
+            : { key: t.key, state: "working" },
         );
       } else if (attentionByTab[ptyId] === "decision") {
         tally.decision++;
@@ -701,6 +769,10 @@ interface ActivityStore {
    *  producing output right now. Drives the per-tab "working" animation in the
    *  tab bar. */
   busyByTab: Record<string, boolean>;
+  /** Composed PTY id → WHAT that tab is busy with ({@link BusyKind}), so the
+   *  tab ring, its status mark and the pill's bars can tell an agent's own turn
+   *  from a command running in the same tab. Absent wherever `busyByTab` is. */
+  busyKindByTab: Record<string, BusyKind>;
   /** Composed PTY id → an agent tab nobody is looking at wants something:
    *  `decision` (a prompt is on its screen) or `done` (it finished its turn).
    *  Derived from the tab's own output by `recompute`; drives the per-tab "needs
@@ -760,6 +832,7 @@ interface ActivityStore {
 export const useActivityStore = create<ActivityStore>((set, get) => ({
   busyByScope: {},
   busyByTab: {},
+  busyKindByTab: {},
   attentionByTab: {},
   attentionByScope: {},
   statusCountsByScope: {},
@@ -800,6 +873,7 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
     delete attentionByTab[ptyId];
     const status = computeStatusScopes(
       get().busyByTab,
+      get().busyKindByTab,
       attentionByTab,
       get().statusCountsByScope,
       get().statusTabsByScope,
@@ -846,9 +920,11 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
     const { tabsByScope } = useTabsStore.getState();
     const prevScope = get().busyByScope;
     const prevTab = get().busyByTab;
+    const prevKind = get().busyKindByTab;
     const prevAttn = get().attentionByTab;
     const nextScope: Record<string, boolean> = {};
     const nextTab: Record<string, boolean> = {};
+    const nextKind: Record<string, BusyKind> = {};
     const nextAttn: Record<string, AttentionKind> = {};
     // Files whose run-launched tab is busy this tick (see `runningRunFiles`).
     // Collected from live tabs only, so a closed/replaced run tab drops out.
@@ -881,11 +957,21 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
         // so restored tabs bursting resume banners on launch never read as
         // "working"), painting and saying something right now, and the text
         // sustained past the onset debounce (so a lone blip never registers).
-        const tabBusy = turn
+        const agentBusy = turn
           ? turn.state === "working" && attn !== "decision"
           : bytesSayWorking(ptyId, now);
+        // A command the agent backgrounded keeps the tab busy on its own: the
+        // turn may be over, but the tab is still running something (this is
+        // what used to reach the window as a held "working" verdict, before the
+        // two facts were reported apart).
+        const jobBusy = !!turn?.job;
+        const tabBusy = agentBusy || jobBusy;
         if (tabBusy) {
           nextTab[ptyId] = true;
+          // A shell tab is a command by definition; an agent tab is one when a
+          // shell of its own is running, and BOTH when it is also working.
+          nextKind[ptyId] =
+            t.kind === "shell" ? "shell" : jobBusy ? (agentBusy ? "both" : "shell") : "agent";
           scopeBusy = true;
           // A run-launched tab (Python Run/Debug, foreground shell run) pulses
           // its source file's ▶ run button while it produces output. Busy-gated,
@@ -893,6 +979,9 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
           if (t.runFile) nextRunFiles.add(t.runFile);
         }
         if ((prevTab[ptyId] ?? false) !== tabBusy) changed = true;
+        // The kind can move while "busy" stands still — a turn ending over a
+        // job that keeps running is the case this whole flag exists for.
+        if (prevKind[ptyId] !== nextKind[ptyId]) changed = true;
         if (turn) {
           // A turn's end is the hook's Stop (or the decision it paused on),
           // exact to the moment it was received: that is when the tab was last
@@ -991,7 +1080,7 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
     const attnChanged = !sameAttention(prevAttn, nextAttn);
     const prevCounts = get().statusCountsByScope;
     const prevStatusTabs = get().statusTabsByScope;
-    const status = computeStatusScopes(nextTab, nextAttn, prevCounts, prevStatusTabs);
+    const status = computeStatusScopes(nextTab, nextKind, nextAttn, prevCounts, prevStatusTabs);
     const nextCounts = status.counts;
     // The tally can move even when no tab flipped busy — a tab carrying an
     // attention flag was closed, say — so it gates the publish independently.
@@ -1019,7 +1108,7 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
     // the whole `busyByTab` object, so handing it a fresh-but-equal one on each
     // interval tick would re-render them all for nothing.
     set({
-      ...(changed ? { busyByScope: nextScope, busyByTab: nextTab } : {}),
+      ...(changed ? { busyByScope: nextScope, busyByTab: nextTab, busyKindByTab: nextKind } : {}),
       ...(attnChanged
         ? { attentionByTab: nextAttn, attentionByScope: rollupAttentionScopes(nextAttn) }
         : {}),

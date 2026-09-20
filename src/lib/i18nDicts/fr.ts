@@ -3075,6 +3075,7 @@ export const dict: Dict = {
   "tabBar.newTabTitle": "Nouvel onglet",
   "tabBar.renameAriaLabel": "Renommer l'onglet",
   "tabBar.statusWorking": "En cours",
+  "tabBar.statusRunning": "Exécute une commande",
   "tabBar.statusDecision": "Attend votre réponse",
   "tabBar.statusDone": "Terminé",
   "tabBar.closeTabTitle": "Fermer l'onglet",
