@@ -75,8 +75,12 @@ tool is unavailable, say so — never skip silently.
 - Match surrounding style; small focused changes; `rg` for search.
 - All user-facing strings via `src/lib/i18n.ts` (`useT()`); English holds
   every key. Never hardcode display text.
-- Tag new, not-live-verified features with the `UntestedTag` pill; remove it
-  only when the user says that item is tested.
+- Tag new, not-live-verified features with the `UntestedTag` pill, and give it
+  a row in the register (`src/lib/untested.ts`) — pills carry its id, menu-entry
+  data carries it as `untested: "<id>"`. Clear one only when the user says that
+  item is tested: `npm run untested -- tested <id-or-prefix>` stamps the row and
+  the pills stop rendering; `-- sweep` later deletes the markup. `-- list` shows
+  what is still tagged and where.
 - Prefer local state and existing Zustand stores over new global state.
 - Tauri command payloads use the frontend's camelCase keys.
 - Keep `services/` modules `AppHandle`-free and unit-testable.

@@ -6374,7 +6374,7 @@ function EditorAiControls({ ai, path }: { ai: TabAiPrefs; path: string }) {
                 : t("fileViewer.autocompleteOffHint")
             }
           >
-            {t("fileViewer.autocompleteLabel")} <UntestedTag />
+            {t("fileViewer.autocompleteLabel")} <UntestedTag id="fileViewer.autocompleteLabel" />
           </button>
           {ai.autocomplete && !copilot && (
             <Dropdown
@@ -7165,7 +7165,7 @@ function SlurmBar({
       >
         ⚡ {t("fileViewer.interactiveSessionLabel")}
       </button>
-      <UntestedTag />
+      <UntestedTag id="fileViewerPane.1" />
 
       {varsOpen && (
         <div className="file-viewer-run-args" role="dialog" aria-label={t("fileViewer.sbatchVariablesDialog")}>
@@ -7706,7 +7706,7 @@ function TextView({
               setRemarkLine(offsetToLineCol(draft, offset).line);
             }}
           >
-            💬 <UntestedTag />
+            💬 <UntestedTag id="fileViewerPane.2" />
           </button>
         )}
         {/* The YAML tree and the bib cards edit the text, so their edits are
@@ -8231,7 +8231,7 @@ function MarkdownView({
               hosts: hostsLabel(remoteImageHosts(remoteUrls)),
             })}
           </span>
-          <UntestedTag />
+          <UntestedTag id="fileViewerPane.3" />
           <button
             className="file-viewer-reload-btn"
             title={t("fileViewer.remoteImagesLoadTitle")}
@@ -8880,7 +8880,7 @@ function TexWorkspaceView({
       {
         title: (
           <>
-            {t("texWorkspace.newFileTitle")} <UntestedTag />
+            {t("texWorkspace.newFileTitle")} <UntestedTag id="texWorkspace.newFileTitle" />
           </>
         ),
         body: t("texWorkspace.newFileBody", { name: parentName }),
@@ -8974,7 +8974,7 @@ function TexWorkspaceView({
         <div className="tex-structure-sidebar" style={{ width: sidebarWidth }}>
           <div className="tex-structure-header">
             <span className="tex-structure-title">{t("texWorkspace.structureTitle")}</span>
-            <UntestedTag />
+            <UntestedTag id="fileViewerPane.4" />
             <button
               type="button"
               className="tex-structure-chrome-btn tex-structure-fold"
@@ -9047,7 +9047,7 @@ function TexCreateRefBanner({
           : t("fileViewer.texMissingRefMsg", { name: creation.rel })}
         {error ? ` ${error}` : ""}
       </span>
-      <UntestedTag />
+      <UntestedTag id="fileViewerPane.5" />
       <button
         type="button"
         className="ollama-action-btn primary"
@@ -9951,7 +9951,7 @@ function TexView({
               : t("fileViewer.texPreviewOffHint")
           }
         >
-          {t("fileViewer.texPreviewLabel")} <UntestedTag />
+          {t("fileViewer.texPreviewLabel")} <UntestedTag id="fileViewer.texPreviewLabel" />
         </button>
         <button
           className={`file-viewer-tex-beamer-toggle${beamer.on ? " active" : ""}`}
@@ -9959,7 +9959,7 @@ function TexView({
           aria-pressed={beamer.on}
           title={beamer.on ? t("fileViewer.beamerOnHint") : t("fileViewer.beamerOffHint")}
         >
-          {t("fileViewer.beamerToggle")} <UntestedTag />
+          {t("fileViewer.beamerToggle")} <UntestedTag id="fileViewer.beamerToggle" />
         </button>
         {pdfVersion > 0 && pdfPath && (
           <button
@@ -10011,7 +10011,7 @@ function TexView({
             >
               {t("fileViewer.outputFolderBrowse")}
             </button>
-            <UntestedTag />
+            <UntestedTag id="fileViewerPane.6" />
           </label>
           <label className="file-viewer-tex-option">
             <span>{t("fileViewer.extraFlagsLabel")}</span>
@@ -10051,7 +10051,7 @@ function TexView({
       )}
       {compileNote === "unchanged" && (
         <div className="file-viewer-tex-sync-miss" role="status">
-          {t("fileViewer.compileUnchangedMsg")} <UntestedTag />
+          {t("fileViewer.compileUnchangedMsg")} <UntestedTag id="fileViewer.compileUnchangedMsg" />
         </div>
       )}
       {/* Only alongside a *successful* build: a failed one already shows the same
@@ -10061,7 +10061,7 @@ function TexView({
         <div className="file-viewer-tex-sync-miss" role="status">
           {t("fileViewer.compileDriverNote")} <code>{driverNote}</code>{" "}
           <TexCopyButton label={t("fileViewer.copyError")} text={driverNote} />
-          <UntestedTag />
+          <UntestedTag id="fileViewerPane.7" />
         </div>
       )}
       {syncNote && (
@@ -10145,7 +10145,7 @@ function TexView({
               <TexCopyButton label={t("fileViewer.copyLog")} text={log} />
               {/* One pill for the whole copy affordance — the row buttons are
                   the same control and would only repeat it. */}
-              <UntestedTag />
+              <UntestedTag id="fileViewerPane.8" />
             </div>
           )}
           {showLog && log && <pre className="file-viewer-tex-log">{log}</pre>}

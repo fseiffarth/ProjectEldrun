@@ -369,7 +369,7 @@ export function TexStructureSidebar({
         <TexBackButton {...nav} />
         <TexUpButton {...nav} />
         <span className="tex-structure-title">{t("texWorkspace.structureTitle")}</span>
-        <UntestedTag />
+        <UntestedTag id="texStructureSidebar.1" />
         {onNewFile && (
           <button
             type="button"

@@ -97,7 +97,7 @@ export function useAgentWorktreePicker({
             // the old menu gave, and the safe one to Enter through.
             current: w.is_main,
           })),
-          untested: true,
+          untested: "agentWorktrees.1",
         });
       } finally {
         setAsking(false);

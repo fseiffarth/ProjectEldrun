@@ -69,7 +69,7 @@ export function TodoOverlayHost() {
       >
         <div className="settings-title-row">
           <h2>
-            {t("todo.overlayTitle")} <UntestedTag />
+            {t("todo.overlayTitle")} <UntestedTag id="todo.overlayTitle" />
           </h2>
           <button
             type="button"

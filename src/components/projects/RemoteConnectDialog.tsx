@@ -346,7 +346,7 @@ function RemoteConnectDialogInner({
         <label className="remote-connect-field remote-worker-name">
           <span className="remote-machine-add-label">
             {t("remoteConnect.nameLabel")}
-            <UntestedTag />
+            <UntestedTag id="remoteConnectDialog.1" />
           </span>
           <input
             type="text"
@@ -376,7 +376,7 @@ function RemoteConnectDialogInner({
           <label className="remote-connect-field remote-worker-name">
             <span className="remote-machine-add-label">
               {t("remoteConnect.machineNameLabel")}
-              <UntestedTag />
+              <UntestedTag id="remoteConnectDialog.2" />
             </span>
             <input
               type="text"
@@ -676,7 +676,7 @@ function RemoteConnectDialogInner({
           <label className="remote-connect-field">
             <span className="remote-machine-add-label">
               {t("remoteConnect.usernameLabel")}
-              <UntestedTag />
+              <UntestedTag id="remoteConnectDialog.3" />
             </span>
             <input
               type="text"
@@ -888,7 +888,7 @@ function RemoteConnectDialogInner({
                 {autoConnectBlock === "hpc" && (
                   <span className="machines-auto-blocked"> {t("autoConnect.offWhileHpc")}</span>
                 )}
-                <UntestedTag />
+                <UntestedTag id="remoteConnectDialog.4" />
                 <span className="ssh-optional-hint">
                   {autoConnectBlock === "hpc"
                     ? t("autoConnect.hpcTitle")
@@ -968,7 +968,7 @@ function RemoteConnectDialogInner({
                 onClick={() => setKillArm(true)}
               >
                 {t("remoteConnect.killArmBtn")}
-                <UntestedTag />
+                <UntestedTag id="remoteConnectDialog.5" />
               </button>
             ))}
           {/* Only offered when there is something to forget — the keychain state

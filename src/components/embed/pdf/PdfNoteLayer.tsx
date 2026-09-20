@@ -625,7 +625,7 @@ export function PdfNoteLayer({
                 }}
               >
                 {ready ? t("pdfNotes.addHere") : t("pdfNotes.reading")}
-                <UntestedTag />
+                <UntestedTag id="pdfNoteLayer.1" />
               </button>
             )}
           </div>,

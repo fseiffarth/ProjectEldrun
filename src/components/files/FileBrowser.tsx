@@ -455,7 +455,7 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
         {deckEnabled && (
           <button onClick={() => void createDeck()}>
             {t("fileTree.newPresentation")}
-            <UntestedTag />
+            <UntestedTag id="fileBrowser.1" />
           </button>
         )}
         <button onClick={renameSelected} disabled={!canMutate}>{t("fileBrowser.rename")}</button>
@@ -591,7 +591,7 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
                         onClick={() => runContextAction(() => void createDeck())}
                       >
                         {t("fileTree.newPresentation")}
-                        <UntestedTag />
+                        <UntestedTag id="fileBrowser.2" />
                       </button>
                     </div>
                   )}

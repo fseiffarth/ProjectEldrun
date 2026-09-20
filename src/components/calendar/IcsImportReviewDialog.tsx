@@ -55,7 +55,7 @@ export function IcsImportReviewDialog({
     <div className="modal-backdrop">
       <div className="project-dialog ics-review-dialog">
         <h2 className="ics-review-title">
-          {t("icsReview.title")} <UntestedTag />
+          {t("icsReview.title")} <UntestedTag id="icsReview.title" />
         </h2>
         <p className="ics-review-file">{name}</p>
 

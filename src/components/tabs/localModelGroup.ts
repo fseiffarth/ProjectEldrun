@@ -177,7 +177,7 @@ export function localModelMenuGroup(opts: {
             dot: "⏻",
             color: TAB_ACCENT["local_agent"],
             disabled: gpu.loading,
-            untested: true,
+            untested: "localModelGroup.1",
             onPick: gpu.load,
           }];
   }

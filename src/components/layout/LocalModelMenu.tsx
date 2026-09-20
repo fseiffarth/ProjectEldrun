@@ -1186,7 +1186,7 @@ export function LocalModelMenu() {
             <span className="tab-new-menu-dot" style={{ color: "transparent" }}>
               ●
             </span>
-            {t("localModel.skillsLibrary")} <UntestedTag />
+            {t("localModel.skillsLibrary")} <UntestedTag id="localModel.skillsLibrary" />
           </button>
           {agents.map((a) => {
             const isDefault = a.id === defaultAgentCmd;
@@ -1250,7 +1250,7 @@ export function LocalModelMenu() {
                       {t("localModel.mcpChip")}
                     </button>
                   )}
-                  <UntestedTag />
+                  <UntestedTag id="localModelMenu.1" />
                 </div>
               </div>
             );
@@ -1371,7 +1371,7 @@ export function LocalModelMenu() {
               </button>
               <div className="local-model-autostart-text">
                 <span className="local-model-autostart-sentence">{restoreSentence}</span>
-                <UntestedTag />
+                <UntestedTag id="localModelMenu.2" />
               </div>
               {/* Waiting is the one phase with something to *stop*; the two
                   that ended without the models being back are the ones with
@@ -1423,7 +1423,7 @@ export function LocalModelMenu() {
               </button>
               <div className="local-model-autostart-text">
                 <span className="local-model-autostart-sentence">{autoNoteTitle}</span>
-                <UntestedTag />
+                <UntestedTag id="localModelMenu.3" />
               </div>
               {autoPhase !== "loading" && (
                 <div className="local-model-autostart-actions">
@@ -1614,7 +1614,7 @@ export function LocalModelMenu() {
                       >
                         {t("localModel.mcpChip")}
                       </button>
-                      <UntestedTag />
+                      <UntestedTag id="localModelMenu.4" />
                       {/* The row's own two verbs, grouped and right-aligned: the
                           task tags above are a wrapping set, these are a column. */}
                       <div className="local-model-row-actions">
@@ -1670,7 +1670,7 @@ export function LocalModelMenu() {
               {gpuStatus?.igpu_dropped && (
                 <div className="local-model-igpu-notice">
                   <div className="local-model-igpu-text">
-                    {t("localModel.igpuDropped")} <UntestedTag />
+                    {t("localModel.igpuDropped")} <UntestedTag id="localModel.igpuDropped" />
                   </div>
                   {gpuStatus.fix_cmd ? (
                     <button

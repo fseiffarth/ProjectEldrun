@@ -68,7 +68,7 @@ export function CarefulHostToggle({
         disabled={disabled || tagged}
         onChange={(e) => void updateSettings(setCarefulPatch(settings, target, e.target.checked))}
       />
-      {t("carefulHost.label")} <UntestedTag />
+      {t("carefulHost.label")} <UntestedTag id="carefulHost.label" />
       <span className="ssh-optional-hint">
         {tagged
           ? t("carefulHost.hintHpcTagged")

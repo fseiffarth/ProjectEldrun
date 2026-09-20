@@ -1334,7 +1334,7 @@ export function ProjectFilesView({
                 ? `✦ ${t("projectFilesView.rootScopeName")}`
                 : t("projectFilesView.filesFallbackName")}
         </span>
-        {isRootScope && <UntestedTag />}
+        {isRootScope && <UntestedTag id="projectFilesView.1" />}
         {!activeBox && project && (
           <ProjectHoverCard project={project} state={nameHover} showTags={false} />
         )}
@@ -1423,7 +1423,7 @@ export function ProjectFilesView({
                   }}
                 >
                   {t("projectFilesView.remoteMachinesEllipsis")}
-                  <UntestedTag />
+                  <UntestedTag id="projectFilesView.2" />
                 </button>
               </div>
           </ContextMenuPortal>
@@ -1850,7 +1850,7 @@ export function ProjectFilesView({
                 <span className="orange-bulk-count">
                   {t("projectFilesView.divergedCount", { count: orangeFiles.length })}
                 </span>
-                <UntestedTag />
+                <UntestedTag id="projectFilesView.3" />
                 <div className="orange-file-actions">
                   <button
                     type="button"
@@ -2109,7 +2109,7 @@ export function ProjectFilesView({
                     <span className="orange-bulk-count">
                       {t("projectFilesView.newLocalCount", { count: newLocalFiles.length })}
                     </span>
-                    <UntestedTag />
+                    <UntestedTag id="projectFilesView.4" />
                     <div className="orange-file-actions">
                       <button
                         type="button"
@@ -2310,7 +2310,7 @@ export function ProjectFilesView({
           <div ref={sessionTooltipRef} className="file-tooltip" style={style}>
             <div className="file-tooltip-name">
               {s.name}
-              <UntestedTag />
+              <UntestedTag id="projectFilesView.5" />
             </div>
             <div>
               <span className="file-tooltip-label">{t("projectFilesView.tooltipHost")}</span>
@@ -2355,7 +2355,7 @@ export function ProjectFilesView({
       {view === "jobs" && (
         <div className="side-panel-scroll side-panel-orange" style={{ flex: 1, overflowY: "auto" }}>
           <div className="side-panel-jobs-head">
-            <UntestedTag />
+            <UntestedTag id="projectFilesView.6" />
           </div>
           {wsRows.length > 0 && (
             <>
@@ -2517,7 +2517,7 @@ export function ProjectFilesView({
       {view === "windows" && (
         <div className="side-panel-scroll" style={{ flex: 1, overflowY: "auto", padding: 4 }}>
           <div className="file-tree-empty" style={{ paddingBottom: 4 }}>
-            <UntestedTag />
+            <UntestedTag id="projectFilesView.7" />
           </div>
           {scopedWindows.length === 0 ? (
             <div className="file-tree-empty">{t("projectFilesView.noOpenedWindows")}</div>

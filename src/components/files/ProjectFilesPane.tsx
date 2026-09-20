@@ -407,7 +407,7 @@ function BoxRootSection({
               ⚙
             </button>
           )}
-          <UntestedTag />
+          <UntestedTag id="projectFilesPane.1" />
           {remote && (
             <span style={{ marginLeft: "auto" }}>
               <FileSourceSwitch source={source} onChange={setSource} />
@@ -813,7 +813,7 @@ export function ProjectFilesPane({
           >
             {t("projectFilesPane.bigFolders")}
           </button>
-          <UntestedTag />
+          <UntestedTag id="projectFilesPane.2" />
           {/* Both directions ask first (`stores/remote/syncConfirm`). This is the widest
               transfer in the app — one click over the *whole* tree, in whichever
               direction the source switch happens to be on — so the one thing it

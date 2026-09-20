@@ -96,7 +96,7 @@ export function SavePasswordRow({
           <>
             <span className="remote-machine-add-label">
               {label}
-              <UntestedTag />
+              <UntestedTag id="savePasswordRow.1" />
             </span>
             <Toggle
               size="sm"

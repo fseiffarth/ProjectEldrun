@@ -27,7 +27,7 @@ export function TabColorPicker({
   return (
     <>
       <div className="tab-new-menu-group-label">
-        {t("tabColor.menu")} <UntestedTag />
+        {t("tabColor.menu")} <UntestedTag id="tabColor.menu" />
       </div>
       <div className="tab-color-swatches" role="group" aria-label={t("tabColor.menu")}>
         <button

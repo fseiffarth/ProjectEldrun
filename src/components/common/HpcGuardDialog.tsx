@@ -60,7 +60,7 @@ export function HpcGuardDialog() {
     <div className="modal-backdrop" onClick={cancel}>
       <div className="project-dialog hpc-guard-dialog" onClick={(e) => e.stopPropagation()}>
         <h2 className="hpc-guard-title">
-          {t(copy.title)} <UntestedTag />
+          {t(copy.title)} <UntestedTag id="hpcGuardDialog.1" />
         </h2>
         <div className="hpc-guard-target">
           <span className="hpc-guard-badge">HPC</span>

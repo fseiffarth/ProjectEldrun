@@ -42,7 +42,7 @@ export function BrowserDownloadDialog({
       >
         <div className="settings-title-row">
           <h2>
-            {t("browser.downloadTitle")} <UntestedTag />
+            {t("browser.downloadTitle")} <UntestedTag id="browser.downloadTitle" />
           </h2>
           <button type="button" className="dialog-close-btn" onClick={() => onDecide(false)}>
             ×

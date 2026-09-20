@@ -34,7 +34,7 @@ export function BrowserStartPage({
     return (
       <div className="browser-start">
         <div className="browser-start-title">
-          {t("browser.startTitle")} <UntestedTag />
+          {t("browser.startTitle")} <UntestedTag id="browser.startTitle" />
         </div>
         <p className="browser-start-hint">{t("browser.startHint")}</p>
         <button type="button" className="browser-btn browser-btn-primary" onClick={onOpenAddress}>
@@ -47,7 +47,7 @@ export function BrowserStartPage({
   return (
     <div className="browser-start">
       <div className="browser-start-title">
-        {t("browser.resumeTitle")} <UntestedTag />
+        {t("browser.resumeTitle")} <UntestedTag id="browser.resumeTitle" />
       </div>
       <div className="browser-resume-url">
         {parts.raw ? (

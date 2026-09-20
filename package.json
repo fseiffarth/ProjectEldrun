@@ -24,6 +24,7 @@
     "package:dev": "./scripts/package-dev.sh",
     "test": "vitest run",
     "test:watch": "vitest",
+    "untested": "node scripts/untested.mjs",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"
   },

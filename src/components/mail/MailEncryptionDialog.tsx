@@ -110,7 +110,7 @@ export function MailEncryptionDialog({ state, onChanged, onClose }: MailEncrypti
       >
         <div className="settings-title-row">
           <h2>
-            {t("mail.encryption.title")} <UntestedTag />
+            {t("mail.encryption.title")} <UntestedTag id="mail.encryption.title" />
           </h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>
             ×

@@ -342,7 +342,7 @@ export function VpnPasswordPrompt() {
                 disabled={connecting}
                 title={t(connecting ? "vpnPrompt.terminalBtnStopFirst" : "vpnPrompt.terminalBtnHandoff")}
               >
-                {t("vpnPrompt.logInTerminal")} <UntestedTag />
+                {t("vpnPrompt.logInTerminal")} <UntestedTag id="vpnPrompt.logInTerminal" />
               </button>
               <button
                 type="button"

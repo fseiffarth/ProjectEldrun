@@ -1528,7 +1528,7 @@ function OutlinePane({
     <div className="file-viewer-pdf-outline" ref={paneRef}>
       <div className="file-viewer-pdf-outline-head">
         <span>{t("pdfOutline.contentsHeader")}</span>
-        <UntestedTag />
+        <UntestedTag id="pdfViewer.1" />
       </div>
       {derived && nodes && nodes.length > 0 && (
         <div className="file-viewer-pdf-outline-note" title={t("pdfOutline.derivedNoteTitle")}>
@@ -4018,7 +4018,7 @@ function PdfCanvas({
             ←
           </button>
         )}
-        {linkBack.length > 0 && <UntestedTag />}
+        {linkBack.length > 0 && <UntestedTag id="pdfViewer.2" />}
         <span className="file-viewer-pdf-toolbar-sep" aria-hidden="true" />
         <button
           className="file-viewer-zoom-btn"
@@ -4114,7 +4114,7 @@ function PdfCanvas({
         >
           ▮
         </button>
-        <UntestedTag />
+        <UntestedTag id="pdfViewer.3" />
         {/* There is deliberately no ✂ copy-region button any more either: the
             region capture is armed by the header's global Screenshot app, which
             hands the shot to a visible PDF viewer before it would spawn an OS
@@ -4133,7 +4133,7 @@ function PdfCanvas({
         >
           💬
         </button>
-        <UntestedTag />
+        <UntestedTag id="pdfViewer.4" />
         {/* Delete the metadata (#pdf-meta). Beside the blackout tool because the two
             are the same job on the file's two halves — what is on the page, and what
             the file says about itself off it. */}
@@ -4147,7 +4147,7 @@ function PdfCanvas({
         >
           🏷
         </button>
-        <UntestedTag />
+        <UntestedTag id="pdfViewer.5" />
         {/* ── Page arranging (#page-arrange) ────────────────────────────────
             Edits live in memory until Save, so a stray delete is always one Ctrl+Z
             away and never touches the file. */}
@@ -4206,7 +4206,7 @@ function PdfCanvas({
         {notedSheets > 0 && (
           <span className="file-viewer-pdf-note-pending" title={t("pdfNotes.pendingTitle")}>
             💬 {t("pdfNotes.pending", { n: notesTotal, pages: notedSheets })}
-            <UntestedTag />
+            <UntestedTag id="pdfViewer.6" />
           </span>
         )}
         <button
@@ -4238,7 +4238,7 @@ function PdfCanvas({
         >
           ▶ {t("pdfViewer.fullscreenPresentBtn")}
         </button>
-        <UntestedTag />
+        <UntestedTag id="pdfViewer.7" />
         {deckEnabled && (
           <button
             className="file-viewer-zoom-btn file-viewer-zoom-text"
@@ -4327,7 +4327,7 @@ function PdfCanvas({
           {copySelecting && <span>{t("pdfViewer.copySelectionHint")}</span>}
           {copyBusy && <span>{t("pdfViewer.copySelectionWorking")}</span>}
           {copyNotice && <span className="file-viewer-pdf-copy-success">{copyNotice}</span>}
-          <UntestedTag />
+          <UntestedTag id="pdfViewer.8" />
         </div>
       )}
       {metaOpen && doc && (

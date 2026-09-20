@@ -1321,7 +1321,7 @@ export function MachinesIndicator() {
             <div className="vpn-indicator-row menu-form machines-io-panel">
               <div className="vpn-indicator-note">
                 {t("machines.exportNote")}
-                <UntestedTag />
+                <UntestedTag id="machinesIndicator.1" />
               </div>
               {machines.length === 0 ? (
                 <div className="vpn-indicator-empty">{t("machines.nothingToExport")}</div>
@@ -1409,7 +1409,7 @@ export function MachinesIndicator() {
                             : "machines.importCountMany",
                           { count: importEntries.length },
                         )}
-                    <UntestedTag />
+                    <UntestedTag id="machinesIndicator.2" />
                   </div>
                   {importEntries.length > 0 && (
                     <div className="machines-io-preview">
@@ -1451,7 +1451,7 @@ export function MachinesIndicator() {
                     />
                     <span>
                       {t("machines.savePassword")}
-                      <UntestedTag />
+                      <UntestedTag id="machinesIndicator.3" />
                     </span>
                   </label>
                   <label
@@ -1465,7 +1465,7 @@ export function MachinesIndicator() {
                     />
                     <span>
                       {t("machines.autoConnectLabel")}
-                      <UntestedTag />
+                      <UntestedTag id="machinesIndicator.4" />
                     </span>
                   </label>
                   {ioError && <div className="vpn-indicator-error">{ioError}</div>}
@@ -1492,7 +1492,7 @@ export function MachinesIndicator() {
               row's grip, which reorders. */}
           <div className="vpn-indicator-note">
             <strong>{t("machines.note.strong")}</strong> {t("machines.note.rest")}
-            <UntestedTag />
+            <UntestedTag id="machinesIndicator.5" />
           </div>
 
           {machines.length > 0 && disconnectAllArm ? (
@@ -1500,7 +1500,7 @@ export function MachinesIndicator() {
               <div className="vpn-indicator-hint">
                 {t("machines.disconnectAllHint.pre")} <strong>{t("machines.tmuxJobs")}</strong>{" "}
                 {t("machines.disconnectAllHint.post")}
-                <UntestedTag />
+                <UntestedTag id="machinesIndicator.6" />
               </div>
               <div className="vpn-indicator-actions">
                 <button
@@ -1571,7 +1571,7 @@ export function MachinesIndicator() {
               >
                 ▥
               </button>
-              <UntestedTag />
+              <UntestedTag id="machinesIndicator.7" />
             </div>
           )}
 
@@ -1882,7 +1882,7 @@ export function MachinesIndicator() {
                             {t("machines.autoBlockedHpc")}
                           </span>
                         )}
-                        <UntestedTag />
+                        <UntestedTag id="machinesIndicator.8" />
                       </span>
                     </label>
                     {/* Where the tag is set for a machine already in the list. The
@@ -1912,7 +1912,7 @@ export function MachinesIndicator() {
                       />
                       <span>
                         {t("machines.hpcToggleLabel")}
-                        <UntestedTag />
+                        <UntestedTag id="machinesIndicator.9" />
                       </span>
                     </label>
                   </>
@@ -1922,7 +1922,7 @@ export function MachinesIndicator() {
                     <div className="vpn-indicator-hint">
                       {t("machines.attachQuestionPre")} <strong>{name}</strong>{" "}
                       {t("machines.attachQuestionPost")}
-                      <UntestedTag />
+                      <UntestedTag id="machinesIndicator.10" />
                     </div>
                     {projects.length === 0 && (
                       <div className="vpn-indicator-empty">{t("machines.noActiveProject")}</div>
@@ -1991,7 +1991,7 @@ export function MachinesIndicator() {
                           {t("machines.removeHintLive.pre")}{" "}
                           <strong>{t("machines.tmuxJobs")}</strong>{" "}
                           {t("machines.removeHintLive.post")}
-                          <UntestedTag />
+                          <UntestedTag id="machinesIndicator.11" />
                         </>
                       ) : (
                         t("machines.removeHintIdle")
@@ -2009,7 +2009,7 @@ export function MachinesIndicator() {
                     <div className="vpn-indicator-hint">
                       {t("machines.disconnectHint.pre")} <strong>{t("machines.tmuxJobs")}</strong>{" "}
                       {t("machines.disconnectHint.post")}
-                      <UntestedTag />
+                      <UntestedTag id="machinesIndicator.12" />
                     </div>
                     <button
                       type="button"
@@ -2085,7 +2085,7 @@ export function MachinesIndicator() {
                       />
                       <span>
                         {t("machines.savePassword")}
-                        <UntestedTag />
+                        <UntestedTag id="machinesIndicator.13" />
                       </span>
                     </label>
                     <label>
@@ -2226,7 +2226,7 @@ export function MachinesIndicator() {
                 />
                 <span>
                   {t("machines.savePassword")}
-                  <UntestedTag />
+                  <UntestedTag id="machinesIndicator.14" />
                 </span>
               </label>
               <label
@@ -2244,7 +2244,7 @@ export function MachinesIndicator() {
                   {addHpc && (
                     <span className="machines-auto-blocked"> {t("machines.autoBlockedHpcAdd")}</span>
                   )}
-                  <UntestedTag />
+                  <UntestedTag id="machinesIndicator.15" />
                 </span>
               </label>
               {/* The tag, at the moment it is actually known: logging in is when
@@ -2260,7 +2260,7 @@ export function MachinesIndicator() {
                 <Toggle checked={addHpc} onChange={(e) => setAddHpc(e.target.checked)} size="sm" />
                 <span>
                   {t("machines.hpcToggleLabel")}
-                  <UntestedTag />
+                  <UntestedTag id="machinesIndicator.16" />
                 </span>
               </label>
               <label>

@@ -61,7 +61,7 @@ export function TerminalSignInToggle({
       }
     >
       <Toggle size="sm" checked={checked} disabled={busy} onChange={(e) => onChange(e.target.checked)} />
-      {t("terminalSignIn.label")} <UntestedTag />
+      {t("terminalSignIn.label")} <UntestedTag id="terminalSignIn.label" />
       <span className={`ssh-optional-hint${failed ? " terminal-signin-suggest" : ""}`}>
         {failed
           ? t("terminalSignIn.failedHint", { what })

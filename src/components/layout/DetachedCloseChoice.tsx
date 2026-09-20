@@ -50,7 +50,7 @@ export function DetachedCloseChoice({
         onClick={(e) => e.stopPropagation()}
       >
         <h2 className="detached-close-title">
-          {t("detachedClose.title")} <UntestedTag />
+          {t("detachedClose.title")} <UntestedTag id="detachedClose.title" />
         </h2>
         <p className="detached-close-body">{t("detachedClose.body")}</p>
         <div className="project-dialog-actions">

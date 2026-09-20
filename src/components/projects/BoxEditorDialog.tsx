@@ -114,7 +114,7 @@ export function BoxEditorDialog({ onClose }: { onClose: () => void }) {
       >
         <div className="settings-title-row">
           <h2>
-            {t("boxEditor.title")} <UntestedTag />
+            {t("boxEditor.title")} <UntestedTag id="boxEditor.title" />
           </h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>

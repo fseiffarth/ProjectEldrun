@@ -17,6 +17,7 @@
  * surface that explains them (legend overlay, help, lessons) renders from it.
  */
 import { IS_MAC, PLATFORM } from "../platform";
+import type { UntestedId } from "../untested";
 import { desktopOwnsSuperKey } from "./superKey";
 import type { TranslationKey } from "../i18n";
 
@@ -66,9 +67,10 @@ export interface ShortcutDef {
   group: ShortcutGroup;
   /** The built-in default chord, used whenever the user hasn't rebound it. */
   default: ChordDescriptor;
-  /** Renders the shared `UntestedTag` pill beside the row in the settings
-   *  panel; removed per action once the user confirms it live. */
-  untested?: boolean;
+  /** The pill's id in the untested register (`lib/untested`), which renders
+   *  the shared `UntestedTag` beside the row in the settings panel; stamping
+   *  that row `tested` retires the pill. */
+  untested?: UntestedId;
 }
 
 /** The cheat sheet's section order + i18n titles — kept here beside the defs
@@ -167,7 +169,7 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     labelKey: "shortcut.steeringMode",
     group: "steering",
     default: { key: " ", ctrl: true, shift: true },
-    untested: true,
+    untested: "shortcut.steeringMode",
   },
   // Backward twin of cycleProject. Ctrl distinguishes it from prevTab's
   // Shift+← default.
@@ -176,14 +178,14 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     labelKey: "shortcut.cycleProjectBack",
     group: "navigation",
     default: { key: "ArrowLeft", ctrl: true, shift: true },
-    untested: true,
+    untested: "shortcut.cycleProjectBack",
   },
   {
     action: "shortcutHelp",
     labelKey: "shortcut.shortcutHelp",
     group: "steering",
     default: { key: "F1" },
-    untested: true,
+    untested: "shortcut.shortcutHelp",
   },
   // The root console (`layout/RootOverlay`): the cross-project management
   // overlay that replaced switching to the root scope. Handled in the same
@@ -196,7 +198,7 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     labelKey: "shortcut.rootConsole",
     group: "navigation",
     default: { key: "r", ctrl: true, shift: true },
-    untested: true,
+    untested: "shortcut.rootConsole",
   },
   // The TeX workspace's two navigation steps (#tex-structure-up). Unlike every
   // chord above these are NOT handled by `useKeyboard`: they only mean anything
@@ -212,14 +214,14 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     labelKey: "shortcut.texUp",
     group: "tex",
     default: { key: "ArrowUp", ctrl: true, shift: true },
-    untested: true,
+    untested: "shortcut.texUp",
   },
   {
     action: "texBack",
     labelKey: "shortcut.texBack",
     group: "tex",
     default: { key: "ArrowDown", ctrl: true, shift: true },
-    untested: true,
+    untested: "shortcut.texBack",
   },
   // The build itself. Listened for the same way as the two navigation steps
   // above — on the TeX pane's own root, not in `useKeyboard` — because a
@@ -231,7 +233,7 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     labelKey: "shortcut.texCompile",
     group: "tex",
     default: { key: "b", ctrl: true, shift: true },
-    untested: true,
+    untested: "shortcut.texCompile",
   },
 ];
 

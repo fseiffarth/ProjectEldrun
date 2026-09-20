@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { UntestedTag } from "../common/UntestedTag";
+import { isUntested, type UntestedId } from "../../lib/untested";
 import { useT } from "../../lib/i18n";
 
 /** One pickable row in the add-tab menu. */
@@ -12,11 +13,12 @@ export interface AddMenuEntry {
   /** Dot color (a TAB_ACCENT value or any CSS color). */
   color: string;
   disabled?: boolean;
-  /** Render the shared `<UntestedTag />` after the label (and give the button the
+  /** The pill's id in the untested register (`lib/untested`): renders the
+   *  shared `<UntestedTag />` after the label (and gives the button the
    *  `untested` class, so label and tag lay out in a row). A menu entry cannot
    *  carry a ReactNode label — the search box filters on `label` as a string — so
-   *  the tag is a flag here rather than markup at the call site. */
-  untested?: boolean;
+   *  the tag is an id here rather than markup at the call site. */
+  untested?: UntestedId;
   /** A sentence about a risk in picking this entry, shown as a `⚠` after the
    *  label with the sentence as its tooltip. A caution, never a block: the row
    *  stays pickable, which is the difference between this and `disabled`. Like
@@ -233,7 +235,7 @@ export function AddTabMenuList({ groups }: { groups: AddMenuGroup[] }) {
                 if (e.moreEntries && node) moreTriggerRefs.current.set(g.label, node);
               }}
               className={`tab-new-menu-item${e === active ? " enter-target" : ""}${
-                e.untested ? " untested" : ""
+                isUntested(e.untested) ? " untested" : ""
               }`}
               disabled={e.disabled}
               onClick={(event) =>
@@ -261,7 +263,7 @@ export function AddTabMenuList({ groups }: { groups: AddMenuGroup[] }) {
                   ⚠
                 </span>
               )}
-              {e.untested && <UntestedTag />}
+              {e.untested && <UntestedTag id={e.untested} />}
             </button>
           ))}
           {g.entries.length === 0 && g.hint && (
@@ -285,7 +287,7 @@ export function AddTabMenuList({ groups }: { groups: AddMenuGroup[] }) {
             {moreMenu.entries.map((e) => (
               <button
                 key={e.key}
-                className={`tab-new-menu-item${e.untested ? " untested" : ""}`}
+                className={`tab-new-menu-item${isUntested(e.untested) ? " untested" : ""}`}
                 disabled={e.disabled}
                 onClick={e.onPick}
               >
@@ -298,7 +300,7 @@ export function AddTabMenuList({ groups }: { groups: AddMenuGroup[] }) {
                     ⚠
                   </span>
                 )}
-                {e.untested && <UntestedTag />}
+                {e.untested && <UntestedTag id={e.untested} />}
               </button>
             ))}
           </div>

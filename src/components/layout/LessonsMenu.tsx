@@ -49,7 +49,7 @@ export function LessonsMenu({ onClose }: { onClose: () => void }) {
             run in a live window — the tag comes off per the usual rule, when
             the user says it's tested. */}
         <p className="settings-help">
-          {t("lessons.intro")} <UntestedTag />
+          {t("lessons.intro")} <UntestedTag id="lessons.intro" />
         </p>
 
         <div className="lessons-list">

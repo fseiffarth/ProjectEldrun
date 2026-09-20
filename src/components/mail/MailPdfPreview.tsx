@@ -77,7 +77,7 @@ export function MailPdfPreview({ bytesB64, truncated }: { bytesB64: string; trun
         <span>
           {doc ? t("mail.previewPdfPages", { count: String(total) }) : t("mail.previewPdfRendering")}
         </span>
-        <UntestedTag />
+        <UntestedTag id="mailPdfPreview.1" />
       </div>
       {doc && (
         <div className="mail-attachment-pdf-pages">

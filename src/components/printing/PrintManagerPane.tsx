@@ -114,7 +114,7 @@ export function PrintManagerPane({ visible = true }: PrintManagerPaneProps) {
       <div className="print-toolbar">
         <span className="print-title">
           <PrinterIcon className="print-title-icon" />
-          {t("printing.title")} <UntestedTag />
+          {t("printing.title")} <UntestedTag id="printing.title" />
         </span>
         <span className="print-toolbar-spacer" />
         {snapshot?.default_printer && (

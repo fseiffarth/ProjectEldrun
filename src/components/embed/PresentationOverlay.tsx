@@ -493,7 +493,7 @@ export function PresentationOverlay() {
             >
               ✕
             </button>
-            <UntestedTag />
+            <UntestedTag id="presentationOverlay.1" />
           </div>
         )}
       </div>

@@ -245,7 +245,7 @@ export function MailAiMessageActions({ header }: { header: MailHeader }) {
             {taskBusy ? t("mailAi.extractingTask") : t("mailAi.extractTask")}
           </button>
         )}
-        <UntestedTag />
+        <UntestedTag id="mailAiMessageActions.1" />
       </div>
 
       {note && <div className="mail-note">{note}</div>}

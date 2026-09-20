@@ -315,7 +315,7 @@ function MailListImpl({
           {t("mail.sortFrom")}
           {/* For the per-row ✕ at the far end: a pill in a 14px column on every
               row would bury the list, so it is said once, up here. */}
-          <UntestedTag />
+          <UntestedTag id="mailList.1" />
         </span>
         {sortHeader({
           field: "size",
@@ -348,7 +348,7 @@ function MailListImpl({
             {t("mail.selectedCount", { count: checkedHere.length })}
             {/* The gesture's one visible surface, so the pill goes here rather
                 than on every row. */}
-            <UntestedTag />
+            <UntestedTag id="mailList.2" />
           </span>
           <button type="button" className="mail-selection-clear" onClick={onClearChecks}>
             {t("mail.clearSelection")}
@@ -575,7 +575,7 @@ function MailListImpl({
                   onClick={() => file("important")}
                 >
                   {t("mail.moveToImportant")}
-                  <UntestedTag />
+                  <UntestedTag id="mailList.3" />
                 </button>
                 <button
                   className="untested"
@@ -583,12 +583,12 @@ function MailListImpl({
                   onClick={() => file("urgent")}
                 >
                   {t("mail.moveToUrgent")}
-                  <UntestedTag />
+                  <UntestedTag id="mailList.4" />
                 </button>
                 {menu.targets.some((h) => h.priority) && (
                   <button className="untested" onClick={() => file(null)}>
                     {t("mail.removeFromPriority")}
-                    <UntestedTag />
+                    <UntestedTag id="mailList.5" />
                   </button>
                 )}
                 {/* Says what filing does NOT do, at the one moment the user is
@@ -629,7 +629,7 @@ function MailListImpl({
                         : plan.purged > 0
                           ? t("mail.deleteForever")
                           : t("mail.moveToTrash")}
-                      <UntestedTag />
+                      <UntestedTag id="mailList.6" />
                     </button>
                     {/* Where the mail goes, said before the click rather than
                         afterwards: "delete" means two different things here and

@@ -199,7 +199,7 @@ export function BrowserPane({ tab, visible }: BrowserPaneProps) {
             onClick={() => void openLive(currentUrl)}
           >
             {t("browser.openLive")}
-            <UntestedTag />
+            <UntestedTag id="browserPane.1" />
           </button>
         )}
 
@@ -366,7 +366,7 @@ export function BrowserPane({ tab, visible }: BrowserPaneProps) {
                   }}
                 >
                   {t("browser.clearData")}
-                  <UntestedTag />
+                  <UntestedTag id="browserPane.2" />
                 </button>
               </div>
           </ContextMenuPortal>

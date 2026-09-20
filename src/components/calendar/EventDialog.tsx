@@ -627,7 +627,7 @@ export function EventDialog({
                     <div className="cal-field-row">
                       <label className="cal-field">
                         <span className="cal-field-label">
-                          {t("eventDialog.repeatOnField")} <UntestedTag />
+                          {t("eventDialog.repeatOnField")} <UntestedTag id="eventDialog.repeatOnField" />
                         </span>
                         <select
                           className="cal-input"

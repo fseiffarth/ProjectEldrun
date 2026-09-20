@@ -549,7 +549,7 @@ export function MailPane({ visible }: MailPaneProps) {
             >
               {t("mail.clearPriority", { count: priorityListCount })}
             </button>
-            <UntestedTag />
+            <UntestedTag id="mailPane.1" />
           </>
         )}
         {/* Everything to the left of this acts on the selected account or its
@@ -615,7 +615,7 @@ export function MailPane({ visible }: MailPaneProps) {
       {agentDrafts.length > 0 && (
         <div className="mail-agent-drafts" aria-label={t("mail.agentDrafts")}>
           <span className="mail-agent-drafts-title">
-            {t("mail.agentDrafts")} <UntestedTag />
+            {t("mail.agentDrafts")} <UntestedTag id="mail.agentDrafts" />
           </span>
           {agentDrafts.map((d) => (
             <button

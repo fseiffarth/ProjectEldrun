@@ -150,7 +150,7 @@ export function UpdatesPanel({
   return (
     <>
       <SettingsHeader
-        title={<>{t("nav.updates.title")} <UntestedTag /></>}
+        title={<>{t("nav.updates.title")} <UntestedTag id="nav.updates.title" /></>}
         onBack={onBack}
         onClose={onClose}
       />

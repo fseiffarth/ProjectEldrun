@@ -311,7 +311,7 @@ export function BibCards({
           {t("bibCards.addEntry")}
         </button>
         <span className="yaml-cards-bar-spacer" />
-        <UntestedTag />
+        <UntestedTag id="bibCards.1" />
       </div>
 
       {/* The `%` comments and any other text between records: the cards neither

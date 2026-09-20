@@ -1155,7 +1155,7 @@ export function ProjectDialog({
                 <>
                   {t("projectDialog.forkHintPre")}{" "}
                   <code>upstream</code> {t("projectDialog.forkHintMid")}{forkCli?.bin ?? "gh / glab"}{t("projectDialog.forkHintPost")}{" "}
-                  <UntestedTag />
+                  <UntestedTag id="projectDialog.1" />
                 </>
               ) : gitConnected ? (
                 t("projectDialog.cloneHintPrivateConnected")
@@ -1276,7 +1276,7 @@ export function ProjectDialog({
                 : t("projectDialog.gitHostingFromCloneProviderOnly", {
                     provider: cloneProvider === "gitlab" ? "GitLab" : "GitHub",
                   })}{" "}
-              <UntestedTag />
+              <UntestedTag id="projectDialog.2" />
             </span>
           )}
         </label>
@@ -1306,7 +1306,7 @@ export function ProjectDialog({
               {t("projectDialog.publishAtCreationHint", {
                 provider: publishProviderResolved === "gitlab" ? "GitLab" : "GitHub",
               })}{" "}
-              <UntestedTag />
+              <UntestedTag id="projectDialog.3" />
             </span>
           </label>
         )}
@@ -1423,7 +1423,7 @@ export function ProjectDialog({
                 ...(vmOk ? [{ value: "vm", label: t("projectDialog.tierVmOpt") }] : []),
               ]}
             />
-            <UntestedTag />
+            <UntestedTag id="projectDialog.4" />
           </label>
         )}
         {runInContainer && (

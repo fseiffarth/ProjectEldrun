@@ -16,6 +16,7 @@
 import { createElement } from "react";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import { translate, useI18nStore } from "../i18n";
+import { isUntested, type UntestedId } from "../untested";
 import { initialPages, isPristine, type PageList } from "./pageModel";
 import {
   mountPageStrip,
@@ -911,7 +912,7 @@ export function printDocument(fullHtml: string): Promise<void> {
         progress.phase === "printing" && progress.page !== null
           ? `${text.textContent}\n${tr("print.progressPagesNote")}`
           : text.textContent;
-      progressEl.append(steps, text, untestedTag());
+      progressEl.append(steps, text, ...untestedTag("print.queueProgress"));
     };
 
     /**
@@ -1119,17 +1120,22 @@ function numberField(
     input.value = String(n);
     onChange(n);
   });
-  wrap.append(text, input, untestedTag());
+  wrap.append(text, input, ...untestedTag("print.copiesField"));
   return { wrap, input };
 }
 
-/** Not yet live-verified — the DOM twin of `<UntestedTag/>`. */
-function untestedTag(): HTMLSpanElement {
+/**
+ * Not yet live-verified — the DOM twin of `<UntestedTag/>`, reading the same
+ * register in `lib/untested`. Returns a list so a caller can spread it into
+ * `append()`: once the row is stamped tested, it spreads to nothing.
+ */
+function untestedTag(id: UntestedId): HTMLSpanElement[] {
+  if (!isUntested(id)) return [];
   const tag = document.createElement("span");
   tag.className = "untested-tag";
   tag.title = tr("untested.title");
   tag.textContent = tr("untested.label");
-  return tag;
+  return [tag];
 }
 
 /** How often the queue is re-read while a job is followed. */

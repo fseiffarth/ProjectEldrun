@@ -567,7 +567,7 @@ export function VpnIndicator() {
             }
           />
           <span>
-            {t("vpnIndicator.saveLoginCredentialsLabel")} <UntestedTag />
+            {t("vpnIndicator.saveLoginCredentialsLabel")} <UntestedTag id="vpnIndicator.saveLoginCredentialsLabel" />
           </span>
         </label>
         {saved && keyring === "locked" && (
@@ -672,7 +672,7 @@ export function VpnIndicator() {
                 title={t("vpnIndicator.unlockTitle")}
                 onClick={() => void unlock()}
               >
-                {unlocking ? t("vpnIndicator.unlocking") : t("vpnIndicator.unlockKeyring")} <UntestedTag />
+                {unlocking ? t("vpnIndicator.unlocking") : t("vpnIndicator.unlockKeyring")} <UntestedTag id="vpnIndicator.unlockKeyring" />
               </button>
             </div>
           )}

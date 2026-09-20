@@ -50,7 +50,7 @@ export function PdfLinkConfirmDialog({
       <div className="settings-dialog pdf-link-dialog" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-title-row">
           <h2>{t("pdfLinks.confirmTitle")}</h2>
-          <UntestedTag />
+          <UntestedTag id="pdfLinkDialog.1" />
           <button type="button" className="dialog-close-btn" onClick={onClose}>
             ×
           </button>

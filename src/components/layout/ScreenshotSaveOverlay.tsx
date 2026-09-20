@@ -183,7 +183,7 @@ export function ScreenshotSaveOverlay() {
         onMouseDown={(e) => e.stopPropagation()}
       >
         <h2>
-          {t("screenshotSave.title")} <UntestedTag />
+          {t("screenshotSave.title")} <UntestedTag id="screenshotSave.title" />
         </h2>
         {preview && (
           <img className="screenshot-save-preview" src={preview} alt={t("screenshotSave.preview")} />

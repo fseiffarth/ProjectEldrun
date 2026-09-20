@@ -701,7 +701,7 @@ export function RemoteMachinesWindow({
                 >
                   {t("remoteMachines.primaryTag")}
                 </span>
-                <UntestedTag />
+                <UntestedTag id="remoteMachinesWindow.1" />
                 <span className="remote-machine-target">
                   {project.remote && formatRemoteTarget(project.remote)}
                 </span>
@@ -893,7 +893,7 @@ export function RemoteMachinesWindow({
                     <span className="remote-machine-global-title">
                       {t("remoteMachines.globalListTitle")}
                     </span>
-                    <UntestedTag />
+                    <UntestedTag id="remoteMachinesWindow.2" />
                   </div>
                   <p className="settings-help">{t("remoteMachines.globalListHelp")}</p>
                   <div className="remote-machine-global-list">
@@ -955,7 +955,7 @@ export function RemoteMachinesWindow({
               <label>
                 <span className="remote-machine-add-label">
                   {t("remoteConnect.usernameLabel")}
-                  <UntestedTag />
+                  <UntestedTag id="remoteMachinesWindow.3" />
                 </span>
                 <input
                   placeholder={t("remoteMachines.usernamePlaceholder")}
@@ -1111,7 +1111,7 @@ export function RemoteMachinesWindow({
               <label>
                 <span className="remote-machine-add-label">
                   {syncCopy ? t("remoteMachines.remotePathForCopy") : t("remoteMachines.pathToProject")}
-                  <UntestedTag />
+                  <UntestedTag id="remoteMachinesWindow.4" />
                 </span>
                 <div className="folder-picker-row">
                   <input

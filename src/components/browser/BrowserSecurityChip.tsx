@@ -74,7 +74,7 @@ export function BrowserSecurityChip({
             className="context-menu browser-security-popover"
           >
               <div className="context-menu-group-label">
-                {t("browser.securityDetails")} <UntestedTag />
+                {t("browser.securityDetails")} <UntestedTag id="browser.securityDetails" />
               </div>
               <div className="browser-security-row">
                 <span className="browser-security-label">{t("browser.securityOrigin")}</span>

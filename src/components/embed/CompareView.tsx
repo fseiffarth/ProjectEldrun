@@ -499,7 +499,7 @@ export function CompareView({
             {selected && <span className="file-viewer-compare-date">{selected.date}</span>}
           </>
         )}
-        {syncMode && <UntestedTag />}
+        {syncMode && <UntestedTag id="compareView.1" />}
         <div className="file-viewer-compare-bar-gap" />
         {syncMode ? (
           // Sync merge: name the two sides by what they are (local mirror vs

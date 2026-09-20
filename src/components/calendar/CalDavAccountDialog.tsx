@@ -227,7 +227,7 @@ export function CalDavAccountDialog({
       <div className="settings-dialog caldav-dialog" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-title-row">
           <h2>
-            {account ? t("caldav.dialogEdit") : t("caldav.dialogNew")} <UntestedTag />
+            {account ? t("caldav.dialogEdit") : t("caldav.dialogNew")} <UntestedTag id="caldav.dialogNew" />
           </h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>
             ×
@@ -335,7 +335,7 @@ export function CalDavAccountDialog({
                 onChange={(e) => patch({ allow_write: e.target.checked })}
               />
               <span>{t("caldav.allowWrite")}</span>
-              <UntestedTag />
+              <UntestedTag id="calDavAccountDialog.1" />
             </span>
             <span className="caldav-field-hint">{t("caldav.allowWriteHint")}</span>
           </label>

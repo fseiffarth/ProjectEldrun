@@ -76,7 +76,7 @@ export function ShortcutHelpOverlay() {
       >
         <div className="settings-title-row">
           <h2>
-            {t("shortcutHelp.title")} <UntestedTag />
+            {t("shortcutHelp.title")} <UntestedTag id="shortcutHelp.title" />
           </h2>
           <button
             type="button"

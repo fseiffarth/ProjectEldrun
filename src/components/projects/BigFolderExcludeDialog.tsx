@@ -158,7 +158,7 @@ export function BigFolderExcludeDialog({ projectId }: { projectId: string }) {
     <div className="modal-backdrop" onMouseDown={close}>
       <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
         <h2>
-          {t("bigFolder.titlePre")} {project?.name ?? t("bigFolder.thisProject")} <UntestedTag />
+          {t("bigFolder.titlePre")} {project?.name ?? t("bigFolder.thisProject")} <UntestedTag id="bigFolder.thisProject" />
         </h2>
         <p className="big-folder-intro">
           {t("bigFolder.introPre")} <strong>{t("bigFolder.doesNotReadGitignore")}</strong>{t("bigFolder.introPost")}

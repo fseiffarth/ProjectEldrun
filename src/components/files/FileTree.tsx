@@ -4222,7 +4222,7 @@ export function FileTree({
                 ) : (
                   <>
                     {t("fileTree.runArgsLabelShell", { name: argsPopover.entry.name })}
-                    <UntestedTag />
+                    <UntestedTag id="fileTree.1" />
                   </>
                 )}
               </label>
@@ -4323,7 +4323,7 @@ export function FileTree({
                   </div>
                   <button className="untested" onClick={() => void createDeck()}>
                     {t("fileTree.newPresentation")}
-                    <UntestedTag />
+                    <UntestedTag id="fileTree.2" />
                   </button>
                 </div>
               )}
@@ -4485,7 +4485,7 @@ export function FileTree({
                         )}
                       >
                         {t(syncExcluded ? "fileTree.includeInSync" : "fileTree.excludeFromSync")}
-                        <UntestedTag />
+                        <UntestedTag id="fileTree.3" />
                       </button>
                     )}
                     <hr />
@@ -4559,12 +4559,12 @@ export function FileTree({
                     }}
                   >
                     {t("sendToProject.menuItem")}
-                    <UntestedTag />
+                    <UntestedTag id="fileTree.4" />
                   </button>
                 )}
                 {remarksEnabled && projectId && !entry.is_dir && (
                   <button className="untested" onClick={() => { setContextMenu(null); setRemarkFor(entry); }}>
-                    {t("projectRemarks.addMenu")} <UntestedTag />
+                    {t("projectRemarks.addMenu")} <UntestedTag id="projectRemarks.addMenu" />
                   </button>
                 )}
                 {/* The per-file/folder SFTP exit — the one casual way bytes
@@ -4572,7 +4572,7 @@ export function FileTree({
                 {remoteListing && (
                   <button className="untested" onClick={() => void downloadEntryTo(entry)}>
                     {t("fileTree.downloadToMenuItem")}
-                    <UntestedTag />
+                    <UntestedTag id="fileTree.5" />
                   </button>
                 )}
                 {renderPasteButton()}

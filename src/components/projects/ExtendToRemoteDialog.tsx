@@ -244,7 +244,7 @@ export function ExtendToRemoteDialog({
               <span className="remote-machine-global-title">
                 {t("extendRemote.machinesTitle")}
               </span>
-              <UntestedTag />
+              <UntestedTag id="extendToRemoteDialog.1" />
             </div>
             <p className="settings-help">{t("extendRemote.machinesHelp")}</p>
             <div className="remote-machine-global-list">

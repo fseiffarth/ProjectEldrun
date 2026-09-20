@@ -27,7 +27,7 @@ export function ExecTrustHost() {
   return (
     <DialogShell onDismiss={() => answer(false)}>
       <h2>
-        {t(TITLES[request.kind] ?? "execTrust.title.gitHooks")} <UntestedTag />
+        {t(TITLES[request.kind] ?? "execTrust.title.gitHooks")} <UntestedTag id="execTrustHost.1" />
       </h2>
       <p className="file-delete-body">
         {t(request.changed ? "execTrust.bodyChanged" : "execTrust.body")}

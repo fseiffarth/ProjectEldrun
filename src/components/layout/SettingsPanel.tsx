@@ -121,7 +121,7 @@ export function WorkspaceParkingNote() {
   return (
     <SettingsCard>
       <p className="settings-help">
-        {t("settings.workspaceNoParking")} <UntestedTag />
+        {t("settings.workspaceNoParking")} <UntestedTag id="settings.workspaceNoParking" />
       </p>
     </SettingsCard>
   );
@@ -296,7 +296,7 @@ function ShortcutsSettings({ onBack, onClose }: SubPanelProps) {
         <div className="settings-row shortcut-row">
           <span className="settings-role-label">
             {t(def.labelKey)}
-            {def.untested && <> <UntestedTag /></>}
+            {def.untested && <> <UntestedTag id={def.untested} /></>}
           </span>
           <button
             type="button"
@@ -751,7 +751,7 @@ function ScaffoldRepairPanel({ onBack, onClose }: SubPanelProps) {
       {/* The repair now *rewrites* untouched legacy agent stubs, not just fills
           gaps — new behavior, never run in a live window. */}
       <SettingsHeader
-        title={<>{t("nav.scaffoldRepair.title")} <UntestedTag /></>}
+        title={<>{t("nav.scaffoldRepair.title")} <UntestedTag id="nav.scaffoldRepair.title" /></>}
         onBack={onBack}
         onClose={onClose}
       />
@@ -902,7 +902,7 @@ export function SettingsDialog({
             />
 
             <SettingRow
-              label={<>{t("settings.themeVars")} <UntestedTag /></>}
+              label={<>{t("settings.themeVars")} <UntestedTag id="settings.themeVars" /></>}
               help={t("settings.themeVars.help")}
               control={
                 <button
@@ -916,7 +916,7 @@ export function SettingsDialog({
             />
 
             <SettingRow
-              label={<>{t("settings.language")} <UntestedTag /></>}
+              label={<>{t("settings.language")} <UntestedTag id="settings.language" /></>}
               help={t("settings.language.help")}
               control={
                 <Dropdown
@@ -957,7 +957,7 @@ export function SettingsDialog({
             {/* Absent means on. The backend reads the key per spawn and per
                 request, so the switch needs no restart in either direction. */}
             <ToggleCard
-              label={<>{t("settings.rootMcp")} <UntestedTag /></>}
+              label={<>{t("settings.rootMcp")} <UntestedTag id="settings.rootMcp" /></>}
               checked={settings?.root_mcp ?? true}
               onChange={(e) => void updateSettings({ root_mcp: e.target.checked })}
               help={t("settings.rootMcpHelp")}
@@ -965,7 +965,7 @@ export function SettingsDialog({
             {/* Subordinate to the switch above. Read per spawn and per request
                 too: on, the endpoint refuses the cloud agents already running. */}
             <ToggleCard
-              label={<>{t("settings.rootMcpLocalOnly")} <UntestedTag /></>}
+              label={<>{t("settings.rootMcpLocalOnly")} <UntestedTag id="settings.rootMcpLocalOnly" /></>}
               checked={settings?.root_mcp_local_only ?? false}
               disabled={!(settings?.root_mcp ?? true)}
               onChange={(e) => void updateSettings({ root_mcp_local_only: e.target.checked })}
@@ -974,7 +974,7 @@ export function SettingsDialog({
             {/* Its own switch, absent means off: the tools above never bring
                 mail with them. Read per request, like the two above. */}
             <ToggleCard
-              label={<>{t("settings.rootMcpMail")} <UntestedTag /></>}
+              label={<>{t("settings.rootMcpMail")} <UntestedTag id="settings.rootMcpMail" /></>}
               checked={settings?.root_mcp_mail ?? false}
               disabled={!(settings?.root_mcp ?? true)}
               onChange={(e) => void updateSettings({ root_mcp_mail: e.target.checked })}
@@ -982,7 +982,7 @@ export function SettingsDialog({
             />
 
             <SettingRow
-              label={<>{t("rootReview.setting")} <UntestedTag /></>}
+              label={<>{t("rootReview.setting")} <UntestedTag id="rootReview.setting" /></>}
               control={<Dropdown
                 value={settings?.root_mcp_review ?? "all"}
                 disabled={!(settings?.root_mcp ?? true)}
@@ -1051,7 +1051,7 @@ export function SettingsDialog({
             <ToggleCard
               label={
                 <>
-                  {t("settings.fastMode")} <UntestedTag />
+                  {t("settings.fastMode")} <UntestedTag id="settings.fastMode" />
                 </>
               }
               checked={settings?.fast_mode === true}
@@ -1082,28 +1082,28 @@ export function SettingsDialog({
                 canvas is the safe renderer, and a terminal whose WebGL fails
                 demotes itself back to it (TerminalView's renderer ladder). */}
             <ToggleCard
-              label={<>{t("settings.terminalWebgl")} <UntestedTag /></>}
+              label={<>{t("settings.terminalWebgl")} <UntestedTag id="settings.terminalWebgl" /></>}
               checked={experimentalEnabled(settings, "terminal_webgl")}
               onChange={(e) => void updateSettings({ terminal_webgl: e.target.checked })}
               help={t("settings.terminalWebglHelp")}
             />
 
             <ToggleCard
-              label={<>{t("settings.mdGraph")} <UntestedTag /></>}
+              label={<>{t("settings.mdGraph")} <UntestedTag id="settings.mdGraph" /></>}
               checked={experimentalEnabled(settings, "md_graph")}
               onChange={(e) => void updateSettings({ md_graph: e.target.checked })}
               help={t("settings.mdGraphHelp")}
             />
 
             <ToggleCard
-              label={<>{t("settings.projectRemarks")} <UntestedTag /></>}
+              label={<>{t("settings.projectRemarks")} <UntestedTag id="settings.projectRemarks" /></>}
               checked={experimentalEnabled(settings, "project_remarks")}
               onChange={(e) => void updateSettings({ project_remarks: e.target.checked })}
               help={t("settings.projectRemarksHelp")}
             />
 
             <ToggleCard
-              label={<>{t("settings.copilotCompletion")} <UntestedTag /></>}
+              label={<>{t("settings.copilotCompletion")} <UntestedTag id="settings.copilotCompletion" /></>}
               checked={experimentalEnabled(settings, "copilot_completion")}
               onChange={(e) => void updateSettings({ copilot_completion: e.target.checked })}
               help={t("settings.copilotCompletionHelp")}
@@ -1122,7 +1122,7 @@ export function SettingsDialog({
                 lib/experimentalSweep. */}
             <SettingsCard>
               <ToggleRow
-                label={<>{t("settings.mailClient")} <UntestedTag /></>}
+                label={<>{t("settings.mailClient")} <UntestedTag id="settings.mailClient" /></>}
                 checked={experimentalEnabled(settings, "mail_client")}
                 onChange={(e) => void updateSettings({ mail_client: e.target.checked })}
               />
@@ -1208,7 +1208,7 @@ export function SettingsDialog({
               <ToggleRow
                 label={
                   <>
-                    {t("statusCluster.settingLabel")} <UntestedTag />
+                    {t("statusCluster.settingLabel")} <UntestedTag id="statusCluster.settingLabel" />
                   </>
                 }
                 title={t("statusCluster.settingHelp")}
@@ -1249,7 +1249,7 @@ export function SettingsDialog({
             {/* The calendar's twin of "Mail in the header". Not nested under
                 anything: the calendar is shipped, not experimental. */}
             <ToggleCard
-              label={<>{t("settings.calendarGlobalApp")} <UntestedTag /></>}
+              label={<>{t("settings.calendarGlobalApp")} <UntestedTag id="settings.calendarGlobalApp" /></>}
               checked={settings?.calendar_global_app ?? false}
               onChange={(e) => void updateSettings({ calendar_global_app: e.target.checked })}
               help={t("settings.calendarGlobalAppHelp")}
@@ -1259,7 +1259,7 @@ export function SettingsDialog({
                 where its cards live: they ARE this calendar's tasks, so the
                 board is a second view of the store above, not a second store. */}
             <ToggleCard
-              label={<>{t("settings.todoBoard")} <UntestedTag /></>}
+              label={<>{t("settings.todoBoard")} <UntestedTag id="settings.todoBoard" /></>}
               checked={settings?.todo_board ?? false}
               onChange={(e) => void updateSettings({ todo_board: e.target.checked })}
               help={t("settings.todoBoardHelp")}
@@ -1334,7 +1334,7 @@ export function SettingsDialog({
                 are the backend's and are not configurable — a "trusted sites"
                 list or an "ignore certificate errors" switch is exactly the kind
                 of relaxation that outlives the reason for it, so none exists. */}
-            <SettingsSection title={<>{t("settings.browser")} <UntestedTag /></>} />
+            <SettingsSection title={<>{t("settings.browser")} <UntestedTag id="settings.browser" /></>} />
             <SettingRow
               htmlFor="browser-home-url"
               label={t("settings.browserHome")}
@@ -1432,7 +1432,7 @@ export function SettingsDialog({
                   window.dispatchEvent(new Event("eldrun:start-advanced-tour"));
                 }}
               >
-                {t("settings.takeAdvancedTour")} <UntestedTag />
+                {t("settings.takeAdvancedTour")} <UntestedTag id="settings.takeAdvancedTour" />
               </button>
               <button
                 type="button"
@@ -1454,7 +1454,7 @@ export function SettingsDialog({
             </div>
 
             <SettingsSection
-              title={<>{t("settings.layout")} <UntestedTag /></>}
+              title={<>{t("settings.layout")} <UntestedTag id="settings.layout" /></>}
               help={
                 <>
                   {t("settings.zoomHelp1")} <strong>{t("settings.zoomHelpBold")}</strong>

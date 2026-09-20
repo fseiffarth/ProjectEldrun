@@ -221,7 +221,7 @@ export function MailAccountDialog({
       <div className="settings-dialog mail-account-dialog" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-title-row">
           <h2>
-            {account ? t("mail.accountDialogEdit") : t("mail.accountDialogNew")} <UntestedTag />
+            {account ? t("mail.accountDialogEdit") : t("mail.accountDialogNew")} <UntestedTag id="mail.accountDialogNew" />
           </h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>
             ×

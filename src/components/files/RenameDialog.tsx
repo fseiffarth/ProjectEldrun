@@ -44,7 +44,7 @@ export function RenameDialog({
     <TextPromptDialog
       title={
         <>
-          {t(isDir ? "fileTree.renameFolderTitle" : "fileTree.renameFileTitle")} <UntestedTag />
+          {t(isDir ? "fileTree.renameFolderTitle" : "fileTree.renameFileTitle")} <UntestedTag id="renameDialog.1" />
         </>
       }
       body={

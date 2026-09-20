@@ -2,6 +2,7 @@ import { type ReactNode, useCallback, useState } from "react";
 import { UntestedTag } from "./UntestedTag";
 import { createPortal } from "react-dom";
 import { useT } from "../../lib/i18n";
+import type { UntestedId } from "../../lib/untested";
 
 /**
  * The three shapes every in-app question takes — ask for a name, ask yes/no,
@@ -76,8 +77,9 @@ export type ChoiceSpec = {
   title: ReactNode;
   body?: ReactNode;
   options: ChoiceOption[];
-  /** The feature asking has not been live-verified yet. */
-  untested?: boolean;
+  /** The asking feature's row in the untested register (`lib/untested`):
+   *  set → the title wears the pill until that row is stamped tested. */
+  untested?: UntestedId;
 };
 
 /** A `window.alert` replacement. */
@@ -253,7 +255,7 @@ export function ChoiceDialog({
   title,
   body,
   options,
-  untested = false,
+  untested,
   onCancel,
   onPick,
 }: ChoiceSpec & { onCancel: () => void; onPick: (id: string) => void }) {
@@ -263,7 +265,7 @@ export function ChoiceDialog({
     <DialogShell onDismiss={onCancel}>
       <h2>
         {title}
-        {untested && <UntestedTag />}
+        {untested && <UntestedTag id={untested} />}
       </h2>
       {body != null && <p className="file-delete-body">{body}</p>}
       <div className="file-delete-choices" role="listbox" aria-label={typeof title === "string" ? title : undefined}>

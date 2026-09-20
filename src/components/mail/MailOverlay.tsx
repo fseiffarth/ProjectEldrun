@@ -71,7 +71,7 @@ export function MailOverlayHost() {
       >
         <div className="settings-title-row">
           <h2>
-            {t("mail.overlayTitle")} <UntestedTag />
+            {t("mail.overlayTitle")} <UntestedTag id="mail.overlayTitle" />
           </h2>
           <button
             type="button"

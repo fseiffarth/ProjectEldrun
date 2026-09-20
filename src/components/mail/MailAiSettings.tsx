@@ -166,7 +166,7 @@ export function MailAiSettings({
     <>
       {!embedded && (
         <div className="settings-section-title">
-          {t("mailAi.settingsTitle")} <UntestedTag />
+          {t("mailAi.settingsTitle")} <UntestedTag id="mailAi.settingsTitle" />
         </div>
       )}
       <p className="settings-help">{t("mailAi.settingsHelp")}</p>
@@ -195,7 +195,7 @@ export function MailAiSettings({
           <div className="mail-ai-report">
             <div className="mail-ai-report-head">
               <strong>{t("mailAi.classifyReportTitle")}</strong>
-              <UntestedTag />
+              <UntestedTag id="mailAiSettings.1" />
             </div>
             <p className="settings-help">{t("mailAi.classifyDistinct")}</p>
             <p className="settings-help">

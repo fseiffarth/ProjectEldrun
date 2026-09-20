@@ -46,7 +46,7 @@ export function HpcHostToggle({
         disabled={disabled}
         onChange={(e) => void updateSettings(setHpcPatch(settings, target, e.target.checked))}
       />
-      {t("hpcHost.label")} <UntestedTag />
+      {t("hpcHost.label")} <UntestedTag id="hpcHost.label" />
       <span className="ssh-optional-hint">
         {tagged ? t("hpcHost.hintOn") : t("hpcHost.hintOff")}
       </span>

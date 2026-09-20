@@ -20,7 +20,7 @@ export function AddRemarkDialog({ projectId, projectDir, file, line = null, onCl
   return createPortal(
     <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="modal-card project-remark-dialog" style={{ color: "var(--text-primary)" }} role="dialog" aria-modal="true">
-        <div className="modal-header"><h2>{t("projectRemarks.addTitle")}</h2><UntestedTag /><button onClick={onClose}>×</button></div>
+        <div className="modal-header"><h2>{t("projectRemarks.addTitle")}</h2><UntestedTag id="projectRemarks.addTitle" /><button onClick={onClose}>×</button></div>
         <div className="modal-divider" />
         <p className="muted">{line ? `${file}:${line}` : file}</p>
         <textarea autoFocus className="cal-input" rows={5} value={text} onChange={(e) => setText(e.target.value)} placeholder={t("projectRemarks.placeholder")} />

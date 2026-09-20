@@ -80,7 +80,7 @@ export function ProjectMigrationDialog({
         <SettingsHeader
           title={
             <>
-              {t("migrate.title")} <UntestedTag />
+              {t("migrate.title")} <UntestedTag id="migrate.title" />
             </>
           }
           onClose={onClose}

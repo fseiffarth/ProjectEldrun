@@ -572,7 +572,7 @@ export function ThemeCustomizerDialog({
         <SettingsHeader
           title={
             <>
-              {t("theme.title")} <UntestedTag />
+              {t("theme.title")} <UntestedTag id="theme.title" />
             </>
           }
           onBack={onBack}
@@ -602,7 +602,7 @@ export function ThemeCustomizerDialog({
           <SettingsSection
             title={
               <>
-                {t("theme.presets")} <UntestedTag />
+                {t("theme.presets")} <UntestedTag id="theme.presets" />
               </>
             }
             help={t("theme.presets.help")}
@@ -710,7 +710,7 @@ export function ThemeCustomizerDialog({
           <SettingRow
             label={
               <>
-                {t("settings.corners")} <UntestedTag />
+                {t("settings.corners")} <UntestedTag id="settings.corners" />
               </>
             }
             help={t("settings.corners.help")}
@@ -734,7 +734,7 @@ export function ThemeCustomizerDialog({
           <SettingRow
             label={
               <>
-                {t("settings.cursor")} <UntestedTag />
+                {t("settings.cursor")} <UntestedTag id="settings.cursor" />
               </>
             }
             help={t("settings.cursor.help")}
@@ -787,7 +787,7 @@ export function ThemeCustomizerDialog({
                   {(group.id === "topframe" || group.id === "subwindow") && (
                     <>
                       {" "}
-                      <UntestedTag />
+                      <UntestedTag id="themeCustomizer.1" />
                     </>
                   )}
                 </>

@@ -1442,7 +1442,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
     <div className="file-viewer deck-view" tabIndex={0} onKeyDown={onKeyDown}>
       <div className="file-viewer-pdf-toolbar" role="group" aria-label={t("deckView.presentationToolsAria")}>
         <span className="deck-toolbar-title">
-          {t("deckView.presentationTitle")} <UntestedTag />
+          {t("deckView.presentationTitle")} <UntestedTag id="deckView.presentationTitle" />
         </span>
         <span className="file-viewer-pdf-toolbar-sep" />
         <button className="file-viewer-zoom-btn" onClick={addText} title={t("deckView.addTextBoxTitle")}>

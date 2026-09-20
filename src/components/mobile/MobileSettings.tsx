@@ -470,7 +470,7 @@ export function MobileSettings() {
       </p>
       {IS_WINDOWS && (
         <p className="settings-help">
-          {t("mobile.windowsTerminalsNote")} <UntestedTag />
+          {t("mobile.windowsTerminalsNote")} <UntestedTag id="mobile.windowsTerminalsNote" />
         </p>
       )}
       {/* The handoff script has a PowerShell twin on Windows, so the QR flow
@@ -586,21 +586,21 @@ export function MobileSettings() {
 
       <div className="settings-subheader">{t("mobile.mailWrites")}</div>
       <ToggleRow
-        label={<>{t("mobile.mailRead")} <UntestedTag /></>}
+        label={<>{t("mobile.mailRead")} <UntestedTag id="mobile.mailRead" /></>}
         checked={stored?.mail_read !== false}
         disabled={busy}
         onChange={(event) => void setMailGate("mail_read", event.target.checked)}
       />
       <p className="settings-help">{t("mobile.mailReadHelp")}</p>
       <ToggleRow
-        label={<>{t("mobile.mailActions")} <UntestedTag /></>}
+        label={<>{t("mobile.mailActions")} <UntestedTag id="mobile.mailActions" /></>}
         checked={stored?.mail_actions ?? false}
         disabled={busy}
         onChange={(event) => void setMailGate("mail_actions", event.target.checked)}
       />
       <p className="settings-help">{t("mobile.mailActionsHelp")}</p>
       <ToggleRow
-        label={<>{t("mobile.mailReply")} <UntestedTag /></>}
+        label={<>{t("mobile.mailReply")} <UntestedTag id="mobile.mailReply" /></>}
         checked={stored?.mail_reply ?? false}
         disabled={busy}
         onChange={(event) => void setMailGate("mail_reply", event.target.checked)}
@@ -636,7 +636,7 @@ export function MobileSettings() {
       </div>
 
       {boxes.length > 0 && <>
-        <div className="settings-subheader">{t("mobile.boxAccess")} <UntestedTag /></div>
+        <div className="settings-subheader">{t("mobile.boxAccess")} <UntestedTag id="mobile.boxAccess" /></div>
         <p className="settings-help">{t("mobile.boxAccessHelp")}</p>
         <div className="mobile-project-access-list">
           {matchingBoxes.map((box) => (

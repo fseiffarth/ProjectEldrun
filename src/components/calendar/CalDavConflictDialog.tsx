@@ -71,7 +71,7 @@ export function CalDavConflictDialog() {
     <div className="modal-backdrop">
       <div className="project-dialog caldav-conflict-dialog">
         <h2 className="caldav-conflict-title">
-          {t("caldavConflict.title")} <UntestedTag />
+          {t("caldavConflict.title")} <UntestedTag id="caldavConflict.title" />
         </h2>
 
         <p className="caldav-conflict-lede">

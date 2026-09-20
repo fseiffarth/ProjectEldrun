@@ -1101,7 +1101,7 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
                 >
                   <span className="sysmon-proc-caret">{sessionsOpen ? "▾" : "▸"}</span>
                   <span className="sysmon-group-title">{t("usage.loggedIn")}</span>
-                  <UntestedTag />
+                  <UntestedTag id="systemMonitorPane.1" />
                 </button>
                 <span className="sysmon-count">
                   {t(
@@ -1171,7 +1171,7 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
                 >
                   <span className="sysmon-proc-caret">{usersOpen ? "▾" : "▸"}</span>
                   <span className="sysmon-group-title">{t("sysmon.byUser")}</span>
-                  <UntestedTag />
+                  <UntestedTag id="systemMonitorPane.2" />
                 </button>
                 <span className="sysmon-count">
                   {t(userRows.length === 1 ? "sysmon.userCountOne" : "sysmon.userCountMany", {

@@ -366,7 +366,7 @@ export function ProjectFilesSettingsDialog({
         <SettingsSection
           title={
             <>
-              {t("projectSettings.treeGrouping")} <UntestedTag />
+              {t("projectSettings.treeGrouping")} <UntestedTag id="projectSettings.treeGrouping" />
             </>
           }
           help={t("projectSettings.treeGroupingHelp")}
@@ -414,7 +414,7 @@ export function ProjectFilesSettingsDialog({
             <SettingsSection
               title={
                 <>
-                  {t("projectSettings.migration")} <UntestedTag />
+                  {t("projectSettings.migration")} <UntestedTag id="projectSettings.migration" />
                 </>
               }
               help={t("projectSettings.migrationHelp")}

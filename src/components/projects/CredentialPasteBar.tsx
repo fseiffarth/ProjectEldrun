@@ -117,7 +117,7 @@ export function CredentialPasteBar({
           {entry.label}
         </button>
       ))}
-      <UntestedTag />
+      <UntestedTag id="credentialPasteBar.1" />
       {note && <span className="ssh-optional-hint credential-paste-note">{note}</span>}
     </div>
   );

@@ -988,7 +988,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
       <div className="git-worktree-section">
         <div className="git-worktree-header">
           <span className="git-worktree-title">{t("gitHistory.worktrees")}</span>
-          <UntestedTag />
+          <UntestedTag id="gitHistory.1" />
           {remote && (
             // #23 I2: two repos, two answers. `git_publish`'s "Publish from"
             // selector is the precedent — where the bytes are is not where the

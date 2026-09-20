@@ -61,7 +61,7 @@ export function CalendarOverlayHost() {
       >
         <div className="settings-title-row">
           <h2>
-            {t("calendar.overlayTitle")} <UntestedTag />
+            {t("calendar.overlayTitle")} <UntestedTag id="calendar.overlayTitle" />
           </h2>
           <button
             type="button"

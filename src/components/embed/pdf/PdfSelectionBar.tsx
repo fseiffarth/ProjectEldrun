@@ -137,7 +137,7 @@ export function PdfSelectionBar({
       >
         {copied ? t("pdfText.copied") : "⧉"}
       </button>
-      <UntestedTag />
+      <UntestedTag id="pdfSelectionBar.1" />
     </div>
   );
 }

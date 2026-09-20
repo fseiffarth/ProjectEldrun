@@ -113,7 +113,7 @@ export function YamlGrid({
       <div className="yaml-cards">
         <div className="yaml-cards-bar">
           <span className="yaml-cards-bar-spacer" />
-          <UntestedTag />
+          <UntestedTag id="yamlGrid.1" />
         </div>
         <div className="yaml-tree-notice">
           <p>{t("yamlGrid.noEntriesYet")}</p>
@@ -156,7 +156,7 @@ export function YamlGrid({
           ))}
         </nav>
         <span className="yaml-cards-bar-spacer" />
-        <UntestedTag />
+        <UntestedTag id="yamlGrid.2" />
       </div>
 
       {levels.map((level, i) => (

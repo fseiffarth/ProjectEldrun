@@ -353,7 +353,7 @@ function HpcPipelineWizard({ onClose }: { onClose: () => void }) {
       <div className="project-dialog dialog-framed hpc-wizard" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-title-row">
           <h2>
-            {t("hpcWizard.title")} <UntestedTag />
+            {t("hpcWizard.title")} <UntestedTag id="hpcWizard.title" />
           </h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>

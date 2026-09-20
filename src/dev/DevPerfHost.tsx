@@ -207,7 +207,7 @@ export function DevPerfHost() {
     <div className="dev-perf-panel">
       <div className="dev-perf-head">
         <span className="dev-perf-title">
-          Perf monitor <UntestedTag />
+          Perf monitor <UntestedTag id="devPerfHost.1" />
         </span>
         <span className="dev-perf-head-actions">
           <button onClick={() => resetPerf()} title="Clear all buffers">

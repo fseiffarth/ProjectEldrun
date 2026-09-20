@@ -132,7 +132,7 @@ export function VmSettingsDialog({
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-title-row">
-          <h2>{t("pill.vmSettingsTitle", { name: project.name })} <UntestedTag /></h2>
+          <h2>{t("pill.vmSettingsTitle", { name: project.name })} <UntestedTag id="pill.vmSettingsTitle" /></h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
 
@@ -222,7 +222,7 @@ export function VmSettingsDialog({
             box — and this line says why before the click does. */}
         <label className="container-settings-toggle">
           <span>
-            {t("pill.vmMailReader")} <UntestedTag />
+            {t("pill.vmMailReader")} <UntestedTag id="pill.vmMailReader" />
           </span>
           <Toggle checked={mailReader} onChange={(e) => setMailReader(e.target.checked)} size="sm" />
         </label>

@@ -286,7 +286,7 @@ function MailCryptoPanel({ info }: { info: MailCryptoInfo }) {
           {t(info.format === "openpgp" ? "mail.crypto.titlePgp" : "mail.crypto.titleSmime")}
         </span>
         <span className="mail-auth-summary">{t(headline)}</span>
-        <UntestedTag />
+        <UntestedTag id="mailMessageView.1" />
       </div>
       {info.signed && (
         <div className="mail-auth-rows">
@@ -328,7 +328,7 @@ function MailAuthPanel({ auth }: { auth?: MailAuthResults }) {
       <div className="mail-auth-head">
         <span className="mail-meta-label">{t("mail.authTitle")}</span>
         <span className="mail-auth-summary">{t(summary.key, summary.values)}</span>
-        <UntestedTag />
+        <UntestedTag id="mailMessageView.2" />
       </div>
       {shown.length > 0 && (
         <div className="mail-auth-rows">
@@ -681,7 +681,7 @@ function AttachmentSaveDialog({
       <div className="settings-dialog mail-link-dialog" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-title-row">
           <h2>{t("mail.attachmentSaveTitle")}</h2>
-          <UntestedTag />
+          <UntestedTag id="mailMessageView.3" />
           <button type="button" className="dialog-close-btn" onClick={onClose}>
             ×
           </button>

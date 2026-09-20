@@ -231,7 +231,7 @@ export function DevBuildIndicator() {
         <div className="tab-new-menu mobile-indicator-menu" role="menu">
           <div className="tab-new-menu-group-label vpn-indicator-title">
             <span>
-              {t("devBuild.title")} <UntestedTag />
+              {t("devBuild.title")} <UntestedTag id="devBuild.title" />
             </span>
             <button
               type="button"
