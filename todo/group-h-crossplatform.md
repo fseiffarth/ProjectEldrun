@@ -2110,3 +2110,33 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     closing the sheet closes the dialog in the session too.
   - [ ] ✅ Works
   - [ ] ❌ Doesn't work
+
+- [~] **31au — A chat message is held, and the hold says what to do with it**
+  (2026-09-20; ✅ code-complete, automated tests passing, ⚠️ not verified on a
+  phone).
+  - Copy and read-aloud were two small buttons hanging beside every bubble.
+    They are a sheet now (`mobile-web/src/components/MessageMenu.tsx`), opened
+    by a click-hold on the message itself — 450 ms, and a finger that wanders
+    more than 12 px is scrolling the chat, not holding it. A right-click is
+    the same press on a mouse, and the browser's own long-press callout is off
+    over a bubble so it cannot fight that press.
+  - A prompt offers the same two as an answer: the reader's own words are read
+    back. Both readings have it — the stored session (`TranscriptTurns`) and
+    the screen (`ReadableTurns`) — and a pending prompt, which is an ordinary
+    prompt bubble, comes with it.
+  - The message is read at the moment of the press and kept, so the sheet acts
+    on what the bubble said; a raw screen row or tool output is no message and
+    a hold on one opens nothing.
+  - The bubbles gained the width the buttons reserved.
+  - Needs a rebuild of the embedded PWA (`npm run build` did it) and a desktop
+    restart to serve it.
+  - [ ] 🖐️ Manual phone QA — in an agent tab's Focus view, hold a finger on one
+    of the agent's answers: the sheet opens with the message's first words,
+    **Copy message** and **Read aloud**. Copy says "Copied" and closes itself;
+    the clipboard holds that one message. Hold the answer again and tap Read
+    aloud — the phone speaks it and the row becomes **Stop reading**, which
+    stops it. Do the same on one of your own prompts, on both the Session and
+    the Screen reading. Then scroll the chat by dragging from inside a bubble:
+    no sheet opens, and no text gets selected.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
