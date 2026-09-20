@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agentWorking } from "../../mobile-web/src/terminal/agentBusy";
+import { agentWork, agentWorking } from "../../mobile-web/src/terminal/agentBusy";
 
 const rows = (...text: string[]) => text.map((line) => ({ text: line }));
 
@@ -26,5 +26,21 @@ describe("Eldrun Mobile agent busy reader", () => {
   it("only reads the bottom of the screen", () => {
     const stale = ["✻ Thinking… (2s · esc to interrupt)", ...Array.from({ length: 30 }, () => "output")];
     expect(agentWorking(rows(...stale))).toBe(false);
+  });
+
+  it("reads the elapsed time and the tokens the busy row prints", () => {
+    expect(agentWork(rows("✻ Thinking… (9s · ↓ 1.2k tokens · esc to interrupt)", "> "))).toEqual({ elapsed: "9s", tokens: "1.2k" });
+    expect(agentWork(rows("✶ Cascading… (36s · ↓ 2.1k tokens)", "❯ "))).toEqual({ elapsed: "36s", tokens: "2.1k" });
+    expect(agentWork(rows("✢ Reticulating… (1m 4s · ↑ 310 tokens · thinking)", "❯ "))).toEqual({ elapsed: "1m 4s", tokens: "310" });
+    expect(agentWork(rows("› fix the tests", "• Working (0s • esc to interrupt)"))).toEqual({ elapsed: "0s", tokens: undefined });
+    expect(agentWork(rows("⠏ Thinking about it (esc to cancel, 3s)", "> Type your message"))).toEqual({ elapsed: "3s", tokens: undefined });
+  });
+
+  it("leaves the facts out when the row carries none", () => {
+    // A hint with no timer, and OpenCode's status row — whose `223.0K` is the
+    // context it holds, not what this turn spent.
+    expect(agentWork(rows("✻ Pondering… (esc to interrupt)", "> "))).toEqual({ elapsed: undefined, tokens: undefined });
+    expect(agentWork(rows(" BUILD  223.0K (21%) · ctrl+p cmd  ⬝⬝■■  esc interrupt"))).toEqual({ elapsed: undefined, tokens: undefined });
+    expect(agentWork(rows("⏺ Done.", "> ", "  ? for shortcuts"))).toBeNull();
   });
 });

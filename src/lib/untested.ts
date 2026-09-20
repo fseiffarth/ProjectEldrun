@@ -243,6 +243,7 @@ export const UNTESTED = {
   "mobile.focus.onScreen": { area: "mobile", what: "Terminal · Focus mode on-screen transcript note" },
   "mobile.focus.session": { area: "mobile", what: "Terminal · Focus mode session card" },
   "mobile.focus.statusLine": { area: "mobile", what: "Terminal · Focus mode status-line strip" },
+  "mobile.focus.workingFacts": { area: "mobile", what: "Terminal · Focus mode elapsed time and tokens while the agent works" },
   "mobile.home.reorder": { area: "mobile", what: "Home · Drag to reorder the project list" },
   "mobile.mailActions": { area: "mobile", what: "MobileSettings · Mark read and star from the phone" },
   "mobile.mailRead": { area: "mobile", what: "MobileSettings · Read mail on the phone" },

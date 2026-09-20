@@ -60,6 +60,7 @@ export const dict: Dict = {
   "mobile.focus.sessionUnreadable": "Impossibile leggere la sessione salvata",
   "mobile.focus.untested": "Non testato",
   "mobile.focus.working": "L'agente sta lavorando…",
+  "mobile.focus.workingTokens": "{count} token",
   "mobile.facts.session": "5h {percent}%",
   "mobile.facts.week": "settimana {percent}%",
   "mobile.focus.statusLine": "Riga di stato",

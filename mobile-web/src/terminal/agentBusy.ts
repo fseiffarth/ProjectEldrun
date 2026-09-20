@@ -29,10 +29,41 @@ const BUSY_HINT =
  * bullet in an ellipsis has no timer after it. */
 const CLAUDE_SPINNER = /^\s*[·✢✳✶✻✽*]\s+\S[^()]*…\s*\(\d+(?:\.\d+)?[hms]\b/u;
 
-export function agentWorking(lines: readonly { text: string }[]): boolean {
+/** What the busy row says about the turn besides the fact that it runs: how
+ * long it has been going, and how many tokens it has spent. Both are read
+ * off the screen — nothing here counts, so a stale screen says a stale time
+ * rather than a made-up one, and a TUI that prints neither shows neither. */
+export type WorkFacts = { elapsed?: string; tokens?: string };
+
+/** The parenthesised part of the busy row, where every family that prints
+ * numbers prints them: `(36s · ↓ 2.1k tokens)`, `(9s · esc to interrupt)`,
+ * `(esc to cancel, 3s)`. The last group on the row, because a verb can carry
+ * its own aside before it. OpenCode's status row has no parentheses — and its
+ * `223.0K` is the context it holds, not what this turn spent, so it stays
+ * unread. */
+const BUSY_FACTS = /\(([^()]*)\)(?=[^()]*$)/u;
+
+/** The elapsed time as the TUIs write it: `0s`, `36s`, `1m 4s`, `2h 3m`. */
+const ELAPSED = /\b(\d+(?:\.\d+)?h(?:\s+\d+(?:\.\d+)?m)?|\d+(?:\.\d+)?m(?:\s+\d+(?:\.\d+)?s)?|\d+(?:\.\d+)?s)\b/u;
+
+/** The token count with its `k`/`M` suffix, without the direction arrow —
+ * `↓ 2.1k tokens`, `↑ 310 tokens`. The word is what makes it a count: a bare
+ * number in that row is the timer. */
+const TOKENS = /(\d+(?:\.\d+)?\s*[kKmM]?)\s*tokens\b/u;
+
+/** The busy row's facts, or `null` when no row says the agent is working. */
+export function agentWork(lines: readonly { text: string }[]): WorkFacts | null {
   for (let index = lines.length - 1; index >= 0 && index >= lines.length - BUSY_WINDOW; index -= 1) {
     const text = lines[index].text;
-    if (BUSY_HINT.test(text) || CLAUDE_SPINNER.test(text)) return true;
+    if (!BUSY_HINT.test(text) && !CLAUDE_SPINNER.test(text)) continue;
+    const inside = BUSY_FACTS.exec(text)?.[1] ?? "";
+    const elapsed = ELAPSED.exec(inside)?.[1];
+    const tokens = TOKENS.exec(inside)?.[1].replace(/\s+/u, "");
+    return { elapsed, tokens };
   }
-  return false;
+  return null;
+}
+
+export function agentWorking(lines: readonly { text: string }[]): boolean {
+  return agentWork(lines) !== null;
 }

@@ -59,7 +59,7 @@ import {
 } from "../terminal/openCodeMini";
 import { currentMode, modeChoices, modeFixed, shiftTabKey } from "../terminal/agentModes";
 import { agentInputWrites, bracketsAgentMessage } from "../terminal/composer";
-import { agentWorking } from "../terminal/agentBusy";
+import { agentWork } from "../terminal/agentBusy";
 import { chatTurns, isPromptEcho } from "../terminal/chatTurns";
 import { answerHtml } from "../terminal/answerMarkdown";
 import { transcriptTurns } from "../terminal/transcriptTurns";
@@ -1907,7 +1907,18 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   /** The stored session only grows at message boundaries, so a turn busy in
    * tool calls looked finished. The live screen's interrupt hint says it is
    * not; a choice on screen is waiting on the reader instead. */
-  const sessionBusy = useMemo(() => sessionShown && !liveQuestion && agentWorking(lines), [sessionShown, liveQuestion, lines]);
+  const sessionWork = useMemo(
+    () => (sessionShown && !liveQuestion ? agentWork(liveScreen) : null),
+    [sessionShown, liveQuestion, liveScreen],
+  );
+  const sessionBusy = sessionWork !== null;
+  /** What the working row says beside the dots: the elapsed time and the
+   * tokens the agent's own spinner prints, in its words. A family that prints
+   * neither leaves the line as it was. */
+  const workFacts = [
+    sessionWork?.elapsed,
+    sessionWork?.tokens ? t("mobile.focus.workingTokens", { count: sessionWork.tokens }) : undefined,
+  ].filter((fact): fact is string => !!fact);
   /** The screen's lines as the reading view shows them: the revealed history,
    * the open chunk, then the live tail. */
   const screenStream = useMemo(
@@ -2110,6 +2121,10 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
                   {sessionBusy && <div className="transcript-working" role="status">
                     <span className="transcript-working-dots" aria-hidden="true"><i /><i /><i /></span>
                     {t("mobile.focus.working")}
+                    {workFacts.length > 0 && <small className="transcript-working-facts">
+                      {workFacts.join(" · ")}
+                      {isUntested("mobile.focus.workingFacts") && <em> · {t("mobile.focus.untested")}</em>}
+                    </small>}
                   </div>}
                 </div>)
             : painted.length === 0 && visibleChunks.length === 0 && earlier.open.length === 0
