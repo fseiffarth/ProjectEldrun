@@ -240,11 +240,11 @@ export const UNTESTED = {
 
   // --- mobile — The phone PWA ---------------------------------------
   "mobile.boxAccess": { area: "mobile", what: "MobileSettings · Box access" },
-  "mobile.focus.onScreen": { area: "mobile", what: "Terminal · Focus mode on-screen transcript note" },
-  "mobile.focus.readAloud": { area: "mobile", what: "Terminal · Focus mode read-aloud button and auto-read toggle" },
-  "mobile.focus.session": { area: "mobile", what: "Terminal · Focus mode session card" },
-  "mobile.focus.statusLine": { area: "mobile", what: "Terminal · Focus mode status-line strip" },
-  "mobile.focus.workingFacts": { area: "mobile", what: "Terminal · Focus mode elapsed time and tokens while the agent works" },
+  "mobile.focus.onScreen": { area: "mobile", what: "Terminal · Reader on-screen transcript note" },
+  "mobile.focus.readAloud": { area: "mobile", what: "Terminal · Reader read-aloud button and auto-read toggle" },
+  "mobile.focus.session": { area: "mobile", what: "Terminal · Reader session card" },
+  "mobile.focus.statusLine": { area: "mobile", what: "Terminal · Reader status-line strip" },
+  "mobile.focus.workingFacts": { area: "mobile", what: "Terminal · Reader elapsed time and tokens while the agent works" },
   "mobile.home.reorder": { area: "mobile", what: "Home · Drag to reorder the project list" },
   "mobile.mailActions": { area: "mobile", what: "MobileSettings · Mark read and star from the phone" },
   "mobile.mailRead": { area: "mobile", what: "MobileSettings · Read mail on the phone" },

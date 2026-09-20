@@ -201,7 +201,7 @@ describe("Eldrun Mobile terminal dictation", () => {
     render(<Terminal tab={{ id: "opaque-shell", label: "Shell", kind: "shell", available: true, viewer_busy: false }} back={() => {}} />);
     await act(async () => {});
 
-    const focus = screen.getByRole("button", { name: "Focus" });
+    const focus = screen.getByRole("button", { name: "Reader" });
     const terminal = screen.getByRole("button", { name: "Terminal" });
     expect(terminal.getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByRole("textbox", { name: "Shell command" })).toBeTruthy();
@@ -290,6 +290,6 @@ describe("Eldrun Mobile terminal dictation", () => {
 
     expect(screen.queryByText("secret for tab a")).toBeNull();
     expect((screen.getByRole("textbox", { name: "Shell command" }) as HTMLTextAreaElement).value).toBe("");
-    expect(screen.getByRole("button", { name: "Focus" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Reader" }).getAttribute("aria-pressed")).toBe("true");
   });
 });

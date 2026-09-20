@@ -312,7 +312,7 @@ does not have to ship a phone app for the agent you are running.
 - Raw project ids, paths, commands, and tmux targets never cross the browser
   API — the sidecar core (`services::mobile_control`) is `AppHandle`-free and
   path-free by construction.
-- **Focus** presents a chat view of a session. For Claude and Codex it reads
+- **Reader** presents a chat view of a session. For Claude and Codex it reads
   stored prompts and answers, with explicit truncation limits; when that record
   is unavailable it falls back to the terminal screen. Model selection,
   scheduled prompts, closing tabs, and the `eldrun-send` file outbox are also

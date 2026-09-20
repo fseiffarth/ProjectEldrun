@@ -104,7 +104,7 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     vi.stubGlobal("fetch", sidecarFetch(() => STORED));
     const { unmount } = render(<Terminal tab={TAB} back={() => {}} />);
     await settle();
-    expect(screen.getByRole("button", { name: "Focus" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Reader" }).getAttribute("aria-pressed")).toBe("true");
     screen.getByTestId("session-transcript");
     // The default is not written down as the reader's choice.
     expect(localStorage.getItem("eldrun.mobile.view.claude-code")).toBeNull();
@@ -191,26 +191,26 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     // The choice is a list under the Focus button; Session is there, dimmed,
     // saying why, and a tap on it does not switch.
     expect(screen.queryByRole("menu")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Focus" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reader" }));
     const dimmed = screen.getByRole("menuitemradio", { name: /Session/ });
     expect(dimmed.getAttribute("aria-disabled")).toBe("true");
     expect(dimmed.textContent).toContain("No session id for this tab yet");
     expect(screen.getByRole("menuitemradio", { name: /Screen/ }).getAttribute("aria-checked")).toBe("true");
     fireEvent.click(dimmed);
     expect(screen.queryByTestId("session-transcript")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Focus" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reader" }));
     expect(screen.queryByRole("menu")).toBeNull();
 
     stored = STORED;
     act(() => { document.dispatchEvent(new Event("visibilitychange")); });
     await settle();
     screen.getByTestId("session-transcript");
-    fireEvent.click(screen.getByRole("button", { name: "Focus" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reader" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /Screen/ }));
     expect(screen.queryByRole("menu")).toBeNull();
     expect(screen.queryByTestId("session-transcript")).toBeNull();
     expect(screen.getByText("Hi there.")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Focus" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reader" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /Session/ }));
     screen.getByTestId("session-transcript");
   });
@@ -238,7 +238,7 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     within(screen.getByRole("group", { name: "On screen now" })).getByText("Yes");
 
     // Switched to the screen, the full-screen program says so, as before.
-    fireEvent.click(screen.getByRole("button", { name: "Focus" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reader" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /Screen/ }));
     screen.getByText("Full-screen program");
     expect(screen.queryByTestId("session-transcript")).toBeNull();
