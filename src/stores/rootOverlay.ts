@@ -13,7 +13,8 @@ import { ROOT_SCOPE, hydrateScopeFromDisk, useTabsStore, type TabEntry } from ".
  * (`layout/RootOverlay`, Ctrl+Shift+R) over whatever is open — the fast-reach,
  * cross-project management surface: its agents are the only ones handed
  * Eldrun's own MCP tools (projects, calendar, to-do board; see the backend's
- * `services::root_mcp`), and it is never offered to the phone.
+ * `services::root_mcp`). The phone reaches it only behind its own switch and
+ * the review gate (`docs/context/root_console.md`, "On the phone").
  *
  * Nothing about the *scope* changed: its tabs still live in `tabsByScope.root`,
  * persist under `sessions/root/`, and their PTYs are still owned by

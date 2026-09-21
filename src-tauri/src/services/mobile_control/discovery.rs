@@ -94,6 +94,9 @@ struct LiveTmux {
 pub enum ScopeKind {
     Project,
     Box,
+    /// The root console (`docs/context/root_console.md`, "On the phone"): the
+    /// one scope that is in neither list, behind its own switch and gate.
+    Root,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -104,6 +107,10 @@ pub struct PublicProject {
     pub kind: ScopeKind,
     pub live_sessions: usize,
     pub last_activity: Option<u64>,
+    /// Root only: how many staged root-agent proposals wait for a decision.
+    /// A count and nothing else — deciding them is the desktop's alone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_reviews: Option<usize>,
 }
 
 /// The one-line schedule summary the desktop's Agents view puts under an agent
@@ -307,9 +314,71 @@ pub fn opaque_control_id(state_dir: &Path, domain: &str, value: &str) -> Result<
     Ok(key_id(&key, domain, &[value]))
 }
 
+/// The root scope's own id, as the desktop's tab store and bridge spell it.
+const ROOT_SCOPE_ID: &str = "root";
+
 /// The root scope's id, or anything that maps onto its session directory.
 fn is_root_scope_id(id: &str) -> bool {
-    project_key(id) == "root"
+    project_key(id) == ROOT_SCOPE_ID
+}
+
+/// What the root gate needs from outside the state dir, so a test can say it.
+pub struct RootEnv {
+    /// `paths::root_work_dir()`.
+    pub dir: PathBuf,
+    /// A root agent started now would run fenced — the three facts behind
+    /// `root_mcp_status`'s `review_enforced`. Only asked when it decides.
+    pub fenced: fn() -> bool,
+}
+
+impl RootEnv {
+    fn live() -> Self {
+        Self {
+            dir: crate::paths::root_work_dir(),
+            fenced: || {
+                crate::services::agent_fence::policy_enabled(None)
+                    && crate::services::agent_fence::platform_fenceable()
+                    && crate::services::agent_fence::bwrap_available()
+            },
+        }
+    }
+}
+
+/// Whether the root console is the phone's right now. Read per catalog load,
+/// so flipping any of its inputs needs no sidecar restart and an open root
+/// terminal detaches at `pty_bridge`'s next re-check.
+///
+/// Off unless `eldrun_mobile_host.root_access` is set. Then: a root agent
+/// without the MCP tools holds no right a project agent lacks, so root is
+/// open; with them, only while every write is staged (`root_mcp_review` =
+/// all, the default and the reading of any unknown value) behind a fence the
+/// agent cannot walk around — otherwise a prompt typed on the phone would
+/// write the calendar with nobody at the desk to see it. Unreadable settings
+/// refuse, as they do for the tools themselves.
+fn root_open(state_dir: &Path, env: &RootEnv) -> bool {
+    let Some(settings) = fs::read(state_dir.join("settings.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+    else {
+        return false;
+    };
+    let switched_on = settings
+        .get("eldrun_mobile_host")
+        .and_then(|host| host.get("root_access"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !switched_on {
+        return false;
+    }
+    let tools = settings.get("root_mcp").and_then(Value::as_bool).unwrap_or(true);
+    if !tools {
+        return true;
+    }
+    let staged = !matches!(
+        settings.get("root_mcp_review").and_then(Value::as_str),
+        Some("destructive" | "off")
+    );
+    staged && (env.fenced)()
 }
 
 fn project_key(id: &str) -> String {
@@ -425,6 +494,10 @@ fn live_tmux() -> HashMap<String, LiveTmux> {
 
 impl Catalog {
     pub fn load(state_dir: &Path, host_key: &[u8]) -> Result<Self, String> {
+        Self::load_with(state_dir, host_key, &RootEnv::live())
+    }
+
+    fn load_with(state_dir: &Path, host_key: &[u8], root: &RootEnv) -> Result<Self, String> {
         let bytes =
             fs::read(state_dir.join("projects.json")).map_err(|e| format!("read projects: {e}"))?;
         let projects: Vec<ProjectRecord> =
@@ -438,14 +511,22 @@ impl Catalog {
             .unwrap_or_default();
         let live = live_tmux();
         let mut sources = Vec::new();
+        if root_open(state_dir, root) {
+            sources.push(ScopeSource {
+                raw_id: ROOT_SCOPE_ID.into(),
+                label: "Root".into(),
+                status: "active".into(),
+                kind: ScopeKind::Root,
+                roots: vec![root.dir.clone()],
+            });
+        }
         for project in &projects {
             if !project.eldrun_mobile_access || !mobile_local(project) {
                 continue;
             }
-            // The root console is never the phone's (`services::root_mcp`): its
-            // agents hold rights no project agent has. It is not a project, so
-            // it cannot be listed honestly — this refuses a hand-edited record
-            // that borrows its session directory by taking its id.
+            // Root is listed above, by its own switch and gate, and is not a
+            // project: this refuses a hand-edited record that would borrow its
+            // session directory — and walk past that gate — by taking its id.
             if is_root_scope_id(&project.id) {
                 continue;
             }
@@ -602,6 +683,8 @@ fn resolve_scope(
         kind: source.kind,
         live_sessions: tabs.iter().filter(|t| t.public.available).count(),
         last_activity,
+        pending_reviews: (source.kind == ScopeKind::Root)
+            .then(|| crate::services::root_mcp_review::pending_count(state_dir)),
     };
     Some(ResolvedProject {
         public,
@@ -826,11 +909,11 @@ mod tests {
         assert_eq!(colors, vec![Some("teal"), None, None]);
     }
 
-    /// The root console never reaches the phone — not even through a
-    /// `projects.json` record hand-edited to take the root scope's id (and with
-    /// it `sessions/root/`, the root console's own tab layout).
+    /// The root console reaches the phone by its own switch and gate only
+    /// (`root_open`) — never through a `projects.json` record hand-edited to
+    /// take the root scope's id (and with it `sessions/root/`).
     #[test]
-    fn the_root_scope_is_never_in_the_catalog() {
+    fn the_root_scope_is_listed_by_its_switch_and_gate_alone() {
         let dir = tempfile::tempdir().expect("state dir");
         let state = dir.path();
         let root = state.join("root");
@@ -839,7 +922,7 @@ mod tests {
             state.join("projects.json"),
             serde_json::to_vec(&serde_json::json!([{
                 "id": "root",
-                "name": "Root",
+                "name": "Borrowed",
                 "status": "active",
                 "directory": root.to_string_lossy(),
                 "eldrun_mobile_access": true,
@@ -856,15 +939,59 @@ mod tests {
                     "cmd": "claude",
                     "cwd": root.to_string_lossy(),
                     "kind": "agent",
+                    "sessionId": "s1",
                     "tmuxSession": "eldrun-root--agent-123456789",
                 }]
             }))
             .expect("session"),
         )
         .expect("write session");
+        let fenced = RootEnv { dir: root.clone(), fenced: || true };
+        let unfenced = RootEnv { dir: root.clone(), fenced: || false };
+        let load = |settings: Option<serde_json::Value>, env: &RootEnv| {
+            match settings {
+                Some(value) => fs::write(state.join("settings.json"), value.to_string()).expect("settings"),
+                None => { let _ = fs::remove_file(state.join("settings.json")); }
+            }
+            Catalog::load_with(state, &[7; 32], env).expect("catalog").projects
+        };
+        let host = |on: bool| serde_json::json!({ "enabled": true, "root_access": on });
 
-        let catalog = Catalog::load(state, &[7; 32]).expect("catalog");
-        assert!(catalog.projects.is_empty());
+        // No settings, or the switch unset/off: the borrowed record is refused
+        // and nothing else lists root.
+        assert!(load(None, &fenced).is_empty());
+        assert!(load(Some(serde_json::json!({ "eldrun_mobile_host": { "enabled": true } })), &fenced).is_empty());
+        assert!(load(Some(serde_json::json!({ "eldrun_mobile_host": host(false) })), &fenced).is_empty());
+
+        // Switched on, default review, fenced: one Root row — the gate's, not
+        // the borrowed record's — with its tab and a pending count.
+        let listed = load(Some(serde_json::json!({ "eldrun_mobile_host": host(true) })), &fenced);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].public.kind, ScopeKind::Root);
+        assert_eq!(listed[0].public.label, "Root");
+        assert_eq!(listed[0].raw_id, "root");
+        assert_eq!(listed[0].tabs.len(), 1);
+        assert_eq!(listed[0].public.pending_reviews, Some(0));
+        // An unknown review value reads as `all`, as it does for the tools.
+        assert_eq!(load(Some(serde_json::json!({ "eldrun_mobile_host": host(true), "root_mcp_review": "later" })), &fenced).len(), 1);
+
+        // Tools on but writes not staged behind a fence: closed.
+        assert!(load(Some(serde_json::json!({ "eldrun_mobile_host": host(true) })), &unfenced).is_empty());
+        for level in ["destructive", "off"] {
+            assert!(
+                load(Some(serde_json::json!({ "eldrun_mobile_host": host(true), "root_mcp_review": level })), &fenced).is_empty(),
+                "{level}"
+            );
+        }
+        // Tools off: a root agent holds nothing extra, so neither matters.
+        assert_eq!(
+            load(Some(serde_json::json!({ "eldrun_mobile_host": host(true), "root_mcp": false, "root_mcp_review": "off" })), &unfenced).len(),
+            1
+        );
+        // Unreadable settings refuse.
+        fs::write(state.join("settings.json"), b"{").expect("corrupt settings");
+        assert!(Catalog::load_with(state, &[7; 32], &fenced).expect("catalog").projects.is_empty());
+
         assert!(is_root_scope_id("root"));
         assert!(!is_root_scope_id("rooted"));
     }

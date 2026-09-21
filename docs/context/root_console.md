@@ -524,10 +524,42 @@ of private stores are masked too. macOS denies the known private stores after
 its path grants; Windows and deliberately unfenced agents retain their existing
 limitations. New private store paths must be added to the macOS deny inventory.
 
-## Never the phone
+## On the phone
 
-- `mobile_control::discovery` builds its catalog from `projects.json` and
-  `boxes.json`. Root is in neither file, and a hand-edited record using the id
-  `root` (which would borrow `sessions/root/`) is refused explicitly.
-- Root Claude tabs spawn without `--remote-control`, so they never appear in
-  Claude's own phone app.
+Root used to be kept off Eldrun Mobile outright, on the grounds that its agents
+hold rights no project agent has. That guarded against the wrong party. Those
+rights separate a root *agent* from a project *agent* — fenced processes that
+read untrusted text. The phone is the user, on a paired device that signs a
+challenge with its own key, and it can already open an unfenced shell in any
+Mobile-enabled project: a shell that runs as the user and can read every store
+these tools serve. Keeping root away took nothing from someone holding the
+phone and kept the user from their own root agent away from the desk.
+
+So root is a phone scope, behind a line drawn where the rights actually are
+(`docs/mobile_root_plan.md`):
+
+- **Its own switch, default off** — `eldrun_mobile_host.root_access`, in
+  Settings → Eldrun Mobile. Root is in neither `projects.json` nor
+  `boxes.json`, so it cannot carry a per-record switch; `discovery` lists it as
+  `ScopeKind::Root` from `paths::root_work_dir()` and `sessions/root/`. A
+  hand-edited *project record* using the id `root` is still refused: it would
+  borrow that session directory and walk past the gate below.
+- **The device that drives the agent never approves its proposals.** Approve,
+  reject, undo, the session grants and Settings are Tauri commands with no
+  phone route. The phone's root row carries `pending_reviews`, a count.
+- **Closed while review is weaker than default.** With the MCP tools on, root
+  is listed only while `root_mcp_review` is `all` *and* a root agent would run
+  fenced (the `review_enforced` facts) — otherwise a prompt typed on the phone
+  would write the calendar at once with nobody at the desk. With the tools off
+  a root agent holds nothing extra and the switch alone decides.
+  `discovery::root_open` reads this per catalog load, so weakening review
+  drops root from the phone and `pty_bridge`'s re-check detaches its open
+  terminals. `MobileBridgeHost.mobileRootScope` repeats the rule, because the
+  bridge is reachable without the sidecar route; Settings says why when the
+  switch is on and the gate is closed.
+- **No phone-only kind of root agent.** A tab created from the phone goes
+  through the same `pty_spawn` with no project id, so `apply_to_spawn` decides
+  its tools by the same Root / MCP chips as a tab made at the desk. "Activate"
+  raises the console (`useRootOverlayStore.show`); root is never switched to.
+- Root Claude tabs still spawn without `--remote-control`, so they never appear
+  in Claude's own phone app — a different decision from Eldrun's paired phone.

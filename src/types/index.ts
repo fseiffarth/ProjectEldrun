@@ -154,6 +154,10 @@ export interface Settings {
     /** A paired phone may send a plain-text reply whose recipient the desktop
      * derives from the original. Unset is off; independent of `mail_actions`. */
     mail_reply?: boolean;
+    /** A paired phone may reach the root console's tabs. Unset is off; the
+     * sidecar also holds it closed while root-agent writes are not staged
+     * behind the fence (`docs/context/root_console.md`, "On the phone"). */
+    root_access?: boolean;
   };
   /** Show Eldrun Mobile's host-connection control in the desktop header. This
    * defaults to on when Mobile itself is enabled; an explicit false hides it. */

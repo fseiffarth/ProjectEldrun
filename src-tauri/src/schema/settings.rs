@@ -55,6 +55,11 @@ pub struct EldrunMobileHostSettings {
     /// outbound mail are different risks and are switched separately.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mail_reply: Option<bool>,
+    /// May a paired phone reach the root console's tabs? Default off. Read by
+    /// the sidecar per catalog load (`mobile_control::discovery::root_open`,
+    /// which also holds the review gate) and repeated by the desktop bridge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_access: Option<bool>,
 }
 
 /// Cloud completion authority lives in Eldrun's settings, never project.json.

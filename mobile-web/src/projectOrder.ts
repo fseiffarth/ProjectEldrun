@@ -58,3 +58,14 @@ export function mergeProjectOrder(stored: readonly string[], listed: readonly st
   if (!placed) merged.unshift(...listed);
   return merged;
 }
+
+/** The small line under a row's name: what kind of scope it is. A box and the
+ * root console are not projects and have no status of their own; root also
+ * says how many of its agents' proposals wait — a count only, because deciding
+ * them is the desktop's alone. */
+export function scopeCaption(row: { kind?: "project" | "box" | "root"; status: string; pending_reviews?: number }): string {
+  if (row.kind === "box") return "▣ box";
+  if (row.kind !== "root") return row.status;
+  const waiting = row.pending_reviews ?? 0;
+  return waiting > 0 ? `★ root · ${waiting} awaiting approval at the desk` : "★ root";
+}

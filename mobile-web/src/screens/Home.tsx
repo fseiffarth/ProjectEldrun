@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api, resolveAlert, type ActivityTab, type MobileAlertItem, type MobileAlerts, type ProjectRow, type TabPlace } from "../api";
 import { classifyUnavailable, describeUnavailable, type UnavailableReason } from "../connection";
 import { readFlag, readOrder, writeFlag, writeOrder } from "../prefs";
-import { arrangeProjects, mergeProjectOrder } from "../projectOrder";
+import { arrangeProjects, mergeProjectOrder, scopeCaption } from "../projectOrder";
 import { useRowDrag } from "../rowDrag";
 import { placeBeside } from "../tabReorder";
 import { Activity } from "./Activity";
@@ -263,7 +263,7 @@ export function Home({ open, openTab, todo, mail }: {
         ref={drag.rowRef(project.id)}
       >
         <div className="tab-card-head">
-          <button className="card" onClick={() => open(project.id)}><span><strong>{project.label}</strong><small>{project.kind === "box" ? "▣ box" : project.status}</small></span><span className="count">{project.live_sessions}</span></button>
+          <button className="card" onClick={() => open(project.id)}><span><strong>{project.label}</strong><small>{scopeCaption(project)}</small></span><span className="count">{project.live_sessions}</span></button>
           {canReorder && <button
             className="tab-card-grip"
             aria-label={`Move ${project.label}`}

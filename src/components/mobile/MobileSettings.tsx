@@ -132,6 +132,21 @@ export function MobileSettings() {
   const rootDir = useProjectsStore((state) => state.rootDir);
   const setProjectMobileAccess = useProjectsStore((state) => state.setProjectMobileAccess);
   const stored = settings?.eldrun_mobile_host;
+  // The sidecar's `discovery::root_open`, repeated so the switch can say why
+  // root is missing from the phone while it is on.
+  const [reviewEnforced, setReviewEnforced] = useState(true);
+  const rootSwitchedOn = stored?.root_access === true;
+  useEffect(() => {
+    if (!rootSwitchedOn) return;
+    let live = true;
+    void invoke<{ review_enforced?: boolean }>("root_mcp_status")
+      .then((status) => { if (live) setReviewEnforced(status.review_enforced === true); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [rootSwitchedOn]);
+  const rootReview = settings?.root_mcp_review;
+  const rootGateClosed = settings?.root_mcp !== false
+    && (rootReview === "destructive" || rootReview === "off" || !reviewEnforced);
   const [displayName, setDisplayName] = useState(stored?.display_name ?? "Workstation");
   const [port, setPort] = useState(String(stored?.port ?? 8742));
   const [origin, setOrigin] = useState(stored?.serve_origin ?? "");
@@ -245,7 +260,7 @@ export function MobileSettings() {
    * read by the desktop bridge alone — the sidecar never sees mail settings.
    * They ride on the stored host settings untouched otherwise, so flipping one
    * never re-verifies Serve or restarts the host. */
-  const setMailGate = async (gate: "mail_read" | "mail_actions" | "mail_reply", on: boolean) => {
+  const setMailGate = async (gate: "mail_read" | "mail_actions" | "mail_reply" | "root_access", on: boolean) => {
     setError(null);
     try {
       await updateSettings({
@@ -287,6 +302,7 @@ export function MobileSettings() {
           mail_read: stored?.mail_read,
           mail_actions: stored?.mail_actions,
           mail_reply: stored?.mail_reply,
+          root_access: stored?.root_access,
         },
       });
       await invoke("mobile_host_apply", { enabled });
@@ -364,6 +380,7 @@ export function MobileSettings() {
           mail_read: stored?.mail_read,
           mail_actions: stored?.mail_actions,
           mail_reply: stored?.mail_reply,
+          root_access: stored?.root_access,
         },
       });
     } catch (reason) {
@@ -411,6 +428,7 @@ export function MobileSettings() {
           mail_read: stored?.mail_read,
           mail_actions: stored?.mail_actions,
           mail_reply: stored?.mail_reply,
+          root_access: stored?.root_access,
         },
       });
       await invoke("mobile_host_apply", { enabled: false });
@@ -606,6 +624,18 @@ export function MobileSettings() {
         onChange={(event) => void setMailGate("mail_reply", event.target.checked)}
       />
       <p className="settings-help">{t("mobile.mailReplyHelp")}</p>
+
+      <div className="settings-subheader">{t("mobile.rootAccessHeader")}</div>
+      <ToggleRow
+        label={<>{t("mobile.rootAccess")} <UntestedTag id="mobile.rootAccess" /></>}
+        checked={stored?.root_access ?? false}
+        disabled={busy}
+        onChange={(event) => void setMailGate("root_access", event.target.checked)}
+      />
+      <p className="settings-help">{t("mobile.rootAccessHelp")}</p>
+      {stored?.root_access && rootGateClosed && (
+        <div className="project-dialog-error">{t("mobile.rootAccessClosed")}</div>
+      )}
 
       <div className="settings-subheader">{t("mobile.projectAccess")}</div>
       <p className="settings-help">

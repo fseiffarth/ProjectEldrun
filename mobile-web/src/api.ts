@@ -1,7 +1,7 @@
 /** One row of the phone's list. `kind` says whether it is a project or a box
  * (#31aa) — a box is a scope of its own on the desktop, always "active" here,
  * and a host older than the field sends none, which reads as a project. */
-export interface ProjectRow { id: string; label: string; status: string; kind?: "project" | "box"; live_sessions: number; last_activity?: number }
+export interface ProjectRow { id: string; label: string; status: string; kind?: "project" | "box" | "root"; live_sessions: number; last_activity?: number; /** Root only: staged root-agent proposals awaiting a decision — which is made at the desk, never here. */ pending_reviews?: number }
 export type AgentStatus = "working" | "question" | "done";
 /** The desktop's own one-line summary of a tab's scheduled prompts: what the
  * Agents view prints under an agent tab, so the project overview says the same

@@ -264,6 +264,7 @@ export const UNTESTED = {
   "mobile.mailActions": { area: "mobile", what: "MobileSettings · Mark read and star from the phone" },
   "mobile.mailRead": { area: "mobile", what: "MobileSettings · Read mail on the phone" },
   "mobile.mailReply": { area: "mobile", what: "MobileSettings · Reply from the phone" },
+  "mobile.rootAccess": { area: "mobile", what: "MobileSettings · Root console on the phone (switch, review gate, pending count on the phone's row)" },
   "mobile.outbox.gallery": { area: "mobile", what: "OutboxGallery · Files the agent sent to the phone, Save on every tile" },
   "mobile.project.newTab": { area: "mobile", what: "NewTabSheet · The header's ＋ opens a shell or an agent" },
   "mobile.project.outbox": { area: "mobile", what: "Project · Shelf under the tab cards for the files the desktop sent (eldrun-send), with the header's 🖼 and the shelf's button on the whole gallery" },

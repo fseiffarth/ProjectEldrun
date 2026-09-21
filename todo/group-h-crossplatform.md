@@ -2796,6 +2796,38 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
 
+- [~] **31az — The root console on the phone** (2026-09-21; ✅ code-complete,
+  automated tests passing — `discovery`'s
+  `the_root_scope_is_listed_by_its_switch_and_gate_alone`,
+  `MobileRootAccess.test.tsx`, `scopeCaption` in `MobileProjectOrder.test.tsx`;
+  ⚠️ not verified on a phone, and it needs a rebuild + restart first: the
+  sidecar's catalog changed and the phone serves the bundle baked into the
+  binary). Plan and rationale: `docs/mobile_root_plan.md`,
+  `docs/context/root_console.md` ("On the phone"). Root is a phone scope behind
+  its own default-off switch (Settings → Eldrun Mobile → Root console) and a
+  gate: with the root MCP tools on it is listed only while write review is
+  "all" and root agents are fenced. Approvals stay on the desktop; the phone's
+  root row shows the count of waiting proposals.
+  - [ ] 🖐️ Manual phone QA — switch "Root console on the phone" on: a **Root**
+    row (`★ root`) appears on the phone with the console's shell/agent tabs;
+    open a running root agent and type into it; ＋ → an agent: the root console
+    rises on the desktop over the open project (no scope switch) with the new
+    tab in front; ask it for a calendar entry → nothing is written, the
+    desktop's ✓ Approvals shows it, and the phone row reads "1 awaiting
+    approval at the desk". Set MCP write review to "Destructive only" → Settings
+    shows the "Closed right now" line, the row leaves the phone within a few
+    seconds and an open root terminal detaches; back to "All writes" → it
+    returns. Switch the root MCP tools off with review still weakened → the
+    row is listed. Switch root access off → gone.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
 *Not coming to the phone (decided, not forgotten — see
 `docs/mobile_box_parity_plan.md`): editing a box from the phone (membership,
 rename, Dissolve), listing a box's members as project rows, a per-member

@@ -11,8 +11,18 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Home } from "../../../mobile-web/src/screens/Home";
-import { arrangeProjects, mergeProjectOrder } from "../../../mobile-web/src/projectOrder";
+import { arrangeProjects, mergeProjectOrder, scopeCaption } from "../../../mobile-web/src/projectOrder";
 import { readOrder, writeOrder } from "../../../mobile-web/src/prefs";
+
+describe("Mobile scope caption", () => {
+  it("names a box and the root console instead of a status, and counts root's waiting proposals", () => {
+    expect(scopeCaption({ kind: "project", status: "active" })).toBe("active");
+    expect(scopeCaption({ status: "paused" })).toBe("paused");
+    expect(scopeCaption({ kind: "box", status: "active" })).toBe("▣ box");
+    expect(scopeCaption({ kind: "root", status: "active", pending_reviews: 0 })).toBe("★ root");
+    expect(scopeCaption({ kind: "root", status: "active", pending_reviews: 2 })).toBe("★ root · 2 awaiting approval at the desk");
+  });
+});
 
 describe("Mobile project order — the list surgery", () => {
   const rows = [{ id: "a" }, { id: "b" }, { id: "c" }];

@@ -5,9 +5,11 @@ import { restoreProjectScope, useProjectsStore } from "../../stores/projects";
 import { BOX_SCOPE_PREFIX, boxScopeId, useBoxesStore } from "../../stores/boxes";
 import {
   RESUMABLE_AGENTS,
+  ROOT_SCOPE,
   useTabsStore,
   type TabEntry,
 } from "../../stores/tabs";
+import { ensureRootScopeHydrated, useRootOverlayStore } from "../../stores/rootOverlay";
 import { closeTabInScope } from "../../lib/remote/closeRemoteTab";
 import { useSettingsStore } from "../../stores/settings";
 import { calendarColor, useCalendarStore, visibleCalendarIds } from "../../stores/calendar/calendar";
@@ -327,8 +329,40 @@ interface MobileScope {
   project?: ProjectEntry;
 }
 
+/** The one thing the root gate needs that no store holds: whether a root agent
+ * started now would run fenced (`root_mcp_status`'s `review_enforced`). Read
+ * when the bridge mounts and again, in the background, each time the gate is
+ * asked — `mobileScope` is synchronous, so it answers from the last reading
+ * and stays closed until there has been one. */
+const rootFacts = { reviewEnforced: false };
+
+function refreshRootFacts(): void {
+  void invoke<{ review_enforced?: boolean }>("root_mcp_status")
+    .then((status) => { rootFacts.reviewEnforced = status.review_enforced === true; })
+    .catch(() => { rootFacts.reviewEnforced = false; });
+}
+
+/** The root console as a phone scope (`docs/context/root_console.md`, "On the
+ * phone"). The sidecar's `discovery::root_open` is the perimeter; this is the
+ * desktop-side repeat of the same rule, because the bridge is reachable without
+ * going through it: the switch is on, and either root agents carry no MCP tools
+ * or every write of theirs is staged behind a fence they cannot walk around. */
+function mobileRootScope(): MobileScope | undefined {
+  const settings = useSettingsStore.getState().settings;
+  if (settings?.eldrun_mobile_host?.root_access !== true) return undefined;
+  refreshRootFacts();
+  if (settings.root_mcp !== false) {
+    const level = settings.root_mcp_review;
+    if (level === "destructive" || level === "off" || !rootFacts.reviewEnforced) return undefined;
+  }
+  const cwd = useProjectsStore.getState().rootDir;
+  if (!cwd) return undefined;
+  return { id: ROOT_SCOPE, name: "Root", cwd, localFile: "" };
+}
+
 function mobileScope(id: string | undefined): MobileScope | undefined {
   if (!id) return undefined;
+  if (id === ROOT_SCOPE) return mobileRootScope();
   if (id.startsWith(BOX_SCOPE_PREFIX)) {
     const box = useBoxesStore.getState().boxes.find((entry) => boxScopeId(entry.id) === id);
     // A box never opened has no folder yet; the switch resolves one on enable,
@@ -341,14 +375,22 @@ function mobileScope(id: string | undefined): MobileScope | undefined {
   return { id: project.id, name: project.name, cwd: resolveProjectDirectory(project), localFile: project.local_file, project };
 }
 
-/** Every scope the phone may reach right now: the opted-in projects, then the
- * opted-in boxes. Walked from the two lists rather than the tab store's scope
- * keys so that each switch and the trust tiers gate its entry: a scope key is
- * not a permission, and the store also holds the root scope, which is neither. */
+/** Every scope the phone may reach right now: root behind its gate, the
+ * opted-in projects, then the opted-in boxes. Walked from the lists rather
+ * than the tab store's scope keys so that each switch and the trust tiers gate
+ * its entry: a scope key is not a permission. */
 function allMobileScopes(): MobileScope[] {
   const projects = useProjectsStore.getState().projects.flatMap((entry) => mobileScope(entry.id) ?? []);
   const boxes = useBoxesStore.getState().boxes.flatMap((entry) => mobileScope(boxScopeId(entry.id)) ?? []);
-  return [...projects, ...boxes];
+  const root = mobileScope(ROOT_SCOPE);
+  return [...(root ? [root] : []), ...projects, ...boxes];
+}
+
+/** Load a scope's saved tabs when the desktop has not opened it this session.
+ * A box needs none here: its tabs restore when it is opened. */
+async function restoreScope(scope: MobileScope): Promise<void> {
+  if (scope.project) await restoreProjectScope(scope.project).catch(() => {});
+  else if (scope.id === ROOT_SCOPE) await ensureRootScopeHydrated();
 }
 
 /** The phone receives these already-derived activity facts only. The desktop
@@ -624,14 +666,20 @@ async function create(request: CreateRequest, t: ReturnType<typeof useT>): Promi
   if (!created.tmuxSession) {
     return { status: "error", code: "launch_failed", message: "Persistent terminal session was not created" };
   }
+  if (scope.id === ROOT_SCOPE) useTabsStore.getState().revealTabInScope(ROOT_SCOPE, created.key);
   return { status: "created", tmux_session: created.tmuxSession };
 }
 
 /** Make `scope` the one the desktop shows: a project is activated, a box is
  * opened (which restores its members' tabs box-locally and enters its scope,
- * exactly as the switcher's box pill does). */
+ * exactly as the switcher's box pill does). Root is never switched to — its
+ * console is raised over whatever is open, which is what gives its panes a
+ * terminal. */
 async function enterScope(scope: MobileScope): Promise<void> {
-  if (scope.project) await useProjectsStore.getState().activateProject(scope.project.id);
+  if (scope.id === ROOT_SCOPE) {
+    await ensureRootScopeHydrated();
+    useRootOverlayStore.getState().show();
+  } else if (scope.project) await useProjectsStore.getState().activateProject(scope.project.id);
   else await useBoxesStore.getState().openBox(scope.id.slice(BOX_SCOPE_PREFIX.length));
 }
 
@@ -699,7 +747,7 @@ async function closeMobileTab(projectId: string, tmuxSession: string): Promise<D
   if (!scope) {
     return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
   }
-  if (scope.project) await restoreProjectScope(scope.project).catch(() => {});
+  await restoreScope(scope);
   const tab = mobileTargetTab(scope.id, tmuxSession);
   if (!tab) return { status: "error", code: "tab_not_found", message: "Tab is unavailable" };
   closeTabInScope(scope.id, tab.key);
@@ -735,7 +783,7 @@ async function colorMobileTab(
   if (next !== undefined && !isTabColor(next)) {
     return { status: "error", code: "invalid_color", message: "Tab colour is not in the palette" };
   }
-  if (scope.project) await restoreProjectScope(scope.project).catch(() => {});
+  await restoreScope(scope);
   const tab = mobileTargetTab(scope.id, tmuxSession);
   if (!tab) return { status: "error", code: "tab_not_found", message: "Tab is unavailable" };
   useTabsStore.getState().setTabColorInScope(scope.id, tab.key, next);
@@ -762,7 +810,7 @@ async function reorderMobileTab(
   if (!scope) {
     return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
   }
-  if (scope.project) await restoreProjectScope(scope.project).catch(() => {});
+  await restoreScope(scope);
   const tab = mobileTargetTab(scope.id, tmuxSession);
   const anchor = mobileTargetTab(scope.id, anchorTmuxSession);
   if (!tab || !anchor) return { status: "error", code: "tab_not_found", message: "Tab is unavailable" };
@@ -1768,6 +1816,7 @@ export function MobileBridgeHost() {
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
+    refreshRootFacts();
     void listen<DesktopRequest>(MOBILE_DESKTOP_EVENT, (event) => {
       const request = event.payload;
       const run = async () => {
