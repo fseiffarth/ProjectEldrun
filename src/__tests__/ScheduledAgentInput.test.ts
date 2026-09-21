@@ -69,6 +69,60 @@ describe("scheduled agent input", () => {
     expect(settle).toHaveBeenCalledTimes(2);
   });
 
+  it("types a scheduled prompt into Claude Code rather than pasting it", async () => {
+    // A filed or chained prompt reached the model as `<pasted_content>`, quoted
+    // as something pasted from elsewhere rather than asked: Claude Code turns
+    // every bracketed paste into a `[Pasted text]` block. The phone's composer
+    // has refused the markers for this family; delivery from the desktop is the
+    // other half of the same rule, prefix commands included — a pasted `/clear`
+    // is text in the composer, not the command the schedule asked for.
+    const settle = vi.fn(() => Promise.resolve());
+    registerScheduledAgentInput("target", {
+      ptyId: "project:agent",
+      ready: () => true,
+      bracketedPaste: () => true,
+      agent: "claude",
+      recordAuthorizedInput: vi.fn(),
+      noteInput: vi.fn(),
+    });
+
+    await submitScheduledAgentMessage("target", "first\nsecond", { preface: ["/clear"], settle });
+
+    expect(writeMock.mock.calls.map(([, bytes]) => decode(bytes))).toEqual([
+      "\u0001\u000b", "/clear", "\r",
+      "\u0001\u000b", "first", "\n", "second", "\r",
+    ]);
+  });
+
+  it("keeps the markers for the families that want them, and where the pane has the mode off", async () => {
+    registerScheduledAgentInput("codex", {
+      ptyId: "project:codex",
+      ready: () => true,
+      bracketedPaste: () => true,
+      agent: "/usr/local/bin/codex",
+      recordAuthorizedInput: vi.fn(),
+    });
+    registerScheduledAgentInput("plain", {
+      ptyId: "project:plain",
+      ready: () => true,
+      bracketedPaste: () => false,
+      agent: "codex",
+      recordAuthorizedInput: vi.fn(),
+    });
+
+    await submitScheduledAgentMessage("codex", "go");
+    await submitScheduledAgentMessage("plain", "go");
+
+    expect(writeMock.mock.calls.map(([id, bytes]) => [id, decode(bytes)])).toEqual([
+      ["project:codex", "\u0001\u000b"],
+      ["project:codex", "\u001b[200~go\u001b[201~"],
+      ["project:codex", "\r"],
+      ["project:plain", "\u0001\u000b"],
+      ["project:plain", "go"],
+      ["project:plain", "\r"],
+    ]);
+  });
+
   it("skips a prefix entry that sanitizes away rather than submitting a bare newline", async () => {
     const settle = vi.fn(() => Promise.resolve());
     registerScheduledAgentInput("target", {

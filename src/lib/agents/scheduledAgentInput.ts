@@ -1,4 +1,4 @@
-import { agentInputWrites } from "../../../shared/agentComposer";
+import { agentInputWrites, bracketsAgentMessage } from "../../../shared/agentComposer";
 import { writePtyInput } from "../terminal/terminalInput";
 
 const ENCODER = new TextEncoder();
@@ -17,6 +17,10 @@ export interface ScheduledAgentInput {
   ptyId: string;
   ready: () => boolean;
   bracketedPaste: () => boolean;
+  /** What launches the agent, for {@link bracketsAgentMessage}: the markers are
+   *  per family, and Claude Code reads a pasted prompt as quoted content rather
+   *  than as the question asked. Unset takes the pane's answer as it stands. */
+  agent?: string;
   /** Stamps input AND counts one asked prompt — the message, never a prefix. */
   recordAuthorizedInput: () => void;
   /** Stamps input only. Used for prefix commands, which are not prompts: the
@@ -72,7 +76,7 @@ export async function submitScheduledAgentMessage(
 ): Promise<string> {
   const input = inputs.get(scheduleTargetId);
   if (!input || !input.ready()) throw new Error("agent terminal is not ready");
-  const bracketed = input.bracketedPaste();
+  const bracketed = bracketsAgentMessage(input.agent, input.bracketedPaste());
   const messageWrites = agentInputWrites(message, bracketed);
   if (messageWrites.length === 0) throw new Error("scheduled prompt is empty");
   const prefaceWrites = (options.preface ?? [])

@@ -724,6 +724,10 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
           ptyId: id,
           ready: scheduledInputReady,
           bracketedPaste: () => term.modes.bracketedPasteMode === true,
+          // The family decides whether the markers are used at all: a prompt
+          // pasted into Claude Code arrives as `<pasted_content>` rather than
+          // as the question (`bracketsAgentMessage`).
+          agent: cmd,
           recordAuthorizedInput: () => {
             noteUserInput(id);
             countSubmit();
