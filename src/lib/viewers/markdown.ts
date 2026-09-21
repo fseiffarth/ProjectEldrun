@@ -177,11 +177,22 @@ function attrText(raw: string, spans: InlineSpans): string {
       const idx = Number(part.slice(2, -1));
       const stored =
         part[1] === "C" ? spans.codeSpans[idx] : part[1] === "M" ? spans.mathSpans[idx] : spans.links[idx];
-      // Text inside the stored HTML is escaped, so no `<`/`>` survives the tag
-      // strip; the second pass makes that a guarantee, not an assumption.
-      return (stored ?? "").replace(/<[^>]*>/g, "").replace(/[<>]/g, "");
+      return stripTags(stored ?? "");
     })
     .join("");
+}
+
+/** `html` minus its tags. A character scan, not a regex replace: it never emits
+ *  `<` or `>`, whatever the input, so the result cannot hold a partial tag. */
+function stripTags(html: string): string {
+  let out = "";
+  let inTag = false;
+  for (const ch of html) {
+    if (ch === "<") inTag = true;
+    else if (ch === ">") inTag = false;
+    else if (!inTag) out += ch;
+  }
+  return out;
 }
 
 /** Render inline constructs within already-block-split text. Input is raw
