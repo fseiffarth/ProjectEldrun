@@ -28,6 +28,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(), emit: vi.fn() }));
 import { MobileBridgeHost } from "../components/mobile/MobileBridgeHost";
 import { useActivityStore } from "../stores/activity";
 import { clearAgentModelFloorForTest, useAgentModelsStore } from "../stores/agents/agentModels";
+import { useAgentPromptsStore } from "../stores/agents/agentPrompts";
 import { useProjectsStore } from "../stores/projects";
 import { useSettingsStore } from "../stores/settings";
 import { useTabsStore, type TabEntry } from "../stores/tabs";
@@ -143,5 +144,31 @@ describe("Mobile bridge — what a session was last asked", () => {
     useProjectsStore.setState({ projects: [{ ...paper, eldrun_mobile_access: false }], activeId: paper.id, loaded: true });
     const answer = await ask({ type: "catalog", request_id: "r5", project_id: paper.id });
     expect(answer.prompts).toEqual([]);
+  });
+
+  it("keeps a phone-sent Codex prompt's time until its rollout is readable", async () => {
+    useTabsStore.setState((state) => ({
+      tabsByScope: {
+        [paper.id]: state.tabsByScope[paper.id].map((tab) => tab.key === "agent-1"
+          ? { ...tab, label: "Codex", cmd: "codex", sessionId: "codex-session" }
+          : tab),
+      },
+    }));
+    useAgentModelsStore.setState({ byTab: {}, promptByTab: {}, recentByTab: {} });
+    useAgentPromptsStore.setState({ historyByProject: {
+      [paper.id]: [{
+        id: "phone-send",
+        message: "keep the timestamp",
+        created_at: "2026-09-21T10:00:00Z",
+        sent_at: "2026-09-21T10:00:00Z",
+        tab_label: "Codex",
+        tab_id: "codex-session",
+        result: "delivered",
+      }],
+    } });
+
+    const answer = await ask({ type: "catalog", request_id: "codex-time", project_id: paper.id }) as unknown as { prompts: PromptRow[] };
+    const codex = answer.prompts.find((row) => row.tmux_session === BUSY_TMUX);
+    expect(codex?.prompts).toContainEqual({ text: "keep the timestamp", at: "2026-09-21T10:00:00Z" });
   });
 });

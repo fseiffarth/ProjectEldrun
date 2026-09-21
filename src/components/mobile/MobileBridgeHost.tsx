@@ -442,10 +442,6 @@ function allAgentStatuses(): AgentTabStatus[] {
 const MOBILE_PROMPT_TAIL = 5;
 const MOBILE_PROMPT_CHARS = 240;
 
-/** Agents whose own transcript the backend reads prompts from
- * (`agent_session::read_agent_transcript_from`). */
-const TRANSCRIPT_AGENTS = new Set(["claude", "codex"]);
-
 /** The prompt history rows that went to `tab`, newest last, as card lines.
  * Matched by the tab's launch id only: a label ("OpenCode") is shared by every
  * tab of that agent the project ever had. The history is loaded on first use;
@@ -470,6 +466,36 @@ function historyPromptsOf(projectId: string, tab: TabEntry): AgentTabPrompt[] {
 const historyAsked = new Set<string>();
 
 /**
+ * The prompt history records a phone send before Codex has written the
+ * corresponding rollout item. Keep that timestamp on the card until the
+ * rollout catches up, then prefer the transcript's own instant. A close pair
+ * with the same text is one prompt; an intentional later repeat remains one
+ * row of its own.
+ */
+function mergePromptRows(recent: readonly { text: string; at: string }[], sent: readonly AgentTabPrompt[]): AgentTabPrompt[] {
+  const rows = [
+    ...recent.map((prompt) => ({ text: prompt.text.slice(0, MOBILE_PROMPT_CHARS), at: prompt.at, source: "transcript" as const })),
+    ...sent.map((prompt) => ({ ...prompt, source: "sent" as const })),
+  ].sort((left, right) => (left.at ?? "").localeCompare(right.at ?? ""));
+  const merged: AgentTabPrompt[] = [];
+  for (const row of rows) {
+    const previous = merged[merged.length - 1];
+    const sameText = previous?.text === row.text;
+    const previousAt = previous?.at ? Date.parse(previous.at) : NaN;
+    const rowAt = row.at ? Date.parse(row.at) : NaN;
+    const sameSend = sameText && Number.isFinite(previousAt) && Number.isFinite(rowAt)
+      && Math.abs(previousAt - rowAt) <= 2 * 60_000;
+    if (sameSend) {
+      // A rollout timestamp is the CLI's source of truth once it is present.
+      if (row.source === "transcript") merged[merged.length - 1] = { text: row.text, at: row.at };
+      continue;
+    }
+    merged.push({ text: row.text, at: row.at });
+  }
+  return merged.slice(-MOBILE_PROMPT_TAIL);
+}
+
+/**
  * What each agent tab of a scope was last asked — the tail the model tag is
  * read with, published so the phone's lists can say it without opening the
  * session.
@@ -491,17 +517,15 @@ function projectAgentPrompts(projectId: string): AgentTabPrompts[] {
     // An agent whose transcript is not read (OpenCode, Gemini, …) is known to
     // have been asked what Eldrun itself sent it: the composers here and on the
     // phone and the schedules all record into the prompt history.
-    const sent = TRANSCRIPT_AGENTS.has(tab.cmd) ? [] : historyPromptsOf(projectId, tab);
+    const sent = historyPromptsOf(projectId, tab);
     // Last, the prompt off the pane's own screen (`lib/agents/prompt/echo`); it
     // carries no time, and a row without one is honest about that rather than
     // inventing the read's. Not for OpenCode: its full-screen TUI has no prompt
     // echo, and the reader took its panels for prompts.
     const fallback = tab.cmd === "opencode" ? undefined : models.promptByTab[ptyId];
-    const prompts: AgentTabPrompt[] = recent.length
-      ? recent.slice(-MOBILE_PROMPT_TAIL).map((prompt) => ({
-        text: prompt.text.slice(0, MOBILE_PROMPT_CHARS),
-        at: prompt.at,
-      }))
+    const promptTail = mergePromptRows(recent, sent);
+    const prompts: AgentTabPrompt[] = promptTail.length
+      ? promptTail
       : sent.length
         ? sent
         : fallback
