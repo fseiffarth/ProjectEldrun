@@ -16,7 +16,7 @@
  *
  * The Rust half of the same rule is `services::web_safety::{FORMAT_CHARS,
  * strip_format_controls}`. The two lists are kept identical on purpose, and
- * `src/__tests__/TextSafety.test.ts` reads the Rust one out of that file and
+ * `src/__tests__/security/TextSafety.test.ts` reads the Rust one out of that file and
  * fails if they drift.
  */
 

@@ -577,7 +577,7 @@ intent. What is left is listed here.
      - Audit at the time (2026-08-31): no auto-named `Screenshot-*.png` was ever
        committed in any Eldrun project; the only screenshots in this public
        repo's history are the deliberate README assets.
-    - [x] 🤖 Automated test — `src/__tests__/ScreenshotDelay.test.ts` (countdown,
+    - [x] 🤖 Automated test — `src/__tests__/system/ScreenshotDelay.test.ts` (countdown,
       throttled-timer firing, restart, cancel), `commands::screenshot` staging
       confinement + TTL sweep, `scaffold_project_gitignores_screenshots`.
     - [ ] 🖐️ Manual test — needs a backend restart. Press Screenshot: the

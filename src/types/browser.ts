@@ -154,7 +154,7 @@ export interface DownloadOutcome {
  * {@link import("../lib/browser").reasonPhrase}. Rendering `reason` directly is
  * how `redirect-to-link-local` ends up on a user's screen; the canonical token
  * list is `services::web_safety::REASON_TOKENS` and
- * `src/__tests__/BrowserTripwire.test.ts` fails if the two sides drift.
+ * `src/__tests__/browser/BrowserTripwire.test.ts` fails if the two sides drift.
  *
  * `window_label` names the live-page window a refusal happened in. Every emitter
  * of this event is a live window, so without it the frontend could only guess

@@ -602,7 +602,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [x] 🤖 Automated test — `services::app_update` (13: version compare,
         pre-release ordering, the URL allowlist incl. a look-alike host, asset
         pick per platform, untrusted asset names, release parsing) +
-        `src/__tests__/UpdatesPanel.test.tsx` (5: no URL/path crosses the IPC
+        `src/__tests__/system/UpdatesPanel.test.tsx` (5: no URL/path crosses the IPC
         boundary, nothing downloads on open, `manual` offers no install)
       - [ ] 🖐️ Manual test — with an AppImage install and a newer release
         published: open Settings → Updates, check, download, install, restart,
@@ -629,7 +629,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   swipe (≥ 56 px, ≥ 2× the vertical travel, ≤ 700 ms), and ignores one starting
   within 16 px of a screen edge (Android back), on an input, or inside something
   that can still scroll sideways. Swipe-only, never persisted. Tested in
-  `src/__tests__/MobileTerminalFocusStatusLine.test.tsx`.
+  `src/__tests__/mobile/MobileTerminalFocusStatusLine.test.tsx`.
       - [ ] **Manual QA:** open a Claude agent tab → Focus → swipe right across
         the output: a strip opens under it showing the status row exactly as
         the desktop draws it (custom statusline included); swipe left, and
@@ -709,7 +709,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   `Terminal.tsx` renders it per history chunk, open chunk and live tail, still
   memoized on the chunk reference. Copy still copies the transcript as printed,
   marker included; a shell tab is untouched. Tested in
-  `src/__tests__/MobileChatTurns.test.ts` (7 cases) and
+  `src/__tests__/mobile/MobileChatTurns.test.ts` (7 cases) and
   `MobileTerminalReadableView.test.tsx` (2 cases); `/terminal-preview.html`
   shows two exchanges.
   - [ ] Manual phone QA (2026-09-15): Codex labelled dividers such as
@@ -820,7 +820,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   `dateColumn`'s three refusals) instead of offering a move that errors; and a
   refusal that does arrive is read as prose — *"Overdue, Today and the backlog
   follow the card's own deadline"* — rather than as its code. Tested in
-  `src/__tests__/MobileTodoDateColumns.test.tsx`.
+  `src/__tests__/mobile/MobileTodoDateColumns.test.tsx`.
   - [ ] 🖐️ Manual phone QA — with the desktop open: tick a card on the phone's
     board → it goes to Done there and on the desktop, and the desktop's card
     shows a completion date; untick it → it comes back to the backlog. Open a
@@ -901,7 +901,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   prompt, only positive matches, generic "Model"/"Mode" labels otherwise.
   Tapping the model chip sends `/model` and the mode chip sends Shift+Tab, so
   the chip labels follow the TUI's own redraw — both taps now open a list sheet
-  instead (see 31j). Tested in `src/__tests__/MobileStatusLine.test.ts`.
+  instead (see 31j). Tested in `src/__tests__/mobile/MobileStatusLine.test.ts`.
   - [ ] 🖐️ Manual test — on the phone, open a Claude tab: chips show the
     model/mode from the statusline, `/model` picker opens from the model chip,
     mode chip cycles plan/accept-edits, ＋ inserts `@` into the draft
@@ -932,7 +932,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   the bridge gates each project through the same `mobileProject` check as every
   other handler, so the Mobile switch and the remote/sandbox/VM tiers hold.
   Behind the mode, neither the project list nor the alerts feed is polled.
-  Locked by `src/__tests__/MobileAgentsMode.test.tsx` and the `host.rs` activity
+  Locked by `src/__tests__/mobile/MobileAgentsMode.test.tsx` and the `host.rs` activity
   route tests.
   - [ ] 🖐️ Manual phone QA — with two projects each holding a busy agent tab:
     open Projects → **Agents** and see both, waiting-first, each naming its
@@ -960,7 +960,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   limit at creation), the sidecar replay captures the same depth
   (`pty_bridge::MOBILE_SCROLLBACK_LINES`), and the phone xterm's scrollback
   matches (`PHONE_SCROLLBACK`). Copy copies exactly what is revealed. Tested in
-  `src/__tests__/MobileReadableScreen.test.ts` (lazy-history describe block).
+  `src/__tests__/mobile/MobileReadableScreen.test.ts` (lazy-history describe block).
   - [ ] 🖐️ Manual test — on the phone, open an agent tab with a long session:
     "Show earlier output" appears, reveals older lines without the view
     jumping, repeated taps walk back to the session start, reconnect (airplane
@@ -988,8 +988,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     session where it was and says so. A session whose mode no family claims
     keeps the old single-cycle tap. `statusLine` learned Codex's bare `auto`
     (anchored, so Claude's `auto-compact` and `~/…/auto/…` stay unmatched).
-  Tested in `src/__tests__/MobileSelectPrompt.test.ts` and
-  `src/__tests__/MobileOptionSheet.test.tsx`.
+  Tested in `src/__tests__/mobile/MobileSelectPrompt.test.ts` and
+  `src/__tests__/mobile/MobileOptionSheet.test.tsx`.
   - [ ] 🖐️ Manual test — on the phone, open a Claude tab: the model chip opens
     a list of the real models with the current one checked, tapping one
     switches it (chip label follows), ✕ closes both sheet and picker; the mode
@@ -1213,7 +1213,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     rejected device, so a rejected **origin** — the host refusing the address
     the app was opened from, which re-pairing cannot fix — sent the reader to a
     pairing screen that could only fail again.
-  - Tested in `src/__tests__/MobileConnectionError.test.ts` (10 cases).
+  - Tested in `src/__tests__/mobile/MobileConnectionError.test.ts` (10 cases).
   - [ ] 🖐️ Manual test — on the phone: turn Tailscale off → "Can't reach your
     desktop" naming Tailscale *and* a sleeping desktop, not "Host unavailable";
     turn airplane mode on → "This phone is offline" instead; with Tailscale up
@@ -1273,7 +1273,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   between the bar and the editor backdrop); + Column stays as a small button
   at the top. **The search moved directly under the header** and the "synced
   through the desktop" notice to the foot of the screen. Tested in
-  `src/__tests__/MobileTodoBoard.test.ts`.
+  `src/__tests__/mobile/MobileTodoBoard.test.ts`.
   - [ ] 🖐️ Manual test — on the phone: tick "Hide done", leave the board and
     come back (still ticked); the board opens with archived cards hidden and
     the archive column still showing its count; unticking "Hide archived"
@@ -1397,8 +1397,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     hop, each above the one below it — CLI 15s < desktop 20s < sidecar 25s <
     phone 30s. The three copies of the mail-message timeout `matches!` became
     `DesktopRequest::response_timeout`/`desktop_timeout` on the way.
-  - Tested in `src/__tests__/MobileUsageReport.test.ts` (7) and
-    `src/__tests__/MobileStatusSheet.test.tsx` (7), plus the service's own Rust
+  - Tested in `src/__tests__/mobile/MobileUsageReport.test.ts` (7) and
+    `src/__tests__/mobile/MobileStatusSheet.test.tsx` (7), plus the service's own Rust
     tests.
   - [ ] 🖐️ Manual phone QA — on a Claude tab: the Status chip shows the tab's
     lamp and opens with the session state, the model/mode/context the composer
@@ -1428,7 +1428,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   session is waiting on would be the one unrecoverable mistake here, so a
   numbered row means no frame and nothing is cut. Blank rows and the box's
   labelled top rule directly above go with it, or the output would trail off
-  into a rule and a gap. Tested in `src/__tests__/MobileSelectPrompt.test.ts`
+  into a rule and a gap. Tested in `src/__tests__/mobile/MobileSelectPrompt.test.ts`
   (3 cases).
   - [ ] 🖐️ Manual phone QA — open a Claude agent tab in Focus: the answer ends
     at the last real output line, with no rule, no `❯`, no statusline and no
@@ -2058,7 +2058,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     option carried a note of box-drawing characters; a second column that opens
     with a frame edge is now dropped as the panel it is. Ground truth: a real
     215-column capture, replayed through `readableScreen`, now a fixture in
-    `src/__tests__/MobileSelectPrompt.test.ts`.
+    `src/__tests__/mobile/MobileSelectPrompt.test.ts`.
   - Needs a rebuild of the embedded PWA and a desktop restart to serve it.
   - [ ] 🖐️ Manual phone QA — open a project: on an agent card the pill and `›`
     are at the bottom right, and tapping the card (including that corner) opens
@@ -2096,8 +2096,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     own rows as the status under it.
   - Ground truth: `agy` 1.2.7 driven through a pty at 80×24 and replayed
     through the phone's emulator; the surviving screens are the fixtures in
-    `src/__tests__/MobileAntigravity.test.ts` and
-    `src/__tests__/MobileAntigravityModel.test.tsx`
+    `src/__tests__/mobile/MobileAntigravity.test.ts` and
+    `src/__tests__/mobile/MobileAntigravityModel.test.tsx`
     (`docs/mobile_focus_cli_survey.md` holds the shapes).
   - Needs a rebuild of the embedded PWA (`npm run build` did it) and a desktop
     restart to serve it.

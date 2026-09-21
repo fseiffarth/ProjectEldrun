@@ -886,7 +886,7 @@ container) — as opposed to the git **push** axis (#21/#22).*
         forward fast-forward warns about nothing; only a move *back* deletes), the
         `FfRetry` variants pinned against real git (`Cleared` names what it removed even
         when the ff puts identical bytes straight back), and
-        `src/__tests__/LocalLossDialog.test.tsx` (raises unacked losses, says outright
+        `src/__tests__/git/LocalLossDialog.test.tsx` (raises unacked losses, says outright
         when nothing can be recovered, acks through the backend, never shows one
         project's losses over another).
       - [ ] 🖐️ Manual test — live SSH host: commit a file deletion on the host and let
@@ -967,7 +967,7 @@ container) — as opposed to the git **push** axis (#21/#22).*
     last holder leaves — previously `logoutRemote` and the Connect modal's Disconnect
     both called `openvpn_disconnect` unconditionally, killing a tunnel a *second*
     project (and the rest of the OS) was still riding.
-    - [x] 🤖 Automated test — `src/__tests__/VpnMachineScope.test.tsx` (refcounted
+    - [x] 🤖 Automated test — `src/__tests__/remote/VpnMachineScope.test.tsx` (refcounted
       shared tunnel; indicator shows/holders/disconnects; header-initiated connect
       with no holder; backend reconcile).
     - [ ] 🖐️ Manual test — connect a VPN-gated project, confirm `ip route` shows the
@@ -1462,7 +1462,7 @@ untested tag until a VM has actually booted on this machine).
   scoping (`services::vm`); allowlist matching/composition, CONNECT parsing,
   real-socket deny/temp-allow/405 (`services::vm_proxy`); spawn-refusal matrix
   (`commands::terminal`); download path traversal + name guards
-  (`commands::vm`); locality pinning (`src/__tests__/VmTabLocation.test.ts`).
+  (`commands::vm`); locality pinning (`src/__tests__/remote/VmTabLocation.test.ts`).
 - [ ] 🖐️ **Manual test (Phase 1 QA)** — fetch the base image, create a VM
   project, watch it boot, ssh lamp green, open a shell tab (lands in
   `/home/eldrun/project`), `git init` + commit inside, deactivate (VM powers

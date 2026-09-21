@@ -49,10 +49,10 @@ profile (URL + token).*
     `publishCreated`), and the pill's git menu asks `project_has_origin`
     (`git_publish.rs`) so a project *labeled* as published but lacking an origin
     is offered Publish… instead of the manage-a-repo actions that would all fail.
-    - [x] 🤖 Automated test — `src/__tests__/ProjectDialogPublish.test.tsx`
+    - [x] 🤖 Automated test — `src/__tests__/projects/ProjectDialogPublish.test.tsx`
       (publishes on create, keeps the dialog open + retries publish-only on
       failure, leaves a `local` git type alone) and
-      `src/__tests__/ProjectPillPublishMenu.test.tsx` (menu follows the real
+      `src/__tests__/projects/ProjectPillPublishMenu.test.tsx` (menu follows the real
       origin, not the label).
     - Still open, deliberately:
       - A **work-remote** or **VM** project keeps the recorded push target and
@@ -94,7 +94,7 @@ profile (URL + token).*
       the field keeps its private default, with the hint saying so.
     - An answer the user gives in the dropdown themselves is never overwritten,
       and the hint names where a filled-in answer came from.
-    - [x] 🤖 Automated test — `src/__tests__/ProjectDialogCloneHosting.test.tsx`
+    - [x] 🤖 Automated test — `src/__tests__/projects/ProjectDialogCloneHosting.test.tsx`
       (public → `remote-public` + `gitProvider: "github"` on the import call,
       private, unknown → private + its hint, an explicit pick suppresses the
       probe entirely, no probe for a folder import) and

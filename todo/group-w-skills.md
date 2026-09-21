@@ -110,7 +110,7 @@ backend new `src-tauri/src/services/skills.rs` +
       agents…" — a skill is installed per machine exactly like an agent CLI. The
       tab stays: it is the one surface that knows which project is meant, unlike
       mail's retired one.
-    - [x] 🤖 Automated test — `src/__tests__/SkillsTarget.test.ts` (the personal
+    - [x] 🤖 Automated test — `src/__tests__/agents/SkillsTarget.test.ts` (the personal
       target names no path and is frozen; every call passes the target verbatim
       with no leftover `projectDir`), plus the two Rust resolver tests above and
       `sandbox.rs`'s `unmounted_entry_matching_is_exact_with_a_star_prefix`.

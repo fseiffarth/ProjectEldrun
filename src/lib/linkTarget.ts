@@ -7,7 +7,7 @@
  *  - {@link routeUri} is **pure and total**: a URI plus a context in, a
  *    {@link LinkTarget} out. It touches no store, performs no IPC and never
  *    throws, which is what makes the whole routing table testable in
- *    `src/__tests__/LinkTarget.test.ts` rather than only observable by clicking.
+ *    `src/__tests__/browser/LinkTarget.test.ts` rather than only observable by clicking.
  *  - {@link openRoutedUri} performs the target: a browser tab, `launch_app`,
  *    `open_external_url`, or the mail composer.
  *

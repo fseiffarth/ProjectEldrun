@@ -140,7 +140,7 @@ pub(crate) fn quarantine_xattr_value(epoch_secs: u64, agent: &str) -> String {
 /// title (`example.com — Secure  \u{2069}`).
 ///
 /// This list is mirrored in `src/lib/textSafety.ts`, which spells it as
-/// character *ranges*. That difference is why `src/__tests__/TextSafety.test.ts`
+/// character *ranges*. That difference is why `src/__tests__/security/TextSafety.test.ts`
 /// reads this array out of this file and compares both directions: the
 /// invisible-math block `U+2061`–`U+2064` was in the range on the TS side and
 /// absent here, so the same string came back cleaned or not depending on which
@@ -583,7 +583,7 @@ impl ConfirmReason {
 ///
 /// So this array is the contract. `reason_tokens_are_exhaustive` below fails if
 /// a `BlockReason`/`ConfirmReason` variant is added without listing it here, and
-/// `src/__tests__/BrowserTripwire.test.ts` reads this very array out of this
+/// `src/__tests__/browser/BrowserTripwire.test.ts` reads this very array out of this
 /// file and fails if any entry has no i18n phrase. Neither side can move alone.
 ///
 /// `scheme:` is listed as a **prefix**: the gate appends the offending scheme

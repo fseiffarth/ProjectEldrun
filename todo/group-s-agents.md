@@ -1645,7 +1645,7 @@ unchanged; the new agents are additive.
       - [x] 🤖 Automated test — `commands::agents::tests`
         (`expanded_agent_registry_keeps_official_commands_and_binaries`,
         `every_warmup_recipe_names_a_registry_agent_and_puts_the_message_last`),
-        `src/__tests__/CustomAgents.test.ts`
+        `src/__tests__/agents/CustomAgents.test.ts`
       - [ ] 🖐️ Manual test — Settings → Agents lists the six new cards and no
         longer lists Mentat/GPT Engineer/OpenHands; an installed Kiro finally
         reports as installed; installing Grok yields `grok --version` 1.0.x

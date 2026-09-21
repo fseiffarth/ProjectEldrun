@@ -21,7 +21,7 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
     - Shipped as a pure/total router plus a separate performer:
       `src/lib/linkTarget.ts:124 routeUri` (URI + context → `LinkTarget`) and
       `:341 openRoutedUri` (performs it: browser tab, `launch_app`, or fallback).
-    - [x] 🤖 Automated test — `src/__tests__/LinkTarget.test.ts:22-64` covers the
+    - [x] 🤖 Automated test — `src/__tests__/browser/LinkTarget.test.ts:22-64` covers the
       scheme→role mapping and the fallback path.
     - [ ] 🖐️ Manual — click an `http`/`mailto`/`webcal` link in a terminal and in
       the file tree; confirm each raises the configured global app rather than
@@ -70,12 +70,12 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
       - Order is data: the first matching rule wins, so the list is reorderable
         and saved wholesale. "Test" is a **dry run of the apply itself**, not a
         second matcher in TypeScript.
-    - [x] 🤖 Automated test — `src/__tests__/MailPriority.test.ts` (the
+    - [x] 🤖 Automated test — `src/__tests__/mail/MailPriority.test.ts` (the
       folder/priority fork), `services::mail_store::tests` (the column, the
       cross-account query, that a re-sync never wipes a mark, and the filter
       scan's folder-kind refusals), `services::mail_filters::tests` (14 cases:
       case-folding, whole-word boundaries, `match_all` across fields, first-rule-
-      wins, never overwriting a mark), `src/__tests__/MailFilters.test.ts`
+      wins, never overwriting a mark), `src/__tests__/mail/MailFilters.test.ts`
       (term parsing, field toggles, ordering, the i18n coverage check)
     - [ ] 🖐️ Manual test — write a rule, check mail, confirm the arrival lands in
       the named list and the strip says how many were filed; then "Apply to mail
@@ -265,7 +265,7 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
       `services::mail_pgp` (sign/verify/encrypt round trips, sign-inside-encrypt),
       `tests/mail_hostile_crypto.rs` (a decrypted body still meets the sanitizer;
       a real signature over a different body is refused),
-      `src/__tests__/MailCryptoDisplay.test.ts` (only `verified` is positive)
+      `src/__tests__/mail/MailCryptoDisplay.test.ts` (only `verified` is positive)
     - [ ] 🖐️ Manual test — **the whole feature.** Nothing here has run against a
       real server or a real correspondent: interop with Thunderbird and Outlook,
       unlock latency on the slowest machine, keychain-locked behaviour, and the

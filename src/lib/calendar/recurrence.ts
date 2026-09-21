@@ -15,7 +15,7 @@
  * override that moves the occurrence to another day still matches on the next
  * expansion.
  *
- * Pure — no React, no Tauri. Unit-tested in `src/__tests__/Recurrence.test.ts`.
+ * Pure — no React, no Tauri. Unit-tested in `src/__tests__/calendar/Recurrence.test.ts`.
  */
 
 import type { CalendarEvent, EventStatus, Occurrence, Rrule } from "../../types";

@@ -22,7 +22,7 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
 > modules (`model`, `sidecar`, `snap`, `export`, `present`, `template`,
 > `transform`). Every data-loss item in V.1 lived in `DeckView`'s effects or in
 > `presenter.rs` — surfaces with **no test coverage at all**. That gap is closed
-> for the write policy: `src/__tests__/DeckAutosave.test.tsx` mounts the real
+> for the write policy: `src/__tests__/deck/DeckAutosave.test.tsx` mounts the real
 > `DeckView` over a fake backend and asserts the three properties #93/#94 are
 > about (open-does-not-write, unmount-flushes, lossy-is-held).
 >

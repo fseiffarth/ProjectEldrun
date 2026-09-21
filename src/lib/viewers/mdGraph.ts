@@ -5,7 +5,7 @@
  * laying the result out on concentric depth rings.
  *
  * Kept free of React and Tauri so the whole pipeline is unit-testable
- * (`src/__tests__/MdGraph.test.ts`); the component
+ * (`src/__tests__/viewers/MdGraph.test.ts`); the component
  * (`components/embed/MdGraphView.tsx`) supplies the scoped file reads and the
  * SVG. File reads go through the caller-provided `readText`, so the graph
  * respects the same project-scope confinement every viewer read does — the

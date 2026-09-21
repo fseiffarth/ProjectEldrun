@@ -965,7 +965,7 @@ mod tests {
     use super::Settings;
 
     /// The experimental rule, backend side (the frontend twin lives in
-    /// `src/__tests__/Experimental.test.ts`): unset defers to debug mode, and an
+    /// `src/__tests__/shell/Experimental.test.ts`): unset defers to debug mode, and an
     /// explicit value wins in BOTH directions.
     #[test]
     fn experimental_flags_default_to_debug_mode() {

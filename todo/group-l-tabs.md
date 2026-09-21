@@ -81,7 +81,7 @@ correctness/UX work atop the same layout model #42 detaches.*
     (`TabBar.tsx:200,210,640`); plain right-click still opens the context menu.
     Amend the wording or change the binding — as written the item doesn't match
     the code.
-    - [x] 🤖 Automated test — `src/__tests__/TabInlineRename.test.tsx`
+    - [x] 🤖 Automated test — `src/__tests__/tabs/TabInlineRename.test.tsx`
     - [ ] 🖐️ Manual test
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
@@ -176,7 +176,7 @@ correctness/UX work atop the same layout model #42 detaches.*
     *Files: `src/lib/shortcuts/shortcuts.ts`, `src/hooks/useKeyboard.ts`,
     `src/stores/keyboardSteering.ts`, `src/components/layout/SteeringLegend.tsx`
     / `ShortcutHelpOverlay.tsx`, `src/lib/lessons.ts`.*
-    - [x] 🤖 Automated test — `src/__tests__/Shortcuts.test.ts` (chord helpers,
+    - [x] 🤖 Automated test — `src/__tests__/shell/Shortcuts.test.ts` (chord helpers,
       grouping, conflicts, fixed chords); the i18n parity tests cover the
       lesson keys.
     - [ ] 🖐️ Manual test
@@ -201,7 +201,7 @@ correctness/UX work atop the same layout model #42 detaches.*
     *Files: `src/lib/installCommand.ts`, `src/lib/remote/remoteConnect.ts`,
     `src/stores/rootOverlay.ts` (`openTabInRootConsole`),
     `src/components/layout/AppShell.tsx`.*
-    - [x] 🤖 Automated test — `src/__tests__/InstallInRootConsole.test.tsx`
+    - [x] 🤖 Automated test — `src/__tests__/run/InstallInRootConsole.test.tsx`
       (tab in front + console open, project untouched, restore-before-add,
       no second login mid-restore).
     - [ ] 🖐️ Manual test
@@ -237,7 +237,7 @@ correctness/UX work atop the same layout model #42 detaches.*
     `src/components/layout/AgentCronHost.tsx`,
     `src/components/layout/SettingsSubPanels.tsx`, `src/styles/header-menus.css`,
     `src/types/index.ts`, `src/lib/i18n.ts` (+ the four dictionaries).*
-    - [x] 🤖 Automated test — `src/__tests__/AgentCron.test.ts` (parse/format,
+    - [x] 🤖 Automated test — `src/__tests__/agents/AgentCron.test.ts` (parse/format,
       per-agent override vs. the global list, the three conditions for being
       scheduled, the grace window and the never-fire-late rule, the fired-slot
       key across midnight, next-run, and the config editors).
@@ -267,7 +267,7 @@ correctness/UX work atop the same layout model #42 detaches.*
     `src/components/tabs/TabBar.tsx`,
     `src/components/layout/DetachedCenterPanel.tsx`,
     `src/styles/projects-tabs.css`, `src/lib/i18n.ts` (+ the four dictionaries).*
-    - [x] 🤖 Automated test — `src/__tests__/texPdfLink.test.ts` (both
+    - [x] 🤖 Automated test — `src/__tests__/tex/texPdfLink.test.ts` (both
       directions, the standalone `.tex` editor, one-half-open, stem and
       directory mismatches, non-viewer/other-viewer tabs, case-insensitive
       pairing, never returning the tab itself).
@@ -302,7 +302,7 @@ correctness/UX work atop the same layout model #42 detaches.*
     - [x] 🤖 Automated test — `services::root_mcp` (spawn wiring per CLI,
       bearer check, every tool incl. the 1 h default and bad input),
       `discovery::the_root_scope_is_never_in_the_catalog`,
-      `src/__tests__/RootOverlay.test.tsx`.
+      `src/__tests__/root/RootOverlay.test.tsx`.
     - [ ] 🖐️ Manual test (needs a restart: backend change)
       - Ctrl+Shift+R from a focused project terminal opens the console and
         pressing it again closes it; the project stays where it was.
@@ -373,7 +373,7 @@ correctness/UX work atop the same layout model #42 detaches.*
     *Files: `src/components/layout/RootOverlay.tsx`, `src/stores/rootOverlay.ts`,
     `src/stores/tabs.ts`, `src/styles/subwindows.css`, `src/lib/i18n.ts` (+ the
     four dictionaries), `docs/context/root_console.md`.*
-    - [x] 🤖 Automated test — `src/__tests__/RootOverlay.test.tsx` (the ◫ writes
+    - [x] 🤖 Automated test — `src/__tests__/root/RootOverlay.test.tsx` (the ◫ writes
       the ROOT group node and never the project's, the column's scope/cwd/viewer
       id, one column per split subwindow, fill/restore, and the pure frame
       helpers: clamping into a smaller window, move, corner resize, the pinned
@@ -520,12 +520,12 @@ correctness/UX work atop the same layout model #42 detaches.*
     `mobile-web/src/tabColors.ts`, `mobile-web/src/screens/ColorSheet.tsx`,
     `mobile-web/src/screens/{Project,Activity}.tsx`, `mobile-web/src/api.ts`,
     `mobile-web/src/style.css`.*
-    - [x] 🤖 Automated test — `src/__tests__/TabColor.test.tsx` (the palette
+    - [x] 🤖 Automated test — `src/__tests__/tabs/TabColor.test.tsx` (the palette
       resolves its ids and nothing else, incl. a hex and a CSS injection; the
       scoped and active-scope writes; the disk projection; restore dropping an
       unknown id; the popout's optimistic apply; and the real `TabBar` menu
       painting, keeping itself open, and clearing),
-      `src/__tests__/MobileTabColor.test.tsx` (the bridge across a
+      `src/__tests__/mobile/MobileTabColor.test.tsx` (the bridge across a
       non-showing scope, a shell tab, the layout write, clear-by-null and
       clear-by-absent, every refusal; and the phone screen's chips, request
       body, ring and card border), `services::mobile_control::host`

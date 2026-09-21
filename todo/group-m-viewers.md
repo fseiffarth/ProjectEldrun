@@ -838,7 +838,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       `\cite` completion dropdown, is now an adapter over the same parse, so the
       card view and the completion list cannot disagree about what is in a `.bib`.
       Ctrl+clicking `\bibliography{refs}` in a `.tex` now lands in the cards.
-    - Tested in `src/__tests__/BibViewer.test.ts` (21 cases: the tolerant parse,
+    - Tested in `src/__tests__/tex/BibViewer.test.ts` (21 cases: the tolerant parse,
       the delimiter/locked-value rules, and every op's splice-not-rewrite
       guarantee).
     - [ ] 🖐️ Manual test — open a real `.bib` (a Zotero/Mendeley export, ideally
@@ -895,7 +895,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       against the canvas rather than the event's own target; the boxes take the
       crosshair cursor while it is armed. Only pages of the file itself carry a
       link layer — a merged-in page's destinations point into *its* document.
-    - Tested in `src/__tests__/PdfLinks.test.ts` (the geometry, the destination
+    - Tested in `src/__tests__/pdf/PdfLinks.test.ts` (the geometry, the destination
       slot rules, and every annotation shape that must be dropped).
     - [ ] 🖐️ Manual test — open a `hyperref` PDF (any LaTeX paper with citations):
       confirm a `\cite` jumps to the bibliography entry and `←` comes back, that a
@@ -952,7 +952,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       them onto the rasters it prints, and a page dragged into another viewer or
       window is exported *burned in* — a mark that travelled as an editable
       overlay would arrive as a page whose text is still there under a box.
-    - Tested in `src/__tests__/PdfRedact.test.ts` — including end to end through
+    - Tested in `src/__tests__/pdf/PdfRedact.test.ts` — including end to end through
       pdf-lib: a real PDF with real text is marked, saved, and its decoded content
       streams are searched for the word that was supposed to be destroyed.
     - [ ] 🖐️ Manual test — open a PDF, arm ▮, drag over a line (confirm the box
@@ -1003,7 +1003,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       that a redacted sheet's images are not yet registered.
     - **The deletion travels with a page dragged out**, for the blackouts' reason:
       those bytes are what lands in the other viewer.
-    - Tested in `src/__tests__/PdfSave.test.ts`, asserting against the **saved
+    - Tested in `src/__tests__/pdf/PdfSave.test.ts`, asserting against the **saved
       bytes** rather than the object model — the failure being guarded against is
       precisely a field that survives in the file after the model says it is gone.
     - [ ] 🖐️ Manual test — open a PDF with a real author/producer (anything out of
@@ -1054,7 +1054,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       rail and a page dragged into another document all cover them for free; a
       **flattened** (blacked-out) sheet keeps its remarks though it keeps nothing
       else, since a comment about what was destroyed is the reader's own work.
-    - Tested in `src/__tests__/PdfNotes.test.ts`, asserting against the **saved
+    - Tested in `src/__tests__/pdf/PdfNotes.test.ts`, asserting against the **saved
       bytes**: that a remark is a real `/Text` annotation, that an untouched page's
       comments are unmoved, that a touched page's are replaced rather than doubled,
       that a link is never disturbed, and that two copies of one duplicated sheet
@@ -1138,7 +1138,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       would address one the page had never heard of. The read is hoisted to the
       viewer, keyed by source/page/rotation, requested by a page when it comes
       near and by the panel for the whole document when it opens.
-    - Tested in `src/__tests__/PdfNotes.test.ts`: the reading order and the ring,
+    - Tested in `src/__tests__/pdf/PdfNotes.test.ts`: the reading order and the ring,
       that the arrangement's set wins over the file's for a sheet it has taken
       over, that a remark is addressed by its entry so a reorder follows it, the
       drag clamp, and what `isPristineExceptNotes` refuses to let an autosave
@@ -1187,7 +1187,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     - The blackout tool's "black out all N matches" inherits all of it, since it
       marks from exactly these boxes: a redacted name that wrapped is now covered
       on both lines.
-    - Tested in `src/__tests__/TexSync.test.ts`.
+    - Tested in `src/__tests__/tex/TexSync.test.ts`.
     - [ ] 🖐️ Manual test — find a paper with a hyphenated line break, search for
       the whole word and confirm both halves highlight (hyphen included) and that
       Enter walks onto it; search a two-word phrase that wraps and confirm it is
@@ -1260,9 +1260,9 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       are already on the page, and a copy of them in the annotation is a second
       version of the sentence that stops being true the moment the document is
       edited. Asserted against the saved bytes.
-    - Tested in `src/__tests__/PdfNotes.test.ts` (model, annotation read, and the
-      saved bytes), `src/__tests__/PdfSelection.test.ts` (the rect merge) and
-      `src/__tests__/PdfNoteUi.test.tsx` (a highlight through the real UI).
+    - Tested in `src/__tests__/pdf/PdfNotes.test.ts` (model, annotation read, and the
+      saved bytes), `src/__tests__/pdf/PdfSelection.test.ts` (the rect merge) and
+      `src/__tests__/pdf/PdfNoteUi.test.tsx` (a highlight through the real UI).
     - [ ] 🖐️ Manual test — open a PDF and drag across a paragraph with no tool
       armed: the selection should follow the words, a bar should appear over the
       end of it, and the text should already be on the clipboard (paste it
@@ -1288,7 +1288,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     fragment verbatim, then its slugified form (a link written as the
     heading's visible text), then case-insensitively; in-page `#anchor`
     clicks go through the same matcher.
-    - [x] 🤖 Automated test (`src/__tests__/MdAnchor.test.ts`)
+    - [x] 🤖 Automated test (`src/__tests__/viewers/MdAnchor.test.ts`)
     - [ ] 🖐️ Manual test — in one md file write `[x](other.md#some-heading)`
       and click it in Preview: the other file should open scrolled to that
       heading; click again from the source file (repeat jump must re-fire).
@@ -1306,7 +1306,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     through the same `openLinkedFile` routing a preview link uses. Reads ride
     the confined `read_file_text` with the pane's project scope; the crawl is
     one bounded pass per look, never a background poll.
-    - [x] 🤖 Automated test (`src/__tests__/MdGraph.test.ts`)
+    - [x] 🤖 Automated test (`src/__tests__/viewers/MdGraph.test.ts`)
     - [ ] 🖐️ Manual test — enable the flag, open `PROJECT.md` in a scaffolded
       project, switch to Graph: the scaffold files should ring the center;
       click `README.md` to open it; delete a linked file and rebuild (↻) to
@@ -1364,7 +1364,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     condition on disk, so a stale accept is a no-op, never an overwrite.
     Frontend: `ProjectMigrationDialog.tsx` + pure `migration.ts` helpers.
     - [x] 🤖 Automated test (`commands/projects.rs` migration tests,
-      `src/__tests__/ProjectMigration.test.ts`)
+      `src/__tests__/projects/ProjectMigration.test.ts`)
     - [ ] 🖐️ Manual test — needs a backend restart (two new commands). On an
       old project (or one with a deleted scaffold file / legacy `# Claude
       Context` stub): open the file view's ⚙ → Migrate project…, check each
@@ -1405,7 +1405,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       opened in the workspace centre would be answering for both.
     - i18n: `texWorkspace.hideStructure` / `showStructure` / `back` /
       `backEmpty`, 4 strings × 5 languages.
-    - [x] 🤖 Automated test (`src/__tests__/TexWorkspace.test.tsx` (h) fold →
+    - [x] 🤖 Automated test (`src/__tests__/tex/TexWorkspace.test.tsx` (h) fold →
       rail → back, persisted; (i) sidebar click then ← returns the centre and
       the button goes inert again)
     - [ ] 🖐️ Manual test — open a multi-file `.tex` as a workspace: fold the
@@ -1449,7 +1449,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       the chord, so the textarea's own paragraph selection never runs.
     - i18n: `texWorkspace.up` / `upEmpty` / `backChord`,
       `shortcutHelp.group.tex`, 4 strings × 5 languages.
-    - [x] 🤖 Automated test (`src/__tests__/TexStructure.test.ts`: line/column
+    - [x] 🤖 Automated test (`src/__tests__/tex/TexStructure.test.ts`: line/column
       per reference incl. a nested child and a graphic, `texStructureParent`
       for child/graphic/root/unlisted; `TexWorkspace.test.tsx` (m) ↑ inert on
       the main, climbs from the child with the jump to line 3, ← returns; (n)
@@ -1501,7 +1501,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       while it is up, so the projector does not blank in a long Q&A.
     - i18n: `pdfViewer.fullscreenPresent{Title,DirtyTitle,Label,Btn}` and
       `pdfPresent.{waiting,opening,loadError,keyHint}`, 8 strings × 5 languages.
-    - [x] 🤖 Automated test (`src/__tests__/PdfPresent.test.ts`: one label per
+    - [x] 🤖 Automated test (`src/__tests__/pdf/PdfPresent.test.ts`: one label per
       path, never confused with a deck label, valid as a window label and through
       `?present=`, page clamped before the document is open)
     - [ ] 🖐️ Manual test — open a PDF, scroll to a middle sheet and press
@@ -1542,7 +1542,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     - Commits through the ordinary `edit()` path, so undo/redo, the dirty mark
       and the syntax overlay all stay consistent, and the selection is restored
       over the same text afterwards.
-    - [x] 🤖 Automated test (`src/__tests__/EditorLineComment.test.ts`: markers
+    - [x] 🤖 Automated test (`src/__tests__/editor/EditorLineComment.test.ts`: markers
       per language, round-trip, partial→full, indent alignment, blank-line skip,
       selection ending at a line start; `Highlight.test.ts`: the comment block,
       an unclosed one, and other environments unaffected)
@@ -1594,7 +1594,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       reason (the one create that routes over SFTP). The folder step is the
       exception, project-addressed `create_dir`, so a remote project fails it
       with the host's own message rather than silently.
-    - [x] 🤖 Automated test (`src/__tests__/TexLinks.test.ts`: what each command
+    - [x] 🤖 Automated test (`src/__tests__/tex/TexLinks.test.ts`: what each command
       would create, the declines, the folder pair, `texPathExists` and the
       command it stats with, folder-then-file creation, an existing folder left
       alone, and the re-check writing nothing when the file was there)
@@ -1684,13 +1684,13 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       document is prose), and a bare `\` opens nothing — it is the first
       keystroke of `\\`, `\[` and `\%`, and a list of every command over it
       would fight the typist.
-    - [x] 🤖 Automated tests (`src/__tests__/TexCompletions.test.ts` — the two
+    - [x] 🤖 Automated tests (`src/__tests__/tex/TexCompletions.test.ts` — the two
       new contexts and their refusals, the `\newcommand`-family and
       environment parsers, and every branch of both inserts including the
-      nested-`\end` case; `src/__tests__/TexLogWarnings.test.ts` — a realistic
+      nested-`\end` case; `src/__tests__/tex/TexLogWarnings.test.ts` — a realistic
       two-file log: kinds, lines from both spellings, file attribution across a
       close, a wrapped warning, a package marker, deduplication, and errors not
-      being read as warnings; `src/__tests__/TexWordCount.test.ts` — body vs.
+      being read as warnings; `src/__tests__/tex/TexWordCount.test.ts` — body vs.
       preamble, headings/captions counted apart, math as objects, verbatim and
       machinery arguments skipped, and the unterminated-group cases;
       `commands::tex::tests::compile_env_disables_log_line_wrapping`)
@@ -1745,7 +1745,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       tab rewritten as spaces, because one substituted character would slide
       every guide after it off its column; painted as a gradient rather than a
       `border-left`, which would add a pixel of width and do the same.
-    - [x] 🤖 Automated test (`src/__tests__/EditorAutoIndent.test.ts`: the carry,
+    - [x] 🤖 Automated test (`src/__tests__/editor/EditorAutoIndent.test.ts`: the carry,
       block openers and exits, the file's own unit, strings and comments not
       read as code, continuation alignment across lines, the between-a-pair
       case, `\begin` with and without a waiting `\end`, nesting, a `\begin`
@@ -1822,7 +1822,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       (persisted in the tab's `viewerState`, seeded from
       `viewer_prefs.tex.hover_preview`). Absent from a machine with no TeX
       engine, like the rest of the compile UI.
-    - [x] 🤖 Automated test (`src/__tests__/TexHoverPreview.test.ts`: what is and
+    - [x] 🤖 Automated test (`src/__tests__/tex/TexHoverPreview.test.ts`: what is and
       is not a previewable fragment, delimiters included in the range, nesting,
       commented-out math, `\$` and `\\[2mm]` left alone, offset lookup, preamble
       slicing and the null for a child file, cache-key identity, error-line
@@ -1966,7 +1966,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       spliced line on its own.
     - Asked in the app's own prompt chrome (`useDialogs`), so a failed create or
       splice keeps the typed name with the reason beside it (#244's rule).
-    - [x] 🤖 Automated test (`src/__tests__/TexLinks.test.ts`: the splice above
+    - [x] 🤖 Automated test (`src/__tests__/tex/TexLinks.test.ts`: the splice above
       `\end{document}` / past a commented one / onto a fragment / into an empty
       parent; create+insert, adopt-without-second-`\input`, spelled-differently
       matching, exists-but-unreferenced, the declines touching nothing;
@@ -2041,11 +2041,11 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       differently from "\end{enumerate} has no matching \begin{enumerate}", and
       one generic "opening delimiter is missing its closing partner" was wrong
       text for half of them.
-    - [x] 🤖 Automated tests (`src/__tests__/TexDelimiterMatch.test.ts` —
+    - [x] 🤖 Automated tests (`src/__tests__/tex/TexDelimiterMatch.test.ts` —
       mismatched names flagging both halves, a stray `\end`, the inner-`\begin`
       blame, crossed environments, repeated/nested same-name pairs, a
       commented-out `\end`, and spacing inside the braces;
-      `src/__tests__/EditorBracketMatch.test.ts` — the hint reaching
+      `src/__tests__/editor/EditorBracketMatch.test.ts` — the hint reaching
       `data-hint`, escaped)
     - [ ] 🖐️ Manual test — frontend only, hot-reloads. In a `.tex` file write
       `\begin{itemize}` … `\end{enumerate}`: **both** lines should underline
@@ -2085,10 +2085,10 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       be attributed to one file in the list and another in the badge. Errors in
       a file the structure does not list (a `.sty`, a package) have no row to
       land on and stay in the cards only.
-    - [x] 🤖 Automated tests (`src/__tests__/TexErrors.test.ts` — bucketing by
+    - [x] 🤖 Automated tests (`src/__tests__/tex/TexErrors.test.ts` — bucketing by
       resolved path, first-line-wins, the no-file warning falling back to the
       root, a warning with no line leaving no jump target, and the empty map;
-      `src/__tests__/TexWorkspace.test.tsx` — a failing build badges the child's
+      `src/__tests__/tex/TexWorkspace.test.tsx` — a failing build badges the child's
       row and not the main's, and the pill centers the child with a `requestJump`
       on the reported line)
     - [ ] 🖐️ Manual test — frontend only, hot-reloads. Open a multi-file TeX
@@ -2135,7 +2135,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       wins when there is one, the remembered one is used only while the draft
       still holds exactly that text there.
     - Pure half in `src/lib/viewers/tex/beamer.ts`; tests in
-      `src/__tests__/Beamer.test.ts`, `Highlight.test.ts` (the token) and
+      `src/__tests__/tex/Beamer.test.ts`, `Highlight.test.ts` (the token) and
       `TexViewer.test.tsx` (toggle → bar → Wrap; a beamer document opens with
       the bar on). Frontend only, hot-reloads.
     - [ ] 🖐️ Manual test — open a `.tex` with `\documentclass{beamer}`: the
@@ -2209,7 +2209,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       `src/components/embed/FileViewerPane.tsx`,
       `src/components/tabs/TabBar.tsx`, `src/lib/i18n.ts` (+ the four
       dictionaries).* Frontend only, hot-reloads.
-    - [x] 🤖 Automated test — `src/__tests__/TexViewer.test.tsx` (Ctrl+Shift+B
+    - [x] 🤖 Automated test — `src/__tests__/tex/TexViewer.test.tsx` (Ctrl+Shift+B
       from the textarea compiles; the button's tooltip names the chord).
     - [ ] 🖐️ Manual test — in a TeX workspace, press Ctrl+Shift+B with the
       caret in the source: it should save and build exactly as the button does,
@@ -2235,7 +2235,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     - *Files: `src/stores/viewers/texViewPref.ts` (new),
       `src/components/embed/FileViewerPane.tsx`, `src/stores/tabs.ts`.*
       Frontend only, hot-reloads.
-    - [x] 🤖 Automated test — `src/__tests__/TexViewPref.test.ts` (merge,
+    - [x] 🤖 Automated test — `src/__tests__/tex/TexViewPref.test.ts` (merge,
       persist, junk rows dropped) and `TexViewer.test.tsx` (a second file of
       the project opens with the bar / the preview off, through a fresh module
       registry = the relaunch path; another project keeps its default).

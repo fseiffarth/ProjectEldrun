@@ -76,7 +76,7 @@ engine's correctness arguments all assume one human.*
       the local gate needs both the user's opt-in and the server's
       (`commands::caldav::a_write_needs_both_the_users_opt_in_and_the_servers`);
       the store-level gate and the refused-delete rejection
-      (`src/__tests__/CalDavPushGate.test.ts`).
+      (`src/__tests__/calendar/CalDavPushGate.test.ts`).
     - [ ] 🖐️ Manual test — Radicale in a container + Thunderbird: create/edit/
       delete an event and a task from Eldrun and see them in Thunderbird; a
       concurrent edit from Thunderbird surfaces as a named conflict rather than

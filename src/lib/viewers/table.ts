@@ -1,7 +1,7 @@
 /**
  * Pure, dependency-free CSV/TSV parsing, sniffing, editing and sorting for the
  * table viewer (#40). No DOM, no React — unit-tested in isolation
- * (`src/__tests__/table.test.ts`).
+ * (`src/__tests__/viewers/table.test.ts`).
  *
  * Two things are worth internalising before changing anything here:
  *

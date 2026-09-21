@@ -113,7 +113,7 @@ Build, not the third-party `@vibe-kit/grok-cli` it used to.
 <agent> --version
 <agent> --help | grep -iE 'print|resume|continue|session'   # flags still there?
 cargo test --manifest-path src-tauri/Cargo.toml agents::     # WARMUPS/registry tests
-npx vitest run src/__tests__/agentPrompt.test.ts              # decision-prompt corpus
+npx vitest run src/__tests__/agents/agentPrompt.test.ts              # decision-prompt corpus
 ```
 
 Then open one tab per updated agent, trigger a permission prompt, and check
@@ -336,8 +336,8 @@ codex --help; codex exec --help | grep skip-git-repo-check
 head -c 300 "$(ls -t ~/.codex/sessions/*/*/*/rollout-*.jsonl | head -1)"
 grep -n 'hooks' ~/.codex/config.toml
 cargo test --manifest-path src-tauri/Cargo.toml codex
-npx vitest run src/__tests__/agentPrompt.test.ts
-npx vitest run src/__tests__/MobileSelectPrompt.test.ts src/__tests__/MobileModelSheetSteps.test.tsx
+npx vitest run src/__tests__/agents/agentPrompt.test.ts
+npx vitest run src/__tests__/mobile/MobileSelectPrompt.test.ts src/__tests__/mobile/MobileModelSheetSteps.test.tsx
 ```
 
 ### 1.3 Gemini CLI

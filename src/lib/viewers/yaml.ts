@@ -42,7 +42,7 @@
  * and the tree defers to Source rather than showing a structure that isn't the
  * file's.
  *
- * Pure: no React, no Tauri, no fs. Unit-tested in `src/__tests__/Yaml*.test.ts`.
+ * Pure: no React, no Tauri, no fs. Unit-tested in `src/__tests__/viewers/Yaml*.test.ts`.
  */
 
 import type { TranslationKey } from "../i18n";

@@ -55,7 +55,7 @@ screen is not.*
     It composes with Energy Saver rather than replacing it, and it is reactive
     throughout — turning it off restores every surface in place, with no
     relaunch and no remount, which is what makes it safe to try.
-    - [x] 🤖 Automated test — `src/__tests__/FastMode.test.tsx` (8: the gate is
+    - [x] 🤖 Automated test — `src/__tests__/agents/FastMode.test.tsx` (8: the gate is
       never inferred — unset, `false` and an unloaded store all read off; the
       root attribute; and a withdrawn surface renders nothing **and** asks the
       backend nothing, then comes back when the toggle flips) plus the schema
@@ -110,7 +110,7 @@ screen is not.*
     listing that FAILS (the snapshot is dropped, so the error shows rather than
     resurrected rows) and a remote pool that cannot be asked (the git bar
     clears) — are not seeded at all.
-    - [x] 🤖 Automated test — `src/__tests__/SidePanelReveal.test.tsx` (9: a
+    - [x] 🤖 Automated test — `src/__tests__/shell/SidePanelReveal.test.tsx` (9: a
       cold first frame is empty, a revealed one is not; the stale seed upgrades
       to what the folder now holds; the git counts survive a close; plus the
       LRU bounds and read-as-use on both snapshot maps).
@@ -189,7 +189,7 @@ screen is not.*
       `APPEARANCE_CHANGED_EVENT` (DetachedApp listener) + the popout's own
       settings load. Pre-paint: `index.html` re-applies validated
       `eldrun-accent`/`eldrun-corners` localStorage caches before first paint.
-    - [x] 🤖 Automated test — `src/__tests__/Appearance.test.ts` (normalize/
+    - [x] 🤖 Automated test — `src/__tests__/theme/Appearance.test.ts` (normalize/
       apply/clear/invalid-input for both overrides; "system" resolution).
     - [ ] 🖐️ Manual test — pick a swatch: pills, focus rings, scrollbar and
       buttons recolor at once, in every theme including Plain Dark/Light;
@@ -325,7 +325,7 @@ screen is not.*
       one scroll from being clipped. A palette pick reaches the accent
       6-digit — `ui_accent` has no alpha channel and a translucent accent would
       fade every control derived from it.
-    - [x] 🤖 Automated test — `src/__tests__/ThemeVars.test.ts` (the allow-list
+    - [x] 🤖 Automated test — `src/__tests__/theme/ThemeVars.test.ts` (the allow-list
       gate, hex validation incl. the 8-digit alpha form, clearing an override
       really clears it, the pre-paint cache holds only validated values, every
       catalog token exists in the stylesheet **and has an example string**, the
@@ -823,7 +823,7 @@ screen is not.*
       pack. Deliberately *not* pre-painted from `index.html` — twelve canvas
       renders is not what a pre-paint script is for, and a frame of the system
       arrow at launch costs nothing.
-    - [x] 🤖 Automated test — `src/__tests__/CursorPacks.test.ts` (normalize,
+    - [x] 🤖 Automated test — `src/__tests__/theme/CursorPacks.test.ts` (normalize,
       every shape emitted with its hotspot and keyword fallback, both clear
       paths, the no-canvas no-op, and a corpus scan that fails on a bare
       `cursor: pointer;` anywhere in the stylesheet).

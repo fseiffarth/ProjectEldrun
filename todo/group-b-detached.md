@@ -718,7 +718,7 @@ writes are now forwarded rather than dropped.
      detach in heap A, edit in heap B, and assert both layouts agree. Every
      fix above then lands with a test in that harness, and the harness itself
      is the regression net for the "second React root" class of bug.
-     **Built** as `src/__tests__/detachedHarness.ts` + `DetachedTwoHeap.test.ts`
+     **Built** as `src/__tests__/helpers/detachedHarness.ts` + `DetachedTwoHeap.test.ts`
      (20 cases). `loadHeap()` is `vi.resetModules()` + a fresh dynamic import,
      so each heap has its own `useTabsStore`/`useSettingsStore`/
      `useActivityStore`/`useProjectsStore`; the hoisted mocks are

@@ -198,7 +198,7 @@ share files and context:
   boxes.
 
 - **Quick wins next:** ~~J #33 URI routing~~ — **shipped** (`src/lib/linkTarget.ts:124`
-  `routeUri`, `:341` `openRoutedUri`, tests `src/__tests__/LinkTarget.test.ts`).
+  `routeUri`, `:341` `openRoutedUri`, tests `src/__tests__/browser/LinkTarget.test.ts`).
   The in-app mail J#65 / browser #61 in the same group are the larger net-new
   surfaces, weigh security first and pair with #60. Real quick wins now:
   R #64 (the liveness helper `commands/apps.rs:1669 check_pid_alive` already
