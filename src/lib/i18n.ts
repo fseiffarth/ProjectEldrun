@@ -3707,6 +3707,8 @@ export const en = {
   "rootReview.tainted": "Proposed by an agent that reads mail from outside",
   "rootReview.draft": "Mail draft",
   "rootReview.openDraft": "Open in composer",
+  "rootReview.icsImport": "Calendar file",
+  "rootReview.icsImportHelp": "An agent sent this calendar file. Importing puts its entries into a new calendar \"{name}\"; nothing is imported until you approve.",
   "rootReview.outbound": "Will be pushed to {name}. The server may notify attendees.",
   "rootReview.conflict": "This entry changed since the agent looked at it. Discard this proposal and ask the agent to propose again.",
   "rootReview.details": "Show changes",

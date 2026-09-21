@@ -238,6 +238,9 @@ pub fn tool(name: &str) -> Option<ToolPolicy> {
         | "boxes_list" => ("projects", false, false, true, false),
         "calendar_list" | "calendar_free_busy" => ("calendar", false, false, true, true),
         "calendar_create" | "calendar_add_event" => ("calendar", true, false, true, true),
+        // Root only: a reader is handed no attachment, and a file's text must
+        // not reach the calendar through it (`root_mcp_import`).
+        "calendar_import_ics" => ("calendar", true, false, true, false),
         "calendar_update_event" | "calendar_move_events" | "calendar_delete_event" => {
             ("calendar", true, true, true, true)
         }
@@ -278,8 +281,10 @@ pub fn validate(schema: &Value, value: &Value) -> Result<(), String> {
         return Err("Invalid argument type".into());
     }
     if let Some(s) = value.as_str() {
-        if s.len() > 32 * 1024 {
-            return Err("Argument text exceeds 32 KiB".into());
+        // 32 KiB unless the schema names its own bound (a whole `.ics` file).
+        let max = schema["maxLength"].as_u64().map_or(32 * 1024, |n| n as usize);
+        if s.len() > max {
+            return Err(format!("Argument text exceeds {} KiB", max / 1024));
         }
     }
     if let Some(n) = value.as_f64() {

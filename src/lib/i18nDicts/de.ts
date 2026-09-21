@@ -373,6 +373,8 @@ export const dict: Dict = {
   "rootReview.tainted": "Vorgeschlagen von einem Agenten, der E-Mails von außen liest",
   "rootReview.draft": "E-Mail-Entwurf",
   "rootReview.openDraft": "Im Editor öffnen",
+  "rootReview.icsImport": "Kalenderdatei",
+  "rootReview.icsImportHelp": "Ein Agent hat diese Kalenderdatei geschickt. Beim Import landen ihre Einträge in einem neuen Kalender \"{name}\"; ohne deine Zustimmung wird nichts importiert.",
   "rootReview.outbound": "Wird an {name} übertragen. Der Server kann Teilnehmer benachrichtigen.",
   "rootReview.conflict": "Dieser Eintrag wurde geändert, seit der Agent ihn gelesen hat. Verwirf den Vorschlag und bitte den Agenten um einen neuen.",
   "rootReview.details": "Änderungen anzeigen",

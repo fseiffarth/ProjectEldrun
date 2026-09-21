@@ -429,6 +429,26 @@ correctness/UX work atop the same layout model #42 detaches.*
   shows `caldav_href`. Switch the agent fence off for root: the ⚿ badge gains ⚠
   and the review strip says review is not enforced. Open a reader draft with
   recipients: the composer shows the recipients warning.
+- [ ] **Root MCP `calendar_import_ics` — live QA** (implemented 2026-09-21, not
+  run live; pill `rootReview.icsImport`). After the updated backend is running,
+  give a root agent an `.ics` and ask it to import it: the reply must say
+  *proposed*, the ✓ Approvals count goes up by one and the calendar is
+  unchanged. The card shows the file's counts and findings (try one with an
+  `ATTACH` or a `PROCEDURE` alarm); ✓ creates one new calendar with the entries,
+  ✗ discards. "Approve all" must not import it. Afterwards `calendar_list` shows
+  the imported events `external` with `[link]` for URLs. Also check: a sixth
+  staged file from one tab is refused, a file over 96 KiB is refused with the
+  Import-button hint, the tool is absent for a mail reader, and with
+  `root_mcp_review` off the file still only stages.
+  - [ ] 🖐️ Manual test
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 2314. **The root console as a window: a docked file viewer, move, resize.** ✅
     Implemented · 🧪 Awaiting live QA. Three things the console lacked because

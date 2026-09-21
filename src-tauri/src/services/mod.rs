@@ -90,6 +90,7 @@ pub mod remote_usage;
 pub mod restore_service;
 pub mod root_mcp;
 pub mod root_mcp_security;
+pub mod root_mcp_import;
 pub mod root_mcp_mail;
 pub mod root_mcp_review;
 // The project container bind-mounts host paths straight into a Linux container

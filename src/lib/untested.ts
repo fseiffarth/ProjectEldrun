@@ -178,6 +178,7 @@ export const UNTESTED = {
   "projectSwitcher.hpcPipeline": { area: "layout", what: "ProjectSwitcher · HPC pipeline…" },
   "projectSwitcher.newBox": { area: "layout", what: "ProjectSwitcher · New Box" },
   "rootOverlay.1": { area: "layout", what: "RootOverlay · ⚿ Eldrun tools + ✓ Approvals" },
+  "rootReview.icsImport": { area: "layout", what: "RootReviewStrip · Calendar file staged by calendar_import_ics" },
   "rootReview.setting": { area: "layout", what: "SettingsPanel · Review root-agent writes" },
   "rootReview.title": { area: "layout", what: "RootReviewStrip · Agent proposals" },
   "screenshotSave.title": { area: "layout", what: "ScreenshotSaveOverlay · Save screenshot" },

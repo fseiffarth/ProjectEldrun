@@ -372,6 +372,8 @@ export const dict: Dict = {
   "rootReview.tainted": "Proposta da un agente che legge posta dall'esterno",
   "rootReview.draft": "Bozza di posta",
   "rootReview.openDraft": "Apri nell'editor",
+  "rootReview.icsImport": "File di calendario",
+  "rootReview.icsImportHelp": "Un agente ha inviato questo file di calendario. L'importazione mette le sue voci in un nuovo calendario \"{name}\"; nulla viene importato senza la tua approvazione.",
   "rootReview.outbound": "Verrà inviata a {name}. Il server potrebbe avvisare i partecipanti.",
   "rootReview.conflict": "Questa voce è cambiata da quando l’agente l’ha letta. Scarta la proposta e chiedi all’agente di formularne una nuova.",
   "rootReview.details": "Mostra modifiche",

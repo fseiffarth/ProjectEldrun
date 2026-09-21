@@ -349,6 +349,40 @@ the token identity for generation-safe revocation.
 `agent_warmup` builds its own `Command` and never reaches `pty_spawn`, so an
 unattended run gets no endpoint; future scheduled-agent spawns must opt out.
 
+## Importing an `.ics`
+
+`calendar_import_ics` (`services::root_mcp_import`) takes the file's **text**
+and nothing else. There is no path and no URL argument on purpose: this process
+is not fenced, so a path would let a fenced agent have Eldrun read what its
+fence hides (a symlink named `x.ics` is enough), and a URL is a fetch the agent
+aims. The text is capped at 96 KiB (`maxLength` in the schema, which
+`root_mcp_security::validate` honours in place of its 32 KiB default; the
+request body is 128 KiB).
+
+**The backend does not parse it.** `commands/calendar.rs` keeps iCalendar out of
+Rust, and a second parser would be a second attack surface drifting from the
+first. The tool checks only that the text claims `BEGIN:VCALENDAR` and writes it
+to `<state_dir>/root_mcp/imports/<id>.json` (5 per tab, 20 in all; inside the
+fenced-off state dir). The reply carries the id and no word of the file.
+
+**Like a mail draft, it is not a `Proposal`.** It shows in the review panel as a
+card whose body is the window's own `inspectIcs` report — the same
+`IcsReportBody` the Import button's dialog shows — and ✓ runs the same
+`stores/calendar/importIcs` the button runs, on exactly the text reported on.
+So it stages at every `root_mcp_review` level including `off`, is never part of
+"Approve all", and lands in a **new local calendar**, never a CalDAV one: an
+invitation cannot be pushed to a server as the user's own entry, and undo is
+deleting one calendar. The staged copy is removed *before* the import runs, so
+a failed import cannot be approved twice into two calendars. Needs the
+all-calendars grant and write access; a reader is not served it (it is handed
+no attachment, and this must not become the way one reaches the calendar).
+
+**The importer marks the calendar `imported: true`** (in `extra`, for the
+button's imports too). `event_view` and `todo_list` show such a calendar's rows
+`external` with URLs redacted, as for a read-only feed — without the mark, a
+file's text would come back to the agent as the user's own. No tool edits a
+calendar's `extra`, so an agent cannot clear it.
+
 ## Staged writes
 
 `settings.root_mcp_review` defaults to `all` (including unknown values): calendar

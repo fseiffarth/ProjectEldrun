@@ -3,6 +3,52 @@ import type { IcsFinding, IcsReport } from "../../lib/calendar/icsSafety";
 import { useT } from "../../lib/i18n";
 
 /**
+ * The report itself — the counts, then each finding with what Eldrun does about
+ * it. Apart from the dialog so the root console's review panel shows a file an
+ * agent staged (`calendar_import_ics`) in exactly the same words.
+ */
+export function IcsReportBody({ report }: { report: IcsReport }) {
+  const t = useT();
+  const label = (f: IcsFinding): string =>
+    t(`icsReview.finding.${f.kind}`, { count: f.count });
+  const effect = (f: IcsFinding): string =>
+    f.ignored ? t("icsReview.effectIgnored") : t("icsReview.effectKept");
+  return (
+    <>
+      {!report.looksLikeIcs ? (
+        // The one finding that is not a nuance: this is not a calendar file,
+        // so nothing below it would mean anything.
+        <p className="ics-review-notice ics-review-notice-bad">{t("icsReview.notIcs")}</p>
+      ) : (
+        <p className="ics-review-counts">
+          {t("icsReview.counts", {
+            events: report.events,
+            tasks: report.tasks,
+            kb: Math.max(1, Math.round(report.bytes / 1024)),
+          })}
+          {report.skipped > 0 ? ` ${t("icsReview.skipped", { count: report.skipped })}` : ""}
+        </p>
+      )}
+
+      {report.findings.length > 0 && (
+        <ul className="ics-review-list">
+          {report.findings.map((f) => (
+            <li
+              key={f.kind}
+              className={f.ignored ? "ics-review-row" : "ics-review-row ics-review-row-kept"}
+            >
+              <span className="ics-review-what">{label(f)}</span>
+              <span className="ics-review-effect">{effect(f)}</span>
+              {f.sample && <code className="ics-review-sample">{f.sample}</code>}
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
+  );
+}
+
+/**
  * What is in this `.ics` file, shown before any of it is imported.
  *
  * ## Why a dialog, when the file cannot do anything
@@ -46,11 +92,6 @@ export function IcsImportReviewDialog({
 }) {
   const t = useT();
 
-  const label = (f: IcsFinding): string =>
-    t(`icsReview.finding.${f.kind}`, { count: f.count });
-  const effect = (f: IcsFinding): string =>
-    f.ignored ? t("icsReview.effectIgnored") : t("icsReview.effectKept");
-
   return (
     <div className="modal-backdrop">
       <div className="project-dialog ics-review-dialog">
@@ -59,35 +100,7 @@ export function IcsImportReviewDialog({
         </h2>
         <p className="ics-review-file">{name}</p>
 
-        {!report.looksLikeIcs ? (
-          // The one finding that is not a nuance: this is not a calendar file,
-          // so nothing below it would mean anything.
-          <p className="ics-review-notice ics-review-notice-bad">{t("icsReview.notIcs")}</p>
-        ) : (
-          <p className="ics-review-counts">
-            {t("icsReview.counts", {
-              events: report.events,
-              tasks: report.tasks,
-              kb: Math.max(1, Math.round(report.bytes / 1024)),
-            })}
-            {report.skipped > 0 ? ` ${t("icsReview.skipped", { count: report.skipped })}` : ""}
-          </p>
-        )}
-
-        {report.findings.length > 0 && (
-          <ul className="ics-review-list">
-            {report.findings.map((f) => (
-              <li
-                key={f.kind}
-                className={f.ignored ? "ics-review-row" : "ics-review-row ics-review-row-kept"}
-              >
-                <span className="ics-review-what">{label(f)}</span>
-                <span className="ics-review-effect">{effect(f)}</span>
-                {f.sample && <code className="ics-review-sample">{f.sample}</code>}
-              </li>
-            ))}
-          </ul>
-        )}
+        <IcsReportBody report={report} />
 
         <p className="ics-review-footnote">{t("icsReview.footnote")}</p>
 

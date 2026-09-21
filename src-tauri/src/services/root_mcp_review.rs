@@ -951,6 +951,8 @@ mod tests {
                 // A mail draft touches no calendar row and never stages: the
                 // draft is the proposal (`root_mcp_mail`).
                 .filter(|n| !crate::services::root_mcp_mail::is_mail_tool(n))
+                // Nor does a staged `.ics`: the window's importer writes it.
+                .filter(|n| *n != crate::services::root_mcp_import::TOOL)
                 .map(str::to_string)
                 .collect();
             assert_eq!(covered, writes);

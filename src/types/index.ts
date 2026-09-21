@@ -1332,6 +1332,12 @@ export interface Calendar {
    */
   caldav_account_id?: string;
   caldav_href?: string;
+  /**
+   * Filled from an `.ics` file (`stores/calendar/importIcs`). Rides `extra`
+   * like the keys above; the root agent's read tools show such a calendar's
+   * text as external. Absent on calendars imported before the mark existed.
+   */
+  imported?: boolean;
 }
 
 /** How often a recurring event repeats. */

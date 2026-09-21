@@ -407,6 +407,24 @@ pub async fn root_mcp_review_apply_all(
     Ok(())
 }
 
+/// The `.ics` files root agents staged (`services::root_mcp_import`), text and
+/// all: the window's parser reads them, and its importer runs on the user's ✓.
+#[tauri::command]
+pub async fn root_mcp_import_list() -> Result<Vec<crate::services::root_mcp_import::StagedImport>, String> {
+    tokio::task::spawn_blocking(|| crate::services::root_mcp_import::list(&storage::state_dir()))
+        .await
+        .map_err(|e| e.to_string())
+}
+/// Imported or discarded: the staged copy goes either way.
+#[tauri::command]
+pub async fn root_mcp_import_remove(app: AppHandle, id: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || crate::services::root_mcp_import::remove(&storage::state_dir(), &id))
+        .await
+        .map_err(|e| e.to_string())??;
+    emit_review(&app, Vec::new());
+    Ok(())
+}
+
 #[derive(Serialize)]
 pub struct SecurityStatus {
     sessions: Vec<root_mcp::SessionInfo>,

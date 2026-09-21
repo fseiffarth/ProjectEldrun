@@ -22,9 +22,10 @@ import {
   weekDates,
 } from "../../lib/calendar/calendarTime";
 import { expandEvents } from "../../lib/calendar/recurrence";
-import { parseIcs, serializeIcs } from "../../lib/calendar/ics";
+import { serializeIcs } from "../../lib/calendar/ics";
 import { inspectIcs, type IcsReport } from "../../lib/calendar/icsSafety";
 import { IcsImportReviewDialog } from "./IcsImportReviewDialog";
+import { importIcsText } from "../../stores/calendar/importIcs";
 import { MonthView } from "./MonthView";
 import { TimeGrid } from "./TimeGrid";
 import { AgendaView } from "./AgendaView";
@@ -487,30 +488,12 @@ export function CalendarPane({ visible }: Props) {
   /** The import itself, once it is going ahead. */
   async function commitImport(text: string, stem: string) {
     try {
-      const parsed = parseIcs(text);
-
-      // Imported items land in their own calendar, so an import is easy to undo by
-      // deleting that one calendar — and can never silently mix into "Personal".
-      const name = stem;
-      const target = await createCalendar({
-        name: name || t("calendarPane.importedCalendarName"),
-        color: "#8d8fd6",
-        visible: true,
-        readonly: false,
-      });
-
-      for (const e of parsed.events) {
-        await createEvent({ ...e, calendar_id: target.id });
-      }
-      for (const tk of parsed.tasks) {
-        await createTask({ ...tk, calendar_id: target.id });
-      }
-
+      const done = await importIcsText(text, stem || t("calendarPane.importedCalendarName"));
       setNotice(
-        t("calendarPane.importedEvents", { count: parsed.events.length }) +
-          (parsed.tasks.length ? t("calendarPane.andTasks", { count: parsed.tasks.length }) : "") +
-          t("calendarPane.intoCalendar", { name: target.name }) +
-          (parsed.skipped ? t("calendarPane.skippedSuffix", { count: parsed.skipped }) : t("calendarPane.periodSuffix")),
+        t("calendarPane.importedEvents", { count: done.events }) +
+          (done.tasks ? t("calendarPane.andTasks", { count: done.tasks }) : "") +
+          t("calendarPane.intoCalendar", { name: done.calendarName }) +
+          (done.skipped ? t("calendarPane.skippedSuffix", { count: done.skipped }) : t("calendarPane.periodSuffix")),
       );
     } catch (err) {
       setNotice(t("calendarPane.importFailed", { error: String(err) }));

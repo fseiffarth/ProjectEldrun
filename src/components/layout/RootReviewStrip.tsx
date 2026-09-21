@@ -2,6 +2,8 @@ import { useRootReviewStore, type RootProposal, type ReviewRow } from "../../sto
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
 import { useMailStore } from "../../stores/mail";
+import { inspectIcs } from "../../lib/calendar/icsSafety";
+import { IcsReportBody } from "../calendar/IcsImportReviewDialog";
 
 /** Strip bidi overrides, zero-width controls and default-ignorable text. Keep
  * normal line breaks; rendering is always React text, never HTML/Markdown. */
@@ -63,7 +65,7 @@ function RowDiff({ row }: { row: ReviewRow }) {
  */
 export function RootReviewStrip({ advisory = false }: { advisory?: boolean }) {
   const t = useT();
-  const { proposals, count, error, busy, decide, applyAll } = useRootReviewStore();
+  const { proposals, imports, count, error, busy, decide, applyAll, importStaged, discardStaged } = useRootReviewStore();
   const pending = proposals.filter((p) => p.status === "pending");
   const drafts = useMailStore((s) => s.agentDrafts);
   const isOpen = (p: RootProposal) => p.status === "pending" || p.status === "conflicted";
@@ -79,7 +81,7 @@ export function RootReviewStrip({ advisory = false }: { advisory?: boolean }) {
       </button>}
     </div>
     <div className="menu-scroll-region root-review-scroll">
-      {proposals.length === 0 && drafts.length === 0
+      {proposals.length === 0 && drafts.length === 0 && imports.length === 0
         && <p className="settings-empty root-review-empty">{t("rootReview.empty")}</p>}
       {advisory && <p role="note" className="root-review-notice">{t("rootConsole.reviewAdvisory")}</p>}
       {error && <p role="alert" className="settings-error">{stripInvisible(error)}</p>}

@@ -250,10 +250,11 @@ export function RootOverlayHost() {
  * in, so a console sized on an external display is still reachable without one.
  */
 function RootOverlay() {
-  // Agent drafts wait for the user exactly as proposals do, so the badge
-  // counts both.
+  // Agent drafts and staged `.ics` imports wait for the user exactly as
+  // proposals do, so the badge counts all three.
   const reviewCount =
-    useRootReviewStore((s) => s.count) + useMailStore((s) => s.agentDrafts.length);
+    useRootReviewStore((s) => s.count) + useRootReviewStore((s) => s.imports.length)
+    + useMailStore((s) => s.agentDrafts.length);
   // The proposals panel the ✓ Approvals button drops. Open/closed is the review
   // store's, so a flow that floats the console can also open it at the rows;
   // the console clears it on the way out (below).
