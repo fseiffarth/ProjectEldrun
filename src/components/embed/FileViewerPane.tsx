@@ -41,6 +41,7 @@ import { Dropdown } from "../common/Dropdown";
 import { PrinterIcon } from "../common/PrinterIcon";
 import { SaveIcon } from "../common/SaveIcon";
 import { CompareView } from "./CompareView";
+import { GitMergeView } from "./GitMergeView";
 import { PresentationOverlay } from "./PresentationOverlay";
 import { usePresentationStore } from "../../stores/viewers/presentation";
 import { matchAnchorId, renderMarkdown, splitLineHint, toggleTaskCheckbox } from "../../lib/viewers/markdown";
@@ -646,6 +647,8 @@ export function FileViewerPane({ viewer, path, projectId, tabKey, visible = true
     view = <DiffView path={path} projectId={projectId} mode="sync" onOpenExternally={openExternally} tabKey={tabKey} />;
   } else if (viewer === "syncmerge") {
     view = <SyncMergeView path={path} projectId={projectId} tabKey={tabKey} />;
+  } else if (viewer === "gitmerge") {
+    view = <GitMergeView path={path} projectId={projectId} tabKey={tabKey} />;
   } else if (viewer === "odt") {
     view = <OdtView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} />;
   } else if (viewer === "media") {

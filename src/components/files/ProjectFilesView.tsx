@@ -515,6 +515,8 @@ export function ProjectFilesView({
   const [openTree, setOpenTree] = useState<"add" | "commit" | "push" | null>(null);
   const [commitMsg, setCommitMsg] = useState<string | null>(null);
   const [gitBusy, setGitBusy] = useState(false);
+  // Bumped by the Pull button: GitHistory owns the pull preview it opens.
+  const [pullRequest, setPullRequest] = useState(0);
   const [gitError, setGitError] = useState<string | null>(null);
   // Whether the project is missing scaffold files — drives the "no scaffold"
   // type tag shown beside its name, mirroring ProjectPill's hover tags.
@@ -1758,7 +1760,9 @@ export function ProjectFilesView({
             projectDir={effectiveGitRoot}
             projectId={onNestedRepo ? undefined : project?.remote ? projectId ?? undefined : undefined}
             remote={!onNestedRepo && !!project?.remote}
+            authProjectId={onNestedRepo ? undefined : projectId ?? undefined}
             onChanged={() => effectiveGitRoot && refreshGit(effectiveGitRoot)}
+            pullRequest={pullRequest}
           />
         </div>
         {/* Add / Commit / Push live at the FOOT of the panel, below the history
@@ -1823,6 +1827,18 @@ export function ProjectFilesView({
                       {openTree === "push" ? "▾" : "▴"}
                     </button>
                   </div>
+                )}
+                {/* No caret, so no `.git-action` group: the preview it opens is
+                    GitHistory's pull panel, above. */}
+                {(gitStatus.behind ?? 0) > 0 && (
+                  <button
+                    className="git-action-btn git-action-btn--pull"
+                    disabled={gitBusy}
+                    onClick={() => setPullRequest((n) => n + 1)}
+                    title={t("projectFilesView.pullTitle", { count: gitStatus.behind ?? 0 })}
+                  >
+                    <span className="git-btn-glyph">⬇</span><span className="git-btn-label">{t("projectFilesView.pull", { count: gitStatus.behind ?? 0 })}</span>
+                  </button>
                 )}
                 {treeScope && projectDir && <GitChangeTree projectDir={projectDir} scope={treeScope} />}
               </>

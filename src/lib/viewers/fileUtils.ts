@@ -57,6 +57,11 @@ export type InternalViewer =
   // opened from a diverged (amber) file in the orange list; routed to
   // `SyncMergeView`. Apply resolves the divergence (writes mirror + force-push).
   | "syncmerge"
+  // Git pull's merge/diff view: the same three-way `CompareView`, fed by git —
+  // ours ⇄ theirs of a conflicted merge (Apply writes + stages), else HEAD ⇄
+  // upstream as a look-only preview. Never auto-selected; opened from the Git
+  // panel's pull preview / merge bar; routed to `GitMergeView`.
+  | "gitmerge"
   | "odt"
   | "media"
   | "gif"

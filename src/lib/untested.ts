@@ -16,7 +16,7 @@
  *
  * Ids are the label's i18n key where the pill sits on one, else
  * `<file>.<n>`; the id is what the call site passes, so it must stay stable.
- * A new pill adds its row here — `src/__tests__/UntestedRegistry.test.ts`
+ * A new pill adds its row here — `src/__tests__/shell/UntestedRegistry.test.ts`
  * fails on a call site with no row, and on a row no call site uses.
  */
 
@@ -114,6 +114,9 @@ export const UNTESTED = {
   "fileTree.5": { area: "files", what: "FileTree · Download to…" },
   "gitHistory.1": { area: "files", what: "GitHistory · Worktrees" },
   "gitHistory.loadMoreCommits": { area: "files", what: "GitHistory · Load older commits" },
+  "gitPull.1": { area: "files", what: "Git · Pull preview (fetch, fast-forward, merge)" },
+  "gitMerge.1": { area: "files", what: "Git · Merge-in-progress bar (commit / abort)" },
+  "gitMergeView.1": { area: "embed", what: "Git merge view · Incoming diff and conflict resolve" },
   "importDrop.title": { area: "files", what: "importDrop · File already exists" },
   "projectFilesPane.1": { area: "files", what: "ProjectFilesPane · Project settings" },
   "projectFilesPane.2": { area: "files", what: "ProjectFilesPane · Large folders…" },

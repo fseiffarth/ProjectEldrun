@@ -272,7 +272,8 @@ export function CompareView({
   path: string;
   /** The live editor content (the "new" side). */
   rightText: string;
-  onApply: (merged: string) => void;
+  /** Absent → a look-only compare (the git pull preview): no Apply button. */
+  onApply?: (merged: string) => void;
   onClose: () => void;
   /** When provided, the left ("old") side is a fixed text rather than a commit
    *  picked from this file's git history — this is the "sync merge" mode where
@@ -543,13 +544,15 @@ export function CompareView({
             </button>
           </>
         )}
-        <button
-          className="file-viewer-format-btn file-viewer-compare-apply"
-          onClick={() => onApply(resultText)}
-          title={syncMode ? t("compareView.applyTitleSync") : t("compareView.applyTitleGit")}
-        >
-          {applyLabel ?? t("compareView.applyToFile")}
-        </button>
+        {onApply && (
+          <button
+            className="file-viewer-format-btn file-viewer-compare-apply"
+            onClick={() => onApply(resultText)}
+            title={syncMode ? t("compareView.applyTitleSync") : t("compareView.applyTitleGit")}
+          >
+            {applyLabel ?? t("compareView.applyToFile")}
+          </button>
+        )}
         <button className="file-viewer-format-btn" onClick={onClose} title={t("compareView.closeTitle")}>
           {t("common.close")}
         </button>

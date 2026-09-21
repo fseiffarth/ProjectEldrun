@@ -153,6 +153,8 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `files/SendToProjectDialog.tsx` | "Send to project…": pick a project, browse inside it (`list_dir`), copy via `import_external_file` (collision keeps both). Local destinations and local sources only. |
 | `files/FileBrowser.tsx` | The *other* files tab: a two-pane explorer (list/icons, columns, history). Deliberately not the tree — no drag-and-drop, no git markers; both are offered. |
 | `files/GitHistory.tsx` | Commit history / commit / push, lockstep bar, Worktrees (#23). Branch control is a dropdown for checkout, text input for create; worktree removal is confirmed and escalating (it deletes ignored files). |
+| `files/GitPullPanel.tsx` | Pull preview (incoming/outgoing commits, upstream-changed files, fast-forward or merge) + the merge-in-progress bar (conflicts → `gitmerge` viewer, commit/abort). Opened from a branch's ↓N chip or the git bar's Pull. |
+| `embed/GitMergeView.tsx` | `gitmerge` viewer: the sync resolver's `CompareView` fed by git — ours ⇄ theirs mid-merge (Resolve writes + stages), else HEAD ⇄ upstream look-only. Stateless: a restored tab re-asks the repo. |
 | `files/SetDefaultAppDialog.tsx` | Pick the default app for a file type. |
 | `embed/EmbedPane.tsx` | Hosts an embedded external app window. |
 | `embed/FileViewerPane.tsx` | In-app viewers (image, markdown, code, TeX/SyncTeX) + shared plumbing. Markdown follows local links and `#fragment`s (`stores/viewers/mdAnchor`); autocomplete ghost/visibility/acceptance UI delegates streaming/model/cache work to `lib/viewers/completion/ollamaCompletionProvider.ts`; code-editor key helpers (`applyIndent`, `applyLineComment`, `applyAutoIndent`, `detectIndentUnit`). |

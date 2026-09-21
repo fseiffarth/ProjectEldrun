@@ -23,6 +23,7 @@ pub mod git_fork;
 pub mod git_hosting;
 pub mod git_peer;
 pub mod git_publish;
+pub mod git_pull;
 pub mod global_machines;
 pub mod hpc_ws;
 pub mod local_loss;

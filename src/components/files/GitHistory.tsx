@@ -9,6 +9,7 @@ import { UntestedTag } from "../common/UntestedTag";
 import { useDialogs } from "../common/PromptDialogs";
 import { useTabsStore } from "../../stores/tabs";
 import { useT, type TranslationKey } from "../../lib/i18n";
+import { GitMergeBar, GitPullPanel, type MergeState } from "./GitPullPanel";
 
 interface GitCommit {
   hash: string;
@@ -25,6 +26,11 @@ interface GitBranch {
   name: string;
   is_current: boolean;
   is_remote: boolean;
+  /** Configured upstream (`origin/main`); "" for none. Optional: an older backend. */
+  upstream?: string;
+  /** Against that upstream, as of the last fetch. */
+  ahead?: number;
+  behind?: number;
 }
 
 interface Worktree {
@@ -117,8 +123,14 @@ interface Props {
   projectId?: string;
   /** True for SSH remote projects (gates the lockstep UI). */
   remote?: boolean;
+  /** The project whose git credentials a fetch uses — any project kind, unlike
+   *  `projectId`; absent on a nested repo (its own remote, no provider token). */
+  authProjectId?: string;
   /** Called after a checkout/reword so the parent can refresh git status. */
   onChanged?: () => void;
+  /** Bumped by the parent to open the pull preview for the checked-out branch
+   *  (the git bar's Pull button). 0 = never asked. */
+  pullRequest?: number;
 }
 
 function basename(p: string): string {
@@ -315,7 +327,7 @@ const LOCKSTEP_STATUS_KEY: Record<LockstepStatus, TranslationKey> = {
   disconnected: "gitHistory.statusDisconnected",
 };
 
-export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) {
+export function GitHistory({ projectDir, projectId, remote, authProjectId, onChanged, pullRequest }: Props) {
   const t = useT();
   // Every destructive git question below is asked in the panel's own dialog —
   // the native `confirm()` these used arrives themeless, titled with the page
@@ -348,6 +360,10 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
   // #28p D6: null = the Backups list is closed.
   const [backups, setBackups] = useState<BackupRef[] | null>(null);
   const [wtForm, setWtForm] = useState<WorktreeForm | null>(null);
+  // The pull preview: null = closed; `branch` null = the checked-out branch.
+  const [pullTarget, setPullTarget] = useState<{ branch: string | null } | null>(null);
+  const [mergeState, setMergeState] = useState<MergeState | null>(null);
+  const [fetching, setFetching] = useState(false);
   /**
    * Which side's worktrees these are (#23 I2). For a remote project `projectDir`
    * is the **local mirror** while the repo of record is on the host, so resolving
@@ -390,11 +406,15 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
     // commit list and the branch pills too. Each result now stands or falls alone
     // and only the failures are reported.
     const want = loadedRef.current;
-    const [log, br, wt] = await Promise.allSettled([
+    const [log, br, wt, ms] = await Promise.allSettled([
       invoke<GitCommit[]>("git_log", { projectDir, limit: want, skip: 0 }),
       invoke<GitBranch[]>("git_branches", { projectDir }),
       invoke<Worktree[]>("git_worktree_list", { projectDir, site: wtSite }),
+      invoke<MergeState>("git_merge_state", { projectDir }),
     ]);
+    // Best-effort and not reported: a backend without the command just never
+    // shows the merge bar.
+    setMergeState(ms.status === "fulfilled" ? ms.value : null);
     if (log.status === "fulfilled") {
       const list = log.value ?? [];
       setCommits(list);
@@ -687,6 +707,40 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
     }
   }, [projectId, lockstep?.localHead]);
 
+  // The git bar's Pull button lives in the parent; it asks by bumping a counter.
+  // Seeded with the value at mount, so a remount (view switch) does not replay
+  // an old click.
+  const seenPullRef = useRef(pullRequest);
+  useEffect(() => {
+    if (!pullRequest || pullRequest === seenPullRef.current) return;
+    seenPullRef.current = pullRequest;
+    setPullTarget({ branch: null });
+  }, [pullRequest]);
+  // A project switch closes a preview that belonged to the old repo.
+  useEffect(() => {
+    setPullTarget(null);
+  }, [projectDir]);
+
+  /** Update the tracking refs, so every branch's behind count is current. */
+  async function fetchNow() {
+    setFetching(true);
+    setError(null);
+    try {
+      await invoke("git_fetch", { projectDir, projectId: authProjectId ?? null });
+      await load();
+      onChanged?.();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setFetching(false);
+    }
+  }
+
+  const afterPull = () => {
+    void load();
+    onChanged?.();
+  };
+
   async function checkout(target: string) {
     setLoading(true);
     setError(null);
@@ -895,10 +949,33 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
         >
           {t(graphMode ? "gitHistory.graphModeGraph" : "gitHistory.graphModeList")}
         </button>
+        <button
+          className="toolbar-btn git-history-mode"
+          onClick={() => void fetchNow()}
+          title={t("gitPull.fetchTitle")}
+          disabled={loading || fetching}
+        >
+          {fetching ? t("gitPull.fetchingShort") : t("gitPull.fetch")}
+        </button>
         <button className="toolbar-btn git-history-refresh" onClick={load} title={t("common.refresh")} disabled={loading}>
           ⟳
         </button>
       </div>
+
+      {mergeState?.merging && (
+        <GitMergeBar projectDir={projectDir} state={mergeState} canOpenFiles={!remote} onChanged={afterPull} />
+      )}
+      {pullTarget && !mergeState?.merging && (
+        <GitPullPanel
+          key={`${projectDir}:${pullTarget.branch ?? ""}`}
+          projectDir={projectDir}
+          projectId={authProjectId ?? null}
+          branch={pullTarget.branch}
+          canOpenFiles={!remote}
+          onClose={() => setPullTarget(null)}
+          onDone={afterPull}
+        />
+      )}
 
       {lockstepEligible && (
         <div className="git-lockstep-bar" style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 6px", borderBottom: "1px solid var(--border-color)", fontSize: 10 }}>
@@ -1060,7 +1137,27 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
               )}
               {b.name}
             </button>
-          ))}
+          )).flatMap((pill, i) => {
+            // A branch behind its upstream gets a pull chip right after its pill.
+            const b = localBranches[i];
+            if (!b.behind) return [pill];
+            return [
+              pill,
+              <button
+                key={`${b.name}:pull`}
+                className="git-branch-pill git-branch-pull"
+                onClick={() => setPullTarget({ branch: b.name })}
+                disabled={loading || !!mergeState?.merging}
+                title={t("gitPull.branchChipTitle", {
+                  name: b.name,
+                  upstream: b.upstream ?? "",
+                  count: b.behind,
+                })}
+              >
+                ↓{b.behind}
+              </button>,
+            ];
+          })}
           {remoteBranches.map((b) => (
             <button
               key={b.name}

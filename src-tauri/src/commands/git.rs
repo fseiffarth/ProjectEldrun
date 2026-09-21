@@ -416,7 +416,7 @@ pub(crate) fn hookless_git_command_in<S: AsRef<str>, P: AsRef<Path>>(
 /// so the container→host escalation this exists for has no remote counterpart —
 /// a remote host's own `.git/config` is that host's business, same as any other
 /// file a user's own SSH session could write there.
-fn run_git(
+pub(crate) fn run_git(
     target: Option<&RemoteTarget>,
     project_dir: &str,
     args: &[&str],
@@ -477,7 +477,7 @@ fn valid_positional_path(s: &str) -> bool {
 /// git. A remote project's `.git` lives on the host, so it is never short-
 /// circuited here — its command runs over SSH and the usual lenient
 /// empty-on-failure handling covers a non-repo host dir.
-fn local_non_repo(target: Option<&RemoteTarget>, project_dir: &str) -> bool {
+pub(crate) fn local_non_repo(target: Option<&RemoteTarget>, project_dir: &str) -> bool {
     target.is_none() && !Path::new(project_dir).join(".git").exists()
 }
 
@@ -521,6 +521,9 @@ pub struct GitStatus {
     pub untracked: usize,
     pub has_remote: bool,
     pub is_repo: bool,
+    /// Commits the upstream has that the current branch lacks, as of the last
+    /// fetch — the git bar's Pull button. `0` with no upstream.
+    pub behind: usize,
 }
 
 #[tauri::command]
@@ -547,16 +550,27 @@ fn git_status_probe(project_dir: String, probe_remote: bool) -> Result<GitStatus
             untracked: 0,
             has_remote: false,
             is_repo: false,
+            behind: 0,
         });
     }
 
-    let out = run_git(target.as_ref(), &project_dir, &["status", "--porcelain"])?;
+    // `--branch` adds one `## main...origin/main [behind 2]` header — the
+    // behind count for free, in the spawn this probe already pays for.
+    let out = run_git(target.as_ref(), &project_dir, &["status", "--porcelain", "--branch"])?;
 
     let text = String::from_utf8_lossy(&out.stdout);
     let mut staged = 0usize;
     let mut unstaged = 0usize;
     let mut untracked = 0usize;
+    let mut behind = 0usize;
     for line in text.lines() {
+        if let Some(header) = line.strip_prefix("## ") {
+            behind = header
+                .rfind('[')
+                .map(|at| parse_track(&header[at..]).1)
+                .unwrap_or(0);
+            continue;
+        }
         if line.len() < 2 {
             continue;
         }
@@ -585,7 +599,29 @@ fn git_status_probe(project_dir: String, probe_remote: bool) -> Result<GitStatus
         untracked,
         has_remote,
         is_repo: true,
+        behind,
     })
+}
+
+/// `(ahead, behind)` out of git's tracking text — `[ahead 1, behind 2]`,
+/// `ahead 1` (`%(upstream:track,nobracket)`), `[gone]` or empty. Anything it
+/// does not recognise counts as zero: a stale reading never invents a pull.
+pub(crate) fn parse_track(s: &str) -> (usize, usize) {
+    let mut ahead = 0;
+    let mut behind = 0;
+    for part in s.trim_matches(|c| c == '[' || c == ']').split(',') {
+        let mut words = part.split_whitespace();
+        let (Some(word), Some(n)) = (words.next(), words.next()) else {
+            continue;
+        };
+        let n = n.parse().unwrap_or(0);
+        match word {
+            "ahead" => ahead = n,
+            "behind" => behind = n,
+            _ => {}
+        }
+    }
+    (ahead, behind)
 }
 
 /// One probe behind the project switcher's per-pill git dot.
@@ -1214,7 +1250,7 @@ pub(crate) fn scoped_token_config(origins: &[String], username: &str) -> Vec<Str
 /// The ask-once gate (`services::exec_trust`) for git verbs that run the repo's
 /// hooks on this machine. A remote project's git runs on its host — that host's
 /// hooks are its own business — so only local repos are gated.
-fn require_hook_trust(target: Option<&RemoteTarget>, project_dir: &str) -> Result<(), String> {
+pub(crate) fn require_hook_trust(target: Option<&RemoteTarget>, project_dir: &str) -> Result<(), String> {
     if target.is_some() {
         return Ok(());
     }
@@ -1695,6 +1731,11 @@ pub struct GitBranch {
     pub name: String,
     pub is_current: bool,
     pub is_remote: bool,
+    /// The configured upstream (`origin/main`), "" for none / a remote branch.
+    pub upstream: String,
+    /// Against that upstream, as of the last fetch.
+    pub ahead: usize,
+    pub behind: usize,
 }
 
 /// Lists local and remote-tracking branches.
@@ -1708,7 +1749,7 @@ fn git_branches_blocking(project_dir: String) -> Result<Vec<GitBranch>, String> 
     if local_non_repo(target.as_ref(), &project_dir) {
         return Ok(vec![]);
     }
-    let fmt = "--format=%(if)%(HEAD)%(then)*%(else) %(end)\u{1f}%(refname:short)\u{1f}%(refname)";
+    let fmt = "--format=%(if)%(HEAD)%(then)*%(else) %(end)\u{1f}%(refname:short)\u{1f}%(refname)\u{1f}%(upstream:short)\u{1f}%(upstream:track,nobracket)";
     let out = run_git(target.as_ref(), &project_dir, &["branch", "-a", fmt])?;
     let text = String::from_utf8_lossy(&out.stdout);
     let mut branches = Vec::new();
@@ -1722,10 +1763,15 @@ fn git_branches_blocking(project_dir: String) -> Result<Vec<GitBranch>, String> 
         if name.ends_with("/HEAD") {
             continue;
         }
+        let upstream = parts.get(3).copied().unwrap_or("").to_string();
+        let (ahead, behind) = parse_track(parts.get(4).copied().unwrap_or(""));
         branches.push(GitBranch {
             is_current: parts[0] == "*",
             is_remote: parts[2].starts_with("refs/remotes/"),
             name,
+            upstream,
+            ahead,
+            behind,
         });
     }
     Ok(branches)
@@ -2005,7 +2051,7 @@ fn git_blame_blocking(project_dir: String, rel_path: String) -> Result<Vec<GitBl
 /// authoring a commit but still check out a tree. An empty value makes git find
 /// no hook to run (verified against git 2.53.0); unlike `diff.external=` it does
 /// not make git try to exec the empty string.
-const NO_HOOKS_CONFIG: &[&str] = &["core.hooksPath="];
+pub(crate) const NO_HOOKS_CONFIG: &[&str] = &["core.hooksPath="];
 
 #[derive(serde::Serialize)]
 pub struct Worktree {

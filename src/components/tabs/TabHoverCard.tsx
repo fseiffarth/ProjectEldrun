@@ -53,6 +53,7 @@ const VIEWER_LABEL_KEY: Record<InternalViewer, TranslationKey> = {
   diff: "viewerLabel.diff",
   syncdiff: "viewerLabel.syncdiff",
   syncmerge: "viewerLabel.syncmerge",
+  gitmerge: "viewerLabel.gitmerge",
   odt: "viewerLabel.odt",
   media: "viewerLabel.media",
   html: "viewerLabel.html",
