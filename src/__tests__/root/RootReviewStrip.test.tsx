@@ -45,6 +45,17 @@ describe("root-agent write review", () => {
     expect(screen.queryByText("Hidden sibling")).toBeNull();
     expect(screen.getAllByText("Visible change").length).toBeGreaterThan(0);
   });
+  it("folds already-decided proposals shut until asked for", () => {
+    useRootReviewStore.setState({ proposals: [proposal(), proposal({ id: "done", tool: "calendar_event_create", status: "applied" })], count: 1 });
+    render(<RootReviewStrip />);
+    const toggle = screen.getByRole("button", { name: /Already decided \(1\)/ });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("calendar_event_create")).toBeNull();
+    expect(screen.getByText("todo_update")).toBeTruthy();
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("calendar_event_create")).toBeTruthy();
+  });
   it("says so when it opens on nothing, since it is now a panel and not a strip", () => {
     useRootReviewStore.setState({ proposals: [], count: 0 });
     render(<RootReviewStrip />);

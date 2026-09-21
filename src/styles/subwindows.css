@@ -1095,6 +1095,27 @@
   text-transform: uppercase;
   color: var(--text-muted);
 }
+.root-review-group-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-family: inherit;
+  text-align: left;
+  cursor: var(--cur-pointer, pointer);
+}
+.root-review-group-toggle:hover {
+  color: var(--accent-secondary);
+}
+.root-review-group-chevron {
+  display: inline-block;
+  transition: transform 0.15s ease;
+}
+.root-review-group-toggle[aria-expanded="true"] > .root-review-group-chevron {
+  transform: rotate(90deg);
+}
 .root-review-group.open > .root-review-group-label {
   color: var(--accent);
 }

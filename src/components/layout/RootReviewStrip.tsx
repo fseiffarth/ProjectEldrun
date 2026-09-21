@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useRootReviewStore, type RootProposal, type ReviewRow } from "../../stores/rootReview";
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
@@ -71,6 +72,9 @@ export function RootReviewStrip({ advisory = false }: { advisory?: boolean }) {
   const isOpen = (p: RootProposal) => p.status === "pending" || p.status === "conflicted";
   const open = proposals.filter(isOpen).sort((a, b) => Number(b.status === "pending") - Number(a.status === "pending"));
   const decided = proposals.filter((p) => !isOpen(p));
+  // Settled cards are history: folded shut until asked for, so the ones that
+  // still want a ✓/✗ are what the panel opens on.
+  const [showDecided, setShowDecided] = useState(false);
   return <section className="root-review-strip" aria-label={t("rootReview.title")}>
     <div className="tab-new-menu-group-label root-review-heading">
       <span className="root-review-heading-title">{t("rootReview.title")} ({count})</span>
@@ -104,6 +108,35 @@ export function RootReviewStrip({ advisory = false }: { advisory?: boolean }) {
           </div>
         </article>)}
       </div>}
+      {/* Nor is a staged `.ics`: the agent only put the file here. The report is
+          this window's own reading of it, and ✓ runs the calendar's importer on
+          exactly the text reported on — never part of "Approve all". */}
+      {imports.length > 0 && <div className="settings-list root-review-cards">
+        {imports.map((staged) => {
+          const report = inspectIcs(staged.text);
+          const name = stripInvisible(staged.name) || t("calendarPane.importedCalendarName");
+          return <article key={staged.id} className="settings-card root-review-card">
+            <div className="root-review-card-head">
+              <span className="settings-list-label" title={name}>{name}</span>
+              <UntestedTag id="rootReview.icsImport" />
+              <span className="ollama-badge root-review-status">{t("rootReview.icsImport")}</span>
+            </div>
+            <div className="settings-help root-review-meta">
+              {stripInvisible(staged.tab)} · {new Date(Number(staged.created)).toLocaleString()}
+            </div>
+            <p className="settings-help">{t("rootReview.icsImportHelp", { name })}</p>
+            <IcsReportBody report={report} />
+            <div className="root-review-actions">
+              <button className="root-review-btn approve" disabled={busy || !report.looksLikeIcs}
+                title={t("icsReview.import")} aria-label={t("icsReview.import")}
+                onClick={() => void importStaged(staged, t("calendarPane.importedCalendarName"))}>✓</button>
+              <button className="root-review-btn reject" disabled={busy}
+                title={t("rootReview.discard")} aria-label={t("rootReview.discard")}
+                onClick={() => void discardStaged(staged)}>✗</button>
+            </div>
+          </article>;
+        })}
+      </div>}
       {/* Two groups, each under its own label: what still wants a decision
           first, what is already decided after a rule — so the ✓/✗ cards never
           blur into the settled ones. */}
@@ -112,8 +145,14 @@ export function RootReviewStrip({ advisory = false }: { advisory?: boolean }) {
         { key: "decided", label: t("rootReview.decided", { count: decided.length }), items: decided },
       ].filter((group) => group.items.length > 0).map((group) => <div key={group.key}
         className={`root-review-group ${group.key}`}>
-        <div className="root-review-group-label">{group.label}</div>
-        <div className="settings-list root-review-cards">
+        {group.key === "decided"
+          ? <button type="button" className="root-review-group-label root-review-group-toggle"
+              aria-expanded={showDecided} onClick={() => setShowDecided((o) => !o)}>
+              <span className="root-review-group-chevron" aria-hidden="true">›</span>
+              {group.label}
+            </button>
+          : <div className="root-review-group-label">{group.label}</div>}
+        {(group.key !== "decided" || showDecided) && <div className="settings-list root-review-cards">
         {group.items.map((proposal) => {
           const { rows, folded } = reviewRows(proposal);
           const known = ["pending", "applied", "rejected", "conflicted", "undone"].includes(proposal.status);
@@ -166,7 +205,7 @@ export function RootReviewStrip({ advisory = false }: { advisory?: boolean }) {
             </div>
           </article>;
         })}
-        </div>
+        </div>}
       </div>)}
     </div>
   </section>;
