@@ -264,7 +264,7 @@ describe("Eldrun Mobile select dialog", () => {
       "",
       "  Tip: New Use /fast to enable our fastest inference with increased plan usage.",
       "",
-      "⚠ clamping SessionEnd hook timeout to 3s in /home/florian/.codex/config.toml",
+      "⚠ clamping SessionEnd hook timeout to 3s in /home/user/.codex/config.toml",
       "",
       "• Automatically switched to Luna Reserve high due to usage limits.",
       "",

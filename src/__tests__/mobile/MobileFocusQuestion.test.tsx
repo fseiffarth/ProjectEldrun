@@ -149,7 +149,7 @@ const CODEX_QUESTION = [
   "model:     gpt-6-astra high   /model to change",
   "directory: ~/eldrun/projects/projecteldrun",
   "",
-  "⚠ clamping SessionEnd hook timeout to 3s in /home/florian/.codex/config.toml",
+  "⚠ clamping SessionEnd hook timeout to 3s in /home/user/.codex/config.toml",
   "",
   // Carries the card too, though Codex draws this line plain: it is what says
   // the palette is dropped for the question alone, not for the screen.
