@@ -14,6 +14,7 @@ import { version as APP_VERSION } from "../../../package.json";
 import { isUntested } from "../../../src/lib/untested";
 import { useT } from "../../../src/lib/i18n";
 import { SpeechLangSheet, speechLangSummary } from "../components/SpeechLangPicker";
+import { SendToDesktop } from "../components/SendToDesktop";
 import { readSpeechLang, type SpeechLang } from "../speechLang";
 
 const BUILD_STAMP = formatBuildStamp();
@@ -273,6 +274,7 @@ export function Home({ open, openTab, todo, mail }: {
       </div>)}</section>
       {alerts && <AlertRows alerts={alerts} onAlerts={setAlerts} todo={todo} mail={mail} />}
     </>}
+    <SendToDesktop />
     {/* What this phone does, as against what the desktop is doing — kept to the
         end of the page, under whichever list the reader came for. */}
     <section className="phone-settings" aria-labelledby="phone-settings-heading">

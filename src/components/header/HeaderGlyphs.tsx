@@ -64,6 +64,19 @@ export function TodoGlyph({ className }: { className: string }) {
   );
 }
 
+/** A tray — files the phone sent to this desktop (`InboxIndicator`). */
+export function InboxGlyph({ className }: { className: string }) {
+  return (
+    <Glyph className={className}>
+      <path
+        d="M1.5 9 3.5 3.3A1.8 1.8 0 0 1 5.2 2h5.6a1.8 1.8 0 0 1 1.7 1.3L14.5 9v3.2a1.8 1.8 0 0 1-1.8 1.8H3.3a1.8 1.8 0 0 1-1.8-1.8Z"
+        {...STROKE}
+      />
+      <path d="M1.5 9h3.4l1 1.8h4.2l1-1.8h3.4" {...STROKE} />
+    </Glyph>
+  );
+}
+
 export function AppsGlyph({ className }: { className: string }) {
   return (
     <Glyph className={className}>

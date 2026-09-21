@@ -2238,16 +2238,52 @@ async fn inbox_upload(
                 "size": stored.size,
             } })),
         ),
-        Err(error) => api_error(
-            match error {
-                inbox::InboxError::Empty => StatusCode::BAD_REQUEST,
-                inbox::InboxError::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
-                inbox::InboxError::Full => StatusCode::INSUFFICIENT_STORAGE,
-                inbox::InboxError::Unavailable => StatusCode::CONFLICT,
-                inbox::InboxError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            },
-            error.code(),
+        Err(error) => inbox_error(error),
+    }
+}
+
+/// An inbox write's refusal as the phone's status — one vocabulary for the
+/// project inbox and the global one.
+fn inbox_error(error: inbox::InboxError) -> (StatusCode, Json<serde_json::Value>) {
+    api_error(
+        match error {
+            inbox::InboxError::Empty => StatusCode::BAD_REQUEST,
+            inbox::InboxError::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            inbox::InboxError::Full => StatusCode::INSUFFICIENT_STORAGE,
+            inbox::InboxError::Unavailable => StatusCode::CONFLICT,
+            inbox::InboxError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        },
+        error.code(),
+    )
+}
+
+/// `POST /api/v1/inbox` — the phone's **Send to desktop**: a file that belongs
+/// to no project. It lands in Eldrun's own `<state_dir>/inbox/`, never in a
+/// project folder, and the desktop's header lists it from there. The answer
+/// carries the stored name and size only — there is nothing to reference.
+async fn global_inbox_upload(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Query(query): Query<InboxQuery>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    if !exact_origin(&headers, &state) {
+        return api_error(StatusCode::FORBIDDEN, "invalid_origin");
+    }
+    let state_dir = state.config.state_dir.clone();
+    let stored =
+        tokio::task::spawn_blocking(move || inbox::store_global(&state_dir, &query.name, &body))
+            .await
+            .unwrap_or_else(|error| Err(inbox::InboxError::Io(error.to_string())));
+    match stored {
+        Ok(stored) => (
+            StatusCode::CREATED,
+            Json(json!({ "file": { "name": stored.name, "size": stored.size } })),
         ),
+        Err(error) => inbox_error(error),
     }
 }
 
@@ -2707,6 +2743,10 @@ fn router(state: HostState) -> Router {
             post(inbox_upload).layer(DefaultBodyLimit::max(inbox::MAX_INBOX_FILE)),
         )
         .route(
+            "/api/v1/inbox",
+            post(global_inbox_upload).layer(DefaultBodyLimit::max(inbox::MAX_INBOX_FILE)),
+        )
+        .route(
             "/api/v1/tabs/{tab_id}/desktop-images",
             get(desktop_images).post(attach_desktop_image),
         )
@@ -3160,6 +3200,7 @@ mod tests {
             "/api/v1/calendar",
             "/api/v1/tabs/anything/schedules",
             "/api/v1/tabs/anything/inbox",
+            "/api/v1/inbox",
             "/api/v1/tabs/anything/desktop-images",
             "/api/v1/tabs/anything/prompt",
             "/api/v1/projects/anything/prompts",
@@ -4319,6 +4360,46 @@ mod tests {
         let (status, ..) = host.send(request).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert!(!host.root.join(inbox::INBOX_DIR).exists(), "a refused upload wrote to disk");
+    }
+
+    #[tokio::test]
+    async fn a_file_sent_to_the_desktop_lands_in_the_global_inbox_not_a_project() {
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(59)).await.0;
+        let send = |name: &str, origin: &str, bytes: Vec<u8>| {
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/inbox?name={name}"))
+                .header(header::ORIGIN, origin)
+                .header(header::COOKIE, cookie_pair(&cookie))
+                .body(Body::from(bytes))
+                .expect("request")
+        };
+        let state_dir = host.state.config.state_dir.clone();
+        let inbox_dir = state_dir.join(inbox::GLOBAL_INBOX_DIR);
+
+        // Wrong origin: refused before anything is written.
+        let (status, ..) = host.send(send("a.txt", "https://elsewhere.example", b"x".to_vec())).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(!inbox_dir.exists(), "a refused upload wrote to disk");
+
+        let bytes = vec![0xCD; MAX_CONTROL_MESSAGE * 4];
+        let (status, _, body) = host.send(send("ticket.pdf", ORIGIN, bytes.clone())).await;
+        assert_eq!(status, StatusCode::CREATED, "answered: {body}");
+        let name = json(&body)["file"]["name"].as_str().expect("name").to_string();
+        assert!(name.ends_with("-ticket.pdf"), "{name}");
+        assert!(json(&body)["file"].get("reference").is_none());
+        assert!(!body.contains(&state_dir.to_string_lossy().to_string()), "a path leaked: {body}");
+        assert_eq!(std::fs::read(inbox_dir.join(&name)).unwrap(), bytes);
+        assert!(!host.root.join(inbox::INBOX_DIR).exists(), "a global file reached a project");
+
+        let (status, _, body) = host.send(send("empty.txt", ORIGIN, vec![])).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json(&body)["error"], "empty_file");
+        let (status, ..) = host
+            .send(send("huge.bin", ORIGIN, vec![0; inbox::MAX_INBOX_FILE + 1]))
+            .await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     #[cfg(unix)]

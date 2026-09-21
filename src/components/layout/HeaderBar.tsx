@@ -7,6 +7,7 @@ import { StatusCluster } from "../header/StatusCluster";
 import { MailIndicator } from "../header/MailIndicator";
 import { CalendarIndicator } from "../header/CalendarIndicator";
 import { TodoIndicator } from "../header/TodoIndicator";
+import { InboxIndicator } from "../header/InboxIndicator";
 import { SettingsMenu } from "../header/SettingsMenu";
 import { WindowControls } from "../header/WindowControls";
 import { ProjectSwitcher } from "./ProjectSwitcher";
@@ -96,6 +97,7 @@ export function HeaderBar() {
         <MailIndicator />
         <CalendarIndicator />
         <TodoIndicator />
+        <InboxIndicator />
         <span className="header-right-gap" aria-hidden="true" />
         <LocalModelMenu />
         <GlobalAppMenu />

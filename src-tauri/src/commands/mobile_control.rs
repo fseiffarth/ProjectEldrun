@@ -193,6 +193,42 @@ pub async fn mobile_attach_desktop_image(
     .map_err(|_| "write_failed".to_string())?
 }
 
+// ── Global inbox (phone → Send to desktop) ──────────────────────────────────
+// Files the phone sent to no project wait in `<state_dir>/inbox/`; the
+// header's inbox button lists them. Every command names a file by the leaf the
+// listing gave out and `inbox::global_file` re-checks it, so a name from the
+// webview can never reach outside that folder.
+
+/// The global inbox, newest first.
+#[tauri::command]
+pub async fn global_inbox_list() -> Vec<inbox::GlobalInboxFile> {
+    tauri::async_runtime::spawn_blocking(|| inbox::list_global(&storage::state_dir()))
+        .await
+        .unwrap_or_default()
+}
+
+/// Open one inbox file with the OS default application.
+#[tauri::command]
+pub fn global_inbox_open(name: String) -> Result<(), String> {
+    let path = inbox::global_file(&storage::state_dir(), &name).ok_or("file_not_found")?;
+    opener::open(&path).map_err(|e| e.to_string())
+}
+
+/// Open the global inbox folder in the OS file manager, creating it first so
+/// the button works before the first file arrives.
+#[tauri::command]
+pub fn global_inbox_reveal() -> Result<(), String> {
+    let dir = storage::state_dir().join(inbox::GLOBAL_INBOX_DIR);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    opener::open(&dir).map_err(|e| e.to_string())
+}
+
+/// Delete one inbox file. `false` when it was already gone.
+#[tauri::command]
+pub fn global_inbox_delete(name: String) -> Result<bool, String> {
+    inbox::remove_global(&storage::state_dir(), &name).map_err(|e| e.code().to_string())
+}
+
 /// Materialize the phone-install handoff where the root terminal can run it,
 /// returning the script's path — the state dir differs per OS, so the caller
 /// must not re-derive it. Keep the script embedded so this action also works

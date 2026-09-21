@@ -125,6 +125,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `header/MailIndicator.tsx` | Header ✉ (the only way into mail, `mail_client`). Red dot = unread inbox derived from the local index (`inboxUnread`), not an arrivals counter. |
 | `header/CalendarIndicator.tsx` | Header 🗓 (`calendar_global_app`), `MailIndicator`'s twin. Badge is derived from store + clock each minute, never acknowledged. |
 | `header/TodoIndicator.tsx` | Header ☑ (`todo_board`). Badge = open cards due today or overdue on visible calendars, derived not acknowledged; hover lists the cards. |
+| `header/InboxIndicator.tsx` | Header tray for the **global inbox** (`<state_dir>/inbox/`, phone → Send to desktop). Renders only while files wait; badge = count, derived. Hover lists files (open / armed delete), click shows the folder. Polls `global_inbox_list` every 10 s while visible. |
 | `header/VpnIndicator.tsx` | Machine-wide OpenVPN control: always present, lists stored `.ovpn`s, connects/disconnects a tunnel with or without a project behind it, names its holders, and arms one to connect on launch. |
 | `header/WindowControls.tsx` | Minimize/maximize/close window buttons. |
 | `tabs/TabBar.tsx` | Per-subwindow tab strip (add/rename/close, pointer-based DnD). |

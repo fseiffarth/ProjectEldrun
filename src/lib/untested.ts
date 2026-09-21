@@ -267,6 +267,8 @@ export const UNTESTED = {
   "mobile.project.newTab": { area: "mobile", what: "NewTabSheet · The header's ＋ opens a shell or an agent" },
   "mobile.project.outbox": { area: "mobile", what: "Project · Shelf under the tab cards for the files the desktop sent (eldrun-send), with the header's 🖼 and the shelf's button on the whole gallery" },
   "mobile.project.reorder": { area: "mobile", what: "Project · Drag to reorder the desktop's tabs" },
+  "inbox.menuTitle": { area: "mobile", what: "InboxIndicator · Sent from your phone (global inbox)" },
+  "mobile.home.sendToDesktop": { area: "mobile", what: "Home · Send a file to the desktop (global inbox)" },
   "mobile.setupTitle": { area: "mobile", what: "MobileSetupGuide · Set up Eldrun Mobile" },
   "mobile.speech.language": { area: "mobile", what: "Terminal · Reader voice-language picker" },
   "mobile.voice.keepListening": { area: "mobile", what: "Terminal · Dictation keeps listening through pauses, holds the screen awake, shows the mic level" },

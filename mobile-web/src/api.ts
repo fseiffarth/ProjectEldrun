@@ -543,10 +543,12 @@ export async function deleteOutboxFile(scope: OutboxScope, name: string): Promis
   await api<{ removed: boolean }>(`${outboxBase(scope)}/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
 
-export async function uploadToInbox(tabId: string, file: Blob, name: string): Promise<InboxAttachment> {
+/** POSTs a raw file to one of the desktop's drop boxes and returns the status
+ * and JSON body, mapping a refusal to the desktop's wire code. */
+async function postFile<T>(url: string, file: Blob): Promise<[number, T | undefined]> {
   let response: Response;
   try {
-    response = await fetch(`/api/v1/tabs/${encodeURIComponent(tabId)}/inbox?name=${encodeURIComponent(name)}`, {
+    response = await fetch(url, {
       method: "POST",
       body: file,
       credentials: "same-origin",
@@ -558,7 +560,7 @@ export async function uploadToInbox(tabId: string, file: Blob, name: string): Pr
     if (error instanceof DOMException && error.name === "AbortError") throw new ApiError(0, "timeout");
     throw new ApiError(0, "offline");
   }
-  let body: { error?: string; attachment?: InboxAttachment } | undefined;
+  let body: (T & { error?: string }) | undefined;
   try {
     body = await response.json() as typeof body;
   } catch {
@@ -566,6 +568,27 @@ export async function uploadToInbox(tabId: string, file: Blob, name: string): Pr
   }
   if (response.status === 401) onUnauthorized?.();
   if (!response.ok) throw new ApiError(response.status, body?.error ?? "request_failed");
-  if (!body?.attachment?.reference) throw new ApiError(response.status, "malformed_response");
+  return [response.status, body];
+}
+
+export async function uploadToInbox(tabId: string, file: Blob, name: string): Promise<InboxAttachment> {
+  const [status, body] = await postFile<{ attachment?: InboxAttachment }>(
+    `/api/v1/tabs/${encodeURIComponent(tabId)}/inbox?name=${encodeURIComponent(name)}`,
+    file,
+  );
+  if (!body?.attachment?.reference) throw new ApiError(status, "malformed_response");
   return body.attachment;
+}
+
+/** A file the phone sent to the desktop's global inbox: its stored name and
+ * size only — it belongs to no project, so there is nothing to reference. */
+export interface DesktopInboxFile { name: string; size: number }
+
+/** `POST /api/v1/inbox` — **Send to desktop**: the file lands in the desktop's
+ * own inbox (`<state_dir>/inbox/`), not in any project, and the desktop's
+ * header lists it. */
+export async function uploadToDesktop(file: Blob, name: string): Promise<DesktopInboxFile> {
+  const [status, body] = await postFile<{ file?: DesktopInboxFile }>(`/api/v1/inbox?name=${encodeURIComponent(name)}`, file);
+  if (!body?.file?.name) throw new ApiError(status, "malformed_response");
+  return body.file;
 }
