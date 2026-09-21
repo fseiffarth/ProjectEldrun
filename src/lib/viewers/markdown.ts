@@ -177,7 +177,9 @@ function attrText(raw: string, spans: InlineSpans): string {
       const idx = Number(part.slice(2, -1));
       const stored =
         part[1] === "C" ? spans.codeSpans[idx] : part[1] === "M" ? spans.mathSpans[idx] : spans.links[idx];
-      return (stored ?? "").replace(/<[^>]*>/g, "");
+      // Text inside the stored HTML is escaped, so no `<`/`>` survives the tag
+      // strip; the second pass makes that a guarantee, not an assumption.
+      return (stored ?? "").replace(/<[^>]*>/g, "").replace(/[<>]/g, "");
     })
     .join("");
 }
