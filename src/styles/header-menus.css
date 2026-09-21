@@ -22,6 +22,14 @@
   margin-top: 8px;
 }
 
+/* The same row, left-aligned: an action that is a *step* inside the dialog
+   (pick a file, browse for a folder) rather than its footer. Keeps the button
+   chrome of the family it is used in — only the alignment differs. */
+.dialog-actions.dialog-actions-start,
+.project-dialog-actions.dialog-actions-start {
+  justify-content: flex-start;
+}
+
 /* ── Large-folder sync prompt (BigFolderExcludeDialog) ───────────────── */
 /* One grid shared by the header row and every folder row, so the two side
    columns line up without either knowing the other's width. */

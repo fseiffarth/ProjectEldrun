@@ -1451,6 +1451,11 @@ pub fn run() {
             commands::projects::delete_archived_project,
             commands::projects::archived_mirror_unsynced,
             commands::projects::clear_archive,
+            // Full project export / import (docs/context/project_transfer.md)
+            commands::project_transfer::preview_project_export,
+            commands::project_transfer::export_project,
+            commands::project_transfer::inspect_project_export,
+            commands::project_transfer::import_project_export,
             // Project boxes (meta-project grouping)
             commands::boxes::get_boxes,
             commands::boxes::save_boxes,

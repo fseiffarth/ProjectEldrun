@@ -39,6 +39,9 @@ pub mod power;
 pub mod presenter;
 pub mod printing;
 pub mod project_runtime;
+// Full project export/import — move a project to another computer
+// (docs/context/project_transfer.md).
+pub mod project_transfer;
 pub mod projects;
 pub mod python;
 pub mod remote;

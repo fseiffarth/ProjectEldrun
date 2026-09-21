@@ -528,6 +528,55 @@ pub fn delete_box(box_id: String) -> Result<(), String> {
     write_boxes(&boxes)
 }
 
+/// Add `project_id` to every box whose **name** matches one of `names`, and
+/// report which names had no box. Used by the project-import path: a bundle
+/// carries the box names its project belonged to, not box ids, because a box id
+/// is meaningless on another installation.
+///
+/// Deliberately never *creates* a box. A box is a meta-project with its own
+/// folder and agent docs; conjuring one because an imported file named it would
+/// let a bundle add entries to the strip the user never asked for. Matching an
+/// existing name is the whole contract — the unmatched names are returned so the
+/// dialog can say so.
+pub(crate) fn join_boxes_by_name(
+    project_id: &str,
+    names: &[String],
+) -> Result<(Vec<String>, Vec<String>), String> {
+    if names.is_empty() {
+        return Ok((vec![], vec![]));
+    }
+    let mut boxes = read_boxes()?;
+    let mut joined = Vec::new();
+    let mut missing = Vec::new();
+    for name in names {
+        match boxes.iter_mut().find(|b| b.name == *name) {
+            Some(target) => {
+                if !target.member_ids.iter().any(|id| id == project_id) {
+                    target.member_ids.push(project_id.to_string());
+                }
+                joined.push(name.clone());
+            }
+            None => missing.push(name.clone()),
+        }
+    }
+    if !joined.is_empty() {
+        write_boxes(&boxes)?;
+    }
+    Ok((joined, missing))
+}
+
+/// The names of the boxes `project_id` is a member of, in box order — what a
+/// project export records so the membership can be re-established elsewhere.
+pub(crate) fn box_names_for(project_id: &str) -> Vec<String> {
+    let mut boxes = read_boxes().unwrap_or_default();
+    boxes.sort_by_key(|b| b.position);
+    boxes
+        .into_iter()
+        .filter(|b| b.member_ids.iter().any(|id| id == project_id))
+        .map(|b| b.name)
+        .collect()
+}
+
 #[tauri::command]
 pub fn set_box_members(box_id: String, member_ids: Vec<String>) -> Result<ProjectBox, String> {
     let mut boxes = read_boxes()?;

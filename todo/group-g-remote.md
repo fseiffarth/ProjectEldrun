@@ -1520,3 +1520,53 @@ untested tag until a VM has actually booted on this machine).
       Sessions view.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+2320. **Full project export / import — moving a project to another computer
+    (2026-09-21, ✅ Built · 🧪 Untested).** Copying a project folder to a second
+    machine carried the files and nothing else: the registry entry (git label,
+    remote spec, compute hosts, container spec, interpreter, categories), the
+    `project.json`, the tab layout in `<state_dir>/sessions/<key>/`, the time
+    history and the box membership all live elsewhere, keyed by project id, so
+    every question Eldrun ever asked about that project had to be answered
+    again. The pill menu now has "Export project…" (writes one `.eldrunproj`
+    zip) and the ＋ menu "Import Project File", which registers it on the far
+    side with its paths re-pointed. The manifest is the trusted half of the
+    bundle and the payload is not: entries are zip-slip confined, symlinks are
+    written last, and the tab layout goes through the same sanitizer a cloned
+    repository's does (`open_apps` is never adopted). Keychain secrets and
+    host-bound sync state (`sync.json`, `git_peer.json`) are deliberately left
+    out; VM and Trash projects are refused up front. *Files:
+    `commands/project_transfer.rs`, `services/terminal_service.rs`
+    (`adopt_untrusted_session`), `commands/boxes.rs` (`join_boxes_by_name`),
+    `components/projects/Project{Export,ImportBundle}Dialog.tsx`; doc
+    `docs/context/project_transfer.md`.*
+    - [x] 🤖 Automated tests — `export_import_roundtrip_carries_files_settings_and_tabs`,
+      `imported_tabs_are_sanitized_and_open_apps_never_return`,
+      `export_refuses_vm_projects`,
+      `a_metadata_only_export_imports_as_an_empty_folder_with_a_note`
+      (`tests/projects_commands.rs`); the walk/zip-slip/blocker unit tests in
+      `commands/project_transfer.rs`; `ProjectTransferDialogs` (vitest).
+    - [ ] 🖐️ Manual test — on machine A, right-click a project → "Export
+      project…": the sizes for files / git history / rebuildable folders are
+      plausible and the estimate tracks the switches. Save to a stick. On
+      machine B, ＋ → "Import Project File": the summary names the project and
+      its export date, the import lands in the chosen folder, and switching to
+      it brings back its tabs (with their cwds inside the *new* folder), its
+      description, its container/interpreter settings and its time history.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+    - [ ] 🖐️ Manual test — import the same bundle a second time on machine B:
+      it lands beside the first as a separate project with a new id, and the
+      first one's folder is untouched.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+    - [ ] 🖐️ Manual test — export a **remote** project, import on machine B:
+      the host, user and compute hosts come back, the local mirror is recreated,
+      the dialog says the password did not travel, and connecting asks for it
+      once. Byte-sync and lockstep start from scratch rather than reporting
+      everything as already in sync.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+    - [ ] **Open:** the export has no cancel, and progress is emitted per 64
+      files — a multi-gigabyte tree is a long modal with a counter and no way
+      out but closing the window.

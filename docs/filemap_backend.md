@@ -25,6 +25,7 @@ only when breaking it does damage. The *why* goes in code comments or
 |------|---------|
 | `projects.rs` | Project CRUD, scaffold/import, time-today (god module, #1). `find_project_conflict` is the one duplicate gate (#152), comparing a `ProjectSite` (local dir canonicalized; remote = SSH target + path). `plan_project_dir_rename`/`rename_project_dir`: guarded rename of a closed local project's folder (no-replace move, then path prefixes re-pointed in registry, `project.json`, saved layout). |
 | `fs.rs` | File-I/O commands (read/write/mtime, extracted from `projects.rs`; #1 seam). |
+| `project_transfer.rs` | Full project export/import (`docs/context/project_transfer.md`): one `.eldrunproj` zip carrying the tree + registry entry + `project.json` + tab layout + time slice + box names, so a project moves to another computer whole. Manifest is the trusted half; the payload is untrusted (zip-slip confined, symlinks written last, layout through `terminal_service::adopt_untrusted_session`). Refuses VM and Trash projects; never packs keychain secrets or host-bound sync state. |
 | `fs_watch.rs` | Filesystem watch start/stop + change events. |
 | `git.rs` | Git status/history/commit/push + worktrees (#23, `docs/worktree_improvement_plan.md`). `WorktreeSite` makes where it runs explicit (a remote project's `project_dir` is the mirror). |
 | `git_publish.rs` | Publish a repo to GitHub (`gh`) / GitLab (`glab`); shared `Provider`. `PublishSite`: remote projects publish from the local lockstep mirror by default (`publish_from = "local"`). |

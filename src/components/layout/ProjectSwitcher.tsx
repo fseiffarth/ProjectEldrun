@@ -6,6 +6,7 @@ import { BoxScopeChip } from "../projects/BoxScopeChip";
 import { usePillDragStore } from "../../stores/drag/pillDrag";
 import { ProjectSearch } from "../projects/ProjectSearch";
 import { ProjectDialog } from "../projects/ProjectDialog";
+import { ProjectImportBundleDialog } from "../projects/ProjectImportBundleDialog";
 import { SettingsDialog, type SettingsPanelKind } from "./SettingsPanel";
 import { UntestedTag } from "../common/UntestedTag";
 import { useHpcPipelineStore } from "../../stores/remote/hpc/hpcPipeline";
@@ -74,7 +75,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   const [settingsAnchor, setSettingsAnchor] = useState<string | undefined>(undefined);
   // "clone" is the import dialog opened straight onto its GitHub/GitLab source —
   // the same dialog, so the source can still be switched back inside it.
-  const [dialog, setDialog] = useState<"new" | "import" | "clone" | null>(null);
+  const [dialog, setDialog] = useState<"new" | "import" | "clone" | "bundle" | null>(null);
   const addMenuRef = useRef<HTMLDivElement>(null);
   // The + menu is the switcher's ONLY menu now (the ⚙ moved into the header's
   // global cluster as `header/SettingsMenu`), and it rides the SHARED header
@@ -511,6 +512,12 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
         />,
         document.body,
       )}
+      {dialog === "bundle" && (
+        <ProjectImportBundleDialog
+          onClose={() => setDialog(null)}
+          onProject={(project) => void addAndAudit(project)}
+        />
+      )}
 
       <div
         className="project-switcher"
@@ -718,6 +725,13 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
                   </button>
                   <button onClick={() => { closeHeaderMenu(ADD_MENU_ID); setDialog("clone"); }}>
                     {t("projectSwitcher.importFromGitHub")}
+                  </button>
+                  <button
+                    className="untested"
+                    onClick={() => { closeHeaderMenu(ADD_MENU_ID); setDialog("bundle"); }}
+                    title={t("projectSwitcher.importBundleTitle")}
+                  >
+                    {t("projectSwitcher.importBundle")} <UntestedTag id="transfer.import" />
                   </button>
                   <button
                     className="untested"

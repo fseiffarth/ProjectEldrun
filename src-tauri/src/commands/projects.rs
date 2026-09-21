@@ -22,7 +22,7 @@ use crate::storage;
 /// mountpoint — while the project's tree lives on the host and is reached over
 /// SFTP/SSH. This path becomes the project's `directory` (a stable local key the
 /// fs/git/terminal commands resolve to a `RemoteTarget`).
-fn remote_project_state_dir(id: &str) -> std::path::PathBuf {
+pub(crate) fn remote_project_state_dir(id: &str) -> std::path::PathBuf {
     storage::state_dir().join("remote-projects").join(id)
 }
 
@@ -103,7 +103,7 @@ fn default_remote_mirror(name: &str, id: &str, list: &ProjectsList) -> PathBuf {
 /// `mirror_parent` (the dialog's "Local location") when provided and non-empty,
 /// otherwise the default `projects-ssh` root. Returns the full `<parent>/<name>`
 /// path as a string, ready to store in `project.json`/`projects.json`.
-fn resolve_remote_mirror(
+pub(crate) fn resolve_remote_mirror(
     mirror_parent: Option<&str>,
     name: &str,
     id: &str,
@@ -279,7 +279,7 @@ fn entry_remote_spec(entry: &ProjectEntry) -> Option<RemoteSpec> {
 /// into four different ideas of what "already imported" means — which is how the
 /// gate came to cover local keep-imports and nothing else. `skip_id` excludes the
 /// project being re-pointed (extend edits one that is already in the list).
-fn find_project_conflict(
+pub(crate) fn find_project_conflict(
     list: &ProjectsList,
     site: &ProjectSite,
     skip_id: Option<&str>,
@@ -338,7 +338,7 @@ fn find_project_conflict(
 /// (`check_project_site`) was skipped or read a stale list, so it is plain English
 /// like every other backend error here — the *worded*, translated version is the
 /// frontend's, off `ProjectConflict.kind`.
-fn conflict_message(conflict: &ProjectConflict) -> String {
+pub(crate) fn conflict_message(conflict: &ProjectConflict) -> String {
     match conflict.kind.as_str() {
         "remote-path" => format!(
             "That folder on the host is already the project '{}'",
@@ -352,7 +352,7 @@ fn conflict_message(conflict: &ProjectConflict) -> String {
     }
 }
 
-fn read_projects_list() -> Result<ProjectsList, String> {
+pub(crate) fn read_projects_list() -> Result<ProjectsList, String> {
     let path = storage::state_dir().join("projects.json");
     if path.exists() {
         storage::read_json(&path).map_err(|e| e.to_string())
@@ -789,14 +789,14 @@ pub struct ArchivedProject {
 
 /// Reject ids that could escape the archive root (path traversal). Project ids
 /// are UUIDs in practice, so anything with a separator or `..` is invalid.
-fn validate_project_id(id: &str) -> Result<(), String> {
+pub(crate) fn validate_project_id(id: &str) -> Result<(), String> {
     if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
         return Err(format!("invalid project id '{id}'"));
     }
     Ok(())
 }
 
-fn entry_directory(entry: &ProjectEntry) -> Option<String> {
+pub(crate) fn entry_directory(entry: &ProjectEntry) -> Option<String> {
     entry
         .extra
         .get("directory")
@@ -804,7 +804,7 @@ fn entry_directory(entry: &ProjectEntry) -> Option<String> {
         .map(str::to_string)
 }
 
-fn entry_mirror(entry: &ProjectEntry) -> Option<String> {
+pub(crate) fn entry_mirror(entry: &ProjectEntry) -> Option<String> {
     entry
         .extra
         .get("mirror")
@@ -812,7 +812,7 @@ fn entry_mirror(entry: &ProjectEntry) -> Option<String> {
         .map(str::to_string)
 }
 
-fn entry_is_remote(entry: &ProjectEntry) -> bool {
+pub(crate) fn entry_is_remote(entry: &ProjectEntry) -> bool {
     entry
         .extra
         .get("remote")
@@ -4641,7 +4641,7 @@ pub fn get_time_today(project_id: String) -> Result<f64, String> {
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
-fn next_position(list: &ProjectsList) -> i64 {
+pub(crate) fn next_position(list: &ProjectsList) -> i64 {
     list.iter().map(|p| p.position).max().unwrap_or(0) + 10
 }
 
@@ -4692,7 +4692,7 @@ fn clean_description(description: Option<String>) -> Option<String> {
     })
 }
 
-fn projects_root() -> PathBuf {
+pub(crate) fn projects_root() -> PathBuf {
     paths::projects_root()
 }
 

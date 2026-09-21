@@ -29,6 +29,7 @@ import { useFastMode } from "../../lib/agents/fastMode";
 import { ActivityCalendar } from "./ActivityCalendar";
 import { CategoryEditor } from "./CategoryEditor";
 import { ExtendToRemoteDialog } from "./ExtendToRemoteDialog";
+import { ProjectExportDialog } from "./ProjectExportDialog";
 import { autoConnectEligibility } from "./autoConnectEligibility";
 import { describeDetectedSpecSource, sanitizeName } from "./scaffold";
 import { useSavedCredential } from "./useSavedCredential";
@@ -1394,6 +1395,7 @@ export function ProjectPill({
   const [showVisibility, setShowVisibility] = useState(false);
   const [showMigrate, setShowMigrate] = useState(false);
   const [showArchive, setShowArchive] = useState(false);
+  const [showExport, setShowExport] = useState(false);
   const [editCategories, setEditCategories] = useState(false);
   const [extendRemote, setExtendRemote] = useState(false);
   // Set instead of `extendRemote` alone when a global machine was handed to this
@@ -2022,6 +2024,21 @@ export function ProjectPill({
                 {t("pill.extendToRemoteEllipsis")}
               </button>
             )}
+            {/* Export sits with the metadata actions rather than in the danger
+                zone: it writes one new file and changes nothing about the
+                project. Its counterpart (import) lives on the + menu, where
+                every other "bring a project in" entry already is. */}
+            <button
+              className="untested"
+              onClick={() => {
+                setContextMenu(null);
+                setShowExport(true);
+              }}
+              title={t("pill.exportProjectMenuTitle")}
+            >
+              {t("pill.exportProjectEllipsis")}
+              <UntestedTag id="transfer.export" />
+            </button>
           </div>
 
           {/* Boxes (3a): checkbox row per box (toggle add/remove, additive N:M),
@@ -2632,6 +2649,11 @@ export function ProjectPill({
           onConfirm={() => setProjectGitDisabled(project.id, true)}
           onClose={() => setShowDisableGit(false)}
         />
+      )}
+
+      {/* Export the whole project to a portable file */}
+      {showExport && (
+        <ProjectExportDialog project={project} onClose={() => setShowExport(false)} />
       )}
 
       {/* Delete → archive (reversible; simple confirm) */}

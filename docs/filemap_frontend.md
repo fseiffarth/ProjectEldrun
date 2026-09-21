@@ -60,6 +60,8 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | File | Purpose |
 |------|---------|
 | `projects/ProjectPill.tsx` | Individual project pill (click/close/drag-reorder/group); "Remote machines…" opens `RemoteMachinesWindow`; VM projects get a ▣/▢ state glyph and "VM settings…". |
+| `projects/ProjectExportDialog.tsx` | "Export project…" (pill menu): measures the tree, its `.git` and its rebuildable folders separately so each toggle shows what it costs, then writes one `.eldrunproj` via the save dialog. Names what never travels (keychain secrets, machine-bound sync state). |
+| `projects/ProjectImportBundleDialog.tsx` | "Import Project File" (+ menu): reads a bundle's manifest first (nothing unpacked), shows what is in it and what is missing, then imports into a chosen folder. Refuses a remote bundle whose host folder is already a project here. |
 | `projects/VmSettingsDialog.tsx` | VM tier knobs (`docs/context/vm_projects.md`): boot/shut down/rebuild, memory/cpus/disk, egress mode, GitHub/extra-host allowlist, blocked-CONNECT log. Sibling of `ContainerSettingsWindow`. |
 | `projects/HpcPipelineWizard.tsx` | Guided HPC/SLURM pipeline wizard (+ menu → "HPC pipeline…"): Login → Project → Workspace → Load data → Run job → …; composes existing flows, never reimplements them. |
 | `projects/RemoteMachinesWindow.tsx` | Unified remote hub (`docs/multi_host_remote_plan.md` §4.4): primary host first, then workers, + Add a machine (offers global machines). Connect/Manage opens the shared `RemoteConnectDialog`; workers get sync/pull-outputs/shared-fs toggles. |

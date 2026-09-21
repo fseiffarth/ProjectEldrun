@@ -323,6 +323,8 @@ export const UNTESTED = {
   "remoteMachinesWindow.4": { area: "projects", what: "RemoteMachinesWindow · Remote path for this machine's copy" },
   "savePasswordRow.1": { area: "projects", what: "SavePasswordRow · A terminal login is one Eldrun never sees, so it stores nothing new — and deletes nothing…" },
   "terminalSignIn.label": { area: "projects", what: "TerminalSignInToggle · Sign in in a terminal" },
+  "transfer.export": { area: "projects", what: "ProjectExportDialog · Export project…" },
+  "transfer.import": { area: "projects", what: "ProjectImportBundleDialog · Import project file…" },
 
   // --- skills — The skills library ----------------------------------
   "skillsLibrary.overlayTitle": { area: "skills", what: "SkillsOverlay · Skills Library" },

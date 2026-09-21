@@ -488,8 +488,24 @@ pub fn adopt_project_tree_session(
     project_id: &str,
     local_file: &str,
 ) -> Result<TerminalSession, String> {
-    let mut session = read_project_tree_session(local_file)
+    let session = read_project_tree_session(local_file)
         .ok_or_else(|| "no saved layout in this folder".to_string())?;
+    adopt_untrusted_session(project_id, session)
+}
+
+/// Store a session that arrived from **outside this installation** as
+/// `project_id`'s layout, sanitized. Returns what was stored.
+///
+/// The one path both untrusted adoptions share: the project-tree copy
+/// ([`adopt_project_tree_session`]) and a project export bundle
+/// (`commands::project_transfer`). A bundle is a file that can be mailed, so its
+/// layout gets exactly the treatment a cloned repository's does — same
+/// sanitizer, same dropped `open_apps` — rather than a second, looser rule that
+/// would quietly become the way in.
+pub fn adopt_untrusted_session(
+    project_id: &str,
+    mut session: TerminalSession,
+) -> Result<TerminalSession, String> {
     sanitize_untrusted_layout(&mut session.tab_layout);
     // `open_apps` is not adopted: a folder-supplied list of host commands to
     // launch is precisely what the move was about, and no legitimate workflow

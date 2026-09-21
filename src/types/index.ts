@@ -1130,6 +1130,102 @@ export interface UnsyncedReport {
   verified: boolean;
 }
 
+/* ── Project export / import (docs/context/project_transfer.md) ───────────── */
+
+/** What a `.eldrunproj` bundle actually carries (Rust `BundleContents`). */
+export interface BundleContents {
+  dir: boolean;
+  state: boolean;
+  mirror: boolean;
+  gitHistory: boolean;
+  /** `node_modules`, `.venv`, `target`, … were left out of the bundle. */
+  rebuildableSkipped: boolean;
+  files: number;
+  bytes: number;
+}
+
+/** `preview_project_export` — what an export would carry, with sizes, so the
+ *  dialog's toggles have numbers attached. */
+export interface ExportPreview {
+  projectId: string;
+  name: string;
+  remote: boolean;
+  directory: string | null;
+  directoryMissing: boolean;
+  mirror: string | null;
+  mirrorMissing: boolean;
+  files: number;
+  bytes: number;
+  gitFiles: number;
+  gitBytes: number;
+  rebuildableFiles: number;
+  rebuildableBytes: number;
+  tabs: number;
+  boxNames: string[];
+  suggestedFileName: string;
+  /** Machine token (`"vm"` / `"trash"`) when this project cannot be exported. */
+  blocked?: string;
+}
+
+/** `export_project`'s answer. `notes` are machine tokens worded by
+ *  `transfer.note.*`. */
+export interface ExportReport {
+  path: string;
+  bytes: number;
+  files: number;
+  payloadBytes: number;
+  remote: boolean;
+  notes: string[];
+}
+
+/** `project-export` progress event payload. */
+export interface ExportProgress {
+  projectId: string;
+  phase: "start" | "file" | "done";
+  done: number;
+  total: number;
+}
+
+/** `inspect_project_export` — a bundle's manifest, read without unpacking. */
+export interface BundleInfo {
+  path: string;
+  format: number;
+  appVersion: string;
+  exportedAt: string;
+  projectId: string;
+  name: string;
+  remote: boolean;
+  description: string | null;
+  gitType: string | null;
+  directory: string | null;
+  mirror: string | null;
+  contents: BundleContents;
+  tabs: number;
+  boxNames: string[];
+  timeDays: number;
+  /** A project with the bundle's own id is already registered here, so the
+   *  import gets a fresh one (the original stays put). */
+  idInUse: boolean;
+  /** Name of the project a remote bundle's host+path already belongs to. */
+  siteConflict?: string;
+  suggestedParent: string;
+}
+
+/** `import_project_export`'s answer. */
+export interface ImportBundleResult {
+  entry: ProjectEntry;
+  directory: string;
+  mirror?: string | null;
+  files: number;
+  tabsRestored: number;
+  /** Tabs the sanitizer downgraded to a plain shell (unknown command). */
+  tabsDowngraded: number;
+  newId: boolean;
+  boxesJoined: string[];
+  boxesMissing: string[];
+  notes: string[];
+}
+
 /** Supported git-hosting providers for publishing a project's repo. */
 export type GitProvider = "github" | "gitlab";
 

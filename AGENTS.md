@@ -61,9 +61,9 @@ tool is unavailable, say so — never skip silently.
 - Design rationale, one file per subsystem in `docs/context/` — open only the
   one you're touching: agent_authority, agent_schedule_mcp, agent_sessions,
   caldav, dev_builds, docker_containers, git_sync, hpc_careful_mode, mail_encryption,
-  multi_host_remote, openvpn, project_boxes, remote_autoconnect,
-  remote_credentials, remote_projects, root_console, tmux_sessions,
-  usage_stats, vm_projects.
+  multi_host_remote, openvpn, project_boxes, project_transfer,
+  remote_autoconnect, remote_credentials, remote_projects, root_console,
+  tmux_sessions, usage_stats, vm_projects.
 - Before touching byte-sync or git lockstep: `docs/remote_sync_guide.md`.
 - Updating a wrapped third-party tool: `docs/third_party_update_checklist.md`.
 - New TODOs go in the matching `todo/<group>.md`.
