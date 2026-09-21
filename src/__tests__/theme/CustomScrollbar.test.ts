@@ -9,6 +9,8 @@ import {
   thumbGeometry,
   scrollFromDrag,
   clipBox,
+  openSpans,
+  largestOverlap,
   type Box,
   type TrackMetrics,
 } from "../../lib/theme/customScrollbar";
@@ -159,6 +161,58 @@ describe("clipBox", () => {
     // What an ancestor chain resolves to when one link clips everything away.
     const collapsed: Box = { top: 0, left: 0, width: 0, height: 0 };
     expect(clipBox({ top: 0, left: 0, width: 8, height: 40 }, collapsed)).toBeNull();
+  });
+});
+
+describe("openSpans", () => {
+  // A 600px gutter from y=40; a header dropdown covers y < 250.
+  const underMenu = (y: number) => y >= 250;
+
+  it("returns the whole gutter when nothing covers it", () => {
+    expect(openSpans(40, 640, () => true)).toEqual([[40, 640]]);
+  });
+
+  it("returns nothing when the gutter is wholly covered", () => {
+    expect(openSpans(40, 640, () => false)).toEqual([]);
+  });
+
+  it("finds a menu's bottom edge to the pixel, not to the probe step", () => {
+    expect(openSpans(40, 640, underMenu)).toEqual([[250, 640]]);
+  });
+
+  it("splits around a band covered in the middle", () => {
+    const band = (y: number) => y < 300 || y >= 420;
+    expect(openSpans(40, 640, band)).toEqual([
+      [40, 300],
+      [420, 640],
+    ]);
+  });
+
+  it("gives nothing for a collapsed gutter", () => {
+    expect(openSpans(40, 40, () => true)).toEqual([]);
+  });
+});
+
+describe("largestOverlap", () => {
+  it("trims a thumb to the part below a dropdown", () => {
+    expect(largestOverlap([[250, 640]], 40, 400)).toEqual([250, 400]);
+  });
+
+  it("hides a thumb lying wholly under the dropdown", () => {
+    expect(largestOverlap([[250, 640]], 40, 200)).toBeNull();
+  });
+
+  it("keeps the larger side of a thumb crossing a covered band", () => {
+    expect(
+      largestOverlap(
+        [
+          [40, 300],
+          [420, 640],
+        ],
+        280,
+        500,
+      ),
+    ).toEqual([420, 500]);
   });
 });
 

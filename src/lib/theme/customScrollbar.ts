@@ -163,6 +163,75 @@ export function clipBox(box: Box, clip: Box): Box | null {
   return { top, left, width: right - left, height: bottom - top };
 }
 
+/** A run along one axis, `[start, end)` in viewport px. */
+export type Span = [number, number];
+
+/** Spacing of the coarse probes along a gutter; each state change is then bisected to 1px. */
+const PROBE_STEP = 16;
+
+/**
+ * The runs of `[start, end)` where `isOpen` holds, found by probing every
+ * `step` px and bisecting each flip down to a pixel.
+ *
+ * This is what lets a thumb stop at the edge of a menu instead of painting over
+ * it. The thumbs sit in one layer above every menu (a menu's own list needs its
+ * thumb on top), so a container half-covered by an overlay — the main area
+ * under a header dropdown — has to be told WHERE along its gutter it is still
+ * the topmost thing. A single probe answered only yes or no for the whole
+ * gutter, and a dropdown hanging over its top third read as "not covered".
+ * An overlay thinner than `step` can slip between probes; nothing the app
+ * layers over a gutter is.
+ */
+export function openSpans(
+  start: number,
+  end: number,
+  isOpen: (pos: number) => boolean,
+  step = PROBE_STEP,
+): Span[] {
+  if (end - start < 1) return [];
+  const spans: Span[] = [];
+  const last = end - 0.5;
+  let pos = start + 0.5;
+  let open = isOpen(pos);
+  let runStart = open ? start : 0;
+  while (pos < last) {
+    const next = Math.min(pos + step, last);
+    const nextOpen = isOpen(next);
+    if (nextOpen !== open) {
+      // Bisect (pos, next] for the first probe that reads like `next`.
+      let lo = pos;
+      let hi = next;
+      while (hi - lo > 1) {
+        const mid = (lo + hi) / 2;
+        if (isOpen(mid) === nextOpen) hi = mid;
+        else lo = mid;
+      }
+      const edge = Math.round(hi - 0.5);
+      if (open) spans.push([runStart, edge]);
+      else runStart = edge;
+      open = nextOpen;
+    }
+    pos = next;
+  }
+  if (open) spans.push([runStart, end]);
+  return spans;
+}
+
+/**
+ * The piece of `[start, end)` that the longest overlap with `spans` leaves, or
+ * null when it overlaps none. A thumb crossing a covered band in the middle
+ * keeps its larger side rather than being split in two.
+ */
+export function largestOverlap(spans: Span[], start: number, end: number): Span | null {
+  let best: Span | null = null;
+  for (const [a, b] of spans) {
+    const lo = Math.max(a, start);
+    const hi = Math.min(b, end);
+    if (hi > lo && (!best || hi - lo > best[1] - best[0])) best = [lo, hi];
+  }
+  return best;
+}
+
 /**
  * True when this element's own CSS asks for no scrollbar at all — no native bar
  * and no thumb of ours either. The tab strip, the project pill row and the
@@ -236,6 +305,13 @@ interface Entry {
   clip: Box;
   /** False while the container is off-screen or covered by something else. */
   visible: boolean;
+  /**
+   * Where along each gutter the container is still the topmost thing (see
+   * `openSpans`). A thumb is painted only inside these, so an overlay covering
+   * part of the gutter — a header dropdown over the main area — stays on top.
+   */
+  openV: Span[];
+  openH: Span[];
   /**
    * True when another registered container lives inside this one, i.e. when
    * scrolling THIS element moves someone else's cached rect. Scrolling an
@@ -320,6 +396,8 @@ export function installCustomScrollbars(): () => void {
       height: 0,
       clip: { top: 0, left: 0, width: 0, height: 0 },
       visible: false,
+      openV: [],
+      openH: [],
       nested: false,
     });
     resizeObserver.observe(el);
@@ -427,7 +505,19 @@ export function installCustomScrollbars(): () => void {
             width: geom.size,
             height: SIZE,
           };
-    const shown = clipBox(full, entry.clip);
+    const clipped = clipBox(full, entry.clip);
+    const vertical = axis === "vertical";
+    const run =
+      clipped &&
+      (vertical
+        ? largestOverlap(entry.openV, clipped.top, clipped.top + clipped.height)
+        : largestOverlap(entry.openH, clipped.left, clipped.left + clipped.width));
+    const shown: Box | null =
+      clipped && run
+        ? vertical
+          ? { ...clipped, top: run[0], height: run[1] - run[0] }
+          : { ...clipped, left: run[0], width: run[1] - run[0] }
+        : null;
     if (!shown) {
       thumb.style.opacity = "0";
       thumb.style.pointerEvents = "none";
@@ -475,32 +565,52 @@ export function installCustomScrollbars(): () => void {
     return clipOf(el.parentElement, cache);
   }
 
+  /** Is `entry`'s container the topmost thing at (x, y)? */
+  function ownsPoint(entry: Entry, x: number, y: number): boolean {
+    const hit = document.elementFromPoint(x, y);
+    return !!hit && (hit === entry.el || entry.el.contains(hit));
+  }
+
   /**
-   * Is this container the thing you would actually touch at that point?
+   * Where along each gutter this container is the thing you would actually
+   * touch — fills `openV`/`openH` and sets `visible`.
    *
    * A hit test rather than a list of "which selectors count as a modal": the
    * layer is one fixed element for the whole window, so without this the right
-   * panel's thumb would paint straight over an open dialog that covers it.
-   * Asking the document what is topmost handles every overlay the app has now
-   * and every one it grows later, with no list to keep in step. The probe point
-   * sits inside the container's content, clear of the gutter, so a thumb can
-   * never be the answer to its own question.
+   * panel's thumb would paint straight over an open dialog that covers it, and
+   * the main area's over a header dropdown that covers only the top of its
+   * gutter. Asking the document what is topmost handles every overlay the app
+   * has now and every one it grows later, with no list to keep in step. The
+   * probe lines run just inside the gutter, so a thumb can never be the answer
+   * to its own question.
    */
-  function isReachable(entry: Entry): boolean {
+  function measureReach(entry: Entry): void {
     // Probed inside the CLIPPED box, not the container's own: a list scrolled
-    // so that only its top strip is still inside the dialog has its midpoint
-    // outside it, and probing there would answer "covered" for a container the
-    // user can plainly see (and hide a thumb that belongs on screen).
+    // so that only its top strip is still inside the dialog would otherwise be
+    // probed outside it, answer "covered" for a container the user can plainly
+    // see, and hide a thumb that belongs on screen.
     const visible = clipBox(entry, entry.clip);
-    if (!visible) return false;
-    const x = clamp(visible.left + visible.width - SIZE - 2, 0, window.innerWidth - 1);
-    const y = clamp(
-      visible.top + Math.min(visible.height / 2, visible.height - 2),
-      0,
-      window.innerHeight - 1,
-    );
-    const hit = document.elementFromPoint(x, y);
-    return !!hit && (hit === entry.el || entry.el.contains(hit));
+    entry.openV = [];
+    entry.openH = [];
+    if (!visible) {
+      entry.visible = false;
+      return;
+    }
+    const maxX = window.innerWidth - 1;
+    const maxY = window.innerHeight - 1;
+    if (entry.axisV) {
+      const x = clamp(visible.left + visible.width - SIZE - 2, 0, maxX);
+      entry.openV = openSpans(visible.top, visible.top + visible.height, (y) =>
+        ownsPoint(entry, x, clamp(y, 0, maxY)),
+      );
+    }
+    if (entry.axisH) {
+      const y = clamp(visible.top + visible.height - SIZE - 2, 0, maxY);
+      entry.openH = openSpans(visible.left, visible.left + visible.width, (x) =>
+        ownsPoint(entry, clamp(x, 0, maxX), y),
+      );
+    }
+    entry.visible = entry.openV.length > 0 || entry.openH.length > 0;
   }
 
   function runGeometry(): void {
@@ -518,7 +628,7 @@ export function installCustomScrollbars(): () => void {
       entry.width = rect.width;
       entry.height = rect.height;
       entry.clip = ancestorClip(entry.el, clipCache);
-      entry.visible = isReachable(entry);
+      measureReach(entry);
       applyScroll(entry);
     }
     // Recomputed here rather than on every scroll: containment only changes
@@ -550,7 +660,7 @@ export function installCustomScrollbars(): () => void {
       entry.width = rect.width;
       entry.height = rect.height;
       entry.clip = ancestorClip(entry.el, clipCache);
-      entry.visible = isReachable(entry);
+      measureReach(entry);
       applyScroll(entry);
     }
   }
