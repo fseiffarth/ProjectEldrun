@@ -10,6 +10,8 @@ export const dict: Dict = {
   "scheduleMcp.title": "Projekt-Agenten dürfen Prompts vorschlagen und planen (MCP)",
   "scheduleMcp.help": "Standardmäßig aus. Neue lokale Claude-, Codex- und MCP-fähige Vibe-Tabs können Prompts für sich selbst planen. Vorschläge brauchen eine Freigabe, wiederkehrende Prompts immer. Erfordert das aktualisierte Backend. Remote-, VM- und Container-Tabs werden nicht unterstützt.",
   "scheduleMcp.level": "Zeitplanung durch Agenten",
+  "scheduleMcp.menuItem": "Zeitplanung durch Agenten: {level}",
+  "scheduleMcp.menuTitle": "Klicken zum Wechseln: aus → zur Freigabe vorschlagen → einmalige Prompts sofort übernehmen.",
   "scheduleMcp.off": "Aus",
   "scheduleMcp.propose": "Zur Freigabe vorschlagen",
   "scheduleMcp.apply": "Einmalige Prompts sofort übernehmen",

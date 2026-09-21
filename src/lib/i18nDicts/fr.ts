@@ -10,6 +10,8 @@ export const dict: Dict = {
   "scheduleMcp.title": "Autoriser les agents du projet à proposer des instructions planifiées (MCP)",
   "scheduleMcp.help": "Désactivé par défaut. Les nouveaux onglets locaux Claude, Codex et Vibe avec MCP peuvent planifier leurs propres instructions. Les propositions doivent être approuvées, les récurrentes toujours. Nécessite le backend mis à jour. Les onglets distants, VM et conteneurs ne sont pas pris en charge.",
   "scheduleMcp.level": "Planification par les agents",
+  "scheduleMcp.menuItem": "Planification par les agents : {level}",
+  "scheduleMcp.menuTitle": "Cliquer pour alterner : désactivé → proposer pour approbation → appliquer immédiatement les prompts ponctuels.",
   "scheduleMcp.off": "Désactivée",
   "scheduleMcp.propose": "Proposer pour approbation",
   "scheduleMcp.apply": "Appliquer immédiatement les instructions ponctuelles",

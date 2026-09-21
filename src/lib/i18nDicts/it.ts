@@ -10,6 +10,8 @@ export const dict: Dict = {
   "scheduleMcp.title": "Consenti agli agenti del progetto di proporre istruzioni programmate (MCP)",
   "scheduleMcp.help": "Disattivato per impostazione predefinita. Le nuove schede locali di Claude, Codex e Vibe con MCP possono programmare istruzioni per sé. Le proposte richiedono approvazione; quelle ricorrenti sempre. Richiede il backend aggiornato. Le schede remote, VM e container non sono supportate.",
   "scheduleMcp.level": "Programmazione degli agenti",
+  "scheduleMcp.menuItem": "Programmazione degli agenti: {level}",
+  "scheduleMcp.menuTitle": "Clic per alternare: disattivato → proponi per approvazione → applica subito i prompt singoli.",
   "scheduleMcp.off": "Disattivata",
   "scheduleMcp.propose": "Proponi per approvazione",
   "scheduleMcp.apply": "Applica subito le istruzioni singole",

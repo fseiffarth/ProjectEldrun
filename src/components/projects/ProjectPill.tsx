@@ -47,7 +47,6 @@ import { useBoxEditorStore } from "../../stores/boxEditor";
 import { useBoxesStore } from "../../stores/boxes";
 import { bindDragRelease, dragPlatform } from "../../lib/window/dragPlatform";
 import { useT } from "../../lib/i18n";
-import { AgentScheduleMcpLevel } from "../agents/AgentScheduleMcpSettings";
 import { isTrashProject } from "../../lib/projects/trashProject";
 import { TrashProjectIcon } from "./TrashProjectIcon";
 import {
@@ -1423,6 +1422,7 @@ export function ProjectPill({
   const setProjectSandbox = useProjectsStore((s) => s.setProjectSandbox);
   const setProjectRemoteControl = useProjectsStore((s) => s.setProjectRemoteControl);
   const setProjectAgentFence = useProjectsStore((s) => s.setProjectAgentFence);
+  const setProjectScheduleMcp = useProjectsStore((s) => s.setProjectScheduleMcp);
   const [agentFenceStatus, setAgentFenceStatus] = useState<AgentFenceStatus | null>(null);
   useEffect(() => {
     if (!contextMenu) return;
@@ -2301,10 +2301,21 @@ export function ProjectPill({
                 )}
               <UntestedTag id="projectPill.14" />
             </button>
-            <div className="ctx-inline-control" onClick={(event) => event.stopPropagation()}>
-              <span>{t("scheduleMcp.level")} <UntestedTag id="scheduleMcp" /></span>
-              <AgentScheduleMcpLevel projectId={project.id} />
-            </div>
+            <button
+              className="untested"
+              onClick={() => {
+                setContextMenu(null);
+                const levels = ["off", "propose", "apply"] as const;
+                const current = levels.indexOf(project.schedule_mcp ?? "propose");
+                void setProjectScheduleMcp(project.id, levels[(current + 1) % levels.length]);
+              }}
+              title={t("scheduleMcp.menuTitle")}
+            >
+              {t("scheduleMcp.menuItem", {
+                level: t(`scheduleMcp.${project.schedule_mcp ?? "propose"}`),
+              })}
+              <UntestedTag id="scheduleMcp" />
+            </button>
             {IS_LINUX && agentFenceInstallCommand(agentFenceStatus) && (
                 <button
                   className="untested"

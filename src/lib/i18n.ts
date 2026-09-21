@@ -3703,6 +3703,8 @@ export const en = {
   "scheduleMcp.title": "Let project agents propose scheduled prompts (MCP)",
   "scheduleMcp.help": "Off by default. New local Claude, Codex and MCP-enabled Vibe tabs can schedule prompts for themselves. Proposals need approval; recurring prompts always need approval. Requires the updated backend. Remote, VM and container tabs are not supported.",
   "scheduleMcp.level": "Agent scheduling",
+  "scheduleMcp.menuItem": "Agent scheduling: {level}",
+  "scheduleMcp.menuTitle": "Click to cycle: off → propose for approval → apply one-time prompts immediately.",
   "scheduleMcp.off": "Off",
   "scheduleMcp.propose": "Propose for approval",
   "scheduleMcp.apply": "Apply one-time prompts immediately",
