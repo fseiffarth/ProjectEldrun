@@ -84,7 +84,7 @@ only when breaking it does damage. The *why* goes in code comments or
 | `app_update.rs` | App update check against GitHub releases (not the Tauri updater: releases are unsigned). Asset URLs checked against this repo's release-download prefix; per-platform installer handoff. |
 | `big_folders.rs` | Giant-folder census for the setup prompt: local walk + remote `du -ak -x` reduced to one `(rel, bytes)` shape; pure `tally_dirs` + `pick` report the shallowest over-threshold folder. |
 | `caldav.rs` | CalDAV transport (RFC 4791/6578) on `reqwest` + `roxmltree`: fixed XML templates, multistatus parsing. Never parses iCalendar (opaque text to the frontend). |
-| `dev_build.rs` | Reads `package-dev-auto.sh`'s state files + log tail for the header dev-build chip (step, estimate, failure, behind, relaunch). `None` unless compiled with `ELDRUN_DEV_SOURCE_ROOT`. |
+| `dev_build.rs` | Reads `package-dev-auto.sh`'s state files + log tail for the header dev-build chip (step, estimate, failure, behind, relaunch); `spawn_relauncher` backs the chip's "Relaunch now". `None` unless compiled with `ELDRUN_DEV_SOURCE_ROOT`. |
 | `desktop_images.rs` | Desktop images the phone composer may attach (#31u): newest screenshots/pictures by opaque id; `resolve` re-scans, so no path crosses the API; copies via `mobile_control::inbox::store`. |
 | `browser_engine.rs` | Browser engine work: reader fetch (rustls, no cookies/Referer, fixed UA, 15 s / 5 MB / 3-hop caps), live-window registry, download quarantine + sniffing. SSRF rule: only hop 0 (the user's URL) may be loopback/private. |
 | `sync_auto.rs` | Auto-sync on top of `remote_sync` (watcher + interval, safe-direction policy). Skips lockstep-owned tracked files; ignores `.git`/`.eldrun` writes; HPC tag stops it. |

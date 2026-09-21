@@ -138,6 +138,7 @@ export const UNTESTED = {
 
   // --- header — The header cluster: machines, VPN, dev build --------
   "devBuild.title": { area: "header", what: "DevBuildIndicator · Dev build", tested: "2026-09-20" },
+  "devBuild.relaunchNow": { area: "header", what: "DevBuildIndicator · Relaunch now (onto the newer snapshot)" },
   "machinesIndicator.1": { area: "header", what: "MachinesIndicator · Choose which machines to write to a shareable JSON file. Only the host, port and label ar…", tested: "2026-09-20" },
   "machinesIndicator.10": { area: "header", what: "MachinesIndicator · to which project?" },
   "machinesIndicator.11": { area: "header", what: "MachinesIndicator · here — then removes it from the list. Projects it was added to keep their own copy." },

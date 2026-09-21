@@ -1923,6 +1923,7 @@ pub fn run() {
             // Debug diagnostics
             commands::debug::debug_app_resource_usage,
             commands::debug::dev_build_status,
+            commands::debug::dev_build_relaunch,
             commands::debug::webview_rss_kib,
             commands::debug::webview_renderer_rss,
             commands::debug::webview_renderer_claim,

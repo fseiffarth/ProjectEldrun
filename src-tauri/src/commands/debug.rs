@@ -57,6 +57,27 @@ pub async fn dev_build_status() -> Option<crate::services::dev_build::DevBuildSt
         .flatten()
 }
 
+/// Close this frozen "Eldrun (dev)" window and reopen it on the newest
+/// snapshot: a detached helper waits for the exit and runs the launcher, which
+/// adopts the snapshot. The close goes through the main window, so the quit is
+/// the ordinary one (layout flush, tmux reap, `RunEvent::Exit`) and tabs
+/// restore as after any relaunch. User-clicked only; refused outside the
+/// frozen binary.
+#[tauri::command]
+pub async fn dev_build_relaunch(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    tauri::async_runtime::spawn_blocking(crate::services::dev_build::spawn_relauncher)
+        .await
+        .map_err(|e| e.to_string())??;
+    match app.get_webview_window("main") {
+        Some(main) => main.close().map_err(|e| e.to_string()),
+        None => {
+            app.exit(0);
+            Ok(())
+        }
+    }
+}
+
 /// Resident size (KiB) of the largest webview *renderer* process under the app.
 ///
 /// The renderer (WebKitWebProcess on Linux) holds the whole UI's JS heap in a

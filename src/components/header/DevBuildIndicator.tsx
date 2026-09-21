@@ -16,9 +16,12 @@ import { UntestedTag } from "../common/UntestedTag";
  * (the last successful build's duration is the estimate — nothing better is
  * knowable from a release `cargo build`).
  *
- * Read-only by construction: `dev_build_status` reads the script's own state
- * files, and the one action here opens a root-console tab tailing its log. It
- * never queues, starts or stops a build, and never launches Eldrun.
+ * Read-only towards the build: `dev_build_status` reads the script's own state
+ * files, one action opens a root-console tab tailing its log, and it never
+ * queues, starts or stops a build. The other action is the user's own relaunch:
+ * in the frozen window, once a newer snapshot is installed or built, "Relaunch
+ * now" quits through the ordinary close and reopens via the launcher
+ * (`dev_build_relaunch`).
  *
  * Only a binary built from a checkout answers (`ELDRUN_DEV_SOURCE_ROOT`); a
  * release answers `null` and this renders nothing, so the chip is never a
@@ -43,6 +46,8 @@ interface DevBuildStatus {
   installed: string | null;
   behind: number | null;
   relaunch: boolean;
+  adoptable: string | null;
+  canRelaunch: boolean;
   logPath: string;
 }
 
@@ -101,6 +106,8 @@ export function DevBuildIndicator() {
   const closeMenu = useHeaderHoverMenuStore((s) => s.close);
   const [status, setStatus] = useState<DevBuildStatus | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [relaunching, setRelaunching] = useState(false);
+  const [relaunchError, setRelaunchError] = useState<string | null>(null);
   const closeTimer = useRef<number | undefined>(undefined);
 
   const active = status?.state === "building" || status?.state === "waiting";
@@ -190,6 +197,16 @@ export function DevBuildIndicator() {
     });
   };
 
+  const relaunchNow = () => {
+    setRelaunching(true);
+    setRelaunchError(null);
+    // On success the window closes under us; only a refusal comes back.
+    invoke("dev_build_relaunch").catch((e: unknown) => {
+      setRelaunching(false);
+      setRelaunchError(String(e));
+    });
+  };
+
   let detail: string | null = null;
   if (building && elapsed !== null) {
     const est = status.estimateSecs;
@@ -264,8 +281,30 @@ export function DevBuildIndicator() {
             {failed && (
               <div className="mobile-indicator-error">{t("devBuild.failedWhen", { when: failed.when })}</div>
             )}
-            {status.relaunch && <div className="mobile-indicator-notice">{t("devBuild.relaunch")}</div>}
+            {status.relaunch ? (
+              <div className="mobile-indicator-notice">{t("devBuild.relaunch")}</div>
+            ) : (
+              status.canRelaunch &&
+              status.adoptable && (
+                <div className="mobile-indicator-notice">
+                  {t("devBuild.adoptable", { commit: status.adoptable })}
+                </div>
+              )
+            )}
+            {relaunchError && <div className="mobile-indicator-error">{relaunchError}</div>}
             <div className="mobile-indicator-actions">
+              {status.canRelaunch && (
+                <button
+                  type="button"
+                  className="vpn-indicator-connect"
+                  disabled={relaunching}
+                  title={t("devBuild.relaunchNowHint")}
+                  onClick={relaunchNow}
+                >
+                  {relaunching ? t("devBuild.relaunching") : t("devBuild.relaunchNow")}{" "}
+                  <UntestedTag id="devBuild.relaunchNow" />
+                </button>
+              )}
               <button type="button" className="vpn-indicator-connect" onClick={followLog}>
                 {t("devBuild.openLog")}
               </button>

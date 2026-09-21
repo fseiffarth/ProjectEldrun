@@ -114,7 +114,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `skills/SkillsLibraryTab.tsx` / `skills/SkillsLibraryView.tsx` / `skills/SkillsOverlay.tsx` | Skills Library (`docs/skills_plan.md`): browse git-hosted skills, preview, copy into `.claude/skills/` or `~/.claude/skills/`. Install only from the preview panel. |
 | `printing/PrintManagerPane.tsx` | Native print manager tab: printers, queues, make default / pause / test page / cancel. Machine-scoped (no project props), singleton per scope; `visible` gates polling. |
 | `header/Clock.tsx` | Header clock. |
-| `header/DevBuildIndicator.tsx` | Dev-build chip in the cluster: the background frozen-dev build's step/clock/estimate bar; hover menu opens a `tail -F` of its log. Renders nothing in release builds. |
+| `header/DevBuildIndicator.tsx` | Dev-build chip in the cluster: the background frozen-dev build's step/clock/estimate bar; hover menu opens a `tail -F` of its log, and in the frozen window offers "Relaunch now" onto a newer snapshot. Renders nothing in release builds. |
 | `header/StatusCluster.tsx` | Machine-state readouts (connection, battery, Mobile, OpenVPN, Machines, CPU/RAM/GPU) as one collapsible cluster: collapsed = one worst-state `ConnLamp`; persists `Settings.header_status_expanded`. |
 | `header/SettingsMenu.tsx` | Header ⚙ menu: settings, help, tours, lessons. `GlobalAppMenu`'s twin on the shared `headerHoverMenu` id. |
 | `header/HeaderGlyphs.tsx` | The top bar's drawn icons (✉ 🗓 ☑ ▦ ⚙ as SVG): 16-unit grid, outlines y=2→14, the phone icon's line weight. Sized in `mail-todo.css`. |

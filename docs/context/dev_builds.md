@@ -113,4 +113,10 @@ change was not run live.
   pick it up". It exists only in binaries built with `ELDRUN_DEV_SOURCE_ROOT`
   (`package-dev.sh` and the hot-reload launcher export it), and a log line
   format change in either script silently degrades its step readout.
+  In the frozen window, once a newer snapshot is installed over it or built
+  and recorded in `target/release/` (the fenced case the launcher adopts), its
+  menu offers **Relaunch now** (2026-09-21): `dev_build_relaunch` spawns a
+  detached helper that waits for this pid to exit (gives up after 2 min) and
+  runs `start-eldrun-dev-build.sh`, then closes the main window through the
+  ordinary quit. User-clicked only — agents still never start or stop Eldrun.
 

@@ -88,6 +88,12 @@ pub struct DevBuildStatus {
     /// This process is the frozen binary and a newer one has been installed
     /// over it since it started: a relaunch picks the new one up.
     pub relaunch: bool,
+    /// Short commit of a finished snapshot in the tree that the launcher adopts
+    /// on its next start (the install a fenced build could not do itself).
+    pub adoptable: Option<String>,
+    /// This process is the frozen binary and a relaunch would open something
+    /// newer (`relaunch` or `adoptable`): the menu offers to do it.
+    pub can_relaunch: bool,
     pub log_path: String,
 }
 
@@ -231,15 +237,36 @@ fn commits_behind(root: &str, installed: &str) -> Option<u32> {
     String::from_utf8_lossy(&out.stdout).trim().parse().ok()
 }
 
-/// Linux keeps `/proc/self/exe` pointing at the inode this process runs, and
-/// marks it `(deleted)` once `install` has replaced the path.
-fn replaced_under_us(binary: &Path) -> bool {
-    let Ok(exe) = fs::read_link("/proc/self/exe") else {
-        return false;
-    };
+/// What this process runs as, from `/proc/self/exe`: (path, replaced). Linux
+/// keeps the link pointing at the inode this process runs, and marks it
+/// `(deleted)` once `install` has replaced the path.
+fn own_exe() -> Option<(PathBuf, bool)> {
+    let exe = fs::read_link("/proc/self/exe").ok()?;
     let exe = exe.to_string_lossy();
-    exe.strip_suffix(" (deleted)")
-        .is_some_and(|path| Path::new(path) == binary)
+    Some(match exe.strip_suffix(" (deleted)") {
+        Some(path) => (PathBuf::from(path), true),
+        None => (PathBuf::from(exe.as_ref()), false),
+    })
+}
+
+/// The short commit of a finished snapshot in the tree that
+/// `start-eldrun-dev-build.sh` would adopt: `target/release/eldrun` newer than
+/// the installed binary, with the `.frozen` record `package-dev.sh` writes only
+/// after a verified build. A binary newer than its record is one cargo is still
+/// linking, or one that failed the check — not a snapshot.
+fn adoptable_snapshot(root: &str, installed: &Path) -> Option<String> {
+    let built = Path::new(root).join("target/release/eldrun");
+    let record = Path::new(root).join("target/release/eldrun.frozen");
+    let mtime = |p: &Path| fs::metadata(p).and_then(|m| m.modified()).ok();
+    let built_at = mtime(&built)?;
+    if mtime(installed).is_some_and(|at| at >= built_at) || mtime(&record)? < built_at {
+        return None;
+    }
+    fs::read_to_string(&record)
+        .ok()?
+        .lines()
+        .find_map(|l| l.strip_prefix("commit="))
+        .map(|c| short(c.trim()))
 }
 
 fn short(sha: &str) -> String {
@@ -276,6 +303,12 @@ pub fn status() -> Option<DevBuildStatus> {
     });
     let stamp = read_trimmed(&dir.join("package-dev-auto.stamp"));
     let behind = stamp.as_deref().and_then(|sha| commits_behind(root, sha));
+    let binary = dir.join("eldrun-dev");
+    let (frozen, replaced) = match own_exe() {
+        Some((exe, replaced)) if exe == binary => (true, replaced),
+        _ => (false, false),
+    };
+    let adoptable = adoptable_snapshot(root, &binary);
 
     Some(DevBuildStatus {
         state,
@@ -287,9 +320,47 @@ pub fn status() -> Option<DevBuildStatus> {
         failed,
         installed: stamp.as_deref().map(short),
         behind,
-        relaunch: replaced_under_us(&dir.join("eldrun-dev")),
+        relaunch: replaced,
+        can_relaunch: frozen && (replaced || adoptable.is_some()),
+        adoptable,
         log_path: log_path.to_string_lossy().into_owned(),
     })
+}
+
+/// Start the "Eldrun (dev)" launcher once this process has exited, detached so
+/// the quit's teardown does not take it along. The caller then closes the main
+/// window, which runs the ordinary quit (layout flush, tmux reap,
+/// `RunEvent::Exit`); the launcher refuses while this binary still runs, hence
+/// the wait. A quit that never comes (cancelled, hung) lets the helper give up
+/// after two minutes rather than open a second window some hours later.
+pub fn spawn_relauncher() -> Result<(), String> {
+    let root = SOURCE_ROOT.ok_or("not a dev build")?;
+    let binary = app_dir().join("eldrun-dev");
+    if !own_exe().is_some_and(|(exe, _)| exe == binary) {
+        return Err("this window is not the frozen Eldrun (dev) binary".into());
+    }
+    let launcher = Path::new(root).join("start-eldrun-dev-build.sh");
+    if !launcher.is_file() {
+        return Err(format!("{} is missing", launcher.display()));
+    }
+    let mut cmd = crate::paths::command_no_window("sh");
+    cmd.args([
+        "-c",
+        r#"i=0; while kill -0 "$1" 2>/dev/null; do i=$((i+1)); [ "$i" -gt 600 ] && exit 0; sleep 0.2; done; exec "$2""#,
+        "eldrun-relaunch",
+        &std::process::id().to_string(),
+    ])
+    .arg(&launcher)
+    .stdin(std::process::Stdio::null())
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    // Not waited on: it outlives this process by design, and init reaps it.
+    cmd.spawn().map(drop).map_err(|e| format!("could not start the relauncher: {e}"))
 }
 
 #[cfg(test)]
@@ -375,5 +446,40 @@ Installed frozen binary: /h/eldrun-dev (0.1.72 @ 47b2af1, from head)
 2026-09-18T10:00:01+02:00 pass 1 (aaa) finished with status 0
 ";
         assert_eq!(parse_log(log).last_success_secs, None);
+    }
+
+    #[test]
+    fn a_snapshot_is_adoptable_only_when_newer_and_recorded() {
+        use std::time::{Duration, SystemTime};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        let release = dir.path().join("target/release");
+        fs::create_dir_all(&release).unwrap();
+        let installed = dir.path().join("eldrun-dev");
+        let touch = |path: &Path, body: &str, age_secs: u64| {
+            fs::write(path, body).unwrap();
+            let file = fs::OpenOptions::new().write(true).open(path).unwrap();
+            file.set_modified(SystemTime::now() - Duration::from_secs(age_secs)).unwrap();
+        };
+        let built = release.join("eldrun");
+        let record = release.join("eldrun.frozen");
+
+        // Nothing built.
+        assert_eq!(adoptable_snapshot(root, &installed), None);
+
+        // Built after the install, record written after the build.
+        touch(&installed, "old", 300);
+        touch(&built, "new", 200);
+        touch(&record, "sha256=x\ncommit=30ed3471234\n", 100);
+        assert_eq!(adoptable_snapshot(root, &installed), Some("30ed347".into()));
+
+        // A binary newer than its record is still being linked.
+        touch(&built, "newer", 50);
+        assert_eq!(adoptable_snapshot(root, &installed), None);
+
+        // Already installed.
+        touch(&record, "commit=30ed347\n", 40);
+        touch(&installed, "new", 10);
+        assert_eq!(adoptable_snapshot(root, &installed), None);
     }
 }

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -25,6 +25,8 @@ const idle = {
   installed: "99e2c74",
   behind: 0,
   relaunch: false,
+  adoptable: null,
+  canRelaunch: false,
   logPath: "/h/.local/share/eldrun/package-dev-auto.log",
 };
 
@@ -99,5 +101,30 @@ describe("DevBuildIndicator", () => {
     render(<DevBuildIndicator />);
     await screen.findByLabelText("Dev build: Up to date (99e2c74)", undefined, { timeout: 5000 });
     await waitFor(() => expect(useHeaderStatusStore.getState().reports.devBuild?.tone).toBe("ok"));
+  });
+
+  it("offers no relaunch unless the backend says one would open something newer", async () => {
+    answer(idle);
+    render(<DevBuildIndicator />);
+    fireEvent.click(await screen.findByLabelText("Dev build: Up to date (99e2c74)", undefined, { timeout: 5000 }));
+    await screen.findByText("Follow build log");
+    expect(screen.queryByText("Relaunch now")).toBeNull();
+  });
+
+  it("relaunches onto a built snapshot and shows a refusal", async () => {
+    invokeMock.mockImplementation((command: string) =>
+      command === "dev_build_status"
+        ? Promise.resolve({ ...idle, adoptable: "30ed347", canRelaunch: true })
+        : command === "dev_build_relaunch"
+          ? Promise.reject("this window is not the frozen Eldrun (dev) binary")
+          : Promise.resolve(null),
+    );
+    render(<DevBuildIndicator />);
+    fireEvent.click(await screen.findByLabelText("Dev build: Up to date (99e2c74)", undefined, { timeout: 5000 }));
+    expect(await screen.findByText(/A newer snapshot \(30ed347\) is built/)).toBeTruthy();
+    fireEvent.click(screen.getByText("Relaunch now"));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("dev_build_relaunch"));
+    expect(await screen.findByText("this window is not the frozen Eldrun (dev) binary")).toBeTruthy();
+    expect(screen.getByText("Relaunch now")).toBeTruthy();
   });
 });
