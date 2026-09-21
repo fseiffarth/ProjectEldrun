@@ -66,6 +66,9 @@ export function RootReviewStrip({ advisory = false }: { advisory?: boolean }) {
   const { proposals, count, error, busy, decide, applyAll } = useRootReviewStore();
   const pending = proposals.filter((p) => p.status === "pending");
   const drafts = useMailStore((s) => s.agentDrafts);
+  const isOpen = (p: RootProposal) => p.status === "pending" || p.status === "conflicted";
+  const open = proposals.filter(isOpen).sort((a, b) => Number(b.status === "pending") - Number(a.status === "pending"));
+  const decided = proposals.filter((p) => !isOpen(p));
   return <section className="root-review-strip" aria-label={t("rootReview.title")}>
     <div className="tab-new-menu-group-label root-review-heading">
       <span className="root-review-heading-title">{t("rootReview.title")} ({count})</span>
@@ -99,11 +102,17 @@ export function RootReviewStrip({ advisory = false }: { advisory?: boolean }) {
           </div>
         </article>)}
       </div>}
-      {proposals.length > 0 && <div className="settings-list root-review-cards">
-        {[...proposals].sort((a, b) => {
-          const rank = (p: RootProposal) => p.status === "pending" ? 0 : p.status === "conflicted" ? 1 : 2;
-          return rank(a) - rank(b);
-        }).map((proposal) => {
+      {/* Two groups, each under its own label: what still wants a decision
+          first, what is already decided after a rule — so the ✓/✗ cards never
+          blur into the settled ones. */}
+      {[
+        { key: "open", label: t("rootReview.needsDecision", { count: open.length }), items: open },
+        { key: "decided", label: t("rootReview.decided", { count: decided.length }), items: decided },
+      ].filter((group) => group.items.length > 0).map((group) => <div key={group.key}
+        className={`root-review-group ${group.key}`}>
+        <div className="root-review-group-label">{group.label}</div>
+        <div className="settings-list root-review-cards">
+        {group.items.map((proposal) => {
           const { rows, folded } = reviewRows(proposal);
           const known = ["pending", "applied", "rejected", "conflicted", "undone"].includes(proposal.status);
           const status = known ? t(`rootReview.${proposal.status}` as "rootReview.pending") : stripInvisible(proposal.status);
@@ -155,7 +164,8 @@ export function RootReviewStrip({ advisory = false }: { advisory?: boolean }) {
             </div>
           </article>;
         })}
-      </div>}
+        </div>
+      </div>)}
     </div>
   </section>;
 }

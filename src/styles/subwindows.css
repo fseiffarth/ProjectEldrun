@@ -1063,6 +1063,52 @@
 .root-review-panel .root-review-btn::after {
   content: none;
 }
+/* `.context-menu button` (display:block; width:100%; padding; min-height)
+   outranks the bare `.root-review-btn`, so inside this panel every ✓/✗ grew to
+   the full row width and the pair ran off the panel's right edge. Put the
+   glyph's own box back; the tone rules below still win their ties by order. */
+.root-review-panel .root-review-btn {
+  display: inline-block;
+  width: 22px;
+  min-height: 0;
+  height: 22px;
+  padding: 0;
+  background: none;
+  text-align: center;
+}
+.root-review-panel .root-review-actions > .settings-btn,
+.root-review-panel .root-review-heading > .settings-btn {
+  flex: 0 0 auto;
+  width: auto;
+}
+/* Pending vs decided: each group under a small label, the decided one set off
+   by a rule and dimmed, so where the decisions stop is visible at a glance. */
+.root-review-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.root-review-group-label {
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.root-review-group.open > .root-review-group-label {
+  color: var(--accent);
+}
+.root-review-group.decided {
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-color);
+}
+.root-review-group.decided .root-review-card {
+  opacity: 0.72;
+}
+.root-review-group.open .root-review-card {
+  border-left: 3px solid var(--accent);
+}
 .root-review-strip {
   display: flex;
   flex-direction: column;
