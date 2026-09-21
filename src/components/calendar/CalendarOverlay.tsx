@@ -3,6 +3,7 @@ import { useCalendarStore } from "../../stores/calendar/calendar";
 import { useSettingsStore } from "../../stores/settings";
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
+import { useFloatingFrame } from "../common/useFloatingFrame";
 import { CalendarPane } from "./CalendarPane";
 
 /**
@@ -21,6 +22,9 @@ export function CalendarOverlayHost() {
   // screen over a button that is no longer there — the same withdrawal rule the
   // mail overlay follows for its two gates.
   const live = enabled && open;
+  // Moves, resizes and fills like the root console; remembered per overlay.
+  const { frameRef, frameStyle, frameClass, barProps, grips, fillButton } =
+    useFloatingFrame("eldrun.calendarOverlayFrame");
 
   useEffect(() => {
     if (!live) return;
@@ -54,15 +58,19 @@ export function CalendarOverlayHost() {
       }}
     >
       <div
-        className="project-dialog dialog-framed calendar-overlay"
+        ref={frameRef}
+        className={`project-dialog dialog-framed calendar-overlay ${frameClass}`}
+        style={frameStyle}
         role="dialog"
         aria-modal="true"
         aria-label={t("calendar.overlayTitle")}
       >
-        <div className="settings-title-row">
+        {grips}
+        <div {...barProps} className={`settings-title-row ${barProps.className}`}>
           <h2>
             {t("calendar.overlayTitle")} <UntestedTag id="calendar.overlayTitle" />
           </h2>
+          {fillButton}
           <button
             type="button"
             className="dialog-close-btn"

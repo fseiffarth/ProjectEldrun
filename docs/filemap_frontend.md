@@ -85,6 +85,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `calendar/CalDavSyncHost.tsx` | Scheduled CalDAV sync (renders nothing), mounted once at the shell. Mail's rules: free with no account, first tick one interval away, `0` = never. |
 | `calendar/CalDavConflictDialog.tsx` | The one answer to a CalDAV 412, mounted at the shell: keep mine (conditional overwrite on fresh ETag), use the server's, or decide later. No merge. |
 | `calendar/IcsImportReviewDialog.tsx` | Shows what a picked `.ics` contains before import (`lib/calendar/icsSafety.ts`) and what Eldrun does about each finding; not raised for a clean file. Not a quarantine gate. |
+| `common/useFloatingFrame.tsx` | Move / resize / fill for the header overlays (mail, calendar, to-do): the root console's frame math and grips as a hook; frame per overlay in localStorage. |
 | `calendar/CalendarOverlay.tsx` | Calendar as a global app (`calendar_global_app`): header 🗓 overlay (`CalendarOverlayHost`) rendering the same `CalendarPane` a tab does. Twin of `MailOverlay`. |
 | `calendar/AlarmPopup.tsx` | In-app reminder popup (snooze/dismiss); mounted in `AppShell`. |
 | `todo/TodoOverlay.tsx` | Global to-do board overlay (`todo_board`), header ☑ (`TodoOverlayHost`), mounted last of the three overlay hosts (DOM order = z tie-break). No todo tab; not in popouts. |

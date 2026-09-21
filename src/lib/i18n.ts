@@ -7044,6 +7044,10 @@ export const en = {
   "rootConsole.resizeHint": "Drag to resize the console",
   "rootConsole.fill": "Fill the window",
   "rootConsole.restore": "Back to the previous size",
+  "floatingFrame.moveHint": "Drag the title bar to move · double-click to fill the window",
+  "floatingFrame.resizeHint": "Drag to resize",
+  "floatingFrame.fill": "Fill the window",
+  "floatingFrame.restore": "Back to the previous size",
   "rootConsole.emptyTitle": "The root console is empty",
   "rootConsole.emptyHint":
     "Press + to open an agent or a shell here. It belongs to no project, so it stays one keystroke away from all of them.",

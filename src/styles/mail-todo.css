@@ -434,6 +434,23 @@ svg.alerts-toggle-icon {
   height: min(93vh, calc(100vh - 24px));
   max-height: min(93vh, calc(100vh - 24px));
 }
+/* Moved, resized and filled like the root console (common/useFloatingFrame):
+   the grips are subwindows.css's `.root-overlay-grip`, hung off this frame; a
+   move or resize replaces the size above with an inline `position: fixed` one. */
+.floating-frame {
+  position: relative;
+}
+.floating-frame-bar {
+  cursor: var(--cur-grab, grab);
+}
+.floating-frame-bar button {
+  cursor: var(--cur-pointer, pointer);
+}
+.floating-frame.framing,
+.floating-frame.framing .floating-frame-bar {
+  /* A drag must not select the title on the way past. */
+  user-select: none;
+}
 .mail-overlay-body,
 .calendar-overlay-body,
 .todo-overlay-body,

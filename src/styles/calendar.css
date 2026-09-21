@@ -420,9 +420,10 @@
 
 .cal-list-head {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 4px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  margin-bottom: 6px;
   border-top: 1px solid var(--border-subtle);
   padding-top: 8px;
 }
@@ -433,6 +434,20 @@
   color: var(--accent-secondary);
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+.cal-list-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.cal-list-actions .cal-chip {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .cal-list-add {

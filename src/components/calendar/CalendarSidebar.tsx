@@ -224,19 +224,31 @@ export function CalendarSidebar({
       <div className="cal-list">
         <div className="cal-list-head">
           <span className="cal-list-title">{t("calendarSidebar.calendarsTitle")}</span>
-          <button className="cal-link-btn" onClick={() => setAdding((a) => !a)}>
-            {t("calendarSidebar.newButton")}
-          </button>
-          <button className="cal-link-btn" onClick={() => setSubscribing((s) => !s)}>
-            {t("calendarSidebar.subscribeButton")}
-          </button>
-          <button
-            className="cal-link-btn"
-            onClick={onOpenCaldav}
-            title={t("caldav.manageAccountsTitle")}
-          >
-            {t("caldav.accountsButton")}
-          </button>
+          {/* Title and actions sit on separate rows: three actions beside the
+              title overflowed the 190px sidebar and clipped the last one. */}
+          <div className="cal-list-actions">
+            <button
+              className={`cal-chip${adding ? " cal-chip-on" : ""}`}
+              aria-pressed={adding}
+              onClick={() => setAdding((a) => !a)}
+            >
+              {t("calendarSidebar.newButton")}
+            </button>
+            <button
+              className={`cal-chip${subscribing ? " cal-chip-on" : ""}`}
+              aria-pressed={subscribing}
+              onClick={() => setSubscribing((s) => !s)}
+            >
+              {t("calendarSidebar.subscribeButton")}
+            </button>
+            <button
+              className="cal-chip"
+              onClick={onOpenCaldav}
+              title={t("caldav.manageAccountsTitle")}
+            >
+              {t("caldav.accountsButton")}
+            </button>
+          </div>
         </div>
 
         {adding ? (
