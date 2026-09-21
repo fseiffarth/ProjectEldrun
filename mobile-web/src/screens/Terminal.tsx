@@ -1202,8 +1202,12 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   // agent whose transcript is not read, no desktop) would only re-read the
   // screen: open Terminal instead, without writing that as the reader's choice.
   useEffect(() => {
-    if (!viewChosen.current && view === "focus" && transcript?.available === false) setView("terminal");
-  }, [view, transcript]);
+    // A just-sent prompt is still a useful Reader conversation when Codex has
+    // not produced a readable rollout yet. Keep its local bubble on screen
+    // instead of swapping to the terminal and making it vanish mid-turn.
+    if (!viewChosen.current && view === "focus" && transcript?.available === false
+      && (!CODEX_AGENT.test(tab.agent_label ?? tab.label) || pending.length === 0)) setView("terminal");
+  }, [view, transcript, pending, tab.agent_label, tab.label]);
   /** Whether Focus is reading the stored session rather than the screen. */
   const sessionFocus = tab.kind === "agent" && view === "focus" && focusSource === "session";
   const transcriptVersion = useRef<string | undefined>();
@@ -1261,7 +1265,11 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   /** The stored session is what Focus paints: available, and not switched
    * away from. Until the first read answers, the screen is shown, so the view
    * never opens blank. */
-  const sessionShown = sessionFocus && transcript?.available === true;
+  // Codex can report a fresh session before it has a rollout to read, then
+  // temporarily report `no_transcript` while it binds that rollout. A prompt
+  // sent from this phone remains part of the Reader during that hand-off.
+  const sessionShown = sessionFocus && (transcript?.available === true
+    || (pending.length > 0 && CODEX_AGENT.test(tab.agent_label ?? tab.label)));
   /** The session chat's entries: the stored ones, with each prompt sent
    * from here held in its place (`withPending`). */
   const sessionEntries = useMemo(() => withPending(transcript?.entries ?? [], pending), [transcript, pending]);
@@ -1297,7 +1305,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   useLayoutEffect(() => {
     if (!sessionShown || !atBottom) return;
     const stream = readableHost.current;
-    if (stream) stream.scrollTo({ top: stream.scrollHeight });
+    if (stream && typeof stream.scrollTo === "function") stream.scrollTo({ top: stream.scrollHeight });
   }, [sessionShown, transcript, pending, atBottom]);
   /** Reads the outbox now and every `OUTBOX_POLL` while the page is visible;
    * coming back to the page reads it at once. A listing that could not be

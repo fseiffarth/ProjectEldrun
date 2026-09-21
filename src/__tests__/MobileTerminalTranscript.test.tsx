@@ -293,6 +293,29 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     expect(bubble.nextElementSibling?.textContent).toBe("Still on the button.");
   });
 
+  it("keeps a sent prompt in Reader while Codex is binding its rollout", async () => {
+    const codex = { ...TAB, id: "tab-codex", label: "Codex", agent_label: "Codex" };
+    localStorage.setItem("eldrun.mobile.view.codex", "focus");
+    let stored: unknown = { available: true, version: "new:codex", truncated: false, entries: [] };
+    vi.stubGlobal("fetch", sidecarFetch(() => stored));
+    render(<Terminal tab={codex} back={() => {}} />);
+    await settle();
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Message agent" }), { target: { value: "keep this visible" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await settle();
+    expect(screen.getByRole("group", { name: "Your prompt" }).textContent).toBe("keep this visible");
+
+    // Current Codex releases can announce the live session before a readable
+    // rollout exists. The reader must retain the phone's just-sent prompt
+    // through that temporary `no_transcript` response.
+    stored = { available: false, reason: "no_transcript", entries: [], truncated: false };
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    await settle();
+    screen.getByTestId("session-transcript");
+    expect(screen.getByRole("group", { name: "Your prompt" }).textContent).toBe("keep this visible");
+  });
+
   it("clears the draft with the composer's ✕", async () => {
     vi.stubGlobal("fetch", sidecarFetch(() => STORED));
     render(<Terminal tab={TAB} back={() => {}} />);
