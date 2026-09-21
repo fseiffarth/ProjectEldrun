@@ -36,8 +36,14 @@ the invariants that make it worth having: [`docs/context/caldav.md`](../docs/con
       HTML login page fails loudly instead of importing zero events.
     - [ ] 🖐️ Manual test — against a locally-run Radicale/Nextcloud **before**
       ever pointing it at an institutional account.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 157. **Accounts, discovery, subscribe (Phase 1).** `caldav/accounts.json` +
     `caldav_accounts_list`/`_account_upsert`/`_account_delete`/
@@ -53,8 +59,14 @@ the invariants that make it worth having: [`docs/context/caldav.md`](../docs/con
       no secret, keys the keychain by target rather than account id, coerces
       `remember: false` to `None`, and round-trips a subscription's cursors.
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 158. **Identity-based reconciliation.** `merge_caldav_calendar_at` — the one
     genuinely new piece of logic. `replace_calendar_events_at` cannot be
@@ -73,8 +85,14 @@ the invariants that make it worth having: [`docs/context/caldav.md`](../docs/con
       with no `caldav_href` is never pruned; a master+override resource
       matches positionally and shrinks correctly.
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 159. **Scheduled sync + visible failure (Phase 2).** `sync_interval_min` drives
     `CalDavSyncHost` (mounted at the shell, renders nothing, starts no timer
@@ -91,8 +109,14 @@ the invariants that make it worth having: [`docs/context/caldav.md`](../docs/con
       never-synced from failed from not-CalDAV-at-all.
     - [ ] 🖐️ Manual test — including a wrong password after a relaunch, which
       is the case the amber `!` exists for.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 160. **Two-way sync (Phase 3) — built, never live-tested.** `PUT`/`DELETE`
     conditional on `If-Match` (`If-None-Match: *` to create), a `412` carried as
@@ -123,8 +147,14 @@ the invariants that make it worth having: [`docs/context/caldav.md`](../docs/con
       being overwritten; a recurring series' "this occurrence only" edit
       round-trips. **Nothing in the CalDAV stack has ever spoken to a real
       server**, so this is riskier than its size.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 161. **Look at an `.ics` before importing it — built, never live-tested.**
     `lib/calendar/icsSafety.ts` reports what a picked file contains (`PROCEDURE`/`EMAIL`/
@@ -141,8 +171,14 @@ the invariants that make it worth having: [`docs/context/caldav.md`](../docs/con
       dialog nobody reads.
     - [ ] 🖐️ Manual test — import a hand-built hostile `.ics` and check the
       dialog names each finding and says what happens to it.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 162. **The CalDAV password no longer follows a redirect off its own host.**
     `dav_request` follows hops itself (reqwest's policy would turn a `PROPFIND`
@@ -159,8 +195,14 @@ the invariants that make it worth having: [`docs/context/caldav.md`](../docs/con
     - [ ] 🖐️ Manual test — a server that redirects `.well-known/caldav` to its
       DAV subdomain still sets up; one redirecting to another domain refuses with
       the "set the account's URL to that address" sentence.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 ---
 
@@ -176,8 +218,14 @@ the invariants that make it worth having: [`docs/context/caldav.md`](../docs/con
     - [ ] 🖐️ Manual test — with the tunnel down a ticked account shows no sync
       error after its interval; *Sync now* refuses with the VPN sentence;
       connecting the VPN syncs it within seconds.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 839. **A new event's end follows its start, an hour later.** Moving a new
     event's start left its end where the draft put it, so an event dragged to
@@ -192,8 +240,14 @@ the invariants that make it worth having: [`docs/context/caldav.md`](../docs/con
       set the end to 17:30 by hand, move the start again → end stays 17:30. A
       start at 23:30 on the 31st ends 00:30 on the 1st. Editing an existing event
       does not move its end. Repeat on the phone.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 841. **ICS round-trip and recurrence edge cases that lose data.** Found
     2026-09-15 by the edge-case sweep; each is an `it.skip` in `IcsEdgeCases` /
@@ -217,8 +271,14 @@ the invariants that make it worth having: [`docs/context/caldav.md`](../docs/con
     - [ ] 🖐️ Manual test — paste a note with a Windows line break into an
       event, sync, reopen: the whole note survives. Move next week's recurring
       event to this Friday: it shows on this week's view.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 2318. **Numbered weekdays in a recurrence ("the 2nd Tuesday").** An imported
     or synced `RRULE` with an ordinal `BYDAY` — `FREQ=MONTHLY;BYDAY=2TU`,
@@ -246,5 +306,11 @@ the invariants that make it worth having: [`docs/context/caldav.md`](../docs/con
       "Repeats on: on the 2nd Tuesday"; edit its title with push on, then check
       the server copy still reads `BYDAY=2TU`. Create a monthly event on a month's
       last Friday and pick "on the last Friday".
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS

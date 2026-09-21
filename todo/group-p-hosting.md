@@ -36,8 +36,14 @@ profile (URL + token).*
     - [ ] 🖐️ Manual test — publish a local project to GitLab and to a custom
       remote URL; confirm the repo is created/pushed and `git_type` flips to
       `remote-<visibility>`.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 80. **The hosting choice at creation is honored, not just recorded** (fixed
     2026-08-26). "Push to GitHub/GitLab · private/public" in the new-project
@@ -70,8 +76,14 @@ profile (URL + token).*
       confirm the repo appears on GitHub with the scaffold commit pushed, the
       pill shows the hosting badge, and the Files view offers Push after the
       next commit.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 81. ✅ **An import from GitHub/GitLab fills the Git hosting field from the
     repository it clones** (2026-09-07). A clone or fork import landed on "Push
@@ -104,5 +116,11 @@ profile (URL + token).*
       project's pill shows the hosting badge immediately. Repeat with a private
       repo (field stays private) and with a self-hosted URL (field untouched,
       no provider hint).
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS

@@ -9,8 +9,14 @@
     in that mode.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 64. **[Bug] Right-panel Apps list must drop closed app windows.** A project-opened
     external app appears in the right-panel "Apps" list but doesn't disappear when
@@ -29,8 +35,14 @@
     window-id/monitor/z-order debug surface is NOT built.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 65. **Nested-repo git view: remote support.** The right panel's git section now
     auto-detects a nested git repo under the browsed folder (`git_repo_root`) and
@@ -43,8 +55,14 @@
     project-scoped, not re-rooted per nested repo.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 66. **Share the remaining per-surface probes across file-viewer instances.** The
     same `ProjectFilesView` is mounted many times over at once (right panel, each
@@ -62,8 +80,14 @@
     repo detection), so those probes are genuinely per-surface.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 67. **Alerts group in the file viewer.** A collapsible "Alerts" group
     below the file tree in `ProjectFilesView` (so it lands in the right panel and
@@ -83,8 +107,14 @@
     Implemented 2026-07-29, **never live-tested**.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 68. **Merge the two project searches into the tree's search box.** The toolbar
     "Search" view (`SearchPanel`) duplicated the in-tree search
@@ -101,8 +131,14 @@
     let the Remote source search for real.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 69. **Fold the tree's search away, and move 🔍 / ↻ into the Files/Git/Apps row.**
     The search box + its mode pills cost two permanent rows of every surface that
@@ -119,8 +155,14 @@
     its own inline toggle. Implemented 2026-08-31.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 244. **[Bug] The panel asked its questions in two different chromes.** "New File"
     in the side panel opened `window.prompt()` — which WebKitGTK draws as an
@@ -156,8 +198,14 @@
       Presentation, and in the middle file browser. Then check one confirm
       (Git → a worktree Remove, or Sessions → kill) and one report (Jobs → Copy
       logs): no browser-titled box appears anywhere.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 252. **The side panel forgot which view it was on.** The Files / Git / Apps /
     Agents switcher lived in `ProjectFilesView`'s own state, and the panel
@@ -185,8 +233,14 @@
       switch to another project and back: the panel is still on that view.
       Quit and relaunch: still there. Then, on a **local** project, confirm the
       panel does not open into a Sessions/Jobs view it has no button for.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 267. **The closed panel's edge tab is a rail: Files / Git / Apps / Agents.** The
     edge affordance said only "Files", so reaching Git, Apps or Agents from a
@@ -212,8 +266,14 @@
       **Agents** → it opens on Agents. Move the panel to the other edge (⇄) and
       repeat: the rail mirrors and still works. Hover the edge *above* the rail:
       the panel still reveals, on whichever view it was last left on.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 268. **The edge rail is a bar with a gutter of its own, not a floating cluster.**
     #267's four tabs were `position: fixed` and vertically centred *over* the
@@ -262,8 +322,14 @@
       or reflow either way. Move the panel to the other edge (⇄): the bar and the
       gutter mirror. Open a header menu that reaches that edge: it paints over
       the bar, not under it.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 269. **The edge rail is icons: chevron, Files / Git / Apps / Agents, side switch
     — and the chevron works.** The chevron was a bare `<span>` with
@@ -289,8 +355,14 @@
       switch → the panel does **not** open; the bar jumps to the other edge and
       the chevron now points the other way. Click the switch again → back.
       Hover the bar's empty run: the panel still reveals after a moment.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 270. **Resting on a rail icon opens the panel on that view; the side switch sits
     at the top of the bar.** #268 made pointing at a tab *cancel* the hover
@@ -318,8 +390,14 @@
       side switch for a few seconds → nothing opens and the bar stays on its
       edge; click it → the bar jumps to the other edge, still with the switch
       on top. Clicking any tab still opens it at once.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 271. **The rail's hover-open is quick, lands on the right view, and can close
     again; a side switch is a jump; the panel's scrollbar thumb sits where the
@@ -363,8 +441,14 @@
       jumps to the other edge at once, and nothing slides across the window.
       Open the panel with a click, move the pointer away without entering it →
       it stays open (as before).
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 272. **The side switch says where the panel goes; the panel's list gets its
     bar whatever its first paint held.** (1) "The side rail switch side button
@@ -404,5 +488,11 @@
       overflows downward when it did not before → a vertical thumb appears
       without scrolling first. Shrink the window until a list that fitted no
       longer does → same.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS

@@ -1,18 +1,29 @@
 // Parse open 🖐️ manual-test boxes out of todo/group-*.md into qa-items.json.
 //
-//   node scripts/parse-qa.mjs [repo-root]   → writes ./qa-items.json
+//   node scripts/parse-qa.mjs [repo-root] [--os x11|wayland|windows|macos]
+//                                            → writes ./qa-items.json
 //
 // The items feed the "Eldrun QA Runner" page (see docs/start-qa-runner.sh):
 // replace its <script id="qa-data" type="application/json"> block with this
-// output, escaping "<" as \u003c. A box is open unless its ✅ Works child or
-// every one of its step checkboxes is ticked. `needs` is a keyword guess used
+// output, escaping "<" as \u003c. A box carries a "✅ Works on <platform>" and
+// a "❌ Doesn't work on <platform>" child per platform; it is open on every
+// platform whose ✅ is unticked (`openOs`; a ticked ❌ lands in `brokenOs` and
+// stays open), and dropped once all ✅ or every step checkbox is ticked. With
+// --os only boxes still open on that platform are kept. `needs` is a keyword guess used
 // only to order the queue by setup cost.
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import console from "node:console";
 
-const ROOT = process.argv[2] || ".";
+const args = process.argv.slice(2);
+const osAt = args.indexOf("--os");
+const ONLY_OS = osAt >= 0 ? args.splice(osAt, 2)[1] : null;
+const ROOT = args[0] || ".";
+// "✅ Works on <label>" / "❌ Doesn't work on <label>" → platform key. A legacy
+// bare "✅ Works" counts for all.
+const OS_KEYS = { "Linux (X11)": "x11", "Linux (Wayland)": "wayland", Windows: "windows", macOS: "macos" };
+const ALL_OS = Object.values(OS_KEYS);
 const files = fs.readdirSync(path.join(ROOT, "todo")).filter((f) => /^group-.*\.md$/.test(f)).sort();
 
 const indentOf = (l) => l.match(/^\s*/)[0].length;
@@ -83,20 +94,31 @@ for (const f of files) {
 
     // Children of the manual box (continuation text + step checkboxes).
     const cont = [], steps = [];
-    let ticked = false, j = i + 1;
+    const osTicked = new Set(), brokenOs = new Set();
+    let j = i + 1;
     for (; j < lines.length; j++) {
       const c = lines[j];
       if (!c.trim()) break;
       if (indentOf(c) <= ind) break;
       const cm = c.match(/^\s*- \[([ x])\]\s*(.*)$/);
       if (cm) {
-        if (/^✅ Works|^❌ Doesn/.test(cm[2])) { if (cm[1] === "x") ticked = true; continue; }
+        const wm = cm[2].match(/^✅ Works(?: on (.+))?$/);
+        if (wm) {
+          if (cm[1] === "x") (wm[1] ? [OS_KEYS[wm[1]]] : ALL_OS).forEach((k) => k && osTicked.add(k));
+          continue;
+        }
+        const bm = cm[2].match(/^❌ Doesn.t work(?: on (.+))?$/);
+        if (bm) {
+          if (cm[1] === "x") (bm[1] ? [OS_KEYS[bm[1]]] : ALL_OS).forEach((k) => k && brokenOs.add(k));
+          continue;
+        }
         steps.push({ done: cm[1] === "x", text: cm[2] });
       } else if (steps.length) {
         steps[steps.length - 1].text += " " + c.trim();
       } else cont.push(c.trim());
     }
-    if (ticked) continue;
+    const openOs = ALL_OS.filter((k) => !osTicked.has(k));
+    if (!openOs.length || (ONLY_OS && !openOs.includes(ONLY_OS))) continue;
     const openSteps = steps.filter((s) => !s.done);
     if (steps.length && !openSteps.length) continue;
 
@@ -167,7 +189,7 @@ for (const f of files) {
     for (const [n, rx] of NEED_RX) if (rx.test(probe)) needs.add(n);
     const flags = FLAG_RX.filter(([, rx]) => rx.test(narrow)).map(([n]) => n);
 
-    items.push({ base, first: firstClause(head), ancTitle: titled ? stripTitle(titled.title) : "", ancNum: withNum && !ownNum ? withNum.num : null, id, group: G, groupTitle, file: rel, line: i + 1, title, parent, hint, auto, flags, needs: [...needs], filesRef, prose });
+    items.push({ base, first: firstClause(head), ancTitle: titled ? stripTitle(titled.title) : "", ancNum: withNum && !ownNum ? withNum.num : null, id, group: G, groupTitle, file: rel, line: i + 1, title, parent, hint, auto, openOs, brokenOs: [...brokenOs], flags, needs: [...needs], filesRef, prose });
   }
 }
 // An item with several manual boxes: name each box by what it checks.

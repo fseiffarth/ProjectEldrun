@@ -46,8 +46,14 @@
       - [ ] 🤖 Automated test — none yet (trivial frontend tooltip; covered by
         manual)
       - [ ] 🖐️ Manual test
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **39b — Persist agent tabs with their session id.** ✅ Done.
       Resumable agent tabs (Claude with a `sessionId`) are now persisted in
       `tab_layout` (carrying `sessionId`) and restored on relaunch; other agent
@@ -153,7 +159,13 @@
         - [ ] Remote project: Claude tab, chat, `tmux kill-server` on the host
           (or reboot it), restart Eldrun → the tab resumes instead of dying with
           "Session ID … is already in use".
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
 
 ---

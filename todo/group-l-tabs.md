@@ -64,8 +64,14 @@ correctness/UX work atop the same layout model #42 detaches.*
     - [ ] 🖐️ Manual test — needs backend rebuild + live run (pop-out spawns &
       seeds, PTY attaches without respawn, X11 park + Tauri hide on switch,
       Wayland hide fallback, dock-back & dock-on-close, main window never parked).
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 55. **[Bug] Fix tab→project mapping leak.** A tab can show up under the wrong
     project — e.g. the ProjectEldrun main window showing a `TODO.md` tab that
@@ -74,8 +80,14 @@ correctness/UX work atop the same layout model #42 detaches.*
     `tab_groups`, scope ids) so tabs are strictly bound to their owning project.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 56. **Right-click a tab → start renaming.** Shipped as **Shift+right-click**
     (`TabBar.tsx:200,210,640`); plain right-click still opens the context menu.
@@ -83,8 +95,14 @@ correctness/UX work atop the same layout model #42 detaches.*
     the code.
     - [x] 🤖 Automated test — `src/__tests__/tabs/TabInlineRename.test.tsx`
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 57. **Open `README.md` by default for a project with no tab.** ⛔ **REVERTED —
     was implemented, then deliberately removed.** When a project is
@@ -96,8 +114,14 @@ correctness/UX work atop the same layout model #42 detaches.*
       original implementation.
     - [ ] 🤖 Automated test — n/a while reverted.
     - [ ] 🖐️ Manual test — n/a while reverted.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - **Decide:** restore the behaviour, or close this item as withdrawn.
 
 62. **Fast keyboard navigation across projects / subwindows / tabs.** Make the
@@ -109,8 +133,14 @@ correctness/UX work atop the same layout model #42 detaches.*
     all keyboard-driven.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 82. **Native keyboard file-tree navigation (no mouse).** Make the right-panel
     file tree (`FileTree.tsx`) fully steerable from the keyboard — arrow/`j`/`k`
@@ -124,8 +154,14 @@ correctness/UX work atop the same layout model #42 detaches.*
       (`↑`/`↓`/`j`/`k`), `←`/`→` expand-collapse, and fast scrolling.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 83. **One key shows the radial "pie" project view (as in the root project).**
     A single keypress brings up the same radial/pie project-blob view used by the
@@ -134,8 +170,14 @@ correctness/UX work atop the same layout model #42 detaches.*
     Builds on #62.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 84. **Keyboard navigation within the pie view.** Once the radial/pie view (#83)
     is open, additional keys step the selection around the pie (e.g. arrows /
@@ -144,8 +186,14 @@ correctness/UX work atop the same layout model #42 detaches.*
     Builds on #83.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 85. **Keyboard tab/subwindow management (split, detach, move).** Drive the whole
     Group D.11 tiling layout from the keyboard with no mouse: split the focused
@@ -159,8 +207,14 @@ correctness/UX work atop the same layout model #42 detaches.*
     `src/App.tsx` (global key handlers).*
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 213. **Live-QA the keyboard steering system (#62 follow-on).** ✅ Implemented ·
     🧪 Awaiting live QA. Verify the four new surfaces together: steering mode
@@ -180,8 +234,14 @@ correctness/UX work atop the same layout model #42 detaches.*
       grouping, conflicts, fixed chords); the i18n parity tests cover the
       lesson keys.
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 215. **Live-QA one-click installs in the root console.** ✅ Implemented · 🧪
     Awaiting live QA. Every one-click install (`runInstallInTab`: Ollama/agent
@@ -205,8 +265,14 @@ correctness/UX work atop the same layout model #42 detaches.*
       (tab in front + console open, project untouched, restore-before-add,
       no second login mid-restore).
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 216. **Live-QA the scheduled agent warm-up (Manage CLIs → Scheduled warm-up).**
     ✅ Implemented · 🧪 Awaiting live QA. An agent CLI's allowance is a window
@@ -242,8 +308,14 @@ correctness/UX work atop the same layout model #42 detaches.*
       scheduled, the grace window and the never-fire-late rule, the fired-slot
       key across midnight, next-run, and the config editors).
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 217. **Live-QA the TeX ⇄ PDF tab coupling mark.**
     ✅ Implemented · 🧪 Awaiting live QA. A compiled PDF opens in its own tab
@@ -272,8 +344,14 @@ correctness/UX work atop the same layout model #42 detaches.*
       directory mismatches, non-viewer/other-viewer tabs, case-insensitive
       pairing, never returning the tab itself).
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 ---
 
@@ -320,8 +398,14 @@ correctness/UX work atop the same layout model #42 detaches.*
       - Claude in a project tab: `/mcp` lists no `eldrun`.
       - Codex in the root console: `/mcp` lists `eldrun`.
       - The phone's project list never shows the root console.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 - [ ] **Root MCP staged writes — live QA** (implemented, not run live).
   After the updated backend is running, ask a root agent to add an event: only
@@ -390,8 +474,14 @@ correctness/UX work atop the same layout model #42 detaches.*
         double-click on the bar toggles the same. A press on a tab still drags
         the tab, and a press on ⚿/×/+ still does its own job.
       - Relaunch: the console opens where it was left, at the size it was left.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 2315. **Root console: an event is edited in place, and five sweeps answer for
     every project at once.** ✅ Implemented · 🧪 Awaiting live QA (2026-09-17).
@@ -443,8 +533,14 @@ correctness/UX work atop the same layout model #42 detaches.*
         remote project answers instantly).
       - "What's in my boxes?" — members and their names match the switcher.
       - The ⚿ badge's tooltip lists twenty tools.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 2316. **Root console: one global switch for Eldrun's MCP tools.** ✅
     Implemented · 🧪 Untested (2026-09-17). `settings.json`'s `root_mcp`
@@ -466,8 +562,14 @@ correctness/UX work atop the same layout model #42 detaches.*
       - In a root agent opened *before* the click, ask for the calendar: the
         tool call fails with "switched off in Eldrun's Settings".
       - Click again: that same agent's next tool call works, no restart.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 ---
 
@@ -549,8 +651,14 @@ correctness/UX work atop the same layout model #42 detaches.*
         after a relaunch.
       - With desktop Eldrun closed, the sheet says "Open desktop Eldrun to
         colour a tab." rather than a generic failure.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 2319. **A shell the agent started is its own mark, beside the agent's.**
     ✅ Implemented · 🧪 Awaiting live QA (2026-09-20). The shell status colour
@@ -607,5 +715,11 @@ correctness/UX work atop the same layout model #42 detaches.*
         the Stop.
       - Pop the tab out: the popout's strip shows the same colour and marks.
       - A plain shell tab running a build is unchanged (shell colour, one mark).
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS

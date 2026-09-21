@@ -14,15 +14,27 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     or poll on the open file's mtime/hash.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 44. **TeX viewer: preview off by default.** Default the TeX viewer to the source
     editor rather than auto-rendering a preview; make preview an explicit toggle.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 45. **Auto-complete in native text viewers (pre-defined model).** Add code/text
     auto-completion across all native text viewers, driven by a pre-defined
@@ -58,8 +70,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     Compare first-token latency and suggestion quality; the UntestedTag remains.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 45a. **Optional GitHub Copilot provider for autocomplete — in progress (2026-09-18).**
     Add Copilot alongside Ollama, preserving Ollama as the default for existing
@@ -225,8 +243,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     in-app text and TeX editors (keyboard `Ctrl+Z`/`Ctrl+Shift+Z` plus buttons).
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 47. **Save icon instead of "save/saved" text (+ optional autosave).** Replace the
     textual save/saved status in the text/TeX viewer with a save icon that
@@ -234,8 +258,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     diff-aware reload as the counterpart for external changes).
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 48. **Per-file-type native-viewer settings + document supported types.** A single
     settings surface to configure native-viewer behavior keyed by file type, and
@@ -243,8 +273,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     Ties into #44 (per-type preview defaults) and #45 (per-type completion).
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 49. **Make file links in text/TeX viewers visibly clickable.** Render links that
     point at files with a clear affordance (underline / dotted underline) so they
@@ -252,8 +288,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     governs *where* a clicked link opens.)
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 50. **Link-open routing: same subwindow, or drag-to-set-default.** When a file
     link (#49) is clicked, open the target in the **same** subwindow by default;
@@ -263,31 +305,55 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     linked file(s) with it).
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 51. **Native `.odt` / `.xlsx` viewer.** Add an in-app viewer for OpenDocument /
     spreadsheet files. First decide whether it's worth it / already feasible via
     an existing Tauri-side renderer before building one.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 52. **Image viewer: zoom/scroll to the cursor.** Improve image-viewer scrolling so
     zoom centers on the mouse cursor rather than the viewport origin.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 53. **Drag images (and their tabs) out as drop sources.** Make images in the image
     viewer — and image tabs — draggable as drop sources, e.g. drag an image/text
     tab and drop it into a browser file-upload field.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 54. **TeX compile output → PDF in a new tab + compiler options.** Open the
     compiled PDF as its own tab (it is a real file), and add compiler options to
@@ -295,8 +361,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     `compile_tex` affordance from Group D.14.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 55. **Adjustable text size in the text/TeX/Markdown editors.** Add an `A−`/`A+`
     control (and `Ctrl` +/−, `Ctrl`+0 to reset) that scales the editor font. In
@@ -307,8 +379,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     (alongside #45's autocomplete).
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 66. **SyncTeX PDF↔source navigation + subtex→main compile wiring.** Make the
     compiled PDF and its `.tex` source navigable both ways, and let a child file
@@ -330,8 +408,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     the leaf records; the CLI stays as the fallback for a PDF with no map.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 67. **Find in the text/TeX viewers.** Add an in-editor search bar to the shared
     `CodeEditor` (so it covers both the text and TeX viewers). `Ctrl`/`Cmd`+`F`
@@ -345,8 +429,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     and scrolls the match into view. Pure helpers `findMatches`/`decorateSearchRanges`.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 68. **Image viewer: auto-reload on disk change.** Give the image viewer the same
     diff-aware reload as the editors/PDF (#43): `useBlobUrl` polls `file_mtime`
@@ -357,8 +447,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     dimensions change.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 69. **Persist viewer scroll/zoom across reopen + restart.** The in-app PDF, text,
     and image viewers remember the reader's position so reopening a file — or
@@ -374,8 +470,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     unchanged write never churns the saveLayout debounce.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 70. **TeX viewer: `Ctrl`+`S` saves and recompiles.** ✅ Implemented ·
     🧪 Awaiting live QA. In the LaTeX viewer (engine
@@ -388,8 +490,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       anywhere under `src/__tests__/`. The empty boxes here mean "untested",
       not "unstarted".
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 71. **Find in the native PDF viewer (`Ctrl`+`F`).** Add an in-document search bar
     to the pdf.js-backed PDF viewer (the counterpart to #67's editor search).
@@ -406,8 +514,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     view. Pure helper `pdfPageMatches`.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 80. **PDF page arranging + merging, on ONE code base with the print preview.**
     Turn the read-only PDF viewer into a page organiser: reorder, delete, turn,
@@ -462,8 +576,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     - [ ] 🖐️ Manual test — **the cross-window drag is the one to watch**: it is the
       WebKitGTK-sensitive path. Also re-check the print preview still reorders/prints
       as before, and that saving works on a **remote (SSH)** project's PDF.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 87. *(This is group-M's #87; group-O has a different #87.)*
     **Python in the native code viewer: Run, Debug, breakpoints, go-to-definition.**
@@ -543,8 +663,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       **remote (SSH)** project runs on the host with the *host's* interpreter, and
       that Ctrl+Click into a package (`from .pkg import thing` re-exported by its
       `__init__`) lands on the real definition.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 88. **Native YAML/JSON viewer: an editable structure tree.** Give `.yaml`/`.yml`/
     `.json` the same shape markdown has — a rendered half and a source half behind
@@ -611,8 +737,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       that `Ctrl`+`Z` walks it back. Check a flow/JSON-formatted file adds and
       deletes in its own style, and that a file with an anchor/merge key
       (`<<: *base`) renders those rows read-only instead of offering a broken input.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 89. **CSV table viewer: a separator you can name, and cells you can edit.**
     📄 **Doc drift:** `README.md:369` still describes the table viewer as a
@@ -678,8 +810,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       Columns list, confirm they come back on a second click and survive a reopen,
       and that editing a cell to the *right* of a hidden one still writes the right
       field.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - [ ] **Deferred:** inserting/deleting a **column** (a row op is one splice; a
       column op is one splice per row, and every splice invalidates the offsets
       after it — the same constraint `moveNodeTo` faces in `yaml.ts`). Editing an
@@ -784,8 +922,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       resize and rotate objects and confirm the guides name the right reason;
       recompile the `.tex` with a slide inserted and confirm layers follow their
       slides; confirm the autosave lands (there is no save button by design).
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - [ ] 🖐️ Manual test (dual-window, **on real hardware with a projector or
       second monitor**) — `D` opens the audience window fullscreen on the *other*
       display, not over the notes; advancing on either window moves both; `←`
@@ -794,8 +938,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       ending the talk; `Esc` ends the talk and takes the audience window with it;
       opening the second display twice re-uses one window. With **one** monitor
       it opens windowed and decorated, draggable onto the projector.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - [ ] **Known gap:** `compile_tex` is **local-only** (no remote dispatch), so
       a remote project must compile on its local mirror. (It is also a
       *synchronous* Tauri command, so every compile freezes the window — see
@@ -847,8 +997,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       `Ctrl+Z` undoes it as one step, that the filter finds an entry by author and
       by title, that a fold survives closing and reopening the tab, and that
       deleting a field leaves no blank line behind.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 92. **The PDF's own hyperlinks (`hyperref` cross-references and URLs).** ✅
     Implemented · 🖐️ untested. A PDF carries its links as *link annotations* — a
@@ -903,8 +1059,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       a zoom and a page turn, that a `\url` raises the confirm and Cancel opens
       nothing, and that Ctrl+click on a link still reverse-searches into the
       source.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 93. **Black out text in a PDF, securely (#pdf-redact).** ✅ Implemented ·
     🖐️ untested. The viewer could rearrange a PDF but not remove anything *from* a
@@ -961,8 +1123,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       counts, that the saved page renders identically minus the blacked areas, and
       that selecting/copying that page — or `pdftotext` over the file — returns
       none of the redacted text.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 94. **Delete a PDF's metadata (#pdf-meta).** ✅ Implemented · 🖐️ untested.
     The blackout tool covers what is *on* the page; nothing covered what the file
@@ -1012,8 +1180,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       `exiftool` on the file: confirm it reports no Title/Author/Creator/Producer
       and no dates, that `strings` over the file finds none of the old values, and
       that the pages still render and their text still selects.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 95. **Remarks on a PDF (#pdf-notes).** ✅ Implemented · 🖐️ untested.
     The viewer could rearrange a PDF, black text out of it and strip its
@@ -1064,8 +1238,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       note is there with its text; edit and delete it in that viewer, reopen here
       and confirm Eldrun shows the change; then open a PDF that already carries
       comments, add one of your own and Save, and confirm both survive.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 96. **Selecting text in a PDF (#pdf-textselect).** ✅ Implemented · 🖐️ untested.
     The reader paints pages to a canvas, and a canvas has no text in it. Until
@@ -1150,8 +1330,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       is listed with its page, walk it with ↑/↓ and confirm the page follows and
       the marker flashes; then reorder two pages and confirm the panel says
       autosave is holding and nothing is written until Save.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 98. **Ctrl+F over a word split across two lines (#71).** ✅ Implemented ·
     🖐️ untested. A PDF has no words and no lines — only positioned runs of glyphs
@@ -1193,8 +1379,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       Enter walks onto it; search a two-word phrase that wraps and confirm it is
       found; then check a page range like "3–4" split over a line does not match
       "34".
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 99. **Selection without a mode, highlights with remarks, and copy-on-select
     (#pdf-textselect, #pdf-notes).** ✅ Implemented · 🖐️ untested. Three asks that
@@ -1274,8 +1466,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       must still be clickable, Ctrl-click must still reverse-search, the blackout
       and ✂ tools must still take their drag, and a selection dragged across a
       page break must produce one highlight per page.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 100. **Markdown viewer: cross-file `#fragment` navigation.** ✅ Implemented ·
     A preview link like `docs/guide.md#setup` now opens the target *and*
@@ -1292,8 +1490,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     - [ ] 🖐️ Manual test — in one md file write `[x](other.md#some-heading)`
       and click it in Preview: the other file should open scrolled to that
       heading; click again from the source file (repeat jump must re-fire).
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 101. **Markdown relationship graph (opt-in `md_graph`).** ✅ Implemented ·
     A third "Graph" mode on the markdown viewer, behind the `md_graph`
@@ -1311,8 +1515,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       project, switch to Graph: the scaffold files should ring the center;
       click `README.md` to open it; delete a linked file and rebuild (↻) to
       see it dashed red.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 102. **`PROJECT.md` scaffold: the navigation entry point.** ✅ Implemented ·
     New and imported projects (and the scaffold repair) now also get a
@@ -1327,8 +1537,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     - [ ] 🖐️ Manual test — create a new project and check `PROJECT.md`
       exists, links resolve in the viewer, and an existing project picks it
       up via scaffold repair without touching other files.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 103. **PDF region capture rides the global Screenshot app.** ✅ Implemented ·
     The PDF viewer's ✂ "select and copy as image" toolbar tool is gone; the
@@ -1347,8 +1563,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       clipboard paste and the new file under `eldrun-screenshots/`; press Screenshot
       with no PDF visible and check the OS region tool still runs; Esc while
       armed cancels without a shot.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 211. **Migrate project: step-by-step scaffold/entry migration.** ✅ Implemented ·
     Project Settings (file-view gear) grew a Migration section whose "Migrate
@@ -1371,8 +1593,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       step lists correctly, decline one step and apply — the declined change
       must not happen, the accepted ones must; re-open: only the declined
       step remains; an up-to-date project says so.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 212. **Project remarks follow-ups.** REMARKS.md v1 leaves directory roll-up
     badges, FileBrowser's unscoped context menu, MarkdownView's edit-mode
     add-at-line button, and fs-watch-driven live badge refresh for later. The
@@ -1414,8 +1642,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       `.tex`, a graphic and a `\ref` in turn and walk back through them with ←;
       check the button's tooltip names the file it would return to, that it is
       inert on the main document, and that a resize still works after unfolding.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 250. **TeX workspace: an Up step to the parent's `\input` line, and hotkeys
     for Up and Back.** ✅ Done 2026-09-02, code-complete and **live-unverified**.
@@ -1465,8 +1699,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       buttons, and that the chords do nothing with a terminal tab focused. Then
       rebind `texUp` in Settings → Keyboard Shortcuts and confirm the tooltip
       and the key follow.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 241. **PDF viewer: present the file fullscreen in a window of its own.** ✅
     Implemented (2026-09-01, untested live) · `▶ Fullscreen` in the PDF toolbar
@@ -1512,8 +1752,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       second one opening. On a two-monitor machine, confirm it takes the *other*
       screen. With unsaved page changes, confirm the tooltip says so and the
       window shows the saved file.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 242. **TeX editor: grey out `comment` blocks, and a linewise comment toggle.** ✅
     Implemented (2026-09-01, untested live) · Two halves of the same gesture —
@@ -1553,8 +1799,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       covers them; press again and the text comes back exactly as it was. Try it
       with the caret on a single line, on a block that is already half
       commented, and in a `.py`/`.ts` file (`#`/`//`).
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 243. **TeX editor: Ctrl+click an `\input{…}` that isn't there yet offers to
     create it.** ✅ Implemented (2026-09-01, untested live) · Following a
@@ -1605,8 +1857,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       sibling `\input{notes}` (no folder line), with `\bibliography{refs}` (opens
       the bib cards), and Ctrl+click a `\includegraphics{figs/plot}` that is
       missing — no offer, as before. Cancel must leave the document untouched.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 245. **LaTeX editor: the standard features it was still missing.** ✅
     Implemented (2026-09-01, untested live) · The TeX viewer could compile,
@@ -1706,8 +1964,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       the build succeeds, and a collapsed **Warnings** card appears; open it,
       and the row names the right file and line and jumps there. Press
       **Words** and check the count against `texcount` if it is installed.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 246. **The native editor aligns its own Enter, and marks the indents it draws.**
     ✅ Implemented (2026-09-01, untested live) · The code editor had a Tab that
@@ -1762,8 +2026,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       no second one. Check the guides line up with the text in a tab-indented
       file and in the wrapped LaTeX editor, and that Shift+Enter still writes a
       plain newline.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 247. **TeX editor: hover a snippet, see it typeset.** ✅ Implemented
     (2026-09-01, untested live) · The viewer could compile the whole document
@@ -1863,8 +2133,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       its wash exactly under the pointer after scrolling and in wrap mode (the
       hit layer was missing from the overlay alignment CSS and is now
       hit-tested via elementsFromPoint).
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 248. **Dictionary spell check in the native editors.** ✅ Implemented (untested
     live). A deterministic, model-free spelling provider beside the #45 LLM
@@ -1939,8 +2215,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       (the system's) shows no ×. Pull the network and Download another
       language: a red "Failed: …" appears on the row and nothing half-written
       is listed.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 248. **TeX workspace: the structure sidebar can add a file to the document.** ✅
     Implemented (2026-09-01, untested live) · The sidebar listed what a document
@@ -1980,8 +2262,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       refused with the reason, the typed name kept. With unsaved edits in the
       main file the dialog refuses until you save. Center a chapter first and
       add a file — the `\input` lands in the chapter, not the main.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 249. **Editor overlays: make the link/grammar/unclosed hover hit-tests O(1) like
     the snippet layer's.** The 2026-09-01 hover-preview speed pass replaced the
@@ -2054,8 +2342,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       an `\end{center}` with no `\begin{center}` anywhere — that line is red.
       Confirm a well-formed document with nested and repeated environments is
       clean, and that an `\end` inside a `%` comment is ignored.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 252. **TeX workspace: the structure tree says *which file* is broken.**
     Implemented 2026-09-02, not yet verified live. The Errors and Warnings cards
@@ -2097,8 +2391,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       document's row nothing. Click the pill — the chapter centers with the
       caret on the error line. Fix it and compile again: the red pill goes, and
       any amber warning pills land on the files the Warnings card names.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 253. **TeX editor: beamer mode — wrap a selection in an overlay with a slide
     number.** Implemented 2026-09-02, not yet verified live. Writing a deck means
@@ -2148,8 +2448,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       `<2->`, `<3->`, `<4->`. Click into the *from* field first, then Wrap — the
       selection made before the click must still be the one wrapped. Specs
       should read bold in the number colour.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 254. **TeX editor: double-click a command, see its other uses.** Implemented
     2026-09-05, not yet verified live. Double-clicking a control sequence in a
@@ -2180,8 +2486,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       starting with the same letters must stay unmarked. Type anything, or
       click elsewhere: the marks go. Double-click a plain word: nothing is
       marked. Scroll — the marks must stay glued to their text.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 266. **Hover tooltips name the keyboard shortcut, and the TeX build gets one.**
     Implemented 2026-09-08, not yet verified live. A control that a chord also
@@ -2218,8 +2530,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       the chord; rebind `texCompile` in Settings → Shortcuts and the tooltip
       follows. Hover the ◫ / hide / close subwindow buttons and the active
       tab's ×: each names its chord, and an inactive tab's × does not.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 270. **TeX editor: the Beamer and Preview switches are the project's, not the
     tab's.** Implemented 2026-09-10, not yet verified live. Both toggles wrote
@@ -2245,8 +2563,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       quit and relaunch Eldrun: both files still show the bar and Preview
       off; a different project's `.tex` is unaffected. A beamer document with
       no click still opens with the bar.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 828. **Markdown: remote images load on request, never on open.** A README's
     badges rendered broken: the renderer emitted `<img src="https://…">`, which
@@ -2267,8 +2591,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       network request, the "not loaded (N)" bar names the hosts. Click Load →
       the badges appear; close and reopen the file in the same session → still
       loaded. An image pointing at `http://127.0.0.1/…` stays a chip after Load.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 829. **TeX: a latexmk exit code is not the document's verdict.** latexmk exits
     non-zero for things that are not document errors (a `latexmkrc` treating
@@ -2289,8 +2619,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       fresh PDF shows, with latexmk's note beside it rather than a failure card.
       Introduce a real `\undefinedmacro` → a failure card titled by the engine
       error. Delete the PDF, break the document → no stale PDF shown as success.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 830. **TeX: copy an error, a warning, or the whole log.** Every diagnostics row
     is a jump button and the app sets `user-select: none`, so a TeX error was the
@@ -2305,8 +2641,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       clicking a row's ⧉ copies `file:line: message` without moving the caret;
       the card head's ⧉ and the log's ⧉ copy everything, including lines scrolled
       out of view.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 831. **TeX hover preview marks the fragment its card is showing.** With a
     preview card open nothing tied the card back to its source line. An
@@ -2319,8 +2661,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     - [ ] 🖐️ Manual test — hover a formula until its card opens: the formula's
       source is ringed while the card stays; type elsewhere → ring stays; edit
       inside the formula so it no longer matches → ring goes.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 832. **TeX: Beamer completions in a deck; `\begin{` accept closes its brace.**
     `TEX_BEAMER_COMMANDS` (`\frametitle`, `\usetheme`, `\pause`, `\only`,
@@ -2334,8 +2682,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     - [ ] 🖐️ Manual test — in a beamer deck type `\frame` → `\frametitle` is
       offered; in an article it is not. Type `\begin{ali`, accept `align` → the
       line reads `\begin{align}` with a body and `\end{align}`.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 833. **HTML preview anchors scroll in-page** (+ VPN dropdown tidy). A rendered
     HTML file is a `sandbox=""` srcdoc frame whose base URL fell back to
@@ -2351,8 +2705,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       Preview: clicking an entry scrolls to it and `:target` styling applies.
       Open the VPN dropdown with the tunnel up and no project holding it → no
       holders line.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 834. **Print: a paged document takes its page box from the engine.** Sheets
     sized from the paper (29.65 cm) overflowed WebKitGTK's 27.84 cm print page
@@ -2365,8 +2725,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     - [ ] 🖐️ Manual test — print a 3-page document (portrait and one rotated
       image) to PDF: exactly 3 pages, no blank interleaves, the rotated image
       fits its sheet; scale 50 % shrinks the image, not the margins.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 835. **Screenshots and saved attachments land in `eldrun-`prefixed, always-ignored
     folders.** `screenshots/` is a name a project plausibly owns (docs images),
@@ -2387,8 +2753,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       `.gitignore` gains that line before the file exists, and `git status` is
       clean. Save a mail attachment to the emails folder → `eldrun-emails/`,
       same. A project with no `.gitignore` gets a minimal one.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 840. **Table and BibTeX parsers break their own text-preservation promise on
     four inputs.** Found 2026-09-15 by the edge-case sweep; each case is an
@@ -2406,8 +2778,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     - [x] 🤖 Automated test — `TableEdgeCases`, `BibEdgeCases`
     - [ ] 🖐️ Manual test — edit a card in a CRLF `.bib`; `file` still reports
       CRLF line terminators and git shows one changed line.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 842. **Native viewers review: the deferred items.** An eight-agent read-only
     review of the TeX/Markdown/YAML/PDF viewers on 2026-09-16 produced
@@ -2433,8 +2811,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     design currently refuses) are a user's call.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 843. **A PDF is written by two processes with no lock (V-04/V-24).** latexmk
     writes the PDF in place via `-outdir` — `tex.rs`'s only two `fs::rename`
@@ -2455,8 +2839,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     - [ ] 🖐️ Manual test — open a TeX document's PDF, write a remark, switch tab
       within a second and recompile: the compile output survives and the remark
       is either saved or honestly refused.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 845. **Clicking a checkbox in a rendered README can tick a different one.**
     `markdown.ts`'s list collector has no fence bookkeeping while
@@ -2486,8 +2876,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test — a README with a fenced block indented inside a list
       item: every checkbox ticks the line it sits on.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 844. **`npm test` runs the suite roughly twice.** `vitest.config`'s `exclude` is
     `[...configDefaults.exclude, "target/**"]`, so the run also sweeps every
@@ -2504,5 +2900,11 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     this".
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS

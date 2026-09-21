@@ -105,23 +105,53 @@ the user runs it, and each new surface carries an `UntestedTag`.
 - [ ] 🖐️ #203 — with Ollama pointed at a non-loopback host, every AI action
   refuses with the loopback reason; an embedding-only model says to load a
   completion model; Ollama stopped → "not running", not an error dump.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+  - [ ] ✅ Works on Linux (X11)
+  - [ ] ❌ Doesn't work on Linux (X11)
+  - [ ] ✅ Works on Linux (Wayland)
+  - [ ] ❌ Doesn't work on Linux (Wayland)
+  - [ ] ✅ Works on Windows
+  - [ ] ❌ Doesn't work on Windows
+  - [ ] ✅ Works on macOS
+  - [ ] ❌ Doesn't work on macOS
 - [ ] 🖐️ #204 — *Summarize (local)* on an open message yields bullets; reopening
   the message does not show a stored summary.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+  - [ ] ✅ Works on Linux (X11)
+  - [ ] ❌ Doesn't work on Linux (X11)
+  - [ ] ✅ Works on Linux (Wayland)
+  - [ ] ❌ Doesn't work on Linux (Wayland)
+  - [ ] ✅ Works on Windows
+  - [ ] ❌ Doesn't work on Windows
+  - [ ] ✅ Works on macOS
+  - [ ] ❌ Doesn't work on macOS
 - [ ] 🖐️ #205 — a sync with new inbox mail marks some Important/Urgent and the UI
   says "marked by the local model: '…'"; Ollama stopped → the sync still
   succeeds; the dry-run apply lists matches without changing anything.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+  - [ ] ✅ Works on Linux (X11)
+  - [ ] ❌ Doesn't work on Linux (X11)
+  - [ ] ✅ Works on Linux (Wayland)
+  - [ ] ❌ Doesn't work on Linux (Wayland)
+  - [ ] ✅ Works on Windows
+  - [ ] ❌ Doesn't work on Windows
+  - [ ] ✅ Works on macOS
+  - [ ] ❌ Doesn't work on macOS
 - [ ] 🖐️ #206 — in the composer, notes + *Draft from notes* fills the body and
   nothing is sent.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+  - [ ] ✅ Works on Linux (X11)
+  - [ ] ❌ Doesn't work on Linux (X11)
+  - [ ] ✅ Works on Linux (Wayland)
+  - [ ] ❌ Doesn't work on Linux (Wayland)
+  - [ ] ✅ Works on Windows
+  - [ ] ❌ Doesn't work on Windows
+  - [ ] ✅ Works on macOS
+  - [ ] ❌ Doesn't work on macOS
 - [ ] 🖐️ #207/#208 — a mail with "meeting tomorrow at 3" pre-fills the event
   dialog with the right date; to-do extraction makes a first-column card with the
   mail link; with `auto_create` on, both are created without a dialog.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+  - [ ] ✅ Works on Linux (X11)
+  - [ ] ❌ Doesn't work on Linux (X11)
+  - [ ] ✅ Works on Linux (Wayland)
+  - [ ] ❌ Doesn't work on Linux (Wayland)
+  - [ ] ✅ Works on Windows
+  - [ ] ❌ Doesn't work on Windows
+  - [ ] ✅ Works on macOS
+  - [ ] ❌ Doesn't work on macOS

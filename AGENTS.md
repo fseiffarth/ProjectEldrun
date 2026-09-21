@@ -66,7 +66,9 @@ tool is unavailable, say so — never skip silently.
   tmux_sessions, usage_stats, vm_projects.
 - Before touching byte-sync or git lockstep: `docs/remote_sync_guide.md`.
 - Updating a wrapped third-party tool: `docs/third_party_update_checklist.md`.
-- New TODOs go in the matching `todo/<group>.md`.
+- New TODOs go in the matching `todo/<group>.md`. A 🖐️ manual box gets a
+  `✅ Works on <P>` / `❌ Doesn't work on <P>` child pair for each platform P —
+  `Linux (X11)`, `Linux (Wayland)`, `Windows`, `macOS`; tick only where checked.
 - `todo/*.md`, `DOCUMENTATION.md` and `README.md` run 50–160 KB each: find the
   spot with `rg -n`, then read or edit only that range. Never read one whole.
 

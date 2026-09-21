@@ -33,8 +33,14 @@ container) — as opposed to the git **push** axis (#21/#22).*
       mount is cleaned up on app exit.
     - [x] 🤖 Automated test — `services/ssh_mount.rs` unit tests (validate_arg, mountpoint_for, sshfs_args)
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - **Manual QA checklist (live, step-by-step).** Runtime test plan for
       #28/#28b — agents can't launch Eldrun, so these are hand-checks. Each box is
       one check; a phase is done when all its boxes are ticked.
@@ -203,8 +209,14 @@ container) — as opposed to the git **push** axis (#21/#22).*
       - [ ] 🖐️ Manual test — connect (VPN if needed) → open a remote agent tab →
         the CLI is detected/installed, logs in on first run, and runs a pipeline
         on the remote (remote GPU/env), with edits visible in Eldrun's file tree.
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - **28c — Hardening & gaps (two-reviewer review, 2026-06-19).** A
       code-correctness/security pass plus an architecture pass over #28/#28b.
       Ordered by severity.
@@ -419,8 +431,14 @@ container) — as opposed to the git **push** axis (#21/#22).*
       unit suite (name/fingerprint/up-decision/create+exec argv/stage refresh)
       + `projects_commands.rs` toggle-preservation/legacy-spec tests
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 80. **Native SFTP remote browsing (drop `ssh ls` for the folder picker).**
     Replace the shell-out browse commands in `commands/ssh.rs`
@@ -483,8 +501,14 @@ container) — as opposed to the git **push** axis (#21/#22).*
     - [ ] 🖐️ Manual test — re-run #28 Phase 2 (browse) against key-auth and
       password-only hosts; injection-named dirs are inert; mount/exec (Phases
       3–7) still work unchanged.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - **Follow-on (not this pass):** once browse is SFTP, evaluate a
       JetBrains-*Deployment*-style **edit-over-SFTP** path for the in-app viewers
       to shrink the sshfs surface further (read/write single files over SFTP,
@@ -696,8 +720,14 @@ container) — as opposed to the git **push** axis (#21/#22).*
         import a remote repo → mirror initializes from it; extend a local repo onto a
         host → remote initializes from local; and a large-history bundle streams
         through without the old 64 MiB rejection.
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
 
     - [ ] **28o — Scaffold both sides of SSH projects.** New and imported SSH
       projects must receive the canonical Eldrun scaffold in both their local
@@ -737,8 +767,14 @@ container) — as opposed to the git **push** axis (#21/#22).*
         files, pre-existing files remain byte-identical, Skip touches neither
         side, and an unwritable remote root blocks registration with an
         actionable error.
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
 
     - [x] **28p — Git lockstep hardening (#28n follow-up)** (2026-07-13; ✅ All
       eight defects fixed · 🧪 Live-host QA still owed). Plan:
@@ -850,8 +886,14 @@ container) — as opposed to the git **push** axis (#21/#22).*
         a differing `README.md` is refused with the file named and the host file
         intact; disconnect → Sync now reports disconnected rather than green; and a
         two-sided divergence resolved with Use local leaves a listable backup ref.
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
 
     - [x] **28q — Warn when sync or git destroys something on the LOCAL side**
       (2026-07-13; ✅ Code-complete · 🧪 Live-host QA owed). Re-scanning the remote
@@ -895,8 +937,14 @@ container) — as opposed to the git **push** axis (#21/#22).*
         host so the mirror follows into a checkout that drops a file; edit a byte-synced
         file locally, then Sync now, and confirm the overwrite is reported as
         unrecoverable; and confirm a project that loses nothing never sees the dialog.
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
 
 82. **Split-tunnel the OpenVPN connection (per-project opt-in).** Eldrun passes
     OpenVPN *no* routing flags (`services/openvpn::openvpn_args`), so whatever the
@@ -921,8 +969,14 @@ container) — as opposed to the git **push** axis (#21/#22).*
       host via `tun0` while the default route is unchanged; SSH/SFTP/agent tabs work;
       a browser fetch does *not* egress via the VPN. With it off, behaviour is
       unchanged from today.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 83. ✅ **Interactive (non-headless) tunnels are visible and killable.** With
     `connections_headless: false`, the tunnel is `pkexec openvpn` inside a terminal
@@ -950,8 +1004,14 @@ container) — as opposed to the git **push** axis (#21/#22).*
       terminal tab; the VPN lamp goes green by itself, the header indicator offers a
       working Disconnect, and quitting Eldrun brings the tunnel down (`ip route`
       restored).
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 84. ✅ **The header VPN indicator is a machine-level VPN control.** The tunnel reroutes
     the whole OS, so it gets a surface that does not hang off a project:
@@ -975,8 +1035,14 @@ container) — as opposed to the git **push** axis (#21/#22).*
       project on the same `.ovpn`, log out of the first, confirm the second stays up;
       disconnect from the header and confirm routing is restored. Connect a tunnel
       from the header with no project active.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 85. ✅ **Persistent sessions (tmux) — remote + local.** *(Implemented — `RemoteSpec.persist_sessions`,
     `settings.persist_local_sessions`, `PtyOptions.tmux_session`/`tmux_attach`, `ssh_exec::{TmuxWrap,
@@ -1026,8 +1092,14 @@ container) — as opposed to the git **push** axis (#21/#22).*
       the session gone; tmux-less host → tab works, notice shown, no persistence;
       hand-start a session on the host → it appears in the `☰` Sessions view →
       click → tab attaches to the live process → per-row Kill drops it.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 86. **HPC / SLURM pipeline (guided login → run → watch).** *(Phases A + B implemented —
     `docs/quirky-knitting-umbrella` plan.)* On a SLURM cluster, computation must go
@@ -1056,8 +1128,14 @@ container) — as opposed to the git **push** axis (#21/#22).*
       `--time`/`--mem` in Variables → file dirties/saves; Submit → toast + log tab
       tails output; Jobs view lists it, Cancel removes it, Watch re-opens its log;
       Interactive session… lands a shell on a compute node.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - **Phase B — guided pipeline wizard (implemented, untested).** A 5-step stepper
       (`HpcPipelineWizard.tsx` + `stores/remote/hpc/hpcPipeline`, launched from the project-switcher
       **+** menu) that composes the existing flows rather than reimplementing them:
@@ -1070,8 +1148,14 @@ container) — as opposed to the git **push** axis (#21/#22).*
     - [ ] 🖐️ Manual test (cluster, Phase B) — **+ → HPC pipeline…** walks
       login→create→load→run→watch end-to-end; the created project connects; an
       uploaded file lands on the host; Submit opens a tailing log tab.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - **Phase C — workspaces, before any data moves (implemented, untested).** The
       pipeline was missing its actual first step: on a cluster `$HOME` is a small,
       quota'd, code-only filesystem, and the bulk data of a computation belongs in a
@@ -1152,8 +1236,14 @@ container) — as opposed to the git **push** axis (#21/#22).*
       `ws_allocate`** (or a plain SSH host with `$SCRATCH` set), the step instead
       lists the site's own filesystems with free space and creating the project
       there puts the tree on the chosen one.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - [ ] 🖐️ Manual test (cluster, Phase C) — **+ → HPC pipeline…** → after login
       the Workspace step lists the site's filesystems and your existing workspaces
       with days left; **Allocate workspace** creates one (`ws_list` on the host
@@ -1163,8 +1253,14 @@ container) — as opposed to the git **push** axis (#21/#22).*
       layout instead creates `<project>/data → <workspace>`; the Jobs view lists the
       workspace with its remaining time and **Extend** adds days (extensions drop by
       one); a non-cluster host skips the step with its note.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 91. **rsync for the PUSH direction too (local→host bulk transfer).** rsync is used
     on exactly one axis today: a **directory pull** (`commands::sync::try_rsync_pull`
@@ -1211,8 +1307,14 @@ container) — as opposed to the git **push** axis (#21/#22).*
       bytes untouched while its siblings go up; mark a subfolder excluded and confirm
       it is not transferred; kill rsync on the host and confirm the push still
       completes on the SFTP floor.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 ---
 
@@ -1497,8 +1599,14 @@ untested tag until a VM has actually booted on this machine).
       connect from the header VPN menu: the log is selectable, the Copy chip yields
       the whole handshake, and the error names the expired certificate instead of
       network connectivity.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 838. **Closing a project leaves remote tmux alone and never hands the window to
     the Trash.** Two faults in `deactivateProject`: closing a remote project
@@ -1518,8 +1626,14 @@ untested tag until a VM has actually booted on this machine).
       dialog says its remote session keeps running, and the other project (not
       the Trash) becomes current. Reconnect → the tmux session is still in the
       Sessions view.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 2320. **Full project export / import — moving a project to another computer
     (2026-09-21, ✅ Built · 🧪 Untested).** Copying a project folder to a second
@@ -1553,20 +1667,38 @@ untested tag until a VM has actually booted on this machine).
       its export date, the import lands in the chosen folder, and switching to
       it brings back its tabs (with their cwds inside the *new* folder), its
       description, its container/interpreter settings and its time history.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - [ ] 🖐️ Manual test — import the same bundle a second time on machine B:
       it lands beside the first as a separate project with a new id, and the
       first one's folder is untouched.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - [ ] 🖐️ Manual test — export a **remote** project, import on machine B:
       the host, user and compute hosts come back, the local mirror is recreated,
       the dialog says the password did not travel, and connecting asks for it
       once. Byte-sync and lockstep start from scratch rather than reporting
       everything as already in sync.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - [ ] **Open:** the export has no cancel, and progress is emitted per 64
       files — a multi-gigabyte tree is a long modal with a counter and no way
       out but closing the window.

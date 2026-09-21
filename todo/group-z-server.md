@@ -82,8 +82,14 @@ engine's correctness arguments all assume one human.*
       concurrent edit from Thunderbird surfaces as a named conflict rather than
       being overwritten; a recurring series' "this occurrence only" edit
       round-trips.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 170. **Generic remote URL publishing — Group P #79's one open bullet.**
     `git remote add/set-url origin <url>` + `git push -u origin <branch>`, with
@@ -99,8 +105,14 @@ engine's correctness arguments all assume one human.*
       flips `git_type` to `remote-private`.
     - [ ] 🖐️ Manual test — publish a local project to a bare repo in `/tmp` and
       confirm the history with `git log` on the bare repo.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 171. **Compare-and-swap on `calendar.json` writes.** `write_data`
     (`commands/calendar.rs:44-51`) is whole-file read-modify-write with no
@@ -113,8 +125,14 @@ engine's correctness arguments all assume one human.*
       clobbering.
     - [ ] 🖐️ Manual test — two windows, same board, drag a card in each within a
       second; neither edit vanishes.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 172. **`fsync` in `write_json_atomic`.** `storage.rs:36-50` does `fs::write(tmp)`
     then `fs::rename(tmp, path)` with **no `sync_all()` on either the file or the
@@ -128,8 +146,14 @@ engine's correctness arguments all assume one human.*
       pulling the power).
     - [ ] 🖐️ Manual test — n/a beyond "nothing regressed"; correctness here is not
       observable without a crash rig.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 ---
 
@@ -152,8 +176,14 @@ engine's correctness arguments all assume one human.*
     - [ ] 🖐️ Manual test — run it twice on a fresh Pi; the second run changes
       nothing and reports success. Run it against a half-provisioned box and it
       completes rather than erroring.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 174. **Backend RPC surface.** New `services/eldrun_server.rs` (embedded script,
     slug validation, **pure** parsers for `status` / `catalog` output — unit-tested
@@ -172,8 +202,14 @@ engine's correctness arguments all assume one human.*
       rejected; an unknown field in a server reply round-trips through `extra`
       rather than being dropped.
     - [ ] 🖐️ Manual test — each verb against a real provisioned server.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 175. **Person/device identity and invite codes.** `schema/hub.rs`:
     `Person{id, display_name, devices}`, `Device{id, label, ed25519_pub, added_at,
@@ -197,8 +233,14 @@ engine's correctness arguments all assume one human.*
       rejected; revoking one device leaves the person's other devices valid.
     - [ ] 🖐️ Manual test — two machines, two device keys, one person; revoke one
       and confirm the other still syncs and the revoked one is refused.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 176. **The Team settings panel and setup wizard.** Add `"team"` to
     `SettingsPanelKind` (a closed union at
@@ -221,8 +263,14 @@ engine's correctness arguments all assume one human.*
       never emits bare `false`; a portaled dialog sets an explicit `color`.
     - [ ] 🖐️ Manual test — full wizard against a fresh Pi, including first-contact
       `HostKeyConfirmDialog` and the locked-keyring banner.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 177. **Register the server as a machine, tagged so nothing sweeps it.** A server
     *is* a machine: add it to the global machines list and tag it `careful_hosts`
@@ -241,8 +289,14 @@ engine's correctness arguments all assume one human.*
       probe argv builders; export omits `user` and any secret; import round-trips.
     - [ ] 🖐️ Manual test — register a server, confirm no background traffic in
       `journalctl` on the Pi over an idle hour.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 178. **The SSH loopback forward for CalDAV.** Radicale binds `127.0.0.1:5232`;
     the client raises `ssh -O forward -L 127.0.0.1:<local>:127.0.0.1:5232` against
@@ -261,8 +315,14 @@ engine's correctness arguments all assume one human.*
       silently falling through.
     - [ ] 🖐️ Manual test — CalDAV sync succeeds through the forward with the Pi's
       port 5232 firewalled off from the LAN.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 ---
 
@@ -283,8 +343,14 @@ engine's correctness arguments all assume one human.*
       the client *and* the refusal is surfaced, not swallowed.
     - [ ] 🖐️ Manual test — two people, two machines, one shared calendar: events
       and VTODO fields converge; each also has a private collection.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 180. **Three-way merge on 412, and the conflict dialog.** Keep the row as the
     server last gave it (a *stored base* — `caldav_base` in `extra`, or a sidecar
@@ -302,8 +368,14 @@ engine's correctness arguments all assume one human.*
     - [ ] 🤖 Automated test — different-field edits merge with no dialog;
       same-field edits raise one naming both values; keep-mine re-reads the ETag.
     - [ ] 🖐️ Manual test — two machines, concurrent edits of one event, both cases.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 181. **The timezone detector.** Every stamp is floating local wall-clock
     (`schema/calendar.rs:11-13`) and `parseIcsDate` **ignores `TZID` entirely**
@@ -324,8 +396,14 @@ engine's correctness arguments all assume one human.*
       mismatch state; one offset does not.
     - [ ] 🖐️ Manual test — set two machines to different zones and confirm the
       banner appears and names both.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 182. **Migration of the existing single-user calendar.** Every user has a
     `~/.local/share/eldrun/calendar.json`; make it server-backed without loss, and
@@ -340,8 +418,14 @@ engine's correctness arguments all assume one human.*
       the server accepted.
     - [ ] 🖐️ Manual test — migrate a real calendar, kill the app mid-upload,
       re-run, and diff the result.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 ---
 
@@ -367,8 +451,14 @@ engine's correctness arguments all assume one human.*
       asymmetry, one layer up); a too-old `seq` requests a snapshot rather than
       silently resyncing nothing.
     - [ ] 🖐️ Manual test — two machines, a day's worth of ops, convergence.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 184. **The overlay client: HLC, LWW, and the rules that are not obvious.**
     Per-field LWW ordered by a **client HLC** (UTC epoch millis + logical counter +
@@ -400,8 +490,14 @@ engine's correctness arguments all assume one human.*
     - [ ] 🖐️ Manual test — two people drag cards on one board; a card dragged into
       Done on one machine reads complete in the other's Tasks view; a day offline
       reconciles without losing a tag or a subtask tick.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 185. **Collection-scoped columns.** Sharing `(column, rank)` requires shared
     column ids. The seeded set has **stable slug ids** (`backlog/today/doing/done`,
@@ -418,8 +514,14 @@ engine's correctness arguments all assume one human.*
       file.
     - [ ] 🖐️ Manual test — add a column on one machine, place a card in it, and
       confirm the other machine shows it in that column rather than in Backlog.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 186. **Assignee and attribution.** `assignee` as an overlay field (**not
     `ATTENDEE`** — iTIP is out of scope), rendered as an initials chip on
@@ -437,8 +539,14 @@ engine's correctness arguments all assume one human.*
       while `column`/`rank` are preserved; the indicator badge counts only the
       current member's cards.
     - [ ] 🖐️ Manual test — reassign a card from each machine in turn.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 187. **The conflict case matrix and the replay harness.** A matrix in the style of
     [`docs/git_lockstep_case_matrix.md`](../docs/git_lockstep_case_matrix.md),
@@ -457,8 +565,14 @@ engine's correctness arguments all assume one human.*
       rows in CI.
     - [ ] 🖐️ Manual test — the full matrix live, two machines, results recorded in
       a `docs/eldrun_server_live_qa.md` the way lockstep's was.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 ---
 
@@ -481,8 +595,14 @@ engine's correctness arguments all assume one human.*
       never a corrupt catalog.
     - [ ] 🖐️ Manual test — remove a repo from the server and confirm the member's
       clone survives as a local project with a stated reason.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 189. **"Share on my server…" — one pill-menu entry.** Beside the existing publish
     entries; a `.project-dialog` that is 90% the publish dialog (server, repo name,
@@ -497,8 +617,14 @@ engine's correctness arguments all assume one human.*
     - [ ] 🤖 Automated test — sharing sets `git_type` and `extra["shared"]`; an
       export of a shared project's entry contains no credential and no user.
     - [ ] 🖐️ Manual test — share a project, confirm the bare repo and catalog entry.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 190. **"From my server" — a fourth import source, and the duplicate gate.** No new
     dialog: `ProjectDialog` already has folder / clone / fork, so add a fourth
@@ -517,8 +643,14 @@ engine's correctness arguments all assume one human.*
       existing project, before any clone starts.
     - [ ] 🖐️ Manual test — two Eldrun profiles against one server: A shares, B joins
       and gets a working project; B joins again and is refused.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 191. **Force-disable lockstep and byte-sync on a shared project, and say why.**
     The lockstep engine's correctness arguments all assume **one human** (plan §6.2,
@@ -540,8 +672,14 @@ engine's correctness arguments all assume one human.*
       or byte-sync enabled; the guard fails the test if deleted.
     - [ ] 🖐️ Manual test — two members commit on one branch and resolve by
       `pull --rebase` in a terminal; no Use-local/Use-remote prompt appears.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 192. **Presence.** A heartbeat `{project_id, member, host_label, ts}` every ~30 s
     against a TTL'd server set, and a `👥 N` chip beside the existing category dots
@@ -565,8 +703,14 @@ engine's correctness arguments all assume one human.*
       shared by N mounted surfaces.
     - [ ] 🖐️ Manual test — open the project in a second install; the first reads
       `1` within an interval and clears within TTL.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 ---
 
@@ -597,8 +741,14 @@ engine's correctness arguments all assume one human.*
       shared project and assert it does not fire on commit, push or checkout.
     - [ ] 🖐️ Manual test — plant a hook from machine 2 and confirm nothing runs on
       machine 1.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 194. **The agent-surface review gate.** `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`,
     `.claude/settings.json` and `.claude/skills/**` all steer an AI agent, and
@@ -623,8 +773,14 @@ engine's correctness arguments all assume one human.*
       the state dir and **never** from the project tree.
     - [ ] 🖐️ Manual test — machine 2 edits `CLAUDE.md`; machine 1's next agent spawn
       is blocked pending a diff.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 195. **Container-mandatory, with an explicit refusal.** A writable shared project
     runs in a container or it does not run. Where containers are unavailable —
@@ -648,8 +804,14 @@ engine's correctness arguments all assume one human.*
       platform still warns and proceeds.
     - [ ] 🖐️ Manual test — attempt a writable shared project on Windows and confirm
       the refusal names why.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 196. **Shared-host hazard guards, and one stale doc.** Only needed if a shared
     *work* host mode is ever wanted, but each is a real hazard today:
@@ -673,8 +835,14 @@ engine's correctness arguments all assume one human.*
       deleted; `resolve` refuses when the destination has dirty tracked files.
     - [ ] 🖐️ Manual test — two members on one host; neither can silently end the
       other's session.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 ---
 
@@ -695,8 +863,14 @@ engine's correctness arguments all assume one human.*
     - [ ] 🤖 Automated test — the existing parity suite passes; a new tripwire
       asserts every server reason token has a frontend phrase.
     - [ ] 🖐️ Manual test — switch languages with the Team panel open.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 198. **`docs/context/eldrun_server.md`.** The *why* doc, per the root `CLAUDE.md`
     convention: the invariants (plan §8 — 24 of them, each with its reason), the
@@ -709,8 +883,14 @@ engine's correctness arguments all assume one human.*
     documented exception). Add the row to `CLAUDE.md`'s topic-doc table.
     - [ ] 🤖 Automated test — n/a (documentation).
     - [ ] 🖐️ Manual test — n/a.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 199. **The access log.** Append-only, `(timestamp, person_id, device_id, verb,
     resource_id, result)` and **nothing else** — no titles, no card text, no paths
@@ -732,8 +912,14 @@ engine's correctness arguments all assume one human.*
       retention prunes; no field outside the six-tuple is ever written.
     - [ ] 🖐️ Manual test — confirm the daily recap is unchanged with a server
       configured.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 ---
 

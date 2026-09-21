@@ -63,8 +63,14 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
     carries the edit.
      - [x] 🤖 Automated test — `DeckAutosave.test.tsx` — mounts the real `DeckView`, edits, unmounts inside the debounce, asserts the edit is on disk
      - [ ] 🖐️ Manual test — present a real deck and confirm it.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 94. ✅ **Opening a newer-version deck silently downgrades and overwrites it.**
     `normalizeDeck` always stamps `version: DECK_VERSION` (`sidecar.ts:326`)
@@ -88,8 +94,14 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
     dirty.
      - [x] 🤖 Automated test — `DeckAutosave.test.tsx` (open-does-not-write, newer-version held, override) + `DeckSidecar.test.ts` (version kept, lossy vs. repaired)
      - [ ] 🖐️ Manual test — present a real deck and confirm it.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 95. ✅ **An auto-advancing GIF double-steps whenever the second display is open.**
     `DeckPresenter.tsx:398` renders the interstitial with `onEnded={next}`;
@@ -113,8 +125,14 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
     *Test:* extend `DeckPresent.test.ts` with the stale-`from` case.
      - [x] 🤖 Automated test — `DeckPresent.test.ts` — the stale-`from` case, and that an unstamped request still works
      - [ ] 🖐️ Manual test — present a real deck and confirm it.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 96. ✅ **PDF export throws on any character outside WinAnsi.**
     `export.ts:337-364` calls `page.drawText` with no `try`/`catch`;
@@ -135,8 +153,14 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
     *Test:* `DeckExport.test.ts` cases with a Greek and a CJK string.
      - [x] 🤖 Automated test — `DeckExport.test.ts` — Greek and CJK strings export the rest of the deck and name the character
      - [ ] 🖐️ Manual test — present a real deck and confirm it.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 97. ✅ **The audience window can open black on the projector.**
     `presenter.rs:127-133` applies position/size and then `set_fullscreen(true)`
@@ -153,8 +177,14 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
     `run_on_main_thread` closure, after the ±1 resize nudge.
      - [ ] 🤖 Automated test — none: needs a real window manager — `presenter.rs` has no harness for a live window
      - [ ] 🖐️ Manual test — present a real deck and confirm it.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 98. ✅ **`Escape` is triply bound — holstering the laser ends the talk.**
     Three independent `window` keydown listeners can see one Escape, and none
@@ -173,8 +203,14 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
     overlay while `presenting`.
      - [ ] 🤖 Automated test — none: three window-level keydown listeners in two webviews; needs a live Eldrun
      - [ ] 🖐️ Manual test — present a real deck and confirm it.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 99. ✅ **"Present fullscreen" is not fullscreen.**
     `.deck-presenter` is `position: fixed; inset: 0; z-index: 200`
@@ -192,8 +228,14 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
     `maximize()` instead, matching `useKeyboard.ts:67-77`'s existing reasoning.
      - [ ] 🤖 Automated test — none: asserts against the OS window state; nothing to drive it in jsdom
      - [ ] 🖐️ Manual test — present a real deck and confirm it.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 100. ✅ **Anchoring can scramble layers on a Beamer recompile — the failure the
      sidecar design exists to prevent.**
@@ -229,8 +271,14 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
      leading text) must not silently reorder layers.
      - [x] 🤖 Automated test — `DeckSidecar.test.ts` (overlay fingerprints differ, within-line matching, `line` written back, `ambiguous`) + `tex.rs` (SyncTeX parse, main-input tag, postamble)
      - [ ] 🖐️ Manual test — present a real deck and confirm it.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 ---
 
@@ -249,8 +297,14 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
      rather than living inline in JSX.
      - [x] 🤖 Automated test — `DeckPresent.test.ts` — `nextSlideOf` skips the current slide's own build steps
      - [ ] 🖐️ Manual test — present a real deck and confirm it.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 102. ✅ **The overview grid does not stop navigation.** The keydown handler
      (`DeckPresenter.tsx:318-342`) gates on `blank` but never on `grid`, so with
@@ -260,8 +314,14 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
      `grid` is true; arrows should move the grid *selection*, Enter commits.
      - [ ] 🤖 Automated test — none: presenter keyboard state; would need the presenter mounted with a portal + pdf.js
      - [ ] 🖐️ Manual test — present a real deck and confirm it.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 103. ✅ **The audience window has no exits of its own.**
      `keyToAction("Escape")` → `{kind:"close"}` only *forwards* the request
@@ -287,8 +347,14 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
      `openAudience` resolves.
      - [ ] 🤖 Automated test — none: a second OS window and a monitor unplug
      - [ ] 🖐️ Manual test — present a real deck and confirm it.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 104. ⚠️ **PARTIAL — the ✅ overstates it.** The StrictMode/impure-updater half is
      genuinely fixed (coalescing + push moved outside the updater,
@@ -320,8 +386,14 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
      `next` from a `deckRef` and call `setDeck(next)` non-functionally.
      - [ ] 🤖 Automated test — none: the dirty/flush half is covered by `DeckAutosave.test.tsx`; the coalescing window itself is not
      - [ ] 🖐️ Manual test — present a real deck and confirm it.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 105. ✅ **`compile_tex` is synchronous — every compile freezes the whole window.**
      `commands/tex.rs:310-311` declares a sync Tauri command with a 600 s timeout
@@ -334,8 +406,14 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
      lines, and it removes the worst-feeling part of TeX-figure authoring.
      - [x] 🤖 Automated test — `tex.rs` — the rejection path still tested against `compile_tex_blocking`
      - [ ] 🖐️ Manual test — present a real deck and confirm it.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 106. ✅ **Slides cannot be deleted or skipped — and deletion is structurally
      undone.** `removeSlides` exists and is tested but has **no caller**
@@ -355,8 +433,14 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
      `deck.skippedPrints: string[]`) and check it in the uncovered-page fill.
      - [x] 🤖 Automated test — `DeckSidecar.test.ts` (no resurrection) + `DeckPresent.test.ts` (sequence, goto) + `DeckExport.test.ts` (page count and page mapping)
      - [ ] 🖐️ Manual test — present a real deck and confirm it.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 107. ✅ **A deck cannot be created without an existing PDF, and creation is
      undiscoverable.** The only affordance in the whole app is the "Present"
@@ -376,8 +460,14 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
      gated on `useExperimental("deck_presenter")` like the PDF button.
      - [x] 🤖 Automated test — `DeckSidecar.test.ts` — empty/whitespace/`{}` read as a fresh deck, malformed JSON still refused
      - [ ] 🖐️ Manual test — present a real deck and confirm it.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 108. ✅ **Asset paths break portability, sometimes permanently.**
      `toDeckRelative` relativizes only when the file sits under the deck's own
@@ -395,8 +485,14 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
      inspector while in there.
      - [x] 🤖 Automated test — `DeckView.test.ts` — `deckRelative` walks up, `withinProject` refuses a look-alike sibling
      - [ ] 🖐️ Manual test — present a real deck and confirm it.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 109. ✅ **Duplicate ids are not defended against.** `normalizeObject` mints a fresh
      id only when one is *missing* (`sidecar.ts:136`), same for slides (`:268`).
@@ -408,8 +504,14 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
      and object normalization and re-mint on collision, counted as a repair.
      - [x] 🤖 Automated test — `DeckSidecar.test.ts` — a duplicated object id and a duplicated slide id are both re-minted
      - [ ] 🖐️ Manual test — present a real deck and confirm it.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 110. ✅ **Replacing an interstitial's GIF keeps playing the old one.** `pickGif`
      reuses the existing id (`DeckAnimate.tsx:77`) and `useDeckGifs` keys its
@@ -420,8 +522,14 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
      GIF hook the same `refresh` escape hatch.
      - [ ] 🤖 Automated test — none: needs a decoded GIF and a file swap
      - [ ] 🖐️ Manual test — present a real deck and confirm it.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 111. ✅ **Rotation is ignored by resize, selection and alignment.** `applyHandle`
      applies the pointer delta in page space irrespective of `obj.rot`
@@ -435,8 +543,14 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
      moves the wrong edge is worse than no handle.
      - [x] 🤖 Automated test — `DeckModel.test.ts` — rotated bounds, the aspect-corrected turn, unrotated unchanged
      - [ ] 🖐️ Manual test — present a real deck and confirm it.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 112. ✅ **Mixed page sizes collapse to page 1's box.** `reconcile` unconditionally
      sets `pageWidth`/`pageHeight` from `pages[0]` (`sidecar.ts:472-473,
@@ -447,8 +561,14 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
      `export.ts:144-145`.
      - [x] 🤖 Automated test — `DeckSidecar.test.ts` — a differing page box is recorded per slide, a matching one is not
      - [ ] 🖐️ Manual test — present a real deck and confirm it.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 113. ✅ **Editor background work keeps running during the talk, and desyncs the two
      windows.** The TeX-figure mtime poll (`DeckView.tsx:815-864`) has no
@@ -465,8 +585,14 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
      editor's map.
      - [ ] 🤖 Automated test — none: an interval racing a presenter mount
      - [ ] 🖐️ Manual test — present a real deck and confirm it.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 114. ✅ **Present always starts at slide 1.** `startAt={0}` is hardcoded
      (`DeckView.tsx:1349`), so "let me see how this slide looks" costs walking
@@ -476,8 +602,14 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
      the beginning.
      - [ ] 🤖 Automated test — none: trivial prop threading, but only observable with the presenter mounted
      - [ ] 🖐️ Manual test — present a real deck and confirm it.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 115. ✅ **Two WebKitGTK paint traps in the presenter path.**
      (a) `themes.css:20063-20065` claims "Transform and opacity only. Nothing
@@ -502,8 +634,14 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
      the right/bottom edge of a dark slide on a projector.
      - [ ] 🤖 Automated test — none: CSS animation and canvas paint cost
      - [ ] 🖐️ Manual test — present a real deck and confirm it.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 116. ✅ **No external-change detection for the sidecar.** TeX figures get an mtime
      poll (`DeckView.tsx:815-865`); the deck file itself gets none. Two deck tabs
@@ -512,8 +650,14 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
      mtime and offer reload-vs-keep on a foreign write.
      - [ ] 🤖 Automated test — none: an mtime poll against a real second writer
      - [ ] 🖐️ Manual test — present a real deck and confirm it.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 117. ✅ **`DeckTheme` has readers but no writers — its stated purpose is
      unimplemented.** `margin`, `shapeFill`/`shapeStroke`, `iconColor`, the
@@ -534,8 +678,14 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
      only the form is missing.
      - [x] 🤖 Automated test — `DeckExport.test.ts` — the footer draws, numbers by talk position, and adds no stored object
      - [ ] 🖐️ Manual test — present a real deck and confirm it.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 118. ✅ **No in-place text editing.** `DeckObjectView.tsx` has no `contentEditable`,
      no overlay `<textarea>`, no double-click-to-edit; `DeckStage`'s
@@ -553,8 +703,14 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
      controls.
      - [ ] 🤖 Automated test — none: a double-click gesture on a measured stage
      - [ ] 🖐️ Manual test — present a real deck and confirm it.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 119. ✅ **Half the model has no control surface.** The toolbar offers align
      left/hcenter/right only, while `alignObjects` supports top/vcenter/bottom
@@ -572,8 +728,14 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
      slider.
      - [ ] 🤖 Automated test — none: form controls only; the model ops behind them are already covered
      - [ ] 🖐️ Manual test — present a real deck and confirm it.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 120. ✅ **Typography cannot match the plate, and standard-14 is the root cause of
      #96.** `fonts.ts:29-48` is standard-14 only and `@pdf-lib/fontkit` is not a
@@ -590,8 +752,14 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
      #96's safety net, not instead of it.
      - [x] 🤖 Automated test — `DeckExport.test.ts` — the substitution face matches what the metrics fall back to; unparseable fonts report rather than pretend
      - [ ] 🖐️ Manual test — present a real deck and confirm it.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 121. ✅ **Nothing inhibits display sleep or the screensaver during a talk.** No
      inhibit call exists in the deck subsystem or `presenter.rs`. A 45-minute
@@ -603,8 +771,14 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
      already degrades.
      - [x] 🤖 Automated test — `presenter.rs` — releasing an unheld inhibitor is not an error
      - [ ] 🖐️ Manual test — present a real deck and confirm it.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 122. ✅ **`onCloseRequested` races its own notification.** `DeckAudienceApp.tsx:143-150`
      passes a **non-async** handler that fire-and-forgets `emit(PRESENT_CLOSED)`,
@@ -623,8 +797,14 @@ backend `src-tauri/src/commands/{presenter,tex,fs}.rs`. Plan and rationale:
      projector.
      - [ ] 🤖 Automated test — none: Tauri window teardown ordering
      - [ ] 🖐️ Manual test — present a real deck and confirm it.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 ---
 

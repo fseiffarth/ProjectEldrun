@@ -80,8 +80,14 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
     - [ ] 🖐️ Manual test — write a rule, check mail, confirm the arrival lands in
       the named list and the strip says how many were filed; then "Apply to mail
       I already have" and confirm the count matches the dry run
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - **The rail is two zones now** (2026-07-29): account-*independent* above
       (Important/Urgent + the filter rules that fill them), account-*dependent*
       below (the accounts, and the selected one's folders, whose heading now
@@ -113,8 +119,14 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
       refused_while_a_sealed_file_exists, the_sealed_files_resolve_their_own_key}`
     - [ ] 🖐️ Manual test — launch with the mail overlay closed, open it, confirm
       the account is listed on the first paint.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 61. **Include a browser in Eldrun. (BUILT — reader mode; live pages opt-in.)**
     Shipped as two surfaces, because the obvious third one is not buildable:
@@ -134,8 +146,14 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
     - [ ] 🖐️ Manual test — **nothing here has been runtime-verified.** The
       gating check: from a live page's devtools, `invoke('list_projects')` must
       reject naming the ACL. If it resolves, stop.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 61a. **Containerise live pages. (DEFERRED — do not build without new evidence.)**
     Plan, kept for reference: `docs/browser_sandbox_plan.md`. It would run the
@@ -171,8 +189,14 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
     mode kept.
     - [ ] 🤖 Automated test — n/a while deferred
     - [ ] 🖐️ Manual test — n/a while deferred
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 61b. **Readability extraction for reader mode.** The change that would make the
     reader tab a *reading* surface rather than a sanitized document dump, and the
@@ -215,8 +239,14 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
     reintroduce a tag or attribute the sanitizer would have removed.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 ---
 
@@ -270,8 +300,14 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
       real server or a real correspondent: interop with Thunderbird and Outlook,
       unlock latency on the slowest machine, keychain-locked behaviour, and the
       migration of a store that actually holds mail.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 ---
 
@@ -325,8 +361,14 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
       the provider's "recent activity" page shows **one** sign-in, not ten; then
       leave the app idle 10 min and read another to confirm the stale-session
       path recovers rather than erroring.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 168. **OAuth 2.0 / `XOAUTH2` for the big providers.** Not built, and the plan is
     mostly *not* about IMAP. Today `imap_login` sends `LOGIN user pass`, which
@@ -398,8 +440,14 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
       is the wrong thing to build against a client that has never met a server.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 202. **The local model a mail task runs on — the tag exists, the task does not.**
     The 🧠 menu's role chips gained a **Mail** tag (2026-07-30), stored at
@@ -429,8 +477,14 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
       model — an unassigned tag must not mean "never run".
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 ---
 
@@ -457,8 +511,14 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
       shows no error strip after an interval passes and the ✉ tooltip says it is
       waiting; *Check mail* refuses with the VPN sentence; connecting the VPN from
       the header checks it within seconds; an unticked account is unaffected.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 825. **In-pane PDF preview for mail attachments.** *Preview* on a PDF attachment
     used to say "no in-app preview for this file type", which sent every
@@ -481,8 +541,14 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
       the next six, *Hide preview* removes them; a PDF over 4 MB shows the
       too-large note; an attachment declared `application/octet-stream` that is
       really a PDF previews as one; clicking on a rendered page does nothing.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 ### Mail security audit — 2026-09-17 (#847–#858)
 
@@ -519,8 +585,14 @@ no-MDC OpenPGP refused — is deliberately not re-listed here.*
       `inline_armor_counts_only_as_the_sole_body`.
     - [ ] 🖐️ Manual test — a `multipart/mixed` wrapping a genuinely signed mail shows
       no signature chrome; replying to a decrypted mail has Encrypt ticked.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 848. **🔴 High — "Save to project" writes through symlinks.**
     `commands/mail.rs:3244-3280`: `create_dir_all(<project>/eldrun-emails)` accepts
@@ -549,8 +621,14 @@ no-MDC OpenPGP refused — is deliberately not re-listed here.*
       `ensure_generated_dir_ignored_never_writes_through_a_symlink`.
     - [ ] 🖐️ Manual test — save an attachment to a local project; with
       `eldrun-emails` replaced by a symlink the save is refused.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 849. **🔴 High — decrypted OpenPGP attachments are persisted.**
     `commands/mail.rs:2086-2091` `put_blob`/`put_attachment`s every attachment of
@@ -565,8 +643,14 @@ no-MDC OpenPGP refused — is deliberately not re-listed here.*
     - [x] 🤖 Automated test — `forgetting_a_message_removes_only_blobs_nothing_else_names`.
     - [ ] 🖐️ Manual test — an encrypted mail with a PDF: preview and save work, and
       no new file appears under `mail/blobs/`.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 850. **🟠 Medium — a stalling IMAP server hangs sync for good.**
     `mail_engine.rs:1458/1526/1569/1610/1648`: `timeout()` wraps only

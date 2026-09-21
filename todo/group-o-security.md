@@ -17,8 +17,14 @@ auth) and the local/remote git push axis (#21).*
     are spawned and where pushes happen.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 59. **Per-project remote-control toggle. (DONE ✅ · 🧪 Untested)** **Shipped
     2026-07-28.** `Project.remote_control: Option<bool>` (`schema/project.rs`)
@@ -52,8 +58,14 @@ auth) and the local/remote git push axis (#21).*
       Claude tab, confirm `--remote-control` is absent from its argv even
       with the global setting on; confirm "inherit" goes back to matching the
       global setting.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 87. **Per-tab Plan/Auto agent mode. (REMOVED — the mode is the agent's own.)**
     *(This is group-O's #87; group-M has a different #87.)* Built, then taken
@@ -124,8 +136,14 @@ auth) and the local/remote git push axis (#21).*
     from a Linux dev host. Ties into Group H (Windows parity).
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 ### Sandbox-audit follow-ups (2026-07-26)
 
@@ -154,8 +172,14 @@ intent. What is left is listed here.
     - [ ] 🖐️ Manual test — migration verified on the real workspace. Still worth a
       look on the next relaunch: that restored tabs come back where expected, and
       that "Restore layout saved in the folder…" adopts a synced folder's layout.
-      - [x] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [x] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
     <details><summary>Original entry</summary>
 
@@ -213,8 +237,14 @@ intent. What is left is listed here.
       Dockerfile, confirm the dialog names the root/network risk, decline once
       and confirm no re-ask on an unchanged file, then edit the Dockerfile and
       confirm it re-asks.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 144. **Per-window capability split for `present-*` / `detached-*`.**
     **Re-evaluated 2026-09-18 — the "verify first" question below is answered,
@@ -246,8 +276,14 @@ intent. What is left is listed here.
     [`docs/sandbox_hardening_plan.md`](../docs/sandbox_hardening_plan.md) Phase 5.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 145. **Narrow `~/.claude/projects` to this project's own transcript dir.**
     **PARTIAL — the write half shipped in `b36e731` (2026-07-28) and was never
@@ -280,8 +316,14 @@ intent. What is left is listed here.
     Phase 3.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 146. **Don't silently auto-select a repo-planted `.venv` (S-10).**
     `commands::python::find_venvs` (`python.rs:132-158`) offers any directory
@@ -307,8 +349,14 @@ intent. What is left is listed here.
     bespoke first-open prompt described above.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 147. **Surface "container not applied" for a remote project.** A local project
     that had the container enabled and was later extended to remote keeps its
@@ -324,8 +372,14 @@ intent. What is left is listed here.
     exactly the projects that were extended from a container-toggled local one.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 148. **Guard the provider CLI's positional arguments. (NOT A PROBLEM ✅)**
     `commands::git_publish::local_publish` passes `repo_name` to `gh repo create`
@@ -355,8 +409,14 @@ intent. What is left is listed here.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test — open an Ollama/vibe tab in a container-toggled project,
       confirm it still runs on the host, and that it still does after a relaunch.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
     <details><summary>Original entry</summary>
 
@@ -406,8 +466,14 @@ intent. What is left is listed here.
     - [ ] 🖐️ Manual test — open a shell tab normally (still works), then try
       to reproduce the original exploit shape (a `project_id` paired with an
       unrelated `cwd`) and confirm `pty_spawn` refuses it with the new error.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 151. **A repo's own `.git/config` is executable intent too. (MITIGATED ⚠️ · not
     fully closed)** The same sentence as #142, with git as the executor instead
@@ -487,8 +553,14 @@ intent. What is left is listed here.
       file tree's git status doesn't run it; confirm a real Git LFS repo's
       filter is (expectedly) inert for host-side status/diff/add while a
       container is active.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 152. **One gate for "this is already a project". (DONE ✅ · 🧪 Untested)** Importing
     or creating a project on a site another project already owns used to be
@@ -525,8 +597,14 @@ intent. What is left is listed here.
       hand-typing the path.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 ---
 
@@ -550,8 +628,14 @@ intent. What is left is listed here.
      implementation.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 154. **Screenshots ask before they land in a project — and never auto-file.**
      ✅ Implemented · needs live QA. A capture used to be written straight into
@@ -584,8 +668,14 @@ intent. What is left is listed here.
       overlay should open on the crop with a preview, Save should land it where
       named, Discard should leave the clipboard paste working. Shift+click
       should count down and let an Alt+Tab land first.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 155. **A bind-mounted config file cannot be rewritten (DONE ✅ · 🖐️ Untested).**
     The fence shadowed `~/.codex/config.toml`, `~/.claude/settings.json`,
@@ -616,8 +706,14 @@ intent. What is left is listed here.
       brand-new project and let it ask to trust the folder: it must record the
       trust without the `failed to persist config` error, and
       `~/.codex/config.toml` on the host must stay unchanged.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 156. **A long-lived agent tab logs itself out (DONE ✅ · 🧪 Untested).** The
     "(b)" of #155, met for real: agent tabs open for a few hours showed
@@ -669,8 +765,14 @@ intent. What is left is listed here.
       have changed and `/proc/<tab pid>/root/$HOME/.claude/.credentials.json`
       must hold the new token. Tabs opened *before* the restart stay bound to
       the old inode and must be reopened once.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 ---
 

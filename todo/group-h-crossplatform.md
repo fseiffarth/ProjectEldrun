@@ -43,8 +43,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       extensions (`.exe`/`.cmd`/`.bat`/`.ps1`).
       - [x] 🤖 Automated test — `paths::path_finder_is_where_on_windows_which_elsewhere`
       - [ ] 🖐️ Manual test — "Manage agents" lists installed agents on Windows
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **30b — Cross-platform per-process CPU/RSS sampling.** ✅ Done. `sysstat`
       was entirely `#![cfg(target_os = "linux")]`, so `project_cpu_percent` and
       `debug_app_resource_usage` returned 0 on Windows. Refactored into a shared
@@ -59,8 +65,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [x] 🤖 Automated test — `sysstat` tests now run on Windows too
         (`sum_jiffies`/`sum_rss_kib` against the live process, tree walk, cache)
       - [ ] 🖐️ Manual test — pill popup shows live CPU/RSS on Windows
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **30c — Native PID liveness.** ✅ Done. `check_pid_alive`
       (`commands/apps.rs`) no longer shells out to `tasklist` on Windows; it uses
       `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` + `GetExitCodeProcess`,
@@ -70,8 +82,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [x] 🤖 Automated test — covered by `cargo build --lib` compile + existing
         callers; no behavioral unit test (needs a live pid)
       - [ ] 🖐️ Manual test
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **30d — App discovery + launching on Windows.** ✅ Done. Linux XDG
       `.desktop` discovery is gated behind `cfg(not(windows))`; Windows now enumerates
       Start-Menu `.lnk` shortcuts (`%ProgramData%` + `%APPDATA%`, recursive, deduped
@@ -85,8 +103,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [x] 🤖 Automated test — `cargo test --lib apps` (incl. a Windows-gated
         interpreter-selection test) passes
       - [ ] 🖐️ Manual test
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **30e — Screenshot capture on Windows.** ✅ Done. `commands/screenshot.rs`
       refactored to a cfg-selected `platform` submodule (Linux tool-spawn unchanged).
       Windows uses native Win32 GDI — `GetSystemMetrics(SM_*VIRTUALSCREEN)` for the
@@ -96,8 +120,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       freed on success and error paths. Added `Win32_Graphics_Gdi`.
       - [x] 🤖 Automated test — shared filename/date tests retained; build verified
       - [ ] 🖐️ Manual test
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **30f — VPN-gated projects on Windows.** ✅ Done — and since upgraded
       twice: first from the original graceful-degradation stub to a **real
       backend** (direct `openvpn.exe` spawn — worked only from an elevated
@@ -120,8 +150,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [ ] 🖐️ Manual test — connect a VPN-gated project from an *unelevated*
         Eldrun with `OpenVPNServiceInteractive` running (expect the group-
         membership refusal first if not in "OpenVPN Administrators")
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **30g — Windows crash hook** (2026-07-11; ✅ Done · 🧪 CI-unverified).
       The native-fault analog of the Unix signal handlers: `install_seh_filter`
       (`lib.rs`) opens crash.log at startup, keeps the raw HANDLE in
@@ -133,8 +169,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [x] 🤖 Automated test — `format_crash_line_*` (4 tests, run on Linux)
       - [ ] 🖐️ Manual test — force a native crash on Windows; crash.log gains a
         `=== CRASH:` line with the exception code
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **30h — Windows whole-system monitor** (2026-07-11; ✅ Done · 🧪
       CI-unverified). `sysstat.rs` Windows backend fills a real
       `SystemSnapshot`: aggregate CPU via `GetSystemTimes` (kernel includes
@@ -149,8 +191,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         `decode_ansi_nul_*` (run on Linux)
       - [ ] 🖐️ Manual test — System Monitor pane shows live CPU/mem/processes
         on Windows
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **30i — Windows local network snapshot** (2026-07-11; ✅ Done · 🧪
       CI-unverified). `commands/network.rs` Windows `local_snapshot` via
       `GetIfTable2`: alias name (UTF-16, `utf16_nul_to_string`), octet
@@ -161,8 +209,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [x] 🤖 Automated test — `utf16_alias_decoding_stops_at_nul` (Linux-run)
       - [ ] 🖐️ Manual test — Network pane lists adapters with live byte counts
         on Windows
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **30j — Windows SSH password auth via askpass** (2026-07-11; ✅ Done ·
       🧪 CI-unverified). Password auth no longer hard-requires `sshpass`: when
       the installed OpenSSH honors `SSH_ASKPASS_REQUIRE` (≥ 8.4 —
@@ -180,8 +234,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         `windows_askpass_shim_echoes_env_without_cmd_interpolation` (Linux-run)
       - [ ] 🖐️ Manual test — password-SSH project connects without sshpass on
         Win11 (OpenSSH ≥ 8.4) and via sshpass on Win10 1903
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **30k — Windows position_window + popout occlusion** (2026-07-11; ✅
       Done · 🧪 CI-unverified). `platform/windows.rs` overrides
       `position_window` (`SetWindowPos` with `SWP_NOSIZE|SWP_NOZORDER|
@@ -193,8 +253,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         x86_64-pc-windows-msvc`); the pure occlusion logic is X11/macOS-side
       - [ ] 🖐️ Manual test — file drop places the app on the drop monitor; a
         popout behind the main window refuses the drop-merge
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
 
     - [x] **30l — Windows panel-toggle key: F9, not the Win key** (2026-07-15;
       ✅ Done). The lone-Meta panel toggle was enabled on Windows, but the lone
@@ -208,8 +274,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         a fixed key branch
       - [ ] 🖐️ Manual test — F9 toggles panels on Windows; Win+X no longer
         flickers them
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **30m — Windows one-click agent install** (2026-07-15; ✅ Done).
       `install_agent` hard-refused off Linux/macOS even though the registry
       already carried `install_cmd_windows` for most agents. Now
@@ -223,8 +295,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         `windows_installer_command_picks_interpreter_per_command` (Windows-run)
       - [ ] 🖐️ Manual test — one-click install of an agent on Windows streams
         its log and flips to "installed"
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **30n — Windows disk-capacity probe** (2026-07-15; ✅ Done).
       `duscan::capacity_of` returned `None` on Windows, silently dropping the
       disk-usage pane's total/free capacity bar. Added a `#[cfg(windows)]` arm
@@ -233,8 +311,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [x] 🤖 Automated test — `capacity_of_home_reports_a_plausible_volume`
         (runs on every OS)
       - [ ] 🖐️ Manual test — disk-usage pane shows the capacity bar on Windows
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **30o — no docker spawn at Windows startup** (2026-07-15; ✅ Done).
       Containers are Unix-only, but `sandbox::sweep_orphans` ran unconditionally
       at startup, spawning `docker --version` (and `docker ps` when Docker
@@ -246,8 +330,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       `binary_on_path("docker")`, which walks PATH without spawning.
       - [x] 🤖 Automated test — compile-covered; behavior is an early return
       - [ ] 🖐️ Manual test — n/a
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
 
 31. **macOS support follow-ups.** macOS has initial cross-platform code (state
     paths, default shell, browser profiles, network detection, Unix symlinks),
@@ -273,8 +363,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [ ] 🖐️ Manual test — needs a real macOS build to confirm the libc bindings
         (`proc_taskinfo`/`proc_bsdinfo`/`proc_listallpids`) resolve in pinned
         `libc 0.2`; if any is absent, add a minimal `extern "C"`/`#[repr(C)]` decl.
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [~] **31b — macOS workspace backend** (2026-07-11; ✅ Code-complete, ⚠️
       **unverified** — compile-blind on Linux, no macOS SDK). macOS no longer
       falls to `NullBackend`: `platform/macos.rs` implements `WorkspaceBackend`
@@ -296,8 +392,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         round-trip, `frontmost_at_point` occlusion cases)
       - [ ] 🖐️ Manual test — on a mac: project switch hides/shows foreign apps;
         Eldrun/Finder/Dock never hidden; quitting Eldrun unhides everything
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [~] **31c — macOS whole-system monitor** (2026-07-11; ✅ Code-complete, ⚠️
       **unverified**, compile-blind). `sysstat.rs` macOS `system_snapshot`:
       per-core CPU via `host_processor_info` (ticks → **nanoseconds** so units
@@ -312,8 +414,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         `bsd_process_state_*` (Linux-run)
       - [ ] 🖐️ Manual test — System Monitor pane populates on a mac; CPU% of a
         busy process roughly matches Activity Monitor
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [~] **31d — macOS local network snapshot** (2026-07-11; ✅ Code-complete,
       ⚠️ **unverified**, compile-blind). `network.rs` spawns `netstat -ibn`
       (chosen over the raw `NET_RT_IFLIST2` sysctl — hand-declared
@@ -325,8 +433,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         real-shaped fixture)
       - [ ] 🖐️ Manual test — Network pane lists en0/lo0/utun* with live byte
         counts on a mac
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [~] **31e — macOS OpenVPN backend** (2026-07-11; ✅ Code-complete, ⚠️
       **unverified**, compile-blind). Replaces the "not yet supported" stubs:
       `osascript -e 'do shell script … with administrator privileges'` starts
@@ -345,8 +459,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [ ] 🖐️ Manual test — VPN project on a mac: admin prompt → lamp green →
         disconnect (second prompt) → lamp red; interactive mode types
         `sudo openvpn …` into the root tab
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [ ] **31f — macOS ssh-link traffic via nettop** (design note, no code).
       ControlMaster exists on macOS, so remote projects mux fine; what's
       missing is per-socket byte counters for the ssh-link monitor +
@@ -367,8 +487,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [x] 🤖 Automated test — `sweep_should_probe`
       - [ ] 🖐️ Manual test — kill Eldrun from Task Manager with a container up,
         relaunch, `docker ps` shows no `eldrun-*`
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **32b — image build uses the platform shell and quoting.** The
       one-click build ran `/bin/bash` on Windows; `default` would have been
       cmd.exe, which ignores `'…'`. Now PowerShell plus `install_shell_quote`
@@ -376,8 +502,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [x] 🤖 Automated test — `install_shell_quote` table, `containerBuildShell`
       - [ ] 🖐️ Manual test — project path with a space and an apostrophe →
         build image → PowerShell tab, build succeeds
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **32c — copy+delete only on a real cross-device rename.** Any rename
       error triggered the fallback, so a locked file on Windows could leave a
       duplicated, half-deleted tree. `paths::is_cross_device` (never compares
@@ -386,8 +518,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [x] 🤖 Automated test — predicate per-cfg tests, `move_tree` tempdir resume
       - [ ] 🖐️ Manual test — Windows: keep a file in a folder open, move the
         folder — an error, and no duplicate at the destination
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **32d — saved downloads marked as from the internet.** Mail
       attachments and browser downloads carried no provenance:
       `web_safety::mark_downloaded` writes `Zone.Identifier` on Windows (only
@@ -397,8 +535,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [x] 🤖 Automated test — body/xattr value format; `no_command_takes_a_path`
       - [ ] 🖐️ Manual test — Windows: Explorer shows "Unblock", Office opens it
         in Protected View. macOS: a saved `.command` triggers Gatekeeper
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **32e — the phone's sidecar finds tmux.** It spawned bare `tmux`
       without Eldrun's augmented PATH, so a Homebrew tmux was invisible and the
       phone's tab list came back empty. The attach keeps its `CommandBuilder`
@@ -407,8 +551,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [x] 🤖 Automated test — builder PATH assertions in discovery/pty_bridge
       - [ ] 🖐️ Manual test — macOS with Homebrew tmux: the phone lists
         terminals. Windows: the settings note appears and the phone lists none
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **32f — fenced macOS agents can write the ordinary device files.**
       The Seatbelt profile denied all writes and never re-allowed `/dev/null`,
       so `> /dev/null` failed inside a fenced tab. Allows `/dev/null`, `zero`,
@@ -416,16 +566,28 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       which would let an agent write into other tabs' terminals.
       - [x] 🤖 Automated test — profile ordering/content assertions (Linux-run)
       - [ ] 🖐️ Manual test — a fenced tab runs `git status >/dev/null && echo ok`
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **32g — Docker Desktop / OrbStack CLIs on the macOS PATH**, and the
       **Tailscale CLI inside the app bundle** for App Store installs.
       - [x] 🤖 Automated test — `supplemental_path_dirs_for(Macos, …)`,
         `tailscale_program` with an injected `exists`
       - [ ] 🖐️ Manual test — per-user Docker Desktop: the container tier is
         offered. App Store Tailscale with no CLI on PATH: Mobile Serve reads
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **32h — the fence install hint follows the distribution.** The
       one-click bubblewrap install hardcoded apt, and the fence fails closed, so
       a non-Debian user had no working path. `package_install_cmd` covers
@@ -433,8 +595,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [x] 🤖 Automated test — os-release fixture table incl. `ID_LIKE` precedence
       - [ ] 🖐️ Manual test — Fedora/Arch: the pill's install button runs
         dnf/pacman; an unknown distribution hides it
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **32i — the presenter's sleep inhibitor dies with Eldrun.** It
       spawned `systemd-inhibit … sleep infinity` with nothing tying it to
       Eldrun and no release on exit, so a quit or crash mid-talk kept the
@@ -444,23 +612,41 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [x] 🤖 Automated test — argv builder; a pipe-close test proving the tie
       - [ ] 🖐️ Manual test — present, `kill -9` Eldrun, then
         `systemd-inhibit --list` shows no Eldrun row
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **32j — the renderer reload budget is per window.** One process-wide
       counter meant a crash-looping popout could spend the main window's budget.
       - [x] 🤖 Automated test — pure budget helper; macOS label map
       - [ ] 🖐️ Manual test — hard to force; watch crash.log for a popout that
         loops while the main window still reloads
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **32k — onboarding names the panel key that works here.** The copy
       hardcoded "Super" where the code already uses F9 (GNOME/KDE); it now asks
       `livePanelToggleKey()` and waits for the desktop probe.
       - [x] 🤖 Automated test — extended `SuperKeyOwnership`
       - [ ] 🖐️ Manual test — GNOME/KDE: How to start and the Feature Guide say
         F9; Cinnamon still says Super
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **32l — Settings says when the desktop cannot park windows.** A
       `can_park()` backend capability (default true, null backend false) behind
       `workspace_capabilities`; the dead `workspace_info` fetch in `HeaderBar`
@@ -469,8 +655,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         when `can_park === false`
       - [ ] 🖐️ Manual test — GNOME Wayland: Settings → Layout shows the note;
         Cinnamon or KDE X11 shows none
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **32m — macOS gets an explicit menu, and ⌘W closes a tab.** Tauri's
       default menu bound ⌘W to Close Window, and a focused terminal swallowed
       the app's own chord, so ⌘W quit the whole app. The menu now omits Close
@@ -482,15 +674,27 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         vitest for ⌘W vs ⌃W on macOS and Ctrl+W unchanged on Linux
       - [ ] 🖐️ Manual test — macOS: ⌘W in a focused terminal and in a popout
         closes the tab; ⌃W deletes a word; ⌘Q quits cleanly; ⌘C/⌘V still work
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **32n — macOS window stays hidden until its placement is restored.**
       The per-platform config replaced the window array (RFC 7396), dropping
       `visible: false`, so the window flashed at its default spot on launch.
       - [x] 🤖 Automated test — a Rust test reading both config files
       - [ ] 🖐️ Manual test — macOS: no visible flash before the saved placement
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **32o — housekeeping.** One Wayland predicate instead of three
       disagreeing copies (`Some("")` was read as X11); the deb drops the unused
       `libappindicator3-1` (universe-only on 26.04) and recommends
@@ -501,8 +705,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [x] 🤖 Automated test — covered by the existing suites and both cross-checks
       - [ ] 🖐️ Manual test — Ubuntu: `dpkg -I` on the CI .deb shows the new
         Depends/Recommends
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
 
 254. **The bare Super key belongs to the desktop, not to the OS.** ✅ Fixed
     2026-09-07, ⚠️ untested live. `useKeyboard` gated its lone Meta/Super panel
@@ -533,8 +743,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] 🖐️ Manual test — on GNOME: press Super for the overview and come back
       to Eldrun with the side panel still there; F9 still toggles it; the F1
       sheet lists F9, not Super. On Cinnamon: Super still toggles.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
     **Follow-up (2026-09-07, same day, ⚠️ untested live):** the probe only
     helps a window whose backend can answer it, and the one on the desk could
@@ -556,8 +772,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       all leave the side panel in place. Then F9 (or a lone Super on Cinnamon)
       hides the panels and a toast names the key; the same key brings them
       back with no toast.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 209. **Getting the app onto a machine, and keeping it current.** The two ends
     of distribution that were never Eldrun's own: what the installer looks
@@ -582,8 +804,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [ ] 🖐️ Manual test — run the CI-built `.exe` on Windows: the setup
         program wears the Eldrun icon, the welcome/finish page shows the
         sidebar, and the inner pages show the header
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **209b — Check for a new release, and install it.** ✅ Done.
       Settings → Updates: `services::app_update` reads the project's
       `/releases/latest` from the GitHub API, compares numerically (a lexical
@@ -607,8 +835,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [ ] 🖐️ Manual test — with an AppImage install and a newer release
         published: open Settings → Updates, check, download, install, restart,
         and confirm the new version runs
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
       - [ ] **Open:** no automatic check. A check happens only when the panel
         is opened, so a user who never visits it never learns of a release. An
         opt-in "check on launch" (default off) is the obvious follow-up and was
@@ -637,8 +871,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         works and never opens it; a wide code block still pans sideways instead
         of opening it; a swipe starting at the screen edge triggers Android's
         back gesture, not the strip; Terminal view shows no strip
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
 
 - [~] **31ae — Every phone section glyph asks for emoji presentation** (2026-09-14;
   ✅ code-complete, tests passing, ⚠️ phone QA pending after a PWA rebuild,
@@ -649,8 +889,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   test (`MobileSectionGlyphs`) guards the invisible selector.
       - [ ] **Manual QA:** on the phone all four tab-bar icons and the Home alert
         rows are colour emoji, none grey outline.
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
 
 - [~] **31ad — `eldrun-send`: files from agent terminals to the phone** (2026-09-14;
   implemented, pending live QA). See `docs/mobile_send_plan.md`. Local and
@@ -687,8 +933,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         *Set up in terminal* → confirm. Expect the overlay terminal over
         Settings running `tailscale serve --bg …`, the active project unchanged,
         and a root tab holding the same terminal after closing the overlay
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
 
 - [~] **31ab — Mobile Focus reads as a chat** (2026-09-05; ✅ code-complete and
   automated tests passing, ⚠️ phone QA pending — and a rebuild + restart first,
@@ -723,8 +975,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     question's numbered rows stay on the left and answerable; the live input
     box is still not painted; Copy still includes `> `; a Codex tab shows the
     same for `›`; a shell tab shows no bubbles.
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
   - 2026-09-16 fix: a user bubble sometimes held text the user never typed.
     Two sources feed the bubbles and both leaked. **Stored session** (the
     default for Claude/Codex): the not-a-prompt filter was a short start-only
@@ -768,8 +1026,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     and confirm its `❯` rows stay left. Then the mirror: paste a `tree` into a
     prompt and send it — the whole thing stays in one bubble; send `try "npm
     ci" first` and `where am I?` and confirm each still appears as yours.
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31aa — Project boxes reach the phone** (2026-09-05; ✅ code-complete
   and automated tests passing, ⚠️ phone QA pending — and a rebuild + restart
@@ -799,8 +1063,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     opened in the box after the switch are listed and attach; a member with
     its own switch off is *not* in the list; switch the box off: it vanishes
     from the phone within a poll.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31z — The phone's ✓ ticks a card instead of moving it** (2026-09-05;
   ✅ code-complete and automated tests passing, ⚠️ phone QA pending — and a
@@ -827,8 +1097,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     card's Move picker: for a late card only Overdue (plus Doing/custom/archive
     columns) is selectable, for a card due today only Today, and Overdue is
     greyed for anything not late. Moving a card into Doing and back still works.
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31y — The phone's Alerts rows carry the desktop's Done ✓** (2026-09-04;
   ✅ code-complete and automated tests passing, ⚠️ phone QA pending — and a
@@ -862,8 +1138,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     → the row goes and the appointment is still in the desktop calendar,
     listed under the strip's 🔕 count. Then close Eldrun on the desktop and tap
     a ✓ → "could not be completed", the row still there.
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31g — Eldrun Mobile sidecar on macOS & Windows** (2026-08-26; ✅
   Code-complete, ⚠️ needs live QA on real macOS/Windows machines).
@@ -882,12 +1164,24 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   hidden on Windows and state-dir-aware on macOS.
   - [ ] 🖐️ Manual test — macOS: enable Mobile in Settings, confirm the launch
     agent starts, pair a phone, attach a tmux tab
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
   - [ ] 🖐️ Manual test — Windows: enable Mobile, confirm the host starts and
     survives logoff/logon, pair a phone, open mail/calendar/to-dos
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31h — Mobile composer status chips** (2026-08-28; ✅ Code-complete, ⚠️
   needs live QA on a phone against a real Claude Code / Codex tab).
@@ -905,8 +1199,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   - [ ] 🖐️ Manual test — on the phone, open a Claude tab: chips show the
     model/mode from the statusline, `/model` picker opens from the model chip,
     mode chip cycles plan/accept-edits, ＋ inserts `@` into the draft
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31x — Mobile Agents mode: every waiting session, no project grouping**
   (2026-09-03; ✅ code-complete and automated tests passing, ⚠️ phone QA pending
@@ -942,8 +1242,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     working → question → done; close desktop Eldrun and see the "Desktop
     unavailable" line instead of an empty-and-quiet reading; with everything
     idle, confirm the list is empty and says so
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31i — Mobile lazy terminal history, whole session** (2026-08-28;
   ✅ Code-complete, ⚠️ needs live QA on a phone; the tmux `history-limit` half
@@ -965,8 +1271,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     "Show earlier output" appears, reveals older lines without the view
     jumping, repeated taps walk back to the session start, reconnect (airplane
     mode toggle) replays without duplicating lines
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31j — Mobile model/mode chips open a list, not a TUI dialog**
   (2026-08-28; ✅ Code-complete, ⚠️ needs live QA on a phone against a real
@@ -995,8 +1307,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     switches it (chip label follows), ✕ closes both sheet and picker; the mode
     chip opens the four modes, tapping Plan lands in plan mode, tapping bypass
     on a session without it reports the failure and leaves the mode unchanged
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31l — Mobile Focus mode chips for all agent families** (2026-08-28;
   ✅ Code-complete, ⚠️ needs live QA on a phone).
@@ -1027,8 +1345,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     walking Default→Plan→Default confirms both ways; a Qwen tab lists five
     modes and lands on the tapped one (incl. YOLO, whose prompt turns `*`);
     a Gemini tab still blind-cycles but shows its `% used` as context
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31ag — Mobile Focus beyond Claude Code** (2026-09-15; ✅ code-complete
   for the screen half, ⚠️ untested live; phone needs a rebuild + restart).
@@ -1046,8 +1370,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     the mode chip reads default / accept edits / plan as Shift+Tab cycles on
     the desktop, and the sheet walks between them; a Claude tab whose answer
     ends in a `* item` list still shows the list's last rows.
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
   - [ ] **Follow-ups** (see the survey for each spec):
     - [ ] Stored-session readers in `agent_transcript.rs` for the full-screen
       and inline CLIs that keep one: Gemini, Qwen, Kimi Code, Pi, Vibe,
@@ -1090,11 +1420,24 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     and Claude reads the image; pick a >24 MB video → refused without upload;
     + → A project file inserts a bare `@`. Open the Model sheet → the picker
     text does not appear behind the sheet; close it → the view resumes
-    - [ ] ✅ Works
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
   - [ ] 🖐️ Manual test — on the phone: + → From the gallery opens the photo
     picker (not the file browser); pick two photos → both land in the draft
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31u — Mobile Focus: + attaches an image from the desktop** (2026-09-03;
   ✅ Code-complete, ⚠️ needs live QA on a phone — and a rebuild + restart
@@ -1124,8 +1467,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     lands in the draft and the file is in `<project>/.eldrun/inbox/`; send and
     Claude reads it. Clear the clipboard, reopen the sheet → no clipboard row.
     With Eldrun closed → the sheet says the desktop is not answering.
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31x — Mobile Focus: the agent's pictures reach the phone** (2026-09-05;
   ✅ code-complete, automated tests passing — `outbox.rs` unit tests, the
@@ -1159,8 +1508,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     tap → full screen, Close returns; ✕ → strip gone; copy a second image →
     strip returns with only the new one. Put a `.txt` renamed to `.png` there
     → not listed. With Eldrun closed → the strip still lists what is there.
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31w — Reconnect survives the binary being replaced under a live
   window** (2026-09-03; ✅ code-complete and automated tests passing, ⚠️ not
@@ -1186,8 +1541,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     the Mobile menu: the host restarts (`journalctl --user -u
     eldrun-mobile-host` shows a fresh `Started`) instead of reporting
     `os error 2`, and the phone reaches it again.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31o — Mobile names which machine failed, instead of "Host unavailable"**
   (2026-09-01; ✅ Code-complete, ⚠️ needs live QA on a phone — and a rebuild +
@@ -1219,8 +1580,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     turn airplane mode on → "This phone is offline" instead; with Tailscale up
     but Eldrun closed on the desktop → an error naming *Eldrun Mobile* /
     *Eldrun* rather than the phone; each shows a `status code` line
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31k — Mobile fingerprint unlock is the default** (2026-08-28;
   ✅ Code-complete, ⚠️ needs live QA on a phone).
@@ -1252,8 +1619,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     button on iOS), a fingerprint alone unlocks, cancelling it leaves the PIN
     path working, a fresh setup on a biometric-capable phone states
     PIN-as-fallback
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31m — Mobile to-do board: sticky filters, FAB, hide archived**
   (2026-08-30; ✅ Code-complete, ⚠️ needs live QA on a phone).
@@ -1280,8 +1653,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     reveals them and is remembered; the ＋ button adds a card and never sits
     under the tab bar or over the editor; the last column is fully scrollable
     past the button
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31t — Rename an agent tab from the phone** (2026-09-02; ✅ code-complete
   and automated tests passing, ⚠️ phone QA pending). A tab's name was the one
@@ -1311,8 +1690,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     desktop Eldrun closed the sheet says to open it rather than failing
     silently; no ✎ appears on a shell tab; check the Model/mode/Schedule chips
     read centered in a narrow terminal.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 - [~] **31ab — Close a tab from the phone** (2026-09-05; ✅ code-complete and
   automated tests passing, ⚠️ phone QA pending — and a rebuild + restart first:
   the sidecar route, the desktop bridge and the embedded PWA all changed). The
@@ -1361,8 +1746,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     a tab, close that tab from the desktop and watch the phone say the session
     is gone rather than hanging; with desktop Eldrun closed the sheet says to
     open it rather than failing silently.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31u — Mobile status chip: the session's state and the agent's own usage**
   (2026-09-02; ✅ code-complete and automated tests passing, ⚠️ phone QA
@@ -1407,8 +1798,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     when it did not); on a Codex tab the sheet still shows the state and the
     tally but says Codex has no readable usage; with desktop Eldrun closed it
     names Eldrun rather than "request failed"
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31v — Mobile Focus stops above the session's own input box**
   (2026-09-02; ✅ code-complete and automated tests passing, ⚠️ phone QA pending
@@ -1436,8 +1833,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     correctly; Copy copies without the chrome; when the agent asks a permission
     question the numbered options stay visible and answerable; Terminal view is
     unchanged; a shell tab is unchanged.
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31s — Mobile Terminal view reaches the whole session** (2026-09-02;
   ✅ code-complete and automated tests passing, ⚠️ phone QA pending). tmux sizes
@@ -1481,8 +1884,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     scrollback without a jump; dragging back reaches the prompt again; a short
     session (desktop window no taller than the phone's box) scrolls history from
     the first pixel as before.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 - [~] **31t — Mail writes from the phone: mark read/star and reply-only**
   (2026-09-03; ✅ code-complete and automated tests passing, ⚠️ phone QA
   pending). Mail was the one companion surface with no write at all, and the
@@ -1535,8 +1944,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     retires the tag, and the phone's own attach does the same. Still unchecked:
     a `question` pill surviving a look, and attaching with desktop Eldrun
     closed.
-  - [x] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [x] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 - [~] **31r — The phone comes back where it was** (2026-09-02; ✅ code-complete
   and automated tests passing, ⚠️ phone QA pending). Eldrun Mobile saved only
   the terminal it was last *sent into* (`rememberLastTab` fired on the way in
@@ -1557,8 +1972,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     the app standing on To-do (or Calendar/Mail) and reopen: it lands there;
     open a terminal and reopen while it is open: it lands in the terminal;
     close the desktop tab and reopen the PWA: it lands on the project.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 - [~] **31q — Mobile collected prompts** (2026-09-02; ✅ code-complete and
   automated tests passing, ⚠️ phone QA pending). "◷ Collected prompts" on the
   project screen opens the project's tab-free prompt list (desktop #249)
@@ -1574,8 +1995,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     Agents view follow; Send now to an idle agent and watch it typed on the
     desktop; Schedule… lands in the tab sheet with the text; with desktop
     Eldrun closed the sheet disables writes and says so.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 - [~] **31p — Mobile per-tab schedule sheet** (2026-09-01; ✅ code-complete and
   automated tests passing, ⚠️ phone QA pending). Every agent tab on the
   project's tab overview carries its own schedule line and a **◷ Schedules**
@@ -1600,8 +2027,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     refresh; edit it on desktop and see the open sheet refresh; close desktop
     Eldrun and verify the explanatory disabled state without losing terminal
     access; verify auth/origin rejection from an unpaired client.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31ah — The phone's PWA updates on commit, without a relaunch** (2026-09-17;
   ✅ code-complete, automated tests passing and the publish→load contract smoke-tested
@@ -1635,8 +2068,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     post-commit freeze, pull-to-refresh on the phone and confirm the build stamp
     in the UI moved without the desktop being relaunched; then confirm
     `npm run backend:stale` names the published bundle.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31ai — The phone says what each session was last asked** (2026-09-18;
   ✅ code-complete, automated tests passing, ⚠️ not verified on a phone). Every
@@ -1675,8 +2114,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     still shows what it was asked; check the Agents list carries the last prompt
     under each row; check an agent with no readable transcript (Gemini/Qwen)
     shows its screen-echoed line rather than an empty block.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 ---
 
@@ -1741,8 +2186,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     footer names the new one); the status chips show the context percentage; a
     left→right swipe shows the ` BUILD …` status row; a plain `opencode` tab
     still offers the Terminal view with the `--mini` hint.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
   - [ ] **Follow-ups**: model *variants* (ctrl+t, OpenCode's reasoning-effort
     equivalent) have no chip yet; a stored-session reader for
     `~/.local/share/opencode/opencode.db` would give Focus a history that
@@ -1792,8 +2243,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     page scrolls under the finger; switch to **Last working** and confirm the
     grips disappear; close desktop Eldrun and confirm a drag reports "Open
     desktop Eldrun to rearrange tabs" and puts the card back.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31al — Codex and Claude read alike on the phone** (2026-09-19; ✅
   code-complete, automated tests passing, ⚠️ not verified on a phone).
@@ -1826,8 +2283,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     prompts" names the prompt it is working on. Send a prompt to an OpenCode
     tab from the phone: its card lists it (with the time) after the next poll,
     and the desktop prompt chart shows it once — also for a Claude tab.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31am — The agent's files live in a gallery, not in the chat** (2026-09-20;
   ✅ code-complete, automated tests passing, ⚠️ not verified on a phone).
@@ -1853,8 +2316,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     full screen → ✕ → back on the grid → ✕ → back to the chat. Switch to
     Terminal → the same button, no strip above the composer. Send another file
     → the count rises within ~8 s without the chat moving.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31an — Arrange the phone's project list by hand** (2026-09-20; ✅
   code-complete, automated tests passing, ⚠️ not verified on a phone). The
@@ -1890,8 +2359,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     page scrolls under the finger; switch to **Search**, confirm no grips;
     start a session in a project that was not listed and confirm it joins the
     end rather than jumping into the arranged block.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 ---
 
@@ -1943,8 +2418,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     block holds the question and the line that says why it is asked, in the
     reading view's own type — no white card, no startup banner — and the three
     rows below it answer it.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 ---
 
@@ -1974,8 +2455,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     column and confirm the column says how many it is holding; open it and the
     card is there. Rename and reorder a folded column from its head. Delete a
     folded column and confirm the fold does not come back on a new column.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31aq — The phone keeps a half-typed message** (2026-09-20; ✅
   code-complete, automated tests passing, ⚠️ not verified on a phone). The
@@ -2006,8 +2493,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     composer is empty. Send it and re-open the tab: the composer is empty.
     Type again, switch to another app and let the phone kill the PWA, then
     relaunch: the text is back. Type into a shell tab and confirm the same.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31ar — A project's header carries its tab order** (2026-09-20; ✅
   code-complete, automated tests passing, ⚠️ not verified on a phone). The
@@ -2031,8 +2524,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     pushing the picker off the screen; on a narrow phone confirm the picker is
     still reachable with one thumb. Open a project with one tab and confirm the
     header carries no picker.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31as — The open mark leaves the ✕'s corner, and a fullscreen agent's
   question reaches the phone** (2026-09-20; ✅ code-complete, automated tests
@@ -2067,8 +2566,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     rows appear under the stored session, the rows carry no box-drawing notes,
     and tapping one answers it. While the turn runs, the "Working" dots show;
     swiping right shows the status line.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31at — Antigravity's model and effort reach the phone** (2026-09-20; ✅
   code-complete, automated tests passing, ⚠️ not verified on a phone).
@@ -2108,8 +2613,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     marked; tap another stop and the session's footer changes to it. Repeat
     with a Claude model: it applies at once, with no effort step. Check that
     closing the sheet closes the dialog in the session too.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31au — A chat message is held, and the hold says what to do with it**
   (2026-09-20; ✅ code-complete, automated tests passing, ⚠️ not verified on a
@@ -2138,8 +2649,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     stops it. Do the same on one of your own prompts, on both the Session and
     the Screen reading. Then scroll the chat by dragging from inside a bubble:
     no sheet opens, and no text gets selected.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [ ] **31av — A box tab says which member it runs in** (planned 2026-09-20,
   not built; plan: `docs/mobile_box_parity_plan.md`). A box's tabs run in
@@ -2226,8 +2743,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     names the new one), the sheet closes by itself, and its ✕ closes the
     dialog in the session too. Then confirm a `--mini` tab still lists and
     answers its own picker.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
   - Needs a rebuild of the embedded PWA and a desktop restart to serve it.
   - **Still open for a plain `opencode` tab**: the Reader view. The full TUI
     has no scrollback, so Reader falls back to the stored session
@@ -2264,8 +2787,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     seven more → the shelf still shows six and **All 10 files** opens the
     sheet with all of them. Close the tab the files were sent from → the shelf
     is unchanged. With Eldrun closed → the shelf still lists what is there.
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 *Not coming to the phone (decided, not forgotten — see
 `docs/mobile_box_parity_plan.md`): editing a box from the phone (membership,
