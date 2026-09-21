@@ -342,49 +342,50 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     } catch (reason) { setError(String(reason)); void load(); } finally { setActivating(false); }
   };
   return <main className="screen">
-    {/* One line, read the way an agent tab's header reads: the chevron out, the
-        name in the middle with the room a long one needs, and this list's own
-        control on the right. The order was a row of its own above the cards, and
-        a phone screen has about five of those to spend on tab cards.
+    {/* Two rows: the chevron and the name on the first, so a long name keeps the
+        whole width; this list's own controls on the second. On one line the
+        gallery, the sort and ＋ squeezed the name down to a letter or two.
 
         The same three orders the desktop Agents view offers, remembered per
         phone. "Manual" is this screen's name for the arrival order, because here
         that order is the desktop's own tab order — the one a drag writes into. */}
-    <header>
+    <header className="project-header">
       <button className="back" onClick={back}>‹</button>
       <div className="terminal-title"><h1>{detail?.project.label ?? "Project"}</h1></div>
-      {/* The same 🖼 the Focus screen carries, in the same place and the same
-          class: the shelf below stands under however many tab cards the project
-          has, so on a project with a screenful of them everything the desktop
-          sent was past the end of the scroll — and the outbox is the project's,
-          not a session's. */}
-      {outbox.length > 0 && <button
-        className="terminal-gallery"
-        onClick={() => setGalleryOpen(true)}
-        aria-haspopup="dialog"
-        aria-expanded={galleryOpen}
-        aria-label={t("mobile.outbox.galleryOpen", { count: outbox.length })}
-        title={t("mobile.outbox.region")}
-      ><span aria-hidden="true">🖼</span><small>{outbox.length}</small></button>}
-      {tabs.length > 1 && <label className="activity-sort in-header">
-        <span>Sort</span>
-        <select aria-label="Sort tabs" value={sort} onChange={(event) => { if (isAgentSort(event.target.value)) chooseSort(event.target.value); }}>
-          {AGENT_SORTS.map((value) => <option key={value} value={value}>{SORT_LABEL[value]}</option>)}
-        </select>
-      </label>}
-      {/* Opening a session is what this screen is for, so it sits where the
-          thumb already is rather than under however many cards the project has
-          (`NewTabSheet`). Disabled without the desktop, which is the same
-          condition the buttons down there carried — the notice below says why. */}
-      <button
-        className="primary new-tab"
-        disabled={creating || !detail?.desktop_available}
-        onClick={() => setNewTabOpen(true)}
-        aria-haspopup="dialog"
-        aria-expanded={newTabOpen}
-        aria-label="New tab"
-        title="New agent or shell"
-      ><span aria-hidden="true">＋</span></button>
+      <div className="project-header-tools">
+        {/* The same 🖼 the Focus screen carries, in the same place and the same
+            class: the shelf below stands under however many tab cards the project
+            has, so on a project with a screenful of them everything the desktop
+            sent was past the end of the scroll — and the outbox is the project's,
+            not a session's. */}
+        {outbox.length > 0 && <button
+          className="terminal-gallery"
+          onClick={() => setGalleryOpen(true)}
+          aria-haspopup="dialog"
+          aria-expanded={galleryOpen}
+          aria-label={t("mobile.outbox.galleryOpen", { count: outbox.length })}
+          title={t("mobile.outbox.region")}
+        ><span aria-hidden="true">🖼</span><small>{outbox.length}</small></button>}
+        {tabs.length > 1 && <label className="activity-sort in-header">
+          <span>Sort</span>
+          <select aria-label="Sort tabs" value={sort} onChange={(event) => { if (isAgentSort(event.target.value)) chooseSort(event.target.value); }}>
+            {AGENT_SORTS.map((value) => <option key={value} value={value}>{SORT_LABEL[value]}</option>)}
+          </select>
+        </label>}
+        {/* Opening a session is what this screen is for, so it sits where the
+            thumb already is rather than under however many cards the project has
+            (`NewTabSheet`). Disabled without the desktop, which is the same
+            condition the buttons down there carried — the notice below says why. */}
+        <button
+          className="primary new-tab"
+          disabled={creating || !detail?.desktop_available}
+          onClick={() => setNewTabOpen(true)}
+          aria-haspopup="dialog"
+          aria-expanded={newTabOpen}
+          aria-label="New tab"
+          title="New agent or shell"
+        ><span aria-hidden="true">＋</span></button>
+      </div>
     </header>
     {/* Only once the host has answered: `!detail?.desktop_available` was also
         true while the first load was in flight, so every project opened on a

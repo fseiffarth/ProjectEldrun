@@ -40,6 +40,14 @@ nav button,.keys button { flex:1; }
 .activity-sort.in-header { flex:0 1 auto; min-width:0; margin:0; }
 .activity-sort.in-header select { flex:0 1 auto; max-width:11rem; }
 @media (max-width:420px) { .activity-sort.in-header > span { display:none; } }
+/* The project screen's header runs on two rows: the chevron and the name on the
+   first, the gallery, the sort and ＋ on the second, so the name keeps the width. */
+.project-header { flex-wrap:wrap; row-gap:6px; }
+.project-header-tools { flex:1 0 100%; display:flex; align-items:center; gap:10px; min-width:0; }
+.project-header-tools .activity-sort.in-header { flex:1 1 auto; }
+.project-header-tools .activity-sort.in-header > span { display:inline; }
+.project-header-tools .activity-sort.in-header select { flex:1 1 auto; max-width:none; }
+.project-header-tools .new-tab { margin-left:auto; }
 .cards { display:grid; gap:10px; }
 .card { width:100%; text-align:left; justify-content:space-between; padding:16px; background:rgba(28,31,43,.92); }
 .card span:first-child { display:grid; gap:4px; }
