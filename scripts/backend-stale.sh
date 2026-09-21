@@ -234,25 +234,33 @@ fi
 sidecar_msg=""
 host_pid="$(pgrep -f -- '--mobile-host' | head -n 1 || true)"
 if [ -n "$host_pid" ] && [ -n "$app_pid" ]; then
-  host_exe="$(readlink -f "/proc/$host_pid/exe" 2>/dev/null || true)"
-  app_exe="$(readlink -f "/proc/$app_pid/exe" 2>/dev/null || true)"
-  if [ -n "$host_exe" ] && [ -r "$host_exe" ] && [ -n "$app_exe" ] && [ -r "$app_exe" ]; then
-    host_size="$(stat -c %s "$host_exe" 2>/dev/null || echo 0)"
-    app_size="$(stat -c %s "$app_exe" 2>/dev/null || echo 0)"
-    host_built="$(stat -c %Y "$host_exe" 2>/dev/null || echo 0)"
-    app_built="$(stat -c %Y "$app_exe" 2>/dev/null || echo 0)"
-    if [ "$host_size" != "0" ] && [ "$app_size" != "0" ] \
-       && { [ "$host_size" != "$app_size" ] || [ "$host_built" -lt "$app_built" ]; }; then
-      stale=1
-      sidecar_msg="THE PHONE'S API IS STALE — the sidecar answering the phone is an older copy of
+  # Both images are measured THROUGH `/proc/<pid>/exe` with `stat -L`, never
+  # through the path that link resolves to. `readlink -f` answers
+  # "…/eldrun-dev (deleted)" the moment a rebuild unlinks the file under the
+  # running window — unreadable, so this check used to skip in silence in the
+  # very shape it exists for (2026-09-21: the sidecar was nine hours behind the
+  # window and nothing said so). And when the path does still exist it is the
+  # wrong file: what an install would copy is the image the window is RUNNING,
+  # not whatever now sits at its old name. `-L` follows the magic link to the
+  # live inode either way; the resolved path is kept for the report alone.
+  host_exe="$(readlink "/proc/$host_pid/exe" 2>/dev/null | sed 's/ (deleted)$//' || true)"
+  app_exe="$(readlink "/proc/$app_pid/exe" 2>/dev/null | sed 's/ (deleted)$//' || true)"
+  host_size="$(stat -Lc %s "/proc/$host_pid/exe" 2>/dev/null || echo 0)"
+  app_size="$(stat -Lc %s "/proc/$app_pid/exe" 2>/dev/null || echo 0)"
+  host_built="$(stat -Lc %Y "/proc/$host_pid/exe" 2>/dev/null || echo 0)"
+  app_built="$(stat -Lc %Y "/proc/$app_pid/exe" 2>/dev/null || echo 0)"
+  if [ "$host_size" != "0" ] && [ "$app_size" != "0" ] \
+     && { [ "$host_size" != "$app_size" ] || [ "$host_built" -lt "$app_built" ]; }; then
+    stale=1
+    sidecar_msg="THE PHONE'S API IS STALE — the sidecar answering the phone is an older copy of
   the backend than the window itself, so a mobile feature whose backend half is
   newer than that copy renders and then 404s.
-  window  : $app_exe ($(date -d "@$app_built" '+%F %T'), $app_size bytes)
-  sidecar : $host_exe ($(date -d "@$host_built" '+%F %T'), $host_size bytes)
-  Settings -> Mobile -> \"Update mobile host\" reinstalls it from this window and
-  restarts the sidecar alone — the window keeps its tabs, and the phone needs
-  only a pull-to-refresh afterwards."
-    fi
+  window  : ${app_exe:-pid $app_pid} ($(date -d "@$app_built" '+%F %T'), $app_size bytes)
+  sidecar : ${host_exe:-pid $host_pid} ($(date -d "@$host_built" '+%F %T'), $host_size bytes)
+  The header's Mobile menu -> \"Reconnect\" reinstalls the sidecar from this window
+  and restarts it alone — so does Settings -> Mobile -> \"Update mobile host\" where
+  the window is new enough to offer it. The window keeps its tabs, and the phone
+  needs only a pull-to-refresh afterwards."
   fi
 fi
 
