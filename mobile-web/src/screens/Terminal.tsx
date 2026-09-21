@@ -146,6 +146,14 @@ const TRANSCRIPT_STEP = 120;
 const AGENT_KEY_GAP = 80;
 const AGENT_SUBMIT_GAP = 200;
 
+/** Codex starts a fresh conversation with `/new`; the other supported
+ * scrollback agents use `/clear`. The composer must send the command its own
+ * CLI understands, rather than assuming Claude Code's spelling everywhere. */
+const CODEX_AGENT = /codex/iu;
+function newConversationCommand(agentLabel: string): string {
+  return CODEX_AGENT.test(agentLabel) ? "/new" : "/clear";
+}
+
 /** Session lines the phone keeps. Matches the desktop sidecar's replay depth
  * (`pty_bridge::MOBILE_SCROLLBACK_LINES`) and the tmux `history-limit` Eldrun
  * sets on its sessions — the three are one number by design, so what tmux
@@ -1499,10 +1507,10 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     setDraft("");
     forgetDictation();
   };
-  /** The field's /clear button: the fresh conversation typing `/clear` gives,
-   * sent at once — no confirm dialog. The draft is left alone. */
+  /** The field's new-conversation button sends the selected CLI's command at
+   * once — no confirm dialog. The draft is left alone. */
   const clearConversation = () => {
-    if (sendAgentText("/clear")) setPending([]);
+    if (sendAgentText(newConversationCommand(agentLabel))) setPending([]);
   };
   /** The composer's ✕: an empty draft, and the dictation transcript with it. */
   const clearDraft = () => {

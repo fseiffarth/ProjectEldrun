@@ -26,7 +26,7 @@ export const dict: Dict = {
   "mobile.outbox.from": "Dall’agente",
   "mobile.outbox.untested": "Non testato",
   "mobile.composer.clear": "Svuota il messaggio",
-  "mobile.composer.clearChat": "Svuota la conversazione (/clear)",
+  "mobile.composer.clearChat": "Avvia una nuova conversazione",
   "mobile.voice.dictate": "Detta",
   "mobile.voice.stop": "Interrompi la dettatura",
   "mobile.voice.preparing": "Preparazione della dettatura",

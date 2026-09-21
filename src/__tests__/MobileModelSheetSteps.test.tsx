@@ -238,20 +238,20 @@ describe("Eldrun Mobile — a multi-step /model picker", () => {
     expect(FakeWebSocket.sent).toEqual([UP, UP, "\r"]);
   });
 
-  it("sends /clear from the empty field's button at once, without a confirm dialog", async () => {
+  it("sends /new from Codex's empty field button at once, without a confirm dialog", async () => {
     const confirm = vi.fn(() => false);
     vi.stubGlobal("confirm", confirm);
     render(<Terminal tab={{ id: "tab", label: "Codex", kind: "agent", available: true, viewer_busy: false }} back={() => {}} />);
     await act(async () => {});
 
-    expect(screen.getByRole("button", { name: "Clear the conversation (/clear)" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Start a new conversation" })).toBeTruthy();
     // A draft takes the slot back for its own ✕.
     fireEvent.change(screen.getByRole("textbox", { name: "Message agent" }), { target: { value: "hi" } });
-    expect(screen.queryByRole("button", { name: "Clear the conversation (/clear)" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Start a new conversation" })).toBeNull();
     fireEvent.change(screen.getByRole("textbox", { name: "Message agent" }), { target: { value: "" } });
-    fireEvent.click(screen.getByRole("button", { name: "Clear the conversation (/clear)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Start a new conversation" }));
     await settle(300);
     expect(confirm).not.toHaveBeenCalled();
-    expect(FakeWebSocket.sent.join("")).toContain("/clear");
+    expect(FakeWebSocket.sent.join("")).toContain("/new");
   });
 });

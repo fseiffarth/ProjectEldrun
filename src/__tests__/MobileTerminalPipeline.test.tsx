@@ -118,6 +118,7 @@ const settle = (ms: number) => act(async () => { await new Promise((resolve) => 
 const composer = () => screen.getByLabelText("Message agent") as HTMLTextAreaElement;
 const sentText = () => socket().sent.filter((value): value is string => typeof value === "string");
 const sentBytes = () => socket().sent.filter((value) => typeof value !== "string");
+const sentAgentInput = () => sentBytes().map((value) => new TextDecoder().decode(value as Uint8Array)).join("");
 
 describe("Eldrun Mobile terminal pipeline", () => {
   beforeEach(() => {
@@ -191,6 +192,16 @@ describe("Eldrun Mobile terminal pipeline", () => {
     fireEvent.keyDown(composer(), { key: "Enter" });
     expect(sentBytes().length).toBeGreaterThan(0);
     expect(composer().value).toBe("");
+  });
+
+  it("starts a Codex conversation with its /new command", async () => {
+    const codex = { ...TAB, id: "tab-codex", label: "Codex", agent_label: "Codex" };
+    render(<Terminal tab={codex} back={() => {}} />);
+    await act(async () => {});
+
+    fireEvent.click(screen.getByRole("button", { name: "Start a new conversation" }));
+    await settle(350);
+    expect(sentAgentInput()).toContain("/new\r");
   });
 
   it("drops a retryable close's explanation once the session is back", async () => {
