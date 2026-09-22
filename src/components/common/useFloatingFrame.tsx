@@ -185,15 +185,18 @@ export function useFloatingFrame(storageKey: string) {
         />
       ));
 
+  // The root console's own fill button (RootOverlay's ⤢/⤡), not a window-manager glyph.
   const fillButton = (
     <button
       type="button"
-      className="wm-btn wm-maximize"
+      className="subwindow-hide floating-frame-fill"
       title={saved.filled ? t("floatingFrame.restore") : t("floatingFrame.fill")}
       aria-label={saved.filled ? t("floatingFrame.restore") : t("floatingFrame.fill")}
       aria-pressed={saved.filled}
       onClick={toggleFilled}
-    />
+    >
+      {saved.filled ? "⤡" : "⤢"}
+    </button>
   );
 
   return {

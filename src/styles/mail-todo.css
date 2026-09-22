@@ -460,6 +460,17 @@ svg.alerts-toggle-icon {
 .floating-frame-bar button {
   cursor: var(--cur-pointer, pointer);
 }
+/* The fill button is the root console's `.subwindow-hide` ⤢; in a dialog title
+   row it sits in the flow (no sticky pin, no auto margin — the h2 already takes
+   the slack) and on the band's own wash rather than a panel-coloured square. */
+.floating-frame-bar .floating-frame-fill {
+  position: static;
+  margin-left: 0;
+  background: none;
+}
+.floating-frame-bar .floating-frame-fill:hover {
+  background: var(--pill-hover-bg);
+}
 .floating-frame.framing,
 .floating-frame.framing .floating-frame-bar {
   /* A drag must not select the title on the way past. */
