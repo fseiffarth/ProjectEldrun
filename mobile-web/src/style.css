@@ -1,6 +1,6 @@
 :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background:#0b0d13; color:#e7e9f2; }
 * { box-sizing:border-box; }
-body { margin:0; min-height:100dvh; background:radial-gradient(circle at 80% 0,#262143 0,transparent 42%),#11131a; }
+body { margin:0; min-height:100dvh; background:#000; }
 button,input,textarea,select { font:inherit; }
 button { color:inherit; }
 .screen { max-width:720px; min-height:100dvh; margin:auto; padding:max(22px,env(safe-area-inset-top)) 18px max(24px,env(safe-area-inset-bottom)); }
