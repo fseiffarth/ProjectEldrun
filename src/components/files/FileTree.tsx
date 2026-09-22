@@ -31,7 +31,7 @@ import { useSyncStore, isPathExcluded, dirSyncAggregate, type SyncFileState } fr
 import { confirmSyncTransfer } from "../../stores/remote/syncConfirm";
 import { useActivityStore } from "../../stores/activity";
 import { useFileClipboardStore } from "../../stores/fileClipboard";
-import { type FileEntry, type InternalViewer, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, visibleEntries, isHiddenByEnding, internalViewerFor, disabledViewers, fileEntriesEqual, stringMapsEqual, nextSelection, STANDARD_PROJECT_FILES } from "../../lib/viewers/fileUtils";
+import { type FileEntry, type InternalViewer, type SortKey, fmtSize, fmtModified, visibleEntries, isHiddenByEnding, internalViewerFor, disabledViewers, fileEntriesEqual, stringMapsEqual, nextSelection, STANDARD_PROJECT_FILES } from "../../lib/viewers/fileUtils";
 import {
   dropFileTreeSnapshot,
   fileTreeSnapshotKey,
@@ -77,6 +77,8 @@ import { UntestedTag } from "../common/UntestedTag";
 import { RenameDialog, containingFolderLabel } from "./RenameDialog";
 import { useDialogs } from "../common/PromptDialogs";
 import { Dropdown } from "../common/Dropdown";
+import { FileIcon } from "../common/icons/FileIcon";
+import { SearchIcon } from "../common/icons/Icon";
 import { useT, type TranslationKey } from "../../lib/i18n";
 
 // Persist whether the collapsed "gitignored" files section is expanded, so the
@@ -3474,7 +3476,7 @@ export function FileTree({
                 title={searchOpen ? t("fileTree.hideSearch") : t("fileTree.showSearch")}
                 aria-label={searchOpen ? t("fileTree.hideSearch") : t("fileTree.showSearch")}
               >
-                🔍
+                <SearchIcon />
               </button>
             )}
             {searchOpen && (
@@ -4065,7 +4067,7 @@ export function FileTree({
                   <span className="file-run-spinner" />
                 </span>
               )}
-              <span className="file-icon">{e.is_dir ? folderIcon() : fileIcon(e.extension)}</span>
+              <span className="file-icon"><FileIcon ext={e.extension} isDir={e.is_dir} /></span>
               <span className="file-name">{e.name}</span>
               {notOnRemote && (
                 <span

@@ -72,6 +72,7 @@ import {
   type ScratchCandidate,
 } from "../../lib/remote/hpc/hpcWorkspace";
 import { useT, type TranslationKey } from "../../lib/i18n";
+import { UploadIcon } from "../common/icons/Icon";
 
 type Step = "login" | "project" | "workspace" | "data" | "run" | "watch";
 
@@ -1118,7 +1119,7 @@ function RunStep({
       <div className="project-dialog-actions">
         <button type="button" onClick={onBack}>{t("common.back")}</button>
         <button type="button" disabled={busy} onClick={() => void submit()}>
-          {busy ? t("hpcWizard.submitting") : t("hpcWizard.submitJob")}
+          {busy ? t("hpcWizard.submitting") : <><UploadIcon /> {t("hpcWizard.submitJob")}</>}
         </button>
       </div>
     </>

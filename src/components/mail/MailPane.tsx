@@ -20,6 +20,7 @@ import { MailAiQuickTags } from "./MailAiSettings";
 import { mailPgpAvailable } from "../../lib/mail";
 import { mailEncryptionState } from "../../lib/mail";
 import type { MailEncryptionState } from "../../types/mail";
+import { KeyIcon, LockIcon, SparkleIcon, UnlockIcon } from "../common/icons/Icon";
 
 /**
  * The mail client: folder rail / header list / message view.
@@ -565,7 +566,7 @@ export function MailPane({ visible }: MailPaneProps) {
           title={t("mail.encryption.title")}
           onClick={() => setEncryptionDialog(true)}
         >
-          {encryption?.active ? "🔒" : "🔓"}
+          {encryption?.active ? <LockIcon /> : <UnlockIcon />}
         </button>
         {pgpReady && (
           <button
@@ -574,7 +575,7 @@ export function MailPane({ visible }: MailPaneProps) {
             title={t("mail.keys.title")}
             onClick={() => setKeysDialog(true)}
           >
-            🔑
+            <KeyIcon />
           </button>
         )}
         {/* The Mail AI (local) region: a bordered group holding the global
@@ -598,7 +599,7 @@ export function MailPane({ visible }: MailPaneProps) {
                 title={t("mailAi.settingsTitle")}
                 onClick={() => setAiAccountId(selectedAccount.id)}
               >
-                ✨
+                <SparkleIcon />
               </button>
             </>
           )}

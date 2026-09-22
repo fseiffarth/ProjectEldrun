@@ -89,13 +89,16 @@ async function renderPanel() {
   });
 }
 
-/** A toolbar button by its glyph — the 🔍 fold and the ↻ re-list both live in
+/** A toolbar button by its glyph, or — for the drawn search icon, which has
+ *  no text — by its label. The search fold and the ↻ re-list both live in
  *  the Files/Git/Apps row now, not in a row of the tree's own. */
 function toolbarBtn(glyph: string): HTMLButtonElement {
   const toolbar = document.querySelector(".side-panel-toolbar");
   expect(toolbar).toBeTruthy();
   const btn = [...toolbar!.querySelectorAll("button")].find((b) =>
-    (b.textContent ?? "").includes(glyph),
+    glyph === "🔍"
+      ? /^(Show|Hide) search$/.test(b.getAttribute("aria-label") ?? "")
+      : (b.textContent ?? "").includes(glyph),
   );
   expect(btn).toBeTruthy();
   return btn as HTMLButtonElement;

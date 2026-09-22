@@ -42,9 +42,9 @@ function facets(tags: ReturnType<typeof projectTypeTags>) {
 const GIT = { key: "git", label: "git", color: "#3fb950" };
 const NO_GIT = { key: "git", label: "no git", color: "#8b949e" };
 const GITHUB_PUBLIC = { key: "provider", label: "GitHub · public", color: "#a371f7" };
-const GITHUB_PRIVATE = { key: "provider", label: "GitHub · private 🔒", color: "#a371f7" };
+const GITHUB_PRIVATE = { key: "provider", label: "GitHub · private", color: "#a371f7" };
 const GITLAB_PUBLIC = { key: "provider", label: "GitLab · public", color: "#fc6d26" };
-const GITLAB_PRIVATE = { key: "provider", label: "GitLab · private 🔒", color: "#fc6d26" };
+const GITLAB_PRIVATE = { key: "provider", label: "GitLab · private", color: "#fc6d26" };
 const SSH_TAG = { key: "ssh", label: "SSH", color: "#58a6ff" };
 
 /** The 6 git-label states, each as (git_type, git_provider) → expected git-axis

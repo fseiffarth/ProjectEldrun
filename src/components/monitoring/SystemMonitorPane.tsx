@@ -30,6 +30,7 @@ import { UntestedTag } from "../common/UntestedTag";
 import { hostsForProject } from "../../lib/remote/remoteHosts";
 import { PRIMARY_HOST, sshOf, useRemoteStatusStore } from "../../stores/remote/remoteStatus";
 import { useT, type TranslationKey } from "../../lib/i18n";
+import { FeatherIcon, MicroscopeIcon } from "../common/icons/Icon";
 
 // ── Backend snapshot shape (mirrors sysstat::SystemSnapshot, snake_case) ──────
 
@@ -851,7 +852,7 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
                   })}
                 >
                   <span className="sysmon-mode-icon" aria-hidden="true">
-                    🪶
+                    <FeatherIcon />
                   </span>
                   <span className="sysmon-mode-txt">{t("sysmon.light")}</span>
                 </button>
@@ -883,7 +884,7 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
                   }
                 >
                   <span className="sysmon-mode-icon" aria-hidden="true">
-                    🔬
+                    <MicroscopeIcon />
                   </span>
                   <span className="sysmon-mode-txt">{t("sysmon.detailed")}</span>
                 </button>

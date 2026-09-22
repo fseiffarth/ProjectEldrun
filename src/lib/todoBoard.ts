@@ -997,7 +997,7 @@ export function taskFromRemark(
   const source = `${remark.file}${remark.line != null ? `:${remark.line}` : ""}`;
   return convertedCard(conv, {
     title: first,
-    notes: `📌 ${source}`,
+    notes: source,
     priority: 5,
     project_id: projectId,
     file: { project_id: projectId, path: remark.file, line: remark.line, text: remark.text },
@@ -1066,7 +1066,7 @@ export function taskFromOccurrence(
     : `${datePart(occ.start)} ${timePart(occ.start)}–${timePart(occ.end)}`;
   return convertedCard(conv, {
     title: occ.title || fallbackTitle,
-    notes: occ.location ? `🗓 ${when} · ${occ.location}` : `🗓 ${when}`,
+    notes: occ.location ? `${when} · ${occ.location}` : when,
     priority: 5,
     due: occ.allDay ? datePart(occ.start) : occ.start,
     start: occ.start,

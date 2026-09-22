@@ -270,7 +270,7 @@ export function openLogTab(opts: {
 }): void {
   openHostShellTab({
     scope: opts.scope,
-    label: `📄 ${opts.jobLabel}`,
+    label: translate(useI18nStore.getState().lang, "slurm.logTabLabel", { job: opts.jobLabel }),
     cwd: opts.projectDir,
     location: locationForHost(opts.hostId, opts.isRemote),
     initialInput: buildTailCommand(opts.outFile),

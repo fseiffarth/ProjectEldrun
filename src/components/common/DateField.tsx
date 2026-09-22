@@ -22,6 +22,7 @@ import {
 import { useI18nStore, useT } from "../../lib/i18n";
 import { useSettingsStore } from "../../stores/settings";
 import { ContextMenuPortal } from "./ContextMenuPortal";
+import { CalendarIcon } from "./icons/Icon";
 
 /**
  * **The** day-entry field — `common/TimeField`'s other half, and the one control
@@ -201,7 +202,7 @@ export function DateField({
           }
         }}
       >
-        <span className="date-field-icon" aria-hidden="true">🗓</span>
+        <CalendarIcon className="date-field-icon" />
         <span className="date-field-label">{label}</span>
       </button>
       {anchor ? (

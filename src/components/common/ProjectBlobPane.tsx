@@ -11,12 +11,11 @@ import { categoryColor, primaryCategoryColor, projectCategories } from "../../li
 import { quiesceActive } from "../../stores/power";
 import {
   type FileEntry,
-  fileIcon,
-  folderIcon,
   fmtSize,
   fmtModified,
 } from "../../lib/viewers/fileUtils";
 import { useT } from "../../lib/i18n";
+import { FileIcon } from "./icons/FileIcon";
 
 /**
  * A node in the 3D cloud. In the project cloud it's a project or a box; once a
@@ -826,7 +825,7 @@ export function ProjectBlobPane({ visible = true }: { visible?: boolean } = {}) 
             const base = `translate3d(${pos.x.toFixed(1)}px, ${pos.y.toFixed(1)}px, ${pos.z.toFixed(1)}px)`;
 
             let cls = "blob-node";
-            let icon = "●";
+            let icon: React.ReactNode = "●";
             let label = "";
             let sub: number | null = null;
             let isActive = false;
@@ -854,7 +853,7 @@ export function ProjectBlobPane({ visible = true }: { visible?: boolean } = {}) 
               label = node.label;
             } else {
               cls += node.entry.is_dir ? " blob-node-file blob-file-dir" : " blob-node-file blob-file-doc";
-              icon = node.entry.is_dir ? folderIcon() : fileIcon(node.entry.extension ?? null);
+              icon = <FileIcon ext={node.entry.extension ?? null} isDir={node.entry.is_dir} />;
               label = node.entry.name;
             }
             if (isActive) cls += " blob-node-active";

@@ -93,7 +93,7 @@ describe("taskFromRemark", () => {
       srcStart: 3, srcEnd: 5, invalidPath: false,
     }, "p1", { calendarId: "work", columnId: "backlog", now: new Date("2026-01-02T03:04:00") });
     expect(card).toMatchObject({
-      title: "Explain this", notes: "📌 src/a.ts:12", project_id: "p1",
+      title: "Explain this", notes: "src/a.ts:12", project_id: "p1",
       file: { project_id: "p1", path: "src/a.ts", line: 12, text: "Explain this\nMore detail" },
     });
   });

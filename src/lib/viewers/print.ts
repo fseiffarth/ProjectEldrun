@@ -332,6 +332,17 @@ export function buildOptionsCss(opts: PrintOptions, paged = false): string {
 
 const STORAGE_KEY = "eldrun.print.options";
 
+/** `common/PrinterIcon` as markup: the preview's Print button is built with
+ *  plain DOM, not React. Sized in em so it follows the button's text. */
+const PRINTER_SVG =
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="1.2em" height="1.2em" fill="none" ` +
+  `style="vertical-align:-0.2em" aria-hidden="true" focusable="false">` +
+  `<g stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">` +
+  `<path d="M7 8V3.75h10V8"/>` +
+  `<path d="M7 17H5.5A2.5 2.5 0 0 1 3 14.5v-4A2.5 2.5 0 0 1 5.5 8h13a2.5 2.5 0 0 1 2.5 2.5v4a2.5 2.5 0 0 1-2.5 2.5H17"/>` +
+  `<path d="M7 13.5h10v6.75H7z"/><path d="M9.25 16.75h5.5"/></g>` +
+  `<circle cx="17.25" cy="11" r="0.85" fill="currentColor"/></svg>`;
+
 /**
  * The two kinds of print job, which want different *defaults* and remember their
  * settings apart:
@@ -745,14 +756,18 @@ export function printDocument(fullHtml: string): Promise<void> {
       if (!ready) return;
       const empty = paged && sequence.length === 0;
       printBtn.disabled = empty;
-      printBtn.textContent = empty
-        ? tr("print.noneSelected")
-        : (paged && sequence.length < pageEls.length
+      if (empty) {
+        printBtn.textContent = tr("print.noneSelected");
+      } else {
+        const label =
+          (paged && sequence.length < pageEls.length
             ? sequence.length === 1
               ? tr("print.printOnePage")
               : tr("print.printPages", { count: sequence.length })
             : tr("print.print")) +
           (opts.copies > 1 ? tr("print.copiesSuffix", { count: opts.copies }) : "");
+        printBtn.innerHTML = `${PRINTER_SVG} ${escapeAttr(label)}`;
+      }
     };
 
     /**

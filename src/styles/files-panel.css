@@ -83,17 +83,18 @@
 
 /* Side-flip button in the header — shares the pin's box. Its icon is inline
    line-art in currentColor (a frame, the panel filled on its present edge, an
-   arrow at the other one), so unlike the 📌 colour emoji it honours `color`:
-   the resting tone is the header's secondary text and hover lights it accent,
-   which the pin cannot do. Same opacity step as the pin, so the pair dims and
-   wakes together. */
+   arrow at the other one), so it honours `color`: the resting tone is the
+   header's secondary text and hover lights it accent — the pin, drawn the same
+   way since it stopped being the 📌 emoji, does the same. Same opacity step as
+   the pin, so the pair dims and wakes together. */
 .side-panel-flip {
   font-size: 14px;
 }
 .side-panel-flip svg {
   display: block;
 }
-.side-panel-flip:hover {
+.side-panel-flip:hover,
+.side-panel-pin:hover {
   color: var(--accent);
 }
 
@@ -1001,7 +1002,7 @@
   font-size: var(--text-base);
   line-height: 1;
   /* A BORDERLESS glyph button: no frame and no resting fill, so it sits on the
-     panel header as a bare 📌 / ⇄ rather than as a chip. It used to wear a
+     panel header as a bare pin / ⇄ rather than as a chip. It used to wear a
      --border-subtle frame over a --bg-elevated fill, which was a chip drawn on
      a surface it was already the same colour as — and in the achromatic themes,
      where --bg-elevated IS the panel, the fill did nothing at all while the
@@ -1013,11 +1014,10 @@
   background: transparent;
   color: var(--text-secondary);
   cursor: var(--cur-pointer, pointer);
-  /* Dim the unpinned pin with plain opacity, NOT a CSS filter. Applying `filter`
-     (grayscale/opacity) to the 📌 color-emoji glyph makes it render invisible in
-     WebView2 on Windows — the color glyph doesn't compose through the filter
-     shader path — while WebKitGTK on Linux shows it fine. That vanished the pin
-     entirely in the packaged Windows build. Opacity dims without breaking emoji. */
+  /* Dim the unpinned pin with plain opacity, not a CSS filter: when the pin
+     was the 📌 colour emoji, `filter` made it render invisible in WebView2 on
+     Windows. It is a drawn currentColor icon now, but the pair (pin + flip)
+     still dims and wakes by the same opacity step. */
   opacity: 0.55;
   transition: opacity var(--transition), background var(--transition);
 }
@@ -1032,8 +1032,8 @@
 }
 
 /* Pinned is carried by OPACITY ALONE — the same mechanism the comment above
-   already established as this button's, and the one that works on a colour
-   emoji, whose glyph ignores `color` entirely. So there is no fill and no frame
+   already established as this button's (chosen when the pin was a colour
+   emoji that ignored `color`; kept for the drawn pin). So there is no fill and no frame
    to be theme-dependent, and nothing that can collide with a pure-black or
    pure-white accent. `aria-pressed` on the button carries the state for anyone
    the 0.55→1 step does not reach. */

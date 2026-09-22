@@ -24,6 +24,7 @@ import type { ProjectBox, ProjectEntry } from "../../types";
 import type { SortKey } from "../../lib/viewers/fileUtils";
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
+import { FolderIcon } from "../common/icons/Icon";
 
 /**
  * THE project file view — the tree, the remote sync row and the Downloads
@@ -189,7 +190,7 @@ export function FileSourceSwitch({
 export interface BoxRoot {
   rootId: string;
   label: string;
-  icon: string;
+  icon: React.ReactNode;
   dir: string;
   localFile?: string;
   variant: "box" | "member";
@@ -225,7 +226,7 @@ export function useBoxRoots(scope: string): { activeBox: ProjectBox | null; boxR
       roots.push({
         rootId: p.id,
         label: p.name,
-        icon: "📁",
+        icon: <FolderIcon />,
         dir,
         localFile: p.local_file,
         variant: "member",

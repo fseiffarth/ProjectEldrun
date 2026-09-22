@@ -393,7 +393,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                 entries: [{
                   key: "browser",
                   label: t("newTabMenu.browser"),
-                  dot: "🌐",
+                  dot: "◎",
                   color: TAB_ACCENT.browser,
                   untested: "newTabMenu.browser",
                   onPick: () =>

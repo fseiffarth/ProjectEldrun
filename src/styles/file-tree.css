@@ -934,6 +934,12 @@
 .alerts-row-wrap.muted .alerts-row {
   opacity: 0.55;
 }
+/* BellIcon draws at a fixed 15px; in the alerts rows it follows the text. */
+.alerts-bell {
+  width: 1.3em;
+  height: 1.3em;
+  vertical-align: -0.25em;
+}
 .alerts-muted-chip {
   font-size: 10px;
   line-height: 1;
@@ -1775,7 +1781,7 @@
   background: rgba(88, 166, 255, 0.06);
 }
 
-.file-icon { font-size: 12px; flex-shrink: 0; line-height: 1.3; }
+.file-icon { font-size: 12px; flex-shrink: 0; line-height: 1.3; color: var(--text-secondary); }
 .file-name { flex: 1; min-width: 0; overflow-wrap: anywhere; word-break: break-word; line-height: 1.3; }
 .file-size { font-size: 10px; color: var(--text-muted); flex-shrink: 0; line-height: 1.3; }
 .file-size.size-small  { color: var(--text-muted); }

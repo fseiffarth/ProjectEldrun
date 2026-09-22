@@ -10,8 +10,6 @@ import {
   type SortKey,
   STANDARD_PROJECT_FILES,
   disabledViewers,
-  fileIcon,
-  folderIcon,
   fmtModified,
   fmtSize,
   joinRel,
@@ -27,6 +25,7 @@ import { createDeckFile } from "../../lib/viewers/deck/create";
 import { UntestedTag } from "../common/UntestedTag";
 import { RenameDialog, containingFolderLabel } from "./RenameDialog";
 import { useDialogs } from "../common/PromptDialogs";
+import { FileIcon } from "../common/icons/FileIcon";
 import { useT, type TranslationKey } from "../../lib/i18n";
 
 type ProjectJson = Record<string, unknown>;
@@ -505,7 +504,7 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
                   onDoubleClick={(e) => activate(entry, e)}
                   onContextMenu={(e) => showEntryContextMenu(e, entry)}
                 >
-                  <span><b>{entry.is_dir ? folderIcon() : fileIcon(entry.extension)}</b>{entry.name}</span>
+                  <span><b><FileIcon ext={entry.extension} isDir={entry.is_dir} /></b>{entry.name}</span>
                   <span>{entry.is_dir ? t("fileBrowser.folder") : entry.extension || entry.mime || t("fileBrowser.file")}</span>
                   <span>{entry.is_dir ? "" : fmtSize(entry.size)}</span>
                   <span>{fmtModified(entry.modified_secs)}</span>
@@ -522,7 +521,7 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
                   onDoubleClick={(e) => activate(entry, e)}
                   onContextMenu={(e) => showEntryContextMenu(e, entry)}
                 >
-                  <span>{entry.is_dir ? folderIcon() : fileIcon(entry.extension)}</span>
+                  <span><FileIcon ext={entry.extension} isDir={entry.is_dir} /></span>
                   <b>{entry.name}</b>
                 </button>
               );

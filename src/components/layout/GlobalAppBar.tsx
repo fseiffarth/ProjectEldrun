@@ -20,7 +20,7 @@ const EXEC_PLACEHOLDER_KEY: TranslationKey = IS_WINDOWS
   : "globalApp.execPlaceholder";
 
 export const GLOBAL_APP_ROLES: Array<{ key: string; labelKey: TranslationKey; fallback: string }> = [
-  { key: "browser", labelKey: "globalApp.role.browser", fallback: "🌐" },
+  { key: "browser", labelKey: "globalApp.role.browser", fallback: "◎" },
   { key: "password_manager", labelKey: "globalApp.role.password_manager", fallback: "⚿" },
   { key: "video_conf", labelKey: "globalApp.role.video_conf", fallback: "▣" },
   { key: "screenshot", labelKey: "globalApp.role.screenshot", fallback: "▤" },

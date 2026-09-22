@@ -78,6 +78,7 @@ import { useT, type TranslationKey } from "../../lib/i18n";
 import { useExperimental } from "../../lib/experimental";
 import { useProjectRemarksStore } from "../../stores/projectRemarks";
 import { RemarksPane } from "./RemarksPane";
+import { CommentIcon, InboxIcon, SearchIcon, TrashIcon, WindowIcon } from "../common/icons/Icon";
 
 /** How long the pointer must rest on a session row before its stats card opens
  *  (TODO #85) — same value and rationale as `FileTree`'s `TOOLTIP_DWELL_MS`:
@@ -1593,7 +1594,7 @@ export function ProjectFilesView({
             onClick={() => setView(view === "remarks" ? "files" : "remarks")}
             title={t("projectRemarks.view")}
           >
-            💬
+            <CommentIcon />
           </button>
         )}
         {/* The tree's search + refresh, hoisted out of the tree itself. Files
@@ -1610,7 +1611,7 @@ export function ProjectFilesView({
             title={searchOpen ? t("fileTree.hideSearch") : t("fileTree.showSearch")}
             aria-label={searchOpen ? t("fileTree.hideSearch") : t("fileTree.showSearch")}
           >
-            🔍
+            <SearchIcon />
           </button>
         )}
         {view === "files" && (
@@ -1683,7 +1684,7 @@ export function ProjectFilesView({
             }}
             title={t("projectFilesView.showDownloadsTitle")}
           >
-            📥
+            <InboxIcon />
           </button>
         )}
         {/* The Alerts group's 🔔 used to sit here, between 📥 and ⚙. It is now the
@@ -2103,7 +2104,7 @@ export function ProjectFilesView({
                         })();
                       }}
                     >
-                      🗑
+                      <TrashIcon />
                     </button>
                   )}
                 </div>
@@ -2540,7 +2541,7 @@ export function ProjectFilesView({
           ) : (
             scopedWindows.map((w) => (
               <div key={w.id} className="file-entry">
-                <span className="file-icon">🪟</span>
+                <span className="file-icon"><WindowIcon /></span>
                 <span className="file-name" title={w.exec}>
                   {basename(w.exec) || w.exec}
                   {w.file && <span style={{ color: "var(--text-muted)" }}> {basename(w.file)}</span>}

@@ -186,6 +186,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `common/PageStrip.tsx` | **The** page-thumbnail strip: drag-reorder, shift-select, turn, delete, right-click. Used twice — horizontally by the print preview, vertically as the PDF viewer's page rail. |
 | `common/mountPageStrip.tsx` | `createRoot` adapter letting the imperative print modal host `PageStrip`. |
 | `common/Dropdown.tsx`, `common/OrbitSpinner.tsx` | Shared primitives. |
+| `common/icons/{Icon,FileIcon}.tsx` | The shared line-icon set (24-grid, 1.7 stroke, `currentColor`, `em`-sized) that replaces colour emoji in the chrome; `FileIcon` renders `fileIconKind()` for every file list. New icons go here, not as emoji. |
 | `common/ConnLamp.tsx` | Red/orange/green SSH/OpenVPN status lamp (dialog + header). |
 | `common/TimeField.tsx` | Clock-entry field for the event dialog's start/end, drawn by Eldrun. Native `<input type="time">` is ruled out (engine-locale 12/24h face). |
 | `common/DateField.tsx` | The one date-entry field. Replaces `<input type="date">` (process-locale segment order; undismissable WebKitGTK popover). |

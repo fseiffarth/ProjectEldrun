@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { UntestedTag } from "../common/UntestedTag";
 import { usePresentationStore } from "../../stores/viewers/presentation";
 import { useT, type TranslationKey } from "../../lib/i18n";
+import { TrashIcon } from "../common/icons/Icon";
 
 /**
  * A presentation / walkthrough aid layered over EVERY native viewer (image,
@@ -480,7 +481,7 @@ export function PresentationOverlay() {
               disabled={strokes.length === 0}
               onClick={clear}
             >
-              🗑
+              <TrashIcon />
             </button>
             <button
               className="presentation-tool"

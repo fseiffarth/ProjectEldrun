@@ -1631,7 +1631,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                     entries: [{
                       key: "browser",
                       label: t("newTabMenu.browser"),
-                      dot: "🌐",
+                      dot: "◎",
                       color: TAB_ACCENT.browser,
                       untested: "newTabMenu.browser#2",
                       onPick: handleAddBrowser,

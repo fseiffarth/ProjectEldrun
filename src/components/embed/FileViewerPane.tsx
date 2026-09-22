@@ -261,6 +261,7 @@ import { isBibPath } from "../../lib/viewers/tex/bib";
 import { hasCards } from "../../lib/viewers/yamlGrid";
 import { useI18nStore, useT, type TranslationKey } from "../../lib/i18n";
 import { defaultSpellLanguage, dictionaryLabel } from "../../lib/spellDictionaries";
+import { BoltIcon, BugIcon, CommentIcon, LinkIcon, PlayIcon, UploadIcon } from "../common/icons/Icon";
 
 // The five heavyweight leaf viewers are code-split (§5.1 startup size): a
 // static import here would parse pdfjs-dist + pdf-lib + fontkit (PdfView,
@@ -5979,7 +5980,7 @@ function MarkdownToolbar({ api }: { api: React.MutableRefObject<EditorApi | null
       {btn(<i>I</i>, t("fileViewer.mdItalic"), (v, s, e) => toggleInline(v, s, e, "_"))}
       {btn(<span style={{ fontFamily: "var(--font-mono, monospace)" }}>{"<>"}</span>, t("fileViewer.mdInlineCode"), (v, s, e) => toggleInline(v, s, e, "`"))}
       {btn("H", t("fileViewer.mdCycleHeading"), (v, s) => cycleHeading(v, s))}
-      {btn("🔗", t("fileViewer.mdLink"), (v, s, e) => makeLink(v, s, e))}
+      {btn(<LinkIcon />, t("fileViewer.mdLink"), (v, s, e) => makeLink(v, s, e))}
       {btn("•", t("fileViewer.mdBulletedList"), (v, s, e) => toggleLinePrefix(v, s, e, "- "))}
       {btn("TOC", t("fileViewer.mdInsertToc"), (v, s, e) => {
         const toc = generateToc(v);
@@ -6976,7 +6977,7 @@ function RunDebugButtons({
         title={`${t("fileViewer.runFileTitle")}\n${t("fileViewer.rightClickArgs")}`}
         aria-label={t("fileViewer.runFileLabel")}
       >
-        ▶ {t("fileViewer.runLabel")}{args ? " *" : ""}
+        <PlayIcon /> {t("fileViewer.runLabel")}{args ? " *" : ""}
       </button>
       {showDebug && (
       <button
@@ -6999,7 +7000,7 @@ function RunDebugButtons({
         }
         aria-label={t("fileViewer.debugFileLabel")}
       >
-        🐞 {t("fileViewer.debugLabel")}
+        <BugIcon /> {t("fileViewer.debugLabel")}
       </button>
       )}
       {/* Saved-args hover hint. Shown only while hovering, only when args are set,
@@ -7043,7 +7044,7 @@ function RunDebugButtons({
                 onRun();
               }}
             >
-              ▶ {t("fileViewer.runLabel")}
+              <PlayIcon /> {t("fileViewer.runLabel")}
             </button>
             <button
               type="button"
@@ -7148,7 +7149,7 @@ function SlurmBar({
         title={t("fileViewer.submitSlurmTitle")}
         aria-label={t("fileViewer.submitSlurmLabel")}
       >
-        ⏫ {t("fileViewer.submitJobLabel")}
+        <UploadIcon /> {t("fileViewer.submitJobLabel")}
       </button>
       <button
         className={`file-viewer-format-btn${varsOpen ? " active" : ""}`}
@@ -7166,7 +7167,7 @@ function SlurmBar({
         title={t("fileViewer.openInteractiveTitle")}
         aria-pressed={interOpen}
       >
-        ⚡ {t("fileViewer.interactiveSessionLabel")}
+        <BoltIcon /> {t("fileViewer.interactiveSessionLabel")}
       </button>
       <UntestedTag id="fileViewerPane.1" />
 
@@ -7230,7 +7231,7 @@ function SlurmBar({
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => { setInterOpen(false); onInteractive(inter); }}
             >
-              ⚡ {t("fileViewer.startLabel")}
+              <BoltIcon /> {t("fileViewer.startLabel")}
             </button>
           </div>
         </div>
@@ -7709,7 +7710,7 @@ function TextView({
               setRemarkLine(offsetToLineCol(draft, offset).line);
             }}
           >
-            💬 <UntestedTag id="fileViewerPane.2" />
+            <CommentIcon /> <UntestedTag id="fileViewerPane.2" />
           </button>
         )}
         {/* The YAML tree and the bib cards edit the text, so their edits are

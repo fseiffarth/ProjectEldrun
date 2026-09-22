@@ -581,29 +581,28 @@ function compareEntries(a: FileEntry, b: FileEntry, sortKey: SortKey, descending
   return descending ? -result : result;
 }
 
-export function fileIcon(ext: string | null): string {
+/** Which drawn icon a file row shows; `components/common/icons/FileIcon` renders it. */
+export type FileIconKind = "code" | "text" | "data" | "book" | "image" | "script" | "file";
+
+export function fileIconKind(ext: string | null): FileIconKind {
   switch (ext) {
-    case ".py": return "🐍";
-    case ".rs": return "🦀";
+    case ".py":
+    case ".rs":
     case ".ts":
-    case ".tsx": return "⟨⟩";
+    case ".tsx":
     case ".js":
-    case ".jsx": return "⚡";
-    case ".md": return "📝";
-    case ".json": return "{}";
-    case ".bib": return "📚";
+    case ".jsx": return "code";
+    case ".md": return "text";
+    case ".json": return "data";
+    case ".bib": return "book";
     case ".png":
     case ".jpg":
     case ".jpeg":
     case ".gif":
-    case ".svg": return "🖼";
-    case ".sh": return "⚙";
-    default: return "📄";
+    case ".svg": return "image";
+    case ".sh": return "script";
+    default: return "file";
   }
-}
-
-export function folderIcon(): string {
-  return "📁";
 }
 
 /**

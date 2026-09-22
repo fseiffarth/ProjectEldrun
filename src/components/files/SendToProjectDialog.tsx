@@ -6,6 +6,7 @@ import { resolveProjectDirectory, resolveLocalMirror, type ProjectEntry } from "
 import { type FileEntry } from "../../lib/viewers/fileUtils";
 import { loadLastSendTarget, saveLastSendTarget } from "../../lib/projects/sendToProject";
 import { useT } from "../../lib/i18n";
+import { FolderIcon, GlobeIcon } from "../common/icons/Icon";
 
 /** The item being sent — always a LOCAL absolute path (the dialog is only opened
  *  for local file-tree rows, so `import_external_file` can read it as an ordinary
@@ -183,7 +184,7 @@ export function SendToProjectDialog({ source, fromProjectId, onClose }: Props) {
                       title={disabled ? t("sendToProject.remoteUnsupported") : destRootFor(p)}
                       onClick={() => pickProject(p)}
                     >
-                      <span className="folder-picker-icon">{p.remote ? "🌐" : "📁"}</span>
+                      <span className="folder-picker-icon">{p.remote ? <GlobeIcon /> : <FolderIcon />}</span>
                       <span className="folder-picker-name">{p.name}</span>
                       {p.id === fromProjectId && (
                         <span className="send-to-project-tag">{t("sendToProject.thisProject")}</span>
@@ -237,7 +238,7 @@ export function SendToProjectDialog({ source, fromProjectId, onClose }: Props) {
                     onClick={() => loadFolder(selected, rel ? `${rel}/${entry.name}` : entry.name)}
                     title={entry.path}
                   >
-                    <span className="folder-picker-icon">📁</span>
+                    <span className="folder-picker-icon"><FolderIcon /></span>
                     <span className="folder-picker-name">{entry.name}</span>
                   </button>
                 ))

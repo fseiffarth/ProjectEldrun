@@ -15,6 +15,7 @@ import { joinConference } from "../../lib/linkTarget";
 import { useT } from "../../lib/i18n";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { CalendarGlyph } from "./HeaderGlyphs";
+import { VideoIcon } from "../common/icons/Icon";
 
 const MENU_ID = "calendar";
 
@@ -296,7 +297,7 @@ export function CalendarIndicator() {
                               joinConference(call.url);
                             }}
                           >
-                            <span aria-hidden="true">📹</span>
+                            <VideoIcon />
                             <span className="cal-menu-join-text">{t("calendar.join")}</span>
                           </button>
                         )}

@@ -20,6 +20,7 @@ import { customFontPath, fontKey, updateObjects } from "../../../lib/viewers/dec
 import { FontField } from "./FontField";
 import { ALIGN_KEYS } from "./DeckThemePanel";
 import { useT } from "../../../lib/i18n";
+import { EyeIcon, LockIcon } from "../../common/icons/Icon";
 
 export interface DeckInspectorProps {
   objects: ObjectList;
@@ -614,7 +615,7 @@ export function DeckInspector({
           }}
           title={t("deckInspector.lockTitle")}
         >
-          🔒
+          <LockIcon />
         </button>
         {/* `hidden` was modelled, honoured by `visibleAt`, respected by the
             exporter — and had no control anywhere (TODO V #119). Same
@@ -632,7 +633,7 @@ export function DeckInspector({
           }}
           title={t("deckInspector.hideTitle")}
         >
-          👁
+          <EyeIcon />
         </button>
       </div>
     </div>

@@ -10,6 +10,7 @@ import { useDialogs } from "../common/PromptDialogs";
 import { useTabsStore } from "../../stores/tabs";
 import { useT, type TranslationKey } from "../../lib/i18n";
 import { GitMergeBar, GitPullPanel, type MergeState } from "./GitPullPanel";
+import { LockIcon, UnlockIcon } from "../common/icons/Icon";
 
 interface GitCommit {
   hash: string;
@@ -1258,7 +1259,7 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
                 >
                   {wt.is_locked && (
                     <span className="git-worktree-flag" aria-label={t("gitHistory.locked")}>
-                      🔒
+                      <LockIcon />
                     </span>
                   )}
                   {wt.is_prunable && (
@@ -1281,7 +1282,7 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
                         { path: wt.path },
                       )}
                     >
-                      {wt.is_locked ? "🔓" : "🔒"}
+                      {wt.is_locked ? <UnlockIcon /> : <LockIcon />}
                     </button>
                   )}
                   {/* `is_main` is not the question a Remove control has to answer:

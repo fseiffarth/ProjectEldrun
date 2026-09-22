@@ -37,6 +37,7 @@
 import { useT } from "../../../lib/i18n";
 import { UntestedTag } from "../../common/UntestedTag";
 import { HIGHLIGHT_COLORS } from "./notes";
+import { CommentIcon } from "../../common/icons/Icon";
 
 /** The bar's own height plus a little air, in CSS pixels — how far above the line it
  *  sits, and the room it needs before it has to flip below. Measured rather than read
@@ -120,7 +121,7 @@ export function PdfSelectionBar({
         title={t("pdfText.remarkTitle")}
         onClick={onRemark}
       >
-        💬
+        <CommentIcon />
       </button>
       <span className="file-viewer-pdf-toolbar-sep" aria-hidden="true" />
       {/* The copy state, as one control: what happened and whether it keeps

@@ -28,6 +28,7 @@ import {
 // Single source of truth for the displayed version: package.json is kept in
 // lockstep with the Tauri manifests on each version bump.
 import { version as APP_VERSION } from "../../../package.json";
+import { PinIcon } from "../common/icons/Icon";
 
 interface Props {
   open: boolean;
@@ -305,7 +306,7 @@ export function SidePanel({
             onClick={onTogglePin}
             title={t(pinned ? "sidePanel.unpinTitle" : "sidePanel.pinTitle")}
           >
-            📌
+            <PinIcon />
           </button>
         )}
       </>

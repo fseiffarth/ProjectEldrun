@@ -13,6 +13,8 @@ import { useExperimental } from "../../lib/experimental";
 import { joinConference } from "../../lib/linkTarget";
 import { awayDelta, type DueDelta } from "../../lib/todoBoard";
 import { useT, type TranslationKey } from "../../lib/i18n";
+import { BellIcon } from "../common/BellIcon";
+import { CalendarIcon, CheckboxIcon, MailIcon, VideoIcon, type IconProps } from "../common/icons/Icon";
 
 /**
  * The side-panel **Alerts** group: urgent mail, the next appointments, and the
@@ -71,12 +73,17 @@ interface AlertsSectionProps {
   onClose: () => void;
 }
 
-/** Emoji per source. The row's kind is also its `title`, so this is decoration. */
-const KIND_ICON: Record<AlertKind, string> = {
-  mail: "✉",
-  event: "🗓",
-  task: "☑",
+/** Icon per source. The row's kind is also its `title`, so this is decoration. */
+const KIND_ICON: Record<AlertKind, (p: IconProps) => React.ReactElement> = {
+  mail: MailIcon,
+  event: CalendarIcon,
+  task: CheckboxIcon,
 };
+
+function KindIcon({ kind }: { kind: AlertKind }) {
+  const Icon = KIND_ICON[kind];
+  return <Icon />;
+}
 
 /**
  * `dueDeltaKey`'s counterpart for this strip: the same *choice* of phrase off the
@@ -288,7 +295,7 @@ export function AlertsSection({ onClose }: AlertsSectionProps) {
             ●
           </span>
           <span className="alerts-kind" title={kindLabel(item.kind)}>
-            {KIND_ICON[item.kind]}
+            <KindIcon kind={item.kind} />
           </span>
           <span className="alerts-text">
             <span className="alerts-row-title">{item.title}</span>
@@ -313,7 +320,7 @@ export function AlertsSection({ onClose }: AlertsSectionProps) {
             })}
             onClick={() => joinConference(conferenceUrl)}
           >
-            <span aria-hidden="true">📹</span>
+            <VideoIcon />
             <span className="alerts-join-text">{t("calendar.join")}</span>
           </button>
         )}
@@ -325,7 +332,7 @@ export function AlertsSection({ onClose }: AlertsSectionProps) {
           title={muted ? t("filesAlerts.unmute") : t("filesAlerts.mute")}
           aria-label={muted ? t("filesAlerts.unmute") : t("filesAlerts.mute")}
         >
-          {muted ? "🔔" : "🔕"}
+          <BellIcon className="alerts-bell" off={!muted} />
         </button>
       </div>
     );
@@ -339,7 +346,7 @@ export function AlertsSection({ onClose }: AlertsSectionProps) {
         title={t("filesAlerts.resizeHint")}
       />
       <div className="alerts-header">
-        <span className="alerts-title">🔔 {t("filesAlerts.title")}</span>
+        <span className="alerts-title"><BellIcon className="alerts-bell" /> {t("filesAlerts.title")}</span>
         {items.length > 0 && (
           <span
             className={"alerts-count" + (counts.overdue > 0 ? " overdue" : "")}
@@ -363,7 +370,7 @@ export function AlertsSection({ onClose }: AlertsSectionProps) {
             onClick={() => setShowMuted((v) => !v)}
             title={showMuted ? t("filesAlerts.hideMuted") : t("filesAlerts.showMuted")}
           >
-            🔕 {mutedItems.length}
+            <BellIcon className="alerts-bell" off /> {mutedItems.length}
           </button>
         )}
         <button

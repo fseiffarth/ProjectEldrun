@@ -30,6 +30,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { basename, dirname, relativePathWithin } from "../paths";
 import { useTabsStore, isRemoteLocation, type TabEntry, type TabLocation } from "../../stores/tabs";
 import { guardLoginNodeRun } from "../remote/hpc/hpcGuard";
+import { translate, useI18nStore } from "../i18n";
 
 /** How a run/debug tab is inserted into the layout. Given the built (keyless)
  *  tab, place it and return the created entry — or null when it streamed the tab
@@ -265,9 +266,12 @@ export function pythonRunPlan(opts: {
   return { location, cwd, runPath: rel && rel.trim() ? rel : file, probeDir };
 }
 
-/** The label a run/debug tab carries. */
+/** The label a run/debug tab carries. Plain text (a tab label is a string):
+ *  ▶ pinned to text presentation, and debug named in words, not a 🐞 emoji. */
 export function pyTabLabel(mode: PyRunMode, file: string): string {
-  return `${mode === "debug" ? "🐞" : "▶"} ${basename(file)}`;
+  return mode === "debug"
+    ? translate(useI18nStore.getState().lang, "pythonRun.debugTabLabel", { file: basename(file) })
+    : `▶\uFE0E ${basename(file)}`;
 }
 
 /**

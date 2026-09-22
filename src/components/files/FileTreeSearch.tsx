@@ -21,7 +21,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useEditorJumpStore } from "../../stores/viewers/editorJump";
 import { useSettingsStore } from "../../stores/settings";
 import { basename, resolvePath } from "../../lib/paths";
-import { disabledViewers, fileIcon, folderIcon, type FileEntry } from "../../lib/viewers/fileUtils";
+import { disabledViewers, type FileEntry } from "../../lib/viewers/fileUtils";
 import {
   CONTENT_DEBOUNCE_MS,
   MAX_CONTENT_RESULTS,
@@ -33,10 +33,11 @@ import {
   type SearchMatch,
 } from "../../lib/projects/projectSearch";
 import { openFileEntry } from "./openFileEntry";
+import { FileIcon } from "../common/icons/FileIcon";
 import { useT } from "../../lib/i18n";
 
 /** The `.ext` (lowercased, dot-included) of a path's basename, matching the
- *  shape `fileIcon` and `FileEntry.extension` use; "" when there is none. */
+ *  shape `FileIcon` and `FileEntry.extension` use; "" when there is none. */
 function extensionOf(path: string): string {
   const name = basename(path);
   const dot = name.lastIndexOf(".");
@@ -247,7 +248,7 @@ export function FileTreeSearch({
             onClick={() => onReveal(e.path, e.is_dir)}
             onDoubleClick={() => openEntry(e.path, e.is_dir)}
           >
-            <span className="file-icon">{e.is_dir ? folderIcon() : fileIcon(extensionOf(e.path))}</span>
+            <span className="file-icon"><FileIcon ext={extensionOf(e.path)} isDir={e.is_dir} /></span>
             <span className="file-name file-search-path">
               <HighlightedPath text={displayPath} query={trimmed} />
             </span>

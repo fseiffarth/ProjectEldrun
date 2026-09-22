@@ -151,6 +151,7 @@ import {
   type CaretPhrase,
 } from "../../../lib/viewers/tex/tex";
 import { useT, type TranslationKey } from "../../../lib/i18n";
+import { CommentIcon, SearchIcon, TagIcon } from "../../common/icons/Icon";
 
 /** How often the open PDF re-checks its file's mtime for an on-disk change (a
  *  LaTeX recompile rewrites the very bytes this tab is showing). Mirrors the
@@ -4094,7 +4095,7 @@ function PdfCanvas({
           aria-label={t("pdfViewer.findLabel")}
           aria-pressed={findOpen}
         >
-          🔍
+          <SearchIcon />
         </button>
         {/* There is deliberately no "select text" button beside this one any more.
             It was a mode, and selecting words in a document is not one — see the
@@ -4131,7 +4132,7 @@ function PdfCanvas({
           aria-label={t("pdfNotes.paneTitle")}
           aria-pressed={notesOpen}
         >
-          💬
+          <CommentIcon />
         </button>
         <UntestedTag id="pdfViewer.4" />
         {/* Delete the metadata (#pdf-meta). Beside the blackout tool because the two
@@ -4145,7 +4146,7 @@ function PdfCanvas({
           aria-label={t("pdfMeta.toolLabel")}
           aria-pressed={metaOpen}
         >
-          🏷
+          <TagIcon />
         </button>
         <UntestedTag id="pdfViewer.5" />
         {/* ── Page arranging (#page-arrange) ────────────────────────────────
@@ -4205,7 +4206,7 @@ function PdfCanvas({
             edit had been lost. */}
         {notedSheets > 0 && (
           <span className="file-viewer-pdf-note-pending" title={t("pdfNotes.pendingTitle")}>
-            💬 {t("pdfNotes.pending", { n: notesTotal, pages: notedSheets })}
+            <CommentIcon /> {t("pdfNotes.pending", { n: notesTotal, pages: notedSheets })}
             <UntestedTag id="pdfViewer.6" />
           </span>
         )}

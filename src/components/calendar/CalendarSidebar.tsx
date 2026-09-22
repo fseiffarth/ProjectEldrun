@@ -3,6 +3,7 @@ import type { Calendar } from "../../types";
 import { calendarSyncStatus, useCalDavStore } from "../../stores/calendar/caldav";
 import { addMonths, datePart, monthGrid, monthName, todayStr, weekdayLabel } from "../../lib/calendar/calendarTime";
 import { useI18nStore, useT } from "../../lib/i18n";
+import { LinkIcon, LockIcon } from "../common/icons/Icon";
 
 /** The palette a new calendar picks from. */
 const CALENDAR_COLORS = [
@@ -239,14 +240,14 @@ export function CalendarSidebar({
               aria-pressed={subscribing}
               onClick={() => setSubscribing((s) => !s)}
             >
-              {t("calendarSidebar.subscribeButton")}
+              <LinkIcon /> {t("calendarSidebar.subscribeButton")}
             </button>
             <button
               className="cal-chip"
               onClick={onOpenCaldav}
               title={t("caldav.manageAccountsTitle")}
             >
-              {t("caldav.accountsButton")}
+              <LockIcon /> {t("caldav.accountsButton")}
             </button>
           </div>
         </div>

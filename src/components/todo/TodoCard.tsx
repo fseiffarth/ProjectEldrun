@@ -23,6 +23,7 @@ import { useListReorder } from "../../hooks/useListReorder";
 import { resolveRemarkAbsPath } from "../../lib/projects/projectRemarks";
 import { jumpToSource } from "../embed/FileViewerPane";
 import { basename } from "../../lib/paths";
+import { ClockIcon, PinIcon } from "../common/icons/Icon";
 
 interface Props {
   task: CalendarTask;
@@ -288,7 +289,7 @@ export function TodoCard({ task, columns, onPointerDown, onEdit, onOpenMail }: P
             >
               {/* The hour is printed only when there is one — a card due "some
                   time on Friday" must not be dressed up as one due at 00:00. */}
-              ⏰ {dueDate}
+              <ClockIcon /> {dueDate}
               {dueTime ? ` ${dueTime}` : ""}
               {/* And beside it, never instead of it: the date says *when*, the
                   countdown says how long that leaves, and only the second is
@@ -485,7 +486,7 @@ export function TodoCard({ task, columns, onPointerDown, onEdit, onOpenMail }: P
                 if (abs) jumpToSource(abs, task.file!.line ?? 1);
               }}
             >
-              📌 {basename(task.file.path)}{task.file.line != null ? `:${task.file.line}` : ""}
+              <PinIcon /> {basename(task.file.path)}{task.file.line != null ? `:${task.file.line}` : ""}
             </button>
           )}
         </div>

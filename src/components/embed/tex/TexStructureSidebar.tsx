@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
 import type { InternalViewer } from "../../../lib/viewers/fileUtils";
-import { fileIcon } from "../../../lib/viewers/fileUtils";
+import { FileIcon } from "../../common/icons/FileIcon";
+import { FileImageIcon } from "../../common/icons/Icon";
 import type {
   TexFileDiagnostics,
   TexFileNode,
@@ -118,7 +119,7 @@ export function TexStructureRail({
   );
 }
 
-/** Extension of a basename, lower-cased, for `fileIcon`. */
+/** Extension of a basename, lower-cased, for `FileIcon`. */
 function extOf(name: string): string | null {
   const dot = name.lastIndexOf(".");
   return dot > 0 ? name.slice(dot).toLowerCase() : null;
@@ -225,8 +226,9 @@ function bucketize(node: TexFileNode): SectionBucket[] {
  *
  * Purely presentational: it takes the already-parsed `structure`, the active
  * path, and `onSelect`, and owns nothing but its own hover/resize interaction.
- * It deliberately imports only i18n, `fileIcon` and the `UntestedTag` pill
- * (never `FileViewerPane`), so the leaf stays out of the viewer's import graph.
+ * It deliberately imports only i18n, the shared icons and the `UntestedTag`
+ * pill (never `FileViewerPane`), so the leaf stays out of the viewer's import
+ * graph.
  */
 export function TexStructureSidebar({
   structure,
@@ -310,7 +312,7 @@ export function TexStructureSidebar({
           title={node.path}
           onClick={() => onSelect(node.path, "tex")}
         >
-          <span className="tex-structure-icon" aria-hidden="true">{fileIcon(extOf(node.label))}</span>
+          <span className="tex-structure-icon" aria-hidden="true"><FileIcon ext={extOf(node.label)} /></span>
           <span className="tex-structure-label">{node.label}</span>
         </button>
         {diag && (
@@ -336,7 +338,7 @@ export function TexStructureSidebar({
           title={g.path}
           onClick={() => onSelect(g.path, g.viewer)}
         >
-          <span className="tex-structure-icon" aria-hidden="true">🖼</span>
+          <span className="tex-structure-icon" aria-hidden="true"><FileImageIcon /></span>
           <span className="tex-structure-label">{g.label}</span>
         </button>
       </div>

@@ -63,6 +63,7 @@ import { setVpnAutoConnect, vpnUsernameFor } from "../../lib/remote/vpn/vpnAutoC
 import type { StoredVpnConfig } from "../../types";
 import { MobileSettings } from "../mobile/MobileSettings";
 import { UpdatesPanel } from "./UpdatesPanel";
+import { BugIcon, PlayIcon } from "../common/icons/Icon";
 import {
   SETTINGS_ANCHORS,
   SettingRow,
@@ -1186,7 +1187,7 @@ export function SettingsDialog({
               help={
                 <>
                   {t("settings.pythonRunHelp1")} <code>.py</code> {t("settings.pythonRunHelp2")}{" "}
-                  <b>▶ Run</b> {t("settings.pythonRunHelp3")} <b>🐞 Debug</b>{" "}
+                  <b><PlayIcon /> {t("fileViewer.runLabel")}</b> {t("settings.pythonRunHelp3")} <b><BugIcon /> {t("fileViewer.debugLabel")}</b>{" "}
                   {t("settings.pythonRunHelp4")} <code>pdb</code>
                   {t("settings.pythonRunHelp5")}
                 </>

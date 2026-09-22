@@ -49,6 +49,7 @@ import { bindDragRelease, dragPlatform } from "../../lib/window/dragPlatform";
 import { useT } from "../../lib/i18n";
 import { isTrashProject } from "../../lib/projects/trashProject";
 import { TrashProjectIcon } from "./TrashProjectIcon";
+import { PauseIcon } from "../common/icons/Icon";
 import {
   agentFenceInstallCommand,
   agentFenceLabelKey,
@@ -2723,7 +2724,7 @@ export function ProjectPill({
                 <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
                   <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z" />
                 </svg>
-                {timerPaused && <span className="pill-folder-pause">⏸</span>}
+                {timerPaused && <span className="pill-folder-pause"><PauseIcon /></span>}
               </span>
               <span className="project-pill-label">{project.name}</span>
               {boxNames && boxNames.length > 0 && (

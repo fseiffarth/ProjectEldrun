@@ -5,6 +5,7 @@ import { useI18nStore, useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
 import { UntestedTag } from "../common/UntestedTag";
 import type { MailHeader, MailPriority, MailSort } from "../../types/mail";
+import { PaperclipIcon } from "../common/icons/Icon";
 
 /**
  * The header list — the middle pane.
@@ -237,7 +238,7 @@ function MailListImpl({
     className,
   }: {
     field: MailSort;
-    label: string;
+    label: React.ReactNode;
     title: string;
     className?: string;
   }) => {
@@ -310,7 +311,7 @@ function MailListImpl({
             because the header only aligns with the rows if it has a cell per
             column. */}
         <span className="mail-sort-spacer" aria-hidden="true" />
-        {sortHeader({ field: "attachments", label: "📎", title: t("mail.sortAttachments") })}
+        {sortHeader({ field: "attachments", label: <PaperclipIcon />, title: t("mail.sortAttachments") })}
         <span className="mail-sort-from">
           {t("mail.sortFrom")}
           {/* For the per-row ✕ at the far end: a pill in a 14px column on every
@@ -446,7 +447,7 @@ function MailListImpl({
                   still rendered, because a marker that shifts the subject left
                   when it is absent is a column in name only. */}
               <span className="mail-row-clip" title={h.has_attachments ? t("mail.hasAttachments") : undefined}>
-                {h.has_attachments ? "📎" : ""}
+                {h.has_attachments ? <PaperclipIcon /> : null}
               </span>
               <span className="mail-row-from" title={h.from.address}>
                 {formatAddress(h.from)}

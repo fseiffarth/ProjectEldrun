@@ -70,6 +70,7 @@ import { renderPage } from "./deckBase";
 import { InterstitialView, PresentedSlide } from "./DeckSlideView";
 import { useT } from "../../../lib/i18n";
 import { useUse24h } from "../../../lib/timeFormat";
+import { PauseIcon, PlayIcon, TimerIcon } from "../../common/icons/Icon";
 
 export interface DeckPresenterProps {
   deck: Deck;
@@ -700,7 +701,7 @@ export function DeckPresenter({
                 onClick={() => setPaused((p) => !p)}
                 title={paused ? t("deckPresenter.resumeTimerTitle") : t("deckPresenter.pauseTimerTitle")}
               >
-                {paused ? "▶" : "⏸"}
+                {paused ? <PlayIcon /> : <PauseIcon />}
               </button>
               <button onClick={resetTimer} title={t("deckPresenter.resetTimerTitle")}>
                 ↺
@@ -709,7 +710,7 @@ export function DeckPresenter({
                 onClick={() => setTarget((v) => (v + 5) % 65)}
                 title={t("deckPresenter.targetDurationTitle")}
               >
-                {target > 0 ? `${target}m` : "⏱"}
+                {target > 0 ? `${target}m` : <TimerIcon />}
               </button>
               <button
                 onClick={() => setNotesSize((n) => (n >= 20 ? 11 : n + 2))}
