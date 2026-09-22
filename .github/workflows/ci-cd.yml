@@ -5,6 +5,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Read-only by default; the release job opts into `contents: write` itself.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 

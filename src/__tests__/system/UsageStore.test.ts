@@ -37,6 +37,17 @@ function payloadFor(scope: string): Record<string, number> | undefined {
 }
 
 describe("bumpUsage", () => {
+  it("treats __proto__ as an ordinary scope and metric name", async () => {
+    // A plain-object accumulator would resolve `pending["__proto__"]` to
+    // Object.prototype and write the counter onto every object.
+    bumpUsage("__proto__", "polluted");
+    bumpUsage("p1", "__proto__", 2);
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    await flushUsage();
+    expect(Object.entries(payloadFor("__proto__") ?? {})).toEqual([["polluted", 1]]);
+    expect(Object.entries(payloadFor("p1") ?? {})).toEqual([["__proto__", 2]]);
+  });
+
   it("accumulates repeated bumps rather than sending each one", () => {
     bumpUsage("p1", "shell.command");
     bumpUsage("p1", "shell.command");
