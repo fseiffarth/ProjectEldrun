@@ -1284,6 +1284,12 @@ export interface ProjectBox {
   /** Eldrun Mobile reach (#31aa): the box's `box:<id>` scope is listed on a
    *  paired phone. Off/absent by default, like a project's switch. */
   eldrun_mobile_access?: boolean;
+  /** User-picked colour (`#rrggbb`); absent = hashed from the id
+   *  (`lib/theme/boxColor`). Rides the Rust struct's flattened `extra`. */
+  color?: string;
+  /** The box has no pill of its own on the header row — only a row in the
+   *  scope chip's list. Absent = shown. Rides `extra` too. */
+  hide_pill?: boolean;
 }
 
 /**

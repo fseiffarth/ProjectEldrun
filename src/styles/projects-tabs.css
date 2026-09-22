@@ -530,6 +530,32 @@
   box-shadow: inset 0 0 0 1px var(--accent);
 }
 
+/* A box row in the dropdown: the show-on-row checkbox, then the row's own
+   button (pick the box). Two buttons side by side, so a toggle never enters
+   the box. */
+.box-chip-menu-row {
+  display: flex;
+  align-items: stretch;
+}
+
+.box-chip-menu-row > button:last-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.box-chip-menu button.box-chip-menu-pin {
+  width: 22px;
+  justify-content: center;
+  padding: 5px 0;
+  color: var(--accent);
+}
+
+.box-chip-menu-label {
+  padding: 3px 8px 1px;
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
 .box-chip-menu-name {
   flex: 1;
   overflow: hidden;
@@ -2235,6 +2261,22 @@ button:has(> .menu-shortcut) {
 .tab-color-swatch.is-current {
   border-color: var(--text-primary);
   box-shadow: 0 0 0 2px var(--bg-elevated), 0 0 0 3px var(--text-primary);
+}
+
+/* The box picker's custom chip: a label over a hidden native colour input,
+   so it wears the swatch shape and opens the platform picker on click. */
+.box-color-custom {
+  position: relative;
+  display: inline-block;
+  overflow: hidden;
+  background: conic-gradient(#d9556b, #e2b93b, #59b96a, #4fc3c3, #4aa3df, #c164d6, #d9556b);
+}
+
+.box-color-custom input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: inherit;
 }
 
 .tab-color-swatch--none {

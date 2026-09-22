@@ -6,6 +6,7 @@ import { resolveProjectDirectory } from "../types";
 import { restoreProjectScope, useProjectsStore } from "./projects";
 import { cmdToKind, hydrateScopeFromDisk, useTabsStore } from "./tabs";
 import { BOX_SCOPE_PREFIX } from "../lib/terminal/ptyId";
+import { isBoxColor } from "../lib/theme/boxColor";
 
 // Re-exported, not redeclared: the PTY-id parser needs the same constant and
 // cannot import this module (it would be a cycle through stores/tabs), so the
@@ -84,6 +85,12 @@ interface BoxesStore {
    *  `projects.setProjectMobileAccess`. Enabling resolves the box folder on
    *  the backend, so the returned record carries `folder` too. */
   setBoxMobileAccess: (boxId: string, enabled: boolean) => Promise<void>;
+  /** Set the box's colour (`#rrggbb`), or `undefined` to go back to the colour
+   *  hashed from its id. */
+  setBoxColor: (boxId: string, color: string | undefined) => Promise<void>;
+  /** Hide the box's pill from the header row (it stays in the scope chip's
+   *  list), or show it again. */
+  setBoxPillHidden: (boxId: string, hidden: boolean) => Promise<void>;
   /** Multi-select commit: put `ids` into a new box (`name`) or append to `boxId`. */
   boxProjects: (
     ids: string[],
@@ -231,6 +238,36 @@ export const useBoxesStore = create<BoxesStore>((set, get) => ({
     set((state) => ({
       boxes: state.boxes.map((b) => (b.id === boxId ? updated : b)),
     }));
+  },
+
+  setBoxColor: async (boxId, color) => {
+    const next = isBoxColor(color) ? color.toLowerCase() : undefined;
+    let changed = false;
+    set((state) => ({
+      boxes: state.boxes.map((b) => {
+        if (b.id !== boxId || b.color === next) return b;
+        changed = true;
+        const { color: _drop, ...rest } = b;
+        return next ? { ...rest, color: next } : rest;
+      }),
+    }));
+    if (!changed) return;
+    await invoke<void>("save_boxes", { boxes: get().boxes });
+  },
+
+  setBoxPillHidden: async (boxId, hidden) => {
+    let changed = false;
+    set((state) => ({
+      boxes: state.boxes.map((b) => {
+        if (b.id !== boxId || !!b.hide_pill === hidden) return b;
+        changed = true;
+        // Absent from disk while shown, like `eldrun_mobile_access` while off.
+        const { hide_pill: _drop, ...rest } = b;
+        return hidden ? { ...rest, hide_pill: true } : rest;
+      }),
+    }));
+    if (!changed) return;
+    await invoke<void>("save_boxes", { boxes: get().boxes });
   },
 
   boxProjects: async (ids, target) => {

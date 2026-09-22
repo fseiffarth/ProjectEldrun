@@ -2137,7 +2137,7 @@ export function ProjectPill({
                   </span>
                   <span
                     className="context-menu-box-swatch"
-                    style={{ background: boxColor(b.id) }}
+                    style={{ background: boxColor(b) }}
                     aria-hidden
                   />
                   {b.name}

@@ -13,6 +13,7 @@ import { StarIcon } from "../layout/StarIcon";
 import { ScopeSetStatusBars } from "./PillStatusBars";
 import { MenuShortcut } from "../common/MenuShortcut";
 import { UntestedTag } from "../common/UntestedTag";
+import { BoxColorPicker } from "./BoxColorPicker";
 
 /** This chip's entry in the shared header hover-menu id (stores/headerHoverMenu). */
 const SCOPE_MENU_ID = "box-scope-chip";
@@ -117,15 +118,19 @@ export function BoxScopeChip({
   useEffect(() => () => window.clearTimeout(closeTimer.current), []);
 
   // The boxes in row order, and the ones that get a pill: the first
-  // MAX_BOX_PILLS by position — always including the selected box, which
+  // MAX_BOX_PILLS by position that the user has not hidden from the row (the
+  // dropdown's per-row checkbox) — always including the selected box, which
   // takes the last slot when it would otherwise be off the row, so the box
   // being looked at is never the one without a pill.
   const ordered = useMemo(() => [...boxes].sort((a, b) => a.position - b.position), [boxes]);
   const shown = useMemo(() => {
-    const head = ordered.slice(0, MAX_BOX_PILLS);
+    const head = ordered.filter((b) => !b.hide_pill).slice(0, MAX_BOX_PILLS);
     if (!selectedId || head.some((b) => b.id === selectedId)) return head;
     const selected = ordered.find((b) => b.id === selectedId);
-    return selected ? [...head.slice(0, MAX_BOX_PILLS - 1), selected] : head;
+    if (!selected) return head;
+    // A hidden box being looked at joins the row in its own place, not last.
+    const withSelected = head.length < MAX_BOX_PILLS ? head : head.slice(0, MAX_BOX_PILLS - 1);
+    return ordered.filter((b) => b === selected || withSelected.includes(b));
   }, [ordered, selectedId]);
   const overflow = ordered.length - shown.length;
 
@@ -323,7 +328,7 @@ export function BoxScopeChip({
           {shown.map((b) => {
             const isSelected = b.id === selectedId;
             const isActive = isSelected && !!active;
-            const color = boxColor(b.id);
+            const color = boxColor(b);
             return (
               <div
                 key={b.id}
@@ -424,35 +429,55 @@ export function BoxScopeChip({
               {t("boxChip.allProjects")}
             </button>
             {ordered.length > 0 && <div className="box-chip-menu-sep" />}
+            {ordered.length > 0 && (
+              <div className="box-chip-menu-label">
+                {t("boxChip.onRowLabel")} <UntestedTag id="boxChip.onRowLabel" />
+              </div>
+            )}
             {ordered.map((b) => (
-              <button
-                key={b.id}
-                // A drop target in its own right while a pill drag is in
-                // flight (see the spring-loaded open above); ProjectPill's
-                // hit-test sweeps `[data-box-id]` across the document, so a
-                // portaled row counts exactly as a pill does.
-                data-box-id={b.id}
-                className={`${b.id === selectedId ? "is-current" : ""}${
-                  pillDrag?.overBoxId === b.id ? " drag-over" : ""
-                }`.trim()}
-                onClick={() => pick(b.id)}
-                title={memberCountTitle(b)}
-              >
-                <span
-                  className="project-pill-box-swatch"
-                  style={{ background: boxColor(b.id) }}
-                  aria-hidden
-                />
-                <span className="box-chip-menu-name">{b.name}</span>
-                {/* Inert bars: the row is already a button, and picking the
-                    box is the way in from here. */}
-                <ScopeSetStatusBars
-                  scopes={[`${BOX_SCOPE_PREFIX}${b.id}`]}
-                  interactive={false}
-                  className="inline"
-                />
-                <span className="box-chip-menu-count">{b.member_ids.length}</span>
-              </button>
+              <div key={b.id} className="box-chip-menu-row">
+                {/* Whether the box stands on the row as a pill. Its own button
+                    beside the row's, so toggling never enters the box, and the
+                    menu stays open across toggles like the members checklist. */}
+                <button
+                  type="button"
+                  className="box-chip-menu-pin"
+                  aria-pressed={!b.hide_pill}
+                  title={t(b.hide_pill ? "boxChip.showPillTitle" : "boxChip.hidePillTitle", {
+                    name: b.name,
+                  })}
+                  onClick={() => void useBoxesStore.getState().setBoxPillHidden(b.id, !b.hide_pill)}
+                >
+                  {b.hide_pill ? "☐" : "☑"}
+                </button>
+                <button
+                  // A drop target in its own right while a pill drag is in
+                  // flight (see the spring-loaded open above); ProjectPill's
+                  // hit-test sweeps `[data-box-id]` across the document, so a
+                  // portaled row counts exactly as a pill does.
+                  data-box-id={b.id}
+                  className={`${b.id === selectedId ? "is-current" : ""}${
+                    pillDrag?.overBoxId === b.id ? " drag-over" : ""
+                  }`.trim()}
+                  onClick={() => pick(b.id)}
+                  title={memberCountTitle(b)}
+                >
+                  <span
+                    className="project-pill-box-swatch"
+                    style={{ background: boxColor(b) }}
+                    aria-hidden
+                  />
+                  <span className="box-chip-menu-name">{b.name}</span>
+                  {/* Inert bars: the row is already a button, and picking the
+                      box is the way in from here. */}
+                  <ScopeSetStatusBars
+                    scopes={[`${BOX_SCOPE_PREFIX}${b.id}`]}
+                    interactive={false}
+                    className="inline"
+                  />
+                  <span className="box-chip-menu-count">{b.member_ids.length}</span>
+                </button>
+              </div>
             ))}
             <div className="box-chip-menu-sep" />
             <button
@@ -500,6 +525,10 @@ export function BoxScopeChip({
             >
               {t("common.rename")}
             </button>
+            <BoxColorPicker
+              box={menuBox}
+              onPick={(color) => void useBoxesStore.getState().setBoxColor(menuBox.id, color)}
+            />
 
             {/* Members, right on the box: a checkbox row per open project,
                 toggling membership on the spot. The menu STAYS open across

@@ -306,6 +306,8 @@ export const UNTESTED = {
   "bigFolder.thisProject": { area: "projects", what: "BigFolderExcludeDialog · this project" },
   "boxEditor.title": { area: "projects", what: "BoxEditorDialog · Box editor" },
   "boxPill.membersGroup": { area: "projects", what: "BoxScopeChip · Per-box pills beside the chip (coloured, drop targets) + the box pill menu's Members checklist + member swatches on project pills" },
+  "boxPill.colorGroup": { area: "projects", what: "BoxColorPicker · Box pill menu Colour row (palette, automatic, custom colour input)" },
+  "boxChip.onRowLabel": { area: "projects", what: "BoxScopeChip · Dropdown checkboxes choosing which boxes get a pill on the row" },
   "carefulHost.label": { area: "projects", what: "CarefulHostToggle · Go easy on this machine" },
   "credentialPasteBar.1": { area: "projects", what: "CredentialPasteBar · ))}" },
   "extendToRemoteDialog.1": { area: "projects", what: "ExtendToRemoteDialog · Your machines" },

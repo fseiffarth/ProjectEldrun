@@ -554,7 +554,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
                 : (membership.get(project.id) ?? [])
                     .map((boxId) => boxes.find((b) => b.id === boxId))
                     .filter((b): b is ProjectBox => !!b)
-              ).map((b) => ({ id: b.id, name: b.name, color: boxColor(b.id) }));
+              ).map((b) => ({ id: b.id, name: b.name, color: boxColor(b) }));
               return (
                 <ProjectPill
                   key={project.id}

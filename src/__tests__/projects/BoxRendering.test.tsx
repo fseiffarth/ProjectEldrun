@@ -422,7 +422,7 @@ describe("box chip rendering (slice model)", () => {
     // The colour is the box's own (hashed from its id) and travels inline, so
     // the CSS can tint the mark, the active line and the drop wash from it.
     const pillA = boxPill(container)!;
-    expect(pillA.style.getPropertyValue("--box-color")).toBe(boxColor("boxA"));
+    expect(pillA.style.getPropertyValue("--box-color")).toBe(boxColor({ id: "boxA" }));
     // No member-count badge on the pill: the count is in the tooltip, and the
     // members themselves are one click away.
     expect(pillA.querySelector(".project-box-member-count")).toBeNull();
@@ -463,6 +463,64 @@ describe("box chip rendering (slice model)", () => {
     expect(names[MAX_BOX_PILLS - 1]).toBe(last.name);
     expect(container.querySelector(".box-scope-pill.is-selected")?.textContent).toContain(
       last.name,
+    );
+  });
+
+  it("lets the dropdown choose which boxes stand on the row", async () => {
+    useBoxesStore.setState({
+      boxes: [box("boxA", [], 5), { ...box("boxB", [], 6), hide_pill: true }],
+      openBox: vi.fn(openBoxScope),
+    });
+    useProjectsStore.setState({ projects: [proj("p1", 10)], activeId: null, loaded: true });
+
+    const container = await renderSwitcher();
+    // A hidden box has no pill, but the chip still counts it and lists it.
+    expect(boxPillNames(container)).toEqual(["boxA"]);
+    expect(chip(container)!.textContent).toContain("+1");
+
+    const menu = await openChipMenu(container);
+    const pins = [...menu.querySelectorAll<HTMLElement>(".box-chip-menu-pin")];
+    expect(pins.map((b) => b.getAttribute("aria-pressed"))).toEqual(["true", "false"]);
+    await act(async () => {
+      fireEvent.click(pins[1]);
+    });
+    expect(useBoxesStore.getState().boxes.find((b) => b.id === "boxB")?.hide_pill).toBeUndefined();
+    expect(boxPillNames(container)).toEqual(["boxA", "boxB"]);
+    // Toggling is not picking: no box was entered, and the list stays open.
+    expect(container.querySelector(".box-scope-pill.is-selected")).toBeNull();
+    expect(document.querySelector(".box-chip-menu")).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(menu.querySelectorAll<HTMLElement>(".box-chip-menu-pin")[0]);
+    });
+    expect(useBoxesStore.getState().boxes.find((b) => b.id === "boxA")?.hide_pill).toBe(true);
+    expect(boxPillNames(container)).toEqual(["boxB"]);
+  });
+
+  it("paints a box in its picked colour, and the pill menu's Colour row sets it", async () => {
+    useBoxesStore.setState({ boxes: [{ ...box("boxA", ["p1"], 5), color: "#123456" }] });
+    useProjectsStore.setState({ projects: [proj("p1", 10)], activeId: null, loaded: true });
+
+    const container = await renderSwitcher();
+    expect(boxPill(container)!.style.getPropertyValue("--box-color")).toBe("#123456");
+
+    await act(async () => {
+      fireEvent.contextMenu(boxPill(container)!);
+    });
+    const ctx = document.querySelector(".box-pill-menu") as HTMLElement;
+    await act(async () => {
+      fireEvent.click(ctx.querySelector('[aria-label="Green"]')!);
+    });
+    expect(useBoxesStore.getState().boxes[0].color).toBe("#59b96a");
+    expect(boxPill(container)!.style.getPropertyValue("--box-color")).toBe("#59b96a");
+
+    // Automatic drops the stored colour and goes back to the hashed one.
+    await act(async () => {
+      fireEvent.click(ctx.querySelector('[aria-label="Automatic colour"]')!);
+    });
+    expect("color" in useBoxesStore.getState().boxes[0]).toBe(false);
+    expect(boxPill(container)!.style.getPropertyValue("--box-color")).toBe(
+      boxColor({ id: "boxA" }),
     );
   });
 
