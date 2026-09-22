@@ -5325,6 +5325,7 @@ export const dict: Dict = {
   "pdfMeta.field.ModDate": "Modificato",
   "pdfViewer.insertFailed": "Impossibile inserire {name}: {msg}",
   "pdfViewer.copyPagesFailed": "Impossibile copiare quelle pagine: {msg}",
+  "pdfViewer.printFailed": "Impossibile stampare: {msg}",
   "pdfViewer.insertPagesFailed": "Impossibile inserire quelle pagine: {msg}",
   "pdfViewer.notAPdf": "{name} non è un PDF.",
   "pdfViewer.pdfBuildEmpty": "Un PDF deve avere almeno una pagina.",

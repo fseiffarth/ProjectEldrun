@@ -1237,13 +1237,25 @@ export function printHtmlBody(bodyHtml: string, css: string, title?: string): Pr
  * current order and with its turns applied — to PNG data URLs for printing, pulling
  * each sheet from its own already-open pdf.js document. So printing an edited PDF
  * prints what you see, without first having to save it. `scale` trades size for print
- * sharpness (~2× ≈ good on paper).
+ * sharpness; the default is {@link PDF_PRINT_SCALE}.
  */
+/**
+ * Print resolution for a PDF sheet, in dots per inch. The raster is the ONLY
+ * resolution the paper ever gets: WebKitGTK embeds the `<img>` in the print job
+ * pixel for pixel (measured with a headless print-to-PDF of an A4 page: a
+ * 1191×1684 raster came out as a 171 ppi image, a 2481×3508 one as 356 ppi —
+ * nothing resampled). The old 2× (144 dpi) therefore printed text visibly soft
+ * and stair-stepped; 300 dpi is ordinary laser resolution. An A4 sheet at this
+ * scale is 8.7 Mpx, inside the canvas limits below, and ~150 KB as a PNG.
+ */
+export const PDF_PRINT_DPI = 300;
+/** {@link PDF_PRINT_DPI} as a pdf.js viewport scale (one unit = 1/72 in). */
+export const PDF_PRINT_SCALE = PDF_PRINT_DPI / 72;
 /**
  * The ceiling on one rasterised sheet, in pixels. A canvas past the engine's
  * limit does not fail loudly — it comes back blank, and a blank sheet prints as
- * a blank sheet. An A4 page at 2× is 2.2 Mpx and nowhere near this; an A0/A1
- * drawing or a plotter page is (A1 at 2× is 32 Mpx), so those rasterise at
+ * a blank sheet. An A4 page at print scale is 8.7 Mpx and inside it; an A0/A1
+ * drawing or a plotter page is (A1 at 300 dpi is 70 Mpx), so those rasterise at
  * whatever scale fits instead. They are being fitted onto a much smaller sheet
  * anyway, so the resolution lost is resolution that would not have printed.
  */
@@ -1277,7 +1289,7 @@ export async function renderPdfPagesToImages(
     marks?: readonly { x: number; y: number; w: number; h: number }[];
   }[],
   docFor: (src: string) => PDFDocumentProxy | undefined,
-  scale = 2,
+  scale = PDF_PRINT_SCALE,
 ): Promise<string[]> {
   const urls: string[] = [];
   for (const ref of refs) {
@@ -1307,7 +1319,7 @@ export async function renderPdfPagesToImages(
     }
     urls.push(canvas.toDataURL("image/png"));
     // Give the backing store back before rasterising the next sheet. An A4 page at
-    // this scale is ~2 megapixels — 8 MB of pixels — and the canvas is only garbage
+    // print scale is ~9 megapixels — 35 MB of pixels — and the canvas is only garbage
     // once the collector gets to it, so printing a 200-page document otherwise held
     // every page's raster AND its data URL at the same time. The URL is already
     // taken; the pixels are finished with.

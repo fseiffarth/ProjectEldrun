@@ -52,6 +52,30 @@ export async function printSnapshot(): Promise<PrintSnapshot> {
   }
 }
 
+/** What a native PDF print came to. `unsupported` means this platform (or an
+ *  older backend without the command) has no native path — the caller prints
+ *  through its own preview instead. */
+export type NativePdfPrint = "sent" | "cancelled" | "unsupported";
+
+/**
+ * Print a PDF the way a PDF app does: the system print dialog, then the PDF
+ * itself goes to the printer — vector text, not the raster the in-app preview
+ * has to print (`commands/print_native.rs`). Takes the document's BYTES, never a
+ * path (rule 1 above). Rejects only on a real print failure.
+ */
+export async function printPdfNative(bytes: Uint8Array, title: string): Promise<NativePdfPrint> {
+  try {
+    const outcome = await invoke<string>("print_pdf_native", { bytes: Array.from(bytes), title });
+    return outcome === "sent" ? "sent" : "cancelled";
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg === "eldrun-native-print-unsupported" || /print_pdf_native.*not found/i.test(msg)) {
+      return "unsupported";
+    }
+    throw new Error(msg);
+  }
+}
+
 /** Cancel one job. `printer` is only read by the Windows backend (its API needs
  *  the queue as well as the id); CUPS cancels by id alone. */
 export function printJobCancel(printer: string, jobId: string): Promise<void> {

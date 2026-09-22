@@ -276,7 +276,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `lib/remote/hpc/hpcWorkspace.ts` | HPC workspaces (backend `commands::hpc_ws`): `ws*` invoke wrappers + shared pure helpers (`projectPathIn`, expiry labels/tones). Workspaces expire and get deleted. |
 | `lib/agents/skills.ts` | Typed invoke surface for the Skills Library (`skills_*`); no manifest, installed list is a disk read; install addressed by `SkillTarget`, never a path. |
 | `lib/agents/localDrivers.ts` | Typed invoke surface for local-model coding agents + model-update check. `listLocalDrivers(model)` hides agents a completion-only model (no tool calls) can't serve. |
-| `lib/window/printing.ts` | Typed invoke surface for the print manager (`print_*`): queues only, no wrapper takes a path; `printSnapshot` resolves rather than rejects. |
+| `lib/window/printing.ts` | Typed invoke surface for the print manager (`print_*`): queues only, no wrapper takes a path; `printSnapshot` resolves rather than rejects. `printPdfNative` takes PDF bytes for the system dialog. |
 | `lib/terminal/pythonRun.ts` | Run/Debug a Python file by opening a terminal tab (inherits remote/container locality); debug = pdb with gutter breakpoints. Interpreter asked of backend (`python_interpreter_for`). |
 | `lib/agents/fastMode.ts` | Fast mode (`Settings.fast_mode`): the list of withdrawn costly display aids lives in this module's header (folder sizes, pill git dots, …). |
 | `lib/theme/themeTokens.ts` | Theme Customizer allow-list of overridable CSS color tokens (grouped; ids are i18n keys). `normalizeThemeVars` is the gate; `THEME_COLOR_RE` accepts `#rrggbb` and `#rrggbbaa`. |

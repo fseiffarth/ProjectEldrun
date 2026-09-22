@@ -1778,6 +1778,7 @@ pub fn run() {
             commands::printing::print_set_default,
             commands::printing::print_set_enabled,
             commands::printing::print_test_page,
+            commands::print_native::print_pdf_native,
             // Disk usage analyzer (commands::disk_usage)
             commands::disk_usage::disk_usage_scan,
             commands::disk_usage::disk_usage_cancel,

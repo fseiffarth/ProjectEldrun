@@ -105,6 +105,7 @@ export const UNTESTED = {
   "pdfViewer.6": { area: "embed", what: "PdfViewer · {n} remarks on {pages} pages" },
   "pdfViewer.7": { area: "embed", what: "PdfViewer · Fullscreen" },
   "pdfViewer.8": { area: "embed", what: "PdfViewer · Capturing…" },
+  "pdfViewer.printLabel": { area: "embed", what: "PdfViewer · Print through the system dialog (real PDF, not page images)" },
   "presentationOverlay.1": { area: "embed", what: "PresentationOverlay · Close presentation tools" },
   "texStructureSidebar.1": { area: "embed", what: "TexStructureSidebar · Structure" },
   "texWorkspace.newFileTitle": { area: "embed", what: "FileViewerPane · Add a file to this document" },

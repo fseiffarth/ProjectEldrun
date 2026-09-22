@@ -124,6 +124,7 @@ import {
   screenshotFilename,
   type ScreenshotCaptureDetail,
 } from "../../../lib/window/screenshot";
+import { printPdfNative } from "../../../lib/window/printing";
 import { useSettingsStore } from "../../../stores/settings";
 import { PageStrip } from "../../common/PageStrip";
 import { PrinterIcon } from "../../common/PrinterIcon";
@@ -2630,25 +2631,40 @@ function PdfCanvas({
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [current, setCurrent] = useState(0);
   const findInputRef = useRef<HTMLInputElement>(null);
-  // Print: the webview can't print a PDF directly, so rasterise the already-open
-  // pages to images and print those through the shared pipeline. `printing`
-  // disables the button while the (async) render runs.
+  // Print: like a PDF app — the system print dialog, then the PDF itself goes to
+  // the printer, so text stays vector (`printPdfNative`). The webview can't print a
+  // PDF, so where there is no native path the already-open pages are rasterised and
+  // printed through the shared preview instead. `printing` disables the button
+  // while the (async) build runs.
   const [printing, setPrinting] = useState(false);
   const handlePrint = useCallback(async () => {
     if (!doc || printing || pages.length === 0) return;
     setPrinting(true);
+    setEditError(null);
     try {
-      // Rasterise the ARRANGEMENT, not the file: printing an edited PDF prints what
-      // is on screen, without having to save it first.
+      // The ARRANGEMENT, not the file: printing an edited PDF prints what is on
+      // screen, without having to save it first. `buildPdf` is the bytes Save and a
+      // page drag-out write — blackouts burned in, pending metadata deletion applied.
+      const outcome = await buildPdf(pages, sources, {
+        emptyMsg: t("pdfViewer.pdfBuildEmpty"),
+        sourceClosedMsg: t("pdfViewer.pdfSourceClosed"),
+        redactDpi,
+        stripMetadata: stripMeta,
+      }).then((bytes) => printPdfNative(bytes, basename(path)));
+      if (outcome !== "unsupported") return;
       const images = await renderPdfPagesToImages(pages, (id) => sources.get(id)?.doc);
       const body = images
         .map((src) => `<div class="print-page"><img src="${src}" alt=""></div>`)
         .join("");
       await printHtmlBody(body, PDF_PRINT_CSS);
+    } catch (e) {
+      setEditError(
+        t("pdfViewer.printFailed", { msg: e instanceof Error ? e.message : String(e) }),
+      );
     } finally {
       setPrinting(false);
     }
-  }, [doc, printing, pages, sources]);
+  }, [doc, printing, pages, sources, redactDpi, stripMeta, path, t]);
 
   /**
    * Write the arrangement back to the file. The ONLY place a PDF is written.
@@ -4223,6 +4239,7 @@ function PdfCanvas({
             <PrinterIcon />
           )}
         </button>
+        <UntestedTag id="pdfViewer.printLabel" />
         {/* Fullscreen present: this PDF in a window of its own, with nothing else
             on the screen. Beside Print because the two are the same job aimed at
             the two audiences a document has — the room and the page. */}

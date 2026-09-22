@@ -50,6 +50,7 @@ only when breaking it does damage. The *why* goes in code comments or
 | `mail.rs` (deleting) | `mail_move` (delete = move to Trash) and `mail_purge` (`\Deleted` + `UID EXPUNGE`). Requires UIDPLUS or refuses (`NO_UIDPLUS`) — never plain `EXPUNGE`. |
 | `mail.rs` (filters) | `mail_filters_{list,set,apply}`: local keyword rules; list saved wholesale (order = first match wins); one command for preview and apply (`dry_run`). |
 | `printing.rs` | Native print manager: `print_system_snapshot` + cancel / set-default / pause / test page. CUPS (under `LC_ALL=C`) or Windows PowerShell, mapped to a closed state set (unknown ≠ healthy). |
+| `print_native.rs` | `print_pdf_native`: a PDF's bytes → GTK print dialog → `GtkPrintJob` with the PDF as source (vector, like Evince). Hand-declared GTK unix-print FFI; Linux only, else `eldrun-native-print-unsupported`. |
 | `subwindow.rs` | Detached subwindow lifecycle (#42). Wayland parks by minimize/activate (hide/show loses placement); `detached_window_is_parked` gates renderer work. `detached_query` writes `?detached=<scope>&group=<gid>`. |
 | `presenter.rs` | Presentation windows (deck audience window, PDF present window, `present-` labels): second monitor, screen kept awake. Not a detached subwindow — never parked on project switch. |
 | `timer.rs` | Time-tracking commands. |

@@ -5629,6 +5629,7 @@ export const en = {
   "pdfMeta.field.ModDate": "Modified",
   "pdfViewer.insertFailed": "Could not insert {name}: {msg}",
   "pdfViewer.copyPagesFailed": "Could not copy those pages: {msg}",
+  "pdfViewer.printFailed": "Could not print: {msg}",
   "pdfViewer.insertPagesFailed": "Could not insert those pages: {msg}",
   "pdfViewer.notAPdf": "{name} is not a PDF.",
   "pdfViewer.pdfBuildEmpty": "A PDF must have at least one page.",

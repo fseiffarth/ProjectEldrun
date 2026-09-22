@@ -11,7 +11,8 @@
  *     whose printer the snapshot did not list would silently vanish — and a job
  *     nobody can see is a job nobody can cancel.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { invoke } from "@tauri-apps/api/core";
 import {
   followPrintJob,
   jobTitleMatches,
@@ -23,7 +24,10 @@ import {
   printerStateKey,
   printerStateLabelKey,
   printerTone,
+  printPdfNative,
 } from "../../lib/window/printing";
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+
 import type { PrintJob, PrintJobState, PrintSnapshot, PrinterInfo } from "../../types/printing";
 
 function printer(over: Partial<PrinterInfo> = {}): PrinterInfo {
@@ -210,5 +214,33 @@ describe("following a print job", () => {
     expect(jobTitleMatches("notes.md", "notes.md")).toBe(true);
     expect(jobTitleMatches("no", "notes.md")).toBe(false);
     expect(jobTitleMatches("", "notes.md")).toBe(false);
+  });
+});
+
+describe("printPdfNative", () => {
+  const mocked = vi.mocked(invoke);
+  beforeEach(() => mocked.mockReset());
+
+  it("sends the bytes and a title, never a path", async () => {
+    mocked.mockResolvedValue("sent");
+    await expect(printPdfNative(new Uint8Array([37, 80]), "a.pdf")).resolves.toBe("sent");
+    expect(mocked).toHaveBeenCalledWith("print_pdf_native", { bytes: [37, 80], title: "a.pdf" });
+  });
+
+  it("reads a closed dialog as cancelled", async () => {
+    mocked.mockResolvedValue("cancelled");
+    await expect(printPdfNative(new Uint8Array([1]), "a.pdf")).resolves.toBe("cancelled");
+  });
+
+  it("falls back when the platform or the running backend has no native path", async () => {
+    mocked.mockRejectedValueOnce("eldrun-native-print-unsupported");
+    await expect(printPdfNative(new Uint8Array([1]), "a.pdf")).resolves.toBe("unsupported");
+    mocked.mockRejectedValueOnce("Command print_pdf_native not found");
+    await expect(printPdfNative(new Uint8Array([1]), "a.pdf")).resolves.toBe("unsupported");
+  });
+
+  it("surfaces a real print failure", async () => {
+    mocked.mockRejectedValueOnce("this printer does not accept PDF documents");
+    await expect(printPdfNative(new Uint8Array([1]), "a.pdf")).rejects.toThrow(/accept PDF/);
   });
 });
