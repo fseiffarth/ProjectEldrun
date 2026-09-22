@@ -2631,10 +2631,10 @@ function PdfCanvas({
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [current, setCurrent] = useState(0);
   const findInputRef = useRef<HTMLInputElement>(null);
-  // Print: like a PDF app — the system print dialog, then the PDF itself goes to
-  // the printer, so text stays vector (`printPdfNative`). The webview can't print a
-  // PDF, so where there is no native path the already-open pages are rasterised and
-  // printed through the shared preview instead. `printing` disables the button
+  // Print: like a PDF app — the system print UI, then the PDF itself goes to the
+  // printer, so text stays vector (`printPdfNative`; GTK / WebView2 / PDFKit). The
+  // webview can't print a PDF, so where there is no native path the already-open
+  // pages are rasterised and printed through the shared preview instead. `printing` disables the button
   // while the (async) build runs.
   const [printing, setPrinting] = useState(false);
   const handlePrint = useCallback(async () => {

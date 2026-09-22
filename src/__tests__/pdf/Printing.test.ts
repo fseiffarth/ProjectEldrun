@@ -227,6 +227,11 @@ describe("printPdfNative", () => {
     expect(mocked).toHaveBeenCalledWith("print_pdf_native", { bytes: [37, 80], title: "a.pdf" });
   });
 
+  it("passes Windows' fire-and-forget print window through as opened", async () => {
+    mocked.mockResolvedValue("opened");
+    await expect(printPdfNative(new Uint8Array([1]), "a.pdf")).resolves.toBe("opened");
+  });
+
   it("reads a closed dialog as cancelled", async () => {
     mocked.mockResolvedValue("cancelled");
     await expect(printPdfNative(new Uint8Array([1]), "a.pdf")).resolves.toBe("cancelled");

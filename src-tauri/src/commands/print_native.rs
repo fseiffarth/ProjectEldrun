@@ -1,41 +1,71 @@
-//! Print a PDF the way a PDF app does: the system print dialog, then the PDF
-//! itself goes to the printer.
+//! Print a PDF the way a PDF app does: the PDF itself goes to the printer,
+//! through the system's own print UI.
 //!
 //! The in-app print path (`lib/viewers/print.ts`) prints an HTML document
 //! through the webview, and WebKitGTK has no PDF engine — so a PDF reaches
 //! paper there as one raster image per page. However high the resolution, that
-//! is not what Evince or Firefox print: they hand the *document* to the print
-//! system, text stays vector, and CUPS renders it at the printer's own
-//! resolution. This command does the same, through the same GTK machinery
-//! those apps use: `GtkPrintUnixDialog` for the choice, then a `GtkPrintJob`
-//! whose source file is the PDF (CUPS accepts PDF natively, and the dialog's
-//! page range / copies / pages-per-sheet travel as job options).
+//! is not what Evince, Preview or Edge print: they hand the *document* to the
+//! print system, text stays vector, and the printer renders it at its own
+//! resolution. Each OS does the same here with the engine that OS's PDF app
+//! uses:
 //!
-//! gtk-rs 0.18 has no bindings for the unix-print half of GTK 3, so the eight
-//! functions used are declared here; they live in the `libgtk-3` the window
-//! already links.
+//!  - **Linux** — `GtkPrintUnixDialog`, then a `GtkPrintJob` whose source file
+//!    is the PDF (Evince/Firefox's path; CUPS accepts PDF natively, and the
+//!    dialog's page range / copies / pages-per-sheet travel as job options).
+//!    gtk-rs 0.18 has no bindings for GTK 3's unix-print half, so the eight
+//!    functions used are declared here; they live in the `libgtk-3` the window
+//!    already links.
+//!  - **Windows** — WebView2 *is* Edge's engine, PDF viewer (PDFium) included:
+//!    a print window loads the PDF and opens its print preview
+//!    (`ShowPrintUI`), which is exactly Edge printing a PDF. The window stays
+//!    up afterwards showing the document, with the viewer's own print button.
+//!  - **macOS** — PDFKit's `PDFDocument` print operation, the one Preview runs,
+//!    with the system print panel.
 //!
 //! What crosses the IPC boundary is **bytes, never a path**: the print manager
 //! deliberately has no print-this-file command (see `printing.rs`), and this is
 //! not one — the frontend builds the arranged PDF (`buildPdf`, blackouts burned
-//! in) and nothing prints without the user confirming the native dialog.
+//! in) and nothing prints without the user confirming the system's print UI.
 
 /// Returned when this platform has no native PDF print path; the frontend
 /// falls back to its own print preview on seeing it.
 pub const UNSUPPORTED: &str = "eldrun-native-print-unsupported";
 
 /// Outcome of a native print: `"sent"` once the job reached the print system,
-/// `"cancelled"` when the user closed the dialog.
+/// `"cancelled"` when the user closed the dialog, `"opened"` where the system
+/// print UI owns the rest and reports nothing back (Windows).
 #[tauri::command]
 pub async fn print_pdf_native(
     window: tauri::WebviewWindow,
     bytes: Vec<u8>,
     title: String,
 ) -> Result<String, String> {
+    if bytes.is_empty() {
+        return Err("nothing to print".into());
+    }
     imp::print(window, bytes, title).await
 }
 
-#[cfg(not(target_os = "linux"))]
+/// A private (0600, unique) spool file holding the PDF, for the print paths
+/// that hand the print system a file. Deleted when dropped.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+async fn write_spool(bytes: Vec<u8>) -> Result<tempfile::NamedTempFile, String> {
+    use std::io::Write;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut f = tempfile::Builder::new()
+            .prefix("eldrun-print-")
+            .suffix(".pdf")
+            .tempfile()
+            .map_err(|e| format!("print spool: {e}"))?;
+        f.write_all(&bytes).map_err(|e| format!("print spool: {e}"))?;
+        f.flush().map_err(|e| format!("print spool: {e}"))?;
+        Ok(f)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 mod imp {
     pub async fn print(
         _window: tauri::WebviewWindow,
@@ -46,10 +76,129 @@ mod imp {
     }
 }
 
+#[cfg(target_os = "macos")]
+mod imp {
+    use objc2::{AllocAnyThread, MainThreadMarker};
+    use objc2_app_kit::NSPrintInfo;
+    use objc2_foundation::{NSData, NSString};
+    use objc2_pdf_kit::{PDFDocument, PDFPrintScalingMode};
+
+    pub async fn print(
+        window: tauri::WebviewWindow,
+        bytes: Vec<u8>,
+        title: String,
+    ) -> Result<String, String> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        window
+            .run_on_main_thread(move || {
+                let _ = tx.send(run(bytes, &title));
+            })
+            .map_err(|e| e.to_string())?;
+        rx.await
+            .unwrap_or_else(|_| Err("the print panel did not open".into()))
+    }
+
+    /// Main thread. `runOperation` runs the print panel app-modally (AppKit
+    /// keeps the event loop turning inside it) and answers whether the job
+    /// went out — which also keeps the document and the operation alive for
+    /// exactly as long as the panel needs them.
+    fn run(bytes: Vec<u8>, title: &str) -> Result<String, String> {
+        let mtm = MainThreadMarker::new().ok_or("print: not on the main thread")?;
+        let data = NSData::with_bytes(&bytes);
+        // SAFETY: a fresh allocation initialised from owned bytes; PDFKit
+        // answers nil (None) for data it cannot read.
+        let doc = unsafe { PDFDocument::initWithData(PDFDocument::alloc(), &data) }
+            .ok_or("PDFKit could not read the document")?;
+        let info = NSPrintInfo::sharedPrintInfo();
+        // SAFETY: main thread (`mtm`), live document and print info.
+        let op = unsafe {
+            doc.printOperationForPrintInfo_scalingMode_autoRotate(
+                Some(&info),
+                PDFPrintScalingMode::PageScaleDownToFit,
+                true,
+                mtm,
+            )
+        }
+        .ok_or("PDFKit could not prepare the print job")?;
+        op.setJobTitle(Some(&NSString::from_str(title)));
+        op.setShowsPrintPanel(true);
+        op.setShowsProgressPanel(true);
+        Ok(if op.runOperation() { "sent" } else { "cancelled" }.into())
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod imp {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
+
+    use tauri::webview::{NewWindowResponse, PageLoadEvent};
+    use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2_16, COREWEBVIEW2_PRINT_DIALOG_KIND_BROWSER,
+    };
+    use windows::core::Interface;
+
+    pub async fn print(
+        window: tauri::WebviewWindow,
+        bytes: Vec<u8>,
+        title: String,
+    ) -> Result<String, String> {
+        let spool = super::write_spool(bytes).await?;
+        let url = tauri::Url::from_file_path(spool.path())
+            .map_err(|_| "print spool: no file URL for it".to_string())?;
+        // Not in any capability's `webviews`, and a `file:` origin is remote to
+        // Tauri, so this window can reach no command and no plugin.
+        let label = format!("print-{}", crate::commands::projects::uuid_v4());
+        let allowed = url.clone();
+        let asked = AtomicBool::new(false);
+        let win = WebviewWindowBuilder::new(window.app_handle(), &label, WebviewUrl::External(url))
+            .title(format!("{title} — Print"))
+            .inner_size(900.0, 1000.0)
+            .incognito(true)
+            .browser_extensions_enabled(false)
+            // The document is attacker-controlled (anything in a project
+            // folder is): its links go nowhere, in this window or a new one.
+            .on_navigation(move |target| *target == allowed)
+            .on_new_window(|_, _| NewWindowResponse::Deny)
+            .on_page_load(move |win, payload| {
+                if !matches!(payload.event(), PageLoadEvent::Finished)
+                    || asked.swap(true, Ordering::SeqCst)
+                {
+                    return;
+                }
+                // SAFETY: COM calls on the live controller Tauri hands us, on
+                // the webview's own thread. A runtime older than
+                // `ICoreWebView2_16` just leaves the viewer up, whose toolbar
+                // prints the same way.
+                let _ = win.with_webview(|webview| unsafe {
+                    if let Ok(core) = webview.controller().CoreWebView2() {
+                        if let Ok(core16) = core.cast::<ICoreWebView2_16>() {
+                            let _ = core16.ShowPrintUI(COREWEBVIEW2_PRINT_DIALOG_KIND_BROWSER);
+                        }
+                    }
+                });
+            })
+            .build()
+            .map_err(|e| format!("print window: {e}"))?;
+        crate::hook_webview_crash_reporter(&win);
+        crate::commands::browser::deny_all_permissions(&win);
+        // The spool lives exactly as long as the window showing it.
+        let spool = Mutex::new(Some(spool));
+        win.on_window_event(move |event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                if let Ok(mut held) = spool.lock() {
+                    held.take();
+                }
+            }
+        });
+        Ok("opened".into())
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod imp {
     use std::ffi::{c_char, c_int, c_uint, c_void, CString};
-    use std::io::Write;
     use std::os::unix::ffi::OsStrExt;
 
     use gtk::glib;
@@ -99,23 +248,9 @@ mod imp {
         bytes: Vec<u8>,
         title: String,
     ) -> Result<String, String> {
-        if bytes.is_empty() {
-            return Err("nothing to print".into());
-        }
-        // A private (0600, unique) spool file. GTK opens it when the job is
-        // given it, so it is deleted as soon as that has happened.
-        let spool = tauri::async_runtime::spawn_blocking(move || {
-            let mut f = tempfile::Builder::new()
-                .prefix("eldrun-print-")
-                .suffix(".pdf")
-                .tempfile()
-                .map_err(|e| format!("print spool: {e}"))?;
-            f.write_all(&bytes).map_err(|e| format!("print spool: {e}"))?;
-            f.flush().map_err(|e| format!("print spool: {e}"))?;
-            Ok::<_, String>(f)
-        })
-        .await
-        .map_err(|e| e.to_string())??;
+        // GTK opens the spool when the job is given it, so it is deleted as
+        // soon as that has happened.
+        let spool = super::write_spool(bytes).await?;
 
         let (tx, rx) = oneshot::channel::<Result<String, String>>();
         let on_main = window.clone();

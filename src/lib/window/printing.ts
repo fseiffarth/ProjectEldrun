@@ -52,21 +52,23 @@ export async function printSnapshot(): Promise<PrintSnapshot> {
   }
 }
 
-/** What a native PDF print came to. `unsupported` means this platform (or an
+/** What a native PDF print came to. `opened` is Windows: the print window owns
+ *  the rest and reports nothing back. `unsupported` means this platform (or an
  *  older backend without the command) has no native path — the caller prints
  *  through its own preview instead. */
-export type NativePdfPrint = "sent" | "cancelled" | "unsupported";
+export type NativePdfPrint = "sent" | "cancelled" | "opened" | "unsupported";
 
 /**
  * Print a PDF the way a PDF app does: the system print dialog, then the PDF
  * itself goes to the printer — vector text, not the raster the in-app preview
- * has to print (`commands/print_native.rs`). Takes the document's BYTES, never a
+ * has to print (`commands/print_native.rs`: GTK on Linux, WebView2's PDF
+ * engine on Windows, PDFKit on macOS). Takes the document's BYTES, never a
  * path (rule 1 above). Rejects only on a real print failure.
  */
 export async function printPdfNative(bytes: Uint8Array, title: string): Promise<NativePdfPrint> {
   try {
     const outcome = await invoke<string>("print_pdf_native", { bytes: Array.from(bytes), title });
-    return outcome === "sent" ? "sent" : "cancelled";
+    return outcome === "sent" || outcome === "opened" ? outcome : "cancelled";
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     if (msg === "eldrun-native-print-unsupported" || /print_pdf_native.*not found/i.test(msg)) {
