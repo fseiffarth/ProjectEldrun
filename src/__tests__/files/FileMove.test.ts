@@ -168,6 +168,13 @@ describe("FileTree source tripwires", () => {
     }
   });
 
+  it("the listing itself is a drop target for the folder it shows", () => {
+    // After a spring-load navigation the user releases over the new listing —
+    // file rows or empty space — not over a folder row. Without the tree root
+    // as a target that release resolved to nothing and the file stayed put.
+    expect(SRC).toMatch(/data-move-rel=\{relPath\}\n\s*\{\.\.\.moveTargetAttrs\}/);
+  });
+
   it("the move commit routes to the TARGET root, not the source tree's", () => {
     // Scoped to the drag-to-move commit — the clipboard paste sites legitimately
     // use `destProjectDir: projectDir` (their destination IS this tree).

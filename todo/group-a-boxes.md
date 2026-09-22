@@ -330,12 +330,16 @@
     pointer must move before another folder can arm, so a held-still drag does
     not drill down a level per dwell. Timing core `createSpringLoader` in
     `lib/projects/fileMove.ts`; `components/files/FileTree.tsx`. Frontend only.
-    Implemented 2026-09-14 (`de0f931`), **not live-tested**.
+    Implemented 2026-09-14 (`de0f931`), **not live-tested**. 2026-09-21: the
+    listing itself (`.file-tree`, file rows and empty space) is now a drop
+    target for the folder it shows — before, a release inside a freshly
+    sprung-open folder hit no target and the file stayed put.
     - [x] 🤖 Automated test — `FileMove` (spring loader: dwell, re-arm only
-      after movement, cancel)
+      after movement, cancel; tripwire: tree root carries `data-move-rel`)
     - [ ] 🖐️ Manual test — drag a file over a folder row and hold still: after
       about ⅔ s the tree opens that folder and exactly one level, not deeper;
-      wiggle onto a subfolder → it opens too; drop → the file moves there. Hover
+      wiggle onto a subfolder → it opens too; drop on a file row or empty space
+      of the opened listing (dashed frame) → the file moves there. Hover
       a breadcrumb and ↑ the same way. Pass over folders quickly → nothing opens.
       - [ ] ✅ Works on Linux (X11)
       - [ ] ❌ Doesn't work on Linux (X11)

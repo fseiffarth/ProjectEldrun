@@ -3395,7 +3395,14 @@ export function FileTree({
   return (
     <div
       ref={treeRootRef}
-      className={`file-tree${isDragOver ? " drag-over" : ""}`}
+      className={`file-tree${isDragOver ? " drag-over" : ""}${moveTargetRel === relPath ? " move-drop-target" : ""}`}
+      // The listing itself is a drop target for the folder it shows: after a
+      // spring-load navigated the tree mid-drag, releasing over a file row or
+      // empty space lands in the folder now on screen. Folder rows and crumbs
+      // are nested targets and win the `closest()` lookup; the file's own
+      // folder stays a no-op (`resolveMoveTarget`).
+      data-move-rel={relPath}
+      {...moveTargetAttrs}
       tabIndex={0}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}

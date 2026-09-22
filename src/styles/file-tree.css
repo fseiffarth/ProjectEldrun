@@ -566,7 +566,10 @@
 }
 
 /* Dragging a download over empty tree space (not a specific folder) targets the
-   currently browsed folder — frame the whole tree area so the drop is legible. */
+   currently browsed folder — frame the whole tree area so the drop is legible.
+   `.file-tree` is the same frame for a file drag: its listing is the drop
+   target for the folder it shows (after a spring-load navigation). */
+.file-tree.move-drop-target,
 .side-panel-scroll.move-drop-target {
   outline: 2px dashed var(--accent);
   outline-offset: -3px;
