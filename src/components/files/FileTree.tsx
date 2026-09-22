@@ -75,6 +75,8 @@ import { normalizeScanPath } from "./ProjectFilesSettings";
 import { FileTreeSearch } from "./FileTreeSearch";
 import { useClampToViewport } from "../../hooks/useClampToViewport";
 import { UntestedTag } from "../common/UntestedTag";
+import { MenuShortcut } from "../common/MenuShortcut";
+import type { ChordDescriptor } from "../../lib/shortcuts/shortcuts";
 import { IdeMenuItems } from "../projects/IdeMenuItems";
 import { RenameDialog, containingFolderLabel } from "./RenameDialog";
 import { useDialogs } from "../common/PromptDialogs";
@@ -82,6 +84,9 @@ import { Dropdown } from "../common/Dropdown";
 import { FileIcon } from "../common/icons/FileIcon";
 import { SearchIcon } from "../common/icons/Icon";
 import { useT, type TranslationKey } from "../../lib/i18n";
+
+// The context menu's Delete rows name their keyboard twin (handleTreeKeyDown).
+const DELETE_KEY: ChordDescriptor = { key: "Delete" };
 
 // Persist whether the collapsed "gitignored" files section is expanded, so the
 // choice survives side-panel hide/show and remounts (FileTree remounts each
@@ -4404,6 +4409,7 @@ export function FileTree({
                   <hr />
                   <button className="danger" onClick={() => promptDelete(menuEntries)}>
                     {t("fileTree.deleteItemsCount", { count: n })}
+                    <MenuShortcut chord={DELETE_KEY} />
                   </button>
                 </>
               );
@@ -4624,6 +4630,7 @@ export function FileTree({
                 </button>
                 <button className="danger" onClick={() => promptDelete([entry])}>
                   {t("fileBrowser.delete")}
+                  <MenuShortcut chord={DELETE_KEY} />
                 </button>
               </>
             );

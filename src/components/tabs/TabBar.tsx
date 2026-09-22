@@ -64,6 +64,7 @@ import { registerHostBoundTab } from "../../lib/remote/hostBound";
 import { busyStateClass, useActivityStore } from "../../stores/activity";
 import { UntestedTag } from "../common/UntestedTag";
 import { ContextMenuPortal } from "../common/ContextMenuPortal";
+import { MenuShortcut } from "../common/MenuShortcut";
 import { useT } from "../../lib/i18n";
 import { useChordHint } from "../../lib/shortcuts/shortcutHint";
 import { TRASH_PROJECT_ID } from "../../lib/projects/trashProject";
@@ -1646,6 +1647,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   dot: "×",
                   color: "var(--danger)",
                   disabled: !hasAnyTabs,
+                  shortcut: "closeAllTabs",
                   onPick: () => {
                     closeAllTabs();
                     setMenuPos(null);
@@ -1733,6 +1735,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
           >
             <span className="tab-new-menu-dot tab-new-menu-dot--danger">×</span>
             {t("common.close")}
+            <MenuShortcut chord="closeTab" />
           </button>
           <button
             className="tab-new-menu-item"

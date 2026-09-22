@@ -229,6 +229,7 @@ export const UNTESTED = {
   "shortcut.texBack": { area: "lib", what: "shortcuts · TeX workspace: back to the previous file" },
   "shortcut.texCompile": { area: "lib", what: "shortcuts · TeX workspace: save and compile the document" },
   "shortcut.texUp": { area: "lib", what: "shortcuts · TeX workspace: up to the parent document" },
+  "shortcut.menuHints": { area: "lib", what: "shortcuts · Menu rows show their chord (root console, shortcuts, tab close / close all, file Delete)" },
 
   // --- mail — The mail client ---------------------------------------
   "mail.accountDialogNew": { area: "mail", what: "MailAccountDialog · Add mail account" },

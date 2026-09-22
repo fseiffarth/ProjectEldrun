@@ -2110,6 +2110,27 @@
   color: var(--text-muted);
   white-space: nowrap;
 }
+/* A menu row's keyboard twin, IDE-style ("Close   Ctrl+W"; common/MenuShortcut).
+   Muted whatever the row's own colour (a danger row stays red, its chord grey);
+   the fill colour is set too because some menu chrome pins
+   -webkit-text-fill-color, which children inherit. The block-level rows
+   (.context-menu, the header dropdowns) become a flex row only when they carry
+   one, so every other row lays out exactly as before. */
+.menu-shortcut {
+  margin-left: auto;
+  padding-left: 18px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-muted);
+  -webkit-text-fill-color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+button:has(> .menu-shortcut) {
+  display: flex;
+  align-items: center;
+}
+
 /* The "‹ Run on machine" header row of the machine sub-picker: reads as a title,
    not a target, and hosts the untested tag. */
 .tab-new-menu-item.tab-menu-back { color: var(--text-secondary); }

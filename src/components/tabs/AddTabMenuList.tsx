@@ -1,5 +1,7 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { UntestedTag } from "../common/UntestedTag";
+import { MenuShortcut } from "../common/MenuShortcut";
+import type { ChordDescriptor, ShortcutAction } from "../../lib/shortcuts/shortcuts";
 import { isUntested, type UntestedId } from "../../lib/untested";
 import { useT } from "../../lib/i18n";
 
@@ -25,6 +27,8 @@ export interface AddMenuEntry {
    *  `untested` it is a flag rather than markup, for that field's reason — the
    *  search box filters on `label` as a string, so a label cannot be a node. */
   caution?: string;
+  /** The row's keyboard twin, shown muted at the row's end (`MenuShortcut`). */
+  shortcut?: ShortcutAction | ChordDescriptor;
   /** A fly-out list opened by this row rather than an immediate tab choice. */
   moreEntries?: AddMenuEntry[];
   onPick: () => void;
@@ -264,6 +268,7 @@ export function AddTabMenuList({ groups }: { groups: AddMenuGroup[] }) {
                 </span>
               )}
               {e.untested && <UntestedTag id={e.untested} />}
+              {e.shortcut && <MenuShortcut chord={e.shortcut} />}
             </button>
           ))}
           {g.entries.length === 0 && g.hint && (
