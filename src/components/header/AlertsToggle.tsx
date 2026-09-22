@@ -1,6 +1,7 @@
 import { useSettingsStore } from "../../stores/settings";
 import { useHeaderStatusReport } from "../../stores/headerStatus";
 import { useT } from "../../lib/i18n";
+import { BellIcon } from "../common/BellIcon";
 
 /**
  * The header's bell: the on/off switch for the Alerts group (urgent mail, the
@@ -71,40 +72,7 @@ export function AlertsToggle() {
         aria-pressed={enabled}
         onClick={() => void updateSettings({ files_alerts: !enabled })}
       >
-        <svg
-          className="alerts-toggle-icon"
-          viewBox="0 0 16 16"
-          fill="none"
-          xmlns="http://www.w3.org/2000/svg"
-          aria-hidden="true"
-        >
-          {/* dome: straight sides closed by a half-round top */}
-          <path
-            d="M4.9 10.6V7.3a3.1 3.1 0 0 1 6.2 0v3.3"
-            stroke="currentColor"
-            strokeWidth="1.3"
-            strokeLinecap="round"
-            fill="none"
-          />
-          {/* rim */}
-          <line
-            x1="3.5"
-            y1="10.7"
-            x2="12.5"
-            y2="10.7"
-            stroke="currentColor"
-            strokeWidth="1.3"
-            strokeLinecap="round"
-          />
-          {/* clapper */}
-          <path
-            d="M6.8 12.2a1.3 1.3 0 0 0 2.4 0"
-            stroke="currentColor"
-            strokeWidth="1.3"
-            strokeLinecap="round"
-            fill="none"
-          />
-        </svg>
+        <BellIcon className="alerts-toggle-icon" />
       </button>
     </div>
   );
