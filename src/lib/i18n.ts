@@ -3219,6 +3219,11 @@ export const en = {
   "machines.showDetailsTitle": "Show address, usage & auto-connect",
   "machines.hideDetailsTitle": "Hide address, usage & auto-connect",
   "machines.systemMonitor": "System monitor…",
+  "machines.utilAria": "{machine} utilization",
+  "machines.utilCpu": "CPU",
+  "machines.utilGpu": "GPU",
+  "machines.utilCpuTitle": "CPU utilization: {pct}% (measured over a short window, refreshed while this menu is open). Shown because this machine is read in Detailed mode.",
+  "machines.utilGpuTitle": "GPU utilization: {pct}% (busiest NVIDIA GPU, refreshed while this menu is open). Shown because this machine is read in Detailed mode.",
   "machines.systemMonitorTitle": "Open the full system monitor (CPU, memory, GPU, processes) for this machine.",
 
   // Per-machine toggles.

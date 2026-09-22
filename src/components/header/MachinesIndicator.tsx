@@ -10,12 +10,13 @@ import { useGlobalMachineMonitorStore } from "../../stores/remote/globalMachineM
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { useRemoteMachinesStore } from "../../stores/remote/remoteMachines";
-import { useRemoteUsageStore } from "../../stores/remote/remoteUsage";
+import { machineKey, useRemoteUsageStore, type RemoteUsageReport } from "../../stores/remote/remoteUsage";
 import { useHostBusyStore, busyReading, busyLabel } from "../../stores/remote/hostBusy";
 import { parseSshAddress } from "../projects/scaffold";
 import { TerminalSignInToggle } from "../projects/TerminalSignInToggle";
 import { openConnectionInRoot } from "../../lib/remote/remoteConnect";
 import { isHpcHost, mayAutoTouch, setHpcPatch, targetOfSpec } from "../../lib/remote/hpc/hpcHost";
+import { isCarefulHost } from "../../lib/remote/carefulHost";
 import { hpcGuardRefusal } from "../../lib/remote/hpc/hpcGuard";
 import { useT, type TranslationKey } from "../../lib/i18n";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
@@ -127,6 +128,48 @@ const STATE_TIP: Record<RowState, TranslationKey> = {
  *  would otherwise pay seventeen logins for each of them. */
 const PROBE_MIN_INTERVAL_MS = 60_000;
 
+/** How often the open menu re-reads a Detailed machine's CPU/GPU utilization.
+ *  One `global_machine_usage_check` login per machine per tick, and only while
+ *  the menu is on screen — gentler than the system monitor's 3 s remote poll. */
+const UTIL_POLL_MS = 10_000;
+
+/**
+ * Whether a row gets the inline CPU/GPU utilization bars: the machine is one the
+ * user switched to **Detailed** in the system monitor (`careful_hosts` answered
+ * `false` for its target — the default for every remote machine is careful) and
+ * is not HPC-tagged, which outranks that answer. Careful is "read me lightly";
+ * a sweep that logs in every few seconds just to draw a bar is not light.
+ */
+export function showsUtilization(
+  settings: Parameters<typeof isCarefulHost>[0],
+  m: { user?: string; host: string; port?: number },
+): boolean {
+  const target = targetOfSpec(m);
+  return !isHpcHost(settings, target) && !isCarefulHost(settings, target);
+}
+
+/** The two bar readings from a usage report. GPU is the busiest adapter, and
+ *  `null` when the host reports no GPU — omitted, never drawn as an idle zero. */
+export function utilizationOf(r: RemoteUsageReport): { cpu: number; gpu: number | null } {
+  const clamp = (n: number) => Math.min(100, Math.max(0, n));
+  const gpu = r.gpus.length ? Math.max(...r.gpus.map((g) => g.utilPct)) : null;
+  return { cpu: clamp(r.cpuPct), gpu: gpu === null ? null : clamp(gpu) };
+}
+
+/** One labelled mini meter; tone by ratio like the local-model meters. */
+function UtilBar({ label, pct, title }: { label: string; pct: number; title: string }) {
+  const tone = pct >= 85 ? "high" : pct >= 60 ? "medium" : "low";
+  return (
+    <span className="machines-util-item" title={title}>
+      <span className="machines-util-label">{label}</span>
+      <span className="local-model-meter machines-util-meter">
+        <span className={`local-model-meter-fill ${tone}`} style={{ width: `${pct}%` }} />
+      </span>
+      <span className="machines-util-value">{Math.round(pct)}%</span>
+    </span>
+  );
+}
+
 export function targetLabel(m: { user?: string; host: string; port?: number }): string {
   return `${m.user ? `${m.user}@` : ""}${m.host}${m.port ? `:${m.port}` : ""}`;
 }
@@ -205,6 +248,7 @@ export function MachinesIndicator() {
   // `requestExtend` is picked up by the target's mounted `ProjectPill`.
   const projects = useProjectsStore((s) => s.projects).filter((p) => p.status !== "inactive");
   const openUsage = useRemoteUsageStore((s) => s.open);
+  const usageReports = useRemoteUsageStore((s) => s.reports);
   const openRemoteMachines = useRemoteMachinesStore((s) => s.open);
   const requestExtend = useRemoteMachinesStore((s) => s.requestExtend);
 
@@ -571,6 +615,30 @@ export function MachinesIndicator() {
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, probeAll]);
+
+  // Inline utilization bars: while the menu is open, read every connected
+  // Detailed machine's CPU/GPU once now and every `UTIL_POLL_MS` after. A
+  // *background* read (the backend refuses it on a tagged host), never stacked
+  // (`recheck` skips a key already in flight), and it stops with the menu.
+  useEffect(() => {
+    if (!open) return;
+    const sweep = () => {
+      const gm = useGlobalMachinesStore.getState();
+      const s = useSettingsStore.getState().settings;
+      const recheck = useRemoteUsageStore.getState().recheck;
+      for (const m of gm.machines) {
+        if ((gm.status[m.id] ?? "off") !== "connected") continue;
+        if (!showsUtilization(s, m) || !mayAutoTouch(s, targetOfSpec(m))) continue;
+        void recheck(
+          { kind: "machine", key: machineKey(m.id), label: m.label || m.host, user: m.user, host: m.host, port: m.port },
+          { background: true },
+        );
+      }
+    };
+    sweep();
+    const timer = window.setInterval(sweep, UTIL_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [open]);
 
   const orderKey = machines.map((m) => m.id).join("|");
 
@@ -1604,6 +1672,9 @@ export function MachinesIndicator() {
             // before it dropped says nothing about it now — and a stale row is by
             // definition one whose session may already be gone.
             const busy = state === "connected" ? busyReading({ readings }, m) : null;
+            const usageReport =
+              state === "connected" && showsUtilization(settings, m) ? usageReports[machineKey(m.id)] : undefined;
+            const util = usageReport ? utilizationOf(usageReport) : null;
             const name = m.label || m.host;
             // `ConnLamp`'s own tooltip is "<label>: <colour>", and most states
             // share their colour with another (red covers error and stale, grey
@@ -1844,6 +1915,25 @@ export function MachinesIndicator() {
                     to be nothing but a toggle springing silently back. Also still
                     the only place an auto-connect failure at launch explains
                     itself — `autoConnect` never opens a modal. */}
+                {/* CPU and GPU utilization, right on the row — only for a
+                    machine read in Detailed mode (see `showsUtilization`). */}
+                {util && !rowFormOpen && (
+                  <div className="machines-util" aria-label={t("machines.utilAria", { machine: name })}>
+                    <UtilBar
+                      label={t("machines.utilCpu")}
+                      pct={util.cpu}
+                      title={t("machines.utilCpuTitle", { pct: String(Math.round(util.cpu)) })}
+                    />
+                    {util.gpu !== null && (
+                      <UtilBar
+                        label={t("machines.utilGpu")}
+                        pct={util.gpu}
+                        title={t("machines.utilGpuTitle", { pct: String(Math.round(util.gpu)) })}
+                      />
+                    )}
+                    <UntestedTag id="machines.utilAria" />
+                  </div>
+                )}
                 {rowError && !rowFormOpen && (
                   <div className="vpn-indicator-error machines-row-error">{rowError}</div>
                 )}

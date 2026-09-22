@@ -2391,6 +2391,39 @@
 .machines-indicator-row {
   cursor: var(--cur-grab, grab);
 }
+/* Inline CPU / GPU utilization under a Detailed machine's head line: two
+   label · meter · value groups side by side, reusing the local-model meter. */
+.machines-util {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 4px 2px 28px;
+}
+.machines-util-item {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.machines-util-label {
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+.machines-util-meter {
+  flex: 1 1 auto;
+  min-width: 24px;
+}
+.machines-util-meter > .local-model-meter-fill {
+  display: block;
+}
+.machines-util-value {
+  min-width: 28px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
 .machines-indicator-row:active {
   cursor: var(--cur-grabbing, grabbing);
 }
