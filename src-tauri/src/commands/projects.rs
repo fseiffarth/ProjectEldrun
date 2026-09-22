@@ -820,6 +820,10 @@ pub(crate) fn entry_is_remote(entry: &ProjectEntry) -> bool {
         .unwrap_or(false)
 }
 
+pub(crate) fn entry_is_vm(entry: &ProjectEntry) -> bool {
+    entry.extra.get("vm").is_some_and(|v| !v.is_null())
+}
+
 /// Move a directory tree from `src` to `dst`, creating `dst`'s parent. Tries a
 /// fast `rename` first and falls back to recursive copy + remove in exactly two
 /// cases: a cross-filesystem move, and a `dst` that already exists. The second is
@@ -1047,6 +1051,96 @@ pub fn archive_project_blocking(project_id: String, archived_at: String) -> Resu
         }
         Ok(())
     })?;
+    Ok(())
+}
+
+/// Remove a project from Eldrun and leave its folder exactly where it is.
+///
+/// The counterpart of `archive_project` for when the *files* are fine and only
+/// Eldrun's view of them is wrong — an import that went sideways, a folder
+/// registered under the wrong name, a tree that should be imported again from
+/// scratch. Nothing inside the project folder is touched: not `project.json`,
+/// not the scaffold (`PROJECT.md`, `AGENTS.md`, `.claude/settings.json`,
+/// `.gitignore` — the scaffold only writes those when absent, so any of them may
+/// be the user's own), not `.eldrun/`, and certainly nothing the user put there
+/// themselves (a `README.md`). A remote project's mirror is user files
+/// and stays too. What goes is Eldrun's own state *about* the project, all of it
+/// keyed by the id and all of it outside the tree: the `projects.json` entry,
+/// `<state_dir>/sessions/<id>/` (tab layout, `open_apps`, host-bound markers),
+/// `<state_dir>/live_sessions/<id>/` (agent resume records), the time-tracking
+/// history, and for a remote project the local per-project state dir (which
+/// holds only its `project.json`). A later re-import gets a fresh id, so none of
+/// that would ever be read again — and the duplicate gate it has to pass looks
+/// at the registry, not the folder.
+///
+/// A VM project is refused: its overlay disk lives in Eldrun's state dir and
+/// *is* the working tree, so "keep the files" has nothing to keep — that one
+/// goes through the archive, which moves the disk with it.
+#[tauri::command]
+pub async fn forget_project(project_id: String) -> Result<(), String> {
+    run_off_thread(move || forget_project_blocking(project_id)).await
+}
+
+pub fn forget_project_blocking(project_id: String) -> Result<(), String> {
+    validate_project_id(&project_id)?;
+    if paths::is_trash_project_id(&project_id) {
+        return Err(
+            "The built-in Trash project is always available and cannot be removed.".into(),
+        );
+    }
+    let list = read_projects_list()?;
+    let entry = list
+        .iter()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("project '{project_id}' not found"))?
+        .clone();
+    if entry_is_vm(&entry) {
+        return Err("A VM project's disk lives in Eldrun's state, so there is no folder to \
+                    keep — use \"Delete project…\", which archives the disk with it."
+            .into());
+    }
+    let remote = entry_is_remote(&entry);
+
+    // Unregister FIRST. Once the entry is gone the project can no longer be
+    // activated, so a purge failing partway leaves at worst an orphaned state
+    // dir (inert: nothing reads it without a registry entry) — never a
+    // registered project with half its state missing.
+    patch_projects_list(|list| {
+        let before = list.len();
+        list.retain(|project| project.id != project_id);
+        if list.len() == before {
+            return Err(format!("project '{project_id}' not found"));
+        }
+        Ok(())
+    })?;
+
+    forget_project_state(&project_id, remote)
+}
+
+/// The state-dir half of `forget_project`: every directory Eldrun keeps *about*
+/// a project, keyed by its id — all under the state dir, never under the tree.
+fn forget_project_state(project_id: &str, remote: bool) -> Result<(), String> {
+    let mut dirs = vec![
+        storage::project_session_dir(project_id),
+        crate::services::agent_session::project_live_sessions_dir(project_id),
+    ];
+    if remote {
+        dirs.push(remote_project_state_dir(project_id));
+    }
+    remove_dirs_if_present(&dirs)?;
+    purge_project_time(project_id)
+}
+
+/// Remove each directory that exists; one that isn't there is not an error
+/// (a project that never opened a tab has no session dir). The first failure
+/// stops the sweep and is reported with its path.
+fn remove_dirs_if_present(dirs: &[PathBuf]) -> Result<(), String> {
+    for dir in dirs {
+        if dir.exists() {
+            fs::remove_dir_all(dir)
+                .map_err(|e| format!("could not remove '{}': {e}", dir.display()))?;
+        }
+    }
     Ok(())
 }
 
@@ -4749,6 +4843,52 @@ fn chrono_now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `forget_project` purges only Eldrun's state dirs about a project: a dir
+    /// that is there goes, one that never existed is not an error, and a
+    /// sibling that is not on the list — the project folder — is untouched.
+    #[test]
+    fn remove_dirs_if_present_skips_missing_and_leaves_siblings_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions = tmp.path().join("sessions").join("p1");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(sessions.join("layout.json"), b"{}").unwrap();
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("README.md"), b"mine").unwrap();
+        std::fs::write(project.join("project.json"), b"{}").unwrap();
+        let never_created = tmp.path().join("live_sessions").join("p1");
+
+        remove_dirs_if_present(&[sessions.clone(), never_created.clone()]).unwrap();
+
+        assert!(!sessions.exists(), "the session dir is gone");
+        assert!(!never_created.exists());
+        assert_eq!(std::fs::read(project.join("README.md")).unwrap(), b"mine");
+        assert!(project.join("project.json").exists());
+    }
+
+    /// A VM project's overlay disk is its tree, so "keep the folder" has no
+    /// meaning for it — `forget_project` dispatches on this and refuses.
+    #[test]
+    fn entry_is_vm_reads_the_vm_spec() {
+        let mut entry = ProjectEntry {
+            id: "p1".into(),
+            name: "P".into(),
+            status: "inactive".into(),
+            position: 0,
+            local_file: "/tmp/p1/project.json".into(),
+            extra: HashMap::new(),
+        };
+        assert!(!entry_is_vm(&entry));
+        entry
+            .extra
+            .insert("vm".to_string(), Value::Null);
+        assert!(!entry_is_vm(&entry), "an explicit null is not a VM");
+        entry
+            .extra
+            .insert("vm".to_string(), serde_json::json!({ "image": "x" }));
+        assert!(entry_is_vm(&entry));
+    }
 
     /// An interrupted archive leaves a partial destination, and a retry must
     /// resume *into* it. `rename` onto a non-empty directory fails with

@@ -845,6 +845,10 @@ interface ProjectsStore {
    * it into the archive (`~/eldrun/archive/<id>/`). Reversible from Settings; the
    * remote host tree of an SSH project is never touched. */
   archiveProject: (id: string) => Promise<void>;
+  /** Remove a project from Eldrun and leave its folder exactly where it is:
+   *  only the registry entry and Eldrun's state dirs about it go — nothing
+   *  inside the tree is touched. For a botched import that should be redone. */
+  forgetProject: (id: string) => Promise<void>;
   updateProjectDescription: (id: string, description: string) => Promise<void>;
   renameProject: (id: string, name: string) => Promise<void>;
   /** Rename a local project's folder to `<same parent>/<leaf>`. The backend
@@ -1061,6 +1065,65 @@ function patchProjectRemote(id: string, patch: (remote: RemoteSpec) => RemoteSpe
         : project,
     ),
   }));
+}
+
+/**
+ * The one "take a project out of Eldrun" sequence behind `archiveProject` and
+ * `forgetProject`: tear down every Eldrun-side connection and in-memory state
+ * the project holds, run the backend verb that drops it from `projects.json`
+ * (and moves or purges its state — that is the only part the two differ in),
+ * then remove the pill and re-focus if it was the current project. The teardown
+ * runs BEFORE the backend call so a pooled SSH master or a running PTY never
+ * outlives its registry entry.
+ */
+async function removeProjectVia(id: string, unregister: () => Promise<unknown>): Promise<void> {
+  const { projects, setActive } = useProjectsStore.getState();
+  const entry = projects.find((p) => p.id === id);
+  if (!entry) return;
+
+  // ── Tear down all Eldrun-side connections/state for this project ──────────
+  // Drop the pooled SSH/SFTP ControlMaster + reset its lamps (remote only).
+  if (entry.remote) dropRemotePool(id);
+  // Close its Connect modal if it happens to be targeting this project.
+  if (useConnectDialogStore.getState().projectId === id) {
+    useConnectDialogStore.getState().close();
+  }
+  // Release its claim on the OpenVPN tunnel — which comes down only if no other
+  // project is still holding it. (This used to scan the project list for another
+  // project *configured* with the same config, which is a different question: it
+  // kept the tunnel up for projects that weren't even connected. `releaseVpn`
+  // counts actual holders.)
+  releaseVpn(id, entry.remote?.openvpn?.config);
+  // Drop its tabs/PTYs/sessions (in memory; the backend discards the file).
+  useTabsStore.getState().closeAllTabs(id);
+  backgroundRestored.delete(id);
+  // Remove it from every box holding it (membership is N:M — the boxes
+  // themselves survive; a box left with one or zero members still renders).
+  {
+    const { useBoxesStore } = await import("./boxes");
+    const boxesStore = useBoxesStore.getState();
+    const holding = boxesStore.boxes.filter((b) => b.member_ids.includes(id));
+    for (const b of holding) {
+      await boxesStore.removeFromBox(id, b.id);
+    }
+  }
+
+  // ── Drop it from projects.json (archive moves its folders; forget does not) ─
+  await unregister();
+
+  // ── Update the store: remove the pill, re-focus if it was active ──────────
+  let nextActiveId: string | null = null;
+  useProjectsStore.setState((state) => {
+    const remaining = state.projects.filter((p) => p.id !== id);
+    nextActiveId =
+      state.activeId === id
+        ? (remaining.find((p) => p.status === "active") ?? remaining[0])?.id ?? null
+        : state.activeId;
+    return { projects: remaining };
+  });
+  if (useProjectsStore.getState().activeId !== nextActiveId) {
+    await setActive(nextActiveId);
+  }
 }
 
 export const useProjectsStore = create<ProjectsStore>((set, get) => ({
@@ -1494,52 +1557,15 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
   },
 
   archiveProject: async (id) => {
-    const entry = get().projects.find((p) => p.id === id);
-    if (!entry) return;
+    // Move it into the archive + drop it from projects.json.
+    await removeProjectVia(id, () =>
+      invoke("archive_project", { projectId: id, archivedAt: new Date().toISOString() }),
+    );
+  },
 
-    // ── Tear down all Eldrun-side connections/state for this project ──────────
-    // Drop the pooled SSH/SFTP ControlMaster + reset its lamps (remote only).
-    if (entry.remote) dropRemotePool(id);
-    // Close its Connect modal if it happens to be targeting this project.
-    if (useConnectDialogStore.getState().projectId === id) {
-      useConnectDialogStore.getState().close();
-    }
-    // Release its claim on the OpenVPN tunnel — which comes down only if no other
-    // project is still holding it. (This used to scan the project list for another
-    // project *configured* with the same config, which is a different question: it
-    // kept the tunnel up for projects that weren't even connected. `releaseVpn`
-    // counts actual holders.)
-    releaseVpn(id, entry.remote?.openvpn?.config);
-    // Drop its tabs/PTYs/sessions (in memory; the folder move discards the file).
-    useTabsStore.getState().closeAllTabs(id);
-    backgroundRestored.delete(id);
-    // Remove it from every box holding it (membership is N:M — the boxes
-    // themselves survive; a box left with one or zero members still renders).
-    {
-      const { useBoxesStore } = await import("./boxes");
-      const boxesStore = useBoxesStore.getState();
-      const holding = boxesStore.boxes.filter((b) => b.member_ids.includes(id));
-      for (const b of holding) {
-        await boxesStore.removeFromBox(id, b.id);
-      }
-    }
-
-    // ── Move it into the archive + drop it from projects.json ────────────────
-    await invoke("archive_project", { projectId: id, archivedAt: new Date().toISOString() });
-
-    // ── Update the store: remove the pill, re-focus if it was active ──────────
-    let nextActiveId: string | null = null;
-    set((state) => {
-      const projects = state.projects.filter((p) => p.id !== id);
-      nextActiveId =
-        state.activeId === id
-          ? (projects.find((p) => p.status === "active") ?? projects[0])?.id ?? null
-          : state.activeId;
-      return { projects };
-    });
-    if (get().activeId !== nextActiveId) {
-      await get().setActive(nextActiveId);
-    }
+  forgetProject: async (id) => {
+    // Drop it from projects.json + Eldrun's state dirs; the folder stays put.
+    await removeProjectVia(id, () => invoke("forget_project", { projectId: id }));
   },
 
   updateProjectDescription: async (id, description) => {

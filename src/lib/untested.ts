@@ -301,6 +301,7 @@ export const UNTESTED = {
   "migrate.title": { area: "projects", what: "ProjectMigrationDialog · Migrate project" },
   "pill.alsoRenameFolder": { area: "projects", what: "ProjectPill · Also rename the project folder" },
   "pill.containerScopeLegend": { area: "projects", what: "ProjectPill · What runs in the container" },
+  "pill.forgetProjectEllipsis": { area: "projects", what: "ProjectPill · Remove from Eldrun…" },
   "pill.publishFrom": { area: "projects", what: "ProjectPill · Publish from" },
   "pill.publishFrom#2": { area: "projects", what: "ProjectPill · Publish from" },
   "pill.vmMailReader": { area: "projects", what: "VmSettingsDialog · Mail reader" },

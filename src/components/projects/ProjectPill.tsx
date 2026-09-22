@@ -849,6 +849,69 @@ function ArchiveConfirmWindow({
   );
 }
 
+/** Confirm for **Remove from Eldrun**: the project leaves the pill list and Eldrun's
+ *  state dirs about it are purged, but its folder stays exactly where it is with
+ *  everything in it — `project.json`, scaffold files, the user's own files. This is
+ *  the "undo a botched import" verb: afterwards the folder can be imported again
+ *  (the duplicate gate only looks at the registry). Same shape as
+ *  `ArchiveConfirmWindow`; the only differences are the words and the verb. */
+function ForgetConfirmWindow({
+  project,
+  onConfirm,
+  onClose,
+}: {
+  project: ProjectEntry;
+  onConfirm: () => Promise<void>;
+  onClose: () => void;
+}) {
+  const t = useT();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const run = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await onConfirm();
+      onClose();
+    } catch (err) {
+      setError(String(err));
+      setBusy(false);
+    }
+  };
+
+  return createPortal(
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="settings-title-row">
+          <h2>{t("pill.forgetProjectTitle", { name: project.name })}</h2>
+          <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
+        </div>
+        <p className="settings-help">
+          {t("pill.forgetDescPre")} <strong>{project.name}</strong> {t("pill.forgetDescMid")}{" "}
+          <strong>{t("pill.notWord")}</strong> {t("pill.forgetDescPost")}
+          {project.remote && <> {t("pill.forgetRemoteNote")}</>}
+        </p>
+        {error && <div className="project-dialog-error">{error}</div>}
+        <div className="project-dialog-actions">
+          <button type="button" onClick={onClose} disabled={busy}>{t("common.cancel")}</button>
+          <button
+            type="button"
+            className="danger"
+            autoFocus
+            onClick={() => void run()}
+            disabled={busy}
+          >
+            {busy ? t("pill.forgetting") : t("pill.forgetProjectConfirm")}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 /** Confirm for detaching a remote (SSH) project back to local. The host's files are never
  *  touched — only the local mirror is promoted back in place.
  *
@@ -1396,6 +1459,7 @@ export function ProjectPill({
   const [showVisibility, setShowVisibility] = useState(false);
   const [showMigrate, setShowMigrate] = useState(false);
   const [showArchive, setShowArchive] = useState(false);
+  const [showForget, setShowForget] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [editCategories, setEditCategories] = useState(false);
   const [extendRemote, setExtendRemote] = useState(false);
@@ -1590,6 +1654,7 @@ export function ProjectPill({
   const setProjectVisibility = useProjectsStore((s) => s.setProjectVisibility);
   const switchProjectProvider = useProjectsStore((s) => s.switchProjectProvider);
   const archiveProject = useProjectsStore((s) => s.archiveProject);
+  const forgetProject = useProjectsStore((s) => s.forgetProject);
 
   // Reveal the project on disk. Local projects open their working directory; a
   // remote (SSH) project has no local tree, so we open its local mirror — the
@@ -2522,6 +2587,18 @@ export function ProjectPill({
             >
               {t("pill.deleteProjectEllipsis")}
             </button>
+            {!project.vm && (
+              <button
+                className="danger"
+                onClick={() => {
+                  setContextMenu(null);
+                  setShowForget(true);
+                }}
+                title={t("pill.forgetProjectMenuTitle")}
+              >
+                {t("pill.forgetProjectEllipsis")} <UntestedTag id="pill.forgetProjectEllipsis" />
+              </button>
+            )}
           </div>
           </div>
         </div>,
@@ -2679,6 +2756,15 @@ export function ProjectPill({
           project={project}
           onConfirm={() => archiveProject(project.id)}
           onClose={() => setShowArchive(false)}
+        />
+      )}
+
+      {/* Remove from Eldrun (folder stays on disk; simple confirm) */}
+      {showForget && (
+        <ForgetConfirmWindow
+          project={project}
+          onConfirm={() => forgetProject(project.id)}
+          onClose={() => setShowForget(false)}
         />
       )}
 

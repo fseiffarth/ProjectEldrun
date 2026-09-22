@@ -1452,6 +1452,7 @@ pub fn run() {
             commands::projects::detach_project_from_remote,
             commands::projects::get_time_today,
             commands::projects::archive_project,
+            commands::projects::forget_project,
             commands::projects::list_archived_projects,
             commands::projects::restore_archived_project,
             commands::projects::delete_archived_project,
