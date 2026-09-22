@@ -43,6 +43,8 @@ pub struct ProjectAgentPrompt {
 /// outlives the tab that carried it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SentAgentPrompt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule_origin: Option<super::agent_tasks::ScheduleOrigin>,
     pub id: String,
     pub message: String,
     /// When the prompt was first collected, carried over from the active entry.
@@ -115,6 +117,8 @@ pub struct SentAgentPrompt {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SentAgentPromptInput {
+    #[serde(default)]
+    pub schedule_origin: Option<super::agent_tasks::ScheduleOrigin>,
     pub tab_label: String,
     /// The tab's session id as the frontend knows it — the LAUNCH id. The
     /// service resolves it to the live id the hook recorded and keeps the

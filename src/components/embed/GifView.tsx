@@ -13,6 +13,7 @@ import { useFileScope, usePaneVisible, readFileBytes, fileMtime } from "./fileAc
 import { openGif, effectiveDelayMs } from "../../lib/viewers/gif";
 import { Dropdown } from "../common/Dropdown";
 import { useT } from "../../lib/i18n";
+import { LoopIcon, PauseIcon, PlayIcon, SkipBackIcon, SkipForwardIcon } from "../common/icons/Icon";
 
 /**
  * Animated-GIF viewer with frame-level transport (#gifviewer). The plain image
@@ -477,7 +478,7 @@ export function GifView({
               title={t("gifView.previousFrame")}
               aria-label={t("gifView.previousFrame")}
             >
-              ⏮
+              <SkipBackIcon />
             </button>
             <button
               className="file-viewer-zoom-btn"
@@ -486,7 +487,7 @@ export function GifView({
               title={playing ? t("gifView.pause") : t("gifView.play")}
               aria-label={playing ? t("gifView.pause") : t("gifView.play")}
             >
-              {playing ? "⏸" : "▶"}
+              {playing ? <PauseIcon /> : <PlayIcon />}
             </button>
             <button
               className="file-viewer-zoom-btn"
@@ -495,7 +496,7 @@ export function GifView({
               title={t("gifView.nextFrame")}
               aria-label={t("gifView.nextFrame")}
             >
-              ⏭
+              <SkipForwardIcon />
             </button>
             <input
               type="range"
@@ -525,7 +526,7 @@ export function GifView({
               aria-pressed={loop}
               style={loop ? undefined : { opacity: 0.45 }}
             >
-              🔁
+              <LoopIcon />
             </button>
             <span
               className="file-viewer-zoom-level"

@@ -11,6 +11,7 @@ import {
 } from "../../lib/viewers/markdownEdit";
 import { renderMarkdown } from "../../lib/viewers/markdown";
 import { useT } from "../../lib/i18n";
+import { LinkIcon } from "./icons/Icon";
 
 interface Props {
   value: string;
@@ -156,7 +157,7 @@ export function MarkdownPromptField({
           {btn("1.", t("mdPrompt.numberedList"), (v, s, e) => toggleLinePrefix(v, s, e, "1. "))}
           {btn("☐", t("mdPrompt.taskList"), (v, s, e) => toggleLinePrefix(v, s, e, "- [ ] "))}
           {btn("❝", t("mdPrompt.quote"), (v, s, e) => toggleLinePrefix(v, s, e, "> "))}
-          {btn("🔗", t("fileViewer.mdLink"), (v, s, e) => makeLink(v, s, e))}
+          {btn(<LinkIcon />, t("fileViewer.mdLink"), (v, s, e) => makeLink(v, s, e))}
           {btn("```", t("mdPrompt.codeBlock"), (v, s, e) => {
             const sel = v.slice(s, e);
             const block = `\`\`\`\n${sel}\n\`\`\`\n`;

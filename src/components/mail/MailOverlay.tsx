@@ -3,6 +3,8 @@ import { useMailStore } from "../../stores/mail";
 import { useExperimental } from "../../lib/experimental";
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
+import { useFloatingFrame } from "../common/useFloatingFrame";
+import { OverlayApprovals } from "../layout/OverlayApprovals";
 import { MailPane } from "./MailPane";
 
 /**
@@ -29,11 +31,15 @@ export function MailOverlayHost() {
   const open = useMailStore((s) => s.overlayOpen);
 
   const live = mailClient && open;
+  // Moves, resizes and fills like the root console; remembered per overlay.
+  const { frameRef, frameStyle, frameClass, barProps, grips, fillButton } =
+    useFloatingFrame("eldrun.mailOverlayFrame");
 
   useEffect(() => {
     if (!live) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      // An Escape the approvals panel (or anything else) already took is not ours.
+      if (e.key === "Escape" && !e.defaultPrevented) {
         e.stopPropagation();
         useMailStore.getState().closeOverlay();
       }
@@ -64,15 +70,20 @@ export function MailOverlayHost() {
       }}
     >
       <div
-        className="project-dialog dialog-framed mail-overlay"
+        ref={frameRef}
+        className={`project-dialog dialog-framed mail-overlay ${frameClass}`}
+        style={frameStyle}
         role="dialog"
         aria-modal="true"
         aria-label={t("mail.overlayTitle")}
       >
-        <div className="settings-title-row">
+        {grips}
+        <div {...barProps} className={`settings-title-row ${barProps.className}`}>
           <h2>
-            {t("mail.overlayTitle")} <UntestedTag />
+            {t("mail.overlayTitle")} <UntestedTag id="mail.overlayTitle" />
           </h2>
+          <OverlayApprovals domain="mail" />
+          {fillButton}
           <button
             type="button"
             className="dialog-close-btn"

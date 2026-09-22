@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { UntestedTag } from "../common/UntestedTag";
-import { usePresentationStore } from "../../stores/presentation";
+import { usePresentationStore } from "../../stores/viewers/presentation";
 import { useT, type TranslationKey } from "../../lib/i18n";
+import { TrashIcon } from "../common/icons/Icon";
 
 /**
  * A presentation / walkthrough aid layered over EVERY native viewer (image,
@@ -322,7 +323,7 @@ export function PresentationOverlay() {
 
   // Publish "a tool is armed" app-wide while one is. The deck presenter reads it
   // to keep Escape from ending the talk when all the speaker meant was to put the
-  // laser away — see `stores/presentation` for why this cannot be a prop or a
+  // laser away — see `stores/viewers/presentation` for why this cannot be a prop or a
   // context.
   useEffect(() => {
     if (!active) return;
@@ -480,7 +481,7 @@ export function PresentationOverlay() {
               disabled={strokes.length === 0}
               onClick={clear}
             >
-              🗑
+              <TrashIcon />
             </button>
             <button
               className="presentation-tool"
@@ -493,7 +494,7 @@ export function PresentationOverlay() {
             >
               ✕
             </button>
-            <UntestedTag />
+            <UntestedTag id="presentationOverlay.1" />
           </div>
         )}
       </div>

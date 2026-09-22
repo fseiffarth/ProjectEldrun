@@ -70,8 +70,14 @@ unchanged; the new agents are additive.
     - [x] 🤖 Automated test — `commands/ollama.rs:2469-2490` covers the registry
       rows and argv construction.
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 73. **Backend: `local_launch_argv` + ensure-running command.** ✅ Implemented ·
     🧪 Awaiting live QA. Add a pure helper
@@ -92,8 +98,14 @@ unchanged; the new agents are additive.
     - [x] 🤖 Automated test — `commands/ollama.rs:2469-2490` covers allowlist
       acceptance and rejection of unknown ids / injection-y model names.
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 74. **`cmdToKind` + spawn path for `ollama launch` tabs.** Teach
     `cmdToKind` (tabs.ts) that `cmd === "ollama"` with a `launch` first-arg maps to
@@ -110,8 +122,14 @@ unchanged; the new agents are additive.
     - [ ] 🤖 Automated test — `cmdToKind("ollama", ["launch","claude",…])` →
       `"local_agent"`; unchanged for plain `ollama`/`bash`.
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 75. **Picker UI: choose which local agent runs the active model.** ✅ Implemented ·
     🧪 Awaiting live QA. Today the
@@ -129,8 +147,14 @@ unchanged; the new agents are additive.
     - [x] 🤖 Automated test — picker rows follow `list_local_drivers`; selection
       dispatches `prepare_local_launch` (argv) vs the vibe env path.
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 76. **Per-agent wiring — Claude Code, Hermes, OpenClaw, OpenCode.** With #72–#75 in
     place each is one `LOCAL_AGENTS` row, but verify per agent: `claude` →
@@ -154,8 +178,14 @@ unchanged; the new agents are additive.
       every agent except the OpenClaw bullet below.
     - [ ] 🤖 Automated test — table test: each id → expected argv + endpoint note.
     - [ ] 🖐️ Manual test — each agent opens, sees the model, completes one edit.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 77. **Persistence / resume parity (follow-up).** Start at **vibe parity**: these
     `local_agent` tabs are **not** resumable (dropped on relaunch like vibe today),
@@ -176,8 +206,14 @@ unchanged; the new agents are additive.
       filtered OUT by the persist filter (matches vibe), **including the
       fallback spawn shape**.
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 78. **Discoverability in the Ollama panel.** In `SettingsSubPanels.tsx` (Ollama
     panel), add a short "Local agents" section listing the supported `ollama
@@ -186,8 +222,14 @@ unchanged; the new agents are additive.
     no separate "Install …" button is required). Link the picker to it.
     - [ ] 🤖 Automated test — n/a (static copy) or a render smoke test.
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 200. **The GPU is not something to be assumed.** ✅ **Done** (2026-07-29).
     Ollama ≥0.32 **drops integrated GPUs by default** ("dropping integrated GPU;
@@ -216,8 +258,14 @@ unchanged; the new agents are additive.
     - [ ] 🖐️ Manual test — the notice itself has never rendered (the machine it
       was found on was fixed before the UI existed); the CPU/GPU buttons are
       verified at the protocol level only.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 201. **The runtime is not something to be assumed either.** Ollama is not a
     choice Eldrun made; it is a fact wired into 33 `#[tauri::command]`s across
@@ -321,8 +369,14 @@ unchanged; the new agents are additive.
       from the systemd server's, which is the proof it did not fall back), a
       port with nothing listening reports `not_running` instead of quietly
       reaching 11434, and both refusals surface their sentence.
-      - [x] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [x] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
     **201b — name the seam.** A `LocalRuntime` trait over the ~6 questions Eldrun
     actually asks: is it up, list models, model capabilities, load/unload,
@@ -332,7 +386,7 @@ unchanged; the new agents are additive.
     drop-in, `OLLAMA_IGPU_ENABLE`: a runtime that cannot do those must *say so*
     (the `LocalDriverInfo.available` pattern), never pretend. Note the honest
     cost up front so nobody underestimates it: the settings keys, the command
-    names, `src/lib/localDrivers.ts`, `stores/ollamaAutoload.ts` and the 🧠 menu
+    names, `src/lib/agents/localDrivers.ts`, `stores/agents/ollamaAutoload.ts` and the 🧠 menu
     are all *named* `ollama`, so this is a rename as much as a refactor.
     Persisted keys stay as they are — new fields are additive, or every existing
     `settings.json` needs a migration for a feature nobody asked for yet.
@@ -340,8 +394,14 @@ unchanged; the new agents are additive.
       behaviour command-for-command; a driver reporting no `launch` support
       empties the local-agent group with a reason rather than silently.
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
     **201c — a second implementation, as the proof the seam is real.**
     **Lemonade first**, for two reasons that are not "it is newer": it answers
@@ -355,8 +415,14 @@ unchanged; the new agents are additive.
     - [ ] 🖐️ Manual test — a model loads onto the 890M **without** the
       `OLLAMA_IGPU_ENABLE` drop-in, and `ollama_gpu_status`'s equivalent reads
       it as on-GPU.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
     **201d — the picker, and what it must admit.** A runtime selector in the
     Ollama settings panel (which #78 is already opening up), plus the sentence
@@ -366,8 +432,14 @@ unchanged; the new agents are additive.
     `needs_tools_unsupported` already draws for a model that lacks `tools`.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
     **Priority: below #74/#76/#77/#78.** Those finish a feature that is
     currently invisible and carry a known `RESUMABLE_AGENTS` collision; this one
@@ -408,8 +480,14 @@ unchanged; the new agents are additive.
     - [ ] 🖐️ Manual test — the `⚠` renders and reads correctly in both menus and
       in all five languages; the tooltip is reachable (it is `title` + an
       `aria-label`, on a `<span>` inside a `<button>`).
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - Left undone deliberately, both offered and declined: promoting vibe as the
       recommended local driver, and stripping the user's own MCP servers from a
       local Codex tab via `-c mcp_servers={}`. The second is a real lever — a
@@ -446,8 +524,14 @@ unchanged; the new agents are additive.
       label/id/bin, an install from a search result moves the card to
       **Installed** on the next refresh, and the three empty states read
       correctly in all five languages.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 204. **Agent fence — confine local agents to their project or box.** ✅
     **Implemented 2026-08-31; automated coverage added; live QA pending.**
@@ -512,8 +596,14 @@ unchanged; the new agents are additive.
       - [ ] Missing bubblewrap gives the readable fail-closed error and the
         install row; after install/recheck the row disappears.
       - [ ] A shell tab in the same project remains unfenced.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 - [ ] **Shift+Tab reaches a Codex tab.** xterm.js has no kitty keyboard
   protocol and no `modifyOtherKeys`, so Shift+Tab left it as the legacy backtab
@@ -529,8 +619,14 @@ unchanged; the new agents are additive.
       - [ ] Shift+Tab in a plain shell tab still sends a backtab (readline
         completion, `less`, an ncurses form).
       - [ ] The phone's mode chip lands on the mode it was asked for.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 - [~] **249 — Agents view + collected prompts** (2026-09-02; ✅ code-complete and
   automated tests passing, ⚠️ live QA pending). The file viewer's row grew a
@@ -551,8 +647,14 @@ unchanged; the new agents are additive.
     to a busy agent and see "Due now" until it settles; Schedule… opens the
     dialog with the text prefilled; edit/delete a prompt and see the phone's
     sheet follow.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 - [~] **Per-tab scheduled agent prompts** (2026-09-01; ✅ code-complete and
   automated tests passing, ⚠️ live QA pending). Multiple one-time/daily/weekday
   prompts are bound to a stable local-only tab target, claimed atomically, and
@@ -582,8 +684,34 @@ unchanged; the new agents are additive.
   - [ ] 🖐️ Restart/DST QA — resumable Claude/Codex targets survive a deliberate
     restart; non-resumable schedules disappear; spring-gap time is skipped and
     an autumn repeated time fires once.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+- [~] **Agent Schedule MCP** (2026-09-20; ✅ desktop v1 code-complete, ❌ never
+  live-verified — `UntestedTag` id `scheduleMcp`): project agents propose rows
+  in their own tab's schedule list over a separate `/mcp/schedule` path —
+  self-target only, staged by default, no preface, no `/`·`!`·`#`·`$`·`@`
+  messages, quotas. Plan: `docs/agent_schedule_mcp_plan.md`; runtime notes and
+  the click-through: `docs/context/agent_schedule_mcp.md`.
+  - [ ] 🖐️ Live QA — the six steps in `docs/context/agent_schedule_mcp.md`
+    (needs a build with the new backend): propose → approve → idle delivery in
+    Claude, Codex and a fenced tab; refusals; Apply level; revoke; restart.
+  - [ ] Follow-ups: phone Approve / Dismiss; Gemini/Qwen/OpenCode flag
+    recipes; remote/container reach; root-console scheduling tool.
+  - [ ] ✅ Works on Linux (X11)
+  - [ ] ❌ Doesn't work on Linux (X11)
+  - [ ] ✅ Works on Linux (Wayland)
+  - [ ] ❌ Doesn't work on Linux (Wayland)
+  - [ ] ✅ Works on Windows
+  - [ ] ❌ Doesn't work on Windows
+  - [ ] ✅ Works on macOS
+  - [ ] ❌ Doesn't work on macOS
 
 - [~] **250 — Per-tab prompt composer + collected-prompt history** (2026-09-02;
   ✅ code-complete, ❌ never live-verified). The Agents view grew the field that
@@ -592,7 +720,7 @@ unchanged; the new agents are additive.
   - **A composer under each agent tab**: prefix chips, the agent's own model
     pick, a message, and Send — aimed at the tab it is rendered under, so
     nothing has to be targeted first. The chips and the model are that CLI's own
-    slash commands (`lib/agentPrefaces`), submitted **one at a time, in order,
+    slash commands (`lib/agents/agentPrefaces`), submitted **one at a time, in order,
     ahead of the prompt** rather than as extra lines of it — `/clear` and
     `/model` take a whole line and would otherwise swallow the prompt appended
     to them. `ScheduledAgentPrompt.preface` carries them (Rust + TS), and
@@ -630,8 +758,14 @@ unchanged; the new agents are additive.
     under Sent prompts with the right session id; "Collect again"; Clear.
   - [ ] 🖐️ Settings QA — add/reorder/remove a chip and a model for one agent,
     confirm the composer follows, then "Use defaults" and confirm it reverts.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **251 — Deliveries leave the schedule menu for Sent prompts** (2026-09-02;
   ✅ code-complete, ❌ never live-verified). A one-time rule that had run stayed
@@ -676,8 +810,14 @@ unchanged; the new agents are additive.
   - [ ] 🖐️ Manual desktop QA — put `/clear` and a model on a daily rule, save,
     reopen it for editing and confirm both come back; watch the three
     submissions land in order at the next run.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 253. **Agents view: rename a tab where its name is read, and let the prompt text
     look like the prompt.** Two small things the Agents view was missing once it
@@ -706,8 +846,14 @@ unchanged; the new agents are additive.
       tabs running, rename one from the row and confirm the tab bar shows the
       new name and keeps it across a relaunch; check the prompt text in Sent
       prompts is visibly set apart from the outcome/tab/time lines.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 254. **Agents view: copy a collected prompt, drag the list into order, and
     narrow the sent one.** Three things the two prompt lists were missing once
@@ -740,8 +886,8 @@ unchanged; the new agents are additive.
       foot says `Showing n of m`, and Clear (which still deletes *everything*)
       says so in its tooltip.
     Frontend: `components/agents/AgentSchedulesView.tsx`, `lib/listReorder.ts`,
-    `lib/agentPromptFilter.ts`, `hooks/useListReorder.ts` (moved),
-    `stores/agentPrompts.ts`, `styles/projects-tabs.css`.
+    `lib/agents/prompt/filter.ts`, `hooks/useListReorder.ts` (moved),
+    `stores/agents/agentPrompts.ts`, `styles/projects-tabs.css`.
     Backend: `services/agent_prompts.rs`, `commands/agent_prompts.rs` — so the
     reorder command needs a restart before the drag can persist.
     Implemented 2026-09-02, **not live-tested**.
@@ -754,8 +900,14 @@ unchanged; the new agents are additive.
       relaunch and confirm it stayed; copy one and paste it elsewhere; in Sent
       prompts filter by an agent and by *Last 7 days* and confirm the count line
       and the empty state read correctly.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 255. **Agents view: tag the prompts, search the library, and blame a change on
     a prompt.** The collected list was a pile; the sent list knew *where* a
@@ -763,7 +915,7 @@ unchanged; the new agents are additive.
     - **Tags.** A collected prompt carries short lowercase tokens
       (`refactor, tests, paper`) typed as one line beside the text, in the add
       form and in the row editor. Stored on the row (`ProjectAgentPrompt.tags`),
-      normalized identically on both sides (`lib/agentPromptTags` ↔
+      normalized identically on both sides (`lib/agents/prompt/tags` ↔
       `services::agent_prompts::normalize_tag`: trimmed, `#` stripped,
       lowercase, inner whitespace folded to `-`), capped at 16 per prompt. The
       phone edits text only and its `tags: None` **keeps** a prompt's tags; an
@@ -794,8 +946,8 @@ unchanged; the new agents are additive.
       button that sets the text filter — "which prompts touched this file" in
       one click. A delivered row without files yet says so.
     Frontend: `components/agents/AgentSchedulesView.tsx`,
-    `components/layout/AgentScheduleHost.tsx`, `lib/agentPromptTags.ts` (new),
-    `lib/agentPromptFilter.ts`, `stores/agentPrompts.ts`,
+    `components/layout/AgentScheduleHost.tsx`, `lib/agents/prompt/tags.ts` (new),
+    `lib/agents/prompt/filter.ts`, `stores/agents/agentPrompts.ts`,
     `styles/projects-tabs.css`, `lib/i18n.ts` + the four dictionaries.
     Backend: `services/prompt_blame.rs` (new), `services/agent_prompts.rs`,
     `schema/agent_prompts.rs`, `commands/agent_prompts.rs`, `lib.rs` — so tags
@@ -818,8 +970,14 @@ unchanged; the new agents are additive.
       hash, a `N file(s) touched` fold listing that file, and that clicking the
       file narrows the sent list to that prompt. Send one from a remote project
       and confirm the row shows no commit line and no error.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 256. **Agents view: one lifecycle — collected → scheduled → sent.** A prompt
     turned into a rule stayed in the collected list looking exactly like text
@@ -829,7 +987,7 @@ unchanged; the new agents are additive.
     - **A new Scheduled prompts section** between the library and Sent prompts.
       A prompt with a live rule leaves the library and reads here with what it
       is waiting for (which tabs carry it, when it next fires). The link is
-      still `lib/agentPromptScheduled`'s key — the prompt's own text — so
+      still `lib/agents/prompt/scheduled`'s key — the prompt's own text — so
       deleting the rule brings the prompt back to the library rather than
       needing anything kept in step.
     - **A one-time delivery retires the prompt.** `AgentScheduleHost`'s retire
@@ -859,8 +1017,14 @@ unchanged; the new agents are additive.
       gone from the collected list. Repeat with a daily rule and confirm the
       prompt stays in Scheduled after the first delivery. Check the rows read as
       text-then-buttons in all three lists.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 257. **Agents view: a per-tab Continue switch that rides the rate-limit
     windows.** A limit is reached, work stops, and the only thing standing
@@ -882,7 +1046,7 @@ unchanged; the new agents are additive.
       The *armed time* is deliberately live-only: a stored one would fire against
       a window that had already turned over while Eldrun was closed.
     - **It chooses nothing about the agent.** One word, submitted through
-      `lib/scheduledAgentInput` — the same path a scheduled prompt takes — so the
+      `lib/agents/scheduledAgentInput` — the same path a scheduled prompt takes — so the
       permission mode stays the agent's own and the idle/decision/settle gate
       applies. The one deliberate loosening is in `deliverable`: a tab whose
       output the activity store has never seen (an ordinary restored agent tab)
@@ -899,8 +1063,8 @@ unchanged; the new agents are additive.
     - The usage parser moved `mobile-web/src/terminal/usageReport.ts` →
       `shared/usageReport.ts`, so the phone's bars and the desktop's countdown
       read one panel the same way.
-    Frontend: `components/layout/AgentContinueHost.tsx`, `stores/agentContinue.ts`,
-    `lib/agentUsage.ts`, `shared/usageReport.ts`, `stores/tabs.ts`
+    Frontend: `components/layout/AgentContinueHost.tsx`, `stores/agents/agentContinue.ts`,
+    `lib/agents/agentUsage.ts`, `shared/usageReport.ts`, `stores/tabs.ts`
     (`autoContinue` + `setAutoContinueInScope`), `components/agents/AgentSchedulesView.tsx`,
     `lib/i18n.ts` + the four dictionaries. No backend change.
     Implemented 2026-09-02, **not live-tested**.
@@ -915,8 +1079,14 @@ unchanged; the new agents are additive.
       window rather than stopping. Turn it on for a Gemini tab and confirm it
       says the CLI publishes no usage panel. Restart Eldrun and confirm the
       switch comes back on and re-arms.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 258. **Agents view: the ◷ Schedules menu reads as two panes, not one scroll.**
     The per-tab schedules dialog opened every time on the same three screens of
@@ -941,8 +1111,14 @@ unchanged; the new agents are additive.
       Edit fills it without moving the list, the guide opens and closes, a
       non-resumable tab still shows its warning with the guide folded, and
       narrowing the window (or a small screen) stacks the two panes cleanly.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 259. **Agents view: a tab's row is the way to the tab, and it shows the
     finished state too.**
@@ -953,7 +1129,7 @@ unchanged; the new agents are additive.
     row's other actions for when a hover is not discoverable enough. Both take
     the same jump the project pill's status bars take — `revealTabInScope`
     first, so the tab is already the visible one when the scope arrives —
-    extracted from `PillStatusBars` into `lib/tabJump.ts` so the two surfaces
+    extracted from `PillStatusBars` into `lib/shortcuts/tabJump.ts` so the two surfaces
     cannot drift into two answers to the same question; the shared helper also
     covers a box scope and falls back to `setActive` in a popout, where the
     layout lives in another window.
@@ -966,7 +1142,7 @@ unchanged; the new agents are additive.
     around the tab are one statement. Precedence matches `TabBar` and the pill
     bars: decision over working over done.
     Frontend only: `components/agents/AgentSchedulesView.tsx`,
-    `components/projects/PillStatusBars.tsx`, new `lib/tabJump.ts`,
+    `components/projects/PillStatusBars.tsx`, new `lib/shortcuts/tabJump.ts`,
     `styles/projects-tabs.css`, three new strings in `lib/i18n.ts` + the four
     dictionaries. Implemented 2026-09-02, **not live-tested**.
     - [x] 🤖 Automated test — `AgentSchedulesView` (all four states and their
@@ -978,8 +1154,14 @@ unchanged; the new agents are additive.
       without looking at its tab and confirm the row reads "Finished" in the
       same green the tab's border wears, that a permission prompt turns both
       amber, and that a working agent reads green-dotted in both places.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 260. **A state file must survive being read by a build that did not write it.**
     The Prompts view came up empty behind
@@ -1006,8 +1188,14 @@ unchanged; the new agents are additive.
       panel's Agents view and confirm the collected prompts and the Sent list
       come back with no error banner, and that a prompt's commit/branch still
       shows on its sent row.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 262. **Agents view: a prompt chart replaces the library, Scheduled and Sent
     sections.** Three lists hold the same prompt at three moments of its life,
@@ -1047,8 +1235,14 @@ unchanged; the new agents are additive.
       confirm the second is queued on delivery and not when the first is
       missed. Check the side panel's compact single-column mode and the Files
       tab's columns.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - **Rework (2026-09-10): one horizontal timeline, real drag-and-drop, the
       agent on the card.** The per-tab columns gave every agent a column's
       width and time a column's width; the chart is now one proportional axis
@@ -1090,8 +1284,14 @@ unchanged; the new agents are additive.
         card (rule moved to the other tab's ◷), on a chained card (the link's
         target). Month view: a day's lamps open the day. ◀ shows yesterday's
         sent cards on the past side.
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - **Follow-ups (2026-09-13/14), not live-tested.** (1) `c24ee4c`: a sent
       card is history — no drag starts on it and every drop zone refuses it
       (the strip's "collect again" drop is gone; the card's button stays); sent
@@ -1113,8 +1313,14 @@ unchanged; the new agents are additive.
         visible. A session with five sent prompts shows one card with five
         ticks. Ctrl + wheel over the timeline changes the view (the page does
         not zoom). Switch Settings to 12 h → card times follow.
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - **Edge commands, Hour view, every typed prompt adopted (2026-09-15),
       not live-tested.** An `after` link carries the target agent's own
       commands (`PromptLink.preface`) — `/clear` between two chained prompts —
@@ -1138,8 +1344,14 @@ unchanged; the new agents are additive.
         grid, ◀ ▶ step an hour, a drop snaps to 5 min. In an agent tab type a
         prompt, then send another while it is still working: both appear on
         the chart at the times they were sent.
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - **A `/clear` splits the session card and draws the edge (2026-09-15),
       not live-tested.** A history row's `session_id` is now the LIVE session
       the prompt reached — the backend resolves the tab's launch id through
@@ -1169,8 +1381,14 @@ unchanged; the new agents are additive.
         the second card, no new arrow. Close the tab: one grey strand, both
         cards still on it. `/resume` to an older conversation then send: the
         new card is joined by a plain (arrowless) line.
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
 
     - **Free draft layout and completion-gated sequences (2026-09-15), not
       live-tested.** Free layout remembers each project's card positions;
@@ -1191,14 +1409,223 @@ unchanged; the new agents are additive.
       live rule is not offered to a draft — picker, timeline drop, Send and
       Schedule all point at linking After it instead; a rule keeps its own tab;
       the ◷ Schedules dialog only warns. `occupiedTargets` in
-      `lib/agentPromptChart`; plan §12.
+      `lib/agents/prompt/chart`; plan §12.
       - [ ] 🖐️ Manual test — with a rule on the Claude tab, a draft's picker
         must list only the other tabs; drop the draft on the timeline and it
         lands on a free tab; aim a draft at the Claude tab first (before the
         rule exists), add the rule, and the card must show the amber note,
         refuse the drop with the error line, and accept an After link.
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
+    - **Nothing is sent that nobody asked to send (2026-09-15), not
+      live-tested.** A two-coder pass over the chart's review findings; see
+      `docs/prompt_chart_plan.md` §13. The **backend guards need a restart**
+      (frozen build: `npm run package:dev`, then relaunch); the frontend half
+      hot-reloads.
+      - [x] 🤖 Automated tests — `PromptChart`, `PromptChartSelect`,
+        `PromptChartLift`, `PromptCardKeyboard`, `PromptSessionCard`,
+        `AgentPromptTimeline`, `AgentPromptTimelineGroup`,
+        `AgentPromptTimelineDst`, `AgentPromptLinks`, `AgentPromptChart`,
+        `AgentSchedulesStoreGuard`, cargo `agent_tasks` / `agent_prompts`.
+      - [ ] 🖐️ Manual test — **selections and the past** (after restarting):
+        Ctrl+click two future rules, drag them left of the now line but off
+        the band: the badge reads "A selection is sent only from the now
+        band", nothing is sent. Drop them on the band: both go. A single draft
+        dropped left of the now line is still sent.
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
+      - [ ] 🖐️ Manual test — **the scheduler got there first** (after
+        restarting): schedule a prompt one minute out, start dragging it and
+        hold it past its minute until it is delivered, then drop it later on
+        the axis: nothing is re-created and the line says "already delivered
+        or removed". Press "+ 5 min" on a card rendered before its delivery
+        landed: the same. No prompt arrives twice.
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
+      - [ ] 🖐️ Manual test — **Send on a daily rule**: expand a daily card and
+        press Send: the prompt goes once, and the daily rule is still in the
+        tab's ◷ Schedules afterwards.
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
+      - [ ] 🖐️ Manual test — **badge, − 5 min, queued picker, ↑/↓**: carry an
+        unaimed draft over the axis with two tabs open: "Schedule on <first
+        tab> · time". With no agent tab: the blocked "No agent tab open — use
+        Send". A card due in 3 min has "− 5 min earlier" greyed out. A queued
+        card's agent picker refuses another tab with a message. With three
+        queued prompts on one tab (Agents view composer), ↑/↓ move a card one
+        place in the order the queue column shows.
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
+      - [ ] 🖐️ Manual test — **links** (after restarting): with A → B (After),
+        drag B's port onto A: refused, "That link would make a loop". Add a
+        related edge C — B and switch it to After in its editor: "That prompt
+        already follows another". Type `/clear` in a Claude tab between two
+        sends: its edge is still drawn.
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
+      - [ ] 🖐️ Manual test — **errors and deletes**: trigger "already has a
+        scheduled prompt", then retime any card: the line disappears; trigger
+        it again and press Dismiss. Delete a scheduled card that has one link:
+        a dialog names the prompt and "1 link"; Cancel keeps it, Delete removes
+        it. A session row's Delete asks too; a draft's × does not.
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
+      - [ ] 🖐️ Manual test — **keyboard**: Tab onto a card (a focus ring),
+        Enter opens it, its Link arms linking, Tab to another card's port and
+        press Enter: the link is drawn. Arm a link with a selection present and
+        press Escape: link mode ends, the selection stays; Escape again clears
+        it. Escape inside a card editor cancels the edit and keeps the
+        selection.
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
+      - [ ] 🖐️ Manual test — **drawing and performance**: before 08:00, a daily
+        08:00 card in tomorrow's Day view reads tomorrow's date, and When
+        "Today" dims it. A session running past midnight in Week view shows
+        both dates. On a wide pane the Day axis labels every hour. Edit a
+        scheduled card on the timeline: the Markdown toolbar fits (460 px) and
+        the lanes do not move. Hide the chart tab while an agent works, show
+        it again: its cards are current. Drag a card across the timeline with
+        several links on screen: no stutter compared with a lift.
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
+      - [ ] 🖐️ Manual test — **drafts board and empty states**: in row layout
+        the hint does not say "Move cards freely" and carrying a draft over the
+        strip shows the blocked "Turn on Free layout…"; in Free layout it says
+        "Move here" and moves. ＋ (tooltip "New draft") opens the board's own
+        composer, Escape / Ctrl+Enter work. A project with no agent tabs and no
+        history shows the empty-timeline hint. Type in the timeline search:
+        "N of M" and Clear appear, Clear leaves the drafts search alone. Lift a
+        card: "Reset positions" appears and puts it back.
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
+      - [ ] 🖐️ Manual test — **± 5 min and the wide editor**: in Week and in
+        Month view, "+ 5 min later" on a card due in 8 min moves it (no "That
+        minute has passed" line); "+ 5 min later" on a queued card moves it 5
+        min past now. "− 5 min earlier" on a card due in 30 min is enabled the
+        same in Day and Month view. Edit a scheduled card in the right part of
+        the axis: the editor grows leftward and its whole Markdown toolbar is
+        visible. Carry one draft left of the now line: the now band lights; a
+        two-card selection there leaves it dark. Drop a selection on a future
+        minute where its earlier card would land in the past: "A card in the
+        selection would land in the past".
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
+      - [ ] 🖐️ Manual test — **closed strands** (after restarting): send a
+        prompt from a Claude tab, close that tab, open a new Claude tab and
+        send another: the old rows sit on a greyed closed strand of their own,
+        not on the new tab's strand. Relaunch Eldrun with a resumed Claude tab
+        and type `/clear` in it: its rows before and after stay on that tab's
+        strand.
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
+      - [ ] 🖐️ Manual test — **snapping in a :30 zone**: start Eldrun with
+        `TZ=Asia/Kolkata`, drop a draft on the Month view (60-min snap): it is
+        scheduled on a local whole hour (e.g. 14:00, not 14:30).
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
+      - [ ] 🖐️ Manual test — **DST** (twice a year, Europe/Berlin): on the
+        spring-forward and fall-back days, Hour view ◀/▶ step past 02:00 and
+        the Day axis draws each hour once.
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
+      - Open questions: should yesterday's axis still be a send-now zone for
+        a single card? Should a dropped unaimed draft get the new-tab
+        `/model` preface? Offer compact Week cards after QA?
+      - Follow-up (accessibility, spans the mail list too): a prompt card's
+        `<article role="button">` holds real buttons and a dropdown, and ARIA
+        makes a button's children presentational, so a screen reader flattens
+        Send/Schedule/Link into the card's name. `mail/MailList.tsx` rows do
+        the same with their star and actions. Move the role onto a toggle
+        element (the card head, or a visually hidden button) on both surfaces
+        together, so they do not drift; keyboard access already works.
+      - Pending doc: update the `docs/filemap_frontend.md` prompt-chart and
+        `PromptDraftBoard` rows once the other session's file-map WIP
+        has landed (the rows still say bottom port → top port, and that
+        cycles and joins are refused only at schedule time).
 
 263. **Agent panes: double-click pastes, and a drag still selects while the TUI
     holds the mouse.** Two gestures the terminal owed an agent tab. A
@@ -1218,7 +1645,7 @@ unchanged; the new agents are additive.
     also flushes on mouse-up instead of waiting out its 60 ms debounce, and holds
     the text it captured, so a repaint under the selection can no longer eat it.
     Agent panes only — a shell tab keeps xterm's word-select and its clicks.
-    Frontend only: `lib/terminalControl.ts`, `components/terminal/TerminalView.tsx`.
+    Frontend only: `lib/terminal/terminalControl.ts`, `components/terminal/TerminalView.tsx`.
     Built 2026-09-07, **not live-tested**.
     - [x] 🤖 Automated test — `TerminalControl` (the gesture decision: paste on a
       double-click, force-select only while the program holds the mouse, never on
@@ -1232,8 +1659,14 @@ unchanged; the new agents are additive.
       paste it into an editor: it should be there. Repeat both in a Codex tab
       (whose TUI grabs the mouse) and confirm the drag still selects, and that
       Ctrl+wheel zoom, Shift+Tab and the TUI's own scrolling are unchanged.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 264. **Agents view: the last prompt beside each tab, typed in the terminal
     included — and adopted into the prompt chart.** The row under a tab's times
@@ -1247,14 +1680,14 @@ unchanged; the new agents are additive.
     captured `/command` output, Codex's injected context — and reading a slash
     command as `/model opus` and a `!` line with its `!`. Re-read when a tab
     turns busy (a prompt was just submitted) and when it finishes. A prompt that
-    *changed* at a turn's start was typed, and `lib/agentPromptAdopt` records it
+    *changed* at a turn's start was typed, and `lib/agents/prompt/adopt` records it
     on the prompt history as delivered to that tab — the row the chart draws a
     sent card from — unless the tab's newest history row already says it, so a
     composer or scheduled send is never recorded twice; the first read of a tab
     is a baseline, never a record. An agent whose transcript Eldrun cannot read
     (Gemini, Qwen, Codex 0.153.4 whose thread store keeps no messages, a custom
     command) gets the prompt echoed on the pane's own screen instead
-    (`lib/agentPromptEcho` over `lib/terminalRegistry`, parsed by the phone's
+    (`lib/agents/prompt/echo` over `lib/terminal/terminalRegistry`, parsed by the phone's
     own `readableScreen`/`inputFrameStart`/`chatTurns`, so a draft still being
     typed is never taken for a prompt). Built 2026-09-07, **not live-tested**; the Rust side is uncompiled on
     the GNOME host (no toolchain) — CI compiles it.
@@ -1277,8 +1710,14 @@ unchanged; the new agents are additive.
       ! …`. In a Codex tab on 0.153.4 and in a Gemini tab, type a prompt: the
       row shows it a moment after the agent starts answering (from the screen
       echo); while you are still typing, the row must NOT change.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 265. **Agent CLI version drift: what is installed vs. what Eldrun was verified
     against.** Eldrun reads other people's CLIs at a level of detail that only
@@ -1338,8 +1777,14 @@ unchanged; the new agents are additive.
       has checked it. Click Dismiss on one and confirm the warning goes while the
       version stays; reopen the panel and confirm it stays dismissed. Click
       Re-check and confirm the version is re-read.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 266. **A copy out of a terminal says so.** Copy-on-select worked, and read as
     "select/copy is broken" (user, 2026-09-13): under an agent TUI the highlight
@@ -1361,8 +1806,14 @@ unchanged; the new agents are additive.
       them. Shift+drag and Ctrl+Shift+C (after a Shift+drag) do the same. In a
       shell tab the same three routes announce too. In soft_dark, the highlight
       is visible over Claude's dimmed blocks while it lasts.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 267. **`claude update` works from a fenced agent tab.** The fence bound the
     agent's own install read-only — `~/.local/bin` from the allowlist and
@@ -1389,8 +1840,14 @@ unchanged; the new agents are additive.
       new version, and a tab opened afterwards runs it. Confirm a shell tab's
       view of `~/.local/bin` is unchanged and that `~/.nvm` (if present) is
       still read-only from the agent tab.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 837. **Meta's Muse Code joins the agent registry.** `muse` installs from Meta's
     own one-liner into `~/.local/bin` (verified against `dev.meta.ai/install.sh`);
@@ -1405,8 +1862,14 @@ unchanged; the new agents are additive.
       one-click install opens a tab and puts `muse` in `~/.local/bin`; the new-tab
       menu then offers Muse and it launches. Relaunch Eldrun → the Muse tab is not
       resumed (expected).
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 838. **Working / done marks come from the agent's own hooks.** The byte heuristic
     could not survive every agent TUI (Codex paints a spinner and its title on a
@@ -1434,8 +1897,14 @@ unchanged; the new agents are additive.
       idle Codex with its dot field is neither. (4) Press Esc mid-turn → working
       clears within a second. (5) Type a long prompt slowly → no working glow.
       (6) A Gemini/Qwen tab (no hooks) still shows working/finished off its bytes.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - **Fix (2026-09-15): scheduled prompts to different tabs no longer wait on
       each other.** Two prompts due at 12:35 on two Claude tabs: the first went
       at 12:35:01, the second only at 12:37:12, after a hook event happened to
@@ -1452,7 +1921,7 @@ unchanged; the new agents are additive.
       key holds nothing; and a tab whose agent fires no hooks (Gemini, Qwen,
       custom) falls back to its bytes — after a keystroke's grace before a
       delivery, and after 30 s of quiet (`HOOKLESS_DONE_QUIET_MS`) after one —
-      instead of never being deliverable again. Files: `lib/terminalControl.ts`,
+      instead of never being deliverable again. Files: `lib/terminal/terminalControl.ts`,
       `TerminalView.tsx`, `stores/activity.ts`, `AgentScheduleHost.tsx`.
       Frontend only, hot-reloads; **not live-tested**.
       - [x] 🤖 Automated test — `AgentScheduleParallelTabs` (two tabs, a
@@ -1466,5 +1935,78 @@ unchanged; the new agents are additive.
         prompt into an idle tab and leave it: a prompt sent to that tab arrives
         after ~20 s, not never. In a Gemini tab send two prompts in a row from
         the chart: the second arrives ~30 s after the first answer goes quiet.
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
+    - **Feature (2026-09-16): a background job keeps the tab working.** A Claude
+      turn that ends with a `run_in_background` shell still running (or a Codex
+      exec left open) used to light "finished" while the job ran on.
+      `services::agent_turn` now holds that `done` back as `working` while a tool
+      shell carrying the tab's `ELDRUN_TAB_UID` is alive (read from
+      `/proc/<pid>/environ` — the agent sits under the tmux server, not the PTY),
+      re-sends it every 8 s so the store's 20 s silence rule does not retire it,
+      and sends `done` within ~2 s of the last one exiting. Scheduled prompts wait
+      for it too. Linux only; container and remote agents keep the plain verdict.
+      A job that never ends (a dev server) keeps the tab working for as long as it
+      runs. File: `services/agent_turn.rs`. Backend change, **restart needed; not
+      live-tested**.
+      - [x] 🤖 Automated test — `agent_turn::tests` (`a_live_tool_shell_carrying_the_uid_holds_the_done`,
+        `only_the_agents_own_tool_shells_count_as_background_jobs`, …)
+      - [ ] 🖐️ Manual test — after a restart, in a Claude tab: "run `sleep 60` in
+        the background and stop". The turn ends, yet the tab stays working
+        (ring/bar) for the minute, then shows finished within a few seconds of
+        the sleep ending. A normal turn with no background job still finishes at
+        once. Kill the background shell from Claude early → finished follows.
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
+
+    - **Feature (2026-09-18): six CLIs joined the registry, four rows were
+      corrected, three were retired.** Added Droid (Factory), Auggie (Augment),
+      Kilo Code, Continue.dev (`cn`), JetBrains Junie and CodeBuddy (Tencent);
+      fixed the `grok` row (it installed the third-party `@vibe-kit/grok-cli`,
+      not xAI's own Grok Build), Kiro's executable (`kiro-cli`), Kimi's
+      installer path and Amp's npm package; retired Mentat, gpt-engineer and
+      the OpenHands CLI, all archived or unmaintained upstream. Files:
+      `commands/agents.rs`, `components/tabs/newTabItems.ts`,
+      `stores/tabs.ts`, `services/sandbox.rs`,
+      `services/mobile_control/discovery.rs`, `lib/usageMetrics.ts`. Backend
+      change, **restart needed; nothing was run live** — every flag, package
+      name and install path was read from the vendor's own installer, docs or
+      changelog.
+      - [x] 🤖 Automated test — `commands::agents::tests`
+        (`expanded_agent_registry_keeps_official_commands_and_binaries`,
+        `every_warmup_recipe_names_a_registry_agent_and_puts_the_message_last`),
+        `src/__tests__/agents/CustomAgents.test.ts`
+      - [ ] 🖐️ Manual test — Settings → Agents lists the six new cards and no
+        longer lists Mentat/GPT Engineer/OpenHands; an installed Kiro finally
+        reports as installed; installing Grok yields `grok --version` 1.0.x
+        (xAI), not 0.0.34. Open a Droid tab, send a prompt, restart Eldrun: the
+        tab comes back on `droid --resume` with its conversation.
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
+      - [ ] **Open follow-ups.** The five launch-only newcomers have verified
+        `--continue`/`--resume` flags but unmapped session stores — wiring one
+        means finding its store, mounting it in
+        `sandbox::CONTINUE_AGENT_SESSION_STORES` and only then adding it to
+        `RESUMABLE_AGENTS`, or a restored tab exits on "no conversation to
+        continue". None of the six is in `services::remote_agents::RECIPES`
+        (no auto-install on a remote spawn) or in the phone's Focus parsers
+        (`docs/mobile_focus_cli_survey.md`), and only Droid passes the mobile
+        `discovery::resumable` gate.

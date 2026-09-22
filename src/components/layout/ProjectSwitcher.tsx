@@ -1,26 +1,29 @@
+import { useHeaderMenu } from "../../hooks/useHeaderMenu";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ProjectPill } from "../projects/ProjectPill";
 import { BoxScopeChip } from "../projects/BoxScopeChip";
-import { usePillDragStore } from "../../stores/pillDrag";
+import { usePillDragStore } from "../../stores/drag/pillDrag";
 import { ProjectSearch } from "../projects/ProjectSearch";
 import { ProjectDialog } from "../projects/ProjectDialog";
+import { ProjectImportBundleDialog } from "../projects/ProjectImportBundleDialog";
 import { SettingsDialog, type SettingsPanelKind } from "./SettingsPanel";
 import { UntestedTag } from "../common/UntestedTag";
-import { useHpcPipelineStore } from "../../stores/hpcPipeline";
+import { useHpcPipelineStore } from "../../stores/remote/hpc/hpcPipeline";
 import { useBigFoldersStore } from "../../stores/bigFolders";
 import { useProjectsStore } from "../../stores/projects";
 import { BOX_SCOPE_PREFIX, useBoxMembership, useBoxesStore } from "../../stores/boxes";
 import { useBoxEditorStore } from "../../stores/boxEditor";
-import { usePillSelectionStore } from "../../stores/pillSelection";
+import { usePillSelectionStore } from "../../stores/drag/pillSelection";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
-import { TRASH_PROJECT_ID } from "../../lib/trashProject";
+import { TRASH_PROJECT_ID } from "../../lib/projects/trashProject";
 import { ROOT_SCOPE, useTabsStore } from "../../stores/tabs";
+import { useRootOverlayStore } from "../../stores/rootOverlay";
 import { useGitDirtyStore } from "../../stores/gitDirty";
 import { projectStations, useKeyboardSteeringStore } from "../../stores/keyboardSteering";
 import { useQuiesce, saverInterval } from "../../stores/power";
-import { useFastMode } from "../../lib/fastMode";
+import { useFastMode } from "../../lib/agents/fastMode";
 import { resolveProjectDirectory, type ProjectEntry } from "../../types";
 import { useT } from "../../lib/i18n";
 
@@ -39,7 +42,11 @@ const ADD_MENU_ID = "project-add";
 
 export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   const t = useT();
-  const { projects, setActive, addProject, deactivateProject, reorderProjects } = useProjectsStore();
+  const projects = useProjectsStore((s) => s.projects);
+  const setActive = useProjectsStore((s) => s.setActive);
+  const addProject = useProjectsStore((s) => s.addProject);
+  const deactivateProject = useProjectsStore((s) => s.deactivateProject);
+  const reorderProjects = useProjectsStore((s) => s.reorderProjects);
   const boxes = useBoxesStore((s) => s.boxes);
   const renameBox = useBoxesStore((s) => s.renameBox);
   const deleteBox = useBoxesStore((s) => s.deleteBox);
@@ -66,29 +73,16 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   const scope = useTabsStore((s) => s.scope);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsPanel, setSettingsPanel] = useState<SettingsPanelKind>("main");
+  const [settingsAnchor, setSettingsAnchor] = useState<string | undefined>(undefined);
   // "clone" is the import dialog opened straight onto its GitHub/GitLab source —
   // the same dialog, so the source can still be switched back inside it.
-  const [dialog, setDialog] = useState<"new" | "import" | "clone" | null>(null);
-  const addMenuRef = useRef<HTMLDivElement>(null);
-  // The + menu is the switcher's ONLY menu now (the ⚙ moved into the header's
-  // global cluster as `header/SettingsMenu`), and it rides the SHARED header
-  // hover-menu id like every other menu in this bar. It used to run on its own
-  // timer, which is what let it render *alongside* a cluster menu the pointer
-  // had already moved to: one menu's 250 ms closing grace is the other menu's
-  // opening frame. See stores/headerHoverMenu.
-  const showAddMenu = useHeaderHoverMenuStore((s) => s.openId === ADD_MENU_ID);
-  const openHeaderMenu = useHeaderHoverMenuStore((s) => s.open);
+  const [dialog, setDialog] = useState<"new" | "import" | "clone" | "bundle" | null>(null);
+  const addMenu = useHeaderMenu(ADD_MENU_ID);
+  const showAddMenu = addMenu.open;
   const closeHeaderMenu = useHeaderHoverMenuStore((s) => s.close);
-  const addCloseTimer = useRef<number | undefined>(undefined);
-
   const revealAddMenu = () => {
     setShowSettings(false);
-    window.clearTimeout(addCloseTimer.current);
-    openHeaderMenu(ADD_MENU_ID);
-  };
-  const scheduleCloseAddMenu = () => {
-    window.clearTimeout(addCloseTimer.current);
-    addCloseTimer.current = window.setTimeout(() => closeHeaderMenu(ADD_MENU_ID), 250);
+    addMenu.reveal();
   };
 
   useEffect(() => {
@@ -99,25 +93,6 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
     }
   }, [open, closeHeaderMenu]);
 
-  // Dismiss the + dropdown on any pointer press outside its wrap (the wrap
-  // stopPropagations, so the in-bar onClick alone never catches a click
-  // elsewhere in the app) or on Escape. Mirrors common/Dropdown.tsx.
-  useEffect(() => {
-    if (!showAddMenu) return;
-    const onDocPointer = (e: PointerEvent) => {
-      if (addMenuRef.current?.contains(e.target as Node)) return;
-      closeHeaderMenu(ADD_MENU_ID);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closeHeaderMenu(ADD_MENU_ID);
-    };
-    document.addEventListener("pointerdown", onDocPointer);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("pointerdown", onDocPointer);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [showAddMenu, closeHeaderMenu]);
   const pillsScrollRef = useRef<HTMLDivElement>(null);
   const [pillOverflow, setPillOverflow] = useState({ left: false, right: false });
 
@@ -125,8 +100,16 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   // settings dialog on a specific panel via a window event.
   useEffect(() => {
     const onOpenSettings = (e: Event) => {
-      const panel = (e as CustomEvent).detail as SettingsPanelKind | undefined;
-      setSettingsPanel(panel ?? "main");
+      // Either a bare panel name, or `{ panel, anchor }` when the caller also
+      // wants the main panel scrolled to one of its sections (the Mobile setup
+      // guide's "Open Mobile settings").
+      const detail = (e as CustomEvent).detail as
+        | SettingsPanelKind
+        | { panel?: SettingsPanelKind; anchor?: string }
+        | undefined;
+      const named = typeof detail === "string" ? { panel: detail } : detail;
+      setSettingsPanel(named?.panel ?? "main");
+      setSettingsAnchor(named?.anchor);
       setShowSettings(true);
     };
     window.addEventListener("eldrun:open-settings", onOpenSettings);
@@ -288,10 +271,12 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   // strip left filtered by a box nobody is in would be a strip that had quietly
   // dropped most of the projects. Each also clears the multi-selection, exactly
   // as a plain pill activation does.
+  // Root is no longer a place to switch to: it opens as the root console over
+  // whatever is on screen (`stores/rootOverlay`), so picking it costs neither
+  // the project in scope nor the slice. With no project open the root scope is
+  // still what the center shows — the overlay simply floats over it.
   const selectRoot = () => {
-    usePillSelectionStore.getState().clear();
-    setBoxFilter(null);
-    void setActive(null);
+    useRootOverlayStore.getState().show();
   };
   const selectTrash = () => {
     if (!trashProject) return;
@@ -327,7 +312,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
     );
   }, [activeProjects, boxCandidateFilter, currentBox, currentBoxMemberIds]);
 
-  // Pointer-driven pill reorder (stores/pillDrag): every OTHER visible project
+  // Pointer-driven pill reorder (stores/drag/pillDrag): every OTHER visible project
   // pill "parts" to open the dragged one's landing slot — a `shiftPx` per id,
   // computed here (not in each pill) since it needs the FULL rendered order.
   // Mirrors MachinesIndicator's row-parting FLIP math, generalized to width:
@@ -470,7 +455,11 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   return (
     <>
       {showSettings && createPortal(
-        <SettingsDialog onClose={() => setShowSettings(false)} initialPanel={settingsPanel} />,
+        <SettingsDialog
+          onClose={() => setShowSettings(false)}
+          initialPanel={settingsPanel}
+          initialAnchor={settingsAnchor}
+        />,
         document.body,
       )}
 
@@ -490,6 +479,12 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
           onProject={(project) => void addAndAudit(project)}
         />,
         document.body,
+      )}
+      {dialog === "bundle" && (
+        <ProjectImportBundleDialog
+          onClose={() => setDialog(null)}
+          onProject={(project) => void addAndAudit(project)}
+        />
       )}
 
       <div
@@ -546,6 +541,11 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
           />
           {/* Hairline between the fixed leading segment (★ · 🗑 · ▣) and the
               scrolling project strip, so the two zones read as two zones. */}
+          {/* The pending-proposals count used to stand here as a second copy of
+              the console's own badge. Eldrun's tools and what they propose are
+              the root console's subject, so both live there and only there
+              (RootOverlay's ⚿ chip and the ✓ button beside it); the project bar
+              keeps its width for the projects. */}
           <div className="pills-lead-sep" aria-hidden />
           <button
             type="button"
@@ -630,13 +630,17 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
 
         <div
           className="project-switcher-add-wrap"
-          ref={addMenuRef}
+          ref={addMenu.ref}
+          onKeyDown={addMenu.onKeyDown}
+          onBlur={addMenu.onBlur}
           onClick={(e) => e.stopPropagation()}
           onMouseEnter={revealAddMenu}
-          onMouseLeave={scheduleCloseAddMenu}
+          onMouseLeave={addMenu.scheduleClose}
         >
           <button
+            type="button"
             className="project-switcher-add-btn"
+            aria-label={t(currentBox ? "projectSwitcher.addProjectsToBox" : "projectSwitcher.addOrImport")}
             data-hint-anchor="add-project"
             title={t(currentBox
               ? "projectSwitcher.addProjectsToBox"
@@ -646,7 +650,8 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
             // click also fires mouseenter, so a toggle here would open on enter and
             // immediately shut.
             onClick={revealAddMenu}
-            onFocus={revealAddMenu}
+            aria-haspopup="menu"
+            aria-expanded={showAddMenu}
           >
             +
           </button>
@@ -655,7 +660,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
               {currentBox ? (
                 <>
                   <div className="project-switcher-box-add-title">
-                    {t("projectSwitcher.addProjectsToBox")} <UntestedTag />
+                    {t("projectSwitcher.addProjectsToBox")} <UntestedTag id="projectSwitcher.addProjectsToBox" />
                   </div>
                   <input
                     className="project-switcher-box-add-filter"
@@ -696,9 +701,16 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
                   </button>
                   <button
                     className="untested"
+                    onClick={() => { closeHeaderMenu(ADD_MENU_ID); setDialog("bundle"); }}
+                    title={t("projectSwitcher.importBundleTitle")}
+                  >
+                    {t("projectSwitcher.importBundle")} <UntestedTag id="transfer.import" />
+                  </button>
+                  <button
+                    className="untested"
                     onClick={() => { closeHeaderMenu(ADD_MENU_ID); openHpcWizard(); }}
                   >
-                    {t("projectSwitcher.hpcPipeline")} <UntestedTag />
+                    {t("projectSwitcher.hpcPipeline")} <UntestedTag id="projectSwitcher.hpcPipeline" />
                   </button>
                   <button
                     className="untested"
@@ -707,7 +719,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
                       useBoxEditorStore.getState().openCreate();
                     }}
                   >
-                    {t("projectSwitcher.newBox")} <UntestedTag />
+                    {t("projectSwitcher.newBox")} <UntestedTag id="projectSwitcher.newBox" />
                   </button>
                 </>
               )}

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Toggle } from "../common/Toggle";
 import { UntestedTag } from "../common/UntestedTag";
+import { IdeMenuItems } from "./IdeMenuItems";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import {
@@ -19,40 +20,43 @@ import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { cmdToKind, isResumableAgentTab, isRestorableTab, useTabsStore } from "../../stores/tabs";
 import { IS_LINUX, IS_WINDOWS } from "../../lib/platform";
-import { runInstallInTab, PROVIDER_CLI_INSTALL, providerAuthLoginCmd } from "../../lib/installCommand";
+import { runInstallInTab, containerBuildShell, PROVIDER_CLI_INSTALL, providerAuthLoginCmd } from "../../lib/installCommand";
 import { PythonInterpreterWindow } from "./PythonInterpreterWindow";
 import { useGitDirtyStore } from "../../stores/gitDirty";
 import { providerName, gitTypeLabel } from "./projectTypeTags";
 import { GitTokenScopes, tokenPageUrl } from "../common/GitTokenScopes";
 import { ProjectHoverCard, projectDescription, useProjectHoverCard } from "./ProjectHoverCard";
-import { useFastMode } from "../../lib/fastMode";
+import { useFastMode } from "../../lib/agents/fastMode";
 import { ActivityCalendar } from "./ActivityCalendar";
 import { CategoryEditor } from "./CategoryEditor";
 import { ExtendToRemoteDialog } from "./ExtendToRemoteDialog";
+import { ProjectExportDialog } from "./ProjectExportDialog";
 import { autoConnectEligibility } from "./autoConnectEligibility";
-import { describeDetectedSpecSource } from "./scaffold";
+import { describeDetectedSpecSource, sanitizeName } from "./scaffold";
 import { useSavedCredential } from "./useSavedCredential";
-import { isHpcHost, targetOfSpec } from "../../lib/hpcHost";
-import { useRemoteMachinesStore, type DroppedGlobalMachine } from "../../stores/remoteMachines";
+import { isHpcHost, targetOfSpec } from "../../lib/remote/hpc/hpcHost";
+import { useRemoteMachinesStore, type DroppedGlobalMachine } from "../../stores/remote/remoteMachines";
 import { Dropdown } from "../common/Dropdown";
 import { PasswordInput } from "../common/PasswordInput";
 import { FolderPickerDialog } from "../common/FolderPickerDialog";
 import { RemoteConnMenu } from "../header/RemoteConnMenu";
 import { VmSettingsDialog } from "./VmSettingsDialog";
-import { categoryColor, primaryCategoryColor, projectCategories } from "../../lib/categoryColor";
-import { usePillDragStore } from "../../stores/pillDrag";
-import { usePillSelectionStore } from "../../stores/pillSelection";
+import { categoryColor, primaryCategoryColor, projectCategories } from "../../lib/theme/categoryColor";
+import { usePillDragStore } from "../../stores/drag/pillDrag";
+import { usePillSelectionStore } from "../../stores/drag/pillSelection";
 import { useBoxEditorStore } from "../../stores/boxEditor";
 import { useBoxesStore } from "../../stores/boxes";
-import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
+import { bindDragRelease, dragPlatform } from "../../lib/window/dragPlatform";
 import { useT } from "../../lib/i18n";
-import { isTrashProject } from "../../lib/trashProject";
+import { isTrashProject } from "../../lib/projects/trashProject";
 import { TrashProjectIcon } from "./TrashProjectIcon";
+import { PauseIcon } from "../common/icons/Icon";
 import {
+  agentFenceInstallCommand,
   agentFenceLabelKey,
   agentFenceReasonKey,
   type AgentFenceStatus,
-} from "../../lib/agentFence";
+} from "../../lib/agents/agentFence";
 
 interface Props {
   project: ProjectEntry;
@@ -68,7 +72,7 @@ interface Props {
   /** Drop onto a box pill: assign this project to that box instead of reordering. */
   onAssignToBox?: (boxId: string) => void;
   /** True while THIS pill is the one being pointer-dragged. ProjectSwitcher owns
-   *  the shared gesture state (`stores/pillDrag`) so every sibling can react to
+   *  the shared gesture state (`stores/drag/pillDrag`) so every sibling can react to
    *  one gesture without prop-drilling the raw drag object through each pill. */
   isDragged?: boolean;
   /** Live pointer-follow offset (px) while `isDragged`. */
@@ -191,34 +195,91 @@ function EditDescriptionWindow({
   );
 }
 
+/** `plan_project_dir_rename`'s answer (see `ProjectDirRenamePlan` in
+ *  commands/projects.rs); `status` is worded by `pill.folderStatus.*`. */
+interface DirRenamePlan {
+  currentDir: string;
+  targetDir: string;
+  leaf: string;
+  status: "ok" | "same" | "exists" | "registered" | "nested" | "invalid" | "missing" | "unsupported";
+}
+
+const FOLDER_STATUS_KEY = {
+  same: "pill.folderStatus.same",
+  exists: "pill.folderStatus.exists",
+  registered: "pill.folderStatus.registered",
+  nested: "pill.folderStatus.nested",
+  invalid: "pill.folderStatus.invalid",
+  missing: "pill.folderStatus.missing",
+  unsupported: "pill.folderStatus.unsupported",
+} as const satisfies Record<Exclude<DirRenamePlan["status"], "ok">, string>;
+
+function folderLeaf(dir: string) {
+  return dir.split(/[/\\]/).filter(Boolean).pop() ?? "";
+}
+
 function RenameWindow({
   project,
   onSave,
+  onRenameFolder,
   onClose,
 }: {
   project: ProjectEntry;
   onSave: (name: string) => Promise<void>;
+  onRenameFolder: (leaf: string) => Promise<void>;
   onClose: () => void;
 }) {
   const t = useT();
   const [value, setValue] = useState(project.name);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  // Folder rename is opt-in. The leaf follows the name (the same slug a new
+  // project's folder gets) until the user edits it by hand.
+  const [renameFolder, setRenameFolder] = useState(false);
+  const [leaf, setLeaf] = useState(() => sanitizeName(project.name));
+  const [leafEdited, setLeafEdited] = useState(false);
+  const [plan, setPlan] = useState<DirRenamePlan | null>(null);
+  const planSeq = useRef(0);
+
+  useEffect(() => {
+    const seq = ++planSeq.current;
+    invoke<DirRenamePlan>("plan_project_dir_rename", { projectId: project.id, leaf })
+      .then((next) => {
+        if (seq === planSeq.current) setPlan(next);
+      })
+      .catch(() => {
+        if (seq === planSeq.current) setPlan(null);
+      });
+  }, [project.id, leaf]);
+
+  const folderSupported = !!plan && plan.status !== "unsupported" && plan.status !== "missing";
+  const folderBlocked = renameFolder && plan?.status !== "ok" && plan?.status !== "same";
 
   const save = async () => {
     if (!value.trim()) {
       setError(t("pill.nameEmpty"));
       return;
     }
+    if (folderBlocked) return;
     setSaving(true);
     setError("");
     try {
-      await onSave(value);
-      onClose();
+      if (value.trim() !== project.name) await onSave(value);
     } catch (err) {
       setError(String(err));
       setSaving(false);
+      return;
     }
+    if (renameFolder && plan?.status === "ok") {
+      try {
+        await onRenameFolder(plan.leaf);
+      } catch (err) {
+        setError(t("pill.folderRenameFailed", { error: String(err) }));
+        setSaving(false);
+        return;
+      }
+    }
+    onClose();
   };
 
   return createPortal(
@@ -236,16 +297,66 @@ function RenameWindow({
           value={value}
           autoFocus
           placeholder={t("pill.namePlaceholder")}
-          onChange={(e) => setValue(e.target.value)}
+          onChange={(e) => {
+            setValue(e.target.value);
+            if (!leafEdited) setLeaf(sanitizeName(e.target.value));
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter") void save();
             if (e.key === "Escape") onClose();
           }}
         />
+        {folderSupported && plan && (
+          <>
+            <label className="settings-switch-row">
+              <span>
+                {t("pill.alsoRenameFolder")} <UntestedTag id="pill.alsoRenameFolder" />
+              </span>
+              <Toggle
+                checked={renameFolder}
+                onChange={(e) => setRenameFolder(e.target.checked)}
+              />
+            </label>
+            {renameFolder && (
+              <>
+                <input
+                  type="text"
+                  value={leaf}
+                  placeholder={folderLeaf(plan.currentDir)}
+                  spellCheck={false}
+                  aria-label={t("pill.folderNameLabel")}
+                  onChange={(e) => {
+                    setLeaf(e.target.value);
+                    setLeafEdited(true);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void save();
+                    if (e.key === "Escape") onClose();
+                  }}
+                />
+                <div className="project-dialog-path">
+                  {plan.currentDir}
+                  {plan.targetDir && plan.status !== "same" ? ` → ${plan.targetDir}` : ""}
+                </div>
+                {plan.status === "ok" ? (
+                  <div className="project-dialog-path">
+                    {project.status !== "inactive"
+                      ? t("pill.folderRenameClosesProject")
+                      : t("pill.folderRenameAgentNote")}
+                  </div>
+                ) : (
+                  <div className={plan.status === "same" ? "project-dialog-path" : "project-dialog-error"}>
+                    {t(FOLDER_STATUS_KEY[plan.status])}
+                  </div>
+                )}
+              </>
+            )}
+          </>
+        )}
         {error && <div className="project-dialog-error">{error}</div>}
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose} disabled={saving}>{t("common.cancel")}</button>
-          <button type="button" onClick={() => void save()} disabled={saving}>
+          <button type="button" onClick={() => void save()} disabled={saving || folderBlocked}>
             {saving ? t("common.saving") : t("common.save")}
           </button>
         </div>
@@ -368,7 +479,7 @@ function PublishWindow({
             provider login, which is why it is the default. */}
         {isRemoteWork && (
           <label>
-            {t("pill.publishFrom")} <UntestedTag />
+            {t("pill.publishFrom")} <UntestedTag id="pill.publishFrom" />
             <Dropdown
               className="dropdown-block"
               value={publishFrom}
@@ -738,6 +849,69 @@ function ArchiveConfirmWindow({
   );
 }
 
+/** Confirm for **Remove from Eldrun**: the project leaves the pill list and Eldrun's
+ *  state dirs about it are purged, but its folder stays exactly where it is with
+ *  everything in it — `project.json`, scaffold files, the user's own files. This is
+ *  the "undo a botched import" verb: afterwards the folder can be imported again
+ *  (the duplicate gate only looks at the registry). Same shape as
+ *  `ArchiveConfirmWindow`; the only differences are the words and the verb. */
+function ForgetConfirmWindow({
+  project,
+  onConfirm,
+  onClose,
+}: {
+  project: ProjectEntry;
+  onConfirm: () => Promise<void>;
+  onClose: () => void;
+}) {
+  const t = useT();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const run = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await onConfirm();
+      onClose();
+    } catch (err) {
+      setError(String(err));
+      setBusy(false);
+    }
+  };
+
+  return createPortal(
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="settings-title-row">
+          <h2>{t("pill.forgetProjectTitle", { name: project.name })}</h2>
+          <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
+        </div>
+        <p className="settings-help">
+          {t("pill.forgetDescPre")} <strong>{project.name}</strong> {t("pill.forgetDescMid")}{" "}
+          <strong>{t("pill.notWord")}</strong> {t("pill.forgetDescPost")}
+          {project.remote && <> {t("pill.forgetRemoteNote")}</>}
+        </p>
+        {error && <div className="project-dialog-error">{error}</div>}
+        <div className="project-dialog-actions">
+          <button type="button" onClick={onClose} disabled={busy}>{t("common.cancel")}</button>
+          <button
+            type="button"
+            className="danger"
+            autoFocus
+            onClick={() => void run()}
+            disabled={busy}
+          >
+            {busy ? t("pill.forgetting") : t("pill.forgetProjectConfirm")}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 /** Confirm for detaching a remote (SSH) project back to local. The host's files are never
  *  touched — only the local mirror is promoted back in place.
  *
@@ -881,7 +1055,7 @@ function ContainerSettingsWindow({
             labelled "agents only" reads as a weakening of a default that is not
             obviously the safer one for every project. */}
         <fieldset className="container-scope-fieldset">
-          <legend>{t("pill.containerScopeLegend")} <UntestedTag /></legend>
+          <legend>{t("pill.containerScopeLegend")} <UntestedTag id="pill.containerScopeLegend" /></legend>
           <label className="container-scope-option">
             <input
               type="radio"
@@ -1190,7 +1364,7 @@ function MigrateProviderWindow({
         </label>
         {isRemoteWork && (
           <label>
-            {t("pill.publishFrom")} <UntestedTag />
+            {t("pill.publishFrom")} <UntestedTag id="pill.publishFrom#2" />
             <Dropdown
               className="dropdown-block"
               value={publishFrom}
@@ -1258,7 +1432,7 @@ export function ProjectPill({
   // Shared hover card (identical popup in the right file-viewer). Owns the
   // popup position, today's time, CPU% and the scaffold-missing flag.
   const hover = useProjectHoverCard(project);
-  // Fast mode withdraws the card (see `lib/fastMode`) — the hook stays
+  // Fast mode withdraws the card (see `lib/agents/fastMode`) — the hook stays
   // mounted and simply never opens, since it arms nothing until `open`.
   const fastMode = useFastMode();
   const [contextMenu, setContextMenu] = useState<ContextMenuPos | null>(null);
@@ -1285,6 +1459,8 @@ export function ProjectPill({
   const [showVisibility, setShowVisibility] = useState(false);
   const [showMigrate, setShowMigrate] = useState(false);
   const [showArchive, setShowArchive] = useState(false);
+  const [showForget, setShowForget] = useState(false);
+  const [showExport, setShowExport] = useState(false);
   const [editCategories, setEditCategories] = useState(false);
   const [extendRemote, setExtendRemote] = useState(false);
   // Set instead of `extendRemote` alone when a global machine was handed to this
@@ -1307,10 +1483,12 @@ export function ProjectPill({
   const gitDirty = useGitDirtyStore((s) => s.byId[project.id]);
   const updateProjectDescription = useProjectsStore((s) => s.updateProjectDescription);
   const renameProject = useProjectsStore((s) => s.renameProject);
+  const renameProjectFolder = useProjectsStore((s) => s.renameProjectFolder);
   const moveRemoteMirror = useProjectsStore((s) => s.moveRemoteMirror);
   const setProjectSandbox = useProjectsStore((s) => s.setProjectSandbox);
   const setProjectRemoteControl = useProjectsStore((s) => s.setProjectRemoteControl);
   const setProjectAgentFence = useProjectsStore((s) => s.setProjectAgentFence);
+  const setProjectScheduleMcp = useProjectsStore((s) => s.setProjectScheduleMcp);
   const [agentFenceStatus, setAgentFenceStatus] = useState<AgentFenceStatus | null>(null);
   useEffect(() => {
     if (!contextMenu) return;
@@ -1428,7 +1606,7 @@ export function ProjectPill({
         { projectId: project.id },
       );
       if (pf.status === "image_missing" && pf.build_command) {
-        runInstallInTab(t("pill.containerImageTab", { image: pf.image }), pf.build_command, "bash");
+        runInstallInTab(t("pill.containerImageTab", { image: pf.image }), pf.build_command, containerBuildShell());
       } else if (pf.status === "daemon_down") {
         useProjectsStore.setState({
           switchToast: t("pill.dockerNotRunning"),
@@ -1476,6 +1654,7 @@ export function ProjectPill({
   const setProjectVisibility = useProjectsStore((s) => s.setProjectVisibility);
   const switchProjectProvider = useProjectsStore((s) => s.switchProjectProvider);
   const archiveProject = useProjectsStore((s) => s.archiveProject);
+  const forgetProject = useProjectsStore((s) => s.forgetProject);
 
   // Reveal the project on disk. Local projects open their working directory; a
   // remote (SSH) project has no local tree, so we open its local mirror — the
@@ -1844,6 +2023,10 @@ export function ProjectPill({
             >
               {t("pill.showOnDisk")}
             </button>
+            {/* One "Open in <IDE>" row per marker the tree carries; nothing
+                for a project without one. A remote project's markers are read
+                off its local mirror, the folder "Show on disk" reveals. */}
+            <IdeMenuItems projectId={project.id} onClose={() => setContextMenu(null)} />
           </div>
 
           {/* Edit metadata */}
@@ -1867,7 +2050,7 @@ export function ProjectPill({
                 title={t("pill.movePillTitle")}
               >
                 {t("pill.moveProjectEllipsis")}
-                <UntestedTag />
+                <UntestedTag id="projectPill.1" />
               </button>
             )}
             <button
@@ -1887,7 +2070,7 @@ export function ProjectPill({
               title={t("pill.categoriesMenuTitle")}
             >
               {t("blob.categoriesEllipsis")}
-              <UntestedTag />
+              <UntestedTag id="projectPill.2" />
             </button>
             <button
               className="untested"
@@ -1898,7 +2081,7 @@ export function ProjectPill({
               title={t("pill.repairScaffoldTitle")}
             >
               {t("pill.repairScaffold")}
-              <UntestedTag />
+              <UntestedTag id="projectPill.3" />
             </button>
             {!project.remote && (
               <button
@@ -1912,6 +2095,21 @@ export function ProjectPill({
                 {t("pill.extendToRemoteEllipsis")}
               </button>
             )}
+            {/* Export sits with the metadata actions rather than in the danger
+                zone: it writes one new file and changes nothing about the
+                project. Its counterpart (import) lives on the + menu, where
+                every other "bring a project in" entry already is. */}
+            <button
+              className="untested"
+              onClick={() => {
+                setContextMenu(null);
+                setShowExport(true);
+              }}
+              title={t("pill.exportProjectMenuTitle")}
+            >
+              {t("pill.exportProjectEllipsis")}
+              <UntestedTag id="transfer.export" />
+            </button>
           </div>
 
           {/* Boxes (3a): checkbox row per box (toggle add/remove, additive N:M),
@@ -1929,7 +2127,7 @@ export function ProjectPill({
                 }}
               >
                 {t("pill.boxTheseEllipsis", { count: selectedPills.length })}
-                <UntestedTag />
+                <UntestedTag id="projectPill.4" />
               </button>
             )}
             {boxesForMenu.slice(0, 6).map((b) => {
@@ -1961,7 +2159,7 @@ export function ProjectPill({
               }}
             >
               {t("pill.newBoxWithEllipsis", { name: project.name })}
-              <UntestedTag />
+              <UntestedTag id="projectPill.5" />
             </button>
             {boxesForMenu.length > 6 && (
               <button
@@ -1972,7 +2170,7 @@ export function ProjectPill({
                 }}
               >
                 {t("pill.editBoxesEllipsis")}
-                <UntestedTag />
+                <UntestedTag id="projectPill.6" />
               </button>
             )}
           </div>
@@ -1991,7 +2189,7 @@ export function ProjectPill({
                   title={t("pill.gitInitTitle")}
                 >
                   {t("pill.enableGit")}
-                  <UntestedTag />
+                  <UntestedTag id="projectPill.7" />
                 </button>
               )
             ) : trulyPublished ? (
@@ -2006,7 +2204,7 @@ export function ProjectPill({
                   title={t("pill.makePrivateTitle")}
                 >
                   {project.git_type === "remote-public" ? t("pill.makePrivate") : t("pill.makePublic")}
-                  <UntestedTag />
+                  <UntestedTag id="projectPill.8" />
                 </button>
                 <button
                   className="untested"
@@ -2017,7 +2215,7 @@ export function ProjectPill({
                   title={t("pill.moveProviderMenuTitle")}
                 >
                   {project.git_provider === "gitlab" ? t("pill.moveToGithub") : t("pill.moveToGitlab")}
-                  <UntestedTag />
+                  <UntestedTag id="projectPill.9" />
                 </button>
                 <button
                   className="untested"
@@ -2028,7 +2226,7 @@ export function ProjectPill({
                   title={t("pill.unpublishMenuTitle")}
                 >
                   {t("pill.unpublishKeepRepoEllipsis")}
-                  <UntestedTag />
+                  <UntestedTag id="projectPill.10" />
                 </button>
                 <button
                   className="untested"
@@ -2039,7 +2237,7 @@ export function ProjectPill({
                   title={t("pill.gitHostingMenuTitle")}
                 >
                   {t("pill.gitHostingEllipsis")}
-                  <UntestedTag />
+                  <UntestedTag id="projectPill.11" />
                 </button>
               </>
             ) : (
@@ -2059,7 +2257,7 @@ export function ProjectPill({
                   }}
                 >
                   {t("pill.publishEllipsis")}
-                  <UntestedTag />
+                  <UntestedTag id="projectPill.12" />
                 </button>
               </>
             )}
@@ -2083,7 +2281,7 @@ export function ProjectPill({
               >
                 {vmRunning ? "▣ " : "▢ "}
                 {t("pill.vmSettingsEllipsis")}
-                <UntestedTag />
+                <UntestedTag id="projectPill.13" />
               </button>
             )}
             {/* Project container (#38): local projects only (a remote project's
@@ -2172,22 +2370,35 @@ export function ProjectPill({
                     })}
                   </span>
                 )}
-              <UntestedTag />
+              <UntestedTag id="projectPill.14" />
             </button>
-            {IS_LINUX && agentFenceStatus?.bwrap_available === false && (
+            <button
+              className="untested"
+              onClick={() => {
+                setContextMenu(null);
+                const levels = ["off", "propose", "apply"] as const;
+                const current = levels.indexOf(project.schedule_mcp ?? "propose");
+                void setProjectScheduleMcp(project.id, levels[(current + 1) % levels.length]);
+              }}
+              title={t("scheduleMcp.menuTitle")}
+            >
+              {t("scheduleMcp.menuItem", {
+                level: t(`scheduleMcp.${project.schedule_mcp ?? "propose"}`),
+              })}
+              <UntestedTag id="scheduleMcp" />
+            </button>
+            {IS_LINUX && agentFenceInstallCommand(agentFenceStatus) && (
                 <button
                   className="untested"
                   onClick={() => {
+                    const command = agentFenceInstallCommand(agentFenceStatus);
                     setContextMenu(null);
-                    runInstallInTab(
-                      t("pill.agentFenceInstall"),
-                      "sudo apt install -y bubblewrap",
-                      "bash",
-                    );
+                    if (!command) return;
+                    runInstallInTab(t("pill.agentFenceInstall"), command, "bash");
                   }}
                 >
                   {t("pill.agentFenceInstall")}
-                  <UntestedTag />
+                  <UntestedTag id="projectPill.15" />
                 </button>
               )}
             {project.remote && (
@@ -2249,7 +2460,7 @@ export function ProjectPill({
                 {project.compute_hosts?.length
                   ? t("pill.remoteMachinesCount", { count: project.compute_hosts.length })
                   : t("pill.remoteMachinesEllipsis")}
-                <UntestedTag />
+                <UntestedTag id="projectPill.16" />
               </button>
             )}
             {/* The explicit half of the layout move: a project's tabs now live in
@@ -2302,7 +2513,7 @@ export function ProjectPill({
                 }}
               >
                 {t("pill.adoptFolderLayout")}
-                <UntestedTag />
+                <UntestedTag id="projectPill.17" />
               </button>
             )}
             <button
@@ -2376,6 +2587,18 @@ export function ProjectPill({
             >
               {t("pill.deleteProjectEllipsis")}
             </button>
+            {!project.vm && (
+              <button
+                className="danger"
+                onClick={() => {
+                  setContextMenu(null);
+                  setShowForget(true);
+                }}
+                title={t("pill.forgetProjectMenuTitle")}
+              >
+                {t("pill.forgetProjectEllipsis")} <UntestedTag id="pill.forgetProjectEllipsis" />
+              </button>
+            )}
           </div>
           </div>
         </div>,
@@ -2392,6 +2615,7 @@ export function ProjectPill({
         <RenameWindow
           project={project}
           onSave={(name) => renameProject(project.id, name)}
+          onRenameFolder={(leaf) => renameProjectFolder(project.id, leaf)}
           onClose={() => setRenaming(false)}
         />
       )}
@@ -2521,12 +2745,26 @@ export function ProjectPill({
         />
       )}
 
+      {/* Export the whole project to a portable file */}
+      {showExport && (
+        <ProjectExportDialog project={project} onClose={() => setShowExport(false)} />
+      )}
+
       {/* Delete → archive (reversible; simple confirm) */}
       {showArchive && (
         <ArchiveConfirmWindow
           project={project}
           onConfirm={() => archiveProject(project.id)}
           onClose={() => setShowArchive(false)}
+        />
+      )}
+
+      {/* Remove from Eldrun (folder stays on disk; simple confirm) */}
+      {showForget && (
+        <ForgetConfirmWindow
+          project={project}
+          onConfirm={() => forgetProject(project.id)}
+          onClose={() => setShowForget(false)}
         />
       )}
 
@@ -2577,7 +2815,7 @@ export function ProjectPill({
                 <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
                   <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z" />
                 </svg>
-                {timerPaused && <span className="pill-folder-pause">⏸</span>}
+                {timerPaused && <span className="pill-folder-pause"><PauseIcon /></span>}
               </span>
               <span className="project-pill-label">{project.name}</span>
               {boxNames && boxNames.length > 0 && (

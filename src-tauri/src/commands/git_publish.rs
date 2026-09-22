@@ -43,11 +43,13 @@ use std::process::Command;
 
 use serde_json::Value;
 
+use crate::commands::git::run_off_thread;
 use crate::commands::projects::{normalize_git_type, sanitize_name};
 use crate::schema::project::Project;
 use crate::schema::projects::ProjectsList;
 use crate::services::git_peer::SyncStatus;
 use crate::services::ssh_common::{ssh_base_args, validate_arg};
+use crate::services::ssh_exec::shell_quote;
 use crate::storage;
 
 /// A supported git-hosting provider. Also used by `commands::git_fork`, which
@@ -210,6 +212,40 @@ pub(crate) fn mirror_origin_repo(project_id: &str) -> Option<PathBuf> {
     mirror_repo(project_id).filter(|dir| has_origin(dir))
 }
 
+/// The project as publish/unpublish/visibility may act on it: `project.json`
+/// for descriptive data, with every field that decides *where* an operation runs
+/// or *what* it publishes taken from the trusted `projects.json` entry instead.
+/// `project.json` lives inside the project tree, where a fenced agent, a
+/// container tab or a `git pull` can rewrite it — and a `directory` read from
+/// there would aim "Publish (public)" at some other repository on disk.
+fn trusted_project(entry: &crate::schema::ProjectEntry) -> Project {
+    let mut project: Project = storage::read_json(Path::new(&entry.local_file)).unwrap_or_default();
+    let text = |key: &str| {
+        entry
+            .extra
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    project.id = entry.id.clone();
+    project.name = entry.name.clone();
+    project.directory = text("directory")
+        .or_else(|| {
+            Path::new(&entry.local_file)
+                .parent()
+                .map(|p| p.to_string_lossy().into_owned())
+        })
+        .unwrap_or_default();
+    project.remote = entry
+        .extra
+        .get("remote")
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
+    project.git_type = text("git_type");
+    project.git_provider = text("git_provider");
+    project
+}
+
 /// A local project's tree, checked to exist.
 fn local_dir(project: &Project) -> Result<PathBuf, String> {
     let dir = PathBuf::from(&project.directory);
@@ -323,8 +359,26 @@ fn origin_site(project: &Project, project_id: &str) -> Result<PublishSite, Strin
 /// this machine's provider login) or `"remote"` (the host's own login). Returns
 /// the CLI's stdout (typically the new repository URL) on success, or the
 /// trimmed stderr on failure.
+///
+/// Every command in this module is an `async` wrapper over a sync `*_blocking`
+/// body run through [`run_off_thread`] (the same pattern as `commands::git`):
+/// the bodies spawn `git`/`gh`/`glab` or ssh and block on them, and a sync
+/// Tauri command runs on the main thread, so a slow push or an unreachable host
+/// froze the whole window for its duration.
 #[tauri::command]
-pub fn publish_project(
+pub async fn publish_project(
+    project_id: String,
+    provider: Option<String>,
+    visibility: String,
+    publish_from: Option<String>,
+) -> Result<String, String> {
+    run_off_thread(move || {
+        publish_project_blocking(project_id, provider, visibility, publish_from)
+    })
+    .await
+}
+
+fn publish_project_blocking(
     project_id: String,
     provider: Option<String>,
     visibility: String,
@@ -342,9 +396,7 @@ pub fn publish_project(
     };
 
     let (entry_index, list) = find_entry(&project_id)?;
-    let local_file = list[entry_index].local_file.clone();
-    let project: Project =
-        storage::read_json(&PathBuf::from(&local_file)).map_err(|e| e.to_string())?;
+    let project = trusted_project(&list[entry_index]);
 
     // Repo names can't contain spaces/special chars; reuse the project name
     // sanitizer that already produces a safe slug for local directories.
@@ -370,6 +422,7 @@ pub fn publish_project(
             // A remote project's `Local` site is its lockstep mirror, whose
             // branch names have to keep matching the host's.
             project.remote.is_none(),
+            &project_id,
         )?,
         // Explicit opt-in: run the CLI on the work-remote host, relying on that
         // host's own provider auth (the local token is never forwarded over ssh).
@@ -429,12 +482,18 @@ pub fn publish_project(
 /// Local projects only. A work-remote project's `origin` may legitimately live on
 /// its host, and asking would be an ssh round trip, so those answer `true` —
 /// "nothing here contradicts the label".
+///
+/// Off-thread even though it is a local `git remote get-url`: the pill calls it
+/// on every right-click of a published project, and a fork+wait on the main
+/// thread there is a visible hitch before the context menu opens.
 #[tauri::command]
-pub fn project_has_origin(project_id: String) -> Result<bool, String> {
+pub async fn project_has_origin(project_id: String) -> Result<bool, String> {
+    run_off_thread(move || project_has_origin_blocking(project_id)).await
+}
+
+fn project_has_origin_blocking(project_id: String) -> Result<bool, String> {
     let (entry_index, list) = find_entry(&project_id)?;
-    let local_file = list[entry_index].local_file.clone();
-    let project: Project =
-        storage::read_json(&PathBuf::from(&local_file)).map_err(|e| e.to_string())?;
+    let project = trusted_project(&list[entry_index]);
     if project.remote.is_some() {
         return Ok(true);
     }
@@ -450,11 +509,13 @@ pub fn project_has_origin(project_id: String) -> Result<bool, String> {
 /// the GitHub/GitLab repo is left intact — only the local tree is detached from
 /// it. Re-publishing later re-creates or re-attaches a remote.
 #[tauri::command]
-pub fn unpublish_project(project_id: String) -> Result<(), String> {
+pub async fn unpublish_project(project_id: String) -> Result<(), String> {
+    run_off_thread(move || unpublish_project_blocking(project_id)).await
+}
+
+fn unpublish_project_blocking(project_id: String) -> Result<(), String> {
     let (idx, list) = find_entry(&project_id)?;
-    let local_file = list[idx].local_file.clone();
-    let project: Project =
-        storage::read_json(&PathBuf::from(&local_file)).map_err(|e| e.to_string())?;
+    let project = trusted_project(&list[idx]);
 
     let gt = project
         .git_type
@@ -519,7 +580,17 @@ pub fn unpublish_project(project_id: String) -> Result<(), String> {
 /// Runs locally, or over ssh on the work-remote host for a remote project
 /// (relying on that host's provider auth, exactly like `publish_project`).
 #[tauri::command]
-pub fn set_project_visibility(project_id: String, visibility: String) -> Result<String, String> {
+pub async fn set_project_visibility(
+    project_id: String,
+    visibility: String,
+) -> Result<String, String> {
+    run_off_thread(move || set_project_visibility_blocking(project_id, visibility)).await
+}
+
+fn set_project_visibility_blocking(
+    project_id: String,
+    visibility: String,
+) -> Result<String, String> {
     let visibility = match visibility.trim() {
         "public" => "public",
         "private" => "private",
@@ -531,9 +602,7 @@ pub fn set_project_visibility(project_id: String, visibility: String) -> Result<
     };
 
     let (idx, list) = find_entry(&project_id)?;
-    let local_file = list[idx].local_file.clone();
-    let project: Project =
-        storage::read_json(&PathBuf::from(&local_file)).map_err(|e| e.to_string())?;
+    let project = trusted_project(&list[idx]);
 
     let gt = project
         .git_type
@@ -591,7 +660,19 @@ pub fn set_project_visibility(project_id: String, visibility: String) -> Result<
 /// and pushes. Records the new `git_provider` + `git_type` (via the reused
 /// `publish_project`). Returns the create CLI's stdout (new repo URL).
 #[tauri::command]
-pub fn switch_project_provider(
+pub async fn switch_project_provider(
+    project_id: String,
+    provider: Option<String>,
+    visibility: String,
+    publish_from: Option<String>,
+) -> Result<String, String> {
+    run_off_thread(move || {
+        switch_project_provider_blocking(project_id, provider, visibility, publish_from)
+    })
+    .await
+}
+
+fn switch_project_provider_blocking(
     project_id: String,
     provider: Option<String>,
     visibility: String,
@@ -608,9 +689,7 @@ pub fn switch_project_provider(
     };
 
     let (idx, list) = find_entry(&project_id)?;
-    let local_file = list[idx].local_file.clone();
-    let project: Project =
-        storage::read_json(&PathBuf::from(&local_file)).map_err(|e| e.to_string())?;
+    let project = trusted_project(&list[idx]);
 
     let gt = project
         .git_type
@@ -631,8 +710,10 @@ pub fn switch_project_provider(
     rename_origin_aside(origin_site(&project, &project_id)?, &project)?;
 
     // Delegate the create+wire+push+persist to the normal publish path, now
-    // targeting the new provider.
-    publish_project(
+    // targeting the new provider. This must call the sync `_blocking` body, not
+    // the `publish_project` command: we are already inside `run_off_thread`'s
+    // closure, a non-async context that cannot `.await` the async wrapper.
+    publish_project_blocking(
         project_id,
         Some(new_provider.as_str().to_string()),
         visibility,
@@ -712,6 +793,7 @@ fn rename_origin_aside(site: PublishSite, project: &Project) -> Result<(), Strin
 /// project still on git's old built-in `master` would name the hosted default
 /// branch `master`. Only a plain local project opts in — see that module for why
 /// a lockstep mirror must keep the branch name the host knows it by.
+#[allow(clippy::too_many_arguments)]
 fn local_publish(
     provider: Provider,
     dir: &PathBuf,
@@ -719,7 +801,11 @@ fn local_publish(
     visibility: &str,
     token: Option<&str>,
     rename_master: bool,
+    project_id: &str,
 ) -> Result<String, String> {
+    // Both branches push from `dir` (gh's `--push` runs `git push` itself), so
+    // the repo's hooks run here: ask-once gate, as for Push.
+    crate::services::exec_trust::require(crate::services::exec_trust::TrustKind::GitHooks, dir)?;
     if rename_master {
         crate::services::git_init::ensure_default_branch(dir);
     }
@@ -758,10 +844,23 @@ fn local_publish(
             }
             let mut out = run_provider_command(&mut create, provider)?;
 
-            let mut push = crate::paths::command_no_window("git");
-            push.current_dir(dir);
-            push_with_token(&mut push, provider, token);
-            push.args(["push", "-u", "origin", "HEAD"]);
+            let mut args: Vec<String> = Vec::new();
+            if token.is_some() {
+                let origins = crate::commands::git_hosting::token_origins(
+                    Some(project_id),
+                    Some(provider.as_str()),
+                );
+                args.extend(crate::commands::git::scoped_token_config(
+                    &origins,
+                    provider.cred_username(),
+                ));
+            }
+            args.extend(["push", "-u", "origin", "HEAD"].map(String::from));
+            let mut push = crate::commands::git::hardened_git_command_in(dir, &args);
+            if let Some(tok) = token {
+                push.env("ELDRUN_GIT_TOKEN", tok);
+                push.env("GIT_TERMINAL_PROMPT", "0");
+            }
             out.push('\n');
             out.push_str(&run_command(&mut push)?);
             Ok(out)
@@ -789,21 +888,6 @@ fn remote_publish_script(
              && git push -u origin HEAD"
         ),
     }
-}
-
-/// Attach an ephemeral inline https credential helper that injects the effective
-/// token (read from the child env, never argv/disk) so a `git push` to a freshly
-/// created https remote authenticates. Harmless for ssh remotes — git won't call
-/// an http helper. Mirrors the helper in `commands::git::git_push`.
-fn push_with_token(cmd: &mut Command, provider: Provider, token: Option<&str>) {
-    let Some(tok) = token else { return };
-    let helper = format!(
-        "!f() {{ test \"$1\" = get && echo username={} && echo \"password=$ELDRUN_GIT_TOKEN\"; }}; f",
-        provider.cred_username()
-    );
-    cmd.args(["-c", "credential.helper=", "-c", &helper]);
-    cmd.env("ELDRUN_GIT_TOKEN", tok);
-    cmd.env("GIT_TERMINAL_PROMPT", "0");
 }
 
 /// Find a project entry by id, returning its index and the full (owned) list so
@@ -950,12 +1034,6 @@ fn friendly_publish_error(provider: Provider, raw: &str) -> String {
         );
     }
     raw.trim().to_string()
-}
-
-/// Single-quote a string for safe embedding in a remote `/bin/sh` command,
-/// escaping any embedded single quotes.
-fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 #[cfg(test)]
@@ -1137,5 +1215,38 @@ mod tests {
         assert!(msg.contains("glab"));
         assert!(msg.contains("glab auth login"));
         assert!(msg.contains("GitLab"));
+    }
+
+    /// Publish/visibility/unpublish act on the trusted entry: a `directory` or
+    /// `remote` planted in the in-folder `project.json` must not redirect them.
+    #[test]
+    fn trusted_project_ignores_the_in_folder_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let local_file = tmp.path().join("project.json");
+        std::fs::write(
+            &local_file,
+            r#"{"id":"p","name":"evil","directory":"/home/u/other-private-repo",
+                "git_type":"remote-public","git_provider":"gitlab",
+                "remote":{"host":"attacker.example","remote_path":"/x"}}"#,
+        )
+        .unwrap();
+        let entry = crate::schema::ProjectEntry {
+            id: "p".into(),
+            name: "Mine".into(),
+            status: "active".into(),
+            position: 0,
+            local_file: local_file.to_string_lossy().into_owned(),
+            extra: serde_json::from_value(serde_json::json!({
+                "directory": "/home/u/mine",
+                "git_type": "local",
+            }))
+            .unwrap(),
+        };
+        let p = trusted_project(&entry);
+        assert_eq!(p.directory, "/home/u/mine");
+        assert_eq!(p.name, "Mine");
+        assert!(p.remote.is_none());
+        assert_eq!(p.git_type.as_deref(), Some("local"));
+        assert_eq!(p.git_provider, None);
     }
 }

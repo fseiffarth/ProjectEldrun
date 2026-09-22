@@ -7,7 +7,7 @@
  *  - {@link routeUri} is **pure and total**: a URI plus a context in, a
  *    {@link LinkTarget} out. It touches no store, performs no IPC and never
  *    throws, which is what makes the whole routing table testable in
- *    `src/__tests__/LinkTarget.test.ts` rather than only observable by clicking.
+ *    `src/__tests__/browser/LinkTarget.test.ts` rather than only observable by clicking.
  *  - {@link openRoutedUri} performs the target: a browser tab, `launch_app`,
  *    `open_external_url`, or the mail composer.
  *
@@ -316,7 +316,7 @@ export function performLinkTarget(target: LinkTarget, hooks: DispatchHooks = {})
  * "open in the desktop app" handoff all live in the user's real browser. An
  * inert sanitized copy of Zoom's launch page is a Join button that does not
  * join. The routing is still asked (rather than calling the OS directly), so the
- * scheme gate applies here like everywhere else: `lib/conference.ts` has already
+ * scheme gate applies here like everywhere else: `lib/calendar/conference.ts` has already
  * refused anything that is not `http(s)`, and this is the independent second
  * check that a `zoommtg:`-style URL never reaches the OS handler.
  */

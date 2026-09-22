@@ -50,6 +50,9 @@ pub type Counters = HashMap<String, u64>;
 ///
 /// Mirrored in `src/lib/usageMetrics.ts` — keep the two in step.
 pub mod metric {
+    /// One outcome per autocomplete suggestion, suffixed with `<mode>.<model>`.
+    pub const AUTOCOMPLETE_ACCEPT: &str = "autocomplete.accept";
+    pub const AUTOCOMPLETE_DISMISS: &str = "autocomplete.dismiss";
     /// `agent.tab.<cmd>` — an agent tab was opened (not counting restore-respawns).
     pub const AGENT_TAB: &str = "agent.tab";
     /// `agent.tab.local.<model>` — a local (Ollama-backed) agent tab was opened.

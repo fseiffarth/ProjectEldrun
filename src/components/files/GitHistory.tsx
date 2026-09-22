@@ -1,13 +1,16 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Toggle } from "../common/Toggle";
 import { invoke } from "@tauri-apps/api/core";
+import { invokeTrusted } from "../../lib/execTrust";
 import { listen } from "@tauri-apps/api/event";
 import { Dropdown } from "../common/Dropdown";
 import { UntestedTag } from "../common/UntestedTag";
 import { useDialogs } from "../common/PromptDialogs";
 import { useTabsStore } from "../../stores/tabs";
 import { useT, type TranslationKey } from "../../lib/i18n";
+import { GitMergeBar, GitPullPanel, type MergeState } from "./GitPullPanel";
+import { LockIcon, UnlockIcon } from "../common/icons/Icon";
 
 interface GitCommit {
   hash: string;
@@ -24,6 +27,11 @@ interface GitBranch {
   name: string;
   is_current: boolean;
   is_remote: boolean;
+  /** Configured upstream (`origin/main`); "" for none. Optional: an older backend. */
+  upstream?: string;
+  /** Against that upstream, as of the last fetch. */
+  ahead?: number;
+  behind?: number;
 }
 
 interface Worktree {
@@ -116,8 +124,14 @@ interface Props {
   projectId?: string;
   /** True for SSH remote projects (gates the lockstep UI). */
   remote?: boolean;
+  /** The project whose git credentials a fetch uses — any project kind, unlike
+   *  `projectId`; absent on a nested repo (its own remote, no provider token). */
+  authProjectId?: string;
   /** Called after a checkout/reword so the parent can refresh git status. */
   onChanged?: () => void;
+  /** Bumped by the parent to open the pull preview for the checked-out branch
+   *  (the git bar's Pull button). 0 = never asked. */
+  pullRequest?: number;
 }
 
 function basename(p: string): string {
@@ -300,6 +314,13 @@ function CommitGraphCell({
 
 const GRAPH_MODE_KEY = "eldrun.gitHistoryGraph";
 
+/**
+ * How many commits one page of history is. The list used to ask for exactly this
+ * many and stop there, which silently truncated any repo with a longer history;
+ * it now pages the rest in as the bottom of the list comes into view.
+ */
+const COMMIT_PAGE = 100;
+
 const LOCKSTEP_STATUS_KEY: Record<LockstepStatus, TranslationKey> = {
   synchronized: "gitHistory.statusSynchronized",
   syncing: "gitHistory.statusSyncing",
@@ -307,7 +328,7 @@ const LOCKSTEP_STATUS_KEY: Record<LockstepStatus, TranslationKey> = {
   disconnected: "gitHistory.statusDisconnected",
 };
 
-export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) {
+export function GitHistory({ projectDir, projectId, remote, authProjectId, onChanged, pullRequest }: Props) {
   const t = useT();
   // Every destructive git question below is asked in the panel's own dialog —
   // the native `confirm()` these used arrives themeless, titled with the page
@@ -315,6 +336,22 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
   // to one unreadable line.
   const { promptText, confirmAction, dialogs } = useDialogs();
   const [commits, setCommits] = useState<GitCommit[]>([]);
+  /** A full page came back, so there is probably at least one more to fetch. */
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  /** Cleared when a page fails, so the observer stops retrying on every scroll. */
+  const [autoPage, setAutoPage] = useState(true);
+  // Read inside `loadMore` rather than closed over, so paging never re-creates
+  // (and re-fires) the callback the scroll sentinel is watching with.
+  const commitsRef = useRef<GitCommit[]>([]);
+  const loadingMoreRef = useRef(false);
+  const sentinelRef = useRef<HTMLButtonElement | null>(null);
+  /**
+   * How many commits a plain refresh re-fetches. A reload after a commit, a
+   * checkout or a lockstep sync would otherwise snap a history the user had
+   * paged deep into back to its first page.
+   */
+  const loadedRef = useRef(COMMIT_PAGE);
   const [branches, setBranches] = useState<GitBranch[]>([]);
   const [worktrees, setWorktrees] = useState<Worktree[]>([]);
   // Git lockstep (#28n): only meaningful for SSH remote projects.
@@ -324,6 +361,10 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
   // #28p D6: null = the Backups list is closed.
   const [backups, setBackups] = useState<BackupRef[] | null>(null);
   const [wtForm, setWtForm] = useState<WorktreeForm | null>(null);
+  // The pull preview: null = closed; `branch` null = the checked-out branch.
+  const [pullTarget, setPullTarget] = useState<{ branch: string | null } | null>(null);
+  const [mergeState, setMergeState] = useState<MergeState | null>(null);
+  const [fetching, setFetching] = useState(false);
   /**
    * Which side's worktrees these are (#23 I2). For a remote project `projectDir`
    * is the **local mirror** while the repo of record is on the host, so resolving
@@ -365,12 +406,22 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
     // `git_worktree_list`, or a worktree probe that failed on its own, blanked the
     // commit list and the branch pills too. Each result now stands or falls alone
     // and only the failures are reported.
-    const [log, br, wt] = await Promise.allSettled([
-      invoke<GitCommit[]>("git_log", { projectDir, limit: 100 }),
+    const want = loadedRef.current;
+    const [log, br, wt, ms] = await Promise.allSettled([
+      invoke<GitCommit[]>("git_log", { projectDir, limit: want, skip: 0 }),
       invoke<GitBranch[]>("git_branches", { projectDir }),
       invoke<Worktree[]>("git_worktree_list", { projectDir, site: wtSite }),
+      invoke<MergeState>("git_merge_state", { projectDir }),
     ]);
-    if (log.status === "fulfilled") setCommits(log.value ?? []);
+    // Best-effort and not reported: a backend without the command just never
+    // shows the merge bar.
+    setMergeState(ms.status === "fulfilled" ? ms.value : null);
+    if (log.status === "fulfilled") {
+      const list = log.value ?? [];
+      setCommits(list);
+      setHasMore(list.length >= want);
+      setAutoPage(true);
+    }
     if (br.status === "fulfilled") setBranches(br.value ?? []);
     if (wt.status === "fulfilled") setWorktrees(wt.value ?? []);
     const failed = [log, br, wt].filter((r) => r.status === "rejected");
@@ -378,9 +429,73 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
     setLoading(false);
   }, [projectDir, wtSite]);
 
+  // Back to one page when the project changes, so a small repo opened after a big
+  // one does not re-ask for the big one's page depth. Declared *before* the load
+  // effect: effects run in order, and `load` reads this depth when it is called.
+  useEffect(() => {
+    loadedRef.current = COMMIT_PAGE;
+    setHasMore(false);
+    setAutoPage(true);
+  }, [projectDir]);
+
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    commitsRef.current = commits;
+  }, [commits]);
+
+  const loadMore = useCallback(async () => {
+    if (!projectDir || loadingMoreRef.current) return;
+    loadingMoreRef.current = true;
+    setLoadingMore(true);
+    try {
+      const skip = commitsRef.current.length;
+      const more = await invoke<GitCommit[]>("git_log", {
+        projectDir,
+        limit: COMMIT_PAGE,
+        skip,
+      });
+      const page = more ?? [];
+      // A commit landing between two pages shifts every later one down by a row,
+      // which `--skip` would hand us twice; hashes settle it.
+      setCommits((prev) => {
+        const seen = new Set(prev.map((c) => c.hash));
+        const next = [...prev, ...page.filter((c) => !seen.has(c.hash))];
+        loadedRef.current = Math.max(loadedRef.current, next.length);
+        return next;
+      });
+      setHasMore(page.length >= COMMIT_PAGE);
+    } catch (e) {
+      setError(String(e));
+      // Stop the observer re-firing against a backend that just refused — the
+      // row stays, and clicking it arms the automatic paging again.
+      setAutoPage(false);
+    } finally {
+      setLoadingMore(false);
+      loadingMoreRef.current = false;
+    }
+  }, [projectDir]);
+
+  // Page the next chunk in when the end of the list comes into view. `root: null`
+  // because the scroller is an ancestor (the side panel's body), and an observer
+  // against the viewport already accounts for every clipping ancestor — which is
+  // also what keeps it quiet in a hidden pane. Re-armed on each page: an observer
+  // reports a *change*, so a sentinel still on screen after the new rows mount
+  // would never fire again and the list would stall one page in.
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el || !hasMore || !autoPage || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) loadMore();
+      },
+      { rootMargin: "200px" },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [hasMore, autoPage, loadMore, commits.length]);
 
   // Load git-lockstep status + subscribe to backend status pushes (#28n).
   useEffect(() => {
@@ -593,6 +708,40 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
     }
   }, [projectId, lockstep?.localHead]);
 
+  // The git bar's Pull button lives in the parent; it asks by bumping a counter.
+  // Seeded with the value at mount, so a remount (view switch) does not replay
+  // an old click.
+  const seenPullRef = useRef(pullRequest);
+  useEffect(() => {
+    if (!pullRequest || pullRequest === seenPullRef.current) return;
+    seenPullRef.current = pullRequest;
+    setPullTarget({ branch: null });
+  }, [pullRequest]);
+  // A project switch closes a preview that belonged to the old repo.
+  useEffect(() => {
+    setPullTarget(null);
+  }, [projectDir]);
+
+  /** Update the tracking refs, so every branch's behind count is current. */
+  async function fetchNow() {
+    setFetching(true);
+    setError(null);
+    try {
+      await invoke("git_fetch", { projectDir, projectId: authProjectId ?? null });
+      await load();
+      onChanged?.();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setFetching(false);
+    }
+  }
+
+  const afterPull = () => {
+    void load();
+    onChanged?.();
+  };
+
   async function checkout(target: string) {
     setLoading(true);
     setError(null);
@@ -801,10 +950,33 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
         >
           {t(graphMode ? "gitHistory.graphModeGraph" : "gitHistory.graphModeList")}
         </button>
+        <button
+          className="toolbar-btn git-history-mode"
+          onClick={() => void fetchNow()}
+          title={t("gitPull.fetchTitle")}
+          disabled={loading || fetching}
+        >
+          {fetching ? t("gitPull.fetchingShort") : t("gitPull.fetch")}
+        </button>
         <button className="toolbar-btn git-history-refresh" onClick={load} title={t("common.refresh")} disabled={loading}>
           ⟳
         </button>
       </div>
+
+      {mergeState?.merging && (
+        <GitMergeBar projectDir={projectDir} state={mergeState} canOpenFiles={!remote} onChanged={afterPull} />
+      )}
+      {pullTarget && !mergeState?.merging && (
+        <GitPullPanel
+          key={`${projectDir}:${pullTarget.branch ?? ""}`}
+          projectDir={projectDir}
+          projectId={authProjectId ?? null}
+          branch={pullTarget.branch}
+          canOpenFiles={!remote}
+          onClose={() => setPullTarget(null)}
+          onDone={afterPull}
+        />
+      )}
 
       {lockstepEligible && (
         <div className="git-lockstep-bar" style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 6px", borderBottom: "1px solid var(--border-color)", fontSize: 10 }}>
@@ -966,7 +1138,27 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
               )}
               {b.name}
             </button>
-          ))}
+          )).flatMap((pill, i) => {
+            // A branch behind its upstream gets a pull chip right after its pill.
+            const b = localBranches[i];
+            if (!b.behind) return [pill];
+            return [
+              pill,
+              <button
+                key={`${b.name}:pull`}
+                className="git-branch-pill git-branch-pull"
+                onClick={() => setPullTarget({ branch: b.name })}
+                disabled={loading || !!mergeState?.merging}
+                title={t("gitPull.branchChipTitle", {
+                  name: b.name,
+                  upstream: b.upstream ?? "",
+                  count: b.behind,
+                })}
+              >
+                ↓{b.behind}
+              </button>,
+            ];
+          })}
           {remoteBranches.map((b) => (
             <button
               key={b.name}
@@ -987,7 +1179,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
       <div className="git-worktree-section">
         <div className="git-worktree-header">
           <span className="git-worktree-title">{t("gitHistory.worktrees")}</span>
-          <UntestedTag />
+          <UntestedTag id="gitHistory.1" />
           {remote && (
             // #23 I2: two repos, two answers. `git_publish`'s "Publish from"
             // selector is the precedent — where the bytes are is not where the
@@ -1067,7 +1259,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
                 >
                   {wt.is_locked && (
                     <span className="git-worktree-flag" aria-label={t("gitHistory.locked")}>
-                      🔒
+                      <LockIcon />
                     </span>
                   )}
                   {wt.is_prunable && (
@@ -1090,7 +1282,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
                         { path: wt.path },
                       )}
                     >
-                      {wt.is_locked ? "🔓" : "🔒"}
+                      {wt.is_locked ? <UnlockIcon /> : <LockIcon />}
                     </button>
                   )}
                   {/* `is_main` is not the question a Remove control has to answer:
@@ -1240,6 +1432,26 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
             </button>
           );
         })}
+        {/* The sentinel *is* the button (as in `BibCards`): scrolling to it pages
+            the next chunk in, and clicking it does the same where there is no
+            IntersectionObserver (jsdom) or where the pane is too short to ever
+            scroll it into view. */}
+        {hasMore && (
+          <button
+            ref={sentinelRef}
+            className="git-commit-row git-commit-more"
+            onClick={() => {
+              setAutoPage(true);
+              loadMore();
+            }}
+            disabled={loadingMore}
+          >
+            {loadingMore
+              ? t("gitHistory.loadingMoreCommits")
+              : t("gitHistory.loadMoreCommits")}
+            <UntestedTag id="gitHistory.loadMoreCommits" />
+          </button>
+        )}
       </div>
 
       {selected && createPortal(
@@ -1297,7 +1509,7 @@ function CommitWindow({ projectDir, commit, onClose, onCheckout, onReworded }: C
     setBusy(true);
     setError(null);
     try {
-      await invoke("git_reword_head", { projectDir, message });
+      await invokeTrusted("git_reword_head", { projectDir, message });
       onReworded();
     } catch (e) {
       setError(String(e));

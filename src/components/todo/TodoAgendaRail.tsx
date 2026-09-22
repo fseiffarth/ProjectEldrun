@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 
 import type { CalendarTask, Occurrence } from "../../types";
-import { useCalendarStore } from "../../stores/calendar";
+import { useCalendarStore } from "../../stores/calendar/calendar";
 import { useSettingsStore } from "../../stores/settings";
 import { useTodoStore } from "../../stores/todo";
-import { formatTime, timePart } from "../../lib/calendarTime";
+import { formatTime, timePart } from "../../lib/calendar/calendarTime";
 import {
   agendaWindow,
   occurrenceCardOf,

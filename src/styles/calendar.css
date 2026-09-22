@@ -330,6 +330,14 @@
   flex: 0 0 auto;
 }
 
+/* The "calendar deleted" notice carries buttons, so the row itself is not one. */
+.cal-notice-undo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: var(--cur-default, default);
+}
+
 /* ── Body: sidebar + view ────────────────────────────────────────────────── */
 
 .cal-body {
@@ -420,9 +428,10 @@
 
 .cal-list-head {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 4px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  margin-bottom: 6px;
   border-top: 1px solid var(--border-subtle);
   padding-top: 8px;
 }
@@ -433,6 +442,20 @@
   color: var(--accent-secondary);
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+.cal-list-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.cal-list-actions .cal-chip {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .cal-list-add {
@@ -470,8 +493,26 @@
   padding: 3px 0;
 }
 
-.cal-list-row:hover .cal-list-del {
+.cal-list-row:hover .cal-list-del,
+.cal-list-row:hover .cal-list-alerts,
+.cal-list-alerts:focus-visible,
+.cal-list-alerts-off {
   visibility: visible;
+}
+
+.cal-list-alerts {
+  visibility: hidden;
+  display: inline-flex;
+  align-items: center;
+}
+
+.cal-list-alerts-icon {
+  width: 13px;
+  height: 13px;
+}
+
+.cal-list-alerts-off {
+  color: var(--text-muted);
 }
 
 .cal-list-del {
@@ -481,23 +522,31 @@
   line-height: 1;
 }
 
-/* A native color input, shrunk to a swatch. */
+/* The calendar's colour as a plain background (set inline), with the native
+   color input stretched over it at zero opacity. The native well itself is
+   never shown: in the live window it painted white while every other surface
+   drew the picked colour. */
 .cal-color-dot {
+  position: relative;
+  box-sizing: border-box;
   width: 12px;
   height: 12px;
-  padding: 0;
   border: 1px solid var(--control-border);
-  background: none;
+  border-radius: 3px;
   cursor: var(--cur-pointer, pointer);
   flex: 0 0 auto;
 }
 
-.cal-color-dot::-webkit-color-swatch-wrapper {
+.cal-color-dot > input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
   padding: 0;
-}
-
-.cal-color-dot::-webkit-color-swatch {
-  border: none;
+  border: 0;
+  opacity: 0;
+  cursor: inherit;
 }
 
 .cal-list-name {
@@ -1527,7 +1576,7 @@
   color: var(--text-secondary);
   background: var(--control-bg);
   border: 1px solid var(--control-border);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   cursor: var(--cur-pointer, pointer);
 }
 

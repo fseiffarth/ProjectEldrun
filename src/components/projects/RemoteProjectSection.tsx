@@ -10,8 +10,8 @@ import { Dropdown } from "../common/Dropdown";
 import { PasswordInput } from "../common/PasswordInput";
 import { Toggle } from "../common/Toggle";
 import { VpnTunnelUpNotice } from "../common/VpnTunnelUpNotice";
-import { useVpnSectionVisible } from "../../stores/vpnStatus";
-import type { ConnState } from "../../stores/remoteStatus";
+import { useVpnSectionVisible } from "../../stores/remote/vpn/vpnStatus";
+import type { ConnState } from "../../stores/remote/remoteStatus";
 import type { useRemoteSession } from "./useRemoteSession";
 import { useT, type TranslationKey } from "../../lib/i18n";
 import { HpcHostToggle } from "./HpcHostToggle";
@@ -229,7 +229,7 @@ export function RemoteProjectSection({
   // target the save row is keyed by — the typed address, since the project does
   // not exist yet — so ticking it here is the same fact as ticking it on the
   // Machines menu's add form, and the very first connect already behaves
-  // (`lib/hpcHost.ts`).
+  // (`lib/remote/hpc/hpcHost.ts`).
   const hpcRow = sshTarget?.host ? (
     <HpcHostToggle
       target={{
@@ -563,7 +563,7 @@ export function RemoteProjectSection({
                     e.preventDefault();
                     void connectSsh();
                   }
-                  if (e.key === "Escape") onClose();
+                  if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); }
                 }}
               />
             </label>
@@ -596,7 +596,7 @@ export function RemoteProjectSection({
                           e.preventDefault();
                           void connectSsh();
                         }
-                        if (e.key === "Escape") onClose();
+                        if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); }
                       }}
                     />
                     <button
@@ -652,7 +652,7 @@ export function RemoteProjectSection({
                       placeholder={t("remoteProjectSection.remotePathPlaceholder")}
                       onChange={(e) => setRemoteChosenPath(e.target.value)}
                       onKeyDown={(e) => {
-                        if (e.key === "Escape") onClose();
+                        if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); }
                       }}
                     />
                   </label>

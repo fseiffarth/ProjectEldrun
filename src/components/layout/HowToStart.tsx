@@ -1,27 +1,43 @@
-import { useEffect } from "react";
-import { HOW_TO_START_STEPS, focusModeTip } from "../../lib/hints";
+import { useModalFocus } from "../../hooks/useModalFocus";
+import { UntestedTag } from "../common/UntestedTag";
+import { useEffect, useState } from "react";
+import { HOW_TO_START_STEPS, focusModeTip } from "../../lib/shortcuts/hints";
 import { useT } from "../../lib/i18n";
+import { PLATFORM } from "../../lib/platform";
+import { probeSuperKeyOwnership } from "../../lib/shortcuts/superKey";
 
 /**
  * The first-run "How to start" instruction: a single scannable modal shown once
  * on the first launch of an empty install, and re-openable from Settings / the
  * gear menu. Reuses the `.modal-backdrop` + `.settings-dialog` split-scroll frame from
- * `SettingsDialog` (and, unlike it, brings its own Esc handler). Content comes
+ * `SettingsDialog`, including shared focus and Escape handling. Content comes
  * from `HOW_TO_START_STEPS` so it stays in lockstep with the Feature Guide.
  */
 export function HowToStart({ onClose }: { onClose: () => void }) {
   const t = useT();
+  const modalRef = useModalFocus(onClose);
+  // On Linux the panel key depends on the desktop (Super, or F9 where the shell
+  // owns Super), and that answer is a backend probe. This dialog opens on the
+  // fresh-install path, possibly before the probe `useKeyboard` fired has
+  // landed — so the tip waits for the answer rather than naming Super to a
+  // GNOME user and correcting itself a moment later.
+  const [keyKnown, setKeyKnown] = useState(PLATFORM !== "linux");
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+    if (PLATFORM !== "linux") return;
+    let live = true;
+    void probeSuperKeyOwnership().then(() => {
+      if (live) setKeyKnown(true);
+    });
+    return () => {
+      live = false;
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, []);
 
   return (
-    <div className="modal-backdrop how-to-start-backdrop" onMouseDown={onClose}>
+    <div className="modal-backdrop how-to-start-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div
+        ref={modalRef}
+        tabIndex={-1}
         className="settings-dialog how-to-start-dialog"
         role="dialog"
         aria-modal="true"
@@ -29,8 +45,8 @@ export function HowToStart({ onClose }: { onClose: () => void }) {
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="settings-title-row">
-          <h2>{t("howToStart.title")}</h2>
-          <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
+          <h2>{t("howToStart.title")} <UntestedTag id="desktop.welcome" /></h2>
+          <button type="button" className="dialog-close-btn" aria-label={t("common.close")} onClick={onClose}>×</button>
         </div>
         {/* Same split-scroll frame as LessonsMenu: `.settings-dialog` clips
             (overflow:hidden, padding 0, gap 0) and this `.dialog-scroll` child
@@ -46,12 +62,15 @@ export function HowToStart({ onClose }: { onClose: () => void }) {
               <div>
                 <div className="how-to-start-step-title">{t(step.titleKey)}</div>
                 {/* Only step4's key has a {tip} placeholder; t() ignores unused params. */}
-                <div className="settings-help">{t(step.bodyKey, { tip: focusModeTip(t) })}</div>
+                <div className="settings-help">
+                  {t(step.bodyKey, { tip: keyKnown ? focusModeTip(t) : "" })}
+                </div>
               </div>
             </li>
           ))}
         </ol>
 
+        <h3 className="project-form-heading">{t("desktop.learnMore")}</h3>
         <div className="settings-link-row">
           <button
             type="button"
@@ -80,10 +99,12 @@ export function HowToStart({ onClose }: { onClose: () => void }) {
           >
             {t("howToStart.lessons")}
           </button>
-          <button type="button" className="how-to-start-got-it" onClick={onClose}>
-            {t("howToStart.gotIt")}
-          </button>
         </div>
+        </div>
+        <div className="dialog-fixed-footer settings-link-row">
+          <button type="button" autoFocus className="settings-btn primary how-to-start-got-it" onClick={onClose}>
+            {t("desktop.startWorking")}
+          </button>
         </div>
       </div>
     </div>

@@ -11,15 +11,14 @@ interface InstalledApp {
 }
 
 type Scope = "project" | "global";
-type ProjectJson = Record<string, unknown>;
 
 interface Props {
   /** File extension including the leading dot, e.g. ".blend". */
   ext: string;
   /** File name, for the dialog heading. */
   fileName: string;
-  /** Path to the project's project.json; null disables the project scope. */
-  localFile: string | null;
+  /** The project whose map the project scope edits; null disables that scope. */
+  projectId: string | null;
   onClose: () => void;
 }
 
@@ -38,16 +37,6 @@ export function execMatchesApp(exec: string, appExec: string): boolean {
   return a.every((token, i) => token === e[i]);
 }
 
-function readDefaultApps(project: ProjectJson | null): Record<string, string> {
-  const raw = project?.default_apps;
-  if (!raw || typeof raw !== "object") return {};
-  const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-    if (typeof v === "string") out[k] = v;
-  }
-  return out;
-}
-
 /**
  * Assign the default app for a file extension, scoped to this project or set
  * globally. A project-scoped mapping overrides the global one for that project
@@ -55,16 +44,15 @@ function readDefaultApps(project: ProjectJson | null): Record<string, string> {
  * applications (parsed from .desktop entries); a manual exec field and a native
  * file picker cover apps not on the list.
  */
-export function SetDefaultAppDialog({ ext, fileName, localFile, onClose }: Props) {
+export function SetDefaultAppDialog({ ext, fileName, projectId, onClose }: Props) {
   const t = useT();
-  const [scope, setScope] = useState<Scope>(localFile ? "project" : "global");
+  const [scope, setScope] = useState<Scope>(projectId ? "project" : "global");
   const [apps, setApps] = useState<InstalledApp[]>([]);
   const [iconDataUrls, setIconDataUrls] = useState<Record<string, string | null>>({});
   const [query, setQuery] = useState("");
   const [exec, setExec] = useState("");
   const [globalApps, setGlobalApps] = useState<Record<string, string>>({});
   const [projectApps, setProjectApps] = useState<Record<string, string>>({});
-  const [projectJson, setProjectJson] = useState<ProjectJson | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // Once the user picks a scope radio themselves, stop auto-selecting it.
@@ -77,18 +65,14 @@ export function SetDefaultAppDialog({ ext, fileName, localFile, onClose }: Props
     invoke<Record<string, string>>("get_default_apps")
       .then(setGlobalApps)
       .catch(() => setGlobalApps({}));
-    if (localFile) {
-      invoke<ProjectJson>("load_project", { localFile })
-        .then((p) => {
-          setProjectJson(p);
-          setProjectApps(readDefaultApps(p));
-        })
-        .catch(() => {
-          setProjectJson(null);
-          setProjectApps({});
-        });
+    // The project map comes from the trusted registry, never the in-folder
+    // project.json (writable by agents, containers, git pulls).
+    if (projectId) {
+      invoke<Record<string, string>>("get_project_default_apps", { projectId })
+        .then(setProjectApps)
+        .catch(() => setProjectApps({}));
     }
-  }, [localFile]);
+  }, [projectId]);
 
   // Open in whichever scope already maps this extension, so reopening the dialog
   // surfaces the saved value instead of an empty project-scope field (a mapping
@@ -97,9 +81,9 @@ export function SetDefaultAppDialog({ ext, fileName, localFile, onClose }: Props
   // Deferred to the maps loading, and disabled once the user picks a scope.
   useEffect(() => {
     if (userPickedScope.current) return;
-    if (localFile && projectApps[ext]) setScope("project");
+    if (projectId && projectApps[ext]) setScope("project");
     else if (globalApps[ext]) setScope("global");
-  }, [ext, localFile, projectApps, globalApps]);
+  }, [ext, projectId, projectApps, globalApps]);
 
   // Seed the exec field with whatever the chosen scope currently maps this
   // extension to, so the dialog opens showing the present value.
@@ -166,12 +150,11 @@ export function SetDefaultAppDialog({ ext, fileName, localFile, onClose }: Props
         else delete next[ext];
         await invoke("save_default_apps", { defaultApps: next });
       } else {
-        if (!localFile) throw new Error(t("setDefaultApp.errNoProjectFile"));
-        const base = projectJson ?? (await invoke<ProjectJson>("load_project", { localFile }));
-        const map = { ...readDefaultApps(base) };
+        if (!projectId) throw new Error(t("setDefaultApp.errNoProjectFile"));
+        const map = { ...projectApps };
         if (nextExec) map[ext] = nextExec;
         else delete map[ext];
-        await invoke("save_project", { localFile, project: { ...base, default_apps: map } });
+        await invoke("set_project_default_apps", { projectId, defaultApps: map });
       }
       onClose();
     } catch (e) {
@@ -197,14 +180,14 @@ export function SetDefaultAppDialog({ ext, fileName, localFile, onClose }: Props
 
         <div className="set-default-app-scope">
           <label
-            className={localFile ? "" : "disabled"}
-            title={localFile ? "" : t("common.noProjectSelected")}
+            className={projectId ? "" : "disabled"}
+            title={projectId ? "" : t("common.noProjectSelected")}
           >
             <input
               type="radio"
               name="default-app-scope"
               checked={scope === "project"}
-              disabled={!localFile}
+              disabled={!projectId}
               onChange={() => {
                 userPickedScope.current = true;
                 setScope("project");

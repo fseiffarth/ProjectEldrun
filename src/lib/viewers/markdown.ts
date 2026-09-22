@@ -164,6 +164,37 @@ type InlineSpans = { codeSpans: string[]; mathSpans: string[]; links: string[] }
 const NUL = "\u0000";
 const mark = (kind: "C" | "M" | "L", idx: number) => `${NUL}${kind}${idx}${NUL}`;
 
+/** Escaped text for an attribute value that may already hold this pass's markers
+ *  (`![$x$](…)` puts a math marker in the alt). Restoring a marker's HTML there
+ *  would let the span's own quotes end the attribute early, so a marker
+ *  contributes only its visible text: the stored HTML minus its tags, which is
+ *  already escaped. */
+function attrText(raw: string, spans: InlineSpans): string {
+  return raw
+    .split(/( [CML]\d+ )/)
+    .map((part, i) => {
+      if (i % 2 === 0) return escapeHtml(part);
+      const idx = Number(part.slice(2, -1));
+      const stored =
+        part[1] === "C" ? spans.codeSpans[idx] : part[1] === "M" ? spans.mathSpans[idx] : spans.links[idx];
+      return stripTags(stored ?? "");
+    })
+    .join("");
+}
+
+/** `html` minus its tags. A character scan, not a regex replace: it never emits
+ *  `<` or `>`, whatever the input, so the result cannot hold a partial tag. */
+function stripTags(html: string): string {
+  let out = "";
+  let inTag = false;
+  for (const ch of html) {
+    if (ch === "<") inTag = true;
+    else if (ch === ">") inTag = false;
+    else if (!inTag) out += ch;
+  }
+  return out;
+}
+
 /** Render inline constructs within already-block-split text. Input is raw
  *  (unescaped) markdown for one block; output is safe HTML. `spans` is passed
  *  only by the recursive link-label render, to share this pass's placeholders. */
@@ -206,8 +237,11 @@ function renderInline(raw: string, spans?: InlineSpans): string {
   );
 
   // Pull links/images out next so their text/url are not mangled by emphasis.
-  text = text.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (_m, alt: string, url: string) => {
-    const altEsc = escapeHtml(alt);
+  // A URL holding a marker (`[a]($x$)`, `![a](`x`)`) is left as literal text: the
+  // marker would otherwise be restored as HTML inside the href/src attribute.
+  text = text.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (m, alt: string, url: string) => {
+    if (url.includes(NUL)) return m;
+    const altEsc = attrText(alt, store);
     const img = imgSrc(url);
     // Local images get a placeholder (no `src`, so they don't 404 against the app
     // origin); the markdown viewer resolves `data-md-src` against the file's dir
@@ -224,7 +258,8 @@ function renderInline(raw: string, spans?: InlineSpans): string {
     const idx = links.push(html) - 1;
     return mark("L", idx);
   });
-  text = text.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (_m, label: string, url: string) => {
+  text = text.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (m, label: string, url: string) => {
+    if (url.includes(NUL)) return m;
     const href = safeHref(url);
     const inner = renderInline(label, store);
     // #49: a link to a local file (relative/absolute path or file: scheme) gets a

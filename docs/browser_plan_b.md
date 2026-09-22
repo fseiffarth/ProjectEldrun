@@ -1120,7 +1120,7 @@ Rejected alternatives and why:
 **What the user is told**, because "the app does what the OS does" is only acceptable if
 it is visible:
 
-- The address bar carries a **VPN chip** whenever `src/stores/vpnStatus.ts` reports an
+- The address bar carries a **VPN chip** whenever `src/stores/remote/vpn/vpnStatus.ts` reports an
   active tunnel, naming the config, and clicking it opens the header's VPN menu. Present
   on every browser tab, not dismissible.
 - The **first** browser tab opened while a tunnel is up shows a one-line notice:

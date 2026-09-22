@@ -90,7 +90,7 @@ the project root, so no walker, manifest or census ever touches it.
   preset); every interpolated value validated *and* `shell_quote`d; list/allocate
   each append a `ws_find` confirmation in the same round trip, because the *path*
   is what everything downstream depends on and `ws_list` layouts differ by version.
-- `lib/hpcWorkspace.ts` + a **Workspace** step in `HpcPipelineWizard`, between
+- `lib/remote/hpc/hpcWorkspace.ts` + a **Workspace** step in `HpcPipelineWizard`, between
   Project and Load data, which is now the step that calls `create_project` —
   because it is what decides the remote root. The integration is one assignment:
   `remoteChosenPath = <workspace path>`.

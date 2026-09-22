@@ -4,12 +4,13 @@ import type { ProjectBox } from "../../types";
 import { BOX_SCOPE_PREFIX } from "../../stores/boxes";
 import { ROOT_SCOPE } from "../../stores/tabs";
 import { useBoxEditorStore } from "../../stores/boxEditor";
-import { usePillDragStore } from "../../stores/pillDrag";
+import { usePillDragStore } from "../../stores/drag/pillDrag";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { useT } from "../../lib/i18n";
 import { StarIcon } from "../layout/StarIcon";
 import { TrashProjectIcon } from "./TrashProjectIcon";
 import { ScopeSetStatusBars } from "./PillStatusBars";
+import { MenuShortcut } from "../common/MenuShortcut";
 
 /** This chip's entry in the shared header hover-menu id (stores/headerHoverMenu). */
 const SCOPE_MENU_ID = "box-scope-chip";
@@ -392,6 +393,7 @@ export function BoxScopeChip({
               {rootStation != null && (
                 <span className="box-chip-menu-count">{rootStation}</span>
               )}
+              <MenuShortcut chord="rootConsole" />
             </button>
             {trash && (
               <button

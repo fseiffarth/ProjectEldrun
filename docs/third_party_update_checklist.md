@@ -39,10 +39,36 @@ tool does that; the **Verify** steps say how without needing a window.
 
 The registry in `src-tauri/src/commands/agents.rs` (`AGENTS`) is the one list of
 installable agents: Claude, Codex, Antigravity, Gemini, Kiro, Cline, Vibe,
-Aider, OpenCode, Cursor, Copilot, Grok, Qwen, OpenClaw, Goose, OpenHands, Pi,
-Plandex, SWE-agent, mini-SWE-agent, Mentat, gpt-engineer, Crush, Amp, Kimi,
-Qoder. Everything below applies per agent; the agent-specific sections that
-follow list what is *additionally* coupled.
+Aider, OpenCode, Cursor, Copilot, Droid, Grok, Qwen, OpenClaw, Auggie, Kilo
+Code, Continue.dev, Junie, CodeBuddy, Goose, Pi, Plandex, SWE-agent,
+mini-SWE-agent, Crush, Amp, Kimi, Qoder, Muse. Everything below applies per
+agent; the agent-specific sections that follow list what is *additionally*
+coupled.
+
+**Added 2026-09-18.** Droid (Factory), Auggie (Augment), Kilo Code, Continue.dev
+(`cn`), Junie (JetBrains) and CodeBuddy (Tencent). Droid was already half here —
+a `LOCAL_DRIVERS` row in `commands/ollama.rs`, a name in `sandbox.rs` and
+`terminal_service.rs` — so it could be driven by a local Ollama model while
+being uninstallable and unlaunchable as itself. Only Droid resumes
+(`--resume`, cwd-scoped, `~/.factory/sessions` mounted in the fence); the other
+five launch only, because a `--continue` whose session store the fence does not
+map exits on "no conversation to continue" and takes the restored tab with it.
+
+**Retired, 2026-09-18.** Mentat (repo archived), gpt-engineer (archived
+2026-04-22, and pinned below Python 3.13) and the OpenHands CLI (upstream says
+it is no longer actively maintained and points at Agent Canvas, a self-hosted
+platform rather than a terminal agent) left the registry. Their metric leaves
+stay in `src/lib/usageMetrics.ts`, which is a decode table for counters already
+written, not a roster. Two more are on watch: Plandex's cloud wound down in
+Oct 2025 (the OSS repo still moves), and Gemini CLI stopped serving free,
+AI Pro and AI Ultra accounts on 2026-06-18 — it still works on a paid API key
+or Code Assist Standard/Enterprise, and Antigravity (`agy`) is Google's
+successor, already in the registry.
+
+**Two names that are not the obvious one.** Kiro installs as `kiro-cli` (it is
+the renamed Amazon Q Developer CLI, so no separate `q` row is needed), and two
+different CLIs install as `grok` — the registry now installs xAI's own Grok
+Build, not the third-party `@vibe-kit/grok-cli` it used to.
 
 **Where**
 
@@ -54,9 +80,9 @@ follow list what is *additionally* coupled.
   say the same thing; they have drifted before.
 - `src/stores/tabs.ts` (`RESUME_ARGS` near the bottom) — per-agent "continue
   last session" flags used on relaunch/restore.
-- `src/lib/agentPrefaces.ts` — default slash commands offered per agent
+- `src/lib/agents/agentPrefaces.ts` — default slash commands offered per agent
   (`/clear`, `/compact`, `/new`, `/status`, …) and `DEFAULT_AGENT_MODELS`.
-- `src/lib/agentPrompt.ts` — `looksLikeDecisionPrompt`: the regexes that turn a
+- `src/lib/agents/prompt/prompt.ts` — `looksLikeDecisionPrompt`: the regexes that turn a
   tab's output tail into the "needs a decision" lamp (pointer glyphs, numbered
   choices, yes/no pairs). Every agent's approval prompt has to keep matching.
 - `mobile-web/src/terminal/{agentModes,statusLine,selectPrompt,readableScreen}.ts`
@@ -87,7 +113,7 @@ follow list what is *additionally* coupled.
 <agent> --version
 <agent> --help | grep -iE 'print|resume|continue|session'   # flags still there?
 cargo test --manifest-path src-tauri/Cargo.toml agents::     # WARMUPS/registry tests
-npx vitest run src/__tests__/agentPrompt.test.ts              # decision-prompt corpus
+npx vitest run src/__tests__/agents/agentPrompt.test.ts              # decision-prompt corpus
 ```
 
 Then open one tab per updated agent, trigger a permission prompt, and check
@@ -107,14 +133,24 @@ resumes.
 
 **Where** `services/agent_session.rs`, `services/agent_usage.rs`,
 `commands/terminal.rs` (`--remote-control`), `commands/ollama.rs`
-(`LOCAL_DRIVERS`), `src/lib/agentPrefaces.ts`, `src/lib/fastMode.ts` is *not*
+(`LOCAL_DRIVERS`), `src/lib/agents/agentPrefaces.ts`, `src/lib/agents/fastMode.ts` is *not*
 Claude's `/fast` — different thing.
 
 **Assumes**
 
+- Root console (`services::root_mcp`): `--mcp-config <inline json>` with an
+  HTTP server whose `headers` value `Bearer ${ELDRUN_ROOT_MCP_TOKEN}` is
+  **expanded from the environment** — verified on 2.1.276 against a logging
+  loopback server (`headersHelper` worked too). If expansion ever stops, the
+  root tools fail with 401 rather than leaking; the fallback is
+  `headersHelper`, never the literal token (it would reach the tmux launcher
+  script on disk).
 - Flags: `--session-id <uuid>`, `--resume <uuid>`, `--permission-mode <mode>`,
   `--dangerously-skip-permissions` (detected, never added),
   `--remote-control` (added by default, setting `agent_remote_control`),
+  `--name=<project>` (host binary only, gated on the probed version ≥
+  `CLAUDE_NAME_FLAG_SINCE` = 2.1.76; below that, or in a container/remote, the
+  tab types `/rename <project>` instead),
   `-p <prompt>`, `-p "/usage" --output-format json`.
 - Permission modes are exactly `default | plan | acceptEdits | auto | dontAsk |
   bypassPermissions` (`is_permission_mode`); anything else is dropped.
@@ -144,8 +180,15 @@ Claude's `/fast` — different thing.
   `<command-name>…<command-args>` reads as `/name args`, `<bash-input>` as
   `! cmd`. A new wrapper tag shows up as a prompt until it is added here.
 - `/usage` in print mode returns a JSON envelope with `result` (panel text),
-  `is_error`, `num_turns: 0`. The panel text itself is parsed on the phone
-  (five-hour / weekly windows, per-model lines) — a re-layout may cost figures.
+  `is_error`, `num_turns: 0` (re-checked live against 2.1.272, 2026-09-15). The
+  panel text is parsed by `shared/usageReport.ts` for the phone's bars, the
+  prompt chart's reset lines and auto-continue (five-hour / weekly windows,
+  per-model lines) — a re-layout may cost figures. `resolveResetAt` places the
+  reset phrase in time: 2.1.272 prints `resets Sep 15, 10:30pm (Europe/Berlin)`
+  (a year only when it is not the current one, the zone always) where earlier
+  builds printed `resets 6:20pm` / `resets Mon 9am`. A shape it does not know
+  resolves to nothing, which silently empties the chart's reset lines and
+  leaves auto-continue unable to arm.
 - Model short names `opus | sonnet | haiku | fable` for the `/model` chips.
 - Preface commands `/clear /compact /context /cost`.
 - Home files: `~/.claude/`, `~/.claude.json` (+ `.bak`, `.backup.N`),
@@ -183,14 +226,16 @@ Claude's `/fast` — different thing.
   the file join the staged shadows instead.
 - Ollama-side: `ollama launch claude --model <m>` is the only way an
   Anthropic-compatible endpoint is stood up for Claude (Ollama ≥ 0.15).
-- Mobile: mode family `default | accept edits | plan | bypass permissions`,
-  `default` draws no mode line; Shift+Tab is the legacy backtab `ESC [ Z`.
+- Mobile: mode family `default | accept edits | plan | auto | bypass
+  permissions` — the cycle's labels `accept edits on`, `plan mode on`, `auto
+  mode on` read out of the 2.1.272 bundle — `default` draws no mode line;
+  Shift+Tab is the legacy backtab `ESC [ Z`.
 
 **Verify**
 
 ```sh
 claude --version
-claude --help | grep -E 'session-id|resume|permission-mode|remote-control|output-format'
+claude --help | grep -E 'session-id|resume|permission-mode|remote-control|output-format|--name'
 claude -p "/usage" --output-format json | head -c 600
 grep -A4 SessionStart ~/.claude/settings.json
 stat -c '%i %a' ~/.claude/.credentials.json   # note the inode, then after a refresh: a new one
@@ -208,9 +253,9 @@ aliases, and anything about where or how credentials are stored.
 
 **Where** `services/agent_session.rs` (`resolve_codex_session`,
 `register_codex_hook`, `codex_hook_state`), `services/codex_bind.rs`,
-`src/lib/codexHooks.ts`, `commands/ollama.rs` (`non_thinking_args`,
+`src/lib/agents/codexHooks.ts`, `commands/ollama.rs` (`non_thinking_args`,
 `write_local_catalog`), `mobile-web/src/terminal/agentModes.ts`,
-`src/lib/agentPrompt.ts` + `src/stores/activity.ts` (the decision lamp).
+`src/lib/agents/prompt/prompt.ts` + `src/stores/activity.ts` (the decision lamp).
 
 **Assumes**
 
@@ -291,17 +336,25 @@ codex --help; codex exec --help | grep skip-git-repo-check
 head -c 300 "$(ls -t ~/.codex/sessions/*/*/*/rollout-*.jsonl | head -1)"
 grep -n 'hooks' ~/.codex/config.toml
 cargo test --manifest-path src-tauri/Cargo.toml codex
-npx vitest run src/__tests__/agentPrompt.test.ts
-npx vitest run src/__tests__/MobileSelectPrompt.test.ts src/__tests__/MobileModelSheetSteps.test.tsx
+npx vitest run src/__tests__/agents/agentPrompt.test.ts
+npx vitest run src/__tests__/mobile/MobileSelectPrompt.test.ts src/__tests__/mobile/MobileModelSheetSteps.test.tsx
 ```
 
 ### 1.3 Gemini CLI
 
 **Assumes** `gemini --resume latest` (index or `latest`, not a uuid),
 `gemini -p`; preface `/clear /compact /stats`; footer says `NN% used`
-without the word "context" (mobile `statusLine.ts`); since ~0.5 the approval
-mode is conveyed only as prompt text, so the phone cannot read it.
-Install via `npm install -g @google/gemini-cli`.
+without the word "context" (mobile `statusLine.ts`). The approval mode is text
+on the row **above** the input box (`ApprovalModeIndicator`):
+`auto-accept edits Shift+Tab to plan|manual`, `plan Shift+Tab to manual`,
+`YOLO Ctrl+Y`, and in default mode only `Shift+Tab to accept edits` — read by
+`statusLine.ts`, walked by the Gemini family in `agentModes.ts` (YOLO is on
+Ctrl+Y, off the Shift+Tab cycle; its prompt turns `*`). Answers open with `✦ `
+(`chatTurns.ts`). Inline unless `ui.useAlternateBuffer`. Read out of the
+installed 0.56.0 bundle and the 0.60.0 npm bundle (2026-09-15; not live).
+Install via `npm install -g @google/gemini-cli`. The 0.59.0 bundle still
+defines `--resume` (alias `-r`) and renders the `NN% used` footer (read out of
+the package, 2026-09-15; not live).
 
 - No transcript is read: the Agents view's last-prompt line comes from the
   prompt echo on the pane's screen (`> …`, parsed by the mobile `chatTurns`),
@@ -313,7 +366,13 @@ Install via `npm install -g @google/gemini-cli`.
 
 **Assumes** `qwen --continue`, `qwen -p`; mode phrases `ask permissions |
 plan | auto-accept | auto | yolo` on the Shift+Tab cycle, and `*` as the
-YOLO input-line marker (mobile `statusLine.ts`). `npm install -g @qwen-code/qwen-code`.
+YOLO input-line marker (mobile `statusLine.ts`, which takes a `*` with a draft
+only beside the word YOLO). Answers open with `◆︎ ` (U+25C6 U+FE0E) since 0.23
+(`chatTurns.ts`). **0.23.4 draws on the alternate screen by default**
+(`ui.useTerminalBuffer`, "Virtualized History"), so Focus hands a Qwen tab to
+Terminal unless `~/.qwen/settings.json` sets `"ui": {"useTerminalBuffer":
+false}` (read out of the 0.23.4 bundle, 2026-09-15; not live).
+`npm install -g @qwen-code/qwen-code`.
 The last-prompt line reads the screen echo, as for Gemini.
 
 ### 1.5 Everyone else
@@ -324,7 +383,7 @@ The last-prompt line reads the screen echo, as for Gemini.
 | OpenCode | `--continue` | `run` | `curl … opencode.ai/install` / `npm i -g opencode-ai` |
 | Copilot | `--continue` | `-p` | `npm i -g @github/copilot` |
 | Cursor agent | `--continue` | `-p` | `curl … cursor.com/install` |
-| Grok | `--session latest` | `-p` | `npm i -g @vibe-kit/grok-cli` |
+| Grok | — (0.0.34 keeps no sessions; `--session` is an unknown option) | `-p` | `npm i -g @vibe-kit/grok-cli` |
 | Antigravity (`agy`) | `--continue` | — | `curl … antigravity.google/cli/install.sh` |
 | Kimi | — | `-p` | `curl … code.kimi.com/install.sh` |
 | Pi | — | `-p` | `npm i -g @mariozechner/pi-coding-agent` |
@@ -334,9 +393,50 @@ The last-prompt line reads the screen echo, as for Gemini.
 | Aider | — | refused (no print mode) | `curl … aider.chat/install.sh` (uv) |
 | Kiro, Cline, OpenClaw, OpenHands, Plandex, SWE-agent, mini-SWE-agent, Mentat, gpt-engineer, Qoder | — | — | see `AGENTS` |
 
-Vibe and OpenCode are full-screen (alternate-screen) TUIs; the phone's Focus
-view cannot read them — a release that changes that is an *opportunity*, not a
-break. Droid, OpenClaw and OpenCode are also `LOCAL_DRIVERS` (Ollama-backed
+A fenced tab resumes only if its session store is mounted into the fence:
+`sandbox::agent_home_mounts` lists each continue-last agent's store (OpenCode
+`~/.local/share/opencode`, Qwen `~/.qwen/projects`, Copilot
+`~/.copilot/session-state`, Cursor `~/.cursor/chats`, Vibe `~/.vibe/logs`;
+Antigravity rides on `~/.gemini`). A CLI that moves its store breaks resume
+silently — re-check the path on update.
+
+**OpenCode's minimal interface** is read by the phone since 2026-09-18
+(`mobile-web/src/terminal/openCodeMini.ts`, verified against 1.18.31 by live
+capture). It assumes, of `opencode --mini`: the status row ` BUILD  223.0K
+(21%) · ctrl+p cmd` as the last row of every frame (agent in capitals, a notice
+slot, tokens used); the turn footer `▣ Build · <model> · 6.2s`; the tool glyphs
+`→ ✱ ◈ % ✗` and `# … Task`; the banner `█▀▀█  OpenCode`; the box hint `Ask
+anything…`; that it wraps its own rows at the pane width; that **no key
+switches its agent** in mini (Tab/Shift+Tab and `<leader>` are the full TUI's);
+that there is **no `/model`** (`/editor /exit /init /new /review /skills` only)
+and the picker opens with ctrl+p → `model` → Enter, filters on typed text and
+clears with ctrl+u. A release that changes any of those degrades the phone's
+Focus view for OpenCode; a release that adds an agent switch to mini would let
+the `fixed` flag in `agentModes.ts` be dropped.
+
+**Antigravity's model and effort** are read by the phone since 2026-09-20
+(`mobile-web/src/terminal/antigravity.ts`, verified against 1.2.7 by a pty
+capture). It assumes, of `agy`: the footer row under the input box, with
+`? for shortcuts` on the left and the model right-aligned, the reasoning effort
+after a ` · ` where the model has one (`Gemini 3.8 Flash · high`); the `/model`
+dialog's heading `Switch Model` and its `Search:` field; unnumbered rows, two
+spaces in, the highlighted one marked `>` and the session's own noted
+`(current)`; the window note `[1-6 of 7 items]`, which is what numbers the rows;
+and the effort slider `Effort ◂ ●━━━◉───○ ▸` over a row of stop labels, moved
+one stop per ←/→ and applied with the model on Enter. The dialog is drawn
+*below* the input box, which is where `inputFrameStart` cuts. A release that
+changes any of those leaves the model chip on the tab's last known model and
+the sheet without its rows. `agy models` lists the model ids and their efforts
+(`gemini-3.1-pro-{high,low}` — no medium), which is the quickest check that the
+list still looks as the sheet expects.
+
+Vibe and Copilot are full-screen (alternate-screen) TUIs, as plain `opencode`
+is; the phone's Focus view cannot read them — a release that changes that is an
+*opportunity*, not a break. Copilot has been alt-screen unconditionally since 1.0.12 (its
+`--alt-screen` flag was removed). Copilot 1.0.81–1.0.82 also offered to restore
+interrupted sessions at startup, a prompt a restored tab would open on; 1.0.83
+turned it off by default. Vibe 2.25.4 still has `-c/--continue` and
+`-p/--prompt` (read out of the wheel, 2026-09-15). Droid, OpenClaw and OpenCode are also `LOCAL_DRIVERS` (Ollama-backed
 tabs via `ollama launch <agent>`).
 
 ---
@@ -344,7 +444,7 @@ tabs via `ollama launch <agent>`).
 ## 2. Ollama
 
 **Where** `commands/ollama.rs` (everything), `services/mail_ai.rs`,
-`src/lib/ollamaStatus.ts`, `src/lib/localDrivers.ts`, `src/lib/gpu.ts`.
+`src/lib/ollamaStatus.ts`, `src/lib/agents/localDrivers.ts`, `src/lib/gpu.ts`.
 Headless probe: `cargo run --example ollama_probe --manifest-path src-tauri/Cargo.toml`.
 
 **Assumes**
@@ -397,6 +497,47 @@ string format, a rename of the systemd unit.
 
 ---
 
+### 2.1 Copilot Language Server (autocomplete, Group M #45a)
+
+**Where** `services/copilot/`, `src/lib/viewers/completion/completionProvider.ts`,
+`scripts/copilot-probe.py`, `docs/context/copilot_completion.md`.
+`commands/copilot.rs`, `CopilotCompletionCard.tsx`. Separate from the Copilot
+agent CLI. Behind the `copilot_completion` experimental flag; the pinned version
+is `services/copilot/process.rs` `SERVER_VERSION` (install dir and npm spec follow it).
+
+**Protocol reference** [GitHub's official server](https://github.com/github/copilot-language-server-release).
+Inspected/probed **1.547.0**, Linux x64, 2026-09-18. Native npm packages list
+Linux/macOS/Windows x64/arm64; upstream also documents Node >=20.8.
+
+**Assumes** stdio Content-Length framing; initialize/initialized; incremental
+didOpen/didChange/didClose plus didFocus; inlineCompletion includes document
+version and returns original items; cancel uses `$/cancelRequest`; shown and
+partial acceptance preserve the full original item, with cumulative UTF-16
+acceptedLength; full acceptance executes the returned command. Status and
+account/billing messages must be handled. Recheck all fields on server upgrades.
+
+**Credential finding** 1.547.0's bundled implementation creates `auth.db` with a
+plaintext writer. Do not infer keychain protection from its keytar dependency.
+The synthetic probe blocks that file and exercises the in-memory fallback;
+authenticated behavior and production credential policy are still unverified.
+
+**Unverified calls** `signIn` (→ `userCode`, `verificationUri`, `command`),
+finishing it via `workspace/executeCommand`, `signOut` and `checkStatus`
+(→ `status`, `user`) are written from upstream's README and tested only
+against a fake server. `didChangeStatus` `kind`/`message` likewise.
+
+**Verify** after bumping `SERVER_VERSION`, the real server inside the real fence:
+`ELDRUN_COPILOT_INSTALL=<npm prefix> cargo test --manifest-path src-tauri/Cargo.toml --lib copilot -- --ignored`
+(initialize + unauthenticated error 1000 through `session.rs`). Also
+`python3 scripts/copilot-probe.py /absolute/path/to/copilot-language-server`
+without launching Eldrun. It currently verifies initialization, unsaved document
+sync, unauthenticated error 1000 and cancellation -32800 only. Before release,
+also verify device sign-in/sign-out, credential persistence policy, exclusions,
+workspace filesystem reads, quota messages and accepted-item offsets against a
+real signed-in session. Never capture tokens or raw protocol logs.
+
+---
+
 ## 3. Tailscale (Eldrun Mobile)
 
 **Where** `services/mobile_control/config.rs` (`verify_tailscale_serve`,
@@ -428,7 +569,7 @@ should treat as eligible or not.
 ## 4. tmux
 
 **Where** `services/tmux_local.rs`, `services/remote.rs` (remote tabs),
-`src/lib/tmuxSession.ts`, `services/mobile_control/*` (phone replay),
+`src/lib/terminal/tmuxSession.ts`, `services/mobile_control/*` (phone replay),
 `docs/context/tmux_sessions.md`.
 
 **Assumes** `tmux -V` parses as `tmux <major>.<minor>[letter]` (`next-3.4`
@@ -438,7 +579,12 @@ from the shell instead); `history-limit` option; `ls -F …`, `kill-session -t`,
 new sessions inherit the *server's* global environment; the client refuses an
 argv over `MAX_IMSGSIZE` (16384 bytes) with `command too long`, which is why a
 long command line (a fenced agent's bubblewrap argv) is moved into
-`<state_dir>/tmux-launch/<session>.sh` (`tmux_local::TMUX_ARGV_LIMIT`).
+`<state_dir>/tmux-launch/<session>.sh` (`tmux_local::TMUX_ARGV_LIMIT`). That
+script is on disk, so `tmux_local::SECRET_ENV` values never go into it. The pane
+runs its command through `sh -c` and follows it with the login shell; after a
+fenced command it first drains the input queue with `stty -g`, `stty raw -echo
+min 0 time 0` and `cat` (POSIX `stty`, where `min 0 time 0` makes an empty queue
+read as end-of-file).
 
 **Verify** `tmux -V`; `cargo test --manifest-path src-tauri/Cargo.toml tmux`.
 Also check the remote host's tmux, which is usually older.
@@ -491,12 +637,13 @@ resolves; the package names above still resolve (`apt-cache policy <pkg>`,
 
 ## 7. bubblewrap (agent fence)
 
-**Where** `services/agent_fence.rs`, `src/lib/agentFence.ts`,
+**Where** `services/agent_fence.rs`, `src/lib/agents/agentFence.ts`,
 `docs/agent_fence_plan.md`.
 
 **Assumes** `bwrap` flags `--ro-bind --ro-bind-try --bind --bind-try --dev
---proc --tmpfs --symlink --unshare-pid --die-with-parent --new-session
---chdir`; unprivileged user namespaces allowed (AppArmor on Ubuntu ≥ 23.10
+--proc --tmpfs --symlink --unshare-pid --die-with-parent --chdir` — **not**
+`--new-session` (see `docs/context/agent_authority.md`: it costs the agent
+`SIGWINCH`; `TIOCSTI` is handled by the tmux pane's drain instead); unprivileged user namespaces allowed (AppArmor on Ubuntu ≥ 23.10
 restricts them); missing/unusable bwrap **fails closed**. The per-agent home
 list in §1 is what the fence exposes. A `--bind` of a single *file* pins its
 inode and makes `rename(2)` onto it `EBUSY` — which is why the config shadows
@@ -563,7 +710,7 @@ project and run the lockstep matrix (`docs/git_lockstep_case_matrix.md`).
 ## 10. GPU tooling, SLURM, HPC probes
 
 **Where** `src-tauri/src/gpustat.rs`, `sysstat.rs`, `services/remote_usage.rs`,
-`commands/slurm.rs`, `src/lib/slurm.ts`, `services/hpc_mode.rs`,
+`commands/slurm.rs`, `src/lib/remote/hpc/slurm.ts`, `services/hpc_mode.rs`,
 `docs/context/hpc_careful_mode.md`.
 
 **Assumes**
@@ -588,7 +735,7 @@ src-tauri/Cargo.toml -- gpustat slurm`.
 
 ## 11. TeX toolchain
 
-**Where** `commands/tex.rs`, `commands/synctex.rs`, `src/lib/texPdfLink.ts`,
+**Where** `commands/tex.rs`, `commands/synctex.rs`, `src/lib/viewers/tex/texPdfLink.ts`,
 `src/lib/viewers/*`, `docs/context` (none) — see `src-tauri/CLAUDE.md`.
 
 **Assumes** `latexmk` argv per engine (pdflatex/xelatex/lualatex, shell-escape
@@ -623,7 +770,7 @@ against a test account, then the `docs/mail_qa_gmail.md` checklist;
 
 ## 13. CalDAV servers
 
-**Where** `services/caldav.rs`, `commands/caldav.rs`, `src/lib/caldav*.ts`,
+**Where** `services/caldav.rs`, `commands/caldav.rs`, `src/lib/calendar/caldav*.ts`,
 `docs/context/caldav.md`.
 
 **Assumes** RFC 4791/6578 REPORT bodies, `/.well-known/caldav` discovery,
@@ -693,7 +840,7 @@ prints (parsed to learn the account); token env vars honoured by each CLI.
 
 ## 16. Python environment tooling
 
-**Where** `commands/python.rs`, `src/lib/pythonRun.ts`.
+**Where** `commands/python.rs`, `src/lib/terminal/pythonRun.ts`.
 
 **Assumes** `conda env list` output shape (`#` comments, `name  prefix`),
 `poetry env info`, active venv detection; interpreter precedence is ranked in
@@ -721,7 +868,7 @@ restructure or a `spellbook` bump.
 
 ## 18. Agent Skills
 
-**Where** `services/skills.rs`, `commands/skills.rs`, `src/lib/skills.ts`,
+**Where** `services/skills.rs`, `commands/skills.rs`, `src/lib/agents/skills.ts`,
 `docs/skills_plan.md`.
 
 **Assumes** the `SKILL.md` frontmatter (`name`, `description`), install

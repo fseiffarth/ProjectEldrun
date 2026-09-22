@@ -1034,7 +1034,8 @@ pub async fn list_orphan_partial_blobs() -> Vec<PartialBlob> {
 
 /// Delete an orphaned partial layer (the main `-partial` file plus its per-chunk
 /// `-partial-<N>` siblings) to reclaim disk. Validated to a file named `*-partial`
-/// inside a `blobs` directory so it can't be used to remove anything else.
+/// inside one of the known Ollama blob directories, so it can't be used to remove
+/// anything else — the check matters because the removal may run elevated.
 #[tauri::command]
 pub async fn delete_partial_blob(path: String) -> Result<(), String> {
     let p = std::path::Path::new(&path);
@@ -1047,27 +1048,86 @@ pub async fn delete_partial_blob(path: String) -> Result<(), String> {
         return Err("not a partial blob".into());
     }
     let dir = p.parent().ok_or("no parent directory")?;
-    if dir.file_name().and_then(|n| n.to_str()) != Some("blobs") {
-        return Err("not inside a blobs directory".into());
+    let canon = |d: &std::path::Path| std::fs::canonicalize(d).unwrap_or_else(|_| d.to_path_buf());
+    let dir_canon = canon(dir);
+    if !ollama_blob_dirs().iter().any(|d| canon(d) == dir_canon) {
+        return Err("not inside an Ollama blobs directory".into());
     }
-    let mut removed = false;
+    let files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir_canon)
+        .map_err(|e| e.to_string())?
+        .flatten()
+        .filter(|entry| is_partial_file_of(&entry.file_name().to_string_lossy(), &name))
+        .map(|entry| entry.path())
+        .collect();
+    if files.is_empty() {
+        return Err("nothing to remove".into());
+    }
+    remove_blob_files(&files)
+}
+
+/// `fname` is the main `<stem>-partial` file or one of its `-partial-<N>` chunk
+/// records.
+fn is_partial_file_of(fname: &str, partial_name: &str) -> bool {
+    fname == partial_name
+        || fname
+            .strip_prefix(partial_name)
+            .and_then(|rest| rest.strip_prefix('-'))
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Remove Ollama blob files, escalating once for the ones this user may not
+/// delete. The system service (`ollama.service`) keeps its cache under
+/// `/usr/share/ollama`, owned by the `ollama` user with a `755` blobs dir, so a
+/// plain unlink gets EACCES and the partial reappears on every listing. Only
+/// ever reached from an explicit Delete click, so the one `pkexec` prompt is
+/// the user's own action, never a background one.
+fn remove_blob_files(files: &[std::path::PathBuf]) -> Result<(), String> {
+    let mut denied: Vec<&std::path::PathBuf> = Vec::new();
     let mut last_err: Option<String> = None;
-    if let Ok(rd) = std::fs::read_dir(dir) {
-        for entry in rd.flatten() {
-            let fname = entry.file_name().to_string_lossy().to_string();
-            if fname == name || fname.starts_with(&format!("{name}-")) {
-                match std::fs::remove_file(entry.path()) {
-                    Ok(()) => removed = true,
-                    Err(e) => last_err = Some(e.to_string()),
-                }
-            }
+    for f in files {
+        match std::fs::remove_file(f) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => denied.push(f),
+            Err(e) => last_err = Some(e.to_string()),
         }
     }
-    if removed {
-        Ok(())
-    } else {
-        Err(last_err.unwrap_or_else(|| "nothing to remove".into()))
+    if !denied.is_empty() {
+        remove_blob_files_elevated(&denied)?;
     }
+    match last_err {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn remove_blob_files_elevated(files: &[&std::path::PathBuf]) -> Result<(), String> {
+    if !crate::paths::binary_on_path("pkexec") {
+        return Err(
+            "permission denied: these files belong to the Ollama system service, and pkexec is not available to remove them".into(),
+        );
+    }
+    let status = std::process::Command::new("pkexec")
+        .arg("rm")
+        .arg("-f")
+        .arg("--")
+        .args(files)
+        .status()
+        .map_err(|e| format!("pkexec: {e}"))?;
+    match status.code() {
+        Some(0) => Ok(()),
+        // pkexec: 126 = the auth dialog was dismissed, 127 = not authorized.
+        Some(126) | Some(127) => Err(
+            "permission denied: these files belong to the Ollama system service, and authorization was not granted".into(),
+        ),
+        _ => Err(format!("removing the partial layer failed ({status})")),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn remove_blob_files_elevated(_files: &[&std::path::PathBuf]) -> Result<(), String> {
+    Err("permission denied: these files belong to another user (the Ollama service)".into())
 }
 
 /// Forget an interrupted pull (e.g. the user dismisses it, or it finished).
@@ -1145,11 +1205,14 @@ fn registry_layer_digests(model: &str) -> Result<Vec<String>, String> {
 }
 
 /// Delete the `*-partial` (and per-chunk `*-partial-<N>`) files matching any of
-/// the given `sha256:<hex>` digests, across all known blob directories.
+/// the given `sha256:<hex>` digests, across all known blob directories. Files the
+/// system service owns go through [`remove_blob_files`]'s one elevated retry —
+/// this runs only from the user's Delete on a paused download.
 fn delete_partials_for_digests(digests: &[String]) {
     // Blob files are named `sha256-<hex>`; the manifest gives `sha256:<hex>`.
     let stems: std::collections::HashSet<String> =
         digests.iter().map(|d| d.replace(':', "-")).collect();
+    let mut files = Vec::new();
     for dir in ollama_blob_dirs() {
         let Ok(rd) = std::fs::read_dir(&dir) else {
             continue;
@@ -1163,9 +1226,12 @@ fn delete_partials_for_digests(digests: &[String]) {
                 continue;
             };
             if stems.contains(rest) {
-                let _ = std::fs::remove_file(entry.path());
+                files.push(entry.path());
             }
         }
+    }
+    if !files.is_empty() {
+        let _ = remove_blob_files(&files);
     }
 }
 
@@ -2826,16 +2892,9 @@ pub async fn list_ollama_models() -> Result<Vec<String>, String> {
 
 // ── Local code/text autocomplete (TODO Group M #45) ──────────────────────────
 //
-// DECISION A: completion is LOCAL OLLAMA ONLY and OPT-IN. We reuse `ollama_http`
-// against the local `/api/chat` endpoint — no remote endpoint is ever contacted.
-// The frontend gates the call behind a per-type `autocomplete` setting (default
-// OFF) and runs it against whichever model is currently loaded in memory; if none
-// is loaded / Ollama isn't reachable this returns `not_running` and the UI shows a
-// "load a local model" hint.
-//
-// We use /api/chat (not /api/generate) with a dedicated system role: a general
-// instruct/chat model like llama3.2 otherwise reads the surrounding text as a
-// *task* and replies "Here is the reformatted version…" instead of continuing it.
+// Opt-in completion uses the configured, policy-checked Ollama endpoint, with
+// no cloud fallback. Native insert-capable models use /api/generate; chat models
+// use a dedicated system role. Both streams are cancellable at the socket.
 
 /// System message that turns a general instruct/chat model into a fill-in-the-
 /// middle completion engine: it must INSERT between BEFORE and AFTER (not author a
@@ -2847,6 +2906,7 @@ editor. You receive the text BEFORE the cursor and the text AFTER the cursor. Ou
 to INSERT at the cursor so that BEFORE + your insertion + AFTER reads as one correct, natural, continuous \
 piece of text. Continue directly from the end of BEFORE and join smoothly into the start of AFTER. Insert \
 exactly what the TASK asks for and no more. Never repeat, rewrite, or quote any text from BEFORE or AFTER. \
+Keep the natural language of the surrounding document; never translate it. \
 No preamble, no quotes, no code fences, no explanations, no labels.";
 
 /// How much of a completion to generate (#45 modes). Chosen per file type in
@@ -2895,12 +2955,32 @@ fn is_mid_sentence(prefix: &str) -> bool {
     }
 }
 
-/// Line-comment token(s) for `language`, used to recognise an "intent comment" the
-/// user wrote to describe the code they want next (e.g. `// new for loop to compute
-/// the sum`). Known code languages map to their comment syntax; prose-ish languages
-/// (markdown / plain text / unknown-empty) return an empty slice so headings like
-/// `# Title` are never mistaken for a code-intent comment; any other named (but
-/// unrecognised) language falls back to the two most common tokens. Pure + tested.
+/// Prose needs chat instructions even when the loaded model supports FIM.
+fn is_completion_prose(language: &str) -> bool {
+    matches!(language.to_ascii_lowercase().as_str(), "" | "text" | "plain" | "txt" | "markdown" | "md" | "mdx" | "tex" | "latex" | "rst")
+}
+
+/// Byte boundary of the first line/sentence end. Wait for lookahead after a
+/// period so a decimal split across stream chunks is not cut in half.
+fn completion_stop(text: &str, prose: bool, done: bool) -> Option<usize> {
+    for (at, ch) in text.char_indices() {
+        if ch == '\n' || ch == '\r' { return Some(at); }
+        if prose && matches!(ch, '.' | '!' | '?' | '。' | '！' | '？') {
+            let end = at + ch.len_utf8();
+            let next = text[end..].chars().next();
+            if matches!(ch, '。' | '！' | '？')
+                || next.is_some_and(char::is_whitespace)
+                || (done && next.is_none())
+            {
+                return Some(end);
+            }
+        }
+    }
+    None
+}
+
+/// Line-comment tokens used to recognise code-intent comments. Prose headings
+/// are not comments; unknown code languages use the two most common tokens.
 fn line_comment_tokens(language: &str) -> &'static [&'static str] {
     match language.to_ascii_lowercase().as_str() {
         "rust" | "c" | "cpp" | "c++" | "h" | "hpp" | "java" | "javascript" | "js" | "jsx"
@@ -2952,7 +3032,7 @@ fn strip_comment_line(line: &str, tokens: &[&str]) -> Option<String> {
 /// so a lone `//` or a `// ----` divider never triggers). Pure + tested.
 fn trailing_comment_intent(prefix: &str, language: &str) -> Option<String> {
     let tokens = line_comment_tokens(language);
-    if tokens.is_empty() {
+    if is_completion_prose(language) || tokens.is_empty() {
         return None;
     }
     let lines: Vec<&str> = prefix.split('\n').collect();
@@ -3116,7 +3196,10 @@ the end of that function or scope; do not continue past it."
 insertion; never output, quote, or repeat them):\n{context}\n"
         )
     };
-    format!("Language: {lang}\n{task}\n\n{reference}BEFORE:\n{prefix}\n\nAFTER:\n{suffix}")
+    let prose = if is_completion_prose(language) {
+        "Continue prose in the natural language of BEFORE and AFTER, even when references use another language. Preserve Markdown/LaTeX markup. Do not translate or switch to English.\n"
+    } else { "" };
+    format!("Language: {lang}\n{prose}{task}\n\n{reference}BEFORE:\n{prefix}\n\nAFTER:\n{suffix}")
 }
 
 /// Strip wrapping artefacts a chat model sometimes adds around a raw completion:
@@ -3206,203 +3289,183 @@ fn trim_context_overlap(prefix: &str, suffix: &str, completion: &str) -> String 
     c.to_string()
 }
 
-/// Single-shot local completion: given the text around the caret, ask the local
-/// Ollama `model` for the insertion. Local-only (`ollama_http` talks to
-/// 127.0.0.1:11434); returns `not_running` when Ollama isn't reachable.
+/// Reserve before starting so a frontend abort can cancel even before the
+/// generation command has arrived. Reservations expire if the caller disappears.
 #[tauri::command]
+pub fn prepare_text_completion() -> Result<String, String> {
+    crate::services::text_completion::reserve()
+}
+
+#[tauri::command]
+pub fn cancel_text_completion(request_id: String) {
+    crate::services::text_completion::cancel(&request_id);
+}
+
+/// Preserve native FIM whitespace. Chat output still needs conservative wrapper
+/// cleanup; withhold incomplete fence/preamble lines while tokens arrive.
+fn completion_preview(raw: &str, fim: bool, done: bool, prefix: &str, suffix: &str) -> String {
+    if fim {
+        return raw.to_string();
+    }
+    if !done && !raw.contains('\n') {
+        let first = raw.trim_start().to_ascii_lowercase();
+        if first.starts_with('`')
+            || [
+                "here is",
+                "here's",
+                "here are",
+                "sure",
+                "certainly",
+                "of course",
+                "continuation",
+                "the continuation",
+                "the completed",
+                "the reformatted",
+            ]
+            .iter()
+            .any(|p| p.starts_with(&first) || first.starts_with(p))
+        {
+            return String::new();
+        }
+    }
+    let cleaned = clean_completion(raw);
+    // Do not flicker by removing a suffix match that may still grow. The final
+    // snapshot applies both seams before the frontend marks it finished.
+    trim_context_overlap(prefix, if done { suffix } else { "" }, &cleaned)
+}
+
+fn completion_body(
+    prefix: &str,
+    suffix: &str,
+    model: &str,
+    language: &str,
+    mode: CompletionMode,
+    context: &str,
+    fim: bool,
+) -> serde_json::Value {
+    let intent = trailing_comment_intent(prefix, language).is_some();
+    let cap = if intent {
+        mode.num_predict().max(CompletionMode::Block.num_predict())
+    } else {
+        mode.num_predict()
+    };
+    let mut body = serde_json::json!({
+        "model": model, "stream": true, "think": false,
+        "options": { "temperature": 0.1, "num_predict": cap }
+    });
+    if fim {
+        body["prompt"] = prefix.into();
+        body["suffix"] = suffix.into();
+        if mode == CompletionMode::Sentence && !intent {
+            body["options"]["stop"] = serde_json::json!(["\n"]);
+        }
+    } else {
+        body["messages"] = serde_json::json!([
+            { "role": "system", "content": COMPLETION_SYSTEM },
+            { "role": "user", "content": completion_prompt(prefix, suffix, language, mode, context) }
+        ]);
+    }
+    body
+}
+
+/// Streaming completion through the configured Ollama endpoint. Insert support
+/// comes from /api/show capabilities, carried by list_ollama_models_detailed.
+/// Attached references stay on the chat path to avoid injecting prose into raw
+/// source. Unsupported FIM falls back to chat before any ghost is published.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn complete_text(
+    window: tauri::WebviewWindow,
     prefix: String,
     suffix: String,
     model: String,
     language: String,
     mode: Option<String>,
     context: Option<Vec<ContextFile>>,
+    insert: Option<bool>,
+    request_id: String,
+    candidate: Option<u32>,
+    project_id: Option<String>,
 ) -> Result<String, String> {
-    let mode = CompletionMode::parse(mode.as_deref().unwrap_or("sentence"));
-    let context_block = context
-        .as_deref()
-        .map(build_context_block)
-        .unwrap_or_default();
-    let user = completion_prompt(&prefix, &suffix, &language, mode, &context_block);
-    // Implementing a comment needs room for a whole statement/block even in the
-    // conservative Sentence mode, so give intent completions at least the Block cap.
-    let num_predict = if trailing_comment_intent(&prefix, &language).is_some() {
-        mode.num_predict().max(CompletionMode::Block.num_predict())
-    } else {
-        mode.num_predict()
-    };
-    // `/api/chat` with a system role keeps a chat model from treating the text as
-    // a task to rewrite. `stream: false` returns one JSON object; low temperature
-    // + a mode-scaled output cap keep completions tight and deterministic.
-    let body = serde_json::json!({
-        "model": model,
-        "stream": false,
-        "messages": [
-            { "role": "system", "content": COMPLETION_SYSTEM },
-            { "role": "user", "content": user }
-        ],
-        "options": { "temperature": 0.1, "num_predict": num_predict }
-    })
-    .to_string();
-    let response = ollama_http("POST", "/api/chat", Some(&body))?;
-    let v: serde_json::Value =
-        serde_json::from_str(&response).map_err(|e| format!("ollama json: {e}"))?;
-    let text = v["message"]["content"].as_str().unwrap_or("");
-    let text = clean_completion(text);
-    Ok(trim_context_overlap(&prefix, &suffix, &text))
-}
-
-// ── Local grammar / spelling check (TODO Group M #45 follow-up) ───────────────
-//
-// Like the autocomplete above, this is LOCAL OLLAMA ONLY and OPT-IN: it reuses
-// `ollama_http` against 127.0.0.1's `/api/chat`, never a remote endpoint. The
-// editor sends the document text; the model returns a JSON list of issues, each
-// with the offending substring, a category (spelling/grammar/style), a one-line
-// message, and a suggested fix. The frontend resolves each issue to a character
-// range and underlines it (colour by category). Offsets are NOT asked of the
-// model — LLMs count characters unreliably — so we send the text with 1-based
-// line-number prefixes and the model reports WHICH line each issue is on, which
-// the frontend resolver uses to disambiguate duplicates.
-
-/// One proofreading issue the local model found. `bad` is the exact offending
-/// substring as it appears in the source (so the frontend can locate it); `line`
-/// is its 1-based line in the submitted text, used as a resolution hint.
-#[derive(serde::Serialize, Clone, PartialEq, Debug)]
-pub struct GrammarIssue {
-    /// 1-based line number in the submitted text.
-    pub line: u32,
-    /// The exact offending text as it appears in the source.
-    pub bad: String,
-    /// Suggested replacement ("" when the fix is simply to delete `bad`).
-    pub suggestion: String,
-    /// "spelling" | "grammar" | "style" (anything else is normalised to "grammar").
-    pub category: String,
-    /// Short human-readable explanation of the problem.
-    pub message: String,
-}
-
-/// Largest document (chars) we submit for a grammar check, so a huge file can't
-/// blow past a small local model's context window. Lines beyond the cap are not
-/// checked; because the cap only drops a trailing slice, the 1-based line numbers
-/// of everything before it stay valid for the frontend resolver.
-const MAX_GRAMMAR_CHARS: usize = 12000;
-
-/// System message turning a chat model into a strict proofreader that emits only
-/// machine-readable JSON. Pure + sent as the chat `system` role.
-const GRAMMAR_SYSTEM: &str = "You are a meticulous proofreader inside a text editor. You receive a \
-document whose lines are each prefixed with \"<n>: \" (a 1-based line number then a colon and a space). \
-Find ONLY genuine spelling, grammar, and punctuation mistakes — do not rewrite for style preference, do \
-not flag correct text, and do not invent issues. Respond with ONLY a JSON array (no prose, no code \
-fences) of objects, each exactly: {\"line\": <number>, \"bad\": \"<exact text from the document WITHOUT \
-the line-number prefix>\", \"suggestion\": \"<corrected replacement for bad>\", \"category\": one of \
-\"spelling\", \"grammar\", \"style\", \"message\": \"<short reason>\"}. The \"bad\" string must be copied \
-verbatim from the document so it can be located, and kept as short as possible (the smallest span that \
-contains the error). If there are no mistakes, respond with exactly [].";
-
-/// Per-language preamble appended to the user message so the model ignores markup
-/// it shouldn't proofread (LaTeX commands, Markdown syntax). Pure + tested.
-fn grammar_language_hint(language: &str) -> &'static str {
-    match language {
-        "latex" | "tex" => {
-            "This is a LaTeX document: ignore commands (\\command), math (between $...$ or \\[...\\]), \
-labels, citations, and environment markers — proofread only the human-readable prose.\n"
-        }
-        "markdown" => {
-            "This is Markdown: ignore code spans/blocks, link/image syntax, and formatting markers — \
-proofread only the human-readable prose.\n"
-        }
-        _ => "",
-    }
-}
-
-/// Prefix each line of `text` with its 1-based number and a colon, so the model
-/// can report which line an issue is on. The numbering matches the frontend's
-/// notion of a line (split on '\n'), so the resolver's line hint lines up. Pure +
-/// tested.
-fn number_lines(text: &str) -> String {
-    let mut out = String::with_capacity(text.len() + text.len() / 8 + 8);
-    for (i, line) in text.split('\n').enumerate() {
-        out.push_str(&format!("{}: {}\n", i + 1, line));
-    }
-    out
-}
-
-/// Extract the JSON array from a model reply that may carry stray prose or code
-/// fences, then build issues from it. Tolerant: a reply with no array, or a
-/// single malformed object, yields the issues that DID parse (a failed check
-/// shows fewer/no marks rather than erroring). The category is normalised to one
-/// of the three known kinds and entries with an empty `bad` are dropped. Pure +
-/// tested.
-fn parse_grammar_issues(raw: &str) -> Vec<GrammarIssue> {
-    let start = match raw.find('[') {
-        Some(i) => i,
-        None => return Vec::new(),
-    };
-    let end = match raw.rfind(']') {
-        Some(i) => i,
-        None => return Vec::new(),
-    };
-    if end <= start {
-        return Vec::new();
-    }
-    let arr: Vec<serde_json::Value> = serde_json::from_str(&raw[start..=end]).unwrap_or_default();
-    arr.into_iter()
-        .filter_map(|v| {
-            let bad = v["bad"].as_str().unwrap_or("").to_string();
-            if bad.trim().is_empty() {
-                return None;
+    use crate::services::text_completion;
+    use tauri::Emitter;
+    let event = format!("text-completion-{request_id}");
+    text_completion::run(request_id, async move {
+        let settings = read_settings().unwrap_or_default();
+        let local_only = project_id.as_ref().and_then(|id| settings.completion_project_policies.as_ref()?.get(id))
+            .is_some_and(|policy| policy.local_only);
+        let addr = resolve_ollama_addr(settings.ollama_host.as_deref(),
+            !local_only && settings.ollama_allow_remote_host.unwrap_or(false))?;
+        let client = text_completion::client()?;
+        let mode = CompletionMode::parse(mode.as_deref().unwrap_or("sentence"));
+        let context = context
+            .as_deref()
+            .map(build_context_block)
+            .unwrap_or_default();
+        // Bound independently of the UI for callers other than the text viewer.
+        let prefix = bounded_completion_prefix(&prefix);
+        let suffix = truncate_chars(&suffix, 4096);
+        let prose = is_completion_prose(&language);
+        let sentence = mode == CompletionMode::Sentence && trailing_comment_intent(&prefix, &language).is_none();
+        // Prose always uses chat so language/markup instructions are effective.
+        let fim = !prose && insert == Some(true) && context.is_empty() && !suffix.is_empty();
+        for use_fim in if fim { vec![true, false] } else { vec![false] } {
+            let mut body =
+                completion_body(&prefix, &suffix, &model, &language, mode, &context, use_fim);
+            let candidate = candidate.unwrap_or(0).min(2);
+            body["options"]["seed"] = serde_json::json!(candidate + 1);
+            if candidate > 0 {
+                body["options"]["temperature"] = serde_json::json!(0.5);
             }
-            let line = v["line"].as_u64().unwrap_or(1).max(1) as u32;
-            let category = match v["category"].as_str().unwrap_or("grammar") {
-                "spelling" => "spelling",
-                "style" => "style",
-                _ => "grammar",
+            let endpoint = if use_fim { "generate" } else { "chat" };
+            let mut published = false;
+            let result = text_completion::stream(
+                &client,
+                &format!("http://{addr}/api/{endpoint}"),
+                &body,
+                |raw, done| {
+                    let mut text = completion_preview(raw, use_fim, done, &prefix, &suffix);
+                    let stop = sentence.then(|| completion_stop(&text, prose, done)).flatten();
+                    if let Some(end) = stop { text.truncate(end); }
+                    published |= !text.is_empty();
+                    // Target only the requesting editor window. IPC Channels bypass
+                    // the embedded browser's origin ACL (see browser.rs tests).
+                    window
+                        .emit_to(window.label(), &event, text)
+                        .map_err(|e| e.to_string())?;
+                    Ok(stop.is_some())
+                },
+            )
+            .await;
+            match result {
+                Ok(raw) => {
+                    let mut text = completion_preview(&raw, use_fim, true, &prefix, &suffix);
+                    if sentence {
+                        if let Some(end) = completion_stop(&text, prose, true) { text.truncate(end); }
+                    }
+                    return Ok(text);
+                }
+                Err(e)
+                    if use_fim
+                        && !published
+                        && (e.contains("400") || e.contains("does not support insert")) =>
+                {
+                    continue
+                }
+                Err(e) => return Err(e),
             }
-            .to_string();
-            Some(GrammarIssue {
-                line,
-                bad,
-                suggestion: v["suggestion"].as_str().unwrap_or("").to_string(),
-                category,
-                message: v["message"].as_str().unwrap_or("").to_string(),
-            })
-        })
-        .collect()
+        }
+        unreachable!("chat always returns")
+    })
+    .await
 }
 
-/// Single-shot local grammar/spelling check: send the document `text` to the
-/// local Ollama `model` and return the issues it found. Local-only (`ollama_http`
-/// talks to 127.0.0.1:11434); returns `not_running` when Ollama isn't reachable.
-/// `language` (the file's syntax language, e.g. "latex"/"markdown") tailors the
-/// prompt so markup isn't proofread as prose.
-#[tauri::command]
-pub async fn check_grammar(
-    text: String,
-    model: String,
-    language: String,
-) -> Result<Vec<GrammarIssue>, String> {
-    let truncated = truncate_chars(&text, MAX_GRAMMAR_CHARS);
-    let numbered = number_lines(&truncated);
-    let hint = grammar_language_hint(&language);
-    let user = format!("{hint}Proofread this document:\n\n{numbered}");
-    // `/api/chat` with a system role keeps a chat model from treating the text as
-    // a task; `stream: false` returns one JSON object; temperature 0 + a generous
-    // output cap let it list every issue deterministically.
-    let body = serde_json::json!({
-        "model": model,
-        "stream": false,
-        "messages": [
-            { "role": "system", "content": GRAMMAR_SYSTEM },
-            { "role": "user", "content": user }
-        ],
-        "options": { "temperature": 0.0, "num_predict": 1024 }
-    })
-    .to_string();
-    let response = ollama_http("POST", "/api/chat", Some(&body))?;
-    let v: serde_json::Value =
-        serde_json::from_str(&response).map_err(|e| format!("ollama json: {e}"))?;
-    let content = v["message"]["content"].as_str().unwrap_or("");
-    Ok(parse_grammar_issues(content))
+fn bounded_completion_prefix(prefix: &str) -> String {
+    let mut start = prefix.len().saturating_sub(16_384);
+    while !prefix.is_char_boundary(start) {
+        start += 1;
+    }
+    prefix[start..].to_string()
 }
 
 /// Result of preparing a local Ollama agent for vibe.
@@ -3420,6 +3483,8 @@ pub struct LocalAgentPrep {
 /// - `active_model = "{alias}"` so vibe selects the correct model even when
 ///   the `VIBE_ACTIVE_MODEL` env var is shadowed by the global `~/.vibe/config.toml`.
 /// - `enabled_tools = ["__no_tools__"]` to disable tool calls for local models.
+///   A root-console tab whose model wears the 🧠 menu's "MCP" chip gets the
+///   root MCP tools back through Vibe's env layer (`services::root_mcp`).
 /// - A single provider + model block for this Ollama model.
 ///
 /// Each Ollama tab gets its own VIBE_HOME subdirectory so there is no shared
@@ -3606,8 +3671,13 @@ const LOCAL_DRIVERS: &[LocalDriver] = &[
         id: "opencode",
         label: "OpenCode",
         bin: "opencode",
-        launch_sub: Some("opencode"),
-        // OpenCode's built-in `ollama` provider; `--model ollama/<model>` selects it.
+        // Never `ollama launch`: it sets its own `OPENCODE_CONFIG_CONTENT`
+        // (clobbering the loaded-models list `pty_spawn` hands every OpenCode —
+        // see `opencode_loaded_models_config`) and appends each launched model
+        // to the user's opencode.jsonc for good.
+        launch_sub: None,
+        // The `ollama` provider — named by the user's config or by the inline
+        // one `pty_spawn` injects; `--model ollama/<model>` selects it.
         fallback: Some(("opencode", &["--model", "ollama/{model}"])),
         needs_tools: true,
         non_thinking_args: None,
@@ -3681,6 +3751,98 @@ fn non_thinking_override(driver: &LocalDriver, thinking: Option<bool>) -> &[&'st
         (Some(args), Some(false)) => args,
         _ => &[],
     }
+}
+
+// ── OpenCode: the loaded Ollama models, handed over at launch ─────────────────
+//
+// OpenCode's `ollama` provider lists whatever models its config names — a list
+// that goes stale the moment another model is loaded (`ollama launch opencode`
+// appends to it and never prunes). Eldrun never edits OpenCode's config, so an
+// OpenCode spawn gets `OPENCODE_CONFIG_CONTENT` instead: an inline config
+// OpenCode deep-merges over the user's own, naming the models resident in
+// Ollama right now and whitelisting only those.
+
+/// The model an OpenCode spawn asks for, or `None` when `cmd`/`args` do not
+/// start OpenCode at all. The inner `Option` is the requested **Ollama** model
+/// — `opencode --model ollama/<m>` (the direct fallback) or `ollama launch
+/// opencode --model <m>` — which is whitelisted even when not loaded yet, since
+/// Ollama loads it on the first request and hiding it would kill the tab.
+pub(crate) fn opencode_spawn_model(cmd: &str, args: &[String]) -> Option<Option<String>> {
+    let bin = std::path::Path::new(cmd)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(cmd);
+    let via_launch = match bin {
+        "opencode" => false,
+        "ollama" if args.first().map(String::as_str) == Some("launch")
+            && args.get(1).map(String::as_str) == Some("opencode") =>
+        {
+            true
+        }
+        _ => return None,
+    };
+    let model = args.iter().enumerate().find_map(|(i, a)| {
+        a.strip_prefix("--model=")
+            .map(str::to_string)
+            .or_else(|| (a == "--model" || a == "-m").then(|| args.get(i + 1).cloned()).flatten())
+    });
+    Some(model.and_then(|m| {
+        if via_launch {
+            Some(m)
+        } else {
+            m.strip_prefix("ollama/").map(str::to_string)
+        }
+    }))
+}
+
+/// Model names from an `/api/ps` body, or `None` when the body is not one.
+fn loaded_model_names(ps_body: &str) -> Option<Vec<String>> {
+    let v = serde_json::from_str::<serde_json::Value>(ps_body).ok()?;
+    Some(
+        v["models"]
+            .as_array()?
+            .iter()
+            .filter_map(|m| m["name"].as_str().or_else(|| m["model"].as_str()))
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
+/// The inline OpenCode config: the `ollama` provider pointed at `addr`, carrying
+/// `loaded` (plus `requested`) as its models and whitelisting exactly those, so
+/// models the user's config names but Ollama has not loaded drop out of the
+/// picker. An empty list is kept deliberately: nothing loaded means no Ollama
+/// models to offer. Pure + tested.
+fn opencode_ollama_config(addr: &str, loaded: &[String], requested: Option<&str>) -> String {
+    let mut names: Vec<&str> = loaded.iter().map(String::as_str).collect();
+    if let Some(r) = requested.filter(|r| !r.is_empty() && !names.contains(r)) {
+        names.push(r);
+    }
+    let models: serde_json::Map<String, serde_json::Value> = names
+        .iter()
+        .map(|n| (n.to_string(), serde_json::json!({ "name": n })))
+        .collect();
+    serde_json::json!({
+        "provider": {
+            "ollama": {
+                "npm": "@ai-sdk/openai-compatible",
+                "name": "Ollama (local)",
+                "options": { "baseURL": format!("http://{addr}/v1") },
+                "models": models,
+                "whitelist": names,
+            }
+        }
+    })
+    .to_string()
+}
+
+/// `OPENCODE_CONFIG_CONTENT` for an OpenCode spawn asking for `requested`, or
+/// `None` when Ollama cannot be asked — an unreachable server leaves the user's
+/// own config alone rather than emptying its model list on a guess.
+pub(crate) fn opencode_loaded_models_config(requested: Option<&str>) -> Option<String> {
+    let loaded = loaded_model_names(&ollama_http("GET", "/api/ps", None).ok()?)?;
+    let addr = ollama_addr().ok()?;
+    Some(opencode_ollama_config(&addr, &loaded, requested))
 }
 
 /// One local-model driver plus whether Eldrun currently has a way to launch it.
@@ -4116,6 +4278,120 @@ mod owned_server_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prose_sentence_stops_preserve_language_punctuation_and_decimals() {
+        assert_eq!(completion_stop(" kostet 3.14 Euro. Weiter", true, false), Some(" kostet 3.14 Euro.".len()));
+        assert_eq!(completion_stop(" kostet 3.", true, false), None);
+        assert_eq!(completion_stop(" fertig!", true, true), Some(" fertig!".len()));
+        assert_eq!(completion_stop("一文。次", true, false), Some("一文。".len()));
+        assert_eq!(completion_stop("call().next()\nother()", false, false), Some("call().next()".len()));
+        for language in ["markdown", "tex", "text", ""] {
+            let prompt = completion_prompt("% Ein deutscher Absatz", "", language, CompletionMode::Sentence, "English reference");
+            assert!(prompt.contains("Do not translate or switch to English"));
+            assert!(!prompt.contains("code that implements"));
+        }
+    }
+
+    #[test]
+    fn completion_fim_uses_native_suffix_and_preserves_whitespace() {
+        let body = completion_body(
+            "fn f() {",
+            "\n}",
+            "coder",
+            "rust",
+            CompletionMode::Sentence,
+            "",
+            true,
+        );
+        assert_eq!(body["prompt"], "fn f() {");
+        assert_eq!(body["suffix"], "\n}");
+        assert!(body.get("messages").is_none());
+        assert_eq!(body["options"]["stop"], serde_json::json!(["\n"]));
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["think"], false);
+        assert_eq!(
+            completion_preview("\n    return 1;\n", true, true, "", ""),
+            "\n    return 1;\n"
+        );
+    }
+
+    #[test]
+    fn completion_chat_keeps_reference_context_and_language_instruction() {
+        let body = completion_body(
+            "Ein Satz",
+            ".",
+            "chat",
+            "markdown",
+            CompletionMode::Block,
+            "notes",
+            false,
+        );
+        assert!(body.get("suffix").is_none());
+        assert!(body["messages"][1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("notes"));
+        assert!(body["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("never translate"));
+        assert_eq!(
+            body["options"]["num_predict"],
+            CompletionMode::Block.num_predict()
+        );
+    }
+
+    #[test]
+    fn completion_stream_withholds_partial_wrappers() {
+        assert_eq!(completion_preview("```py", false, false, "", ""), "");
+        assert_eq!(completion_preview("Here is the", false, false, "", ""), "");
+        assert_eq!(
+            completion_preview(
+                "Here is the continuation:\n```py\nreturn",
+                false,
+                false,
+                "",
+                ""
+            ),
+            "return"
+        );
+        assert_eq!(
+            completion_preview("return a + b", false, true, "return ", ""),
+            "a + b"
+        );
+        assert_eq!(completion_preview("x\nnext", false, true, "", "next"), "x");
+    }
+
+    #[test]
+    fn completion_backend_window_is_utf8_safe() {
+        let text = "界".repeat(10_000);
+        let tail = bounded_completion_prefix(&text);
+        assert!(tail.len() <= 16_384);
+        assert!(text.ends_with(&tail));
+    }
+
+    #[test]
+    fn partial_file_match_takes_the_layer_and_its_chunks_only() {
+        let main = "sha256-ab12-partial";
+        assert!(is_partial_file_of("sha256-ab12-partial", main));
+        assert!(is_partial_file_of("sha256-ab12-partial-0", main));
+        assert!(is_partial_file_of("sha256-ab12-partial-15", main));
+        assert!(!is_partial_file_of("sha256-ab12-partial-", main));
+        assert!(!is_partial_file_of("sha256-ab12-partial-x", main));
+        assert!(!is_partial_file_of("sha256-ab12", main));
+        assert!(!is_partial_file_of("sha256-ab123-partial", main));
+    }
+
+    #[test]
+    fn remove_blob_files_ignores_already_gone_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let kept = dir.path().join("sha256-ab12-partial");
+        std::fs::write(&kept, b"x").unwrap();
+        let gone = dir.path().join("sha256-ab12-partial-0");
+        assert!(remove_blob_files(&[kept.clone(), gone]).is_ok());
+        assert!(!kept.exists());
+    }
     use std::io::Write;
 
     // ── Helper: simulate prepare_local_agent using a tmp base dir ─────────────
@@ -4340,6 +4616,67 @@ mod tests {
         let spec = fallback_spec(d, "llama3.2", &[]).expect("opencode has a fallback");
         assert_eq!(spec.cmd, "opencode");
         assert_eq!(spec.args, vec!["--model", "ollama/llama3.2"]);
+        // Direct only: `ollama launch` would override the injected model list.
+        assert!(d.launch_sub.is_none());
+    }
+
+    fn argv(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn opencode_spawn_model_recognises_every_opencode_launch_shape() {
+        assert_eq!(opencode_spawn_model("opencode", &[]), Some(None));
+        assert_eq!(
+            opencode_spawn_model("/home/u/.opencode/bin/opencode", &argv(&["--model", "ollama/qwen3:8b"])),
+            Some(Some("qwen3:8b".into()))
+        );
+        assert_eq!(
+            opencode_spawn_model("opencode", &argv(&["--model=ollama/qwen3:8b"])),
+            Some(Some("qwen3:8b".into()))
+        );
+        // Another provider's model is not an Ollama request.
+        assert_eq!(
+            opencode_spawn_model("opencode", &argv(&["-m", "anthropic/claude"])),
+            Some(None)
+        );
+        assert_eq!(
+            opencode_spawn_model("ollama", &argv(&["launch", "opencode", "--model", "qwen3:8b"])),
+            Some(Some("qwen3:8b".into()))
+        );
+        assert_eq!(opencode_spawn_model("ollama", &argv(&["launch", "codex"])), None);
+        assert_eq!(opencode_spawn_model("codex", &[]), None);
+    }
+
+    #[test]
+    fn loaded_model_names_reads_api_ps() {
+        let body = r#"{"models":[{"name":"nemotron:30b","model":"nemotron:30b"},{"model":"qwen3:8b"}]}"#;
+        assert_eq!(
+            loaded_model_names(body),
+            Some(vec!["nemotron:30b".to_string(), "qwen3:8b".to_string()])
+        );
+        assert_eq!(loaded_model_names(r#"{"models":[]}"#), Some(vec![]));
+        assert_eq!(loaded_model_names("garbage"), None);
+    }
+
+    #[test]
+    fn opencode_config_whitelists_the_loaded_models_plus_the_requested_one() {
+        let cfg: serde_json::Value = serde_json::from_str(&opencode_ollama_config(
+            "127.0.0.1:11434",
+            &["nemotron:30b".to_string()],
+            Some("qwen3:8b"),
+        ))
+        .unwrap();
+        let p = &cfg["provider"]["ollama"];
+        assert_eq!(p["options"]["baseURL"], "http://127.0.0.1:11434/v1");
+        assert_eq!(p["whitelist"], serde_json::json!(["nemotron:30b", "qwen3:8b"]));
+        assert_eq!(p["models"]["nemotron:30b"]["name"], "nemotron:30b");
+        assert!(p["models"]["qwen3:8b"].is_object());
+
+        // Nothing loaded: an empty whitelist, so stale config models drop out.
+        let cfg: serde_json::Value =
+            serde_json::from_str(&opencode_ollama_config("h:1", &[], None)).unwrap();
+        assert_eq!(cfg["provider"]["ollama"]["whitelist"], serde_json::json!([]));
     }
 
     #[test]
@@ -4955,77 +5292,6 @@ mod tests {
         assert_eq!(overlap_len("    return", "return a"), 6);
         assert_eq!(overlap_len("brown fox", "fox jumps"), 3);
         assert_eq!(overlap_len("hello", "world"), 0);
-    }
-
-    // ── grammar check: line numbering + JSON parsing ──────────────────────────
-
-    #[test]
-    fn number_lines_prefixes_each_line_one_based() {
-        assert_eq!(number_lines("a\nb"), "1: a\n2: b\n");
-        // A trailing newline produces a final (empty) numbered line; harmless.
-        assert_eq!(number_lines("only"), "1: only\n");
-    }
-
-    #[test]
-    fn parse_grammar_issues_reads_a_clean_array() {
-        let raw =
-            r#"[{"line":2,"bad":"teh","suggestion":"the","category":"spelling","message":"typo"}]"#;
-        let issues = parse_grammar_issues(raw);
-        assert_eq!(issues.len(), 1);
-        assert_eq!(
-            issues[0],
-            GrammarIssue {
-                line: 2,
-                bad: "teh".into(),
-                suggestion: "the".into(),
-                category: "spelling".into(),
-                message: "typo".into(),
-            }
-        );
-    }
-
-    #[test]
-    fn parse_grammar_issues_strips_prose_and_fences() {
-        // Models sometimes wrap the array in prose or a ```json fence; we extract
-        // the outermost [...] regardless.
-        let raw = "Sure! Here are the issues:\n```json\n[{\"line\":1,\"bad\":\"alot\",\"suggestion\":\"a lot\",\"category\":\"grammar\",\"message\":\"two words\"}]\n```";
-        let issues = parse_grammar_issues(raw);
-        assert_eq!(issues.len(), 1);
-        assert_eq!(issues[0].bad, "alot");
-        assert_eq!(issues[0].category, "grammar");
-    }
-
-    #[test]
-    fn parse_grammar_issues_normalises_category_and_drops_empty_bad() {
-        let raw = r#"[
-            {"line":1,"bad":"x","category":"weird","message":"m"},
-            {"line":1,"bad":"   ","category":"spelling","message":"blank"},
-            {"line":3,"bad":"y","category":"style"}
-        ]"#;
-        let issues = parse_grammar_issues(raw);
-        assert_eq!(issues.len(), 2, "blank-bad entry is dropped");
-        // Unknown category → grammar; missing suggestion/message default to "".
-        assert_eq!(issues[0].category, "grammar");
-        assert_eq!(issues[0].suggestion, "");
-        // Known categories pass through.
-        assert_eq!(issues[1].category, "style");
-    }
-
-    #[test]
-    fn parse_grammar_issues_empty_or_no_array() {
-        assert!(parse_grammar_issues("[]").is_empty());
-        assert!(parse_grammar_issues("no issues found").is_empty());
-        assert!(parse_grammar_issues("").is_empty());
-    }
-
-    #[test]
-    fn grammar_language_hint_targets_markup_languages() {
-        assert!(grammar_language_hint("latex").contains("LaTeX"));
-        assert!(grammar_language_hint("tex").contains("LaTeX"));
-        assert!(grammar_language_hint("markdown").contains("Markdown"));
-        // Plain text / code → no special markup hint.
-        assert_eq!(grammar_language_hint("text"), "");
-        assert_eq!(grammar_language_hint("rust"), "");
     }
 
     // ── sanitize_alias turns ':' into '-' ─────────────────────────────────────

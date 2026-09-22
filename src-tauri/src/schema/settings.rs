@@ -45,11 +45,35 @@ pub struct EldrunMobileHostSettings {
     /// Read by the desktop bridge only; the sidecar never sees mail settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mail_actions: Option<bool>,
+    /// May a paired phone read mail at all — accounts, folders, message bodies?
+    /// Unset is **on**, which is what pairing meant before the switch existed;
+    /// `false` turns the whole mail view off. Read by the desktop bridge only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail_read: Option<bool>,
     /// May a paired phone send a plain-text reply to a message it is reading?
     /// Default off, and independent of `mail_actions`: a flag write and an
     /// outbound mail are different risks and are switched separately.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mail_reply: Option<bool>,
+    /// May a paired phone reach the root console's tabs? Default off. Read by
+    /// the sidecar per catalog load (`mobile_control::discovery::root_open`,
+    /// which also holds the review gate) and repeated by the desktop bridge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_access: Option<bool>,
+}
+
+/// Cloud completion authority lives in Eldrun's settings, never project.json.
+/// Bind consent to a directory as well as the id so moving/repointing a project
+/// cannot silently authorize a different tree. Unknown fields round-trip.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct CompletionProjectPolicy {
+    pub directory: String,
+    #[serde(default)]
+    pub copilot: bool,
+    #[serde(default)]
+    pub local_only: bool,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
 }
 
 /// `~/.local/share/eldrun/settings.json`.
@@ -100,7 +124,7 @@ pub struct Settings {
     /// round-trips the value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui_corners: Option<String>,
-    /// Calendar: first column of the week — `0` = Sunday (default), `1` = Monday.
+    /// Calendar: first column of the week — `0` = Sunday, `1` = Monday (default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calendar_week_start: Option<u8>,
     /// Calendar: the view a fresh calendar tab opens on
@@ -140,6 +164,38 @@ pub struct Settings {
     /// `mail_client`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub todo_board: Option<bool>,
+    /// Root console: whether Eldrun serves its own MCP tools (projects,
+    /// calendar, to-do board, the overlays) to root agents at all
+    /// (`services::root_mcp`). **Absent means on** — the tools shipped on, so an
+    /// existing `settings.json` needs no migration — and a stored `false` is a
+    /// deliberate switch-off nothing may normalize back to `None`.
+    ///
+    /// Off closes both halves: a root agent spawned from then on is handed no
+    /// endpoint, and the endpoint refuses the agents that already hold the
+    /// token, so the switch takes effect without closing a tab.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_mcp: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule_mcp: Option<bool>,
+    /// Root-agent write review: absent/unknown = all, or destructive / off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_mcp_review: Option<String>,
+    /// Root console: serve the MCP tools to **local-model tabs only**. Absent
+    /// means off (every root agent gets them). On, a cloud agent CLI spawned
+    /// from then on is handed no endpoint and the endpoint refuses the ones
+    /// already running — what the user's calendar and board hold then never
+    /// reaches a hosted model through these tools. Subordinate to `root_mcp`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_mcp_local_only: Option<bool>,
+    /// Root console: whether the MCP endpoint serves its **mail** tools
+    /// (`services::root_mcp_mail`) — drafts to a root agent, reading to a
+    /// contained reader. **Absent means off**: mail is switched on separately
+    /// from the rest of the tools, never by `root_mcp` alone. Off, no mail tool
+    /// is listed, a call to one is refused, and a reader is served nothing;
+    /// read per request, so it takes effect without closing a tab.
+    /// Subordinate to `root_mcp`, and above every per-account `agent_access`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_mcp_mail: Option<bool>,
     /// Side panel: the opt-in **Alerts** group in the file viewer — urgent
     /// mail, the calendar entries about to start, and the to-do cards whose due
     /// date is here or past, in one time-ordered strip.
@@ -274,8 +330,9 @@ pub struct Settings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ollama_model: Option<String>,
     /// Per-task local-model assignments set from the 🧠 menu's role chips. Maps a
-    /// task key (`"autocomplete"`, `"grammar"`, `"tabs"`, `"mail"`) to the model
-    /// name that serves it, so several loaded models can run different jobs in
+    /// task key (`"autocomplete"`, `"autocomplete_prose"`, `"tabs"`,
+    /// `"mail"`) to the model name that serves it (`autocomplete_prose` is plain
+    /// text/Markdown/TeX, falling back to `autocomplete`), so several loaded models can run different jobs in
     /// parallel. Optional + flat so older settings files round-trip cleanly; a
     /// task absent here falls back to `ollama_model`. Frontend logic only —
     /// persisted here. An open map rather than a struct of known keys, which is
@@ -284,6 +341,13 @@ pub struct Settings {
     /// has never heard of.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ollama_roles: Option<HashMap<String, String>>,
+    /// Missing/unknown provider retains Ollama. Prose always retains its role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_completion_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copilot_completion: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_project_policies: Option<HashMap<String, CompletionProjectPolicy>>,
     /// Hunspell dictionary code (e.g. `en_US`) for the editors' dictionary
     /// spell check (`services::spell`). Unset means the default — an installed
     /// English variant when there is one, else the first dictionary found.
@@ -307,6 +371,28 @@ pub struct Settings {
     /// list intentionally leaves every agent behind the menu's search field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compact_tab_agents: Option<Vec<String>>,
+    /// Built-in agent registry ids offered in the root console's + menus, set
+    /// by the 🧠 menu's "Root" chips. Opt-in: unset or empty offers none there,
+    /// since a root agent gets the root MCP tools no project agent has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_agents: Option<Vec<String>>,
+    /// Agent CLI binaries given the root MCP tools in the root console, set by
+    /// the 🧠 menu's "MCP" chips (Root = may run there, MCP = runs there *with*
+    /// the tools). Unset falls back to `root_agents`: before the chip was a
+    /// switch, every root agent got the tools. Read at spawn by
+    /// `services::root_mcp`, which sees only the binary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_mcp_agents: Option<Vec<String>>,
+    /// Local model names switched off for the root console by the 🧠 menu's
+    /// "Root" chips. Opt-out: unset means every local model is offered there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_excluded_models: Option<Vec<String>>,
+    /// Local model names given the root MCP tools by the 🧠 menu's "MCP" chips.
+    /// Opt-in: a local-model (Mistral Vibe) tab otherwise runs with tools off
+    /// (`enabled_tools = ["__no_tools__"]`), which is what keeps a
+    /// completion-only model working. Read at spawn by `services::root_mcp`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ollama_mcp_models: Option<Vec<String>>,
     /// When true (the default), running a `.sh` from the side panel spawns it
     /// as a detached background process instead of opening a terminal tab.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -324,6 +410,10 @@ pub struct Settings {
     /// [`DEFAULT_AGENT_FENCE_PATHS`]; an explicit empty list exposes none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_fence_paths: Option<Vec<String>>,
+    /// Permit reading Cargo registry credential files through exposed toolchain
+    /// paths. Default false; independent of agent login and resume credentials.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_fence_cargo_credentials: Option<bool>,
     /// Prefix chips offered by the side panel's per-tab agent composer, keyed by
     /// agent command (`claude`, `codex`, …). Each entry is one of that CLI's own
     /// slash commands, submitted ahead of the prompt. Unset falls back to the
@@ -493,7 +583,7 @@ pub struct Settings {
     /// `remote`, a `compute_hosts` worker on another project, and a project-free
     /// global machine — three tables, three ids, one machine. A per-record `bool`
     /// would be three values free to disagree about the same host; the SSH target
-    /// is the identity `lib/machineSync`'s `sameTarget` already treats as the
+    /// is the identity `lib/remote/machineSync`'s `sameTarget` already treats as the
     /// bridge between them, so it is the identity used here too.
     ///
     /// The stored value is the user's **explicit** answer. A target *absent* from
@@ -512,7 +602,7 @@ pub struct Settings {
     pub careful_hosts: Option<HashMap<String, bool>>,
     /// The machines the user has tagged **HPC** — a shared cluster login node,
     /// ticked on the login form and shown on the machine's row in the Machines
-    /// menu (`src/lib/hpcHost.ts`). Same SSH-target key as [`Self::careful_hosts`],
+    /// menu (`src/lib/remote/hpc/hpcHost.ts`). Same SSH-target key as [`Self::careful_hosts`],
     /// for the same reason.
     ///
     /// Where `careful_hosts` says how much Eldrun may *look at*, this says what
@@ -539,7 +629,7 @@ pub struct Settings {
     /// One config, not a list: a tunnel reroutes the whole machine, so arming two
     /// would be arming them to fight over the routing. The frontend re-checks at
     /// launch that the connect can still be made without a prompt and stays down if
-    /// it can't (see `lib/vpnAutoConnect.ts`); the backend only round-trips this.
+    /// it can't (see `lib/remote/vpn/vpnAutoConnect.ts`); the backend only round-trips this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vpn_auto_connect: Option<String>,
     /// The `.ovpn` configs the user asked Eldrun to **remember the credentials of**
@@ -572,7 +662,7 @@ pub struct Settings {
     /// merged control could not express "plugged in, still want it lean", which
     /// is the case that asks for this.
     ///
-    /// Read entirely on the frontend (`src/lib/fastMode.ts`, which names the
+    /// Read entirely on the frontend (`src/lib/agents/fastMode.ts`, which names the
     /// exact list); kept here only so it round-trips.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fast_mode: Option<bool>,
@@ -587,6 +677,11 @@ pub struct Settings {
     pub show_gpu_usage: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub global_apps: Option<HashMap<String, GlobalAppEntry>>,
+    /// User-chosen program per IDE id (`services::ide_detect::IdeId::id`),
+    /// consulted before any auto-detection by "Open in <IDE>". Absent or
+    /// blank entries mean "detect".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ide_launchers: Option<HashMap<String, String>>,
     /// Minimum subwindow (split pane) width in px a divider drag may shrink a
     /// pane to. Unset falls back to the frontend's DEFAULT_MIN_SUBWINDOW_PX.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -647,7 +742,7 @@ pub struct Settings {
 }
 
 /// Last-known geometry of the MAIN window, in PHYSICAL desktop pixels — the
-/// canonical cross-window coordinate space (see `src/lib/coords.ts`). Tauri's
+/// canonical cross-window coordinate space (see `src/lib/window/coords.ts`). Tauri's
 /// `outerPosition`/`outerSize`/`set_position`/`set_size` are all physical; only a
 /// *builder*'s `.position()`/`.inner_size()` are logical, which is the trap
 /// `commands::subwindow::detached_position` exists to document.
@@ -710,10 +805,6 @@ pub struct ViewerPref {
     /// `"sentence"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub autocomplete_mode: Option<String>,
-    /// Whether the local-model grammar/spelling check is enabled for this type.
-    /// Like `autocomplete`, defaults OFF (no model call unless explicitly on).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub grammar_check: Option<bool>,
     /// Whether the dictionary (Hunspell) spell check is enabled for this type.
     /// Defaults OFF like its siblings — not for privacy (it calls no model),
     /// but because red underlines nobody asked for are noise in a code editor.
@@ -721,8 +812,8 @@ pub struct ViewerPref {
     pub spell_check: Option<bool>,
     /// Whether the TeX editor typesets the snippet under the pointer and shows
     /// it in a hover card (#tex-hover-preview). Only the `"tex"` entry reads it.
-    /// Absent means ON — unlike `autocomplete`/`grammar_check` above, which are
-    /// opt-in because they call a model; this runs the local TeX engine the
+    /// Absent means ON — unlike `autocomplete` above, which is
+    /// opt-in because it calls a model; this runs the local TeX engine the
     /// viewer is already built around, on a fragment, only after the pointer has
     /// rested. Set `false` to stop hovering from compiling anything.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -805,6 +896,36 @@ impl Settings {
         self.experimental(self.python_run_debug)
     }
 
+    /// Whether the experimental mail client is on — the one gate its overlay
+    /// host asks (`src/components/mail/MailOverlay.tsx`).
+    pub fn mail_client(&self) -> bool {
+        self.experimental(self.mail_client)
+    }
+
+    /// Whether the root console's MCP tools are served. On unless switched off.
+    pub fn root_mcp(&self) -> bool {
+        self.root_mcp.unwrap_or(true)
+    }
+
+    /// The agent CLIs [`Self::root_mcp_agents`] names, with its `root_agents`
+    /// fallback applied.
+    pub fn root_mcp_agent_list(&self) -> Vec<String> {
+        self.root_mcp_agents
+            .clone()
+            .or_else(|| self.root_agents.clone())
+            .unwrap_or_default()
+    }
+
+    /// Whether the root MCP endpoint serves its mail tools. Off unless set.
+    pub fn root_mcp_mail(&self) -> bool {
+        self.root_mcp_mail.unwrap_or(false)
+    }
+
+    /// Whether the root MCP tools are kept to local-model tabs. Off unless set.
+    pub fn root_mcp_local_only(&self) -> bool {
+        self.root_mcp_local_only.unwrap_or(false)
+    }
+
     /// Whether the experimental native presenter ("deck") is offered — the
     /// `*.eldeck.json` viewer and its fullscreen presenter. Off outside debug mode
     /// while the surface is still moving.
@@ -850,7 +971,7 @@ mod tests {
     use super::Settings;
 
     /// The experimental rule, backend side (the frontend twin lives in
-    /// `src/__tests__/Experimental.test.ts`): unset defers to debug mode, and an
+    /// `src/__tests__/shell/Experimental.test.ts`): unset defers to debug mode, and an
     /// explicit value wins in BOTH directions.
     #[test]
     fn experimental_flags_default_to_debug_mode() {
@@ -974,6 +1095,10 @@ mod tests {
     fn agent_fence_defaults_on_with_documented_paths_and_preserves_empty_override() {
         let defaults = Settings::default();
         assert!(defaults.agent_fence());
+        assert!(!defaults.agent_fence_cargo_credentials.unwrap_or(false));
+        let publishing: Settings = serde_json::from_str(r#"{"agent_fence_cargo_credentials":true}"#).unwrap();
+        assert_eq!(publishing.agent_fence_cargo_credentials, Some(true));
+        assert_eq!(serde_json::to_value(&publishing).unwrap()["agent_fence_cargo_credentials"], true);
         assert_eq!(
             defaults.agent_fence_paths(),
             super::DEFAULT_AGENT_FENCE_PATHS
@@ -988,5 +1113,151 @@ mod tests {
         assert!(!off.agent_fence());
         assert!(off.agent_fence_paths().is_empty());
         assert!(off.extra.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod default_rule_tests {
+    use super::*;
+
+    /// The "default ON, only an explicit false opts out" trio: tmux for local
+    /// tabs, headless connections, and remote control. An older
+    /// `settings.json` without the keys keeps today's behaviour.
+    #[test]
+    fn default_on_switches_read_absent_as_on_and_only_explicit_false_as_off() {
+        let absent = Settings::default();
+        assert!(absent.persist_local_sessions());
+        assert!(absent.connections_headless());
+        assert!(absent.agent_remote_control());
+        assert!(absent.daily_stats_recap());
+        assert_eq!(absent.color_scheme(), "fancy_dark");
+
+        let off: Settings = serde_json::from_str(
+            r#"{"persist_local_sessions":false,"connections_headless":false,
+                "agent_remote_control":false,"daily_stats_recap":false,"color_scheme":"soft_dark"}"#,
+        )
+        .unwrap();
+        assert!(!off.persist_local_sessions());
+        assert!(!off.connections_headless());
+        assert!(!off.agent_remote_control());
+        assert!(!off.daily_stats_recap());
+        assert_eq!(off.color_scheme(), "soft_dark");
+        assert!(off.extra.is_empty(), "{:?}", off.extra.keys().collect::<Vec<_>>());
+    }
+
+    /// Live pages are the one browser surface that stays off in debug mode:
+    /// unset means off everywhere, unlike the flag that enables the browser.
+    #[test]
+    fn browser_live_pages_stay_off_even_in_debug_mode() {
+        let debug = Settings {
+            debug: Some(true),
+            ..Default::default()
+        };
+        assert!(debug.web_browser());
+        assert!(!debug.browser_live_pages());
+        let on = Settings {
+            browser_live_pages: Some(true),
+            ..Default::default()
+        };
+        assert!(on.browser_live_pages());
+    }
+
+    /// `window_state` written before `maximized` existed reads as not
+    /// maximized, and there is no `fullscreen` key to strand the window with.
+    #[test]
+    fn window_state_defaults_maximized_off_and_has_no_fullscreen_key() {
+        let w: WindowState = serde_json::from_str(r#"{"x":10,"y":20,"w":800,"h":600}"#).unwrap();
+        assert!(!w.maximized);
+        let out = serde_json::to_value(w).unwrap();
+        assert!(out.get("fullscreen").is_none());
+        assert_eq!(out["maximized"], false);
+        let s: Settings =
+            serde_json::from_str(r#"{"window_state":{"x":0,"y":0,"w":1,"h":1,"maximized":true}}"#)
+                .unwrap();
+        assert!(s.window_state.unwrap().maximized);
+    }
+
+    /// A chord writes only the modifiers that are on, and reads a missing
+    /// modifier as off — the JSON stays compact and older files load.
+    #[test]
+    fn chords_write_only_the_modifiers_that_are_on() {
+        let c: ChordDescriptor = serde_json::from_str(r#"{"key":"k","ctrl":true}"#).unwrap();
+        assert!(c.ctrl && !c.shift && !c.alt && !c.meta);
+        assert_eq!(
+            serde_json::to_value(&c).unwrap(),
+            serde_json::json!({"key":"k","ctrl":true})
+        );
+        let plain = ChordDescriptor {
+            key: "F9".into(),
+            ..Default::default()
+        };
+        assert_eq!(serde_json::to_value(&plain).unwrap(), serde_json::json!({"key":"F9"}));
+    }
+
+    /// The per-type viewer prefs and the alert sources are all tri-state and
+    /// write nothing by default — so a fresh install's file carries neither a
+    /// spurious `false` (alerts: absent means ON) nor a spurious `true`.
+    #[test]
+    fn viewer_prefs_and_alert_sources_write_nothing_by_default() {
+        assert_eq!(serde_json::to_value(ViewerPref::default()).unwrap(), serde_json::json!({}));
+        assert_eq!(serde_json::to_value(AlertSources::default()).unwrap(), serde_json::json!({}));
+        let src: AlertSources = serde_json::from_str(r#"{"mail":false}"#).unwrap();
+        assert_eq!(src.mail, Some(false));
+        assert!(src.events.is_none() && src.tasks.is_none());
+        let pref: ViewerPref =
+            serde_json::from_str(r#"{"autocomplete":true,"font_size":14.5,"hover_preview":false}"#)
+                .unwrap();
+        assert_eq!(pref.font_size, Some(14.5));
+        assert_eq!(pref.hover_preview, Some(false));
+        assert!(pref.spell_check.is_none());
+    }
+
+    /// The Mobile host block is off by default, loads from `{}`, and writes
+    /// its mail gates only when they have been set.
+    #[test]
+    fn mobile_host_settings_default_off_and_omit_unset_gates() {
+        let m: EldrunMobileHostSettings = serde_json::from_str("{}").unwrap();
+        assert!(!m.enabled);
+        assert!(m.mail_actions.is_none() && m.mail_reply.is_none());
+        assert_eq!(
+            serde_json::to_value(&m).unwrap(),
+            serde_json::json!({"enabled": false})
+        );
+        let s: Settings = serde_json::from_str(
+            r#"{"eldrun_mobile_host":{"enabled":true,"port":8443,"mail_reply":true}}"#,
+        )
+        .unwrap();
+        let host = s.eldrun_mobile_host.unwrap();
+        assert_eq!(host.port, Some(8443));
+        assert_eq!(host.mail_reply, Some(true));
+        assert!(host.mail_actions.is_none(), "reply and actions are independent");
+    }
+
+    /// `global_apps` entries keep foreign keys through `extra`, and a settings
+    /// file with keys this build does not know round-trips them untouched.
+    #[test]
+    fn unknown_settings_keys_survive_a_round_trip() {
+        let raw = r#"{"global_apps":{"code":{"exec":"code","visible":true,"icon":"vscode"}},
+                      "some_future_setting":{"a":[1,2]}}"#;
+        let s: Settings = serde_json::from_str(raw).unwrap();
+        assert_eq!(s.global_apps.as_ref().unwrap()["code"].extra["icon"], "vscode");
+        assert_eq!(s.extra["some_future_setting"]["a"][1], 2);
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.extra["some_future_setting"]["a"][1], 2);
+        assert_eq!(back.global_apps.unwrap()["code"].extra["icon"], "vscode");
+    }
+
+    /// `ide_launchers` is optional on the way in and absent on the way out
+    /// when unset, so a settings file from before it existed is untouched.
+    #[test]
+    fn ide_launchers_round_trip_and_stay_absent_when_unset() {
+        let s: Settings = serde_json::from_str("{}").unwrap();
+        assert!(s.ide_launchers.is_none());
+        assert!(!serde_json::to_string(&s).unwrap().contains("ide_launchers"));
+
+        let raw = r#"{"ide_launchers":{"pycharm":"/opt/pycharm/bin/pycharm.sh"}}"#;
+        let s: Settings = serde_json::from_str(raw).unwrap();
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.ide_launchers.unwrap()["pycharm"], "/opt/pycharm/bin/pycharm.sh");
     }
 }

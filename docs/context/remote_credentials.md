@@ -74,7 +74,7 @@ Referenced from `AGENTS.md`.
   channels, **default off**, which swaps the password fields for the same embedded
   login terminal `connections_headless: false` uses — the server asks its own
   questions, the user answers them, Eldrun still never sees a secret. The VPN password
-  modal has the same escape hatch as a button (`stores/vpnPrompt`'s
+  modal has the same escape hatch as a button (`stores/remote/vpn/vpnPrompt`'s
   `handoffToTerminal`), since it has no fields to swap. Four rules make it safe:
   it is **per connect** and never writes `connections_headless`; it is **not offered on
   Windows**, which has no ControlMaster for a terminal login to leave behind (the
@@ -159,7 +159,7 @@ Referenced from `AGENTS.md`.
   ever shown the fingerprint they were implicitly trusting. So every password path
   calls `guard_first_contact` **before** the askpass is attached and refuses an
   unknown host with an `UNKNOWN_HOST_KEY`-marked error;
-  `HostKeyConfirmDialog` (raised via `lib/hostKey.ts`'s `withHostKeyConfirm`, which
+  `HostKeyConfirmDialog` (raised via `lib/remote/hostKey.ts`'s `withHostKeyConfirm`, which
   reads the target out of that error and retries once) shows the fingerprints and, on
   a yes, writes them to `known_hosts` — which is what clears the gate, so there is no
   second "confirmed" state to keep in step. Interactive connects opt in; **background
@@ -168,7 +168,7 @@ Referenced from `AGENTS.md`.
   goes red *at once* rather than after a retry loop, since the refusal is a decision
   that will repeat identically, not a race worth waiting out. (The one retry loop
   left that can meet an unknown host, extend-to-remote's, asks **once** and holds the
-  answer for the rest of the loop — `lib/hostKeyOnce.ts`.)
+  answer for the rest of the loop — `lib/remote/hostKeyOnce.ts`.)
   The bulk machine **import** loop is exempt for the same reason in reverse: one modal
   per imported host would be a wall of prompts, so each lands as a red row whose
   Connect asks once. The gate itself runs two short *local* subprocesses (`ssh -G` to

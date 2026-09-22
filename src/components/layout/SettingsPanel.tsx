@@ -1,3 +1,5 @@
+import { HOW_TO_START_STEPS, focusModeTip } from "../../lib/shortcuts/hints";
+import { useModalFocus } from "../../hooks/useModalFocus";
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -8,6 +10,8 @@ import {
   MAX_UI_ZOOM,
   ZOOM_STEPS,
 } from "../../stores/settings";
+import { RootMcpSecurity } from "./RootMcpSecurity";
+import { CopilotCompletionCard } from "./CopilotCompletionCard";
 import { UntestedTag } from "../common/UntestedTag";
 import { experimentalEnabled } from "../../lib/experimental";
 import { usePowerStore, useEnergySaver } from "../../stores/power";
@@ -37,11 +41,12 @@ import {
   chordLabel,
   findConflicts,
   isFixedChord,
+  livePanelToggleKey,
   resolveChord,
   type ShortcutAction,
   type ShortcutDef,
   type ShortcutMap,
-} from "../../lib/shortcuts";
+} from "../../lib/shortcuts/shortcuts";
 import {
   AgentsPanel,
   FileTypeSettings,
@@ -53,32 +58,78 @@ import { Dropdown } from "../common/Dropdown";
 import { PasswordInput } from "../common/PasswordInput";
 import { useT, LANGUAGES, type Language, type TranslationKey } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
-import { IS_MAC, IS_WINDOWS } from "../../lib/platform";
+import { IS_MAC, IS_WINDOWS, PLATFORM } from "../../lib/platform";
 import { useHintsStore } from "../../stores/hints";
-import { canConnectVpnSilently } from "../../lib/vpnConnect";
-import { setVpnAutoConnect, vpnUsernameFor } from "../../lib/vpnAutoConnect";
+import { canConnectVpnSilently } from "../../lib/remote/vpn/vpnConnect";
+import { setVpnAutoConnect, vpnUsernameFor } from "../../lib/remote/vpn/vpnAutoConnect";
 import type { StoredVpnConfig } from "../../types";
 import { MobileSettings } from "../mobile/MobileSettings";
 import { UpdatesPanel } from "./UpdatesPanel";
+import { BugIcon, PlayIcon } from "../common/icons/Icon";
 import {
+  SETTINGS_ANCHORS,
   SettingRow,
   SettingsCard,
+  SettingsAdvanced,
   SettingsHeader,
   SettingsList,
   SettingsSection,
+  SettingsNavigation,
   ToggleCard,
   ToggleRow,
 } from "./settingsUi";
 
-// The workspace-layout help text. On Linux a lone Super toggles the panels; on
-// Windows it's F9 (the lone Win key is OS-reserved — Start opens on release, see
-// useKeyboard); on macOS the Meta key is reserved for Cmd shortcuts, so the
-// lone-key toggle is disabled — there the panels stay reachable via the
-// cursor-to-edge reveal. Keep the copy honest per OS.
+// The workspace-layout help text. The key is the one that works here, from
+// `livePanelToggleKey`: a lone Super on a Linux desktop that leaves it to the
+// window, F9 where the shell claims Super (GNOME, KDE) and on Windows (the lone
+// Win key is OS-reserved — Start opens on release, see useKeyboard). On macOS
+// the Meta key is reserved for Cmd shortcuts, so the lone-key toggle is
+// disabled — there the panels stay reachable via the cursor-to-edge reveal.
 function workspaceLayoutIntro(t: ReturnType<typeof useT>): string {
   return IS_MAC
     ? t("help.workspaceLayout.introMac")
-    : t("help.workspaceLayout.introOther", { key: IS_WINDOWS ? "F9" : "Super" });
+    : t("help.workspaceLayout.introOther", { key: livePanelToggleKey() });
+}
+
+/** What `workspace_capabilities` answers (backend `commands::workspace`). */
+interface WorkspaceCapabilities {
+  backend: string;
+  can_park: boolean;
+}
+
+/**
+ * One sentence in Layout, Linux only: this desktop cannot hide other apps'
+ * windows on a project switch. Project switching promises to swap the apps
+ * with the project, and on GNOME, XFCE or KDE Wayland (the `null` and
+ * `kde-wayland` backends) it silently leaves every window where it was — the
+ * user should read that here rather than conclude the feature is broken.
+ * Renders nothing until the backend answers, when it can park, and when the
+ * command is missing (a backend older than this frontend). Not on Windows or
+ * macOS, whose backends always park.
+ */
+export function WorkspaceParkingNote() {
+  const t = useT();
+  const [caps, setCaps] = useState<WorkspaceCapabilities | null>(null);
+  useEffect(() => {
+    if (PLATFORM !== "linux") return;
+    let live = true;
+    invoke<WorkspaceCapabilities>("workspace_capabilities")
+      .then((c) => {
+        if (live && c && typeof c.can_park === "boolean") setCaps(c);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
+  if (!caps || caps.can_park) return null;
+  return (
+    <SettingsCard>
+      <p className="settings-help">
+        {t("settings.workspaceNoParking")} <UntestedTag id="settings.workspaceNoParking" />
+      </p>
+    </SettingsCard>
+  );
 }
 
 /** Every sub-panel takes the same two: `onBack` returns to the main panel,
@@ -250,7 +301,7 @@ function ShortcutsSettings({ onBack, onClose }: SubPanelProps) {
         <div className="settings-row shortcut-row">
           <span className="settings-role-label">
             {t(def.labelKey)}
-            {def.untested && <> <UntestedTag /></>}
+            {def.untested && <> <UntestedTag id={def.untested} /></>}
           </span>
           <button
             type="button"
@@ -394,7 +445,7 @@ function GitHostingSettings({ onBack, onClose }: SubPanelProps) {
 
 /**
  * Same setting the header's VPN menu arms per config (`settings.vpn_auto_connect`,
- * see `lib/vpnAutoConnect.ts`) — surfaced here too since the header menu only shows
+ * see `lib/remote/vpn/vpnAutoConnect.ts`) — surfaced here too since the header menu only shows
  * up once a tunnel exists, which makes this opt-in easy to miss.
  */
 function VpnAutoConnectSettings({ onBack, onClose }: SubPanelProps) {
@@ -611,7 +662,7 @@ function ArchivedProjectsPanel({ onBack, onClose }: SubPanelProps) {
                       value={typed}
                       onChange={(e) => setTyped(e.target.value)}
                       onKeyDown={(e) => {
-                        if (e.key === "Escape") resetConfirm();
+                        if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); resetConfirm(); }
                       }}
                     />
                     <button type="button" className="settings-btn sm" onClick={resetConfirm} disabled={rowBusy}>{t("common.cancel")}</button>
@@ -655,7 +706,7 @@ function ArchivedProjectsPanel({ onBack, onClose }: SubPanelProps) {
               value={clearTyped}
               onChange={(e) => setClearTyped(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Escape") { setClearing(false); setClearTyped(""); }
+                if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setClearing(false); setClearTyped(""); }
               }}
             />
             <button type="button" className="settings-btn sm" onClick={() => { setClearing(false); setClearTyped(""); }}>{t("common.cancel")}</button>
@@ -705,7 +756,7 @@ function ScaffoldRepairPanel({ onBack, onClose }: SubPanelProps) {
       {/* The repair now *rewrites* untouched legacy agent stubs, not just fills
           gaps — new behavior, never run in a live window. */}
       <SettingsHeader
-        title={<>{t("nav.scaffoldRepair.title")} <UntestedTag /></>}
+        title={<>{t("nav.scaffoldRepair.title")} <UntestedTag id="nav.scaffoldRepair.title" /></>}
         onBack={onBack}
         onClose={onClose}
       />
@@ -746,6 +797,14 @@ function HelpPanel({ onBack, onClose }: SubPanelProps) {
       <div className="dialog-scroll">
 
       <p className="settings-help">{t("help.intro")}</p>
+      <SettingsSection title={t("settings.howToStart")} />
+      <SettingsCard>
+        <dl className="help-list">
+          {HOW_TO_START_STEPS.map((step) => <div className="help-row" key={step.titleKey}>
+            <dt>{t(step.titleKey)}</dt><dd>{t(step.bodyKey, { tip: focusModeTip(t) })}</dd>
+          </div>)}
+        </dl>
+      </SettingsCard>
 
       {HELP_SECTIONS.map((section) => (
         <div key={section.titleKey} className="help-section">
@@ -787,19 +846,35 @@ const SETTINGS_NAV: Exclude<SettingsPanelKind, "main" | "ollama">[] = [
   "help",
 ];
 
+const MAIN_SECTIONS = ["general", "mobile", "remoteFeatures", "experimental", "resourceMonitor", "clock", "calendar", "browser", "hintsOnboarding", "layout", "downloads", "usageStats", "moreSettings"] as const;
+
 export function SettingsDialog({
   onClose,
   initialPanel = "main",
+  initialAnchor,
 }: {
   onClose: () => void;
   initialPanel?: SettingsPanelKind;
+  /** A `SETTINGS_ANCHORS` id to open scrolled to, for a deep link from another
+   *  surface (the Mobile setup guide's "Open Mobile settings"). The main panel
+   *  is a very long scroll; landing at its top is landing nowhere. */
+  initialAnchor?: string;
 }) {
   const { settings, setTheme, setLanguage, updateSettings } = useSettingsStore();
-  const [panel, setPanel] = useState<SettingsPanelKind>(initialPanel);
+  const [panel, changePanel] = useState<SettingsPanelKind>(initialPanel);
+  const mainScroll = useRef(0);
+  const pendingAnchor = useRef(initialAnchor);
+  const lastInitialAnchor = useRef(initialAnchor);
+  const [category, setCategory] = useState(initialAnchor ?? "settings-anchor-general");
+  const setPanel = (next: SettingsPanelKind) => {
+    if (panel === "main") mainScroll.current = modalRef.current?.querySelector(".dialog-scroll")?.scrollTop ?? 0;
+    changePanel(next);
+  };
   // The theme customizer is a window of its own, not a sub-panel: it is opened
   // INSTEAD of this dialog (‹ Back returns here), so the palette it edits is
   // not judged through the settings scroll sitting on top of it.
   const [showCustomizer, setShowCustomizer] = useState(false);
+  const modalRef = useModalFocus(onClose, !showCustomizer);
   const t = useT();
 
   const currentTheme = (settings?.color_scheme ?? "fancy_dark") as Theme;
@@ -827,6 +902,34 @@ export function SettingsDialog({
     return energyMode === "off" ? t("settings.energyOff") : t("settings.energyInactive");
   })();
 
+  useEffect(() => {
+    if (lastInitialAnchor.current !== initialAnchor) {
+      lastInitialAnchor.current = initialAnchor;
+      pendingAnchor.current = initialAnchor;
+    }
+    if (showCustomizer || panel !== "main") return;
+    const scroll = modalRef.current?.querySelector(".dialog-scroll");
+    if (scroll) scroll.scrollTop = mainScroll.current;
+    if (pendingAnchor.current) {
+      document.getElementById(pendingAnchor.current)?.scrollIntoView({ block: "start" });
+      pendingAnchor.current = undefined;
+    }
+  }, [initialAnchor, panel, showCustomizer, modalRef]);
+
+  const navigate = (value: string) => {
+    if (value.startsWith("settings-anchor-")) {
+      setCategory(value);
+      if (panel !== "main") {
+        pendingAnchor.current = value;
+        setPanel("main");
+      } else {
+        const target = document.getElementById(value);
+        target?.scrollIntoView({ block: "start" });
+        target?.focus({ preventScroll: true });
+      }
+    } else setPanel(value as SettingsPanelKind);
+  };
+
   if (showCustomizer) {
     return (
       <ThemeCustomizerDialog
@@ -837,12 +940,18 @@ export function SettingsDialog({
   }
 
   return (
-    <div className="modal-backdrop how-to-start-backdrop" onMouseDown={onClose}>
-      <div className="settings-dialog" onMouseDown={(e) => e.stopPropagation()}>
+    <div className="modal-backdrop how-to-start-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div ref={modalRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label={t("settings.title")} className="settings-dialog settings-with-navigation" onMouseDown={(e) => e.stopPropagation()}>
+        <SettingsNavigation value={panel === "main" ? category : panel} onChange={navigate} options={[
+          ...MAIN_SECTIONS.map((key) => ({ value: `settings-anchor-${key}`, label: t(`settings.${key}` as TranslationKey) })),
+          ...[...SETTINGS_NAV, "ollama"].map((key) => ({ value: key, label: t(`nav.${key}.title` as TranslationKey) })),
+        ]} />
+        <div className="settings-panel-content">
         {panel === "main" && (
           <>
-            <SettingsHeader title={t("settings.title")} onClose={onClose} />
+            <SettingsHeader title={<>{t("settings.title")} <UntestedTag id="desktop.settingsNavigation" /></>} onClose={onClose} />
             <div className="dialog-scroll">
+            <SettingsSection title={t("settings.general")} anchor="settings-anchor-general" />
 
             <SettingRow
               label={t("settings.theme")}
@@ -856,13 +965,16 @@ export function SettingsDialog({
             />
 
             <SettingRow
-              label={<>{t("settings.themeVars")} <UntestedTag /></>}
+              label={<>{t("settings.themeVars")} <UntestedTag id="settings.themeVars" /></>}
               help={t("settings.themeVars.help")}
               control={
                 <button
                   type="button"
                   className="settings-btn"
-                  onClick={() => setShowCustomizer(true)}
+                  onClick={() => {
+                    mainScroll.current = modalRef.current?.querySelector(".dialog-scroll")?.scrollTop ?? 0;
+                    setShowCustomizer(true);
+                  }}
                 >
                   {t("settings.themeVars.open")}
                 </button>
@@ -870,7 +982,7 @@ export function SettingsDialog({
             />
 
             <SettingRow
-              label={<>{t("settings.language")} <UntestedTag /></>}
+              label={<>{t("settings.language")} <UntestedTag id="settings.language" /></>}
               help={t("settings.language.help")}
               control={
                 <Dropdown
@@ -908,10 +1020,56 @@ export function SettingsDialog({
               />
             )}
 
+            {/* Absent means on. The backend reads the key per spawn and per
+                request, so the switch needs no restart in either direction. */}
+            <ToggleCard
+              label={<>{t("settings.rootMcp")} <UntestedTag id="settings.rootMcp" /></>}
+              checked={settings?.root_mcp ?? true}
+              onChange={(e) => void updateSettings({ root_mcp: e.target.checked })}
+              help={t("settings.rootMcpHelp")}
+            />
+            {/* Subordinate to the switch above. Read per spawn and per request
+                too: on, the endpoint refuses the cloud agents already running. */}
+            <ToggleCard
+              label={<>{t("settings.rootMcpLocalOnly")} <UntestedTag id="settings.rootMcpLocalOnly" /></>}
+              checked={settings?.root_mcp_local_only ?? false}
+              disabled={!(settings?.root_mcp ?? true)}
+              onChange={(e) => void updateSettings({ root_mcp_local_only: e.target.checked })}
+              help={t("settings.rootMcpLocalOnlyHelp")}
+            />
+            {/* Its own switch, absent means off: the tools above never bring
+                mail with them. Read per request, like the two above. */}
+            <ToggleCard
+              label={<>{t("settings.rootMcpMail")} <UntestedTag id="settings.rootMcpMail" /></>}
+              checked={settings?.root_mcp_mail ?? false}
+              disabled={!(settings?.root_mcp ?? true)}
+              onChange={(e) => void updateSettings({ root_mcp_mail: e.target.checked })}
+              help={t("settings.rootMcpMailHelp")}
+            />
+
+            <SettingRow
+              label={<>{t("rootReview.setting")} <UntestedTag id="rootReview.setting" /></>}
+              control={<Dropdown
+                value={settings?.root_mcp_review ?? "all"}
+                disabled={!(settings?.root_mcp ?? true)}
+                options={[
+                  { value: "all", label: t("rootReview.levelAll") },
+                  { value: "destructive", label: t("rootReview.levelDestructive") },
+                  { value: "off", label: t("rootReview.levelOff") },
+                ]}
+                onChange={(value) => void updateSettings({ root_mcp_review: value as "all" | "destructive" | "off" })}
+              />}
+              help={t("rootReview.settingHelp")}
+            />
+
+            <SettingsAdvanced title={t("mcpSecurity.title")}>
+              <RootMcpSecurity />
+            </SettingsAdvanced>
+
             {/* Eldrun Mobile runs its host sidecar on every desktop (systemd
                 user unit, launchd agent, or the Windows Run key), so the
                 section is not platform-gated. */}
-            <SettingsSection title={t("settings.mobile")} />
+            <SettingsSection title={t("settings.mobile")} anchor={SETTINGS_ANCHORS.mobile} />
             <MobileSettings />
             <ToggleCard
               label={t("settings.mobileIndicator")}
@@ -920,7 +1078,7 @@ export function SettingsDialog({
               help={t("settings.mobileIndicatorHelp")}
             />
 
-            <SettingsSection title={t("settings.remoteFeatures")} />
+            <SettingsSection anchor="settings-anchor-remoteFeatures" title={t("settings.remoteFeatures")} />
             <SettingsCard>
               <ToggleRow
                 label={t("settings.vpnEnabled")}
@@ -954,12 +1112,12 @@ export function SettingsDialog({
             {/* Beside Energy Saver rather than folded into it: that one widens
                 timers off a live battery reading, this removes features off a
                 standing preference, and "plugged in, still want it lean" is the
-                case a merged control could not express. `lib/fastMode` holds the
+                case a merged control could not express. `lib/agents/fastMode` holds the
                 list of what goes — the help string above mirrors it. */}
             <ToggleCard
               label={
                 <>
-                  {t("settings.fastMode")} <UntestedTag />
+                  {t("settings.fastMode")} <UntestedTag id="settings.fastMode" />
                 </>
               }
               checked={settings?.fast_mode === true}
@@ -974,7 +1132,7 @@ export function SettingsDialog({
             />
 
             <SettingsSection
-              title={t("settings.experimental")}
+              anchor="settings-anchor-experimental" title={t("settings.experimental")}
               help={
                 <>
                   {t("settings.experimentalHelp1")}{" "}
@@ -990,25 +1148,33 @@ export function SettingsDialog({
                 canvas is the safe renderer, and a terminal whose WebGL fails
                 demotes itself back to it (TerminalView's renderer ladder). */}
             <ToggleCard
-              label={<>{t("settings.terminalWebgl")} <UntestedTag /></>}
+              label={<>{t("settings.terminalWebgl")} <UntestedTag id="settings.terminalWebgl" /></>}
               checked={experimentalEnabled(settings, "terminal_webgl")}
               onChange={(e) => void updateSettings({ terminal_webgl: e.target.checked })}
               help={t("settings.terminalWebglHelp")}
             />
 
             <ToggleCard
-              label={<>{t("settings.mdGraph")} <UntestedTag /></>}
+              label={<>{t("settings.mdGraph")} <UntestedTag id="settings.mdGraph" /></>}
               checked={experimentalEnabled(settings, "md_graph")}
               onChange={(e) => void updateSettings({ md_graph: e.target.checked })}
               help={t("settings.mdGraphHelp")}
             />
 
             <ToggleCard
-              label={<>{t("settings.projectRemarks")} <UntestedTag /></>}
+              label={<>{t("settings.projectRemarks")} <UntestedTag id="settings.projectRemarks" /></>}
               checked={experimentalEnabled(settings, "project_remarks")}
               onChange={(e) => void updateSettings({ project_remarks: e.target.checked })}
               help={t("settings.projectRemarksHelp")}
             />
+
+            <ToggleCard
+              label={<>{t("settings.copilotCompletion")} <UntestedTag id="settings.copilotCompletion" /></>}
+              checked={experimentalEnabled(settings, "copilot_completion")}
+              onChange={(e) => void updateSettings({ copilot_completion: e.target.checked })}
+              help={t("settings.copilotCompletionHelp")}
+            />
+            {experimentalEnabled(settings, "copilot_completion") && <CopilotCompletionCard />}
 
             {/* Mail is ONE switch. It used to be two — this gate plus a
                 `mail_global_app` sub-toggle deciding whether the header button
@@ -1022,7 +1188,7 @@ export function SettingsDialog({
                 lib/experimentalSweep. */}
             <SettingsCard>
               <ToggleRow
-                label={<>{t("settings.mailClient")} <UntestedTag /></>}
+                label={<>{t("settings.mailClient")} <UntestedTag id="settings.mailClient" /></>}
                 checked={experimentalEnabled(settings, "mail_client")}
                 onChange={(e) => void updateSettings({ mail_client: e.target.checked })}
               />
@@ -1072,7 +1238,7 @@ export function SettingsDialog({
               help={
                 <>
                   {t("settings.pythonRunHelp1")} <code>.py</code> {t("settings.pythonRunHelp2")}{" "}
-                  <b>▶ Run</b> {t("settings.pythonRunHelp3")} <b>🐞 Debug</b>{" "}
+                  <b><PlayIcon /> {t("fileViewer.runLabel")}</b> {t("settings.pythonRunHelp3")} <b><BugIcon /> {t("fileViewer.debugLabel")}</b>{" "}
                   {t("settings.pythonRunHelp4")} <code>pdb</code>
                   {t("settings.pythonRunHelp5")}
                 </>
@@ -1084,7 +1250,7 @@ export function SettingsDialog({
                 master switch and per-account quick-toggle tags), not here. There
                 are deliberately no global per-feature toggles in this panel. */}
 
-            <SettingsSection title={t("settings.resourceMonitor")} />
+            <SettingsSection anchor="settings-anchor-resourceMonitor" title={t("settings.resourceMonitor")} />
             <SettingsCard>
               <ToggleRow
                 label={t("settings.showCpu")}
@@ -1108,7 +1274,7 @@ export function SettingsDialog({
               <ToggleRow
                 label={
                   <>
-                    {t("statusCluster.settingLabel")} <UntestedTag />
+                    {t("statusCluster.settingLabel")} <UntestedTag id="statusCluster.settingLabel" />
                   </>
                 }
                 title={t("statusCluster.settingHelp")}
@@ -1122,7 +1288,7 @@ export function SettingsDialog({
 
             {/* The clock lives in its own section, not under Resource monitor:
                 seconds and the 12/24-hour face are time, not CPU/RAM/GPU. */}
-            <SettingsSection title={t("settings.clock")} />
+            <SettingsSection anchor="settings-anchor-clock" title={t("settings.clock")} />
             <SettingsCard>
               <ToggleRow
                 label={t("settings.showClockSeconds")}
@@ -1144,12 +1310,12 @@ export function SettingsDialog({
               <p className="settings-help">{t("settings.clock24Help")}</p>
             </SettingsCard>
 
-            <SettingsSection title={t("settings.calendar")} />
+            <SettingsSection anchor="settings-anchor-calendar" title={t("settings.calendar")} />
 
             {/* The calendar's twin of "Mail in the header". Not nested under
                 anything: the calendar is shipped, not experimental. */}
             <ToggleCard
-              label={<>{t("settings.calendarGlobalApp")} <UntestedTag /></>}
+              label={<>{t("settings.calendarGlobalApp")} <UntestedTag id="settings.calendarGlobalApp" /></>}
               checked={settings?.calendar_global_app ?? false}
               onChange={(e) => void updateSettings({ calendar_global_app: e.target.checked })}
               help={t("settings.calendarGlobalAppHelp")}
@@ -1159,7 +1325,7 @@ export function SettingsDialog({
                 where its cards live: they ARE this calendar's tasks, so the
                 board is a second view of the store above, not a second store. */}
             <ToggleCard
-              label={<>{t("settings.todoBoard")} <UntestedTag /></>}
+              label={<>{t("settings.todoBoard")} <UntestedTag id="settings.todoBoard" /></>}
               checked={settings?.todo_board ?? false}
               onChange={(e) => void updateSettings({ todo_board: e.target.checked })}
               help={t("settings.todoBoardHelp")}
@@ -1171,9 +1337,9 @@ export function SettingsDialog({
               <div className="settings-card-row">
                 <span>{t("settings.weekStartsOn")}</span>
                 <Dropdown
-                  value={String(settings?.calendar_week_start ?? 0)}
+                  value={String(settings?.calendar_week_start ?? 1)}
                   onChange={(v) =>
-                    void updateSettings({ calendar_week_start: Number(v) === 1 ? 1 : 0 })
+                    void updateSettings({ calendar_week_start: Number(v) === 0 ? 0 : 1 })
                   }
                   options={[
                     { value: "0", label: t("day.sunday") },
@@ -1234,7 +1400,7 @@ export function SettingsDialog({
                 are the backend's and are not configurable — a "trusted sites"
                 list or an "ignore certificate errors" switch is exactly the kind
                 of relaxation that outlives the reason for it, so none exists. */}
-            <SettingsSection title={<>{t("settings.browser")} <UntestedTag /></>} />
+            <SettingsSection anchor="settings-anchor-browser" title={<>{t("settings.browser")} <UntestedTag id="settings.browser" /></>} />
             <SettingRow
               htmlFor="browser-home-url"
               label={t("settings.browserHome")}
@@ -1297,7 +1463,7 @@ export function SettingsDialog({
               help={t("settings.browserLivePagesHelp")}
             />
 
-            <SettingsSection title={t("settings.hintsOnboarding")} />
+            <SettingsSection anchor="settings-anchor-hintsOnboarding" title={t("settings.hintsOnboarding")} />
             <ToggleCard
               label={t("settings.showHints")}
               checked={settings?.hints_enabled ?? true}
@@ -1332,7 +1498,7 @@ export function SettingsDialog({
                   window.dispatchEvent(new Event("eldrun:start-advanced-tour"));
                 }}
               >
-                {t("settings.takeAdvancedTour")} <UntestedTag />
+                {t("settings.takeAdvancedTour")} <UntestedTag id="settings.takeAdvancedTour" />
               </button>
               <button
                 type="button"
@@ -1354,7 +1520,7 @@ export function SettingsDialog({
             </div>
 
             <SettingsSection
-              title={<>{t("settings.layout")} <UntestedTag /></>}
+              anchor="settings-anchor-layout" title={<>{t("settings.layout")} <UntestedTag id="settings.layout" /></>}
               help={
                 <>
                   {t("settings.zoomHelp1")} <strong>{t("settings.zoomHelpBold")}</strong>
@@ -1362,6 +1528,7 @@ export function SettingsDialog({
                 </>
               }
             />
+            <WorkspaceParkingNote />
             <SettingRow
               label={t("settings.windowZoom")}
               control={
@@ -1429,7 +1596,7 @@ export function SettingsDialog({
             </SettingsCard>
 
             <SettingsSection
-              title={t("settings.downloads")}
+              anchor="settings-anchor-downloads" title={t("settings.downloads")}
               help={t("settings.downloadsHelp")}
             />
             <SettingsList boxed>
@@ -1482,7 +1649,7 @@ export function SettingsDialog({
               </button>
             </div>
 
-            <SettingsSection title={t("settings.usageStats")} />
+            <SettingsSection anchor="settings-anchor-usageStats" title={t("settings.usageStats")} />
             <ToggleCard
               label={t("settings.dailyRecap")}
               checked={settings?.daily_stats_recap ?? true}
@@ -1502,7 +1669,7 @@ export function SettingsDialog({
               </button>
             </div>
 
-            <SettingsSection title={t("settings.moreSettings")} />
+            <SettingsSection anchor="settings-anchor-moreSettings" title={t("settings.moreSettings")} />
             <div className="settings-nav-list">
               {SETTINGS_NAV.map((panelKind) => (
                 <button
@@ -1535,6 +1702,7 @@ export function SettingsDialog({
         {panel === "scaffoldRepair" && <ScaffoldRepairPanel onBack={() => setPanel("main")} onClose={onClose} />}
         {panel === "updates" && <UpdatesPanel onBack={() => setPanel("main")} onClose={onClose} />}
         {panel === "help" && <HelpPanel onBack={() => setPanel("main")} onClose={onClose} />}
+        </div>
       </div>
     </div>
   );

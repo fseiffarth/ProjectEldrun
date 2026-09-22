@@ -36,7 +36,7 @@ export function MailAiSettingsDialog({ account, onClose }: MailAiSettingsDialogP
       >
         <div className="settings-title-row">
           <h2>
-            {t("mailAi.settingsTitle")} <UntestedTag />
+            {t("mailAi.settingsTitle")} <UntestedTag id="mailAi.settingsTitle#2" />
           </h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>
             ×

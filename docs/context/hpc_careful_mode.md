@@ -10,7 +10,7 @@ and a skipped host census, a wrong full reading costs a usage-policy violation o
 somebody else's cluster. So the question is never asked of the host, only of the
 user, and only when they care to answer: the system monitor's per-machine
 **Light / Detailed** switch, stored per SSH target in `settings.careful_hosts`
-(`src/lib/carefulHost.ts`), which is what "this machine is mine" is written down
+(`src/lib/remote/carefulHost.ts`), which is what "this machine is mine" is written down
 as. The rest of this document is what the reduced reading actually is, and the
 rules that shaped it.
 
@@ -128,7 +128,7 @@ logged in to — the Machines menu's add-a-machine form, the per-host connect
 dialog (`HpcHostToggle`, beside "Go easy on this machine"), and the new/extend
 project flow — and shown afterwards as an `HPC` badge on that machine's row, with
 a toggle in its expanded detail. Stored per SSH target in `settings.hpc_hosts`
-(`src/lib/hpcHost.ts`, `schema::settings`): the same key as `careful_hosts`, so
+(`src/lib/remote/hpc/hpcHost.ts`, `schema::settings`): the same key as `careful_hosts`, so
 tagging a login node once covers it as a project primary, as another project's
 worker, and as a global machine.
 
@@ -139,10 +139,10 @@ Tagged, a machine gets:
 | monitor reading | careful by default, user may switch to Detailed | careful, **and the Detailed switch is disabled** |
 | connect-time usage probe | fires on every connect | not fired automatically (`commands::remote`) |
 | giant-folder census (`du -ak`) | runs on connect | never runs against the host (`commands::sync`) |
-| disk-usage scan | runs | **refused until confirmed for that scan** (`commands::disk_usage` → `HPC_GUARD` → `lib/hpcGuard.ts`) |
+| disk-usage scan | runs | **refused until confirmed for that scan** (`commands::disk_usage` → `HPC_GUARD` → `lib/remote/hpc/hpcGuard.ts`) |
 | auto byte-sync loop (25 s) | starts on connect | never starts (`services::sync_auto`) — manual push/pull still works, and the tag is re-read **per tick**, so tagging a connected host stops the loop mid-session |
 | git lockstep poll (12 s) | starts when lockstep is on | never starts (`services::git_peer`), same per-tick re-read |
-| auto-connect at launch/VPN-up | as armed | never, project or global machine (`stores/projects`, `stores/globalMachines`) |
+| auto-connect at launch/VPN-up | as armed | never, project or global machine (`stores/projects`, `stores/remote/globalMachines`) |
 | silent reconnect of a dead pool (15 s) | re-dials | never (`stores/projects`' `silentReconnectDeadHost`) — a dropped session ends at a red lamp the user clicks |
 | Machines-menu reachability sweep | probes every machine on open | never swept; the row reads *not checked* until its **◎ Check** is pressed |
 | system-monitor poll | 3 s (12 s careful) | sampled once when the pane opens, then only on **↻ Refresh** |

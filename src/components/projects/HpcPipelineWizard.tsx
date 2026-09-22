@@ -12,7 +12,7 @@
  *     OpenVPN + the live remote folder browser).
  *  2. **Project** — a name + local-mirror location.
  *  3. **Workspace** (Phase C, skipped on a host without the tooling) — allocate or
- *     pick an `hpc-workspace` (`lib/hpcWorkspace`), **then** create the project.
+ *     pick an `hpc-workspace` (`lib/remote/hpc/hpcWorkspace`), **then** create the project.
  *     This step exists because `$HOME` on a cluster is a small, quota'd, code-only
  *     filesystem: bulk data belongs in a time-limited workspace on the parallel
  *     filesystem. It has to come *before* the project is created and before a
@@ -36,9 +36,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { RemoteProjectSection } from "./RemoteProjectSection";
 import { useRemoteSession } from "./useRemoteSession";
-import { useHpcPipelineStore } from "../../stores/hpcPipeline";
+import { useHpcPipelineStore } from "../../stores/remote/hpc/hpcPipeline";
 import { useProjectsStore, stashRemotePassword, stashRemoteViaLogin } from "../../stores/projects";
-import { useGlobalMachinesStore } from "../../stores/globalMachines";
+import { useGlobalMachinesStore } from "../../stores/remote/globalMachines";
 import { resolveProjectDirectory, resolveLocalMirror, type ProjectEntry } from "../../types";
 import { basename } from "../../lib/paths";
 import { writeFileText } from "../embed/fileAccess";
@@ -49,7 +49,7 @@ import {
   spliceDirective,
   submitSlurmJob,
   COMMON_SBATCH_KEYS,
-} from "../../lib/slurm";
+} from "../../lib/remote/hpc/slurm";
 import {
   wsAvailable,
   wsList,
@@ -70,8 +70,9 @@ import {
   type HpcWsInfo,
   type HpcAnchor,
   type ScratchCandidate,
-} from "../../lib/hpcWorkspace";
+} from "../../lib/remote/hpc/hpcWorkspace";
 import { useT, type TranslationKey } from "../../lib/i18n";
+import { UploadIcon } from "../common/icons/Icon";
 
 type Step = "login" | "project" | "workspace" | "data" | "run" | "watch";
 
@@ -353,7 +354,7 @@ function HpcPipelineWizard({ onClose }: { onClose: () => void }) {
       <div className="project-dialog dialog-framed hpc-wizard" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-title-row">
           <h2>
-            {t("hpcWizard.title")} <UntestedTag />
+            {t("hpcWizard.title")} <UntestedTag id="hpcWizard.title" />
           </h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
@@ -1118,7 +1119,7 @@ function RunStep({
       <div className="project-dialog-actions">
         <button type="button" onClick={onBack}>{t("common.back")}</button>
         <button type="button" disabled={busy} onClick={() => void submit()}>
-          {busy ? t("hpcWizard.submitting") : t("hpcWizard.submitJob")}
+          {busy ? t("hpcWizard.submitting") : <><UploadIcon /> {t("hpcWizard.submitJob")}</>}
         </button>
       </div>
     </>

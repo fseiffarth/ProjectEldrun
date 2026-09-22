@@ -16,7 +16,7 @@ import {
   printerStateKey,
   printerStateLabelKey,
   printerTone,
-} from "../../lib/printing";
+} from "../../lib/window/printing";
 import type { PrintJob, PrintSnapshot, PrinterInfo } from "../../types/printing";
 
 /**
@@ -114,7 +114,7 @@ export function PrintManagerPane({ visible = true }: PrintManagerPaneProps) {
       <div className="print-toolbar">
         <span className="print-title">
           <PrinterIcon className="print-title-icon" />
-          {t("printing.title")} <UntestedTag />
+          {t("printing.title")} <UntestedTag id="printing.title" />
         </span>
         <span className="print-toolbar-spacer" />
         {snapshot?.default_printer && (

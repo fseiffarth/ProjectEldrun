@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { CompareView } from "./CompareView";
 import { useProjectsStore } from "../../stores/projects";
-import { useSyncStore } from "../../stores/sync";
+import { useSyncStore } from "../../stores/remote/sync";
 import { useTabsStore } from "../../stores/tabs";
 import { resolveProjectDirectory, resolveLocalMirror } from "../../types";
 import { relFromAbs } from "../../lib/viewers/fileUtils";

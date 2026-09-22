@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { create } from "zustand";
-import type { ConnState } from "./remoteStatus";
+import type { ConnState } from "./remote/remoteStatus";
 
 /**
  * What the header's right-hand status widgets currently have to say — the one
@@ -26,7 +26,8 @@ export type HeaderStatusKey =
   | "vpn"
   | "machines"
   | "resources"
-  | "alerts";
+  | "alerts"
+  | "devBuild";
 
 /**
  * How loudly a member is speaking.

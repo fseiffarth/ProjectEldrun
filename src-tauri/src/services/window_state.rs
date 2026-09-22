@@ -17,6 +17,33 @@
 
 use crate::schema::settings::WindowState;
 
+/// Wayland cannot restore desktop coordinates after an unmap. Keep the surface
+/// alive by minimizing, and remember our requests: GTK's minimized flag is not
+/// reliably reported by Wayland, and scope sync runs from two callers.
+#[derive(Default)]
+pub struct DetachedParking {
+    parked: std::collections::HashSet<String>,
+}
+
+impl DetachedParking {
+    pub fn is_parked(&self, label: &str) -> bool {
+        self.parked.contains(label)
+    }
+
+    /// True only when this scope transition needs a minimize/present request.
+    pub fn transition(&mut self, label: &str, visible: bool) -> bool {
+        if visible {
+            self.parked.remove(label)
+        } else {
+            self.parked.insert(label.to_owned())
+        }
+    }
+
+    pub fn forget(&mut self, label: &str) {
+        self.parked.remove(label);
+    }
+}
+
 /// One connected monitor's position and size in physical desktop px, as reported
 /// by Tauri's `available_monitors()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -234,6 +261,37 @@ fn overlap_area(s: &WindowState, m: &MonitorRect) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wayland_scope_parking_is_independent_and_idempotent() {
+        let mut parking = DetachedParking::default();
+        // An active window is never presented just because sync ran again.
+        assert!(!parking.transition("detached-p1-g1", true));
+        for label in ["detached-p1-g1", "detached-p1-g2", "detached-box:b1-g1"] {
+            assert!(parking.transition(label, false));
+            assert!(parking.is_parked(label));
+            // Backend switch and frontend scope sync both park the same set.
+            assert!(!parking.transition(label, false));
+        }
+        for label in ["detached-p1-g1", "detached-p1-g2"] {
+            assert!(parking.transition(label, true));
+            assert!(!parking.is_parked(label));
+            assert!(!parking.transition(label, true));
+        }
+        assert!(parking.is_parked("detached-box:b1-g1"));
+        assert!(parking.transition("detached-p1-g1", false));
+    }
+
+    #[test]
+    fn closed_wayland_popout_leaves_no_parked_state_for_a_reused_label() {
+        let mut parking = DetachedParking::default();
+        parking.transition("detached-p1-g1", false);
+        parking.forget("detached-p1-g1");
+        parking.forget("detached-p1-g1");
+        assert!(!parking.is_parked("detached-p1-g1"));
+        assert!(!parking.transition("detached-p1-g1", true));
+        assert!(parking.transition("detached-p1-g1", false));
+    }
 
     /// The dev desk this feature was written for: two 1920x1080 monitors side by
     /// side, DP-6 at the origin and DP-7 to its right.

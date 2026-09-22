@@ -55,6 +55,7 @@ pub(crate) fn validate_id(label: &str, value: &str) -> Result<(), String> {
 }
 
 fn parse_date_time(value: &str) -> Option<(i32, u32, u32, u32, u32)> {
+    if !value.is_ascii() { return None; }
     if value.len() != 16
         || value.as_bytes().get(4) != Some(&b'-')
         || value.as_bytes().get(7) != Some(&b'-')
@@ -81,13 +82,13 @@ fn parse_date_time(value: &str) -> Option<(i32, u32, u32, u32, u32)> {
 }
 
 fn valid_time(value: &str) -> bool {
-    value.len() == 5
+    value.is_ascii() && value.len() == 5
         && value.as_bytes().get(2) == Some(&b':')
         && value[0..2].parse::<u8>().is_ok_and(|v| v <= 23)
         && value[3..5].parse::<u8>().is_ok_and(|v| v <= 59)
 }
 
-fn validate_rule(rule: &AgentScheduleRule) -> Result<(), String> {
+pub(crate) fn validate_rule(rule: &AgentScheduleRule) -> Result<(), String> {
     match rule {
         AgentScheduleRule::Once { at } if parse_date_time(at).is_none() => {
             Err("invalid one-time date/time".into())
@@ -160,6 +161,10 @@ fn validate_prompt(mut prompt: ScheduledAgentPrompt) -> Result<ScheduledAgentPro
     validate_rule(&prompt.rule)?;
     prompt.preface = validate_preface(std::mem::take(&mut prompt.preface))?;
     prompt.message = sanitize_message(&prompt.message);
+    if prompt.origin.is_some() {
+        if !prompt.preface.is_empty() { return Err("agent schedules cannot carry prefix commands".into()); }
+        prompt.message = super::schedule_mcp::sanitize_prompt(&prompt.message)?;
+    }
     if prompt.message.trim().is_empty() {
         return Err("scheduled prompt is empty".into());
     }
@@ -192,7 +197,11 @@ pub fn list(project_id: &str, target_id: &str) -> Result<Vec<ScheduledAgentPromp
     validate_id("project id", project_id)?;
     validate_id("schedule target id", target_id)?;
     let _guard = lock();
-    Ok(read()?
+    let mut file = read()?;
+    if super::schedule_mcp::prune_proposals(&mut file, &chrono::Utc::now().to_rfc3339()) {
+        write(&file)?;
+    }
+    Ok(file
         .projects
         .get(project_id)
         .and_then(|project| project.get(target_id))
@@ -200,20 +209,70 @@ pub fn list(project_id: &str, target_id: &str) -> Result<Vec<ScheduledAgentPromp
         .unwrap_or_default())
 }
 
-pub fn upsert(
-    project_id: &str,
-    target_id: &str,
-    mut prompt: ScheduledAgentPrompt,
-) -> Result<Vec<ScheduledAgentPrompt>, String> {
-    validate_id("project id", project_id)?;
-    validate_id("schedule target id", target_id)?;
-    // Delivery receipts belong exclusively to claim/complete. Neither a new
-    // schedule nor an editor request may manufacture one at the CRUD boundary.
-    prompt.last = None;
-    let prompt = validate_prompt(prompt)?;
+/// Schedule MCP uses the same transaction lock for validation, quotas and writes.
+pub(crate) fn mutate<T>(f: impl FnOnce(&mut AgentTasksFile) -> Result<T, String>) -> Result<T, String> {
     let _guard = lock();
     let mut file = read()?;
-    let target = target_mut(&mut file, project_id, target_id);
+    let result = f(&mut file)?;
+    write(&file)?;
+    Ok(result)
+}
+
+pub(crate) fn drain_mutations() { drop(lock()); }
+
+/// The refusal an edit of an existing rule gets when the rule it was drawn
+/// from is no longer there to edit: the id is gone, or it is a one-time rule
+/// that has already been delivered. Exact strings — the frontend matches them.
+pub const SCHEDULE_GONE_ERROR: &str = "schedule_gone";
+/// The refusal when a delivery of the rule is claimed and not yet complete.
+pub const SCHEDULE_BUSY_ERROR: &str = "schedule_busy";
+
+/// Whether `schedule_id` on `target_id` is still a rule an editor may move or
+/// drop. An editor holds the rule as it was when it was drawn, and the
+/// scheduler may have delivered and retired it since: re-creating it then
+/// makes a fresh, unclaimed rule under the same id, and the prompt goes out a
+/// second time. A recurring rule with a receipt is still live — only a
+/// one-time rule is finished by its receipt — but no rule is while a claim on
+/// it is outstanding, because `claim` is the only at-most-once check there is.
+fn check_live(
+    file: &AgentTasksFile,
+    project_id: &str,
+    target_id: &str,
+    schedule_id: &str,
+) -> Result<(), String> {
+    let Some(target) = file
+        .projects
+        .get(project_id)
+        .and_then(|project| project.get(target_id))
+    else {
+        return Err(SCHEDULE_GONE_ERROR.into());
+    };
+    let Some(rule) = target.schedules.iter().find(|item| item.id == schedule_id) else {
+        return Err(SCHEDULE_GONE_ERROR.into());
+    };
+    if matches!(rule.rule, AgentScheduleRule::Once { .. }) && rule.last.is_some() {
+        return Err(SCHEDULE_GONE_ERROR.into());
+    }
+    if target.claims.contains_key(schedule_id) {
+        return Err(SCHEDULE_BUSY_ERROR.into());
+    }
+    Ok(())
+}
+
+/// Pure core of [`upsert`]. `expect_existing_on` names the target the edited
+/// rule must still be live on ([`check_live`]); the write itself goes to
+/// `target_id`, which differs from it when a rule moves to another tab.
+pub(crate) fn apply_upsert(
+    file: &mut AgentTasksFile,
+    project_id: &str,
+    target_id: &str,
+    prompt: ScheduledAgentPrompt,
+    expect_existing_on: Option<&str>,
+) -> Result<Vec<ScheduledAgentPrompt>, String> {
+    if let Some(source) = expect_existing_on {
+        check_live(file, project_id, source, &prompt.id)?;
+    }
+    let target = target_mut(file, project_id, target_id);
     match target
         .schedules
         .iter()
@@ -224,6 +283,8 @@ pub fn upsert(
             // but cannot erase at-most-once history by omitting `last`.
             let mut next = prompt;
             next.last = target.schedules[index].last.clone();
+            next.origin = target.schedules[index].origin.clone();
+            let next = validate_prompt(next)?;
             target.schedules[index] = next;
         }
         None => {
@@ -233,17 +294,46 @@ pub fn upsert(
             target.schedules.push(prompt);
         }
     }
-    let result = target.schedules.clone();
+    Ok(target.schedules.clone())
+}
+
+/// Write a rule. With `expect_existing_on` set, an edit of an existing rule is
+/// refused with [`SCHEDULE_GONE_ERROR`] or [`SCHEDULE_BUSY_ERROR`] instead of
+/// re-creating a rule the scheduler already delivered or is delivering; the
+/// phone and every plain create pass `None` and behave as before.
+pub fn upsert(
+    project_id: &str,
+    target_id: &str,
+    mut prompt: ScheduledAgentPrompt,
+    expect_existing_on: Option<&str>,
+) -> Result<Vec<ScheduledAgentPrompt>, String> {
+    validate_id("project id", project_id)?;
+    validate_id("schedule target id", target_id)?;
+    if let Some(source) = expect_existing_on {
+        validate_id("schedule target id", source)?;
+    }
+    // Delivery receipts belong exclusively to claim/complete. Neither a new
+    // schedule nor an editor request may manufacture one at the CRUD boundary.
+    prompt.last = None;
+    let prompt = validate_prompt(prompt)?;
+    let _guard = lock();
+    let mut file = read()?;
+    let result = apply_upsert(&mut file, project_id, target_id, prompt, expect_existing_on)?;
     write(&file)?;
     Ok(result)
 }
 
-pub fn delete(project_id: &str, target_id: &str, schedule_id: &str) -> Result<(), String> {
-    validate_id("project id", project_id)?;
-    validate_id("schedule target id", target_id)?;
-    validate_id("schedule id", schedule_id)?;
-    let _guard = lock();
-    let mut file = read()?;
+/// Pure core of [`delete`]; `expect_undelivered` refuses as [`check_live`] does.
+pub(crate) fn apply_delete(
+    file: &mut AgentTasksFile,
+    project_id: &str,
+    target_id: &str,
+    schedule_id: &str,
+    expect_undelivered: bool,
+) -> Result<(), String> {
+    if expect_undelivered {
+        check_live(file, project_id, target_id, schedule_id)?;
+    }
     if let Some(target) = file
         .projects
         .get_mut(project_id)
@@ -252,7 +342,22 @@ pub fn delete(project_id: &str, target_id: &str, schedule_id: &str) -> Result<()
         target.schedules.retain(|item| item.id != schedule_id);
         target.claims.remove(schedule_id);
     }
-    prune_empty(&mut file);
+    prune_empty(file);
+    Ok(())
+}
+
+pub fn delete(
+    project_id: &str,
+    target_id: &str,
+    schedule_id: &str,
+    expect_undelivered: bool,
+) -> Result<(), String> {
+    validate_id("project id", project_id)?;
+    validate_id("schedule target id", target_id)?;
+    validate_id("schedule id", schedule_id)?;
+    let _guard = lock();
+    let mut file = read()?;
+    apply_delete(&mut file, project_id, target_id, schedule_id, expect_undelivered)?;
     write(&file)
 }
 
@@ -304,6 +409,7 @@ pub fn claim(
     {
         return Ok(false);
     }
+    if !reserve_agent_delivery(target, schedule_id, occurrence, chrono::Local::now()) { return Ok(false); }
     target
         .claims
         .insert(schedule_id.to_string(), occurrence.to_string());
@@ -344,6 +450,10 @@ pub fn complete(
         result,
         at: storage::iso_now(),
     });
+    let record_id = delivery_id(prompt, occurrence);
+    if let Some(delivery) = target.agent_deliveries.iter_mut().find(|r| r.id == record_id) {
+        delivery.result = Some(result);
+    }
     target.claims.remove(schedule_id);
     let schedules = target.schedules.clone();
     write(&file)?;
@@ -352,9 +462,28 @@ pub fn complete(
 
 fn prune_empty(file: &mut AgentTasksFile) {
     for project in file.projects.values_mut() {
-        project.retain(|_, target| !target.schedules.is_empty() || !target.claims.is_empty());
+        project.retain(|_, target| !target.schedules.is_empty() || !target.claims.is_empty() || !target.agent_deliveries.is_empty());
     }
     file.projects.retain(|_, project| !project.is_empty());
+}
+
+fn delivery_id(prompt: &ScheduledAgentPrompt, occurrence: &str) -> String {
+    if matches!(prompt.rule, AgentScheduleRule::Once { .. }) { prompt.id.clone() }
+    else { format!("{}@{occurrence}", prompt.id) }
+}
+
+fn reserve_agent_delivery(target: &mut AgentPromptTarget, schedule_id: &str, occurrence: &str, now: chrono::DateTime<chrono::Local>) -> bool {
+    let Some(prompt) = target.schedules.iter().find(|s| s.id == schedule_id) else { return false };
+    if prompt.origin.is_none() { return true; }
+    let day = now.format("%Y-%m-%d").to_string();
+    if super::schedule_mcp::delivery_count(target, &day) >= 6 { return false; }
+    let id = delivery_id(prompt, occurrence);
+    let cutoff = (now - chrono::Duration::days(7)).format("%Y-%m-%d").to_string();
+    target.agent_deliveries.retain(|r| r.day >= cutoff);
+    target.agent_deliveries.push(crate::schema::agent_tasks::AgentScheduleDelivery {
+        id, day, at: now.to_rfc3339(), result: None,
+    });
+    true
 }
 
 fn saved_bindings(file: &AgentTasksFile) -> HashSet<(String, String)> {
@@ -411,6 +540,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn claim_budget_survives_retirement_reload_and_preserves_user_delivery() {
+        use crate::schema::agent_tasks::{ScheduleOrigin, ScheduleAuthor};
+        let now = chrono::Local::now();
+        let mut target = AgentPromptTarget::default();
+        for i in 0..6 {
+            let mut row = once(&format!("agent-{i}"));
+            row.origin = Some(ScheduleOrigin { by: ScheduleAuthor::Agent, session: "s".into(), at: now.to_rfc3339(), from_delivery: None });
+            target.schedules.push(row.clone());
+            assert!(reserve_agent_delivery(&mut target, &row.id, "2026-09-20T12:00", now));
+            target.schedules.clear();
+        }
+        let mut target: AgentPromptTarget = serde_json::from_value(serde_json::to_value(target).unwrap()).unwrap();
+        let mut row = once("next");
+        row.origin = Some(ScheduleOrigin { by: ScheduleAuthor::Agent, session: "new-spawn".into(), at: now.to_rfc3339(), from_delivery: None });
+        target.schedules.push(row);
+        target.schedules.push(once("user"));
+        assert!(!reserve_agent_delivery(&mut target, "next", "2026-09-20T12:00", now));
+        assert!(reserve_agent_delivery(&mut target, "user", "2026-09-20T12:00", now));
+        assert!(reserve_agent_delivery(&mut target, "next", "2026-09-21T12:00", now + chrono::Duration::days(1)));
+    }
+
+    #[test]
     fn sanitizer_preserves_newlines_and_drops_terminal_controls() {
         assert_eq!(
             sanitize_message("one\r\ntwo\u{1b}[31m\u{7f}"),
@@ -444,6 +595,115 @@ mod tests {
         assert!(validate_preface_command("   ").is_err());
         assert!(validate_preface_command(&format!("/{}", "x".repeat(MAX_PREFACE_BYTES))).is_err());
         assert!(validate_preface(vec!["/clear".into(); MAX_PREFACE_COMMANDS + 1]).is_err());
+    }
+
+    fn rule(id: &str, rule: AgentScheduleRule) -> ScheduledAgentPrompt {
+        ScheduledAgentPrompt {
+            id: id.into(),
+            enabled: true,
+            message: "go".into(),
+            rule,
+            preface: Vec::new(),
+            last: None,
+            origin: None,
+        }
+    }
+
+    fn once(id: &str) -> ScheduledAgentPrompt {
+        rule(id, AgentScheduleRule::Once { at: "2026-09-04T13:00".into() })
+    }
+
+    fn daily(id: &str) -> ScheduledAgentPrompt {
+        rule(id, AgentScheduleRule::Daily { time: "08:00".into() })
+    }
+
+    fn receipt() -> Option<AgentScheduleLastRun> {
+        Some(AgentScheduleLastRun {
+            occurrence: "2026-09-04T08:00".into(),
+            result: AgentScheduleResult::Delivered,
+            at: "2026-09-04T08:00:03+00:00".into(),
+        })
+    }
+
+    /// One tab holding a live one-time rule, a delivered one, a recurring rule
+    /// that has run before, and a one-time rule whose delivery is claimed.
+    fn seeded() -> AgentTasksFile {
+        let mut file = AgentTasksFile::default();
+        let target = target_mut(&mut file, "p", "t1");
+        target.schedules.push(once("live"));
+        target.schedules.push(ScheduledAgentPrompt { last: receipt(), ..once("done") });
+        target.schedules.push(ScheduledAgentPrompt { last: receipt(), ..daily("daily") });
+        target.schedules.push(once("claimed"));
+        target
+            .claims
+            .insert("claimed".into(), "2026-09-04T13:00".into());
+        file
+    }
+
+    fn snapshot(file: &AgentTasksFile) -> String {
+        serde_json::to_string(file).unwrap()
+    }
+
+    #[test]
+    fn an_unguarded_write_behaves_as_before() {
+        let mut file = seeded();
+        // An editor cannot erase a receipt by omitting it…
+        let stored = apply_upsert(&mut file, "p", "t1", once("done"), None).unwrap();
+        assert_eq!(stored.iter().find(|item| item.id == "done").unwrap().last, receipt());
+        // …a missing id is simply created, and a delete drops the claim too.
+        let stored = apply_upsert(&mut file, "p", "t1", once("new"), None).unwrap();
+        assert!(stored.iter().any(|item| item.id == "new"));
+        apply_delete(&mut file, "p", "t1", "claimed", false).unwrap();
+        assert!(!file.projects["p"]["t1"].claims.contains_key("claimed"));
+        assert!(apply_delete(&mut file, "p", "t9", "nothing", false).is_ok());
+    }
+
+    #[test]
+    fn a_guarded_edit_refuses_a_rule_that_was_delivered_or_is_being_delivered() {
+        let mut file = seeded();
+        let before = snapshot(&file);
+        for (id, error) in [
+            ("gone", SCHEDULE_GONE_ERROR),
+            ("done", SCHEDULE_GONE_ERROR),
+            ("claimed", SCHEDULE_BUSY_ERROR),
+        ] {
+            assert_eq!(
+                apply_upsert(&mut file, "p", "t1", once(id), Some("t1")),
+                Err(error.to_string()),
+                "upsert {id}",
+            );
+            assert_eq!(
+                apply_delete(&mut file, "p", "t1", id, true),
+                Err(error.to_string()),
+                "delete {id}",
+            );
+        }
+        // A target that does not hold the id at all is gone too, even when
+        // another tab does.
+        assert_eq!(
+            apply_upsert(&mut file, "p", "t1", once("live"), Some("t2")),
+            Err(SCHEDULE_GONE_ERROR.to_string()),
+        );
+        assert_eq!(snapshot(&file), before, "a refusal writes nothing");
+    }
+
+    #[test]
+    fn a_guarded_edit_still_moves_a_live_rule() {
+        let mut file = seeded();
+        let retimed = rule("live", AgentScheduleRule::Once { at: "2026-09-04T14:00".into() });
+        let stored = apply_upsert(&mut file, "p", "t1", retimed, Some("t1")).unwrap();
+        assert_eq!(
+            stored.iter().find(|item| item.id == "live").unwrap().rule,
+            AgentScheduleRule::Once { at: "2026-09-04T14:00".into() },
+        );
+        // A recurring rule that has run before is still a plan, and keeps its receipt.
+        let stored = apply_upsert(&mut file, "p", "t1", daily("daily"), Some("t1")).unwrap();
+        assert_eq!(stored.iter().find(|item| item.id == "daily").unwrap().last, receipt());
+        // A move to another tab names the tab the rule came from.
+        let stored = apply_upsert(&mut file, "p", "t2", once("live"), Some("t1")).unwrap();
+        assert_eq!(stored.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(), ["live"]);
+        apply_delete(&mut file, "p", "t1", "live", true).unwrap();
+        assert!(!file.projects["p"]["t1"].schedules.iter().any(|item| item.id == "live"));
     }
 
     #[test]

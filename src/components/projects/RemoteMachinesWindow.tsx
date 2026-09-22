@@ -10,15 +10,15 @@ import { SavePasswordRow } from "./SavePasswordRow";
 import { rememberArg, useSavedCredential } from "./useSavedCredential";
 import { CredentialPasteBar, sshPasteEntries } from "./CredentialPasteBar";
 import { TerminalView } from "../terminal/TerminalView";
-import { forgetConnection, markConnectionOpened, resolveRemoteStartDir } from "../../lib/remoteConnect";
+import { forgetConnection, markConnectionOpened, resolveRemoteStartDir } from "../../lib/remote/remoteConnect";
 import { formatBytes } from "../../lib/formatBytes";
-import { withHostKeyConfirm } from "../../lib/hostKey";
-import { sameTarget } from "../../lib/machineSync";
-import { useConnectDialogStore } from "../../stores/connectDialog";
-import { useGlobalMachinesStore } from "../../stores/globalMachines";
-import { useRemoteStatusStore, PRIMARY_HOST, type ConnState } from "../../stores/remoteStatus";
-import { useRemoteMachinesStore } from "../../stores/remoteMachines";
-import { useHostBusyStore, busyReading, busyLabel } from "../../stores/hostBusy";
+import { withHostKeyConfirm } from "../../lib/remote/hostKey";
+import { sameTarget } from "../../lib/remote/machineSync";
+import { useConnectDialogStore } from "../../stores/remote/connectDialog";
+import { useGlobalMachinesStore } from "../../stores/remote/globalMachines";
+import { useRemoteStatusStore, PRIMARY_HOST, type ConnState } from "../../stores/remote/remoteStatus";
+import { useRemoteMachinesStore } from "../../stores/remote/remoteMachines";
+import { useHostBusyStore, busyReading, busyLabel } from "../../stores/remote/hostBusy";
 import { ConnLamp } from "../common/ConnLamp";
 import { Toggle } from "../common/Toggle";
 import { PasswordInput } from "../common/PasswordInput";
@@ -87,7 +87,7 @@ export function RemoteMachinesWindow({
 
   // Sweep every CONNECTED host for live tmux sessions when this hub opens, so
   // each card's lamp says whether that machine is merely reachable or actually
-  // working (`stores/hostBusy`). On-open only, never polled — one SSH round trip
+  // working (`stores/remote/hostBusy`). On-open only, never polled — one SSH round trip
   // per connected host, riding the pool that is already up. A disconnected host
   // is skipped: it has nothing to ask, and asking would dial it just to fail.
   const primarySsh = primary?.ssh ?? "off";
@@ -503,7 +503,7 @@ export function RemoteMachinesWindow({
   };
 
   /** Already this project's primary or one of its workers — matched by SSH
-   *  target, never by id (a project host is a copy by value; `lib/machineSync`).
+   *  target, never by id (a project host is a copy by value; `lib/remote/machineSync`).
    *  Such a row offers no action: adding the same machine twice would give it two
    *  cards, two lamps and two sync paths for one host. */
   const alreadyAHost = (m: GlobalMachine) =>
@@ -701,7 +701,7 @@ export function RemoteMachinesWindow({
                 >
                   {t("remoteMachines.primaryTag")}
                 </span>
-                <UntestedTag />
+                <UntestedTag id="remoteMachinesWindow.1" />
                 <span className="remote-machine-target">
                   {project.remote && formatRemoteTarget(project.remote)}
                 </span>
@@ -893,7 +893,7 @@ export function RemoteMachinesWindow({
                     <span className="remote-machine-global-title">
                       {t("remoteMachines.globalListTitle")}
                     </span>
-                    <UntestedTag />
+                    <UntestedTag id="remoteMachinesWindow.2" />
                   </div>
                   <p className="settings-help">{t("remoteMachines.globalListHelp")}</p>
                   <div className="remote-machine-global-list">
@@ -903,7 +903,7 @@ export function RemoteMachinesWindow({
                       return (
                         <div key={m.id} className="remote-machine-global-row">
                           {/* The machine's own status — a session this app opened,
-                              never a probe (`stores/globalMachines`). */}
+                              never a probe (`stores/remote/globalMachines`). */}
                           <ConnLamp status={globalStatuses[m.id] ?? "off"} label={target} />
                           <span className="remote-machine-name">{m.label || m.host}</span>
                           <span className="remote-machine-target">{target}</span>
@@ -955,7 +955,7 @@ export function RemoteMachinesWindow({
               <label>
                 <span className="remote-machine-add-label">
                   {t("remoteConnect.usernameLabel")}
-                  <UntestedTag />
+                  <UntestedTag id="remoteMachinesWindow.3" />
                 </span>
                 <input
                   placeholder={t("remoteMachines.usernamePlaceholder")}
@@ -1111,7 +1111,7 @@ export function RemoteMachinesWindow({
               <label>
                 <span className="remote-machine-add-label">
                   {syncCopy ? t("remoteMachines.remotePathForCopy") : t("remoteMachines.pathToProject")}
-                  <UntestedTag />
+                  <UntestedTag id="remoteMachinesWindow.4" />
                 </span>
                 <div className="folder-picker-row">
                   <input

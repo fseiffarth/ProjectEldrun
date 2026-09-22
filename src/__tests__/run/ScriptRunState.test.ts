@@ -1,0 +1,56 @@
+/**
+ * Tests for the persistent script-run state (#34, Group R). The running-scripts
+ * set and the `script-finished` clearing live in the activity store (not in
+ * FileTree) so the run animation survives the side panel unmounting on hide.
+ */
+import { describe, it, expect, beforeEach, vi } from "vitest";
+
+const invoke = vi.fn();
+vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => invoke(...args) }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
+
+import { useActivityStore } from "../../stores/activity";
+
+describe("activity store script-run state", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    useActivityStore.setState({ runningScripts: new Set() });
+  });
+
+  it("marks a script running and spawns it detached with run_id = path", () => {
+    invoke.mockResolvedValue(null);
+    useActivityStore.getState().runScript("/proj/build.sh", "/proj", "p1");
+    expect(useActivityStore.getState().runningScripts.has("/proj/build.sh")).toBe(true);
+    // `projectId` scopes the backend's path confinement; absent → null (current project).
+    expect(invoke).toHaveBeenCalledWith("run_script_detached", {
+      scriptPath: "/proj/build.sh",
+      cwd: "/proj",
+      runId: "/proj/build.sh",
+      projectId: "p1",
+      args: null,
+    });
+  });
+
+  it("passes the ▶ popover's arguments trimmed, and blank as none", () => {
+    invoke.mockResolvedValue(null);
+    useActivityStore.getState().runScript("/proj/a.sh", "/proj", "p1", "  --n 2 ");
+    expect(invoke).toHaveBeenLastCalledWith(
+      "run_script_detached",
+      expect.objectContaining({ args: "--n 2" }),
+    );
+    useActivityStore.getState().runScript("/proj/b.sh", "/proj", "p1", "   ");
+    expect(invoke).toHaveBeenLastCalledWith(
+      "run_script_detached",
+      expect.objectContaining({ args: null }),
+    );
+  });
+
+  it("clears the running flag when the detached spawn fails", async () => {
+    invoke.mockRejectedValue(new Error("spawn failed"));
+    useActivityStore.getState().runScript("/proj/bad.sh", "/proj");
+    expect(useActivityStore.getState().runningScripts.has("/proj/bad.sh")).toBe(true);
+    await vi.waitFor(() =>
+      expect(useActivityStore.getState().runningScripts.has("/proj/bad.sh")).toBe(false),
+    );
+  });
+});

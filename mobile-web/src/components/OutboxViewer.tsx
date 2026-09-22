@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useT } from "../../../src/lib/i18n";
-import { outboxFileUrl, type OutboxFile } from "../api";
+import { outboxFileUrl, type OutboxFile, type OutboxScope } from "../api";
 
 const INLINE_LIMIT = 1024 * 1024;
 
@@ -23,9 +23,9 @@ export async function readTextPreview(response: Response): Promise<string> {
   } finally { await reader.cancel(); }
 }
 
-export function OutboxViewer({ tabId, file, onClose }: { tabId: string; file: OutboxFile; onClose: () => void }) {
+export function OutboxViewer({ scope, file, onClose }: { scope: OutboxScope; file: OutboxFile; onClose: () => void }) {
   const t = useT();
-  const url = outboxFileUrl(tabId, file.name);
+  const url = outboxFileUrl(scope, file.name);
   const [text, setText] = useState<string | null>(null);
   const [shareFile, setShareFile] = useState<File | null>(null);
   const [failure, setFailure] = useState("");
@@ -61,7 +61,7 @@ export function OutboxViewer({ tabId, file, onClose }: { tabId: string; file: Ou
       <button className="sheet-close" onClick={onClose} aria-label={t("mobile.outbox.close")}>✕</button>
       <h2>{file.name}</h2>
       <small>{Math.round(file.size / 1024)} KB</small>
-      <a href={outboxFileUrl(tabId, file.name, true)} download={file.name}>{t("mobile.outbox.save")}</a>
+      <a href={outboxFileUrl(scope, file.name, true)} download={file.name}>{t("mobile.outbox.save")}</a>
       {shareFile && <button onClick={share}>{t("mobile.outbox.share")}</button>}
     </div>
     {failure && <p role="alert">{failure}</p>}

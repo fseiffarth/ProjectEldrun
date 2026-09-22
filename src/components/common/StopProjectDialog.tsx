@@ -75,7 +75,7 @@ export function StopProjectDialog() {
         onMouseDown={(e) => e.stopPropagation()}
       >
         <h2 className="stop-project-title">
-          {t("projectSwitcher.stopTitle")} <UntestedTag />
+          {t("projectSwitcher.stopTitle")} <UntestedTag id="projectSwitcher.stopTitle" />
         </h2>
         <p className="stop-project-lede">
           {t("projectSwitcher.stopLedePre")} <strong>{name}</strong>{" "}

@@ -40,24 +40,83 @@ export interface SelectPrompt {
    * with a model list and then a reasoning-level list for the model picked —
    * and the heading is what says which step is on screen. */
   title?: string;
+  /** Rows the dialog has but is not drawing. Claude Code shows only as many
+   * rows as its pane has room for — three at 24 lines — scrolls that window
+   * with the highlight and says `… +2 models` under it, so the rows on screen
+   * are a slice: `options` then need not start at 1. */
+  hidden?: number;
+  /** Index, in the lines read, of the dialog's first row. What sits above it
+   * is what the rows answer — the question and whatever the agent printed to
+   * ask it — which a caller that replaces the rows with a list of its own
+   * still has to show. */
+  start: number;
+  /** Index of the dialog's own question: the block of text directly above its
+   * rows, of which `title` is the first line. It belongs to the list — a
+   * caller showing the rows in its own idiom shows this as their heading —
+   * while `[context, question)` is the screen the dialog was drawn onto.
+   * Equals `start` when the dialog drew no text above its rows. */
+  question: number;
+  /** Index of the first line worth showing above the question (`readContext`).
+   * A dialog answers what is right above it, not the whole session. */
+  context: number;
+}
+
+/** One step of a dialog as far as it is known: every row seen of it, in the
+ * dialog's own order. A windowed dialog (`hidden`) only ever draws a slice, so
+ * the step is what the slices add up to (`mergeSelectRows`). */
+export interface SelectStep {
+  title?: string;
+  options: SelectOption[];
 }
 
 interface SelectLineLike { text: string }
 
 /** How far up from the bottom a dialog may sit. Below it the TUI still draws
- * its footer ("Esc to cancel") and, in Codex, the input box. */
-const SEARCH_WINDOW = 40;
+ * its footer ("Esc to cancel") and, in Codex, the input box — and at phone
+ * width each row's note wraps over several lines. */
+const SEARCH_WINDOW = 80;
 /** A single numbered row is a sentence about a list, not a list. */
 const MIN_OPTIONS = 2;
 /** Longer than any picker either CLI draws; a longer run is not one. */
 const MAX_OPTIONS = 12;
 
 /** `❯ 1. Label   Description` once `readableScreen` stripped the box frame.
- * The marker is optional per row: exactly one row carries it. */
-const OPTION = /^\s*([❯▸▶›>→])?\s*(\d{1,2})[.)]\s+(\S.*)$/u;
+ * The marker is optional per row: exactly one row carries it. `↑`/`↓` sit in
+ * the same slot on the first and last row of a windowed dialog, saying more
+ * rows lie that way (`EDGE`) — they are not the highlight. */
+const OPTION = /^\s*([❯▸▶›>→↑↓])?\s*(\d{1,2})[.)]\s+(\S.*)$/u;
+/** Gemini CLI's selection list — and Qwen Code's, forked from it — marks the
+ * highlighted row with a radio dot instead (`● 1.  Allow once`, read out of
+ * the 0.56 bundle's `BaseSelectionList`). The same `●` opens every Claude Code
+ * answer on Linux and every Kimi Code one, so an answer that starts with a
+ * numbered list would read as a dialog: the dot is a marker only on a tab
+ * whose agent draws it (`radioMarkerAgent`). */
+const RADIO_OPTION = /^\s*([❯▸▶›>→●↑↓])?\s*(\d{1,2})[.)]\s+(\S.*)$/u;
+const EDGE = /^[↑↓]$/u;
+/** Claude Code's note under a windowed dialog: `… +2 models`. The line right
+ * under the run, and nothing but the count and one word. */
+const HIDDEN_ROWS = /^\s*(?:…|\.\.\.)\s*\+(\d{1,2})\s+\p{L}+$/u;
+const RADIO_AGENT = /gemini|qwen/iu;
+
+/** Whether the tab's agent marks a dialog's highlighted row with `●` — and so
+ * never opens a message with one. */
+export function radioMarkerAgent(agentLabel?: string): boolean {
+  return agentLabel !== undefined && RADIO_AGENT.test(agentLabel);
+}
 /** Two or more spaces — what both CLIs put between a row's label and its
  * note. A single space is inside the label. */
 const COLUMN_SPLIT = /\s{2,}/u;
+/** A second column that opens with a frame edge is not the row's note: it is
+ * a panel drawn beside the list — Claude Code puts a question's previews
+ * there, one panel for the highlighted row, so its rows are the panel's and
+ * belong to no option:
+ *
+ *   ❯ 1. Restore it too               ┌──────────────────────────────┐
+ *     2. Just the question            │ swipe → on the reading view  │
+ *
+ * A note is text, so a column that starts with a frame is dropped whole
+ * rather than read as one. */
+const PANEL_COLUMN = /^[│┃┆┇┊┋┌┏╭╔└┗╰╚├┣┤┫─━═]/u;
 const MAX_LABEL = 80;
 const MAX_DESCRIPTION = 200;
 /** Non-blank rows a heading may occupy above the list: the heading itself and
@@ -67,7 +126,54 @@ const MAX_DESCRIPTION = 200;
 const HEADING_BLOCK = 3;
 const MAX_TITLE = 60;
 
-interface ReadRow { marked: boolean; option: Omit<SelectOption, "index"> }
+interface ReadRow {
+  marked: boolean;
+  /** The row carries a windowed dialog's `↑`/`↓`. */
+  edge: boolean;
+  option: Omit<SelectOption, "index">;
+  /** Screen column the label starts at. */
+  labelColumn: number;
+  /** Screen column the row's note starts at: beside the label when the row
+   * carries it in a second column, else the label's own column, under which
+   * the note is printed on rows of its own. */
+  descriptionColumn: number;
+}
+
+/** At phone width both CLIs wrap a row's note onto the lines below it, each
+ * indented to the note's own column:
+ *
+ *     1. gpt-5.6-sol (default)  Latest frontier
+ *                               agentic coding model.
+ *
+ * A label too long for its column wraps the same way, indented to the label's
+ * column, beside the note's own wrapped lines (Codex's question dialog):
+ *
+ *   › 1. Job: running/completed/failed/  Keep async job statuses
+ *        expired (Recommended)           for progress tracking.
+ *
+ * And some dialogs never put the note beside the label at all: Claude Code's
+ * question dialog (AskUserQuestion, its `compact-vertical` layout), Gemini
+ * CLI's and a Codex list too narrow for two columns print it on the rows under
+ * it, at or past the label's column —
+ *
+ *     ❯ 1. Red
+ *          Warm and loud
+ *       2. Green
+ *
+ * — so for a row without a second column the note's column is the label's.
+ * A line that is not a row and starts at or past the label's column continues
+ * the row above: what sits left of the note's column is more label, the rest
+ * more note. Anything shallower is ordinary text and ends the run. */
+function readContinuation(
+  text: string,
+  labelColumn: number,
+  descriptionColumn: number,
+): { label: string; description: string } | null {
+  const indent = text.length - text.trimStart().length;
+  if (indent < labelColumn) return null;
+  if (descriptionColumn <= labelColumn || indent >= descriptionColumn) return { label: "", description: text.trim() };
+  return { label: text.slice(0, descriptionColumn).trim(), description: text.slice(descriptionColumn).trim() };
+}
 
 /** The dialog's heading, read upwards from its first row: past the blank the
  * TUI leaves under the heading, then the contiguous block above it, of which
@@ -84,36 +190,85 @@ function readTitle(lines: readonly SelectLineLike[], start: number): string | un
   const title = block[0];
   if (!title || title.length > MAX_TITLE) return undefined;
   // A numbered row above the run belongs to some other list, not to a heading.
-  if (OPTION.test(title)) return undefined;
+  if (RADIO_OPTION.test(title)) return undefined;
   return /\p{L}/u.test(title) ? title : undefined;
 }
 
-function readRow(text: string): ReadRow | null {
-  const match = OPTION.exec(text);
+/** Blank-separated blocks above the rows that are the dialog's, rather than the
+ * session's: the question itself, and the one block before it — in Claude
+ * Code's permission dialog what is being approved (the file, the diff), in
+ * Codex's the line that says why it is asking. */
+const CONTEXT_BLOCKS = 2;
+/** …and no more lines than a phone shows without pushing the rows off screen.
+ * Unbounded, a session that has not been prompted yet put its whole startup
+ * banner — version, model, directory, tips, warnings — above its first
+ * question, and a mid-turn one repeated the answer the reader already has. */
+const CONTEXT_LINES = 10;
+
+/** Where the dialog's own text starts, read upwards from its first row: the
+ * question is the contiguous block directly above the rows, the context that
+ * block and `CONTEXT_BLOCKS - 1` more, bounded by `CONTEXT_LINES`. Both are
+ * `start` when nothing but blanks sits above the rows. */
+function readContext(lines: readonly SelectLineLike[], start: number): { question: number; context: number } {
+  let index = start - 1;
+  let context = start;
+  let question = start;
+  let taken = 0;
+  for (let block = 0; block < CONTEXT_BLOCKS && taken < CONTEXT_LINES; block += 1) {
+    while (index >= 0 && !lines[index].text.trim()) index -= 1;
+    while (index >= 0 && lines[index].text.trim() && taken < CONTEXT_LINES) {
+      context = index;
+      taken += 1;
+      index -= 1;
+    }
+    if (block === 0) question = context;
+  }
+  return { question, context };
+}
+
+function readRow(text: string, option: RegExp): ReadRow | null {
+  const match = option.exec(text);
   if (!match) return null;
   const [, marker, digits, rest] = match;
   const columns = rest.split(COLUMN_SPLIT);
   const label = columns[0].trim();
   if (!label) return null;
-  const description = columns.slice(1).join(" · ").trim();
+  const beside = columns.slice(1).join(" · ").trim();
+  const description = PANEL_COLUMN.test(beside) ? "" : beside;
+  const split = description ? COLUMN_SPLIT.exec(rest) : null;
   return {
-    marked: marker !== undefined,
+    marked: marker !== undefined && !EDGE.test(marker),
+    edge: marker !== undefined && EDGE.test(marker),
     option: {
       number: Number(digits),
       label: label.slice(0, MAX_LABEL),
       description: description ? description.slice(0, MAX_DESCRIPTION) : undefined,
     },
+    labelColumn: text.length - rest.length,
+    descriptionColumn: text.length - rest.length + (split ? split.index + split[0].length : 0),
   };
 }
 
 /**
  * The select dialog the session is showing right now, or `null` when the bottom
- * of the screen does not hold one in the recognized shape.
+ * of the screen does not hold one in the recognized shape. `agentLabel` is the
+ * tab's agent, which says whether `●` marks a row (`radioMarkerAgent`).
  */
-export function readSelectPrompt(lines: readonly SelectLineLike[]): SelectPrompt | null {
+export function readSelectPrompt(lines: readonly SelectLineLike[], agentLabel?: string): SelectPrompt | null {
+  const option = radioMarkerAgent(agentLabel) ? RADIO_OPTION : OPTION;
   const first = Math.max(0, lines.length - SEARCH_WINDOW);
-  const runs: { start: number; options: SelectOption[]; marked: number[] }[] = [];
-  let run: { start: number; options: SelectOption[]; marked: number[] } | undefined;
+  type Run = {
+    start: number;
+    options: SelectOption[];
+    marked: number[];
+    labelColumn: number;
+    column: number;
+    edge: boolean;
+    /** The `… +N` note right under the run, if any. */
+    hidden?: number;
+  };
+  const runs: Run[] = [];
+  let run: Run | undefined;
 
   for (let index = first; index < lines.length; index += 1) {
     const text = lines[index].text;
@@ -123,34 +278,58 @@ export function readSelectPrompt(lines: readonly SelectLineLike[]): SelectPrompt
       run = undefined;
       continue;
     }
-    const row = readRow(text);
+    const row = readRow(text, option);
+    const hidden = row ? null : HIDDEN_ROWS.exec(text);
+    if (run && hidden) {
+      run.hidden = Number(hidden[1]);
+      run = undefined;
+      continue;
+    }
     if (!row) {
+      const more = run ? readContinuation(text, run.labelColumn, run.column) : null;
+      const last = run?.options[run.options.length - 1];
+      if (more && last) {
+        if (more.label && !PANEL_COLUMN.test(more.label)) last.label = `${last.label} ${more.label}`.slice(0, MAX_LABEL);
+        if (more.description && !PANEL_COLUMN.test(more.description)) {
+          last.description = (last.description ? `${last.description} ${more.description}` : more.description)
+            .slice(0, MAX_DESCRIPTION);
+        }
+        continue;
+      }
       run = undefined;
       continue;
     }
     const continues = run !== undefined
       && run.options.length < MAX_OPTIONS
-      && row.option.number === run.options.length + 1;
-    if (!continues) {
-      run = undefined;
-      if (row.option.number !== 1) continue;
-      run = { start: index, options: [], marked: [] };
+      && row.option.number === run.options[run.options.length - 1].number + 1;
+    if (!continues || !run) {
+      // A run starts at 1 — or wherever a windowed dialog's slice starts,
+      // which the final check holds to the window's own marks.
+      run = { start: index, options: [], marked: [], labelColumn: row.labelColumn, column: row.descriptionColumn, edge: false };
       runs.push(run);
     }
-    if (!run) continue;
     if (row.marked) run.marked.push(run.options.length);
+    if (row.edge) run.edge = true;
     run.options.push({ index: run.options.length, ...row.option });
+    run.labelColumn = row.labelColumn;
+    run.column = row.descriptionColumn;
   }
 
   // The live dialog is the lowest one on screen; an earlier, scrolled-past
   // picker in the same session must not win.
   for (let index = runs.length - 1; index >= 0; index -= 1) {
     const candidate = runs[index];
+    const windowed = candidate.hidden !== undefined || candidate.edge;
+    // A run from anywhere but 1 is a slice only a windowed dialog draws.
+    if (candidate.options[0].number !== 1 && !windowed) continue;
     if (candidate.options.length >= MIN_OPTIONS && candidate.marked.length === 1) {
       return {
         options: candidate.options,
         current: candidate.marked[0],
         title: readTitle(lines, candidate.start),
+        start: candidate.start,
+        ...readContext(lines, candidate.start),
+        ...(candidate.hidden ? { hidden: candidate.hidden } : {}),
       };
     }
   }
@@ -165,11 +344,65 @@ export function selectSignature(prompt: SelectPrompt): string {
   return [prompt.title ?? "", ...prompt.options.map((option) => `${option.number}. ${option.label}`)].join("\n");
 }
 
+/** Whether the list on screen is a slice of `step` — the same heading, and
+ * every row they both hold carries the same label — rather than the next step
+ * of a multi-step dialog drawn in the same place. */
+export function sameSelectStep(step: SelectStep, prompt: SelectPrompt): boolean {
+  if ((step.title ?? "") !== (prompt.title ?? "")) return false;
+  const known = new Map(step.options.map((option) => [option.number, option.label]));
+  let shared = 0;
+  for (const option of prompt.options) {
+    const label = known.get(option.number);
+    if (label === undefined) continue;
+    if (label !== option.label) return false;
+    shared += 1;
+  }
+  return shared > 0;
+}
+
+/** `step` with the rows `prompt` adds — or, when the list on screen is not a
+ * slice of it (`sameSelectStep`), the step `prompt` starts. Returns `step`
+ * itself when the screen shows nothing it did not hold, so a caller keeping it
+ * in state does not re-render on every repaint. */
+export function mergeSelectRows(step: SelectStep | null, prompt: SelectPrompt): SelectStep {
+  if (!step || !sameSelectStep(step, prompt)) {
+    return { title: prompt.title, options: prompt.options.map((option, index) => ({ ...option, index })) };
+  }
+  const rows = new Map(step.options.map((option) => [option.number, option]));
+  let added = false;
+  for (const option of prompt.options) {
+    if (rows.has(option.number)) continue;
+    rows.set(option.number, option);
+    added = true;
+  }
+  if (!added) return step;
+  const options = [...rows.values()]
+    .sort((a, b) => a.number - b.number)
+    .map((option, index) => ({ ...option, index }));
+  return { title: step.title, options };
+}
+
+/** The first row a windowed dialog has that `step` has not seen, by its
+ * printed number — where to walk the highlight next to make the dialog draw
+ * it — or `undefined` once every row is known. */
+export function missingSelectRow(step: SelectStep, prompt: SelectPrompt): number | undefined {
+  if (!prompt.hidden) return undefined;
+  const total = prompt.options.length + prompt.hidden;
+  const seen = new Set(step.options.map((option) => option.number));
+  for (let number = 1; number <= total; number += 1) if (!seen.has(number)) return number;
+  return undefined;
+}
+
 /** The keystrokes that move a dialog's highlight from `current` to `target` and
  * accept it — the same keys the on-screen arrow row sends, so a tapped row is
  * answered exactly as a walked one. */
 export function selectKeys(current: number, target: number): string[] {
+  return [...selectMoveKeys(current, target), "\r"];
+}
+
+/** The arrow keys alone: the highlight moves, nothing is accepted. */
+export function selectMoveKeys(current: number, target: number): string[] {
   const distance = Math.abs(target - current);
   const key = target > current ? "\u001b[B" : "\u001b[A";
-  return [...Array.from({ length: distance }, () => key), "\r"];
+  return Array.from({ length: distance }, () => key);
 }

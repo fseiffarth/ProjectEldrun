@@ -64,7 +64,7 @@ the chain.
 These are the same underlying issue viewed from two angles: **subscription
 granularity is too coarse**. Introducing per-group / per-scope selectors (e.g. a
 `useGroup(groupId)` selector) fixes the re-render storms *and* gives the stores a
-cleaner, event-mediated boundary. `stores/drag.ts` is the model to copy — both
+cleaner, event-mediated boundary. `stores/drag/drag.ts` is the model to copy — both
 reviewers praised it as the example of correctly isolated subscriptions.
 
 ### 4. Append-only JSON state files are repeatedly read-modify-rewritten
@@ -165,7 +165,7 @@ to local compromise.
 
 ### Strengths
 
-- **Drag store isolation** (`stores/drag.ts`): per-frame pointermove updates a
+- **Drag store isolation** (`stores/drag/drag.ts`): per-frame pointermove updates a
   separate store with coarse primitive selectors, so the tab tree doesn't
   re-render during drags. The reference example for the whole frontend.
 - **Pane persistence across scope switches** (`CenterPanel`): all panes stay
@@ -236,7 +236,7 @@ files), 13 Zustand stores, `hooks/`, `lib/`, `types/`, with 59 Vitest suites.
    Unlisted-but-important: `components/header/*` (6 files), `DetachedApp.tsx`,
    `GlobalAppMenu.tsx`, `BoxPill.tsx`, 9 of 13 stores (`detached`, `drag`,
    `boxes`, `activity`, `linkRouting`, `pdfSync`, …), `crashReporter.ts`,
-   `lib/shortcuts.ts`; backend `commands/{boxes,crash,debug,downloads,github,
+   `lib/shortcuts/shortcuts.ts`; backend `commands/{boxes,crash,debug,downloads,github,
    openvpn,subwindow}.rs`, `services/{agent_session,openvpn,remote_agents,
    restore_service,ssh_exec}.rs`. Real onboarding friction.
 3. **`stores/projects.ts` couples switching to tab/timer/VPN state** via direct

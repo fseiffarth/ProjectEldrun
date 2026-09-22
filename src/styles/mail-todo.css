@@ -16,7 +16,14 @@
    dialogs are portaled to <body>, which carries no color, so without it they
    would inherit black. */
 
-.mail-pane {
+/* The pane shell four surfaces share: Mail here, and Browser / Print / Skills
+   in browser-print-tex.css, which imports after this file. Each of the four
+   keeps its own layout rules; only this full-height column on the panel ground
+   is common, and it was written out four times identically. */
+.mail-pane,
+.browser-pane,
+.print-pane,
+.skills-pane {
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -27,7 +34,8 @@
 }
 
 /* ── Global apps in the header (MailIndicator, CalendarIndicator, ...) ──────
-   The ✉ 🗓 ☑ 🔔 buttons beside the brain button, and the overlays they open.
+   The ✉ 🗓 ☑ 🔔 buttons beside the Models & agents chip, and the overlays they
+   open.
    All four are the same kind of thing — a machine-wide control you reach from
    anywhere, not a per-project status readout like the right cluster — so they
    share one rule set here rather than each carrying a copy that can drift
@@ -37,13 +45,14 @@
    eye finds.
 
    Each button is a plain `.global-apps-menu-btn` inside a `.global-apps-menu`
-   wrapper: the brain button's exact chrome. Everything below is therefore
+   wrapper: the Models & agents button's exact chrome. Everything below is therefore
    *additive* — a positioning context for the badge, and the pressed state the
    shared rule spells for `aria-expanded` but not `aria-pressed`. Size, hover,
    colours and transitions are all inherited. */
 .mail-indicator-btn,
 .calendar-indicator-btn,
 .todo-indicator-btn,
+.inbox-indicator-btn,
 .alerts-toggle-btn {
   /* Positioning context for the badge. It must be the BUTTON and not the
      `.global-apps-menu` wrapper: `.header-center` stretches that wrapper to the
@@ -59,9 +68,43 @@
   color: var(--text-primary);
   border-color: var(--text-muted);
 }
+/* The header's six icon buttons — ✉ 🗓 ☑, the Models & agents chip, ▦ and ⚙
+   — fill the bar: a 40px square (the `.app-header` height), with the icons
+   grown to match. The ▦ and ⚙ are matched by the icon span they hold, having
+   no class of their own. The 🔔 stays at the shared 32px/15px: it stands with
+   the status cluster, whose readouts are sized to each other. */
+.mail-indicator-btn,
+.calendar-indicator-btn,
+.todo-indicator-btn,
+.inbox-indicator-btn,
+.local-model-btn,
+.global-apps-menu-btn:has(> .global-apps-menu-icon),
+.global-apps-menu-btn:has(> .settings-menu-icon) {
+  min-width: 40px;
+  height: 40px;
+}
+/* One icon size for all six header buttons (these four plus the ▦ and ⚙):
+   each is an SVG from `header/HeaderGlyphs`, drawn on a 16-unit grid whose
+   outlines all run y=2→14, so a shared 20px box gives them one height and the
+   status cluster phone's ~1.4px line. The Models & agents chip is a 24-unit
+   drawing; at 19px with a 1.8 stroke it lands on the same height and weight.
+   (These were font glyphs once — ✉ 🗓 ☑ ▦ ⚙ — each drawn heavy and at its own
+   size by whichever fallback font had it.) */
 .mail-indicator-icon,
 .calendar-indicator-icon,
 .todo-indicator-icon,
+.inbox-indicator-icon,
+.global-apps-menu-icon,
+.settings-menu-icon {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+svg.local-model-icon {
+  width: 19px;
+  height: 19px;
+  flex-shrink: 0;
+}
 .alerts-toggle-icon {
   font-size: 15px;
   line-height: 1;
@@ -83,16 +126,15 @@ svg.alerts-toggle-icon {
    cursor. `--danger` because the dot is the alert; the rest of the header is
    deliberately quiet.
 
-   It **overhangs** that corner (negative offsets) instead of sitting inside it,
-   which is what keeps the glyph itself readable: a 32px button holds a 15px icon
-   and a badge wide enough for "99+", and inside the box those two have to share
-   the same pixels — the count ends up lying across the ✉, and the icon reads as
-   pushed off-centre even though it is exactly centred. Hung outside, the glyph
-   stays clear and optically centred and the badge is still unmistakably its.
-   Safe because `.header-center` sets `overflow: visible` explicitly and leaves a
-   6px gap between these buttons, so a 3px overhang clips on nothing and touches
-   no neighbour — but that is the budget: a bigger one would reach the button
-   next door.
+   It **overhangs** the side (negative `right`) instead of sitting inside it,
+   which is what keeps the glyph itself readable: the box holds the icon and a
+   badge wide enough for "99+", and inside it those two have to share the same
+   pixels — the count ends up lying across the ✉, and the icon reads as pushed
+   off-centre even though it is exactly centred. Hung outside, the glyph stays
+   clearer and the badge is still unmistakably its. Only sideways: these
+   buttons are the bar's full 40px, so an overhang upward would be cut off by
+   the window's top edge. The 6px gap between buttons is the sideways budget —
+   a 3px overhang touches no neighbour; a bigger one would.
 
    What the number *means* differs between the two, and the difference lives in
    the components, not here: mail counts unread inbox messages and falls as they
@@ -100,9 +142,10 @@ svg.alerts-toggle-icon {
    itself. Neither is dismissed by hand. */
 .mail-indicator-badge,
 .calendar-indicator-badge,
-.todo-indicator-badge {
+.todo-indicator-badge,
+.inbox-indicator-badge {
   position: absolute;
-  top: -3px;
+  top: 1px;
   right: -3px;
   min-width: 14px;
   height: 14px;
@@ -111,7 +154,7 @@ svg.alerts-toggle-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--danger);
   color: #fff;
   font-size: var(--text-xs);
@@ -366,6 +409,16 @@ svg.alerts-toggle-icon {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Its calendar's alerts are off, so the badge does not count it. */
+.cal-menu-muted {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+.cal-menu-muted svg {
+  width: 12px;
+  height: 12px;
+}
 /* Already over. Dimmed rather than dropped — the agenda rail's rule, so the two
    surfaces cannot disagree about what today held, and "what have I already
    done" is half of what a glance at the day is for. Deliberately not struck
@@ -394,6 +447,23 @@ svg.alerts-toggle-icon {
   width: min(1680px, calc(100vw - 24px));
   height: min(93vh, calc(100vh - 24px));
   max-height: min(93vh, calc(100vh - 24px));
+}
+/* Moved, resized and filled like the root console (common/useFloatingFrame):
+   the grips are subwindows.css's `.root-overlay-grip`, hung off this frame; a
+   move or resize replaces the size above with an inline `position: fixed` one. */
+.floating-frame {
+  position: relative;
+}
+.floating-frame-bar {
+  cursor: var(--cur-grab, grab);
+}
+.floating-frame-bar button {
+  cursor: var(--cur-pointer, pointer);
+}
+.floating-frame.framing,
+.floating-frame.framing .floating-frame-bar {
+  /* A drag must not select the title on the way past. */
+  user-select: none;
 }
 .mail-overlay-body,
 .calendar-overlay-body,
@@ -495,6 +565,55 @@ svg.alerts-toggle-icon {
   font-weight: 700;
 }
 
+/* ── The inbox button's file list ────────────────────────────────────────────
+   `.todo-indicator-menu`'s shape. A row is the open button plus a trailing
+   delete that arms on the first click and deletes on the second. */
+.inbox-indicator-menu {
+  min-width: 250px;
+  max-width: 380px;
+  max-height: min(60vh, 460px);
+}
+.inbox-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.inbox-menu-open {
+  flex: 1;
+  min-width: 0;
+  gap: 7px;
+}
+.inbox-menu-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.inbox-menu-size {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+.inbox-menu-delete {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: var(--cur-pointer, pointer);
+}
+.inbox-menu-delete:hover,
+.inbox-menu-delete:focus-visible {
+  background: var(--control-hover-bg);
+  color: var(--text-primary);
+}
+.inbox-menu-delete.armed {
+  color: var(--danger);
+}
+
 .todo-indicator-badge.overdue {
   /* Same number, said louder — a ring in the header's own background colour,
      the trick `.mail-indicator-badge.fresh` uses. `--bg-header-solid`, never
@@ -575,7 +694,7 @@ svg.alerts-toggle-icon {
      like Archived routinely sits off screen and the board has to SHOW that.
      This once forced a classic native bar, because WebKitGTK's own is an
      invisible overlay that appears only on hover. The app's thumbs replaced
-     both: `lib/customScrollbar.ts` paints this scroller's horizontal thumb
+     both: `lib/theme/customScrollbar.ts` paints this scroller's horizontal thumb
      whenever it overflows and keeps it visible, so the affordance is back
      without a native bar to double up with. */
 }
@@ -818,7 +937,7 @@ column reflows under the pointer that is about to click. */
   align-items: center;
   gap: 3px;
   padding: 1px 5px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   font-size: 10px;
   line-height: 1.5;
   background: var(--control-hover-bg);
@@ -867,7 +986,7 @@ column reflows under the pointer that is about to click. */
 .todo-card-steps-bar {
   flex: 1;
   height: 3px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--border-subtle);
   overflow: hidden;
 }
@@ -1439,7 +1558,17 @@ handle — it swallows the pointer before the card ever sees it. */
   min-width: 0;
 }
 .mail-search {
-  width: 220px;
+  flex: 1;
+}
+/* The list's filter bar: everything that narrows the rows, above the sort
+   headers that order them. Fixed like the headers, so it never scrolls away. */
+.mail-list-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
 }
 .mail-textarea,
 .mail-compose-body {
@@ -1452,8 +1581,7 @@ handle — it swallows the pointer before the card ever sees it. */
   line-height: 1.5;
 }
 
-.mail-error-strip,
-.mail-note-strip {
+.mail-error-strip {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1465,11 +1593,7 @@ handle — it swallows the pointer before the card ever sees it. */
   background: color-mix(in srgb, var(--danger) 14%, transparent);
   color: var(--text-primary);
 }
-.mail-note-strip {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-}
-.mail-error-strip span,
-.mail-note-strip span {
+.mail-error-strip span {
   flex: 1;
   word-break: break-word;
 }
@@ -1558,7 +1682,7 @@ handle — it swallows the pointer before the card ever sees it. */
   min-height: 26px;
   padding: 3px 11px;
   border: 1px solid var(--border-color);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--bg-input);
   color: var(--text-primary);
   font-size: 12px;
@@ -1743,14 +1867,14 @@ handle — it swallows the pointer before the card ever sees it. */
      line up, and splitting it into two matching lists is how they drift apart
      the first time a column is added.
 
-     Star · read-dot · clip · sender · size · date. Every column but the sender
+     Star · read-dot · clip · sender · size · date · delete. Every column but the sender
      is a FIXED width, and that is load-bearing rather than lazy: each row is
      its own grid container, so `auto` columns are sized per row — a row reading
      "1.2 KB" and one reading "12.4 MB" would each pick their own width and the
      "columns" would be a staircase. Fixed tracks (plus one `1fr` that resolves
      identically because every row is the same width) are what actually make
      them line up, header included. */
-  --mail-cols: 16px 14px 16px minmax(0, 1fr) 54px 78px;
+  --mail-cols: 16px 14px 16px minmax(0, 1fr) 54px 118px 14px;
   --mail-col-gap: 6px;
   /* Where the sender column starts — the three glyph cells plus their gaps.
      The subject/preview lines are indented by exactly this, so they hang under
@@ -1836,6 +1960,40 @@ handle — it swallows the pointer before the card ever sees it. */
 .mail-row.selected {
   background: color-mix(in srgb, var(--accent) 20%, transparent);
 }
+/* Ticked for a bulk action — a weaker wash than the open message's, plus an
+   accent edge, because the two states are independent: the row being read is
+   usually also ticked, and one of the two marks has to survive the overlap. The
+   edge is inset rather than a border, which would move the row's text by a
+   pixel as it is picked. */
+.mail-row.checked {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.mail-row.selected.checked {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+}
+/* "N messages selected" — only ever on screen while more than one row is
+   ticked, so it costs the list nothing in the ordinary case. */
+.mail-list-selection {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-panel));
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.mail-selection-clear {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font-size: 11px;
+  color: var(--accent);
+  cursor: var(--cur-pointer, pointer);
+  text-decoration: underline;
+}
 .mail-row.unread .mail-row-subject,
 .mail-row.unread .mail-row-from {
   font-weight: 700;
@@ -1874,6 +2032,32 @@ handle — it swallows the pointer before the card ever sees it. */
 }
 .mail-seen-btn.on {
   color: var(--accent);
+}
+/* Delete (to Trash, or for good from Trash itself), the row's last cell. Faint
+   until the row is hovered — a full-strength ✕ down every row reads as a list
+   of things about to go — and red only under the pointer, the moment it is
+   about to be clicked. */
+.mail-delete-btn {
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: var(--cur-pointer, pointer);
+  padding: 0;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0.35;
+}
+.mail-row:hover .mail-delete-btn,
+.mail-delete-btn:focus-visible {
+  opacity: 1;
+}
+.mail-delete-btn:hover {
+  color: var(--danger);
+}
+.mail-sort-from > .untested-tag {
+  margin-left: 6px;
+  text-transform: none;
+  letter-spacing: 0;
 }
 .mail-row-from {
   overflow: hidden;
@@ -2284,7 +2468,7 @@ handle — it swallows the pointer before the card ever sees it. */
   padding: 2px 8px;
   font-size: 11px;
   line-height: 1.4;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   border: 1px solid var(--border-subtle);
   background: transparent;
   color: var(--text-secondary);
@@ -2357,6 +2541,24 @@ handle — it swallows the pointer before the card ever sees it. */
   color: var(--text-primary);
   text-align: left;
   cursor: var(--cur-pointer, pointer);
+}
+.mail-reply-when {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.mail-reply-preview {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mail-reply-text {
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 220px;
+  overflow-y: auto;
+  user-select: text;
 }
 .mail-link-row.warn {
   border-left: 3px solid var(--warning);
@@ -3125,4 +3327,69 @@ handle — it swallows the pointer before the card ever sees it. */
 }
 .mail-staged-remove:hover {
   color: var(--danger);
+}
+
+/* ── Drafts an agent wrote (root MCP) ──────────────────────────────────────
+   A strip of rows above the list: each opens the composer, never sends. The
+   mark is a pill; the reader's is the warning tone — that draft carries text
+   shaped by mail from outside. */
+.mail-agent-drafts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.mail-agent-drafts-title {
+  color: var(--text-secondary);
+}
+.mail-agent-draft-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 2px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font: inherit;
+  cursor: var(--cur-pointer, pointer);
+}
+.mail-agent-draft-row:hover {
+  border-color: var(--accent);
+}
+.mail-agent-draft-subject {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 28em;
+}
+.mail-agent-draft-account {
+  color: var(--text-secondary);
+}
+.mail-agent-mark {
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.mail-agent-mark.reader {
+  background: color-mix(in srgb, var(--warning, #d9a441) 30%, transparent);
+}
+.mail-agent-banner {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--warning, #d9a441) 60%, transparent);
+  background: color-mix(in srgb, var(--warning, #d9a441) 14%, transparent);
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.mail-agent-banner div {
+  margin-top: 4px;
 }

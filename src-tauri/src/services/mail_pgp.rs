@@ -147,6 +147,28 @@ impl std::fmt::Debug for PgpKeyring {
     }
 }
 
+/// The keyring file's plaintext under `keys`, or `None` when there is no keyring.
+///
+/// For carrying the keyring across a change of store key (an encryption reset):
+/// the file is sealed under `k_wrap`, so a new master key would otherwise leave
+/// every private key in it unreadable — and there is no secret-key export to
+/// have saved them first.
+pub fn keyring_plaintext(dir: &Path, keys: &MailKeys) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
+    match std::fs::read(dir.join(KEYRING_FILE)) {
+        Ok(raw) => mail_crypt::open(&keys.wrap, KEYRING_AAD, &raw)
+            .map(|plain| Some(Zeroizing::new(plain.to_vec())))
+            .map_err(|e| format!("the keyring could not be decrypted: {e}")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Seal `plain` (from [`keyring_plaintext`]) as the keyring under `keys`.
+pub fn write_keyring_plaintext(dir: &Path, keys: &MailKeys, plain: &[u8]) -> Result<(), String> {
+    let sealed = mail_crypt::seal(&keys.wrap, KEYRING_AAD, plain);
+    mail_crypt::write_bytes_atomic(&dir.join(KEYRING_FILE), &sealed)
+}
+
 impl PgpKeyring {
     /// Open (or create) the keyring in `dir`, sealed under the store's `k_wrap`.
     pub fn open(dir: &Path, keys: &MailKeys) -> Result<Self, String> {
@@ -806,18 +828,22 @@ impl MailCrypto for PgpKeyring {
 pub fn signed_part_bytes(raw: &[u8], msg: &mail_parser::Message<'_>) -> Option<(Vec<u8>, Vec<u8>)> {
     use mail_parser::{MimeHeaders, PartType};
 
-    // The `multipart/signed` node, and its two children in order.
-    let children = msg.parts.iter().find_map(|part| {
-        let ctype = part.content_type()?;
+    // The `multipart/signed` node, and its two children in order. The **root**
+    // only, matching `mail_crypto::detect`: a signed node nested beside other
+    // content covers none of that content, and a signature checked there would
+    // lend its verdict to parts the sender never saw.
+    let root = msg.root_part();
+    let children = {
+        let ctype = root.content_type()?;
         let signed = ctype.ctype().eq_ignore_ascii_case("multipart")
             && ctype
                 .subtype()
                 .is_some_and(|s| s.eq_ignore_ascii_case("signed"));
-        match (&part.body, signed) {
-            (PartType::Multipart(ids), true) if ids.len() >= 2 => Some(ids.clone()),
-            _ => None,
+        match (&root.body, signed) {
+            (PartType::Multipart(ids), true) if ids.len() >= 2 => ids.clone(),
+            _ => return None,
         }
-    })?;
+    };
 
     let content = msg.part(children[0])?;
     let signature = msg.part(children[1])?;
@@ -845,17 +871,20 @@ pub fn signed_part_bytes(raw: &[u8], msg: &mail_parser::Message<'_>) -> Option<(
 /// The ciphertext part of an RFC 3156 `multipart/encrypted` message.
 pub fn encrypted_part_bytes(raw: &[u8], msg: &mail_parser::Message<'_>) -> Option<Vec<u8>> {
     use mail_parser::{MimeHeaders, PartType};
-    let children = msg.parts.iter().find_map(|part| {
-        let ctype = part.content_type()?;
+    // The root only, for the reason `signed_part_bytes` gives: a ciphertext
+    // nested in someone else's message must not be decrypted into it.
+    let root = msg.root_part();
+    let children = {
+        let ctype = root.content_type()?;
         let enc = ctype.ctype().eq_ignore_ascii_case("multipart")
             && ctype
                 .subtype()
                 .is_some_and(|s| s.eq_ignore_ascii_case("encrypted"));
-        match (&part.body, enc) {
-            (PartType::Multipart(ids), true) if ids.len() >= 2 => Some(ids.clone()),
-            _ => None,
+        match (&root.body, enc) {
+            (PartType::Multipart(ids), true) if ids.len() >= 2 => ids.clone(),
+            _ => return None,
         }
-    })?;
+    };
     // Part 1 is the `application/pgp-encrypted` version marker; part 2 is the
     // payload. Reading part 1 as the message is the classic mis-slice.
     let payload = msg.part(children[1])?;

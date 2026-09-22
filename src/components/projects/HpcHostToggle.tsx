@@ -1,6 +1,6 @@
 import { Toggle } from "../common/Toggle";
 import { UntestedTag } from "../common/UntestedTag";
-import { isHpcHost, setHpcPatch, type Target } from "../../lib/hpcHost";
+import { isHpcHost, setHpcPatch, type Target } from "../../lib/remote/hpc/hpcHost";
 import { useSettingsStore } from "../../stores/settings";
 import { useT } from "../../lib/i18n";
 
@@ -13,7 +13,7 @@ import { useT } from "../../lib/i18n";
  * default. This is about *doing*: on a tagged machine Eldrun runs no disk-usage
  * scan or folder census, no background sync or lockstep poll, never connects at
  * launch by itself, and asks before a run lands on the login node
- * (`lib/hpcHost.ts`, `docs/context/hpc_careful_mode.md`). None of that can be
+ * (`lib/remote/hpc/hpcHost.ts`, `docs/context/hpc_careful_mode.md`). None of that can be
  * defaulted on — it would break the features for every ordinary remote box — and
  * none of it can be inferred from the host, since a scheduler on `PATH` says the
  * machine *has* SLURM, not that its operators mind. So it is asked, once, of the
@@ -46,7 +46,7 @@ export function HpcHostToggle({
         disabled={disabled}
         onChange={(e) => void updateSettings(setHpcPatch(settings, target, e.target.checked))}
       />
-      {t("hpcHost.label")} <UntestedTag />
+      {t("hpcHost.label")} <UntestedTag id="hpcHost.label" />
       <span className="ssh-optional-hint">
         {tagged ? t("hpcHost.hintOn") : t("hpcHost.hintOff")}
       </span>

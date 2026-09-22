@@ -6,7 +6,7 @@ import { useProjectsStore } from "../../stores/projects";
 import { useScreenshotPendingStore } from "../../stores/screenshotPending";
 import { resolveProjectDirectory } from "../../types";
 import { useT } from "../../lib/i18n";
-import { ELDRUN_SCREENSHOTS_DIR } from "../../lib/screenshot";
+import { ELDRUN_SCREENSHOTS_DIR } from "../../lib/window/screenshot";
 import { UntestedTag } from "../common/UntestedTag";
 
 /**
@@ -183,7 +183,7 @@ export function ScreenshotSaveOverlay() {
         onMouseDown={(e) => e.stopPropagation()}
       >
         <h2>
-          {t("screenshotSave.title")} <UntestedTag />
+          {t("screenshotSave.title")} <UntestedTag id="screenshotSave.title" />
         </h2>
         {preview && (
           <img className="screenshot-save-preview" src={preview} alt={t("screenshotSave.preview")} />

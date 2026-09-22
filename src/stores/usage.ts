@@ -29,8 +29,9 @@ const DETACHED_USAGE_EVENT = "detached-usage";
 /** The scope the root terminal's counters are filed under. */
 export const ROOT_SCOPE = "root";
 
-/** scope → metric → count, pending flush. */
-let pending: Record<string, Counters> = {};
+/** scope → metric → count, pending flush. Prototype-free: scope and metric
+ *  names are used as keys, so `__proto__` must be an ordinary key here. */
+let pending: Record<string, Counters> = Object.create(null);
 
 /**
  * Tabs already counted as "active" (given ≥1 prompt) today, keyed `date|ptyId`.
@@ -57,7 +58,7 @@ export function bumpUsage(scope: string, key: string, n = 1): void {
     void emit(DETACHED_USAGE_EVENT, { scope, key, n });
     return;
   }
-  const counters = (pending[scope] ??= {});
+  const counters = (pending[scope] ??= Object.create(null));
   counters[key] = (counters[key] ?? 0) + n;
 }
 
@@ -87,10 +88,10 @@ export function markAgentActive(scope: string, ptyId: string, activeKey: string)
  */
 export async function flushUsage(): Promise<void> {
   const batch = pending;
-  pending = {};
+  pending = Object.create(null);
   const payloads: [string, Counters][] = [];
   for (const [scope, counters] of Object.entries(batch)) {
-    const metrics: Counters = {};
+    const metrics: Counters = Object.create(null);
     for (const [key, n] of Object.entries(counters)) {
       const rounded = Math.round(n);
       if (rounded > 0) metrics[key] = rounded;
@@ -107,7 +108,7 @@ export async function flushUsage(): Promise<void> {
 
 /** Test seam: drop all pending counters and dedup state. */
 export function _resetUsageForTest(): void {
-  pending = {};
+  pending = Object.create(null);
   activeSeen.clear();
 }
 

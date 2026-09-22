@@ -11,10 +11,11 @@ import {
   minutesIntoDay,
   todayStr,
   toStamp,
-} from "../../lib/calendarTime";
-import { eventColor } from "../../lib/calendarCategories";
-import { calendarColor } from "../../stores/calendar";
+} from "../../lib/calendar/calendarTime";
+import { eventColor } from "../../lib/calendar/calendarCategories";
+import { calendarColor } from "../../stores/calendar/calendar";
 import { useT } from "../../lib/i18n";
+import type { CalendarMenuTarget } from "./CalendarContextMenu";
 
 /** Pixel height of one hour row. The whole grid's geometry derives from this. */
 const HOUR_PX = 44;
@@ -22,6 +23,9 @@ const HOUR_PX = 44;
 const SNAP_MIN = 15;
 /** Below this many minutes a block is too short to show its time legibly. */
 const COMPACT_MIN = 45;
+/** A press on a block that travels less than this many pixels is a click (open
+ *  the event), not a move-drag. */
+const CLICK_SLOP_PX = 4;
 
 export interface TimeGridPrefs {
   use24h: boolean;
@@ -42,6 +46,10 @@ interface Props {
   onMove: (occurrence: Occurrence, newStart: string) => void;
   /** A block's bottom edge was dragged — same start, new end. */
   onResize: (occurrence: Occurrence, newEnd: string) => void;
+  /** Right-click: on a block, on empty grid, or (on a block) both at once —
+   *  the cursor is always at a minute of a day, so a paste has a target even
+   *  where every pixel of the column is covered by an event. */
+  onMenu: (target: CalendarMenuTarget) => void;
 }
 
 /** Snap a minute offset to the grid, clamped into the day. */
@@ -63,6 +71,9 @@ type Drag =
        *  picked up by its middle moves with the pointer instead of snapping its
        *  START to it (which shifted the event by half its length). */
       grabOffsetMin: number;
+      /** Where the press landed, to tell a click from a drag on release. */
+      originX: number;
+      originY: number;
     }
   | { kind: "resize"; occ: Occurrence; date: string; endMin: number };
 
@@ -88,6 +99,7 @@ export function TimeGrid({
   onCreate,
   onMove,
   onResize,
+  onMenu,
 }: Props) {
   const t = useT();
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -158,6 +170,8 @@ export function TimeGrid({
       // The true duration, which may exceed the day slice for an overnight event.
       durationMin: Math.max(SNAP_MIN, minutesBetween(occ.start, occ.end)),
       grabOffsetMin: minutesAt(e.clientY) - slice.startMin,
+      originX: e.clientX,
+      originY: e.clientY,
     });
   }
 
@@ -187,7 +201,7 @@ export function TimeGrid({
     }
   }
 
-  function onPointerUp() {
+  function onPointerUp(e: React.PointerEvent, cancelled = false) {
     if (!drag) return;
     const d = drag;
     setDrag(null);
@@ -202,6 +216,11 @@ export function TimeGrid({
     }
 
     if (d.kind === "move") {
+      // A press that never travelled is a click: open the event.
+      if (!cancelled && Math.hypot(e.clientX - d.originX, e.clientY - d.originY) < CLICK_SLOP_PX) {
+        onOpen(d.occ);
+        return;
+      }
       const newStart = stampAt(d.date, d.startMin);
       if (newStart !== d.occ.start) onMove(d.occ, newStart);
       return;
@@ -228,8 +247,8 @@ export function TimeGrid({
           className="cal-timegrid-body"
           ref={bodyRef}
           onPointerMove={onPointerMove}
-          onPointerUp={onPointerUp}
-          onPointerCancel={onPointerUp}
+          onPointerUp={(e) => onPointerUp(e)}
+          onPointerCancel={(e) => onPointerUp(e, true)}
         >
           {hours.map((h) => (
             <div key={h} className="cal-timegrid-line" style={{ top: h * HOUR_PX }} />
@@ -243,6 +262,15 @@ export function TimeGrid({
                 className={`cal-timegrid-col${isToday ? " cal-timegrid-col-today" : ""}`}
                 style={{ left: `${(ci / dates.length) * 100}%`, width: `${100 / dates.length}%` }}
                 onPointerDown={(e) => beginCreate(e, date)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  onMenu({
+                    x: e.clientX,
+                    y: e.clientY,
+                    occ: null,
+                    slot: { date, start: stampAt(date, minutesAt(e.clientY)) },
+                  });
+                }}
               >
                 {isToday ? (
                   <div
@@ -288,7 +316,18 @@ export function TimeGrid({
                         color,
                       }}
                       onPointerDown={(e) => beginMove(e, occ, date)}
-                      onDoubleClick={() => onOpen(occ)}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        // Not the column's menu underneath: that one would
+                        // offer Paste without naming the event clicked on.
+                        e.stopPropagation();
+                        onMenu({
+                          x: e.clientX,
+                          y: e.clientY,
+                          occ,
+                          slot: { date, start: stampAt(date, minutesAt(e.clientY)) },
+                        });
+                      }}
                       title={`${occ.title}${occ.location ? ` — ${occ.location}` : ""}`}
                     >
                       <div className="cal-block-title">{occ.title || t("calendar.untitled")}</div>

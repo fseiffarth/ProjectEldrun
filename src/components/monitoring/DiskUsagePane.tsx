@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { withHpcConfirm } from "../../lib/hpcGuard";
+import { withHpcConfirm } from "../../lib/remote/hpc/hpcGuard";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -18,10 +18,10 @@ import {
   type DuNode,
   type DuProgress,
   type DuScan,
-} from "../../lib/diskUsage";
+} from "../../lib/projects/diskUsage";
 import { FILES_TAB_CMD, useTabsStore } from "../../stores/tabs";
 import { useProjectsStore } from "../../stores/projects";
-import { useRemoteStatusStore } from "../../stores/remoteStatus";
+import { useRemoteStatusStore } from "../../stores/remote/remoteStatus";
 import { OrbitSpinner } from "../common/OrbitSpinner";
 import { useT } from "../../lib/i18n";
 
@@ -50,7 +50,7 @@ const ROW_H = 22;
 /** Rows rendered beyond the viewport on each side, to hide scroll tearing. */
 const OVERSCAN = 8;
 
-// ── Small pure helpers (the interesting maths lives in lib/diskUsage.ts) ───────
+// ── Small pure helpers (the interesting maths lives in lib/projects/diskUsage.ts) ───────
 
 function findNode(node: DuNode, path: string): DuNode | null {
   if (node.path === path) return node;
@@ -145,7 +145,7 @@ export function DiskUsagePane({ projectId, projectCwd, tabKey, visible }: Props)
         // On a host tagged HPC the backend refuses this until the user confirms
         // *this* scan: it stats every file under the root, and on a cluster that
         // root is normally on the parallel filesystem, where that is a metadata
-        // storm against a shared server (`lib/hpcGuard.ts`). Untagged hosts and
+        // storm against a shared server (`lib/remote/hpc/hpcGuard.ts`). Untagged hosts and
         // local roots never see the dialog — the refusal never happens for them.
         const result = await withHpcConfirm((confirmed) =>
           invoke<DuScan>("disk_usage_scan", {

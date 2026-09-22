@@ -25,7 +25,7 @@ the *why*.
   unsynced local edits (resolving amber by choosing the host). It is a **log file**, not an
   event: the services are `AppHandle`-free and a background pass can delete with no window
   listening, so a loss recorded while the app was closed still surfaces on next launch.
-- **Every manual transfer asks first** (`stores/syncConfirm` → `SyncConfirmDialog`,
+- **Every manual transfer asks first** (`stores/remote/syncConfirm` → `SyncConfirmDialog`,
   priced by the read-only `sync_transfer_preview`). The clause above — "non-destructive
   by construction" — describes the *background* engine, which skips a both-sides-changed
   file rather than pick a winner. The **manual** transfers are exactly the ones that do

@@ -117,7 +117,10 @@ function TabPaneImpl({
       // the queue poll, so a background print tab shells out to nothing.
       return <PrintManagerPane visible={visible} />;
     case "network":
-      return <NetworkTrafficPane projectId={scope} visible={visible} onConnect={onConnect} />;
+      // `projectId`, not `scope`: a root tab is the machine's own traffic, and
+      // the pane's whole remote half (host tabs, SSH link, usage totals) hangs
+      // off there being a project — the same `null` the monitor below takes.
+      return <NetworkTrafficPane projectId={projectId} visible={visible} onConnect={onConnect} />;
     case "monitor":
       return <SystemMonitorPane projectId={projectId} visible={visible} />;
     case "diskusage":

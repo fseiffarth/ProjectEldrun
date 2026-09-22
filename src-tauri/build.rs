@@ -15,6 +15,38 @@ fn rust_bytes(bytes: &[u8]) -> String {
     out
 }
 
+/// The newest mtime under `mobile-dist/`, in epoch seconds, or 0 when the
+/// directory is missing or unreadable.
+///
+/// This is the binary's own answer to "how old is the PWA baked into me?", and
+/// the only thing that lets `live_pwa` refuse an overlay that is *older* than
+/// what it would shadow. Without it a stale `target/mobile-pwa/` left behind by
+/// an abandoned branch would keep serving itself to the phone after the user
+/// upgraded to a newer Eldrun — the exact staleness this whole mechanism exists
+/// to end, only harder to see.
+fn newest_mtime(dir: &Path) -> i64 {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut newest = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let seen = if path.is_dir() {
+            newest_mtime(&path)
+        } else {
+            entry
+                .metadata()
+                .ok()
+                .and_then(|meta| meta.modified().ok())
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|age| age.as_secs() as i64)
+                .unwrap_or(0)
+        };
+        newest = newest.max(seen);
+    }
+    newest
+}
+
 fn collect(dir: &Path, root: &Path, out: &mut Vec<(String, Vec<u8>)>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
@@ -34,12 +66,46 @@ fn collect(dir: &Path, root: &Path, out: &mut Vec<(String, Vec<u8>)>) {
     }
 }
 
+/// The non-English dictionary chunks vite emits for `src/lib/i18n.ts`'s
+/// `dictLoaders` (`/assets/de-<hash>.js` and siblings, ~0.5 MB each).
+///
+/// The phone can never request one, so they are not baked in. The only trigger
+/// for a dictionary load is `ensureDict(cachedLang())`, `cachedLang()` reads the
+/// `eldrun-lang` localStorage key, and that key is written only by
+/// `applyLanguage` — desktop code the PWA never imports (it takes `useT` and
+/// `TranslationKey` from i18n, nothing else) — on the desktop webview's own
+/// origin, not the sidecar's. So on the phone the language is always `en`.
+/// Were one ever requested, the sidecar answers a missing `/assets/` path with a
+/// 404 and `ensureDict` falls back to English. **If the phone gains a language
+/// switcher, delete this filter.**
+///
+/// The match is exact — a two-letter language, a dash, an 8-character rollup
+/// hash, `.js`, directly under `/assets/` — so a vite hash-length change makes
+/// it match nothing and bake everything in, the harmless direction.
+fn is_unreachable_dict_chunk(name: &str) -> bool {
+    let Some(file) = name.strip_prefix("/assets/") else {
+        return false;
+    };
+    ["de", "es", "fr", "it"].iter().any(|lang| {
+        file.strip_prefix(lang)
+            .and_then(|rest| rest.strip_prefix('-'))
+            .and_then(|rest| rest.strip_suffix(".js"))
+            .is_some_and(|hash| {
+                hash.len() == 8
+                    && hash
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            })
+    })
+}
+
 fn generate_mobile_assets() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("manifest dir"));
     let dist = manifest.join("../mobile-dist");
     println!("cargo:rerun-if-changed={}", dist.display());
     let mut assets = Vec::new();
     collect(&dist, &dist, &mut assets);
+    assets.retain(|(name, _)| !is_unreachable_dict_chunk(name));
     if !assets.iter().any(|(name, _)| name == "/index.html") {
         assets.push(("/index.html".into(), b"<!doctype html><title>Eldrun Mobile</title><main>Mobile assets are not built. Run npm run mobile:build.</main>".to_vec()));
     }
@@ -60,7 +126,21 @@ fn generate_mobile_assets() {
         })
         .collect::<Vec<_>>()
         .join(",\n");
-    let generated = format!("pub static MOBILE_ASSETS: &[(&str, &[u8], &str)] = &[{rows}];\n");
+    let built_at = newest_mtime(&dist);
+    // Set only by the two dev shapes (`scripts/package-dev.sh`, `npm run
+    // tauri:dev`); unset in CI and in every release build, where the constant
+    // below is `None` and `live_pwa` compiles down to "there is no overlay".
+    // That is deliberate: a shipped binary must never read a PWA off the disk.
+    println!("cargo:rerun-if-env-changed=ELDRUN_MOBILE_LIVE_DIR");
+    let live_dir = match env::var("ELDRUN_MOBILE_LIVE_DIR") {
+        Ok(dir) if !dir.trim().is_empty() => format!("Some({:?})", dir.trim()),
+        _ => "None".to_string(),
+    };
+    let generated = format!(
+        "pub static MOBILE_ASSETS: &[(&str, &[u8], &str)] = &[{rows}];\n\
+         pub const MOBILE_ASSETS_BUILT_AT: i64 = {built_at};\n\
+         pub static MOBILE_LIVE_DIR: Option<&str> = {live_dir};\n"
+    );
     let out = PathBuf::from(env::var("OUT_DIR").expect("out dir")).join("mobile_assets.rs");
     fs::write(out, generated).expect("write mobile assets");
 }
@@ -83,8 +163,41 @@ fn watch_frontend_dist() {
     );
 }
 
+/// Bake the commit this binary is compiled from in as `ELDRUN_BUILD_COMMIT`,
+/// for the side panel's version footer. It is the backend's commit on purpose:
+/// the dev window's frontend hot-reloads and its vite server restarts on a
+/// config edit, but the binary is what the window was launched as. Reruns when
+/// HEAD moves (a checkout, a commit on the branch); unset outside git.
+fn embed_build_commit() {
+    let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("manifest dir"));
+    let git = |args: &[&str]| -> Option<String> {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&manifest)
+            .args(args)
+            .output()
+            .ok()?;
+        let text = String::from_utf8(out.stdout).ok()?.trim().to_string();
+        (out.status.success() && !text.is_empty()).then_some(text)
+    };
+    let Some(commit) = git(&["rev-parse", "--short", "HEAD"]) else {
+        return;
+    };
+    println!("cargo:rustc-env=ELDRUN_BUILD_COMMIT={commit}");
+    let mut watched = vec!["HEAD".to_string(), "packed-refs".to_string()];
+    if let Some(branch) = git(&["symbolic-ref", "-q", "HEAD"]) {
+        watched.push(branch);
+    }
+    for name in watched {
+        if let Some(path) = git(&["rev-parse", "--path-format=absolute", "--git-path", &name]) {
+            println!("cargo:rerun-if-changed={path}");
+        }
+    }
+}
+
 fn main() {
     watch_frontend_dist();
+    embed_build_commit();
     generate_mobile_assets();
     tauri_build::build()
 }

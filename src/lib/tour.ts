@@ -1,4 +1,4 @@
-import { focusModeTip, type HintCtx } from "./hints";
+import { focusModeTip, type HintCtx } from "./shortcuts/hints";
 import type { TranslationKey } from "./i18n";
 
 /**

@@ -5,8 +5,8 @@ import {
   buildPreface,
   prefaceCommandsFor,
   splitPreface,
-} from "../../lib/agentPrefaces";
-import { isFinishedOneTime } from "../../lib/agentPromptSend";
+} from "../../lib/agents/agentPrefaces";
+import { isFinishedOneTime } from "../../lib/agents/prompt/send";
 import {
   desktopTimeZone,
   normalizedSchedulePreface,
@@ -20,11 +20,12 @@ import {
   type ScheduleRule,
   type ScheduleStatusKind,
   type ScheduledAgentPrompt,
-} from "../../lib/agentSchedule";
-import { formatTime, todayStr } from "../../lib/calendarTime";
+} from "../../lib/agents/agentSchedule";
+import { formatTime, todayStr } from "../../lib/calendar/calendarTime";
 import { useI18nStore, useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
-import { scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agentSchedules";
+import { scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agents/agentSchedules";
+import { AgentScheduleProposal } from "./AgentScheduleProposal";
 import { useSettingsStore } from "../../stores/settings";
 import { isResumableAgentTab, type TabEntry } from "../../stores/tabs";
 import { DateTimeField } from "../common/DateTimeField";
@@ -95,7 +96,7 @@ export function AgentScheduleDialog({ scope, tab, onClose, initialMessage, initi
   // side panel composer's chips and model pick, on the schedule form, because a
   // prompt that needs `/clear` and a model at 9:00 needs them every 9:00. They
   // are the agent's own slash commands, submitted one at a time before the
-  // message; Eldrun still chooses nothing (see `lib/agentPrefaces`).
+  // message; Eldrun still chooses nothing (see `lib/agents/agentPrefaces`).
   const [selected, setSelected] = useState<string[]>([]);
   const [model, setModel] = useState("");
   // Commands a saved rule carries that this agent no longer offers. Kept as
@@ -214,6 +215,7 @@ export function AgentScheduleDialog({ scope, tab, onClose, initialMessage, initi
         ...(commands ? { preface: commands } : {}),
         rule,
         last: prior?.last,
+        origin: prior?.origin,
       });
       reset();
     } catch (cause) {
@@ -248,7 +250,7 @@ export function AgentScheduleDialog({ scope, tab, onClose, initialMessage, initi
         onMouseDown={(event) => event.stopPropagation()}
       >
         <div className="settings-title-row">
-          <h2>{t("agentSchedule.title", { tab: tab.label })} <UntestedTag /></h2>
+          <h2>{t("agentSchedule.title", { tab: tab.label })} <UntestedTag id="agentSchedule.title" /></h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
         <div className="dialog-scroll agent-schedule-scroll">
@@ -307,6 +309,7 @@ export function AgentScheduleDialog({ scope, tab, onClose, initialMessage, initi
                         <strong>{ruleText(schedule.rule)}</strong>
                       </div>
                       <span>{schedule.message}</span>
+                      <AgentScheduleProposal projectId={scope} targetId={targetId} schedule={schedule} />
                       {schedule.preface && schedule.preface.length > 0 && (
                         <small className="agent-composer-preview">
                           {t("agentPrompts.prefixPreview", { commands: schedule.preface.join(" · ") })}

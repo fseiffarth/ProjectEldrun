@@ -1,3 +1,4 @@
+import { useModalFocus } from "../../hooks/useModalFocus";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   applyAccent,
@@ -15,13 +16,13 @@ import {
   THEME_TOKENS,
   themeTokenExampleKey,
   type ThemeToken,
-} from "../../lib/themeTokens";
+} from "../../lib/theme/themeTokens";
 import {
   buildCursorPreview,
   CURSOR_PACKS,
   CURSOR_SIZE,
   type CursorPack,
-} from "../../lib/cursorPacks";
+} from "../../lib/theme/cursorPacks";
 import { useT } from "../../lib/i18n";
 import {
   THEMES,
@@ -37,7 +38,7 @@ import { UntestedTag } from "../common/UntestedTag";
  * The Theme Customizer: a window of its own for recoloring the active theme
  * token by token, plus the corner-style knob that shapes the same chrome.
  *
- * It edits `Settings.ui_theme_vars` (`lib/themeTokens` is the allow-list) and,
+ * It edits `Settings.ui_theme_vars` (`lib/theme/themeTokens` is the allow-list) and,
  * for the accent row alone, `Settings.ui_accent` — that one already has a
  * cross-theme setting whose derived hover/active/pill family rides along, and
  * two settings writing `--accent` would be two sources of truth for one color.
@@ -397,6 +398,7 @@ export function ThemeCustomizerDialog({
   onBack?: () => void;
 }) {
   const t = useT();
+  const modalRef = useModalFocus(onClose);
   const { settings, updateSettings } = useSettingsStore();
 
   const stored = useMemo(
@@ -564,15 +566,20 @@ export function ThemeCustomizerDialog({
   };
 
   return (
-    <div className="modal-backdrop how-to-start-backdrop" onMouseDown={onClose}>
+    <div className="modal-backdrop how-to-start-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div
+        ref={modalRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("theme.title")}
         className="settings-dialog theme-customizer"
         onMouseDown={(e) => e.stopPropagation()}
       >
         <SettingsHeader
           title={
             <>
-              {t("theme.title")} <UntestedTag />
+              {t("theme.title")} <UntestedTag id="theme.title" />
             </>
           }
           onBack={onBack}
@@ -602,7 +609,7 @@ export function ThemeCustomizerDialog({
           <SettingsSection
             title={
               <>
-                {t("theme.presets")} <UntestedTag />
+                {t("theme.presets")} <UntestedTag id="theme.presets" />
               </>
             }
             help={t("theme.presets.help")}
@@ -710,7 +717,7 @@ export function ThemeCustomizerDialog({
           <SettingRow
             label={
               <>
-                {t("settings.corners")} <UntestedTag />
+                {t("settings.corners")} <UntestedTag id="settings.corners" />
               </>
             }
             help={t("settings.corners.help")}
@@ -734,7 +741,7 @@ export function ThemeCustomizerDialog({
           <SettingRow
             label={
               <>
-                {t("settings.cursor")} <UntestedTag />
+                {t("settings.cursor")} <UntestedTag id="settings.cursor" />
               </>
             }
             help={t("settings.cursor.help")}
@@ -787,7 +794,7 @@ export function ThemeCustomizerDialog({
                   {(group.id === "topframe" || group.id === "subwindow") && (
                     <>
                       {" "}
-                      <UntestedTag />
+                      <UntestedTag id="themeCustomizer.1" />
                     </>
                   )}
                 </>

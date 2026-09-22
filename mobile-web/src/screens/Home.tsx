@@ -1,12 +1,23 @@
 import { useEffect, useState } from "react";
-import { api, resolveAlert, type ActivityTab, type MobileAlertItem, type MobileAlerts, type ProjectRow } from "../api";
+import { api, resolveAlert, type ActivityTab, type MobileAlertItem, type MobileAlerts, type ProjectRow, type TabPlace } from "../api";
 import { classifyUnavailable, describeUnavailable, type UnavailableReason } from "../connection";
-import { readFlag, writeFlag } from "../prefs";
+import { readFlag, readOrder, writeFlag, writeOrder } from "../prefs";
+import { arrangeProjects, mergeProjectOrder, scopeCaption } from "../projectOrder";
+import { useRowDrag } from "../rowDrag";
+import { placeBeside } from "../tabReorder";
 import { Activity } from "./Activity";
 import { SECTION_GLYPH } from "../glyphs";
+import { formatBuildStamp } from "../buildInfo";
 // Kept in lockstep with the desktop and mobile-host package versions by the
 // release bump, so the phone always reports the build it is running.
 import { version as APP_VERSION } from "../../../package.json";
+import { isUntested } from "../../../src/lib/untested";
+import { useT } from "../../../src/lib/i18n";
+import { SpeechLangSheet, speechLangSummary } from "../components/SpeechLangPicker";
+import { SendToDesktop } from "../components/SendToDesktop";
+import { readSpeechLang, type SpeechLang } from "../speechLang";
+
+const BUILD_STAMP = formatBuildStamp();
 
 const ALERT_ICON: Record<MobileAlertItem["kind"], string> = {
   mail: SECTION_GLYPH.mail,
@@ -126,6 +137,13 @@ export function Home({ open, openTab, todo, mail }: {
   mail: () => void;
 }) {
   const [view, setView] = useState<HomeView>(() => (readFlag("projectsAgents") ? "agents" : "active"));
+  const t = useT();
+  /** The language the phone speaks and listens in (`speechLang.ts`). It is
+   * reachable from inside a session too, under the Reader's menu, but it is
+   * the phone's setting rather than that session's — and a reader who has to
+   * fix it mid-answer has already been read to in the wrong voice. */
+  const [speechLang, setSpeechLang] = useState<SpeechLang>(() => readSpeechLang());
+  const [speechLangSheet, setSpeechLangSheet] = useState(false);
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<ProjectRow[]>([]);
   /** Whether any list has come back yet. Until it has, an empty `rows` is
@@ -135,6 +153,10 @@ export function Home({ open, openTab, todo, mail }: {
   /** Null while the list is loading fine; otherwise why it is not. */
   const [offline, setOffline] = useState<UnavailableReason | null>(null);
   const [alerts, setAlerts] = useState<MobileAlerts | null>(null);
+  /** The hand-arranged project order, this phone's own (`projectOrder.ts`). It
+   * is read once: nothing else on the phone writes it, and re-reading it on
+   * every render would undo a drag the moment a poll came back. */
+  const [order, setOrder] = useState<string[]>(() => readOrder("projectOrder"));
   /** Only the agents mode is remembered: the other two differ by a query the
    * reader has to type anyway, and a Projects tab that opened on an empty
    * search box would be a worse landing than the active list. */
@@ -180,6 +202,21 @@ export function Home({ open, openTab, todo, mail }: {
       window.clearInterval(timer);
     };
   }, [view]);
+  /** The rows as they are drawn. The active list is the reader's own order with
+   * the host's as the fallback; a search result is not arranged at all — it is
+   * an answer to a query, and the best match belongs at the top of it. */
+  const listed = view === "search" ? rows : arrangeProjects(rows, (project) => project.id, order);
+  /** One row cannot be rearranged, and neither can a search result. */
+  const canReorder = view === "active" && listed.length > 1;
+  /** Move one project beside another and remember it. Nothing is sent anywhere:
+   *  the order is this phone's, so the drop is done the moment it is stored —
+   *  there is no round trip to reconcile with and no way for it to be refused. */
+  const moveProject = (key: string, anchor: string, place: TabPlace) => {
+    const next = mergeProjectOrder(order, placeBeside(listed, (project) => project.id, key, anchor, place).map((project) => project.id));
+    setOrder(next);
+    writeOrder("projectOrder", next);
+  };
+  const drag = useRowDrag(listed.map((project) => project.id), moveProject, canReorder);
   return <main className="screen">
     <header className="home-header">
       <div className="home-brand" aria-label="Eldrun">
@@ -188,7 +225,7 @@ export function Home({ open, openTab, todo, mail }: {
       </div>
       {/* The global views used to live here as a header rail; they are tabs of
           their own now, so the bar at the bottom of every screen carries them. */}
-      <div className="mobile-build"><small>Eldrun Mobile v{APP_VERSION}</small><span className={offline ? "lamp off" : "lamp"} /></div>
+      <div className="mobile-build"><small title="Bundle build time">Eldrun Mobile v{APP_VERSION}{BUILD_STAMP && ` · ${BUILD_STAMP}`}</small><span className={offline ? "lamp off" : "lamp"} /></div>
     </header>
     <div className="projects-row">
       <h1>{view === "agents" ? "Agents" : "Projects"}</h1>
@@ -211,11 +248,44 @@ export function Home({ open, openTab, todo, mail }: {
       {loaded && rows.length === 0 && <p className="projects-empty">{view === "search"
         ? query.trim() ? "No project by that name has Eldrun Mobile access." : "Type a project's name to find it."
         : "No project is active right now. Search finds any project with Eldrun Mobile access."}</p>}
+      {canReorder && <p className="reorder-hint">Drag <span aria-hidden="true">⠿</span> to arrange — this order is kept on this phone, so the Eldrun window's own project pills stay as they are. A project that has only just become active joins the end. {isUntested("mobile.home.reorder") && <span className="untested">Untested</span>}</p>}
       {/* A box row says it is one where a project row says its status: a box
           has no status of its own (listing it is what its switch means), and
-          a "Paper" box beside a "Paper" project must be tellable apart. */}
-      <section className="cards">{rows.map((project) => <button className="card" key={project.id} onClick={() => open(project.id)}><span><strong>{project.label}</strong><small>{project.kind === "box" ? "▣ box" : project.status}</small></span><span className="count">{project.live_sessions}</span></button>)}</section>
+          a "Paper" box beside a "Paper" project must be tellable apart.
+
+          The row is the project screen's tab card, one line tall: the grip has
+          to sit beside the opener rather than on it (a press anywhere else
+          opens the project, and the two must not be one gesture), which is the
+          same shape — and so the same classes — the tab list already wears. */}
+      <section className="cards">{listed.map((project) => <div
+        className={`tab-card one-row${drag.rowClass(project.id)}`}
+        key={project.id}
+        ref={drag.rowRef(project.id)}
+      >
+        <div className="tab-card-head">
+          <button className="card" onClick={() => open(project.id)}><span><strong>{project.label}</strong><small>{scopeCaption(project)}</small></span><span className="count">{project.live_sessions}</span></button>
+          {canReorder && <button
+            className="tab-card-grip"
+            aria-label={`Move ${project.label}`}
+            title="Drag to move this project, or use the arrow keys"
+            {...drag.gripProps(project.id)}
+          ><span aria-hidden="true">⠿</span></button>}
+        </div>
+      </div>)}</section>
       {alerts && <AlertRows alerts={alerts} onAlerts={setAlerts} todo={todo} mail={mail} />}
     </>}
+    <SendToDesktop />
+    {/* What this phone does, as against what the desktop is doing — kept to the
+        end of the page, under whichever list the reader came for. */}
+    <section className="phone-settings" aria-labelledby="phone-settings-heading">
+      <h2 id="phone-settings-heading">{t("mobile.home.phoneSettings")}</h2>
+      <ul className="option-list">
+        <li><button aria-haspopup="dialog" aria-expanded={speechLangSheet} onClick={() => setSpeechLangSheet(true)}>
+          <span><strong>{t("mobile.speech.language")}{isUntested("mobile.speech.language") && <span className="untested">Untested</span>}</strong><small>{speechLangSummary(speechLang, t)}</small></span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
+        </button></li>
+      </ul>
+    </section>
+    {speechLangSheet && <SpeechLangSheet chosen={speechLang} onChoose={setSpeechLang} onClose={() => setSpeechLangSheet(false)} />}
   </main>;
 }

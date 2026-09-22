@@ -28,7 +28,7 @@
  * region a table?" — and it is what {@link cellKind} / {@link nestedLabel} classify
  * cells for.
  *
- * Pure: no React, no Tauri, no fs. Unit-tested in `src/__tests__/YamlGrid.test.ts`.
+ * Pure: no React, no Tauri, no fs. Unit-tested in `src/__tests__/viewers/YamlGrid.test.ts`.
  */
 
 import { parseYaml, isFlow, type YamlDoc, type YamlNode } from "./yaml";

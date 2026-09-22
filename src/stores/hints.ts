@@ -1,10 +1,10 @@
 import { create } from "zustand";
 import { useSettingsStore } from "./settings";
-import type { HintId } from "../lib/hints";
+import type { HintId } from "../lib/shortcuts/hints";
 
 /**
  * Live state for the contextual hint engine. The catalog (`HINTS`) and selection
- * logic live in `src/lib/hints.ts` (pure); this store only holds the *currently
+ * logic live in `src/lib/shortcuts/hints.ts` (pure); this store only holds the *currently
  * shown* hint plus thin actions that persist the seen-set and master toggle
  * through `useSettingsStore` — the single writer of `settings.json`. Mirrors the
  * session-only pattern of `vpnPrompt.ts`/`drag.ts`, except dismissals persist.

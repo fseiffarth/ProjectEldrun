@@ -352,7 +352,7 @@ Contents:
 - **Search bar** — filters registered projects by name or path; `Enter`
   activates a unique match, `Escape` clears the search.
 - **Project pills** — one per active/current project, drag-to-reorder with
-  pointer events (`stores/pillDrag.ts`, `PILL_DRAG_TYPE`); HTML5 drag-and-drop is
+  pointer events (`stores/drag/pillDrag.ts`, `PILL_DRAG_TYPE`); HTML5 drag-and-drop is
   not used anywhere in Eldrun because it breaks on WebKitGTK. Hovering a pill
   shows the project path, status, today's active time (`get_time_today`), and
   live CPU%; a running-task indicator spins on pills with live terminal output,
@@ -360,7 +360,7 @@ Contents:
   closes it. The pill's menu exposes the container toggle, remote actions, and
   **Publish to GitHub / GitLab** (see below).
 - **The Trash pill** — the permanent disposable-agent workspace
-  (`trash-project-pill`, `lib/trashProject.ts`). It renders without the ordinary
+  (`trash-project-pill`, `lib/projects/trashProject.ts`). It renders without the ordinary
   pill affordances and cannot be closed or archived.
 - **The scope chip and the box pill** — `BoxScopeChip.tsx` is the row's fixed
   leading segment: one control standing for every scope that is not a project
@@ -397,7 +397,7 @@ Settings dialog (`SettingsPanel.tsx` + `SettingsSubPanels.tsx`) covers the main
 page — default agent command, theme, workspace management, experimental flags,
 the daily-recap toggle, and the Eldrun Mobile opt-in (`MobileSettings`) — plus
 these sub-panels: **Global apps** (role visibility and commands), **File types**
-(per-type viewer behaviour, autocomplete and grammar defaults, autosave),
+(per-type viewer behaviour, autocomplete and spelling defaults, autosave),
 **Ollama** (model management, when the binary is installed), **Agents**,
 **Shortcuts**, **Git hosting** (provider tokens), **VPN auto-connect**, **Remote
 hosts**, **Archived projects**, **Scaffold repair**, and **Help**.
@@ -445,7 +445,7 @@ list. Where a link still needs an app, `src/lib/linkTarget.ts::routeUri` decides
 | Surface | Frontend | Backend | Notes |
 |---------|----------|---------|-------|
 | Mail | `components/mail/`, `stores/mail.ts` | `commands/mail.rs`, `services/mail_{engine,store,crypt,crypto,pgp,sanitize,filters,authres,ai}.rs` | IMAP/SMTP. Behind `mail_client`. |
-| Calendar | `components/calendar/`, `stores/calendar.ts` | `commands/calendar.rs`, `commands/caldav.rs`, `services/caldav.rs` | Month / time-grid / agenda, alarms, `.ics` import+export, CalDAV accounts. |
+| Calendar | `components/calendar/`, `stores/calendar/calendar.ts` | `commands/calendar.rs`, `commands/caldav.rs`, `services/caldav.rs` | Month / time-grid / agenda, alarms, `.ics` import+export, CalDAV accounts. |
 | To-do board | `components/todo/`, `stores/todo.ts` | shares `calendar.json` | Cards **are** calendar tasks — one store, not a second one. |
 | Browser | `components/browser/`, `stores/browser.ts` | `commands/browser.rs`, `services/browser_engine.rs`, `services/web_safety.rs` | Reader mode, no scripts. Behind `web_browser`. |
 | Print manager | `components/printing/PrintManagerPane.tsx` | `commands/printing.rs` | CUPS on Linux/macOS, PowerShell on Windows. |
@@ -512,9 +512,9 @@ Three that carry design decisions worth recording here:
 
 Viewer state — editor/PDF scroll position, PDF/image zoom, image pan — persists
 per tab. Editable text/LaTeX/Markdown viewers carry opt-in, entirely local Ollama
-**autocomplete** (`Ctrl+Space`) and **grammar check**, both off by default with a
-per-tab header toggle; if Ollama is not running they fail silently, and nothing
-is ever sent off the machine.
+**autocomplete** (`Ctrl+Space`) and a dictionary **spell check**, both off by
+default with a per-tab header toggle; if Ollama is not running autocomplete fails
+silently, and nothing is ever sent off the machine.
 
 ### Lessons, Tour, and i18n
 
@@ -613,7 +613,7 @@ keeps global `~/.vibe/config.toml` untouched.
 | `Escape` | Close dialogs. |
 | `Enter` | Confirm create/import dialogs; activate a unique search result. |
 
-Beyond these, a **rebindable** set lives in `src/lib/shortcuts.ts` and is edited
+Beyond these, a **rebindable** set lives in `src/lib/shortcuts/shortcuts.ts` and is edited
 in Settings → Shortcuts, persisted as `settings.keyboard_shortcuts` overrides:
 toggle subwindow fullscreen, cycle to the next project, previous/next tab in a
 subwindow, cycle the focused subwindow up/down, cycle tabs, hide the focused
@@ -846,7 +846,7 @@ and the host-aware variants, never inferred from path conventions.
 ## Architecture
 
 The tree below lists only load-bearing entries; the directory listing is the
-source of truth. `src/CLAUDE.md` and `src-tauri/CLAUDE.md` are the maintained
+source of truth. `docs/filemap_frontend.md` and `docs/filemap_backend.md` are the maintained
 file maps.
 
 ```text
@@ -1066,7 +1066,7 @@ remote git at all.
 - `keyboard_shortcuts` holds per-action chord overrides (Settings → Shortcuts).
 - `fast_mode` is the Fast Mode switch (see above). **Unset and `false` both
   mean off** — the mode is never inferred; only an explicit `true` engages it.
-  Read entirely on the frontend (`src/lib/fastMode.ts`), which also holds the
+  Read entirely on the frontend (`src/lib/agents/fastMode.ts`), which also holds the
   list of what it withdraws; the backend only round-trips the value.
 - `window_state` holds monitor, position, size, and maximized for startup
   restore; experimental flags are stored as plain booleans keyed by flag name.
@@ -1363,7 +1363,7 @@ Ollama integration test skips itself when no local server or model is available.
   2.52.3 was faster but produced flicker, missing PDF images, and a renderer
   crash.
 - A native scrollbar's shape is unreachable from CSS on WebKitGTK, so Eldrun
-  hides the engine's bar and draws its own (`lib/customScrollbar.ts`).
+  hides the engine's bar and draws its own (`lib/theme/customScrollbar.ts`).
 
 ## Practical Development Notes
 

@@ -1,5 +1,16 @@
 ## Group B — Detached Windows: Parity & Cross-Window Correctness
 
+- [ ] **GNOME Wayland monitor retention (2026-09-17): live verification.**
+  Scope switches now minimize popouts and present their existing surfaces on
+  return. Hiding destroyed GTK's Wayland toplevel and lost GNOME's monitor
+  placement; desktop coordinates cannot restore it. Parking requests are
+  tracked independently of GTK's unreliable minimized flag, including renderer
+  polling/streaming and bounds-save gating. Minimized popouts may remain in
+  GNOME's overview/window switcher. After a backend restart, place two popouts
+  on different monitors, switch projects and back repeatedly, then try root/box
+  scopes and unplugging a monitor while parked. Check placement, size, focus,
+  and that every popout returns. Not run live.
+
 *Created 2026-09-01 from a two-agent code audit (one agent for feature parity
 inside a popout, one for every cross-window action), each finding then
 spot-checked by hand against the tree.*
@@ -26,7 +37,7 @@ actions), **`src/stores/detachedContext.ts`** (new — the popout's store seam),
 `src/components/tabs/detachedDropTargets.ts`,
 **`src/components/tabs/detachedDragNet.ts`** (new), `src/components/tabs/TabPane.tsx`,
 `src/components/terminal/TerminalView.tsx`, `src/stores/settings.ts`,
-`src/stores/activity.ts`, `src/stores/usage.ts`, `src/stores/hpcGuardPrompt.ts`,
+`src/stores/activity.ts`, `src/stores/usage.ts`, `src/stores/remote/hpc/hpcGuardPrompt.ts`,
 `src-tauri/src/commands/subwindow.rs`, `src-tauri/src/commands/terminal.rs`,
 `src-tauri/src/terminal/mod.rs`, `src-tauri/src/services/project_runtime.rs`,
 `src-tauri/src/lib.rs` (`WindowEvent::Destroyed`).*
@@ -104,8 +115,14 @@ writes are now forwarded rather than dropped.
      - [ ] 🖐️ Manual test — open a box scope, drag a subwindow out: it comes
        up seeded, and a relaunch respawns it. Then kill a popout with
        `xkill`: its tabs reappear docked in the main window.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 225. **A main-window reload orphans every popout and spawns duplicates.** The
      renderer watchdog (U#223), the crash reporter and a dev full reload all
@@ -140,8 +157,14 @@ writes are now forwarded rather than dropped.
      - [ ] 🖐️ Manual test — with a popout open, trigger a main-window reload
        (debug footer → reload, or the watchdog's dev override): exactly one
        popout remains and its terminal still accepts input.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 226. **A popout writes the whole `settings.json` from a snapshot loaded
      once.** `updateSettings` spreads the cached `settings` object and saves
@@ -182,8 +205,14 @@ writes are now forwarded rather than dropped.
      - [ ] 🖐️ Manual test — theme switch in main, mute an alert in a popout,
        relaunch: the theme survives; the popout's terminal palette follows the
        theme switch live.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 227. **Layout node ids are minted per JS heap.** The popout's optimistic
      `split` edit runs `splitSubtree` (`detached.ts:404-407`), which mints
@@ -219,8 +248,14 @@ writes are now forwarded rather than dropped.
        fraction (`DetachedTwoHeap.test.ts`, `DetachedSplitIds.test.ts`).
      - [ ] 🖐️ Manual test — split a popout, drag the divider, relaunch: the
        divider is where it was left and no pane went blank.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 228. **"Close all tabs" with a popout open orphans its PTYs.** `closeAllTabs`
      (chord `useKeyboard.ts:339-342`, TabBar menu `TabBar.tsx:1613`) writes
@@ -246,8 +281,14 @@ writes are now forwarded rather than dropped.
        (`DetachedTwoHeap.test.ts`).
      - [ ] 🖐️ Manual test — popout open, Close all tabs: the popout closes,
        `ps` shows no surviving shell for it.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 229. **Root and box popouts closed while another project is active come back
      at next launch.** The `DETACHED_CLOSE`/`DETACHED_HIDE` handlers persist
@@ -272,8 +313,14 @@ writes are now forwarded rather than dropped.
        (`DetachedHost.test.ts`).
      - [ ] 🖐️ Manual test — pop out a root subwindow, switch to a project,
        close the popout via the WM, relaunch: it stays closed.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 230. **`reseedDetached` drops `remote`.** `detachedDropTargets.ts:189-195`
      calls `buildSeed` with five arguments (no `remoteInfoForScope`), unlike
@@ -294,8 +341,14 @@ writes are now forwarded rather than dropped.
        context as the initial seed (`DetachedTwoHeap.test.ts`).
      - [ ] 🖐️ Manual test — remote project, popout, drag a tab from main into
        it: the locality badges stay.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 ### B.2 — Parity inside the popout
 
@@ -341,8 +394,14 @@ writes are now forwarded rather than dropped.
      - [ ] 🖐️ Manual test — Ctrl+click a link in a popped-out README opens
        the file; set a breakpoint in a popped-out `.py`, relaunch, it is still
        there.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 232. **A popout of a local project has no project identity.**
      `remoteInfoForScope` returns `undefined` unless `project.remote`
@@ -379,8 +438,14 @@ writes are now forwarded rather than dropped.
        (`DetachedTwoHeap.test.ts`).
      - [ ] 🖐️ Manual test — local project, pop out a subwindow, open ◫: the
        git bar, history and Apps/Sessions views are all present.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 233. **Dialog hosts mounted only in `AppShell` make popout actions hang or
      vanish.** `AppShell.tsx:943-1057` mounts them; `DetachedApp.tsx:596-600`
@@ -414,8 +479,14 @@ writes are now forwarded rather than dropped.
      - [ ] 🖐️ Manual test — HPC-tagged project, pop out, ▶ a script: the
        guard dialog appears in the popout; take a PDF screenshot from a
        popout: the save overlay appears.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 234. **Activity and usage are blind to popouts.** `AppShell.tsx:734-764` is
      the only `terminal-output` → `notePtyOutput` feed; `noteUserInput` from
@@ -450,8 +521,14 @@ writes are now forwarded rather than dropped.
        its own accumulator empty and lands in main's (`DetachedTwoHeap.test.ts`).
      - [ ] 🖐️ Manual test — pop out a Claude tab, send a prompt: the project
        pill shows working, then done; the recap counts the prompt.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 235. **Popped-out terminals start blank.** `TerminalView.tsx:761-783`
      subscribes to live output and the hidden-pane replay only; the backend
@@ -486,8 +563,14 @@ writes are now forwarded rather than dropped.
        normal one does not (`TerminalAttachOnly.test.tsx`).
      - [ ] 🖐️ Manual test — `ls -la` in a shell, pop it out: the listing is
        there.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 236. **Startup respawn applies saved bounds unvalidated, and the default size
      is in the wrong unit.** `detach_subwindow` sets raw physical x/y
@@ -513,8 +596,14 @@ writes are now forwarded rather than dropped.
        unplugged-monitor case. The bounds seed is a live-only path.
      - [ ] 🖐️ Manual test — popout on an external monitor, quit, unplug,
        relaunch: the popout is on the remaining screen.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 ### B.3 — The escape hatch, the protocol, and the long tail
 
@@ -541,8 +630,14 @@ writes are now forwarded rather than dropped.
      view, or the smallest of the visible ones — arbitrated backend-side the
      way visibility already is.
      - [ ] 🤖 Automated test
-     - [ ] ✅ Works
-     - [ ] ❌ Doesn't work
+     - [ ] ✅ Works on Linux (X11)
+     - [ ] ❌ Doesn't work on Linux (X11)
+     - [ ] ✅ Works on Linux (Wayland)
+     - [ ] ❌ Doesn't work on Linux (Wayland)
+     - [ ] ✅ Works on Windows
+     - [ ] ❌ Doesn't work on Windows
+     - [ ] ✅ Works on macOS
+     - [ ] ❌ Doesn't work on macOS
 
 237. **Bring back a dock-back gesture.** Since the 2026-07-19 move-only
      rework there is no way to return a whole popout to the main window: the
@@ -571,8 +666,14 @@ writes are now forwarded rather than dropped.
        (`DetachedHost.test.ts`'s dock cases, now also persisting the scope).
      - [ ] 🖐️ Manual test — ⤓ on a two-pane popout: both panes are back in
        main, terminals still live.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 238. **Fragile cross-window protocol paths** (each plausible from reading,
      none confirmed live):
@@ -646,8 +747,14 @@ writes are now forwarded rather than dropped.
        stale-close guard and the run-host default (`DetachedTwoHeap.test.ts`).
      - [ ] 🖐️ Manual test — start a tab drag from a popout and `xkill` the
        popout mid-drag: main still takes clicks.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 239. **Parity gaps that are features, not bugs** — decide each, build or
      document: no tab **rename** UI or context menu on the popout strip (the
@@ -693,8 +800,14 @@ writes are now forwarded rather than dropped.
      - [ ] 🖐️ Manual test — rename a tab in a popout; check a popped-out
        browser tab keeps its address across a relaunch; park a popout by
        switching project and confirm its terminals stop streaming.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 240. **Test the second window as a second window.** The existing suites
      (`DetachedHost`, `DetachedSync`, `DetachedSplit`, `DecideDetachedDrop`,
@@ -707,7 +820,7 @@ writes are now forwarded rather than dropped.
      detach in heap A, edit in heap B, and assert both layouts agree. Every
      fix above then lands with a test in that harness, and the harness itself
      is the regression net for the "second React root" class of bug.
-     **Built** as `src/__tests__/detachedHarness.ts` + `DetachedTwoHeap.test.ts`
+     **Built** as `src/__tests__/helpers/detachedHarness.ts` + `DetachedTwoHeap.test.ts`
      (20 cases). `loadHeap()` is `vi.resetModules()` + a fresh dynamic import,
      so each heap has its own `useTabsStore`/`useSettingsStore`/
      `useActivityStore`/`useProjectsStore`; the hoisted mocks are
@@ -743,7 +856,7 @@ writes are now forwarded rather than dropped.
      unconditionally and is a no-op otherwise — which is how the backend has
      always cleared the main window's (`restore_main_window`: `let _ =
      win.set_fullscreen(false)`, no read, no branch). What must not be cleared
-     is now the pure `mayClearStrayFullscreen` (`lib/strayFullscreen`): the
+     is now the pure `mayClearStrayFullscreen` (`lib/window/strayFullscreen`): the
      page's own DOM fullscreen and a talk in progress hold it, macOS is
      excluded. And the title-bar press self-heals, because the guard fires on
      resize and focus-regain and a window already stuck *and* already focused
@@ -763,8 +876,14 @@ writes are now forwarded rather than dropped.
        ordinary case is untouched — a normal-sized popout still moves the
        instant you grab the strip — and that a video/browser tab inside a
        popout can still go fullscreen and stay there.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 262. **A popout's title bar has no visible move handle.** The whole strip has
      been a drag region since #42 — every pixel of it that isn't the window
@@ -785,8 +904,14 @@ writes are now forwarded rather than dropped.
        popout's title bar, next to the star. Drag it — the window follows the
        cursor. Double-click it — the window snaps onto its screen (#240), the
        same as double-clicking the bare strip.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 ---
 

@@ -12,8 +12,8 @@ import {
   type TabKind,
 } from "../../stores/tabs";
 import { lastPtyOutputAt, useActivityStore } from "../../stores/activity";
-import { useAgentTaskStore } from "../../stores/agentTask";
-import { useFileSourcesStore } from "../../stores/fileSources";
+import { useAgentTaskStore } from "../../stores/agents/agentTask";
+import { useFileSourcesStore } from "../../stores/viewers/fileSources";
 import type { InternalViewer } from "../../lib/viewers/fileUtils";
 import { TAB_ACCENT } from "./newTabItems";
 import { useT, type TranslationKey } from "../../lib/i18n";
@@ -53,6 +53,7 @@ const VIEWER_LABEL_KEY: Record<InternalViewer, TranslationKey> = {
   diff: "viewerLabel.diff",
   syncdiff: "viewerLabel.syncdiff",
   syncmerge: "viewerLabel.syncmerge",
+  gitmerge: "viewerLabel.gitmerge",
   odt: "viewerLabel.odt",
   media: "viewerLabel.media",
   html: "viewerLabel.html",

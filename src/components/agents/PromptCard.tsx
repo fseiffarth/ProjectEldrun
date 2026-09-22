@@ -1,13 +1,17 @@
 import { useEffect, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { formatTags, parseTags } from "../../lib/agentPromptTags";
+import { formatTags, parseTags } from "../../lib/agents/prompt/tags";
 import { useI18nStore, useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
-import { localWallClock } from "../../lib/agentSchedule";
-import type { PromptChartCard } from "../../lib/agentPromptChart";
-import { formatTimelineInstant } from "../../lib/agentPromptTimeline";
-import type { PromptLink } from "../../stores/agentPrompts";
+import { localWallClock } from "../../lib/agents/agentSchedule";
+import { AgentScheduleProposal } from "./AgentScheduleProposal";
+import type { PromptChartCard } from "../../lib/agents/prompt/chart";
+import { formatTimelineInstant } from "../../lib/agents/prompt/timeline";
+import type { PromptLink } from "../../stores/agents/agentPrompts";
 import { Dropdown } from "../common/Dropdown";
 import { MarkdownPromptField } from "../common/MarkdownPromptField";
+
+/** Inside a card, keys aimed at these belong to them, not to the card. */
+export const CARD_OWN_KEYS = "input, textarea, select, button, [contenteditable]";
 
 export interface PromptCardTarget {
   id: string;
@@ -15,6 +19,7 @@ export interface PromptCardTarget {
 }
 
 interface Props {
+  projectId?: string;
   card: PromptChartCard;
   matched: boolean;
   selected: boolean;
@@ -26,6 +31,13 @@ interface Props {
   linkOver: boolean;
   /** A later occurrence of a recurring rule: read-only, no ports, unregistered. */
   occurrence?: string;
+  /** The instant this card is drawn at on the axis. A recurring rule's first
+   *  drawn occurrence in a future window is not `card.at` (the next one from
+   *  now), so the fact line prints this one — the one under the card. */
+  drawnAt?: Date;
+  /** "5 min earlier" would land at or before now (plus a snap step), where
+   *  the rule would be sent at once rather than moved. */
+  retimeEarlierDisabled?: boolean;
   /** Part of the timeline's multi-selection. */
   multiSelected?: boolean;
   /** Ctrl/⌘ + click: add the card to the selection or take it out. Absent
@@ -41,7 +53,7 @@ interface Props {
    *  prompt: the picker no longer lists it, and the card says why. */
   targetBlocked?: string;
   /** For a draft: the picker's first, default choice — a new agent tab
-   *  running the chart's agent (`lib/agentPromptNewTab`). Its value is the
+   *  running the chart's agent (`lib/agents/prompt/newTab`). Its value is the
    *  empty target, so an unaimed draft selects it, and Send opens the tab. */
   newTabLabel?: string;
   register?: (node: HTMLElement | null) => void;
@@ -75,6 +87,7 @@ function stateFact(
   t: ReturnType<typeof useT>,
   when: (at: Date | null | undefined) => string,
   occurrence?: string,
+  drawnAt?: Date,
 ): string {
   if (card.state === "queued") return t("promptChart.waiting");
   if (card.state === "chained") {
@@ -90,14 +103,16 @@ function stateFact(
   }
   if (card.state === "scheduled") {
     if (occurrence) return `↻ ${when(localWallClock(occurrence)) || occurrence.replace("T", " ")}`;
-    return card.at
-      ? `${card.recurring ? "↻ " : ""}${when(card.at)}`
+    const at = drawnAt ?? card.at;
+    return at
+      ? `${card.recurring ? "↻ " : ""}${when(at)}`
       : t("promptChart.paused");
   }
   return t("promptChart.draft");
 }
 
 export function PromptCard({
+  projectId,
   card,
   matched,
   selected,
@@ -105,6 +120,8 @@ export function PromptCard({
   dragging,
   linkOver,
   occurrence,
+  drawnAt,
+  retimeEarlierDisabled,
   multiSelected,
   onToggleSelect,
   color,
@@ -160,8 +177,10 @@ export function PromptCard({
   const canSend = !occurrence && (targets.length > 0 || !!newTab);
   const save = async () => {
     if (!message.trim()) return;
-    await onSave(message.trim(), parseTags(tags));
-    setEditing(false);
+    try {
+      await onSave(message.trim(), parseTags(tags));
+      setEditing(false);
+    } catch { /* the chart reports it; the editor keeps the text */ }
   };
   const className = [
     "agent-prompt-card todo-card",
@@ -187,7 +206,21 @@ export function PromptCard({
       className={className}
       data-prompt-card={occurrence ? undefined : card.id}
       data-testid={`prompt-chart-card-${card.state}`}
+      data-agent-authored={card.schedule?.origin || card.history?.schedule_origin ? "true" : undefined}
       style={{ "--prompt-strand": color } as React.CSSProperties}
+      // The keyboard route: a card is reached with Tab and opened with Enter
+      // or Space, which is what makes its Send/Schedule/Link buttons reachable.
+      tabIndex={0}
+      role="button"
+      aria-expanded={expanded}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        // A key typed into one of the card's own controls is that control's.
+        if (event.target !== event.currentTarget && (event.target as Element).closest(CARD_OWN_KEYS)) return;
+        event.preventDefault();
+        onSelect();
+        setExpanded((value) => !value);
+      }}
       onClick={(event) => {
         if (onToggleSelect && (event.ctrlKey || event.metaKey)) { onToggleSelect(); return; }
         onSelect();
@@ -217,6 +250,11 @@ export function PromptCard({
         )}
         <span className={`agent-prompt-lamp is-${card.history?.result ?? card.state}`} aria-hidden="true" />
       </div>
+      {projectId && card.targetId && card.schedule?.origin && <AgentScheduleProposal projectId={projectId} targetId={card.targetId} schedule={card.schedule} />}
+      {card.history?.schedule_origin && <div className="agent-schedule-attribution">
+        <span className="agent-schedule-pill" title={card.history.schedule_origin.session}>{t("scheduleMcp.authored")}</span>
+        {card.history.schedule_origin.from_delivery && <small>{t("scheduleMcp.lineage", { id: card.history.schedule_origin.from_delivery })}</small>}
+      </div>}
       <div className="agent-prompt-card-agent" onClick={(event) => event.stopPropagation()}>
         {readOnly || pickOptions.length === 0
           ? <small>{targetLabel ?? targets.find((target) => target.id === card.targetId)?.label ?? t("promptChart.noAgent")}</small>
@@ -236,7 +274,7 @@ export function PromptCard({
         {card.tags.map((tag) => <span key={`stored:${tag}`} className="agent-prompt-tag">#{tag}</span>)}
         {card.autoTags.map((tag) => <span key={`auto:${tag}`} className="agent-prompt-tag is-auto">#{tag}</span>)}
       </div>
-      <small className="agent-prompt-card-fact">{stateFact(card, t, when, occurrence)}</small>
+      <small className="agent-prompt-card-fact">{stateFact(card, t, when, occurrence, drawnAt)}</small>
       {!occurrence && (
         <button
           className="agent-prompt-card-port is-out"
@@ -298,7 +336,7 @@ export function PromptCard({
                 {!readOnly && <button className="settings-btn sm" type="button" onClick={() => setEditing(true)}>{t("common.edit")}</button>}
                 {card.schedule && !card.recurring && (
                   <>
-                    <button className="settings-btn sm" type="button" onClick={() => void onRetime(-5)}>− {t("promptChart.fiveMinutesEarlier")}</button>
+                    <button className="settings-btn sm" type="button" disabled={retimeEarlierDisabled} onClick={() => void onRetime(-5)}>− {t("promptChart.fiveMinutesEarlier")}</button>
                     <button className="settings-btn sm" type="button" onClick={() => void onRetime(5)}>+ {t("promptChart.fiveMinutesLater")}</button>
                   </>
                 )}

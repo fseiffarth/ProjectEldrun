@@ -2,7 +2,7 @@
  * Pure logic for the dev-only perf monitor (`src/dev/perfMonitor.ts`) — ring
  * buffers, aggregation and formatting, with no window, no clock and no Tauri,
  * so "does the IPC table add up" is answered by a unit test rather than by
- * staring at a live panel (`src/__tests__/DevPerf.test.ts`).
+ * staring at a live panel (`src/__tests__/system/DevPerf.test.ts`).
  *
  * Everything here is DEV-ONLY by construction: the only importers sit behind
  * `import.meta.env.DEV` guards, so none of it reaches a shipped bundle.

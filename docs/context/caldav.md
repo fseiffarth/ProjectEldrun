@@ -61,7 +61,7 @@ position, and that is why the frontend hands the backend
 ## Why a sync is two commands
 
 `caldav_fetch` speaks the protocol and hands back each resource's iCalendar
-text **unparsed**; the frontend runs it through `src/lib/ics.ts`; `caldav_apply`
+text **unparsed**; the frontend runs it through `src/lib/calendar/ics.ts`; `caldav_apply`
 reconciles and writes. That is the same seam `calendar_fetch_ics` +
 `calendar_replace_events` already has, for the same reason: `ics.ts` is the only
 parser in this codebase that understands folding, escaping, `RRULE` and
@@ -207,7 +207,7 @@ simpler implementation loses somebody's data:
   *after* the local write (an edit made offline is still an edit); a delete is
   pushed *before* it, and both a conflict and an ordinary failure reject, so the
   local row survives. The other order leaves an appointment gone here and still
-  there for everyone else, with nothing left to retry from. `lib/calendarWriteHook.ts`
+  there for everyone else, with nothing left to retry from. `lib/calendar/calendarWriteHook.ts`
   is where that asymmetry lives — a one-slot handler registry, so the calendar
   store can announce writes without importing the CalDAV store back (two
   module-scope `create()` calls in a cycle is the shape that resolves to
@@ -220,7 +220,7 @@ event's "this event only" edits live in the *same* calendar object as their
 master — and this app stores a synced series as several rows sharing one
 `caldav_href`. Pushing the edited row alone would not be a partial update; it
 would replace the object with one component of it, deleting every other override
-the series had. `lib/caldavPush.ts` groups by resource (`resourceRows`), orders
+the series had. `lib/calendar/caldavPush.ts` groups by resource (`resourceRows`), orders
 master-first (`orderComponents`), and serializes the group as one body.
 
 Two fields had to start round-tripping for any of that to be correct, and neither
@@ -241,12 +241,12 @@ silently in its original place.
 
 ## Looking at an `.ics` before importing it
 
-`lib/icsSafety.ts` + `IcsImportReviewDialog` report what is in a picked file
+`lib/calendar/icsSafety.ts` + `IcsImportReviewDialog` report what is in a picked file
 before any of it lands in `calendar.json`. It is explicitly **not** a scanner,
 and the dialog's own footnote says so: an `.ics` cannot run anything here. The
 parser reads a fixed set of properties into plain data, every text field goes
 through `stripFormatControls`, no calendar surface renders HTML, and a link
-reaches the OS only after `lib/conference.ts` has refused everything that is not
+reaches the OS only after `lib/calendar/conference.ts` has refused everything that is not
 `http(s)`.
 
 It answers the question those defences cannot, precisely because their job is to

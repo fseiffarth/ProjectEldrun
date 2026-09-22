@@ -4,7 +4,7 @@ import type { ProjectEntry } from "../../types";
 import { useProjectsStore } from "../../stores/projects";
 import { useBoxesStore } from "../../stores/boxes";
 import { useBoxEditorStore } from "../../stores/boxEditor";
-import { usePillSelectionStore } from "../../stores/pillSelection";
+import { usePillSelectionStore } from "../../stores/drag/pillSelection";
 import { UntestedTag } from "../common/UntestedTag";
 import { useT } from "../../lib/i18n";
 
@@ -114,7 +114,7 @@ export function BoxEditorDialog({ onClose }: { onClose: () => void }) {
       >
         <div className="settings-title-row">
           <h2>
-            {t("boxEditor.title")} <UntestedTag />
+            {t("boxEditor.title")} <UntestedTag id="boxEditor.title" />
           </h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>

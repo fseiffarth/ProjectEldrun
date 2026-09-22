@@ -7,7 +7,7 @@ import {
   cleanCategories,
   normalizeCategory,
   projectCategories,
-} from "../../lib/categoryColor";
+} from "../../lib/theme/categoryColor";
 import { useT } from "../../lib/i18n";
 
 /**

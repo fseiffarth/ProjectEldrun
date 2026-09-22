@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore } from "../../stores/settings";
 import { useQuiesce, saverInterval } from "../../stores/power";
-import { useFastMode } from "../../lib/fastMode";
+import { useFastMode } from "../../lib/agents/fastMode";
 import { useHeaderStatusReport } from "../../stores/headerStatus";
 import {
   formatBytes,

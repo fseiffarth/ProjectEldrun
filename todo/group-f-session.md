@@ -46,8 +46,14 @@
       - [ ] 🤖 Automated test — none yet (trivial frontend tooltip; covered by
         manual)
       - [ ] 🖐️ Manual test
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **39b — Persist agent tabs with their session id.** ✅ Done.
       Resumable agent tabs (Claude with a `sessionId`) are now persisted in
       `tab_layout` (carrying `sessionId`) and restored on relaunch; other agent
@@ -93,7 +99,7 @@
         installed as the *precise* path (it disambiguates two Codex tabs in one
         cwd, and rebinds on `/clear` instantly); `codex_hook_state` detects the
         trust gate and the UI offers a one-click "open Codex on `/hooks`" fix
-        (`lib/codexHooks.ts`, `lib/hints.ts`, `SettingsSubPanels.tsx`).
+        (`lib/agents/codexHooks.ts`, `lib/shortcuts/hints.ts`, `SettingsSubPanels.tsx`).
         Remaining: **remote (ssh) Codex tabs are out of scope** — their rollouts
         live on the far host, so the binder skips them; making them work means
         running the rollout scan over `ssh_exec`.
@@ -134,7 +140,7 @@
       resolver also probes the project's stage. Verified live along the way: the
       current Claude CLI finds `--resume <id>` from any cwd. *Files:
       `services/agent_session.rs`, `services/ssh_exec.rs`, `services/sandbox.rs`,
-      `services/codex_bind.rs`, `lib.rs`, `lib/agentWorktrees.ts`,
+      `services/codex_bind.rs`, `lib.rs`, `lib/agents/agentWorktrees.ts`,
       `stores/{tabs,boxes}.ts`; doc `docs/context/agent_sessions.md`.*
       - [x] 🤖 Automated — `hook_script_lets_only_the_tabs_own_session_move_the_record`
         (runs the real `sh` script), `resolve_finds_a_log_under_any_of_several_roots`,
@@ -153,7 +159,13 @@
         - [ ] Remote project: Claude tab, chat, `tmux kill-server` on the host
           (or reboot it), restart Eldrun → the tab resumes instead of dying with
           "Session ID … is already in use".
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
 
 ---

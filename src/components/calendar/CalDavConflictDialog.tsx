@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { UntestedTag } from "../common/UntestedTag";
-import { useCalDavStore } from "../../stores/caldav";
+import { useCalDavStore } from "../../stores/calendar/caldav";
 import { useT } from "../../lib/i18n";
 
 /**
@@ -71,7 +71,7 @@ export function CalDavConflictDialog() {
     <div className="modal-backdrop">
       <div className="project-dialog caldav-conflict-dialog">
         <h2 className="caldav-conflict-title">
-          {t("caldavConflict.title")} <UntestedTag />
+          {t("caldavConflict.title")} <UntestedTag id="caldavConflict.title" />
         </h2>
 
         <p className="caldav-conflict-lede">

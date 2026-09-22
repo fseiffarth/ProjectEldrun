@@ -93,6 +93,13 @@ pub struct MailAiPrefs {
     /// **Default off** — mail must never quietly write to the user's own data.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_create: Option<bool>,
+    /// A **contained reader** agent (`services::mail_reader`) may read this
+    /// account's mail through the root MCP tools. Unset = off. The opposite
+    /// consent to every switch above: what such an agent reads is sent to its
+    /// cloud provider (`docs/mail_mcp_plan.md` §1). Draft-only access from a
+    /// root tab does not consult it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_access: Option<bool>,
     #[serde(flatten, default)]
     pub extra: HashMap<String, Value>,
 }
@@ -107,6 +114,7 @@ impl MailAiPrefs {
             && self.calendar.is_none()
             && self.todo.is_none()
             && self.auto_create.is_none()
+            && self.agent_access.is_none()
             && self.extra.is_empty()
     }
 }
@@ -1040,6 +1048,14 @@ pub struct MailDraft {
     pub references: Option<Vec<String>>,
     #[serde(default)]
     pub staged: Vec<StagedAttachment>,
+    /// Who wrote it, when that was not the user: `"agent"` for a root tab's
+    /// draft, `"reader"` for a contained reader's. Unset for the user's own, so
+    /// existing drafts round-trip; a composer save clears it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    /// MCP spawn owner. Older class-only drafts stay available in the composer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_session: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -1277,5 +1293,117 @@ mod authserv_roundtrip_tests {
         account.authserv_id = None;
         let json = serde_json::to_string(&account).unwrap();
         assert!(!json.contains("authserv_id"), "{json}");
+    }
+}
+
+#[cfg(test)]
+mod column_literal_tests {
+    use super::*;
+
+    /// The priority mark and its provenance are stored as fixed literals and
+    /// read back strictly: `parse` is the inverse of `as_str` for every
+    /// variant, and anything else — a future value, a case slip, corruption —
+    /// reads as *no mark* rather than a guess.
+    #[test]
+    fn priority_and_source_literals_round_trip_and_garbage_reads_as_unmarked() {
+        for p in [MailPriority::Important, MailPriority::Urgent] {
+            assert_eq!(MailPriority::parse(p.as_str()), Some(p));
+            assert_eq!(serde_json::to_value(p).unwrap(), p.as_str());
+        }
+        assert_eq!(MailPriority::parse("Important"), None);
+        assert_eq!(MailPriority::parse(""), None);
+        assert_eq!(MailPriority::parse("critical"), None);
+        for s in [MailPrioritySource::User, MailPrioritySource::Filter, MailPrioritySource::Model] {
+            assert_eq!(MailPrioritySource::parse(s.as_str()), Some(s));
+            assert_eq!(serde_json::to_value(s).unwrap(), s.as_str());
+        }
+        assert_eq!(MailPrioritySource::parse("ai"), None);
+        assert_eq!(MailAiClassifyReport::new(true).source, "model");
+    }
+
+    /// The folder-kind column literal and the wire enum are the same word for
+    /// every variant, and an unknown literal folds to `Other` instead of
+    /// failing the folder list.
+    #[test]
+    fn folder_kind_literals_match_the_wire_and_unknowns_fold_to_other() {
+        for kind in [
+            MailFolderKind::Inbox,
+            MailFolderKind::Sent,
+            MailFolderKind::Drafts,
+            MailFolderKind::Trash,
+            MailFolderKind::Junk,
+            MailFolderKind::Archive,
+            MailFolderKind::Other,
+        ] {
+            assert_eq!(MailFolderKind::from_str_lossy(kind.as_str()), kind);
+            assert_eq!(serde_json::to_value(kind).unwrap(), kind.as_str());
+        }
+        assert_eq!(MailFolderKind::from_str_lossy("Inbox"), MailFolderKind::Other);
+        assert_eq!(MailFolderKind::from_str_lossy("spam"), MailFolderKind::Other);
+        assert_eq!(MailFolderKind::default(), MailFolderKind::Other);
+    }
+
+    /// `Authentication-Results` tokens arrive in whatever case and spacing the
+    /// receiver wrote; the verdict reader normalizes both, and never invents
+    /// a pass for a word it does not know.
+    #[test]
+    fn auth_verdict_tokens_are_case_and_whitespace_insensitive() {
+        assert_eq!(MailAuthVerdict::from_token("PASS"), MailAuthVerdict::Pass);
+        assert_eq!(MailAuthVerdict::from_token(" softfail "), MailAuthVerdict::SoftFail);
+        assert_eq!(MailAuthVerdict::from_token("TempError"), MailAuthVerdict::TempError);
+        assert_eq!(MailAuthVerdict::from_token("none"), MailAuthVerdict::None);
+        assert_eq!(MailAuthVerdict::from_token("passed"), MailAuthVerdict::Unknown);
+        assert_eq!(MailAuthVerdict::from_token(""), MailAuthVerdict::Unknown);
+    }
+
+    /// A flag's IMAP name and its SQL column are fixed per variant: the column
+    /// is a bare identifier (it is interpolated into SQL) and the IMAP flag
+    /// is the backslash-prefixed system flag.
+    #[test]
+    fn mail_flag_columns_are_bare_identifiers_and_imap_flags_are_system_flags() {
+        for flag in [MailFlag::Seen, MailFlag::Flagged, MailFlag::Answered, MailFlag::Deleted] {
+            assert!(flag.column().bytes().all(|b| b.is_ascii_lowercase()), "{flag:?}");
+            assert!(flag.imap_flag().starts_with('\\'), "{flag:?}");
+            assert_eq!(flag.imap_flag()[1..].to_ascii_lowercase(), flag.column());
+            assert_eq!(serde_json::to_value(flag).unwrap(), flag.column());
+        }
+        for field in [
+            MailFilterField::Subject,
+            MailFilterField::Sender,
+            MailFilterField::Recipients,
+            MailFilterField::Preview,
+        ] {
+            assert_eq!(serde_json::to_value(field).unwrap(), field.as_str());
+        }
+    }
+
+    /// `is_empty` is what decides whether an account stores `None` or an
+    /// object: any set field, and any unknown key, makes the prefs worth
+    /// keeping.
+    #[test]
+    fn ai_prefs_are_empty_only_when_nothing_was_ever_set() {
+        let untouched: MailAiPrefs = serde_json::from_str("{}").unwrap();
+        assert!(untouched.is_empty());
+        let one: MailAiPrefs = serde_json::from_str(r#"{"summarize":false}"#).unwrap();
+        assert!(!one.is_empty(), "an explicit off is still a setting");
+        let foreign: MailAiPrefs = serde_json::from_str(r#"{"future_knob":1}"#).unwrap();
+        assert!(!foreign.is_empty(), "a newer build's key must not be dropped");
+    }
+
+    /// The sync summary reports how many marks a filter made and omits an
+    /// absent error rather than writing null.
+    #[test]
+    fn sync_summary_omits_an_absent_error() {
+        let ok = MailSyncSummary {
+            account_id: "a".into(),
+            folders: 3,
+            new_messages: 2,
+            filtered: 1,
+            error: None,
+        };
+        let out = serde_json::to_value(&ok).unwrap();
+        assert!(out.get("error").is_none());
+        assert_eq!(out["filtered"], 1);
+        assert_eq!(MailSyncSummary::default().filtered, 0);
     }
 }

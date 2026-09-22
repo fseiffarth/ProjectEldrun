@@ -4,8 +4,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { useProjectsStore } from "../../stores/projects";
 import { resolveProjectDirectory, resolveLocalMirror, type ProjectEntry } from "../../types";
 import { type FileEntry } from "../../lib/viewers/fileUtils";
-import { loadLastSendTarget, saveLastSendTarget } from "../../lib/sendToProject";
+import { loadLastSendTarget, saveLastSendTarget } from "../../lib/projects/sendToProject";
 import { useT } from "../../lib/i18n";
+import { FolderIcon, GlobeIcon } from "../common/icons/Icon";
 
 /** The item being sent — always a LOCAL absolute path (the dialog is only opened
  *  for local file-tree rows, so `import_external_file` can read it as an ordinary
@@ -46,7 +47,7 @@ function parentRel(rel: string): string {
  * folder) into another project. Two steps: pick one of the active projects, then
  * browse the folders inside it (project-confined via `list_dir`, so the browse
  * cannot escape the project) and confirm. The chosen project + folder are
- * remembered for next time (`lib/sendToProject`). The copy is non-destructive —
+ * remembered for next time (`lib/projects/sendToProject`). The copy is non-destructive —
  * the source stays put and a name collision keeps both (`import_external_file`
  * appends " (n)").
  */
@@ -183,7 +184,7 @@ export function SendToProjectDialog({ source, fromProjectId, onClose }: Props) {
                       title={disabled ? t("sendToProject.remoteUnsupported") : destRootFor(p)}
                       onClick={() => pickProject(p)}
                     >
-                      <span className="folder-picker-icon">{p.remote ? "🌐" : "📁"}</span>
+                      <span className="folder-picker-icon">{p.remote ? <GlobeIcon /> : <FolderIcon />}</span>
                       <span className="folder-picker-name">{p.name}</span>
                       {p.id === fromProjectId && (
                         <span className="send-to-project-tag">{t("sendToProject.thisProject")}</span>
@@ -237,7 +238,7 @@ export function SendToProjectDialog({ source, fromProjectId, onClose }: Props) {
                     onClick={() => loadFolder(selected, rel ? `${rel}/${entry.name}` : entry.name)}
                     title={entry.path}
                   >
-                    <span className="folder-picker-icon">📁</span>
+                    <span className="folder-picker-icon"><FolderIcon /></span>
                     <span className="folder-picker-name">{entry.name}</span>
                   </button>
                 ))

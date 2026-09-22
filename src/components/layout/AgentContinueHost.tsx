@@ -1,12 +1,13 @@
 import { useEffect, useRef } from "react";
 import { nextUsageReset, parseUsageReport } from "../../../shared/usageReport";
-import { readAgentUsage } from "../../lib/agentUsage";
-import { localOccurrenceKey } from "../../lib/agentSchedule";
-import { submitScheduledAgentMessage, scheduledAgentInput } from "../../lib/scheduledAgentInput";
+import { readAgentUsage } from "../../lib/agents/agentUsage";
+import { localOccurrenceKey } from "../../lib/agents/agentSchedule";
+import { submitScheduledAgentMessage, scheduledAgentInput } from "../../lib/agents/scheduledAgentInput";
 import { lastPtyOutputAt, useActivityStore } from "../../stores/activity";
-import { recordScheduledDelivery } from "../../stores/agentPrompts";
-import { continueKey, useAgentContinueStore } from "../../stores/agentContinue";
+import { recordScheduledDelivery } from "../../stores/agents/agentPrompts";
+import { continueKey, useAgentContinueStore } from "../../stores/agents/agentContinue";
 import { useTabsStore, type TabEntry } from "../../stores/tabs";
+import { scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agents/agentSchedules";
 
 /**
  * Keeps an agent tab going across its own CLI's rate-limit windows.
@@ -27,7 +28,7 @@ import { useTabsStore, type TabEntry } from "../../stores/tabs";
  *  - a way to choose the agent's mode or model. It submits one word into the
  *    tab, through the same composer path everything else uses.
  *
- * It reuses the scheduler's delivery path and its gate (`lib/scheduledAgentInput`
+ * It reuses the scheduler's delivery path and its gate (`lib/agents/scheduledAgentInput`
  * plus the idle/decision/settle checks): a continue typed into a tab that is
  * mid-turn or sitting on an approval prompt is at best ignored and at worst
  * answers a question the user was being asked. See `deliverable` for the one
@@ -235,6 +236,14 @@ export function AgentContinueHost() {
           const status = useAgentContinueStore.getState().byTarget[key];
           const now = Date.now();
           if (status?.armedAt !== undefined) {
+            // An approved agent prompt around this rollover owns the send.
+            // Disabled proposals do not suppress the user's auto-continue.
+            const rows = useAgentSchedulesStore.getState().byTarget[scheduleCacheKey(binding.projectId, binding.scheduleTargetId)] ?? [];
+            if (rows.some((row) => row.origin && row.enabled && row.rule.type === "once"
+                && Math.abs(new Date(row.rule.at).getTime() - status.armedAt!) < 60_000)) {
+              useAgentContinueStore.getState().patch(key, { phase: "reading", armedAt: undefined, checkAt: status.armedAt + REARM_AFTER_SEND_MS });
+              continue;
+            }
             if (now >= status.armedAt) await send(binding, key, status.armedAt);
             continue;
           }

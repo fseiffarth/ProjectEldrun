@@ -146,6 +146,24 @@ export function relativePathWithin(root: string, path: string): string | null {
     : normalizedPath.slice(normalizedRoot.length + 1);
 }
 
+/** `to` expressed relative to the directory `fromDir`, climbing with `..` where
+ *  it lies outside it (`"."` for the directory itself). Emitted with `/`, the
+ *  backend's convention. Null when the two share no root (different Windows
+ *  drives), where only an absolute path can name `to`. */
+export function relativePathFrom(fromDir: string, to: string): string | null {
+  const windows = isWinStyle(fromDir) || isWinStyle(to);
+  const parts = (value: string) =>
+    normalizePath(value).replace(/\\/g, "/").split("/").filter(Boolean);
+  const from = parts(fromDir);
+  const dest = parts(to);
+  const same = (a: string, b: string) => (windows ? a.toLowerCase() === b.toLowerCase() : a === b);
+  let common = 0;
+  while (common < from.length && common < dest.length && same(from[common], dest[common])) common++;
+  if (windows && common === 0) return null;
+  const rel = [...from.slice(common).map(() => ".."), ...dest.slice(common)];
+  return rel.length > 0 ? rel.join("/") : ".";
+}
+
 /** Resolve `target` against the directory `baseDir`. An absolute `target` is
  *  normalised and returned as-is; a relative one is joined onto `baseDir`. The
  *  result keeps `baseDir`'s separator style. */

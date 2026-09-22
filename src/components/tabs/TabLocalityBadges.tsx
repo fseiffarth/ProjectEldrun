@@ -9,8 +9,8 @@ import {
   type TabEntry,
   type TabLocation,
 } from "../../stores/tabs";
-import { useFileSourcesStore } from "../../stores/fileSources";
-import { useRunHostPrefStore } from "../../stores/runHostPref";
+import { useFileSourcesStore } from "../../stores/viewers/fileSources";
+import { useRunHostPrefStore } from "../../stores/remote/runHostPref";
 import { UntestedTag } from "../common/UntestedTag";
 import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import { useT } from "../../lib/i18n";
@@ -99,7 +99,7 @@ export function TabSourceBadge({ tabKey }: { tabKey: string }) {
  *
  * Renders nothing when the partner is not open, so an ordinary PDF tab and a
  * `.tex` with no build are untouched. `partner` is computed by the host from the
- * tab list it owns (`lib/texPdfLink`'s `texPdfPartner`), keeping this leaf pure
+ * tab list it owns (`lib/viewers/tex/texPdfLink`'s `texPdfPartner`), keeping this leaf pure
  * and usable from both the main-window bar and a popout's strip.
  */
 export function TabTexLinkBadge({
@@ -219,7 +219,7 @@ export function LocalityMenu({
       disabled={opts?.disabled}
       onClick={() => !opts?.disabled && choose(loc)}
     >
-      <span className="tab-new-menu-dot" style={{ color: "var(--accent)" }}>
+      <span className="tab-new-menu-dot tab-new-menu-dot--accent">
         {cur === loc ? "●" : glyph}
       </span>
       {text}
@@ -240,7 +240,7 @@ export function LocalityMenu({
               className="tab-new-menu-item"
               onClick={() => onChangeView("machines")}
             >
-              <span className="tab-new-menu-dot" style={{ color: "var(--accent)" }}>
+              <span className="tab-new-menu-dot tab-new-menu-dot--accent">
                 {onRemoteNow ? "●" : "☁"}
               </span>
               {t("tabLocality.remoteEllipsis")}
@@ -255,7 +255,7 @@ export function LocalityMenu({
             >
               <span className="tab-new-menu-dot">‹</span>
               {t("tabLocality.runOnMachine")}
-              <UntestedTag />
+              <UntestedTag id="tabLocalityBadges.1" />
             </button>
             {machineItem(
               "remote",
@@ -287,7 +287,7 @@ export function LocalityMenu({
  * Remote/Local *source* switch) that chooses WHICH machine a Run/Debug or shell
  * launched from this project runs on, distinct from which side its files are
  * *read* from. Writes the per-project run-host preference (`useRunHostPrefStore`)
- * that `lib/pythonRun` reads at launch. Reuses the same two-level `LocalityMenu`
+ * that `lib/terminal/pythonRun` reads at launch. Reuses the same two-level `LocalityMenu`
  * as the tab badge, so the machine list + worker eligibility stay identical.
  * Shown only for remote projects (a local project has no machine axis).
  */
@@ -342,6 +342,62 @@ export function RunHostPicker({
           onChoose={(_key, loc) => setPref(projectId, loc)}
         />
       )}
+    </>
+  );
+}
+
+/** The status glyph leading a tab's label, in its ring's colour: ▶ working,
+ *  ? waiting on a decision, ✓ finished unseen. The ring alone left the three
+ *  states to be told apart by colour and stroke; the glyph names them. Takes the
+ *  strip's already-resolved state class (`busyStateClass`) so every strip marks
+ *  exactly the tabs its ring marks.
+ *
+ *  A tab running a COMMAND wears the ▶ in the shell colour instead
+ *  (`--status-shell-working`) — a shell tab, or an agent whose turn is over
+ *  while a shell it started keeps going. When an agent is working AND has a
+ *  BACKGROUNDED command of its own running (`working job`), it gets BOTH marks,
+ *  one per colour: the two things are happening at once, and a single glyph
+ *  could only name one of them. (The tool call an agent waits on is not a second
+ *  thing — it IS the turn.) */
+export function TabStatusMark({ stateClass }: { stateClass: string }) {
+  const t = useT();
+  const state = stateClass.includes("working")
+    ? "working"
+    : stateClass.includes("needs-decision")
+      ? "decision"
+      : stateClass.includes("finished")
+        ? "done"
+        : null;
+  if (!state) return null;
+  const glyph = state === "working" ? "▶" : state === "decision" ? "?" : "✓";
+  const label = t(
+    state === "working"
+      ? "tabBar.statusWorking"
+      : state === "decision"
+        ? "tabBar.statusDecision"
+        : "tabBar.statusDone",
+  );
+  const shellLabel = t("tabBar.statusRunning");
+  // `shell` alone: the command IS what the tab is doing, so the one mark is the
+  // shell's. `job`: the agent's mark, then the command's beside it.
+  const commandOnly = stateClass.includes("shell");
+  const alsoCommand = stateClass.includes("job");
+  const shellMark = (
+    <span
+      className="tab-status-mark working shell"
+      title={shellLabel}
+      aria-label={shellLabel}
+    >
+      ▶
+    </span>
+  );
+  if (commandOnly) return shellMark;
+  return (
+    <>
+      <span className={`tab-status-mark ${state}`} title={label} aria-label={label}>
+        {glyph}
+      </span>
+      {alsoCommand && shellMark}
     </>
   );
 }

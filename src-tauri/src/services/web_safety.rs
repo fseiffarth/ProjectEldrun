@@ -34,6 +34,103 @@ use ipnet::{Ipv4Net, Ipv6Net};
 use url::{Host, Url};
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Download marking (Mark-of-the-Web / quarantine)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Mark a file that came from the network — a saved mail attachment, a browser
+/// download — the way the OS expects, so its own protections apply: Windows
+/// SmartScreen / Office Protected View read the `Zone.Identifier` stream,
+/// macOS Gatekeeper reads the `com.apple.quarantine` extended attribute. Other
+/// platforms have no such mark and this is a no-op.
+///
+/// **Best-effort and never fatal**: the file is already saved when this runs,
+/// and a filesystem that cannot carry the mark (FAT/exFAT, some SMB shares) must
+/// not turn a successful save into an error. **An existing mark is kept**: the
+/// web engine may already have written one with better provenance, and this is
+/// a floor, not an override.
+///
+/// Takes no URL on purpose: the recorded origin is always the generic
+/// `about:internet`, matching the browser's ephemeral-profile posture — the page
+/// a file came from is not something to write beside it on disk.
+pub fn mark_downloaded(path: &std::path::Path) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::io::Write;
+        let stream = format!("{}:Zone.Identifier", path.display());
+        if std::fs::metadata(&stream).is_ok() {
+            return;
+        }
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&stream)
+        {
+            let _ = f.write_all(zone_identifier_body(Some("about:internet")).as_bytes());
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let Ok(c_path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+            return;
+        };
+        let name = c"com.apple.quarantine";
+        // SAFETY: both strings are NUL-terminated and outlive the calls; a null
+        // buffer with size 0 only asks whether the attribute exists.
+        let existing = unsafe {
+            libc::getxattr(c_path.as_ptr(), name.as_ptr(), std::ptr::null_mut(), 0, 0, 0)
+        };
+        if existing >= 0 {
+            return;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let value = quarantine_xattr_value(now, "Eldrun");
+        // SAFETY: `value` is a live byte buffer of exactly `value.len()` bytes.
+        unsafe {
+            libc::setxattr(
+                c_path.as_ptr(),
+                name.as_ptr(),
+                value.as_ptr().cast(),
+                value.len(),
+                0,
+                0,
+            );
+        }
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let _ = path;
+    }
+}
+
+/// The `:Zone.Identifier` stream body Windows writes for a download from the
+/// Internet zone (`ZoneId=3`). CRLF line endings, as Windows writes them. A host
+/// URL carrying a line break is dropped rather than written, so nothing can
+/// inject a second `ZoneId` line.
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn zone_identifier_body(host_url: Option<&str>) -> String {
+    let mut body = String::from("[ZoneTransfer]\r\nZoneId=3\r\n");
+    if let Some(url) = host_url.filter(|u| !u.is_empty() && !u.contains(['\r', '\n'])) {
+        body.push_str("HostUrl=");
+        body.push_str(url);
+        body.push_str("\r\n");
+    }
+    body
+}
+
+/// The `com.apple.quarantine` value: `flags;hex epoch seconds;agent;`. `0081`
+/// is the "downloaded by an application" shape browsers write; the agent name
+/// has `;` removed since it is the field separator.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn quarantine_xattr_value(epoch_secs: u64, agent: &str) -> String {
+    let agent: String = agent.chars().filter(|c| *c != ';' && !c.is_control()).collect();
+    format!("0081;{epoch_secs:08x};{agent};")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Format controls
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -43,7 +140,7 @@ use url::{Host, Url};
 /// title (`example.com — Secure  \u{2069}`).
 ///
 /// This list is mirrored in `src/lib/textSafety.ts`, which spells it as
-/// character *ranges*. That difference is why `src/__tests__/TextSafety.test.ts`
+/// character *ranges*. That difference is why `src/__tests__/security/TextSafety.test.ts`
 /// reads this array out of this file and compares both directions: the
 /// invisible-math block `U+2061`–`U+2064` was in the range on the TS side and
 /// absent here, so the same string came back cleaned or not depending on which
@@ -89,11 +186,28 @@ pub fn scheme_of(url: &str) -> String {
 }
 
 pub fn has_userinfo(url: &str) -> bool {
+    if let Some(parsed) = parse_special(url) {
+        return !parsed.username().is_empty() || parsed.password().is_some();
+    }
     let Some(rest) = after_authority_marker(url) else {
         return false;
     };
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let authority = rest.split(['/', '\\', '?', '#']).next().unwrap_or_default();
     authority.contains('@')
+}
+
+/// An http(s) URL parsed the way a browser will parse it, or `None`.
+///
+/// The WHATWG parser is the ground truth for where such a link *goes*, and a
+/// hand-rolled split disagrees with it exactly where phishing lives: a browser
+/// reads `\` as `/` in these schemes, so `https://evil.example\@bank.example/`
+/// is a request to evil.example that a split on `/?#` labels "bank.example".
+fn parse_special(url: &str) -> Option<url::Url> {
+    let scheme = scheme_of(url);
+    if scheme != "http" && scheme != "https" {
+        return None;
+    }
+    url::Url::parse(url.trim()).ok()
 }
 
 fn after_authority_marker(url: &str) -> Option<&str> {
@@ -114,10 +228,17 @@ pub fn host_of(url: &str) -> String {
             .unwrap_or_default()
             .to_ascii_lowercase();
     }
+    if let Some(parsed) = parse_special(url) {
+        return parsed
+            .host_str()
+            .unwrap_or_default()
+            .trim_matches(['[', ']'])
+            .to_ascii_lowercase();
+    }
     let Some(rest) = after_authority_marker(url) else {
         return String::new();
     };
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let authority = rest.split(['/', '\\', '?', '#']).next().unwrap_or_default();
     let host = authority.rsplit('@').next().unwrap_or_default();
     let host = host.split(':').next().unwrap_or_default();
     host.trim_matches(['[', ']']).to_ascii_lowercase()
@@ -150,29 +271,68 @@ pub fn registrable(host: &str) -> String {
     labels[labels.len() - 2..].join(".")
 }
 
-/// A hostname claimed by an anchor's visible text, if it claims one.
+/// Every hostname an anchor's visible text claims, in order.
+///
+/// **Every** word, not the first: "Sign in to paypal.com" names a host as its
+/// fourth word, and a check that stopped at "Sign" let that text point anywhere
+/// without a flag. Surrounding punctuation is peeled first so "(paypal.com)" and
+/// "paypal.com." still count.
+pub fn hosts_in_text(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for word in text.split_whitespace() {
+        let word = word.trim_matches(|c: char| {
+            matches!(c, '(' | ')' | '[' | ']' | '<' | '>' | '"' | '\'' | ',' | ';' | ':' | '!' | '?')
+        });
+        if word.contains("://") {
+            let h = host_of(word);
+            if !h.is_empty() {
+                out.push(h);
+            }
+            continue;
+        }
+        let Some(candidate) = word.split(['/', '\\', '?', '#']).next() else {
+            continue;
+        };
+        let candidate = candidate.trim_end_matches('.').to_ascii_lowercase();
+        if candidate.contains('.')
+            && candidate.split('.').filter(|l| !l.is_empty()).count() >= 2
+            && candidate
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+            && looks_like_host_suffix(&candidate)
+        {
+            out.push(candidate);
+        }
+    }
+    out
+}
+
+/// Whether a dotted word ends the way a hostname does — so scanning every word
+/// of a link's text does not read "e.g.", "3.14" or "report.pdf" as a site the
+/// text names, which would put a phishing flag on ordinary links.
+fn looks_like_host_suffix(candidate: &str) -> bool {
+    /// File extensions that are not TLDs anyone links to. `.zip` and `.mov`
+    /// are left out on purpose: they *are* TLDs, and phishing uses both.
+    const FILE_EXTENSIONS: &[&str] = &[
+        "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv", "png", "jpg", "jpeg",
+        "gif", "svg", "htm", "html", "php", "asp", "aspx", "jsp", "exe", "tar", "gz", "ics", "eml",
+    ];
+    let labels: Vec<&str> = candidate.split('.').collect();
+    if labels.iter().any(|l| l.is_empty()) {
+        return false;
+    }
+    // A dotted-quad IPv4 address is a host.
+    if labels.len() == 4 && labels.iter().all(|l| l.len() <= 3 && l.bytes().all(|b| b.is_ascii_digit())) {
+        return true;
+    }
+    let tld = labels.last().copied().unwrap_or_default();
+    (tld.starts_with("xn--") || (tld.len() >= 2 && tld.bytes().all(|b| b.is_ascii_alphabetic())))
+        && !FILE_EXTENSIONS.contains(&tld)
+}
+
+/// The first hostname an anchor's visible text claims, if it claims one.
 pub fn host_in_text(text: &str) -> Option<String> {
-    let t = text.trim();
-    if t.is_empty() {
-        return None;
-    }
-    if t.contains("://") {
-        let h = host_of(t);
-        return if h.is_empty() { None } else { Some(h) };
-    }
-    let first = t.split_whitespace().next()?;
-    let candidate = first.split(['/', '?', '#']).next()?.to_ascii_lowercase();
-    if candidate.contains('.')
-        && candidate.split('.').filter(|l| !l.is_empty()).count() >= 2
-        && candidate
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
-        && !candidate.ends_with('.')
-    {
-        Some(candidate)
-    } else {
-        None
-    }
+    hosts_in_text(text).into_iter().next()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -423,7 +583,7 @@ impl ConfirmReason {
 ///
 /// So this array is the contract. `reason_tokens_are_exhaustive` below fails if
 /// a `BlockReason`/`ConfirmReason` variant is added without listing it here, and
-/// `src/__tests__/BrowserTripwire.test.ts` reads this very array out of this
+/// `src/__tests__/browser/BrowserTripwire.test.ts` reads this very array out of this
 /// file and fails if any entry has no i18n phrase. Neither side can move alone.
 ///
 /// `scheme:` is listed as a **prefix**: the gate appends the offending scheme
@@ -801,6 +961,44 @@ pub fn describe_url(url: &Url) -> UrlDisplay {
         },
         punycode,
         userinfo,
+    }
+}
+
+#[cfg(test)]
+mod download_mark_tests {
+    use super::*;
+
+    #[test]
+    fn zone_identifier_is_internet_zone_with_crlf() {
+        assert_eq!(
+            zone_identifier_body(Some("about:internet")),
+            "[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=about:internet\r\n"
+        );
+        assert_eq!(zone_identifier_body(None), "[ZoneTransfer]\r\nZoneId=3\r\n");
+    }
+
+    #[test]
+    fn zone_identifier_refuses_a_line_break_in_the_host_url() {
+        let body = zone_identifier_body(Some("about:internet\r\nZoneId=0"));
+        assert_eq!(body, "[ZoneTransfer]\r\nZoneId=3\r\n");
+        assert_eq!(body.matches("ZoneId=").count(), 1);
+    }
+
+    #[test]
+    fn quarantine_value_shape() {
+        assert_eq!(quarantine_xattr_value(0x5f1e_2f3a, "Eldrun"), "0081;5f1e2f3a;Eldrun;");
+        assert_eq!(quarantine_xattr_value(1, "a;b\n"), "0081;00000001;ab;");
+    }
+
+    #[test]
+    fn marking_is_best_effort_and_never_panics() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("x.bin");
+        std::fs::write(&file, b"x").unwrap();
+        mark_downloaded(&file);
+        // A path that does not exist is silently ignored.
+        mark_downloaded(&tmp.path().join("missing"));
+        assert_eq!(std::fs::read(&file).unwrap(), b"x");
     }
 }
 

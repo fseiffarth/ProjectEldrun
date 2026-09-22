@@ -1,7 +1,7 @@
 {
   "name": "eldrun",
   "private": true,
-  "version": "0.1.68",
+  "version": "0.1.79",
   "license": "MIT OR Apache-2.0",
   "type": "module",
   "scripts": {
@@ -24,6 +24,7 @@
     "package:dev": "./scripts/package-dev.sh",
     "test": "vitest run",
     "test:watch": "vitest",
+    "untested": "node scripts/untested.mjs",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"
   },

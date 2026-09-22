@@ -8,7 +8,7 @@ import { create } from "zustand";
  * A store rather than a prop for the ordinary reason the other overlays use one:
  * the control that opens it lives in the header (`LocalModelMenu`) and the
  * overlay has to be mounted at the shell, where it survives a project switch and
- * covers the window. One boolean, mirroring `stores/hpcPipeline`.
+ * covers the window. One boolean, mirroring `stores/remote/hpc/hpcPipeline`.
  *
  * There is deliberately nothing else here. The catalog, the sources and the
  * installed lists are read by `SkillsLibraryView` itself and are the same reads

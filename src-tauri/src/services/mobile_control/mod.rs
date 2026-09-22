@@ -11,8 +11,16 @@ pub mod config;
 pub mod discovery;
 pub mod host;
 pub mod inbox;
+pub mod live_pwa;
 pub mod outbox;
 pub mod limits;
 pub mod protocol;
 pub mod pty_bridge;
 pub mod store;
+
+// The bundle baked in at compile time, when it was built, and the directory a
+// dev build may serve a newer one from. Included here rather than in `host`
+// because `live_pwa` needs the timestamp and the path, and `host` needs the
+// assets; a shared parent is the one place neither has to reach into the
+// other.
+include!(concat!(env!("OUT_DIR"), "/mobile_assets.rs"));

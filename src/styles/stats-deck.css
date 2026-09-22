@@ -476,18 +476,6 @@
   padding: 0 4px;
 }
 
-.deck-text-line {
-  display: flex;
-  gap: 0.4em;
-  align-items: baseline;
-}
-
-.deck-text-marker {
-  flex: 0 0 auto;
-  opacity: 0.85;
-  font-variant-numeric: tabular-nums;
-}
-
 /* --- selection, handles, marquee --- */
 
 .deck-selection {

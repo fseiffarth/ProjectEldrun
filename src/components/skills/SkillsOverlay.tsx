@@ -69,7 +69,7 @@ export function SkillsOverlayHost() {
       >
         <div className="settings-title-row">
           <h2>
-            {t("skillsLibrary.overlayTitle")} <UntestedTag />
+            {t("skillsLibrary.overlayTitle")} <UntestedTag id="skillsLibrary.overlayTitle" />
           </h2>
           <button
             type="button"

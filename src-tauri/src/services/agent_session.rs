@@ -57,9 +57,11 @@ pub fn resolve_agent_session(opts: PtyOptions) -> PtyOptions {
 /// session.
 fn resolve_codex_session(opts: PtyOptions) -> PtyOptions {
     let sessions = paths::home_dir().join(".codex").join("sessions");
-    let store = crate::services::codex_store::state_db();
     let project_id = opts.project_id.clone();
-    resolve_codex_session_impl(opts, &sessions, store.as_deref(), |uid| {
+    let stores = crate::services::codex_store::state_dbs(Some(
+        project_id.as_deref().unwrap_or("root"),
+    ));
+    resolve_codex_session_impl(opts, &sessions, &stores, |uid| {
         read_live_session_for(project_id.as_deref(), uid)
     })
 }
@@ -68,7 +70,7 @@ fn resolve_codex_session(opts: PtyOptions) -> PtyOptions {
 fn resolve_codex_session_impl<F>(
     mut opts: PtyOptions,
     sessions_root: &std::path::Path,
-    store: Option<&std::path::Path>,
+    stores: &[PathBuf],
     live_lookup: F,
 ) -> PtyOptions
 where
@@ -82,7 +84,12 @@ where
     let Some(uid) = opts.env.get("ELDRUN_TAB_UID").cloned() else {
         return opts;
     };
-    if let Some(id) = live_lookup(&uid).filter(|id| codex_session_exists(sessions_root, store, id))
+    if let Some(id) = live_lookup(&uid).filter(|id| {
+        codex_session_log(sessions_root, id).is_some()
+            || stores
+                .iter()
+                .any(|db| crate::services::codex_store::thread_exists(db, id))
+    })
     {
         opts.args = vec!["resume".to_string(), id];
     }
@@ -366,12 +373,16 @@ pub fn agent_session_model(cmd: &str, project_id: Option<&str>, launch_id: &str)
 /// none Eldrun reads. Codex 0.153.4's thread store records no messages at all
 /// (only the thread's first one), so a Codex tab on that release has no answer
 /// here — nothing is guessed from the tab's output instead.
+///
+/// Never read off the launch id's file once a live id is recorded: right after
+/// a `/clear` that file is the cleared conversation, and its prompts are not
+/// what this session was asked.
 pub fn agent_session_last_prompt(
     cmd: &str,
     project_id: Option<&str>,
     launch_id: &str,
 ) -> Option<String> {
-    read_agent_transcript(cmd, project_id, launch_id, last_prompt_in_transcript, |_, _| None)
+    read_agent_transcript_from(cmd, project_id, launch_id, false, last_prompt_in_transcript, |_, _| None)
 }
 
 /// Resolve the transcript behind a tab and read one fact out of it. The
@@ -381,6 +392,9 @@ pub fn agent_session_last_prompt(
 ///   the live id (after a `/clear`) first and the launch id as the fallback —
 ///   the same preference the resume path has. `read_file` is tried on each in
 ///   turn, so a live transcript that holds no answer yet still falls back.
+///   That suits a fact that outlives a `/clear` (the model); what the session
+///   was *asked* does not, and reads with [`read_agent_transcript_from`]
+///   without the fallback.
 /// - Codex: the rollout transcript when this release still writes one, else
 ///   its SQLite thread store through `read_store` — the same fact by the only
 ///   route left since 0.153.4, for the facts that store holds.
@@ -388,6 +402,22 @@ pub(crate) fn read_agent_transcript<T>(
     cmd: &str,
     project_id: Option<&str>,
     launch_id: &str,
+    read_file: impl Fn(&std::path::Path, TranscriptKind) -> Option<T>,
+    read_store: impl Fn(&std::path::Path, &str) -> Option<T>,
+) -> Option<T> {
+    read_agent_transcript_from(cmd, project_id, launch_id, true, read_file, read_store)
+}
+
+/// [`read_agent_transcript`], choosing whether a Claude tab whose live id has
+/// no file yet falls back to the launch id's. The model wants that fallback;
+/// the conversation and the prompts it was given must not take it — right after a `/clear` the hook has recorded the new id but
+/// Claude writes its file only with the first turn, and the launch id's file
+/// is the conversation that was just cleared.
+pub(crate) fn read_agent_transcript_from<T>(
+    cmd: &str,
+    project_id: Option<&str>,
+    launch_id: &str,
+    fall_back_to_launch: bool,
     read_file: impl Fn(&std::path::Path, TranscriptKind) -> Option<T>,
     read_store: impl Fn(&std::path::Path, &str) -> Option<T>,
 ) -> Option<T> {
@@ -401,8 +431,7 @@ pub(crate) fn read_agent_transcript<T>(
             if let Some(pid) = project_id {
                 roots.push(crate::services::sandbox::claude_projects_stage(pid));
             }
-            let ids = [live, Some(launch_id.to_string())];
-            ids.iter().flatten().find_map(|id| {
+            claude_transcript_ids(live, launch_id, fall_back_to_launch).iter().find_map(|id| {
                 roots
                     .iter()
                     .find_map(|root| claude_session_log(root, id))
@@ -415,12 +444,22 @@ pub(crate) fn read_agent_transcript<T>(
             codex_session_log(&root, &live)
                 .and_then(|path| read_file(&path, TranscriptKind::Codex))
                 .or_else(|| {
-                    let db = crate::services::codex_store::state_db()?;
-                    read_store(&db, &live)
+                    crate::services::codex_store::state_dbs(Some(project_id.unwrap_or("root")))
+                        .iter()
+                        .find_map(|db| read_store(db, &live))
                 })
         }
         _ => None,
     }
+}
+
+/// The Claude session ids whose transcripts are tried, in order: the live one
+/// the hook recorded, then the launch id — which is left out when a live id is
+/// recorded and `fall_back_to_launch` is off (after a `/clear`, the launch id's
+/// file is the cleared conversation, or an older one still after two).
+fn claude_transcript_ids(live: Option<String>, launch_id: &str, fall_back_to_launch: bool) -> Vec<String> {
+    let launch = (fall_back_to_launch || live.is_none()).then(|| launch_id.to_string());
+    live.into_iter().chain(launch).collect()
 }
 
 /// The model named by the last answer in the transcript at `path`, reading only
@@ -434,7 +473,7 @@ pub fn last_model_in_transcript(path: &std::path::Path, kind: TranscriptKind) ->
 /// The last prompt the user submitted in the transcript at `path`, reading
 /// only its tail — see [`agent_session_last_prompt`] for what counts as one.
 pub fn last_prompt_in_transcript(path: &std::path::Path, kind: TranscriptKind) -> Option<String> {
-    last_in_transcript_tail(path, |line| prompt_in_record(line, kind))
+    with_prompt_tail(path, |lines| lines.iter().rev().find_map(|line| prompt_in_record(line, kind)))
 }
 
 /// Read the last `MODEL_TAIL_BYTES` of `path` and return `pick`'s answer for
@@ -443,20 +482,46 @@ fn last_in_transcript_tail<T>(
     path: &std::path::Path,
     pick: impl Fn(&str) -> Option<T>,
 ) -> Option<T> {
-    with_transcript_tail(path, |lines| lines.iter().rev().find_map(|line| pick(line)))
+    with_transcript_tail(path, MODEL_TAIL_BYTES, |lines| lines.iter().rev().find_map(|line| pick(line)))
 }
 
-/// Hand `read` the whole lines of the last `MODEL_TAIL_BYTES` of `path`, in
-/// file order. A line cut by the tail boundary is dropped rather than parsed —
-/// it would parse as garbage, or worse, as a record.
+/// The widest tail a prompt read reaches back through. A prompt is followed by
+/// its whole turn, and Codex (0.155) writes every tool result twice — the
+/// output record and an `item_completed` event carrying it again — so one turn
+/// of large reads pushed the prompt that started it a megabyte back, out of
+/// the model's window: the phone's tab list said "nothing read" for a Codex
+/// session in the middle of its work.
+const PROMPT_TAIL_MAX: u64 = 16 * 1024 * 1024;
+
+/// [`with_transcript_tail`] for the prompt reads: the model's window first,
+/// then a window four times wider, while `read` finds nothing and the file
+/// reaches further back — up to [`PROMPT_TAIL_MAX`]. Prompt records are
+/// recognized before they are parsed (`may_be_prompt`), so a wide read costs
+/// a scan, not a JSON parse per tool result.
+fn with_prompt_tail<T>(path: &std::path::Path, read: impl Fn(&[&str]) -> Option<T>) -> Option<T> {
+    let len = std::fs::metadata(path).ok()?.len();
+    let mut tail = MODEL_TAIL_BYTES;
+    loop {
+        let found = with_transcript_tail(path, tail, &read);
+        if found.is_some() || tail >= len || tail >= PROMPT_TAIL_MAX {
+            return found;
+        }
+        tail = (tail * 4).min(PROMPT_TAIL_MAX);
+    }
+}
+
+/// Hand `read` the whole lines of the last `tail` bytes of `path`, in file
+/// order. A line cut by the tail boundary is dropped rather than parsed — it
+/// would parse as garbage, or worse, as a record.
 fn with_transcript_tail<T>(
     path: &std::path::Path,
+    tail: u64,
     read: impl FnOnce(&[&str]) -> Option<T>,
 ) -> Option<T> {
     use std::io::{Read, Seek, SeekFrom};
     let mut file = std::fs::File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
-    let start = len.saturating_sub(MODEL_TAIL_BYTES);
+    let start = len.saturating_sub(tail);
     file.seek(SeekFrom::Start(start)).ok()?;
     let mut buf = Vec::with_capacity((len - start) as usize);
     file.read_to_end(&mut buf).ok()?;
@@ -494,24 +559,24 @@ pub struct TranscriptPrompt {
 
 /// The newest prompts (oldest first) the tab launched as `cmd` with launch id
 /// `launch_id` was given, however they were submitted. Empty when there is no
-/// transcript Eldrun reads (Codex's thread store keeps no messages).
+/// transcript Eldrun reads (Codex's thread store keeps no messages), and right
+/// after a `/clear` — the same no-fallback rule as [`agent_session_last_prompt`].
 pub fn agent_session_recent_prompts(
     cmd: &str,
     project_id: Option<&str>,
     launch_id: &str,
 ) -> Vec<TranscriptPrompt> {
-    read_agent_transcript(cmd, project_id, launch_id, recent_prompts_in_transcript, |_, _| None)
+    read_agent_transcript_from(cmd, project_id, launch_id, false, recent_prompts_in_transcript, |_, _| None)
         .unwrap_or_default()
 }
 
 /// The prompts in the tail of the transcript at `path`, oldest first, at most
-/// [`MAX_RECENT_PROMPTS`]. `None` when it holds none, so the resolver still
-/// falls back from a fresh live transcript to the launch one.
+/// [`MAX_RECENT_PROMPTS`]. `None` when it holds none.
 pub fn recent_prompts_in_transcript(
     path: &std::path::Path,
     kind: TranscriptKind,
 ) -> Option<Vec<TranscriptPrompt>> {
-    with_transcript_tail(path, |lines| {
+    with_prompt_tail(path, |lines| {
         let mut prompts: Vec<TranscriptPrompt> = Vec::new();
         for line in lines {
             let Some(prompt) = timed_prompt_in_record(line, kind) else { continue };
@@ -539,7 +604,7 @@ pub fn recent_prompts_in_transcript(
 /// the chart places a prompt by its time, and a guessed one would misplace it.
 fn timed_prompt_in_record(line: &str, kind: TranscriptKind) -> Option<TranscriptPrompt> {
     let line = line.trim();
-    if line.is_empty() {
+    if !may_be_prompt(line) {
         return None;
     }
     let value: serde_json::Value = serde_json::from_str(line).ok()?;
@@ -557,11 +622,22 @@ fn timed_prompt_in_record(line: &str, kind: TranscriptKind) -> Option<Transcript
     })
 }
 
+/// Whether a transcript line can hold a prompt at all, checked before it is
+/// parsed: every prompt record names the user as a JSON value — Claude's
+/// `"type":"user"`, Codex's `"role":"user"` and `"user_message"` — or is
+/// Claude's `queued_command`. Most of a busy transcript is tool output, and
+/// the prompt reads now reach back through megabytes of it.
+fn may_be_prompt(line: &str) -> bool {
+    line.contains("\"user") || line.contains("queued_command")
+}
+
 /// A message the user sent while Claude was working: a `queued_command`
 /// attachment (`attachment.prompt`), absorbed into the running turn. Only a
 /// human's plain prompt counts — a queued `!` line or a notification the CLI
-/// queued for itself is not one.
-fn claude_queued_prompt(value: &serde_json::Value) -> Option<String> {
+/// queued for itself is not one, nor a peer session's message. The prompt is
+/// a string, or blocks when an image rode along. Claude never also writes a
+/// `user` record for it, so the phone's stored session reads it too.
+pub(crate) fn claude_queued_prompt(value: &serde_json::Value) -> Option<String> {
     if value.get("type").and_then(|t| t.as_str()) != Some("attachment") {
         return None;
     }
@@ -577,7 +653,17 @@ fn claude_queued_prompt(value: &serde_json::Value) -> Option<String> {
     if origin.is_some_and(|origin| origin != "human") {
         return None;
     }
-    claude_prompt_text(attachment.get("prompt")?.as_str()?)
+    let text = match attachment.get("prompt")? {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Array(blocks) => blocks
+            .iter()
+            .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+            .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => return None,
+    };
+    claude_prompt_text(&text)
 }
 
 fn model_in_record(line: &str, kind: TranscriptKind) -> Option<String> {
@@ -588,6 +674,9 @@ fn model_in_record(line: &str, kind: TranscriptKind) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(line).ok()?;
     let model = match kind {
         TranscriptKind::Claude => {
+            if value.get("type").and_then(|t| t.as_str()) == Some("user") {
+                return claude_model_switch(&value);
+            }
             if value.get("type").and_then(|t| t.as_str()) != Some("assistant") {
                 return None;
             }
@@ -601,6 +690,46 @@ fn model_in_record(line: &str, kind: TranscriptKind) -> Option<String> {
         }
     };
     clean_model_name(model)
+}
+
+/// The model a `/model` in the session switched to, from the confirmation
+/// Claude writes as a user record the moment the picker is answered
+/// (`<local-command-stdout>Set model to `Fable 5.1` and saved as …`). Without
+/// it the tag kept naming the old model until the next answer — a switch made
+/// from the phone's Focus sheet sat stale on every list that shows the tag.
+/// The line names the model by its display name, so it is folded into the
+/// shape an id takes after `shortModelName` (`Opus 4.1` → `opus-4-1`, the pill
+/// `claude-opus-4-1-…` gets); a name that folds to nothing useful (`Default`)
+/// yields `None` and the scan falls back to the last answer.
+fn claude_model_switch(value: &serde_json::Value) -> Option<String> {
+    let content = value.get("message")?.get("content")?.as_str()?;
+    let body = content.trim_start().strip_prefix("<local-command-stdout>")?;
+    let rest = body
+        .strip_prefix("Set model to ")
+        .or_else(|| body.strip_prefix("Kept model as "))?;
+    let name = rest.split(" and saved").next()?.split("</").next()?;
+    let name = crate::services::agent_usage::strip_ansi(name).replace('`', "");
+    // Drop annotations: `Opus 5 (1M context) (default)` is the Opus 5 model.
+    let mut plain = String::new();
+    let mut depth = 0usize;
+    for c in name.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => plain.push(c),
+            _ => {}
+        }
+    }
+    let slug = plain
+        .split(|c: char| c.is_whitespace() || c == '.')
+        .filter(|part| !part.is_empty())
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>()
+        .join("-");
+    if slug.is_empty() || slug == "default" {
+        return None;
+    }
+    clean_model_name(&slug)
 }
 
 /// A model name fit to show: trimmed, one line of printable text, bounded, and
@@ -638,6 +767,17 @@ const MAX_PROMPT_CHARS: usize = 300;
 /// Claude user records whose string content opens with one of these are the
 /// CLI talking to itself, not a prompt. `<command-name>` and `<bash-input>`
 /// are handled before this list: they *are* the user's doing.
+///
+/// This is checked *before* [`is_cli_written_block`], and it matches on how
+/// the content *opens*, so a record that merely begins with one of these is
+/// refused whole — a leading block followed by the user's words included. The
+/// order stays that way deliberately: these are whole records in practice (the
+/// local census of 750 transcripts holds none that opens with a block and then
+/// carries a prompt), and the entries the block test cannot read at all — an
+/// unterminated `<stdin>`, the bracketed `[Request interrupted` notice — have
+/// no closing tag to strip back to, so reordering would turn every one of
+/// them into a prompt. The wording, not the ordering, was the thing that was
+/// wrong.
 const CLAUDE_NOT_A_PROMPT: &[&str] = &[
     "<local-command-caveat>",
     "<local-command-stdout>",
@@ -649,10 +789,100 @@ const CLAUDE_NOT_A_PROMPT: &[&str] = &[
     "[Request interrupted",
 ];
 
+/// The tags the CLIs wrap their own blocks in: Claude Code's, as the local
+/// transcript census actually saw them, then the context Codex injects.
+///
+/// This list is the *bound* on the shape test below, and it is the whole point
+/// of it. A shape alone cannot tell a CLI's private block from a user pasting
+/// markup, and it guessed wrong in the direction that costs the user their
+/// words: `<div>hello</div>` and `<p>a paragraph</p>` are prompts, and asking
+/// an agent about markup is ordinary work. Tag *and* shape, or it is the
+/// user's.
+///
+/// `command-name`, `command-args` and `bash-input` are deliberately absent —
+/// those *are* the user's doing, and are read before any of this is asked.
+const CLI_BLOCK_TAGS: &[&str] = &[
+    // Claude Code.
+    "system-reminder",
+    "task-notification",
+    "local-command-stdout",
+    "local-command-stderr",
+    "local-command-caveat",
+    "persisted-output",
+    "tool_use_error",
+    "total_tokens",
+    "bash-stdout",
+    "bash-stderr",
+    "user-prompt-submit-hook",
+    "command-message",
+    "stdin",
+    // Codex rollouts.
+    "environment_context",
+    "user_instructions",
+    "collaboration_mode",
+    "skills_instructions",
+    "permissions",
+    "multi_agent_mode",
+    "multi_agent_role",
+    "plugins_instructions",
+    "model_switch",
+];
+
+/// Whether `text` is one block a CLI wrote to itself rather than something the
+/// user said: it opens with a tag on [`CLI_BLOCK_TAGS`] and closes with that
+/// same tag, with nothing of the user's outside it.
+fn is_cli_written_block(text: &str) -> bool {
+    let text = text.trim();
+    let Some(rest) = text.strip_prefix('<') else {
+        return false;
+    };
+    let Some(end) = rest.find('>') else {
+        return false;
+    };
+    let name = &rest[..end];
+    if !CLI_BLOCK_TAGS.contains(&name) {
+        return false;
+    }
+    text.ends_with(&format!("</{name}>"))
+}
+
+/// The user's words with the blocks the CLI appended behind them removed —
+/// only ever a tag on [`CLI_BLOCK_TAGS`], so a prompt ending in markup
+/// (`fix this:\n<div>…</div>`, `compare <a>one</a> and <a>two</a>`) keeps
+/// every character of it. A reminder attached to a submitted prompt rides at
+/// its *end*
+/// (`fix the tests<system-reminder>…</system-reminder>`); checked only at the
+/// start, the whole block was shown as part of what the user typed. A block
+/// that starts at position 0 is left alone — there is nothing of the user's in
+/// front of it, and whether that record is a prompt at all is the caller's
+/// question.
+fn strip_trailing_blocks(text: &str) -> &str {
+    let mut text = text.trim();
+    loop {
+        let Some(head) = text.strip_suffix('>') else {
+            return text;
+        };
+        let Some(close) = head.rfind("</") else {
+            return text;
+        };
+        let name = &head[close + 2..];
+        if !CLI_BLOCK_TAGS.contains(&name) {
+            return text;
+        }
+        let Some(start) = text.rfind(&format!("<{name}>")) else {
+            return text;
+        };
+        if start == 0 {
+            return text;
+        }
+        text = text[..start].trim();
+    }
+}
+
 /// The prompt a transcript record holds, if it is a prompt at all.
 fn prompt_in_record(line: &str, kind: TranscriptKind) -> Option<String> {
     let line = line.trim();
-    if line.is_empty() {
+    if !may_be_prompt(line) {
         return None;
     }
     let value: serde_json::Value = serde_json::from_str(line).ok()?;
@@ -674,7 +904,17 @@ pub(crate) fn claude_prompt_in_record(value: &serde_json::Value) -> Option<Strin
         return None;
     }
     let flagged = |key: &str| value.get(key).and_then(|v| v.as_bool()) == Some(true);
-    if flagged("isMeta") || flagged("isSidechain") {
+    // `isCompactSummary` and `isVisibleInTranscriptOnly` appear in none of the
+    // local transcripts, but the installed Claude Code binary still carries
+    // `"isCompactSummary":true`, so it can still write one — and a compact
+    // summary arriving as a `user` record would become one enormous bubble
+    // attributed to the reader. One line makes that permanent rather than
+    // true-for-now.
+    if flagged("isMeta")
+        || flagged("isSidechain")
+        || flagged("isCompactSummary")
+        || flagged("isVisibleInTranscriptOnly")
+    {
         return None;
     }
     let content = value.get("message")?.get("content")?;
@@ -693,7 +933,10 @@ pub(crate) fn claude_prompt_in_record(value: &serde_json::Value) -> Option<Strin
                 .iter()
                 .filter(|b| block_type(b) == Some("text"))
                 .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
-                .filter(|t| !CLAUDE_NOT_A_PROMPT.iter().any(|tag| t.trim_start().starts_with(*tag)))
+                .filter(|t| {
+                    !CLAUDE_NOT_A_PROMPT.iter().any(|tag| t.trim_start().starts_with(*tag))
+                        && !is_cli_written_block(t)
+                })
                 .collect::<Vec<_>>()
                 .join("\n")
         }
@@ -716,10 +959,11 @@ fn claude_prompt_text(text: &str) -> Option<String> {
     if let Some(cmd) = between(text, "<bash-input>", "</bash-input>") {
         return Some(format!("! {}", cmd.trim()));
     }
-    if CLAUDE_NOT_A_PROMPT.iter().any(|tag| text.starts_with(*tag)) {
+    if CLAUDE_NOT_A_PROMPT.iter().any(|tag| text.starts_with(*tag)) || is_cli_written_block(text) {
         return None;
     }
-    Some(text.to_string())
+    let text = strip_trailing_blocks(text);
+    (!text.is_empty()).then(|| text.to_string())
 }
 
 /// A Codex rollout record: the `user_message` event is the prompt as typed;
@@ -744,9 +988,13 @@ pub(crate) fn codex_prompt_in_record(value: &serde_json::Value) -> Option<String
                 .iter()
                 .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("input_text"))
                 .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                // The instructions Codex injects ride as blocks of their own
+                // beside the words the user typed, exactly as Claude's
+                // reminders do.
+                .filter(|t| !is_cli_written_block(t))
                 .collect::<Vec<_>>()
                 .join("\n");
-            let text = text.trim();
+            let text = strip_trailing_blocks(text.trim());
             if text.is_empty() || text.starts_with('<') || text.starts_with('#') {
                 return None;
             }
@@ -1613,6 +1861,7 @@ mod tests {
             tmux_session: None,
             tmux_attach: None,
             host_bound_uid: None,
+            schedule_target_id: None,
         }
     }
 
@@ -1723,6 +1972,22 @@ mod tests {
     }
 
     #[test]
+    fn transcript_ids_skip_the_cleared_launch_only_when_asked() {
+        let launch = "00000000-0000-0000-0000-000000000000";
+        let live = "99999999-8888-7777-6666-555555555555";
+        // Before any `/clear` no live id is recorded: the launch id either way.
+        assert_eq!(claude_transcript_ids(None, launch, false), vec![launch.to_string()]);
+        assert_eq!(claude_transcript_ids(None, launch, true), vec![launch.to_string()]);
+        // After one, the prompt reads see only the new session — whose file
+        // Claude writes with its first turn, so until then they see nothing.
+        assert_eq!(claude_transcript_ids(Some(live.to_string()), launch, false), vec![live.to_string()]);
+        assert_eq!(
+            claude_transcript_ids(Some(live.to_string()), launch, true),
+            vec![live.to_string(), launch.to_string()]
+        );
+    }
+
+    #[test]
     fn resolve_downgrades_resume_without_log_to_session_id() {
         // Restore asked for `--resume <launch>` but no log exists (never-used tab)
         // → downgrade to `--session-id` so Claude starts fresh instead of erroring.
@@ -1800,7 +2065,7 @@ mod tests {
         let mut opts = codex_opts();
         opts.env
             .insert("ELDRUN_TAB_UID".to_string(), "tab-key-123".to_string());
-        let out = resolve_codex_session_impl(opts, &root, None, |uid| {
+        let out = resolve_codex_session_impl(opts, &root, &[], |uid| {
             (uid == "tab-key-123").then(|| live.to_string())
         });
         assert_eq!(out.args, vec!["resume".to_string(), live.to_string()]);
@@ -1814,10 +2079,11 @@ mod tests {
         let mut opts = codex_opts();
         opts.env
             .insert("ELDRUN_TAB_UID".to_string(), "tab-key".to_string());
-        let out = resolve_codex_session_impl(opts, &root, None, |_| None);
+        let out = resolve_codex_session_impl(opts, &root, &[], |_| None);
         assert!(out.args.is_empty());
         // No ELDRUN_TAB_UID at all → cannot track → fresh launch.
-        let out2 = resolve_codex_session_impl(codex_opts(), &root, None, |_| Some("x".to_string()));
+        let out2 =
+            resolve_codex_session_impl(codex_opts(), &root, &[], |_| Some("x".to_string()));
         assert!(out2.args.is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1829,7 +2095,7 @@ mod tests {
         opts.env
             .insert("ELDRUN_TAB_UID".to_string(), "tab-key".to_string());
         // Recorded id has no rollout log → don't pass a bad `resume` arg.
-        let out = resolve_codex_session_impl(opts, &root, None, |_| {
+        let out = resolve_codex_session_impl(opts, &root, &[], |_| {
             Some("ffffffff-1111-2222-3333-444444444444".to_string())
         });
         assert!(out.args.is_empty());
@@ -1866,8 +2132,9 @@ mod tests {
         let mut opts = codex_opts();
         opts.env
             .insert("ELDRUN_TAB_UID".to_string(), "tab-key".to_string());
-        let out =
-            resolve_codex_session_impl(opts, &root, Some(db.as_path()), |_| Some(live.to_string()));
+        let out = resolve_codex_session_impl(opts, &root, std::slice::from_ref(&db), |_| {
+            Some(live.to_string())
+        });
         assert_eq!(out.args, vec!["resume".to_string(), live.to_string()]);
 
         // An id neither store has heard of still starts fresh.
@@ -1875,7 +2142,7 @@ mod tests {
         other
             .env
             .insert("ELDRUN_TAB_UID".to_string(), "tab-key".to_string());
-        let out = resolve_codex_session_impl(other, &root, Some(db.as_path()), |_| {
+        let out = resolve_codex_session_impl(other, &root, std::slice::from_ref(&db), |_| {
             Some("ffffffff-1111-2222-3333-444444444444".to_string())
         });
         assert!(out.args.is_empty());
@@ -2242,7 +2509,7 @@ mod tests {
         opts.cmd = "codex".to_string();
         opts.env
             .insert("ELDRUN_TAB_UID".to_string(), "11111111-1111-4111-8111-111111111111".to_string());
-        let out = resolve_codex_session_impl(opts, &projects, None, |_| None);
+        let out = resolve_codex_session_impl(opts, &projects, &[], |_| None);
         assert_eq!(out.env.get(TAB_AGENT_ENV).map(String::as_str), Some("codex"));
     }
 
@@ -2499,7 +2766,8 @@ mod tests {
         let mut opts = codex_opts();
         opts.env
             .insert("ELDRUN_TAB_UID".to_string(), uid.to_string());
-        let out = resolve_codex_session_impl(opts, &root, None, |u| read_live_session_in(&live_dir, u));
+        let out =
+            resolve_codex_session_impl(opts, &root, &[], |u| read_live_session_in(&live_dir, u));
         assert_eq!(out.args, vec!["resume".to_string(), live.to_string()]);
 
         let _ = std::fs::remove_dir_all(&root);
@@ -2637,6 +2905,37 @@ mod tests {
     }
 
     #[test]
+    fn a_model_switch_in_the_session_retags_before_the_next_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        let claude = dir.path().join("s.jsonl");
+        let switch = |text: &str| {
+            serde_json::json!({"type": "user", "message": {"role": "user", "content": text}}).to_string()
+        };
+        let answer = "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-opus-5\",\"role\":\"assistant\"}}";
+        let write = |lines: &[String]| std::fs::write(&claude, lines.join("\n") + "\n").unwrap();
+        let read = || last_model_in_transcript(&claude, TranscriptKind::Claude);
+
+        write(&[answer.into(), switch("<local-command-stdout>Set model to `Fable 5.1` and saved as your default for new sessions</local-command-stdout>")]);
+        assert_eq!(read().as_deref(), Some("fable-5-1"));
+        // Older releases bold the name with ANSI instead of backticks.
+        write(&[answer.into(), switch("<local-command-stdout>Set model to \u{1b}[1mSonnet 4.5\u{1b}[22m and saved as your default for new sessions</local-command-stdout>")]);
+        assert_eq!(read().as_deref(), Some("sonnet-4-5"));
+        // Annotations are not part of the model.
+        write(&[answer.into(), switch("<local-command-stdout>Set model to `Opus 5 (1M context) (default)` and saved as your default</local-command-stdout>")]);
+        assert_eq!(read().as_deref(), Some("opus-5"));
+        write(&[answer.into(), switch("<local-command-stdout>Kept model as `Fable 5`</local-command-stdout>")]);
+        assert_eq!(read().as_deref(), Some("fable-5"));
+        // A later answer wins again; a quoted mention in a prompt is not a switch.
+        write(&[switch("<local-command-stdout>Set model to `Fable 5` and saved</local-command-stdout>"), answer.into()]);
+        assert_eq!(read().as_deref(), Some("claude-opus-5"));
+        write(&[answer.into(), switch("why does it say Set model to `Fable 5`?")]);
+        assert_eq!(read().as_deref(), Some("claude-opus-5"));
+        // A name that folds to nothing useful leaves the last answer standing.
+        write(&[answer.into(), switch("<local-command-stdout>Set model to Default</local-command-stdout>")]);
+        assert_eq!(read().as_deref(), Some("claude-opus-5"));
+    }
+
+    #[test]
     fn recent_prompts_carry_their_times_and_take_in_mid_turn_messages() {
         let dir = tempfile::tempdir().unwrap();
         let claude = dir.path().join("s.jsonl");
@@ -2755,6 +3054,104 @@ mod tests {
         let long = clean_prompt_text(&"p".repeat(MAX_PROMPT_CHARS + 50)).unwrap();
         assert_eq!(long.chars().count(), MAX_PROMPT_CHARS + 1);
         assert!(long.ends_with('…'));
+    }
+
+    #[test]
+    fn markup_the_user_pasted_stays_their_prompt() {
+        // Bounded by shape alone, the block test ate all of these — silently,
+        // with no marker, from the bubble and the last-prompt line both.
+        let html = "fix this:\n<div>\n  <span>x</span>\n</div>";
+        assert_eq!(claude_prompt_text(html).as_deref(), Some(html));
+        let xml = "review this xml:\n<config>\n  <name>x</name>\n</config>";
+        assert_eq!(claude_prompt_text(xml).as_deref(), Some(xml));
+        assert_eq!(
+            claude_prompt_text("compare <a>one</a> and <a>two</a>").as_deref(),
+            Some("compare <a>one</a> and <a>two</a>")
+        );
+        // Wholly one element, and still the user's.
+        assert_eq!(claude_prompt_text("<div>hello</div>").as_deref(), Some("<div>hello</div>"));
+        assert_eq!(claude_prompt_text("<p>a paragraph</p>").as_deref(), Some("<p>a paragraph</p>"));
+        // An attribute never was the thing that saved it.
+        assert_eq!(
+            claude_prompt_text("<div class=\"x\">hello</div>").as_deref(),
+            Some("<div class=\"x\">hello</div>")
+        );
+        // The CLI's own tags are still refused, and still stripped off a tail.
+        assert_eq!(claude_prompt_text("<system-reminder>x</system-reminder>"), None);
+        assert_eq!(
+            claude_prompt_text("ship it\n<system-reminder>x</system-reminder>").as_deref(),
+            Some("ship it")
+        );
+    }
+
+    #[test]
+    fn a_compact_summary_is_never_a_prompt() {
+        let summary: serde_json::Value = serde_json::from_str(concat!(
+            "{\"type\":\"user\",\"isCompactSummary\":true,\"message\":{\"role\":\"user\",",
+            "\"content\":\"This session is being continued from a previous conversation.\"}}",
+        ))
+        .unwrap();
+        assert_eq!(claude_prompt_in_record(&summary), None);
+        let transcript_only: serde_json::Value = serde_json::from_str(concat!(
+            "{\"type\":\"user\",\"isVisibleInTranscriptOnly\":true,\"message\":{\"role\":\"user\",",
+            "\"content\":\"a note the CLI left itself\"}}",
+        ))
+        .unwrap();
+        assert_eq!(claude_prompt_in_record(&transcript_only), None);
+    }
+
+    #[test]
+    fn a_block_the_cli_wrote_to_itself_is_never_a_prompt() {
+        // Read by shape, not off a list: none of these tags was ever on the
+        // prefix list, and each one reached the phone inside a bubble.
+        assert_eq!(claude_prompt_text("<tool_use_error>File has not been read yet</tool_use_error>"), None);
+        assert_eq!(claude_prompt_text("<total_tokens>128000</total_tokens>"), None);
+        assert_eq!(claude_prompt_text("<user-prompt-submit-hook>blocked</user-prompt-submit-hook>"), None);
+        assert_eq!(claude_prompt_text("<bash-stderr>fatal: not a repo</bash-stderr>"), None);
+        assert_eq!(claude_prompt_text("  <local-command-stderr>oops</local-command-stderr>  "), None);
+        // A reminder appended behind the words the user typed is cut off them.
+        assert_eq!(
+            claude_prompt_text("fix the tests\n<system-reminder>be careful</system-reminder>").as_deref(),
+            Some("fix the tests")
+        );
+        // Angle brackets somebody typed stay theirs.
+        assert_eq!(claude_prompt_text("<Vec<T>> or a slice?").as_deref(), Some("<Vec<T>> or a slice?"));
+        assert_eq!(claude_prompt_text("what does <T> mean here?").as_deref(), Some("what does <T> mean here?"));
+        // The two tags that are the user's doing are still read first.
+        assert_eq!(claude_prompt_text("<command-name>/clear</command-name>").as_deref(), Some("/clear"));
+        assert_eq!(claude_prompt_text("<bash-input>git status</bash-input>").as_deref(), Some("! git status"));
+
+        // Codex injects its instructions as blocks beside the typed words.
+        let injected: serde_json::Value = serde_json::from_str(concat!(
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[",
+            "{\"type\":\"input_text\",\"text\":\"<user_instructions>be brief</user_instructions>\"},",
+            "{\"type\":\"input_text\",\"text\":\"rename it\"}]}}",
+        ))
+        .unwrap();
+        assert_eq!(codex_prompt_in_record(&injected).as_deref(), Some("rename it"));
+    }
+
+    #[test]
+    fn a_prompt_behind_a_megabyte_of_tool_output_is_still_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout.jsonl");
+        // Codex 0.155's shape: the prompt, then a turn of tool results each
+        // written twice, far past the model's window.
+        let prompt = r#"{"timestamp":"2026-09-19T17:25:01.000Z","type":"response_item","payload":{"type":"message","role":"assistant_x","content":[]}}
+{"timestamp":"2026-09-19T17:25:02.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Implement these"}]}}
+"#;
+        let output = "o".repeat(40 * 1024);
+        let mut body = prompt.to_string();
+        for _ in 0..40 {
+            body.push_str(&format!(
+                "{{\"type\":\"response_item\",\"payload\":{{\"type\":\"custom_tool_call_output\",\"output\":\"{output}\"}}}}\n{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"item_completed\",\"output\":\"{output}\"}}}}\n"
+            ));
+        }
+        std::fs::write(&path, body).unwrap();
+        assert!(std::fs::metadata(&path).unwrap().len() > 3 * MODEL_TAIL_BYTES);
+        assert_eq!(last_prompt_in_transcript(&path, TranscriptKind::Codex).as_deref(), Some("Implement these"));
+        let recent = recent_prompts_in_transcript(&path, TranscriptKind::Codex).unwrap();
+        assert_eq!(recent.iter().map(|p| p.text.as_str()).collect::<Vec<_>>(), ["Implement these"]);
     }
 
     #[test]

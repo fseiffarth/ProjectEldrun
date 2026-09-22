@@ -7,8 +7,8 @@ import {
   useSavedCredentialSource,
   type SavedPasswordState,
 } from "../projects/useSavedCredential";
-import { useVpnPromptStore } from "../../stores/vpnPrompt";
-import { useVpnStatusStore } from "../../stores/vpnStatus";
+import { useVpnPromptStore } from "../../stores/remote/vpn/vpnPrompt";
+import { useVpnStatusStore } from "../../stores/remote/vpn/vpnStatus";
 import { ConnectionLog, type LogLine } from "../common/ConnectionLog";
 import { PasswordInput } from "../common/PasswordInput";
 import { needsSeparateKeyPassphrase, type VpnAuthNeeds } from "../../types";
@@ -282,7 +282,7 @@ export function VpnPasswordPrompt() {
         )}
         {/* The SSH side's row, reused rather than re-drawn — which is what brings
             the locked-keyring banner and its Unlock button here.
-            Unticking is deliberately **inert**: `stores/vpnPrompt` sends
+            Unticking is deliberately **inert**: `stores/remote/vpn/vpnPrompt` sends
             `remember ? true : null`, never `false`, so an untick leaves the
             keychain alone. Deleting a VPN credential stays an explicit act, in
             the header's VPN menu, exactly as it was. */}
@@ -342,7 +342,7 @@ export function VpnPasswordPrompt() {
                 disabled={connecting}
                 title={t(connecting ? "vpnPrompt.terminalBtnStopFirst" : "vpnPrompt.terminalBtnHandoff")}
               >
-                {t("vpnPrompt.logInTerminal")} <UntestedTag />
+                {t("vpnPrompt.logInTerminal")} <UntestedTag id="vpnPrompt.logInTerminal" />
               </button>
               <button
                 type="button"

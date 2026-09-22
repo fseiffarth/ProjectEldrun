@@ -72,7 +72,7 @@ export function PdfNotesPane({
       <div className="file-viewer-pdf-outline-head">
         <span>{t("pdfNotes.paneHeader")}</span>
         <span className="file-viewer-pdf-notes-count">{placed.length}</span>
-        <UntestedTag />
+        <UntestedTag id="pdfNotesPane.1" />
         <button
           className="file-viewer-zoom-btn file-viewer-pdf-notes-close"
           onClick={onClose}

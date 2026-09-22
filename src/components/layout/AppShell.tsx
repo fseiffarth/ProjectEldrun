@@ -12,8 +12,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { message } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { PLATFORM } from "../../lib/dragPlatform";
-import { nextWindowState } from "../../lib/windowState";
+import { PLATFORM } from "../../lib/window/dragPlatform";
+import { nextWindowState } from "../../lib/window/windowState";
 import { noteAgentTurn, notePtyOutput, useActivityStore } from "../../stores/activity";
 import type { AgentTurnState } from "../../stores/activity";
 import {
@@ -22,10 +22,10 @@ import {
   saverInterval,
   startFocusTracking,
 } from "../../stores/power";
-import { applyFastModeAttribute, useFastMode } from "../../lib/fastMode";
-import { useOllamaAutoloadOnLaunch } from "../../stores/ollamaAutoload";
-import { useRendererWatchdog } from "../../lib/rendererWatchdog";
-import { livePanelToggleKey } from "../../lib/shortcuts";
+import { applyFastModeAttribute, useFastMode } from "../../lib/agents/fastMode";
+import { useOllamaAutoloadOnLaunch } from "../../stores/agents/ollamaAutoload";
+import { useRendererWatchdog } from "../../lib/window/rendererWatchdog";
+import { livePanelToggleKey } from "../../lib/shortcuts/shortcuts";
 import { CenterPanel } from "./CenterPanel";
 import { HeaderBar } from "./HeaderBar";
 import { SidePanel } from "./SidePanel";
@@ -43,16 +43,15 @@ import { HpcPipelineWizardHost } from "../projects/HpcPipelineWizard";
 import { BigFolderDialogHost } from "../projects/BigFolderExcludeDialog";
 import { BoxEditorHost } from "../projects/BoxEditorDialog";
 import { BrowserDownloadHost } from "../browser/BrowserDownloadHost";
-import { MailOverlayHost } from "../mail/MailOverlay";
+import { ExecTrustHost } from "../common/ExecTrustHost";
 import { CalendarOverlayHost } from "../calendar/CalendarOverlay";
 import { CalDavSyncHost } from "../calendar/CalDavSyncHost";
 import { AgentContinueHost } from "./AgentContinueHost";
 import { AgentCronHost } from "./AgentCronHost";
 import { AgentScheduleHost } from "./AgentScheduleHost";
 import { CalDavConflictDialog } from "../calendar/CalDavConflictDialog";
-import { TodoOverlayHost } from "../todo/TodoOverlay";
 import { SkillsOverlayHost } from "../skills/SkillsOverlay";
-import { InstallOverlayHost } from "./InstallOverlay";
+import { RootOverlayHost } from "./RootOverlay";
 import { LocalLossDialog } from "../common/LocalLossDialog";
 import {
   RailAgentsIcon,
@@ -80,31 +79,33 @@ import {
   listenProjectRuntimeSwitched,
   silentReconnectDeadHost,
 } from "../../stores/projects";
-import { useRemoteStatusStore } from "../../stores/remoteStatus";
-import { disconnectAllTunnelsOnQuit } from "../../stores/vpnStatus";
+import { useRemoteStatusStore } from "../../stores/remote/remoteStatus";
+import { disconnectAllTunnelsOnQuit } from "../../stores/remote/vpn/vpnStatus";
 import {
   closeOrphanedPopouts,
   listenDetachedHost,
   shutdownDetachedWindows,
 } from "../../stores/detached";
-import { listenPdfReveal } from "../../stores/pdfSync";
-import { listenSyncProgress } from "../../stores/sync";
-import { autoConnectVpnOnLaunch } from "../../lib/vpnAutoConnect";
-import { initRemoteAutoReconnect } from "../../lib/remoteAutoReconnect";
+import { listenPdfReveal } from "../../stores/viewers/pdfSync";
+import { listenSyncProgress } from "../../stores/remote/sync";
+import { autoConnectVpnOnLaunch } from "../../lib/remote/vpn/vpnAutoConnect";
+import { initRemoteAutoReconnect } from "../../lib/remote/remoteAutoReconnect";
 import { initExperimentalSweep } from "../../lib/experimentalSweep";
-import { initMachineSync } from "../../lib/machineSync";
+import { initMachineSync } from "../../lib/remote/machineSync";
 import { installWindowsEvents } from "../../stores/windows";
-import { listenEditorJump } from "../../stores/editorJump";
-import { listenTexCenter } from "../../stores/texCenter";
+import { listenEditorJump } from "../../stores/viewers/editorJump";
+import { listenTexCenter } from "../../stores/viewers/texCenter";
 import { listenSourceJump } from "../embed/FileViewerPane";
 import { BOX_SCOPE_PREFIX, useBoxesStore } from "../../stores/boxes";
 import { listenSettingsChanged, useSettingsStore } from "../../stores/settings";
 import { ROOT_SCOPE, useTabsStore } from "../../stores/tabs";
 import { useTimerStore } from "../../stores/timer";
+import { useMailStore } from "../../stores/mail";
+import { useTodoStore } from "../../stores/todo";
 import { flushUsage } from "../../stores/usage";
 import { useKeyboard } from "../../hooks/useKeyboard";
 import { useT, useI18nStore, translate, type TranslationKey } from "../../lib/i18n";
-import { sidePanelViewKey, sidePanelViewPatch } from "../../lib/sidePanelView";
+import { sidePanelViewKey, sidePanelViewPatch } from "../../lib/projects/sidePanelView";
 import type { FilesPanelView } from "../../types";
 import { noteTerminalOutputChars } from "../../dev/terminalOutputRate";
 
@@ -114,6 +115,45 @@ import { noteTerminalOutputChars } from "../../dev/terminalOutputRate";
 const DevPerfHost = import.meta.env.DEV
   ? lazy(() => import("../../dev/DevPerfHost").then((m) => ({ default: m.DevPerfHost })))
   : null;
+
+// Code-split (startup size): mail and the todo board are reached from nowhere
+// but these two overlay hosts, and each host renders null until its store's
+// `overlayOpen` is true. Mounting the lazy host only once that flag is set keeps
+// both panes' module graphs out of every window's startup chunk; the fetch is
+// in-process (the frontend is embedded), and the fallback is `null`, the same
+// nothing a closed host renders. The host still applies its own gate
+// (`mail_client` / `todo_board`), so the flag alone never shows anything, and
+// its first-open work (the Escape listener, `openCard`'s `focusTaskId`) runs on
+// mount exactly as it did on the closed-to-open transition: the pane was never
+// mounted while closed. The stores are eager anyway (the header indicators read
+// them). Calendar and Skills stay static on purpose: `TabPane` imports their
+// panes eagerly, so splitting their hosts would save nothing.
+const MailOverlayHost = lazy(() =>
+  import("../mail/MailOverlay").then((m) => ({ default: m.MailOverlayHost })),
+);
+const TodoOverlayHost = lazy(() =>
+  import("../todo/TodoOverlay").then((m) => ({ default: m.TodoOverlayHost })),
+);
+
+function LazyMailOverlayHost() {
+  const open = useMailStore((s) => s.overlayOpen);
+  if (!open) return null;
+  return (
+    <Suspense fallback={null}>
+      <MailOverlayHost />
+    </Suspense>
+  );
+}
+
+function LazyTodoOverlayHost() {
+  const open = useTodoStore((s) => s.overlayOpen);
+  if (!open) return null;
+  return (
+    <Suspense fallback={null}>
+      <TodoOverlayHost />
+    </Suspense>
+  );
+}
 
 // How long the pointer must rest on the edge rail before the panel reveals
 // itself. The hover-open used to be instant, fired by a mousemove anywhere in
@@ -222,7 +262,7 @@ async function saveWindowGeometry(): Promise<void> {
     win.isMaximized(),
   ]);
   // outerPosition/outerSize are already PHYSICAL px, which is what the backend
-  // consumes — nothing is converted anywhere along this path (src/lib/coords.ts).
+  // consumes — nothing is converted anywhere along this path (src/lib/window/coords.ts).
   const store = useSettingsStore.getState();
   const next = nextWindowState(
     store.settings?.window_state,
@@ -278,10 +318,10 @@ export function AppShell() {
   const quiesce = useQuiesce();
   const fastMode = useFastMode();
   // Load the armed local (Ollama) models into memory at launch — main window
-  // only, and skipped (loudly) while Energy Saver is on. See stores/ollamaAutoload.
+  // only, and skipped (loudly) while Energy Saver is on. See stores/agents/ollamaAutoload.
   useOllamaAutoloadOnLaunch();
   // Reload the renderer if its JS heap runs away, before it OOM-crashes the
-  // webview (a 44 GB leak was observed 2026-07-31). See lib/rendererWatchdog.
+  // webview (a 44 GB leak was observed 2026-07-31). See lib/window/rendererWatchdog.
   useRendererWatchdog();
   const [panelsHidden, setPanelsHidden] = useState(false);
   const [panelOpen, setPanelOpen] = useState(false);
@@ -842,8 +882,8 @@ export function AppShell() {
     // script writes. The authority for the tab's marks wherever it speaks; the
     // byte classifier above stays for agents that fire no hooks.
     let unlistenTurn: (() => void) | undefined;
-    listen<{ id: string; state: AgentTurnState }>("agent-turn", (ev) => {
-      noteAgentTurn(ev.payload.id, ev.payload.state);
+    listen<{ id: string; state: AgentTurnState; job?: boolean }>("agent-turn", (ev) => {
+      noteAgentTurn(ev.payload.id, ev.payload.state, !!ev.payload.job);
     })
       .then((fn) => { unlistenTurn = fn; })
       .catch(() => {});
@@ -1306,11 +1346,14 @@ export function AppShell() {
           tab. It also owns the browser event listeners, so a download raised by a
           live-page window is answerable even when no browser tab is open. */}
       <BrowserDownloadHost />
+      {/* The ask-once "run this project's hooks / latexmkrc / prettier?" prompt
+          (services::exec_trust), raised by a gated commit/push/build/format. */}
+      <ExecTrustHost />
       {/* Mail as a global app: the header's ✉ button opens the ordinary MailPane
           as an overlay over whatever is on screen. At the shell rather than in
           the header because it covers the window, not the header — and because
           it must survive a project switch, which mail (unlike a tab) ignores. */}
-      <MailOverlayHost />
+      <LazyMailOverlayHost />
       {/* The calendar's twin of the above: the header's 🗓 button opens the
           ordinary CalendarPane as an overlay, at the shell for the same reason —
           it covers the window and must survive a project switch. */}
@@ -1342,19 +1385,20 @@ export function AppShell() {
           three deliberately: all three are `.modal-backdrop` at one z-index and
           nothing makes them mutually exclusive, so DOM order is the tie-break
           and the surface opened most recently should be the one on top. */}
-      <TodoOverlayHost />
+      <LazyTodoOverlayHost />
       {/* The 🧠 menu's Skills Library — the machine-level door into the library
           the project tab hosts. At the shell for the family's reason (it covers
           the window and must survive a project switch), and after the three
           above because it is opened from a header menu that sits over them. */}
       <SkillsOverlayHost />
-      {/* One-click installs' terminal (`runInstallInTab`): a centered attach-only
-          view of the root-scope install tab, so the install is watched — and its
-          prompts answered — where it was clicked. After the overlay family and
-          the settings surfaces in DOM order so it lands on top of the dialog the
-          install was started from; closing it leaves the install running in the
-          root terminal. */}
-      <InstallOverlayHost />
+      {/* The root console (Ctrl+Shift+R): the root scope as a floating subwindow
+          instead of a scope to switch to, and the one overlay onto the root
+          terminal — a one-click install (`runInstallInTab`) and a parked login
+          both open their tab in it. After the overlay family and the settings
+          surfaces in DOM order, so it lands on top of the dialog that started
+          the install or the login. Its host also persists the root scope and merges the rows a
+          root agent wrote through Eldrun's MCP tools — both while closed. */}
+      <RootOverlayHost />
       {/* The shortcut cheat sheet (F1, `?` in steering mode, or the ⚙ menu) —
           after the overlay family above so the sheet, openable from the
           keyboard while any of them is up, lands on top (same z-index, DOM

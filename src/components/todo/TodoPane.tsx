@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import type { CalendarTask } from "../../types";
-import { useCalendarStore, visibleCalendarIds } from "../../stores/calendar";
+import { useCalendarStore, visibleCalendarIds } from "../../stores/calendar/calendar";
 import { useMailStore } from "../../stores/mail";
 import { useProjectsStore } from "../../stores/projects";
 import { useTodoStore } from "../../stores/todo";

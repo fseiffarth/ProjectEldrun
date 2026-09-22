@@ -6,14 +6,21 @@
  * only after `installDevPerf()` settles. In production the dev branch is
  * compiled out (`import.meta.env.DEV` is statically false) and bootstrap
  * loads immediately; `src/dev/` never ships.
+ *
+ * `hardenPrototype()` runs before bootstrap in both branches, so no app or
+ * library code ever sees a mutable `Object.prototype` (#159).
  */
+import { hardenPrototype } from "./lib/hardenPrototype";
+
 if (import.meta.env.DEV) {
   void import("./dev/perfMonitor")
     .then((m) => m.installDevPerf())
     .catch(() => undefined)
-    .then(() => import("./bootstrap"));
+    .then(() => {
+      hardenPrototype();
+      return import("./bootstrap");
+    });
 } else {
+  hardenPrototype();
   void import("./bootstrap");
 }
-
-export {};

@@ -6,6 +6,7 @@ import {
 import { useTabsStore, type TabEntry } from "../../stores/tabs";
 import { useWindowsStore } from "../../stores/windows";
 import { openTexWorkspace } from "../embed/openTexWorkspace";
+import { openTabInScope } from "../tabs/tabScopeContext";
 
 /**
  * The single open-a-file policy shared by every file listing (the FileTree in
@@ -38,8 +39,11 @@ export function openFileEntry(opts: {
   /** Detached-popout placement override: stream the tab into that window
    *  instead of writing the (non-authoritative) local tab store. */
   placeTab?: (tab: Omit<TabEntry, "key">) => void;
+  /** The scope the tab belongs to when it is not the active one — the root
+   *  console's (`TabScopeContext`). Omit/null = the active scope. */
+  scope?: string | null;
 }): void {
-  const { entry, projectDir, projectId, origin, external, disabled, placeTab } = opts;
+  const { entry, projectDir, projectId, origin, external, disabled, placeTab, scope } = opts;
   if (entry.is_dir) return;
 
   const viewer = internalViewerFor(entry, disabled);
@@ -55,7 +59,7 @@ export function openFileEntry(opts: {
   // instead of a bare editor tab — resolving the build root is async, so this is
   // fire-and-forget. `placeTab` threads the popout/drop seam straight through.
   if (viewer === "tex") {
-    void openTexWorkspace(entry.path, placeTab);
+    void openTexWorkspace(entry.path, placeTab, undefined, scope);
     return;
   }
 
@@ -73,12 +77,17 @@ export function openFileEntry(opts: {
     return;
   }
 
+  const sameFile = (t: TabEntry) =>
+    t.kind === "embed" && t.viewer === viewer && t.embedPath === entry.path;
+  if (scope) {
+    openTabInScope(scope, tab, sameFile);
+    return;
+  }
+
   // Main window: focus an existing viewer tab for this exact file if one is
   // open (same path + viewer), else add a fresh one to the focused subwindow.
   const store = useTabsStore.getState();
-  const prior = store.tabs.find(
-    (t) => t.kind === "embed" && t.viewer === viewer && t.embedPath === entry.path,
-  );
+  const prior = store.tabs.find(sameFile);
   if (prior) store.setActive(prior.key);
   else store.addTab(tab);
 }

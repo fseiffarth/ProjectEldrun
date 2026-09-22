@@ -17,8 +17,14 @@ auth) and the local/remote git push axis (#21).*
     are spawned and where pushes happen.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 59. **Per-project remote-control toggle. (DONE ✅ · 🧪 Untested)** **Shipped
     2026-07-28.** `Project.remote_control: Option<bool>` (`schema/project.rs`)
@@ -52,8 +58,14 @@ auth) and the local/remote git push axis (#21).*
       Claude tab, confirm `--remote-control` is absent from its argv even
       with the global setting on; confirm "inherit" goes back to matching the
       global setting.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 87. **Per-tab Plan/Auto agent mode. (REMOVED — the mode is the agent's own.)**
     *(This is group-O's #87; group-M has a different #87.)* Built, then taken
@@ -124,8 +136,14 @@ auth) and the local/remote git push axis (#21).*
     from a Linux dev host. Ties into Group H (Windows parity).
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 ### Sandbox-audit follow-ups (2026-07-26)
 
@@ -154,8 +172,14 @@ intent. What is left is listed here.
     - [ ] 🖐️ Manual test — migration verified on the real workspace. Still worth a
       look on the next relaunch: that restored tabs come back where expected, and
       that "Restore layout saved in the folder…" adopts a synced folder's layout.
-      - [x] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [x] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
     <details><summary>Original entry</summary>
 
@@ -213,16 +237,32 @@ intent. What is left is listed here.
       Dockerfile, confirm the dialog names the root/network risk, decline once
       and confirm no re-ask on an unchanged file, then edit the Dockerfile and
       confirm it re-asks.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 144. **Per-window capability split for `present-*` / `detached-*`.**
-    **Stale premise:** `capabilities/browser.json` now exists and scopes
-    `browser-*` to *zero* permissions — so the "verify first whether Tauri v2's
-    ACL gates `generate_handler!` commands at all" question is already answered
-    in the affirmative by that file plus `tests/capability_scope.rs`. Scoping is
-    also by **webview**, not window (`capabilities/default.json:5`
-    `"webviews": [...]`). The work is now just doing the `present-*` split.
+    **Re-evaluated 2026-09-18 — the "verify first" question below is answered,
+    and the answer is *no*.** `capabilities/browser.json`'s own description
+    says it: `build.rs` defines no app ACL manifest, and Tauri 2 checks an app
+    (`generate_handler!`) command's ACL only for a **remote** origin — a
+    capability file governs plugin permissions only. So a local-origin
+    `present-*` webview can invoke every app command whatever
+    `capabilities/*.json` says, and splitting `default.json` would narrow
+    plugin permissions and nothing else. (An earlier note here claimed the
+    opposite; it was wrong.) The two real shapes: declare the commands in
+    `build.rs` (`tauri_build::AppManifest::commands(...)`), which puts app
+    commands under the ACL for every window and needs the full allowlist for
+    `main`/`detached-*` up front; or a runtime `webview.label()` guard that
+    refuses everything but the presenter's handful for `present-*` — the
+    smaller change, and none exists today. Scoping is by **webview**, not
+    window (`capabilities/default.json:5`). Severity unchanged (low): the
+    audience window only ever loads the app's own bundle.
     Original text: `capabilities/default.json` was the only capability file and applies to
     `windows: ["main", "detached-*", "present-*"]`, so every one of the ~300
     application commands is reachable from the deck presenter's audience window
@@ -236,8 +276,14 @@ intent. What is left is listed here.
     [`docs/sandbox_hardening_plan.md`](../docs/sandbox_hardening_plan.md) Phase 5.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 145. **Narrow `~/.claude/projects` to this project's own transcript dir.**
     **PARTIAL — the write half shipped in `b36e731` (2026-07-28) and was never
@@ -249,7 +295,10 @@ intent. What is left is listed here.
     instead of decoding Claude's lossy directory name, with
     `transcript_name_matches` only as a fallback — which removes the
     "replicate an undocumented encoding, drift fails silently" objection this
-    entry was blocked on. **Still open: cross-project *read*.** Reassess the
+    entry was blocked on. **Still open: cross-project *read*** — and not only in
+    containers: the bubblewrap fence plans its transcript mounts with the same
+    function (`agent_fence.rs:717`), so a fenced agent tab can read every other
+    project's conversation history too (re-checked 2026-09-18). Reassess the
     cost note below before doing more; it no longer describes the work.
     Original text: The
     container's `~/.claude` mount is now per-entry with an exclusion list
@@ -267,8 +316,14 @@ intent. What is left is listed here.
     Phase 3.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 146. **Don't silently auto-select a repo-planted `.venv` (S-10).**
     `commands::python::find_venvs` (`python.rs:132-158`) offers any directory
@@ -283,10 +338,25 @@ intent. What is left is listed here.
     on a project's first open instead of picking. (`python.rs:177` also runs
     `poetry env info -p` with the untrusted project as cwd.) Low severity: when
     the project's container toggle is on, the run tab is contained anyway.
+    **Re-evaluated 2026-09-18 — still open, and now the odd one out.**
+    `services::exec_trust` has since put every other project-supplied program
+    Eldrun runs on the host (git hooks, `latexmkrc`, the project's prettier)
+    behind an ask-once fingerprint; nothing in `python.rs` touches it, so an
+    in-tree `.venv/bin/python` still wins auto-select unprompted and
+    `poetry env info -p` still runs with the project as cwd (`python.rs:230`).
+    Preferred fix is now a fourth `TrustKind` (the in-tree interpreter +
+    `pyvenv.cfg`, and `pyproject.toml` before the poetry probe) rather than the
+    bespoke first-open prompt described above.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 147. **Surface "container not applied" for a remote project.** A local project
     that had the container enabled and was later extended to remote keeps its
@@ -302,8 +372,14 @@ intent. What is left is listed here.
     exactly the projects that were extended from a container-toggled local one.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 148. **Guard the provider CLI's positional arguments. (NOT A PROBLEM ✅)**
     `commands::git_publish::local_publish` passes `repo_name` to `gh repo create`
@@ -319,7 +395,7 @@ intent. What is left is listed here.
 150. **DONE (2026-07-27) — Stop keying host-bound authority on a usage-stats env
     var.** `is_host_bound_local_agent(cmd, marker)` now takes a *registered marker*
     instead of the tab's env: a local-model tab mints a uid at creation
-    (`src/lib/hostBound.ts` → `register_host_bound_tab`), the backend writes
+    (`src/lib/remote/hostBound.ts` → `register_host_bound_tab`), the backend writes
     `<state_dir>/sessions/<project>/host_bound/<uid>`, and the spawn path checks
     for that file. `ELDRUN_LOCAL_MODEL` is a usage label again. Markers are pruned
     on every layout save against the uids still in the layout.
@@ -333,8 +409,14 @@ intent. What is left is listed here.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test — open an Ollama/vibe tab in a container-toggled project,
       confirm it still runs on the host, and that it still does after a relaunch.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
     <details><summary>Original entry</summary>
 
@@ -372,7 +454,7 @@ intent. What is left is listed here.
     `cwd` names a path on the far host, which this process cannot check, and the
     ssh-wrapped command does the `cd` over there. The "run tab on an absolute
     path" case flagged below turned out not to be a counterexample:
-    `lib/pythonRun.ts`'s `runCwd` only falls back to the file's own directory
+    `lib/terminal/pythonRun.ts`'s `runCwd` only falls back to the file's own directory
     when the viewer has **no** project (root-scope tab, `project_id: None`),
     which the gate already exempts. Comparison is component-wise
     (`Path::starts_with`), mirroring `services::sandbox::cwd_is_within`'s shape
@@ -384,8 +466,14 @@ intent. What is left is listed here.
     - [ ] 🖐️ Manual test — open a shell tab normally (still works), then try
       to reproduce the original exploit shape (a `project_id` paired with an
       unrelated `cwd`) and confirm `pty_spawn` refuses it with the new error.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 151. **A repo's own `.git/config` is executable intent too. (MITIGATED ⚠️ · not
     fully closed)** The same sentence as #142, with git as the executor instead
@@ -425,7 +513,22 @@ intent. What is left is listed here.
       for every local git call this codebase makes — there is no way to keep
       "some filters, but not attacker-chosen ones" here, since the command
       name *is* the filter's entire configuration surface.
-    - **Still residual, deliberately**: `.git/hooks/*` and `core.sshCommand`/
+    - **Re-evaluated 2026-09-18 — most of the residual below is closed.**
+      `services::exec_trust` (`TrustKind::GitHooks`) fingerprints the hook
+      files plus `core.hooksPath`, `core.sshCommand` and `credential*.helper`
+      and asks once before Commit / Push / Reword / Publish
+      (`git.rs` `require_hook_trust` + `push_local`, `git_publish.rs`
+      `local_publish`); `git_checkout` and the worktree verbs pin
+      `core.hooksPath=` (`NO_HOOKS_CONFIG`); #158 mounts `.git/config` and
+      `.git/hooks` read-only for fenced and contained agents. The
+      "unhardened" line is stale too: `git_peer` runs local git through
+      `hookless_git_command_in`, `git_publish` through
+      `hardened_git_command_in`, and no bare `Command::new("git")` is left
+      outside tests. **What is actually still open:** remote git calls are not
+      sanitized, the Git LFS cost above, and #158's create-a-`commondir`
+      residual for a plain `git` in the user's own terminal.
+    - **Residual as written on 2026-07-28 (superseded, kept for the
+      reasoning)**: `.git/hooks/*` and `core.sshCommand`/
       `credential.helper` fire only on **user-initiated** writes (Commit,
       Push, Checkout) — a repo's own hooks are a feature there, and a config
       denylist can't reach a hook anyway (a file in a well-known directory,
@@ -450,8 +553,14 @@ intent. What is left is listed here.
       file tree's git status doesn't run it; confirm a real Git LFS repo's
       filter is (expectedly) inert for host-side status/diff/add while a
       container is active.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 152. **One gate for "this is already a project". (DONE ✅ · 🧪 Untested)** Importing
     or creating a project on a site another project already owns used to be
@@ -488,8 +597,14 @@ intent. What is left is listed here.
       hand-typing the path.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 ---
 
@@ -513,8 +628,14 @@ intent. What is left is listed here.
      implementation.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 154. **Screenshots ask before they land in a project — and never auto-file.**
      ✅ Implemented · needs live QA. A capture used to be written straight into
@@ -540,15 +661,21 @@ intent. What is left is listed here.
      - Audit at the time (2026-08-31): no auto-named `Screenshot-*.png` was ever
        committed in any Eldrun project; the only screenshots in this public
        repo's history are the deliberate README assets.
-    - [x] 🤖 Automated test — `src/__tests__/ScreenshotDelay.test.ts` (countdown,
+    - [x] 🤖 Automated test — `src/__tests__/system/ScreenshotDelay.test.ts` (countdown,
       throttled-timer firing, restart, cancel), `commands::screenshot` staging
       confinement + TTL sweep, `scaffold_project_gitignores_screenshots`.
     - [ ] 🖐️ Manual test — needs a backend restart. Press Screenshot: the
       overlay should open on the crop with a preview, Save should land it where
       named, Discard should leave the clipboard paste working. Shift+click
       should count down and let an Alt+Tab land first.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 155. **A bind-mounted config file cannot be rewritten (DONE ✅ · 🖐️ Untested).**
     The fence shadowed `~/.codex/config.toml`, `~/.claude/settings.json`,
@@ -579,8 +706,14 @@ intent. What is left is listed here.
       brand-new project and let it ask to trust the folder: it must record the
       trust without the `failed to persist config` error, and
       `~/.codex/config.toml` on the host must stay unchanged.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 156. **A long-lived agent tab logs itself out (DONE ✅ · 🧪 Untested).** The
     "(b)" of #155, met for real: agent tabs open for a few hours showed
@@ -632,7 +765,110 @@ intent. What is left is listed here.
       have changed and `/proc/<tab pid>/root/$HOME/.claude/.credentials.json`
       must hold the new token. Tabs opened *before* the restart stay bound to
       the old inode and must be reopened once.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 ---
+
+157. **Agent fence compatibility-preserving hardening (implemented · untested live).**
+    Retry failed tool probes; label status as prospective spawn policy and fix
+    macOS/shared-state wording. Hide Cargo registry credential files by default
+    with an explicit Settings opt-in. Give Linux Codex tabs private writable
+    skills/plugins and fresh shell snapshots; macOS protects the shared content
+    read-only. Preserve shared login credentials, token refresh, session stores,
+    resume databases and native CLI updates.
+    - [x] Automated regression coverage: probe recovery, Cargo mask ordering and
+      opt-in, symlink aliases, independent writable content copies, unchanged
+      login/resume mount selection, and existing credential/database tests.
+    - [ ] Manual: after a deliberate backend restart, open multiple agent tabs
+      without logging in again; verify token refresh and resume after relaunch.
+    - [ ] Manual: skills/plugins load, shell tools run, native CLI updates work;
+      verify macOS startup and skill/plugin update behavior.
+    - [ ] Manual: install missing bubblewrap, then open a tab without restarting;
+      confirm Cargo publish credentials require the opt-in for a new tab.
+
+158. **A `.git` *file* skips the repo-config sanitizer — and nothing sandboxed
+    is kept out of `.git/` (sanitizer part FIXED; read-only `.git` mounts
+    implemented, `services::git_guard` — both not live-verified).** Fixed:
+    `commands::git::repo_config_files`
+    resolves the git dir like git's discovery without running git in the repo
+    (walk up to the nearest `.git`, one `gitdir:` hop, `commondir`,
+    `config.worktree`), and `HARDENED_CONFIG` pins
+    `safe.bareRepository=explicit` against a bare-layout folder.
+    `GIT_ATTR_SOURCE`=empty tree was rejected: with `core.autocrlf` unset an
+    `eol=crlf` repo then shows every file modified.
+    Original report: `sanitize_repo_git_config` reads only
+    `<project>/.git/config` and returns early when that is not a file, so a
+    project whose `.git` is a pointer (`gitdir: .notgit`) keeps any
+    `filter.*`/`diff.*` driver in the redirected config. Reproduced 2026-09-18
+    with Eldrun's exact flags (`-c core.fsmonitor=false -c protocol.ext.allow=never`,
+    `--no-ext-diff --no-textconv`): the clean filter executes on `git diff` and
+    on `git status` after a same-size edit, i.e. from the file-tree poll with no
+    click. Reachable by a downloaded folder added as a project, or by a fenced/
+    containerised agent that swaps `.git` for a pointer (the published
+    "trust handoff" class — Pillar Security, CSA 2026). Eldrun's own agent
+    worktrees use the pointer layout, so the sanitizer is a no-op there too.
+    Fix shapes: resolve the real git dir (and `commondir` + `config.worktree`)
+    from the pointer file before sanitizing, without invoking git in the repo;
+    or read attributes from the empty tree (`--attr-source` /
+    `GIT_ATTR_SOURCE`, git ≥ 2.40) on unattended calls so no in-tree
+    `.gitattributes` can bind a filter. Separately: mount `.git/hooks`,
+    `.git/config` and `config.worktree` read-only in the agent fence and
+    project containers, which is what closes hooks too (#151 residual). See
+    `docs/threat_model.md` tiers 0 and 3.
+    - [x] 🤖 Automated test — pointer-file repo with a `filter.*.clean` driver:
+      `hardened_git_command_in` + `status`/`diff` must not execute it
+      (`commands::git` tests: gitdir pointer, linked worktree + `config.worktree`,
+      project below the repo root, implicit bare layout).
+    - **Read-only `.git` mounts — implemented 2026-09-18 (🧪 untested live).**
+      `services::git_guard::guard_paths` names the control files (`config`,
+      `config.worktree`, `hooks`, `commondir`, `.git` pointer files, incl. every
+      `.eldrun/worktrees/*`); the fence binds them `--ro-bind` after the root
+      grant and binds `.git` onto itself (a mount point can't be renamed away);
+      containers get the same as `:ro` volumes, outside the fingerprint so a new
+      file can't recreate the container under live tabs. Verified with real
+      bubblewrap: commit/branch/stash/gc work; writing config or hooks,
+      rewriting a worktree pointer or its `commondir`, and renaming `.git` all
+      fail. **Residual**: the agent can still *create* `commondir` in a main
+      `.git` (verified to redirect config/hooks for plain git) or `git init`
+      a new repo — a read-only bind can't cover a file that doesn't exist yet.
+    - [x] 🤖 Automated test — `git_guard` tests (plain repo, Eldrun worktree,
+      hostile pointer, repo outside the roots, no repo) and
+      `git_control_files_are_rebound_read_only_after_the_root_grant`.
+    - [ ] 🖐️ Manual test — fenced agent tab: `echo x > .git/hooks/post-checkout`
+      must fail, and `git commit` must still work.
+    - [ ] 🖐️ Manual test — container project: the same two checks inside a
+      container tab (docker nests the `:ro` binds; not run live).
+
+159. **Freeze the JS prototype for the IPC bridge (DONE ✅ · 🧪 untested
+    live).** Not via `app.security.freezePrototype`: Tauri injects that into
+    every webview, the in-app browser's live pages included, and a bare
+    `Object.freeze(Object.prototype)` breaks pdf-lib — under it 9 test files
+    fail (PDF notes/redaction/save, deck export: `PDFHeader.prototype.toString
+    = …`, the "override mistake"). `lib/hardenPrototype.ts` first turns each
+    method into an accessor whose setter defines an own property on the target
+    (SES-style override taming), then freezes; `main.tsx` calls it before
+    bootstrap. The whole suite passes under it.
+    - [x] 🤖 Automated test — `HardenPrototype.test.ts`, plus a one-off full
+      suite run with the hardened prototype (513/513 files).
+    - [ ] 🖐️ Manual test — after a reload, smoke the PDF viewer (add a note,
+      save), deck export, mail, terminal, markdown with Mermaid/KaTeX.
+
+160. **Sign release artifacts the updater installs.** `services::app_update`
+    pins asset URLs to this repo's GitHub releases but checks no signature or
+    checksum, so a compromised GitHub account or CI run ships code straight
+    to every user who clicks Install. Sign in CI (minisign or the Tauri
+    updater key) and verify before `install` runs the staged file.
+    - **Blocked on the key (2026-09-18).** Planned shape, no new crates: CI
+      signs each asset with `openssl dgst -sha256 -sign` (ECDSA P-256, key in
+      the `RELEASE_SIGNING_KEY` secret) and uploads `<asset>.sig`; the updater
+      hashes while downloading and verifies with the `p256` crate against a
+      public key compiled in, refusing an unsigned or mismatched file. The
+      maintainer generates the key pair; only the public half enters the repo.
+    - [ ] 🤖 Automated test — a tampered staged file is refused.

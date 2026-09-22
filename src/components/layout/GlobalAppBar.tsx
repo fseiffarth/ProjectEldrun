@@ -10,7 +10,7 @@ import {
   requestInAppCapture,
   SCREENSHOT_DELAY_MS,
   startDelayedCapture,
-} from "../../lib/screenshot";
+} from "../../lib/window/screenshot";
 import { useT, type TranslationKey } from "../../lib/i18n";
 
 // A platform-appropriate example path for the executable-picker placeholder
@@ -20,7 +20,7 @@ const EXEC_PLACEHOLDER_KEY: TranslationKey = IS_WINDOWS
   : "globalApp.execPlaceholder";
 
 export const GLOBAL_APP_ROLES: Array<{ key: string; labelKey: TranslationKey; fallback: string }> = [
-  { key: "browser", labelKey: "globalApp.role.browser", fallback: "🌐" },
+  { key: "browser", labelKey: "globalApp.role.browser", fallback: "◎" },
   { key: "password_manager", labelKey: "globalApp.role.password_manager", fallback: "⚿" },
   { key: "video_conf", labelKey: "globalApp.role.video_conf", fallback: "▣" },
   { key: "screenshot", labelKey: "globalApp.role.screenshot", fallback: "▤" },
@@ -107,14 +107,9 @@ export function GlobalAppBar() {
     const close = (event: MouseEvent) => {
       if (!popoverRef.current?.contains(event.target as Node)) setEdit(null);
     };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setEdit(null);
-    };
     document.addEventListener("mousedown", close);
-    document.addEventListener("keydown", onKey);
     return () => {
       document.removeEventListener("mousedown", close);
-      document.removeEventListener("keydown", onKey);
     };
   }, [edit]);
 
@@ -146,7 +141,7 @@ export function GlobalAppBar() {
       // A visible PDF viewer claims the shot first: the region is then captured
       // from the rendered document itself (sharper than a screen grab, pending
       // blackouts burned in) and goes to the clipboard + the save overlay — no
-      // OS tool involved. See `lib/screenshot`.
+      // OS tool involved. See `lib/window/screenshot`.
       if (requestInAppCapture()) return;
       captureScreenshot(exec);
       return;
@@ -186,13 +181,14 @@ export function GlobalAppBar() {
   };
 
   return (
-    <div className="tab-new-menu" onClick={(e) => e.stopPropagation()}>
+    <div className="tab-new-menu" role="menu" onClick={(e) => e.stopPropagation()}>
       {apps.map(([role, app]) => {
         const meta = ROLE_BY_KEY[role];
         const label = meta ? t(meta.labelKey) : role;
         const iconDataUrl = app.exec ? iconDataUrls[app.exec] : null;
         return (
           <button
+            role="menuitem"
             key={role}
             className="tab-new-menu-item global-app-menu-row"
             title={`${label}${app.exec ? `: ${app.exec}` : ""} · ${t("globalApp.rightClickConfigure")}${
@@ -221,6 +217,14 @@ export function GlobalAppBar() {
         <div
           ref={popoverRef}
           className="global-app-edit-popover"
+          data-header-menu-interactive
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              setEdit(null);
+            }
+          }}
           style={{ left: edit.x, top: edit.y }}
           onClick={(event) => event.stopPropagation()}
         >

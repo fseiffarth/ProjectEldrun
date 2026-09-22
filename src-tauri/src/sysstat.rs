@@ -677,6 +677,7 @@ fn parse_who(content: &str, me: &str) -> Vec<LoginSession> {
 /// ARM/embedded boards `cpu_thermal`. Anything else (a GPU's `amdgpu`, a
 /// mainboard SuperIO chip, an NVMe drive) is deliberately excluded — a wrong
 /// sensor reported as "CPU" is worse than reporting none.
+#[cfg(any(target_os = "linux", test))]
 fn is_cpu_hwmon(name: &str) -> bool {
     matches!(
         name.trim(),
@@ -689,6 +690,7 @@ fn is_cpu_hwmon(name: &str) -> bool {
 /// SPD-hub temperature sensor). One hwmon appears per populated module that has
 /// one, so the reader takes the *hottest*. Anything else is excluded — a
 /// mainboard/SuperIO channel mislabelled as memory would be worse than none.
+#[cfg(any(target_os = "linux", test))]
 fn is_mem_hwmon(name: &str) -> bool {
     matches!(name.trim(), "jc42" | "spd5118")
 }
@@ -968,7 +970,7 @@ fi
 /// `Some(true)`/`Some(false)` pin `ELDRUN_CAREFUL`, so the script skips its own
 /// `sbatch` probe entirely; `None` leaves the probe in place. **Both** directions
 /// are pinnable, which is the change the per-machine switch needed: careful is
-/// now the default for every remote machine (`src/lib/carefulHost.ts`), so the
+/// now the default for every remote machine (`src/lib/remote/carefulHost.ts`), so the
 /// only way to get a full reading of a machine the user owns is for their answer
 /// to outrank host-side detection. That answer is the *user's*, recorded per SSH
 /// target and deliberate — the asymmetry the old force-on-only signature encoded

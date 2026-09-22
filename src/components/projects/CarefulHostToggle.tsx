@@ -5,8 +5,8 @@ import {
   isCarefulHost,
   setCarefulPatch,
   type Target,
-} from "../../lib/carefulHost";
-import { isHpcHost } from "../../lib/hpcHost";
+} from "../../lib/remote/carefulHost";
+import { isHpcHost } from "../../lib/remote/hpc/hpcHost";
 import { useSettingsStore } from "../../stores/settings";
 import { useT } from "../../lib/i18n";
 
@@ -23,7 +23,7 @@ import { useT } from "../../lib/i18n";
  * names by hand.
  *
  * The switch is **per host, keyed by SSH target**, not per project — see
- * `lib/carefulHost.ts` for why that is the only identity that works when one
+ * `lib/remote/carefulHost.ts` for why that is the only identity that works when one
  * login node is a primary `remote`, a worker and a global machine at once. This
  * component is deliberately the single rendering of it, so the remote hub, the
  * header's Machines menu and the system monitor can never grow three switches
@@ -68,7 +68,7 @@ export function CarefulHostToggle({
         disabled={disabled || tagged}
         onChange={(e) => void updateSettings(setCarefulPatch(settings, target, e.target.checked))}
       />
-      {t("carefulHost.label")} <UntestedTag />
+      {t("carefulHost.label")} <UntestedTag id="carefulHost.label" />
       <span className="ssh-optional-hint">
         {tagged
           ? t("carefulHost.hintHpcTagged")

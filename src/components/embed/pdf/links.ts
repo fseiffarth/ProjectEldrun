@@ -34,7 +34,7 @@
  * zoom and page rotation for free.
  */
 import type { PDFDocumentProxy } from "pdfjs-dist";
-import type { SyncRect, TextItemBox } from "../../../lib/viewers/tex";
+import type { SyncRect, TextItemBox } from "../../../lib/viewers/tex/tex";
 import { resolveDest, type PdfDest } from "./outline";
 import { pageTextItemBoxesUnturned } from "./pageText";
 import { pageInkAt } from "./pageInk";

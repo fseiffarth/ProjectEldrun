@@ -26,6 +26,8 @@ export interface ReadableLine {
   key: string;
   text: string;
   spans: ReadableSpan[];
+  /** Original labelled rule, for detecting the input frame after stripping it. */
+  frameText?: string;
 }
 
 export interface ReadableScreen {
@@ -147,9 +149,24 @@ function sameStyle(a: Omit<ReadableSpan, "text">, b: Omit<ReadableSpan, "text">)
 /** Everything an agent draws its frames with. A line made only of these is
  * decoration, and on a phone it reflows into nonsense. */
 const BORDER_ONLY = /^[\s─-╿▀-▟―—]+$/u;
-/** A leading/trailing frame edge around real content on the same row. */
-const LEFT_EDGE = /^\s*[│┃┆┇┊┋]\s?/u;
+/** A leading/trailing frame edge around real content on the same row.
+ *
+ * The left edge is bounded to the first few columns on purpose. A bar deeper
+ * than that is not this row's frame: it is one drawn beside or behind the
+ * content — OpenCode's full TUI paints its centred dialogs over the composer
+ * box, so each dialog row carries the box's `┃` at column 70 with the dialog's
+ * own text 12 columns further right. Stripping `^\s*┃\s?` there took the whole
+ * indent with it, which dropped those rows out of column with the rest of the
+ * dialog (and glued the box's own bleed-through onto them). Left in place the
+ * bar costs one glyph and every column downstream still lines up. */
+const LEFT_EDGE = /^ {0,7}[│┃┆┇┊┋]\s?/u;
 const RIGHT_EDGE = /\s*[│┃┆┇┊┋]\s*$/u;
+/** Labelled horizontal rules (e.g. `─ Worked for 2m ─────`). Keeping their
+ * desktop-width strokes makes one divider wrap into many bright phone rows.
+ * Require strokes on both sides; ordinary dashes in prose/code stay intact. */
+const LABELLED_RULE = /^\s*[╭┌┏╔]?[─━═]+\s+\S.*?\s+[─━═]+[╮┐┓╗]?\s*$/u;
+const RULE_LEFT = /^\s*[╭┌┏╔]?[─━═]+\s+/u;
+const RULE_RIGHT = /\s+[─━═]+[╮┐┓╗]?\s*$/u;
 
 /** Drops `count` characters from the front of a span run, in place. */
 function trimSpansLeft(spans: ReadableSpan[], count: number) {
@@ -187,6 +204,16 @@ function pushSpan(spans: ReadableSpan[], span: ReadableSpan) {
   else spans.push(span);
 }
 
+/** The eight one-dot braille cells. Codex (0.155) scatters them around its
+ * composer as an animated sparkle, a new pattern every repaint — over the
+ * blank rows, and on the input line itself (`›⠁Ask Codex…`), where one next to
+ * the marker hid the input box from `statusLine`, so the frame cut and the
+ * facts flipped with every frame. No spinner or text is made of lone dots, so
+ * each is read as the blank cell it decorates; denser braille (spinners,
+ * plots) is kept. */
+const SPARKLE = /[\u2801\u2802\u2804\u2808\u2810\u2820\u2840\u2880]/gu;
+const SPARKLE_CELL = /^[\u2801\u2802\u2804\u2808\u2810\u2820\u2840\u2880]$/u;
+
 /** One buffer row as styled spans, padding included.
  *
  * Trailing blanks are *not* dropped here: a row that continues on the next one
@@ -196,7 +223,7 @@ function pushSpan(spans: ReadableSpan[], span: ReadableSpan) {
  */
 function rowSpans(line: ReadableLineLike): ReadableSpan[] {
   if (typeof line.getCell !== "function") {
-    const plain = line.translateToString();
+    const plain = line.translateToString().replace(SPARKLE, " ");
     return plain ? [{ text: plain }] : [];
   }
   const spans: ReadableSpan[] = [];
@@ -209,6 +236,11 @@ function rowSpans(line: ReadableLineLike): ReadableSpan[] {
     // cell before it.
     if (cell.getWidth() === 0) continue;
     const chars = cell.isInvisible() ? " ".repeat(cell.getChars().length || 1) : cell.getChars() || " ";
+    // A sparkle takes no style either: a coloured blank would still be a span.
+    if (SPARKLE_CELL.test(chars)) {
+      pushSpan(spans, { text: " " });
+      continue;
+    }
     pushSpan(spans, { text: chars, ...styleOf(cell) });
   }
   return spans;
@@ -243,6 +275,53 @@ function undecorate(spans: ReadableSpan[]): ReadableSpan[] | "blank" | "border" 
   return spans.length ? spans : "blank";
 }
 
+/** A rule that runs to the end of its row, with a gutter of blanks before it —
+ * the edge of a panel drawn beside the conversation rather than across it. */
+const SIDE_RULE = /(?:^|\s{2})[─━]{12,}$/u;
+/** A rule starting left of this is the screen's own, not a side panel's. */
+const MIN_SIDE_COLUMN = 24;
+
+/**
+ * Cuts a side panel off the rows it shares with the conversation, in place.
+ * Claude Code can draw a diff view to the right of its transcript in the same
+ * terminal rows; read whole, each such row was a line of the answer glued to a
+ * line of the diff, and the chat layout put the diff into the prompt bubble
+ * beside it. The panel is found by its own rules — at least two that start at
+ * the same column and run to the end of the row — and cut from the block of
+ * rows around them that keep a blank gutter before that column, so the input
+ * frame and a full-width row printed before the panel opened stay whole.
+ * Columns are counted in characters: a wide glyph left of the panel shifts
+ * that row's cut by one.
+ */
+function cutSidePanel(rows: ReadableSpan[][]) {
+  const texts = rows.map((spans) => spanText(spans).replace(/\s+$/u, ""));
+  const byColumn = new Map<number, number[]>();
+  texts.forEach((text, index) => {
+    const match = SIDE_RULE.exec(text);
+    if (!match) return;
+    const column = match.index + match[0].length - match[0].trimStart().length;
+    if (column >= MIN_SIDE_COLUMN) byColumn.set(column, [...(byColumn.get(column) ?? []), index]);
+  });
+  let column = -1;
+  let ruleRows: number[] = [];
+  byColumn.forEach((indexes, candidate) => {
+    if (indexes.length >= 2 && indexes.length > ruleRows.length) {
+      column = candidate;
+      ruleRows = indexes;
+    }
+  });
+  if (column < 0) return;
+  const gutter = (text: string) => text.length <= column - 2 || text.slice(column - 2, column) === "  ";
+  let top = ruleRows[0];
+  while (top > 0 && gutter(texts[top - 1])) top -= 1;
+  let bottom = ruleRows[ruleRows.length - 1];
+  while (bottom < texts.length - 1 && gutter(texts[bottom + 1])) bottom += 1;
+  for (let index = top; index <= bottom; index += 1) {
+    const width = spanText(rows[index]).length;
+    if (width > column) trimSpansRight(rows[index], width - column);
+  }
+}
+
 function capLine(line: ReadableLine): ReadableLine {
   if (line.text.length <= MAX_LINE) return line;
   const spans = line.spans.slice();
@@ -272,13 +351,16 @@ export function readableRange(
   afterText?: string,
 ): ReadableLine[] {
   const joined: ReadableLine[] = [];
-
+  const physical: { row: number; wrapped: boolean; spans: ReadableSpan[] }[] = [];
   for (let row = first; row < end; row += 1) {
     const bufferLine = buffer.getLine(row);
-    if (!bufferLine) continue;
-    const spans = rowSpans(bufferLine);
+    if (bufferLine) physical.push({ row, wrapped: bufferLine.isWrapped === true, spans: rowSpans(bufferLine) });
+  }
+  cutSidePanel(physical.map((entry) => entry.spans));
+
+  for (const { row, wrapped, spans } of physical) {
     const previous = joined[joined.length - 1];
-    if (bufferLine.isWrapped && previous) {
+    if (wrapped && previous) {
       // A wrapped continuation belongs to the line above it: join first, and
       // let the trim and the frame stripping run over the completed line.
       spans.forEach((span) => pushSpan(previous.spans, span));
@@ -302,7 +384,14 @@ export function readableRange(
       }
       continue;
     }
-    lines.push(capLine({ key: line.key, text: spanText(spans), spans }));
+    const text = spanText(spans);
+    if (LABELLED_RULE.test(text)) {
+      trimSpansRight(spans, RULE_RIGHT.exec(text)![0].length);
+      trimSpansLeft(spans, RULE_LEFT.exec(text)![0].length);
+      lines.push(capLine({ key: line.key, text: spanText(spans), spans, frameText: text }));
+    } else {
+      lines.push(capLine({ key: line.key, text, spans }));
+    }
   }
   return lines;
 }
@@ -320,6 +409,43 @@ export function readableScreen(buffer: ReadableBufferLike, maxRows = MAX_ROWS): 
 
   if (lines.length > MAX_LINES) clipped = true;
   return { lines: lines.slice(-MAX_LINES), clipped };
+}
+
+/**
+ * The same lines without the indent they all share. A TUI draws a dialog's
+ * question two or four columns in, under its frame; a caller that shows that
+ * text as its own — the phone's question heading, where the rows below it are
+ * already a list of its own — wants it flush against the rest of its layout.
+ * Blank lines neither count towards the shared indent nor lose anything.
+ */
+export function dedentLines(lines: readonly ReadableLine[]): ReadableLine[] {
+  let indent = Number.POSITIVE_INFINITY;
+  for (const line of lines) {
+    if (!line.text.trim()) continue;
+    indent = Math.min(indent, line.text.length - line.text.trimStart().length);
+  }
+  if (!Number.isFinite(indent) || indent <= 0) return [...lines];
+  return lines.map((line) => {
+    if (!line.text.trim()) return line;
+    const spans = line.spans.map((span) => ({ ...span }));
+    trimSpansLeft(spans, indent);
+    return { ...line, text: line.text.slice(indent), spans };
+  });
+}
+
+/** `dedentLines` for rows that are already plain text — the status strip's
+ * (`statusFrameLines`). A fullscreen TUI centres its box, so those rows can
+ * arrive 70 columns in on a wide pane; the strip is a phone-width readout of
+ * them, not a scale model of the desktop window. Rows that start at the margin
+ * lose nothing. */
+export function dedentRows(rows: readonly string[]): string[] {
+  let indent = Number.POSITIVE_INFINITY;
+  for (const row of rows) {
+    if (!row.trim()) continue;
+    indent = Math.min(indent, row.length - row.trimStart().length);
+  }
+  if (!Number.isFinite(indent) || indent <= 0) return [...rows];
+  return rows.map((row) => (row.trim() ? row.slice(indent) : row));
 }
 
 /** The plain text of what the reading view is showing, for Copy. */

@@ -119,14 +119,20 @@
       cwds, cross-root paste invoke shape, multi-root merge picker),
       `RightPanelBox` remote gate, `TmuxSessions` box flip.
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     > **Phase 6 — box file-view fixes + per-member line (2026-08-28, 🤖
     > covered, untested live).** Two live-found bugs fixed: (1) cross-project
     > drag-and-drop in the multi-root view moved files *within the source
     > project* to the other project's rel path ("strangely moved" folders) —
     > every `[data-move-rel]` target now carries its tree's identity
-    > (`data-move-root`/`data-move-remote`), `lib/fileMove.ts`'s
+    > (`data-move-root`/`data-move-remote`), `lib/projects/fileMove.ts`'s
     > `resolveMoveTarget` routes the drop (cross-root local↔local only; remote
     > either side refuses the target up front), and `move_path` is called with
     > the TARGET root — this also fixes a right-panel drag into another
@@ -148,8 +154,14 @@
     - [ ] 🖐️ Manual test (drag member→member file + folder both directions;
       drag onto a member's breadcrumb; remote member: flip Local/Remote while
       disconnected; per-member Git/Search/⚙ line)
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     > **Phase 7 — slice membership controls (2026-08-28, 🤖 covered,
     > untested live).** While a Box slice is selected, the switcher's `+`
     > becomes a filterable list of active non-members and each member pill's
@@ -164,8 +176,14 @@
     - [ ] 🖐️ Manual test (select a Box, add several projects without reopening
       `+`, remove both an ordinary and a currently open member, then return to All
       projects and confirm the ordinary create/import/deactivate controls)
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     > **Phase 8 — agent-fence integration (2026-08-31, implemented; live QA
     > pending):** box-scoped and member-scoped local agents receive the box's
     > read-write root union under the default-on bubblewrap fence, plus native
@@ -201,8 +219,14 @@
       list, confirm the strip un-slices, the accent line follows the scope, the
       bars still open a waiting box tab from inside root, and that dragging a
       pill still springs the list open onto a box row.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     > **Phase 10 — the selected box gets its own pill (2026-09-04, 🤖 covered,
     > untested live).** The chip was doing two jobs: the menu you open to go
     > somewhere, and the label saying where you are — so returning to the box you
@@ -231,8 +255,14 @@
       Rename/Edit box/Delete; drag a project pill onto the pill to add a member;
       confirm a box tab waiting on a decision draws its bar on the pill and not
       also on the chip.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     > **Phase 11 — the slice hands the scope back (2026-09-05, 🤖 covered,
     > untested live).** Entering a box already took the scope with it
     > (`openBox`); leaving by "All projects" did not give it back, so the strip
@@ -255,8 +285,14 @@
       again with its tabs and its pill lit. Repeat after clicking a member
       inside the slice, and after closing P while the box is open (lands at the
       root terminal).
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 ---
 
@@ -277,8 +313,14 @@
       own; commit without pushing → the line changes; a clean project shows no
       line. Right-click a remote project's pill with the window made short: the
       menu stops at the window's bottom edge and scrolls, header wash intact.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 827. **Folders spring open while dragging a file to move it.** The tree lists
     one folder at a time, so a file dragged toward a folder the listing did not
@@ -287,13 +329,23 @@
     re-resolving the drop target once the new rows paint; after an open the
     pointer must move before another folder can arm, so a held-still drag does
     not drill down a level per dwell. Timing core `createSpringLoader` in
-    `lib/fileMove.ts`; `components/files/FileTree.tsx`. Frontend only.
-    Implemented 2026-09-14 (`de0f931`), **not live-tested**.
+    `lib/projects/fileMove.ts`; `components/files/FileTree.tsx`. Frontend only.
+    Implemented 2026-09-14 (`de0f931`), **not live-tested**. 2026-09-21: the
+    listing itself (`.file-tree`, file rows and empty space) is now a drop
+    target for the folder it shows — before, a release inside a freshly
+    sprung-open folder hit no target and the file stayed put.
     - [x] 🤖 Automated test — `FileMove` (spring loader: dwell, re-arm only
-      after movement, cancel)
+      after movement, cancel; tripwire: tree root carries `data-move-rel`)
     - [ ] 🖐️ Manual test — drag a file over a folder row and hold still: after
       about ⅔ s the tree opens that folder and exactly one level, not deeper;
-      wiggle onto a subfolder → it opens too; drop → the file moves there. Hover
+      wiggle onto a subfolder → it opens too; drop on a file row or empty space
+      of the opened listing (dashed frame) → the file moves there. Hover
       a breadcrumb and ↑ the same way. Pass over folders quickly → nothing opens.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS

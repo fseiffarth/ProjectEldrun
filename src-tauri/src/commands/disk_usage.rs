@@ -162,3 +162,28 @@ pub fn disk_usage_cancel(scan_id: String, state: State<'_, DuScanState>) {
 pub async fn disk_usage_devices() -> Result<Vec<DuDevice>, String> {
     Ok(duscan::devices())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `disk-scan-progress` payload is snake_case with the fixed key set
+    /// the pane filters on (`scan_id`) and switches on (`phase`).
+    #[test]
+    fn the_progress_payload_is_snake_case_with_a_fixed_key_set() {
+        let progress = DuProgress {
+            scan_id: "s1".into(),
+            phase: "dir".into(),
+            path: "/tmp/x".into(),
+            files: 3,
+            dirs: 1,
+            bytes: 4096,
+        };
+        let out = serde_json::to_value(&progress).unwrap();
+        let mut keys: Vec<&str> = out.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, vec!["bytes", "dirs", "files", "path", "phase", "scan_id"]);
+        assert_eq!(out["scan_id"], "s1");
+        assert_eq!(out["bytes"], 4096);
+    }
+}

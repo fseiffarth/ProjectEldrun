@@ -1,22 +1,23 @@
 import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { deliveryRecordId, isFinishedOneTime } from "../../lib/agentPromptSend";
-import { promptOfSchedule } from "../../lib/agentPromptScheduled";
-import { nextAfter } from "../../lib/agentPromptLinks";
+import { deliveryRecordId, isFinishedOneTime } from "../../lib/agents/prompt/send";
+import { promptOfSchedule } from "../../lib/agents/prompt/scheduled";
+import { nextAfter } from "../../lib/agents/prompt/links";
 import {
   scheduleVerdict,
+  isAgentProposal,
   sortSchedules,
   type ScheduleResult,
   type ScheduledAgentPrompt,
-} from "../../lib/agentSchedule";
+} from "../../lib/agents/agentSchedule";
 import {
   scheduledAgentInput,
   submitScheduledAgentMessage,
-} from "../../lib/scheduledAgentInput";
-import { agentDeliveryReady, agentDeliveryTurn, lastPtyOutputAt, useActivityStore } from "../../stores/activity";
-import { recordScheduledDelivery, sendCollectedPrompt, useAgentPromptsStore } from "../../stores/agentPrompts";
-import { useAgentSchedulesStore } from "../../stores/agentSchedules";
+} from "../../lib/agents/scheduledAgentInput";
+import { agentDeliveryReady, agentDeliveryTurn, lastPtyOutputAt, noteScheduleProposal, useActivityStore } from "../../stores/activity";
+import { recordScheduledDelivery, sendCollectedPrompt, useAgentPromptsStore } from "../../stores/agents/agentPrompts";
+import { persistScopeLayout, useAgentSchedulesStore } from "../../stores/agents/agentSchedules";
 import { useTabsStore, type TabEntry } from "../../stores/tabs";
 
 const TICK_MS = 15_000;
@@ -171,6 +172,7 @@ async function retire(
       agent: binding.tab.cmd,
       result: last.result,
       scheduledFor: last.occurrence || undefined,
+      scheduleOrigin: schedule.origin,
     },
   );
   if (schedule.rule.type !== "once") return;
@@ -277,6 +279,7 @@ export function AgentScheduleHost() {
   useEffect(() => {
     ensureLiveTargetIds();
     let disposed = false;
+    const notifiedProposals = new Set<string>();
     let unlisten: (() => void) | undefined;
 
     const loadBindings = async () => {
@@ -335,6 +338,12 @@ export function AgentScheduleHost() {
               .load(binding.projectId, binding.scheduleTargetId)
               .catch(() => []);
           }
+          if (schedules.some(isAgentProposal)) {
+            if (!notifiedProposals.has(key)) {
+              notifiedProposals.add(key);
+              noteScheduleProposal(`${binding.projectId}:${binding.tab.key}`);
+            }
+          } else notifiedProposals.delete(key);
           // Rules that finished before this ran — written by an older build, or
           // left behind by a crash between the receipt and the retire — are
           // moved to the history the same way, so the menu ends up holding only
@@ -441,7 +450,11 @@ export function AgentScheduleHost() {
 
     void loadBindings().then(tick);
     const timer = setInterval(() => void tick(), TICK_MS);
+    // Backend reads prune proposals after seven days, even when no MCP client
+    // or schedule dialog has been opened since they arrived.
+    const proposalPruneTimer = setInterval(() => void loadBindings().then(tick), 60 * 60_000);
     void listen("agent-schedules-changed", () => {
+      for (const projectId of new Set(bindings().map((b) => b.projectId))) void persistScopeLayout(projectId);
       void useAgentSchedulesStore.getState().refreshLoaded().then(tick);
     }).then((stop) => {
       if (disposed) stop();
@@ -496,6 +509,7 @@ export function AgentScheduleHost() {
     return () => {
       disposed = true;
       clearInterval(timer);
+      clearInterval(proposalPruneTimer);
       clearTimeout(cleanupTimer);
       unsubscribe();
       unlisten?.();

@@ -45,7 +45,7 @@ pub(crate) fn calendar_path() -> PathBuf {
 
 /// Read the store, migrating a legacy file in the process. A missing file is an
 /// empty calendar, not an error.
-fn read_data(path: &Path) -> Result<CalendarData, String> {
+pub(crate) fn read_data(path: &Path) -> Result<CalendarData, String> {
     if !path.exists() {
         return Ok(CalendarData::default());
     }
@@ -62,6 +62,21 @@ fn read_data(path: &Path) -> Result<CalendarData, String> {
 /// `write_json_atomic`'s own doc describes.
 fn write_data(path: &Path, data: &CalendarData) -> Result<(), String> {
     storage::write_json_atomic(path, data).map_err(|e| e.to_string())
+}
+
+/// Apply an entire reviewed proposal under the same lock as user edits and
+/// CalDAV merges. Failed preconditions never write even part of a batch.
+pub(crate) fn apply_change_at(
+    path: &Path,
+    rows: &[crate::services::root_mcp_review::Row],
+    calendars: &[serde_json::Value],
+) -> Result<Vec<crate::services::root_mcp::Change>, String> {
+    let _guard = lock_calendar();
+    let mut value = serde_json::to_value(read_data(path)?).map_err(|e| e.to_string())?;
+    let changes = crate::services::root_mcp_review::apply_rows(&mut value, rows, calendars)?;
+    let data: CalendarData = serde_json::from_value(value).map_err(|e| e.to_string())?;
+    write_data(path, &data)?;
+    Ok(changes)
 }
 
 /// Mint an id not already present among `existing` (guards against back-to-back
@@ -90,7 +105,7 @@ fn calendar_ids(data: &CalendarData) -> HashSet<&str> {
 
 /// Insert `event`, minting an id and defaulting its calendar. The caller's `id`
 /// is ignored — the store owns identity.
-fn create_event_at(path: &Path, mut event: CalendarEvent) -> Result<CalendarEvent, String> {
+pub(crate) fn create_event_at(path: &Path, mut event: CalendarEvent) -> Result<CalendarEvent, String> {
     let _guard = lock_calendar();
     let mut data = read_data(path)?;
     event.id = fresh_id(&event_ids(&data));
@@ -104,7 +119,7 @@ fn create_event_at(path: &Path, mut event: CalendarEvent) -> Result<CalendarEven
 }
 
 /// Replace the event with `event.id` wholesale.
-fn update_event_at(path: &Path, event: CalendarEvent) -> Result<CalendarEvent, String> {
+pub(crate) fn update_event_at(path: &Path, event: CalendarEvent) -> Result<CalendarEvent, String> {
     let _guard = lock_calendar();
     let mut data = read_data(path)?;
     let slot = data
@@ -118,7 +133,7 @@ fn update_event_at(path: &Path, event: CalendarEvent) -> Result<CalendarEvent, S
     Ok(event)
 }
 
-fn delete_event_at(path: &Path, id: &str) -> Result<(), String> {
+pub(crate) fn delete_event_at(path: &Path, id: &str) -> Result<(), String> {
     let _guard = lock_calendar();
     let mut data = read_data(path)?;
     let before = data.events.len();
@@ -127,6 +142,112 @@ fn delete_event_at(path: &Path, id: &str) -> Result<(), String> {
         return Err(format!("event '{id}' not found"));
     }
     write_data(path, &data)
+}
+
+/// One event a move re-filed: the row as it was, and as it now is.
+#[derive(Debug, Clone)]
+pub(crate) struct MovedEvent {
+    pub before: CalendarEvent,
+    pub after: CalendarEvent,
+}
+
+/// Re-file `event` under `to`, in memory. `data` is the store it came from.
+///
+/// A row synced from a CalDAV server is a **resource in one collection**, and a
+/// move cannot carry that address along: pushing the row to its new calendar
+/// under its old `caldav_href` would `PUT` straight back into the collection it
+/// just left. So the address is dropped here, which makes the next push a
+/// create in the new collection, and the caller hands the `before` row to
+/// whatever deletes the old copy (`MovedEvent`).
+///
+/// A resource holding more than this one row (a series plus the occurrences
+/// the server stores as overrides) is refused: those rows move as one object
+/// or not at all, and pushing them one by one would split the series.
+pub(crate) fn relocate_event(
+    data: &CalendarData,
+    event: &mut CalendarEvent,
+    to: &str,
+) -> Result<(), String> {
+    let href = extra_str(&event.extra, CALDAV_HREF_KEY);
+    if !href.is_empty() {
+        let siblings = data
+            .events
+            .iter()
+            .filter(|e| {
+                e.id != event.id
+                    && e.calendar_id == event.calendar_id
+                    && extra_str(&e.extra, CALDAV_HREF_KEY) == href
+            })
+            .count();
+        if siblings > 0 {
+            return Err(format!(
+                "event '{}' is a recurring series with edited occurrences on its CalDAV server; move it there instead",
+                event.title
+            ));
+        }
+    }
+    event.extra.remove(CALDAV_HREF_KEY);
+    event.extra.remove(CALDAV_ETAG_KEY);
+    event.calendar_id = to.to_string();
+    Ok(())
+}
+
+/// Move the events `ids` into calendar `to`, in **one** atomic write: either
+/// every event moves or none does, so a refusal halfway through a batch leaves
+/// no half-moved calendar behind. An event already in `to` is left alone and
+/// not reported.
+pub(crate) fn move_events_at(path: &Path, ids: &[String], to: &str) -> Result<Vec<MovedEvent>, String> {
+    let _guard = lock_calendar();
+    let mut data = read_data(path)?;
+    let target = data
+        .calendars
+        .iter()
+        .find(|c| c.id == to)
+        .ok_or_else(|| format!("calendar '{to}' not found"))?;
+    if target.readonly {
+        return Err(format!("calendar '{}' is read-only", target.name));
+    }
+    let readonly: HashSet<&str> = data
+        .calendars
+        .iter()
+        .filter(|c| c.readonly)
+        .map(|c| c.id.as_str())
+        .collect();
+
+    let mut moved = Vec::new();
+    let mut seen = HashSet::new();
+    for id in ids {
+        if !seen.insert(id.as_str()) {
+            continue;
+        }
+        let before = data
+            .events
+            .iter()
+            .find(|e| &e.id == id)
+            .cloned()
+            .ok_or_else(|| format!("event '{id}' not found"))?;
+        if before.calendar_id == to {
+            continue;
+        }
+        // Moving out of a read-only calendar deletes from it, which is a write
+        // the window could not push either.
+        if readonly.contains(before.calendar_id.as_str()) {
+            return Err(format!("event '{id}' is in a read-only calendar"));
+        }
+        let mut after = before.clone();
+        relocate_event(&data, &mut after, to)?;
+        moved.push(MovedEvent { before, after });
+    }
+    for m in &moved {
+        if let Some(slot) = data.events.iter_mut().find(|e| e.id == m.after.id) {
+            *slot = m.after.clone();
+        }
+    }
+    if !moved.is_empty() {
+        data.normalize();
+        write_data(path, &data)?;
+    }
+    Ok(moved)
 }
 
 // ── Tasks ───────────────────────────────────────────────────────────────────
@@ -146,7 +267,7 @@ fn normalized_task(data: &CalendarData, id: &str) -> Result<CalendarTask, String
         .ok_or_else(|| format!("task '{id}' vanished during normalize"))
 }
 
-fn create_task_at(path: &Path, mut task: CalendarTask) -> Result<CalendarTask, String> {
+pub(crate) fn create_task_at(path: &Path, mut task: CalendarTask) -> Result<CalendarTask, String> {
     let _guard = lock_calendar();
     let mut data = read_data(path)?;
     task.id = fresh_id(&task_ids(&data));
@@ -160,7 +281,7 @@ fn create_task_at(path: &Path, mut task: CalendarTask) -> Result<CalendarTask, S
     normalized_task(&data, &id)
 }
 
-fn update_task_at(path: &Path, task: CalendarTask) -> Result<CalendarTask, String> {
+pub(crate) fn update_task_at(path: &Path, task: CalendarTask) -> Result<CalendarTask, String> {
     let _guard = lock_calendar();
     let mut data = read_data(path)?;
     let id = task.id.clone();
@@ -175,7 +296,7 @@ fn update_task_at(path: &Path, task: CalendarTask) -> Result<CalendarTask, Strin
     normalized_task(&data, &id)
 }
 
-fn delete_task_at(path: &Path, id: &str) -> Result<(), String> {
+pub(crate) fn delete_task_at(path: &Path, id: &str) -> Result<(), String> {
     let _guard = lock_calendar();
     let mut data = read_data(path)?;
     let before = data.tasks.len();
@@ -239,7 +360,7 @@ fn column_order(data: &CalendarData, column: &str, exclude: &str) -> Vec<(String
 /// which is a superset of `moves` whenever a reindex fired or the done coupling
 /// completed a card. The frontend merges those into its store rather than
 /// reloading the whole calendar.
-fn move_tasks_at(path: &Path, moves: Vec<TaskPlacement>) -> Result<Vec<CalendarTask>, String> {
+pub(crate) fn move_tasks_at(path: &Path, moves: Vec<TaskPlacement>) -> Result<Vec<CalendarTask>, String> {
     let _guard = lock_calendar();
     let mut data = read_data(path)?;
     // The first drag is what creates the board — a *read* deliberately never
@@ -413,7 +534,7 @@ fn columns_set_at(
 
 // ── Calendars ───────────────────────────────────────────────────────────────
 
-fn create_calendar_at(path: &Path, mut calendar: Calendar) -> Result<Calendar, String> {
+pub(crate) fn create_calendar_at(path: &Path, mut calendar: Calendar) -> Result<Calendar, String> {
     let _guard = lock_calendar();
     let mut data = read_data(path)?;
     calendar.id = fresh_id(&calendar_ids(&data));
@@ -453,6 +574,41 @@ fn delete_calendar_at(path: &Path, id: &str) -> Result<(), String> {
     data.events.retain(|e| e.calendar_id != id);
     data.tasks.retain(|t| t.calendar_id != id);
     write_data(path, &data)
+}
+
+/// Put a just-deleted calendar back, with the events and tasks the caller kept
+/// from before the delete — the sidebar's "Undo". The calendar keeps its id, so
+/// its CalDAV link and anything else keyed on it still line up. An event or task
+/// whose id was reused in the meantime gets a fresh one rather than clobbering
+/// the newcomer; everything restored is re-filed under the restored calendar.
+fn restore_calendar_at(
+    path: &Path,
+    calendar: Calendar,
+    events: Vec<CalendarEvent>,
+    tasks: Vec<CalendarTask>,
+) -> Result<CalendarData, String> {
+    let _guard = lock_calendar();
+    let mut data = read_data(path)?;
+    if data.calendars.iter().any(|c| c.id == calendar.id) {
+        return Err(format!("calendar '{}' already exists", calendar.id));
+    }
+    for mut event in events {
+        if event_ids(&data).contains(event.id.as_str()) {
+            event.id = fresh_id(&event_ids(&data));
+        }
+        event.calendar_id = calendar.id.clone();
+        data.events.push(event);
+    }
+    for mut task in tasks {
+        if task_ids(&data).contains(task.id.as_str()) {
+            task.id = fresh_id(&task_ids(&data));
+        }
+        task.calendar_id = calendar.id.clone();
+        data.tasks.push(task);
+    }
+    data.calendars.push(calendar);
+    write_data(path, &data)?;
+    Ok(data)
 }
 
 /// Replace every event/task filed under `calendar_id` with a fresh set —
@@ -782,7 +938,7 @@ pub(crate) fn set_caldav_identity_at(
 // The guards are the door's width — an extension allowlist (so the path cannot
 // name a key, a config, or a document) and a size cap (so a "calendar" cannot be
 // used to slurp a huge file into the renderer). Parsing itself stays in the
-// frontend (`src/lib/ics.ts`), where it is unit-tested; these only move bytes.
+// frontend (`src/lib/calendar/ics.ts`), where it is unit-tested; these only move bytes.
 
 /// Extensions an ICS path may carry. Anything else is refused outright.
 const ICS_EXTENSIONS: [&str; 3] = ["ics", "ical", "ifb"];
@@ -958,6 +1114,16 @@ pub async fn update_calendar(calendar: Calendar) -> Result<Calendar, String> {
 #[tauri::command]
 pub async fn delete_calendar(id: String) -> Result<(), String> {
     run_off_thread(move || delete_calendar_at(&calendar_path(), &id)).await
+}
+
+/// Undo of [`delete_calendar`]. See [`restore_calendar_at`].
+#[tauri::command]
+pub async fn restore_calendar(
+    calendar: Calendar,
+    events: Vec<CalendarEvent>,
+    tasks: Vec<CalendarTask>,
+) -> Result<CalendarData, String> {
+    run_off_thread(move || restore_calendar_at(&calendar_path(), calendar, events, tasks)).await
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -1186,6 +1352,36 @@ mod tests {
         assert_eq!(data.calendars.len(), 1);
         assert_eq!(data.events.len(), 1, "only the Work event is gone");
         assert_eq!(data.events[0].title, "personal");
+    }
+
+    #[test]
+    fn restoring_a_deleted_calendar_brings_its_events_back() {
+        let (_dir, path) = tmp_path();
+        let mut cal = read_data(&path).unwrap().calendars[0].clone();
+        cal.name = "Work".to_string();
+        let cal = create_calendar_at(&path, cal).unwrap();
+        let mut in_work = event("meeting", "2026-07-08T09:00", "2026-07-08T10:00");
+        in_work.calendar_id = cal.id.clone();
+        let in_work = create_event_at(&path, in_work).unwrap();
+
+        delete_calendar_at(&path, &cal.id).unwrap();
+        // An id reused while the calendar was gone must not be clobbered.
+        let mut data = read_data(&path).unwrap();
+        let mut squatter = event("squatter", "2026-07-09T09:00", "2026-07-09T10:00");
+        squatter.id = in_work.id.clone();
+        squatter.calendar_id = data.calendars[0].id.clone();
+        data.events.push(squatter);
+        write_data(&path, &data).unwrap();
+
+        let data = restore_calendar_at(&path, cal.clone(), vec![in_work.clone()], vec![]).unwrap();
+        assert!(data.calendars.iter().any(|c| c.id == cal.id));
+        let restored: Vec<_> = data.events.iter().filter(|e| e.calendar_id == cal.id).collect();
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].title, "meeting");
+        assert_ne!(restored[0].id, in_work.id, "the squatter keeps the id");
+        assert_eq!(data.events.len(), 2);
+
+        assert!(restore_calendar_at(&path, cal, vec![], vec![]).is_err(), "no double restore");
     }
 
     #[test]

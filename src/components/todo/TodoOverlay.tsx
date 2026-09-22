@@ -4,6 +4,8 @@ import { useSettingsStore } from "../../stores/settings";
 import { useTodoStore } from "../../stores/todo";
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
+import { useFloatingFrame } from "../common/useFloatingFrame";
+import { OverlayApprovals } from "../layout/OverlayApprovals";
 import { TodoPane } from "./TodoPane";
 
 /**
@@ -33,11 +35,15 @@ export function TodoOverlayHost() {
   const open = useTodoStore((s) => s.overlayOpen);
 
   const live = enabled && open;
+  // Moves, resizes and fills like the root console; remembered per overlay.
+  const { frameRef, frameStyle, frameClass, barProps, grips, fillButton } =
+    useFloatingFrame("eldrun.todoOverlayFrame");
 
   useEffect(() => {
     if (!live) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      // An Escape the approvals panel (or anything else) already took is not ours.
+      if (e.key === "Escape" && !e.defaultPrevented) {
         e.stopPropagation();
         useTodoStore.getState().closeOverlay();
       }
@@ -62,15 +68,20 @@ export function TodoOverlayHost() {
       }}
     >
       <div
-        className="project-dialog dialog-framed todo-overlay"
+        ref={frameRef}
+        className={`project-dialog dialog-framed todo-overlay ${frameClass}`}
+        style={frameStyle}
         role="dialog"
         aria-modal="true"
         aria-label={t("todo.overlayTitle")}
       >
-        <div className="settings-title-row">
+        {grips}
+        <div {...barProps} className={`settings-title-row ${barProps.className}`}>
           <h2>
-            {t("todo.overlayTitle")} <UntestedTag />
+            {t("todo.overlayTitle")} <UntestedTag id="todo.overlayTitle" />
           </h2>
+          <OverlayApprovals domain="todo" />
+          {fillButton}
           <button
             type="button"
             className="dialog-close-btn"

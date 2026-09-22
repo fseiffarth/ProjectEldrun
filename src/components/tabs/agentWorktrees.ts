@@ -19,7 +19,7 @@
  * *derived from* the project root rather than remembered from an old one —
  * `<root>/.eldrun/worktrees/<name>`, the single place a worktree may live
  * (`commands::git::WorktreeCtx::worktrees_root`) — and resets everything else
- * exactly as before. A moved project is still safe: `renameProjectDir` rewrites
+ * exactly as before. A moved project is still safe: `rename_project_dir` rewrites
  * the prefix, and a cwd under a *different* root fails the check and resets.
  *
  * The listing is always taken from the **mirror side** (`site: "mirror"`): for
@@ -41,7 +41,7 @@ import {
   isAgentMenuKind,
   worktreeName,
   type GitWorktree,
-} from "../../lib/agentWorktrees";
+} from "../../lib/agents/agentWorktrees";
 
 /**
  * The "+" menus' worktree question, shared by `TabBar` and the popout's
@@ -97,7 +97,7 @@ export function useAgentWorktreePicker({
             // the old menu gave, and the safe one to Enter through.
             current: w.is_main,
           })),
-          untested: true,
+          untested: "agentWorktrees.1",
         });
       } finally {
         setAsking(false);

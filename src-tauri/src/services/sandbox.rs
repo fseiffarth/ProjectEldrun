@@ -888,11 +888,20 @@ pub fn up(
     let (mut rw_mounts, mut ro_mounts) = if strict_trash {
         (Vec::new(), Vec::new())
     } else {
-        agent_home_mounts(
+        let codex_state = prepare_codex_state(&home, project_id);
+        let (mut rw, ro) = agent_home_mounts(
             &home,
             &live_sessions_own.to_string_lossy(),
             &live_sessions.to_string_lossy(),
-        )
+            true,
+        );
+        // Parent first; Docker also sorts nested bind mounts by destination,
+        // but preserving the relationship here keeps the pure argv obvious.
+        rw.insert(
+            0,
+            format!("{}:{home}/.codex", codex_state.to_string_lossy()),
+        );
+        (rw, ro)
     };
     if !strict_trash {
         rw_mounts.extend(
@@ -951,8 +960,27 @@ pub fn up(
             &claude_projects_stage(project_id),
         )
     };
-    let rw_mounts: Vec<String> = rw_mounts.into_iter().chain(tx_rw).collect();
-    let ro_mounts: Vec<String> = ro_mounts.into_iter().chain(tx_ro).collect();
+    // The repo's git control files, re-mounted over the rw project (#158): a
+    // contained agent can commit, but cannot plant a hook or `core.fsmonitor`
+    // for the host's next git, nor swap `.git` for a `gitdir:` pointer. Kept out
+    // of the fingerprint like the transcript mounts: which of them exist
+    // changes as the agent works, and a mismatch would recreate the container
+    // under its live tabs.
+    let guard = crate::services::git_guard::guard_paths(&[PathBuf::from(project_dir)], None);
+    let identical = |p: PathBuf| {
+        let p = p.to_string_lossy().into_owned();
+        format!("{p}:{p}")
+    };
+    let rw_mounts: Vec<String> = rw_mounts
+        .into_iter()
+        .chain(tx_rw)
+        .chain(guard.pinned.into_iter().map(identical))
+        .collect();
+    let ro_mounts: Vec<String> = ro_mounts
+        .into_iter()
+        .chain(tx_ro)
+        .chain(guard.read_only.into_iter().map(identical))
+        .collect();
 
     match up_decision(&probe_container(&name), &fingerprint) {
         UpAction::UseExisting => {
@@ -1070,13 +1098,21 @@ pub fn harvest_and_clear_stage() {
 /// copies are cleared by [`harvest_and_clear_stage`], which must have run first
 /// and synchronously. Best-effort; cheap no-op when docker is absent.
 pub fn sweep_orphans() {
-    // Containers are Unix-only (`up_for_project` is a no-op and spawn refuses on
-    // Windows), so a previous run can't have left one behind — don't spawn
-    // `docker --version`/`docker ps` at every Windows startup for nothing.
-    if !cfg!(unix) || preflight_docker().is_err() {
+    // Containers run on every OS with Docker (Docker Desktop on Windows and
+    // macOS), so a crashed or killed previous run can leave one behind anywhere.
+    // What must not happen is a `docker --version`/`docker ps` spawn at every
+    // startup on a machine with no Docker at all — hence the PATH walk first,
+    // which spawns nothing.
+    if !sweep_should_probe(crate::paths::binary_on_path("docker")) || preflight_docker().is_err() {
         return;
     }
     remove_all_owned_except_trash();
+}
+
+/// Whether the startup sweep may spend a `docker` spawn at all: only when a
+/// docker CLI resolves on Eldrun's PATH. Pure so the gate is testable on any OS.
+fn sweep_should_probe(docker_on_path: bool) -> bool {
+    docker_on_path
 }
 
 /// `docker rm -f` every container carrying our owner label. Best-effort.
@@ -1331,16 +1367,37 @@ fn build_command(project_id: &str, image: &str) -> Option<String> {
     if image != DEFAULT_IMAGE && !image.starts_with("eldrun-") {
         return Some(format!("docker pull {image}"));
     }
+    let windows = cfg!(target_os = "windows");
     if let Some(dir) = project_dir_for(project_id) {
         let in_repo = Path::new(&dir).join("docker").join("agent-sandbox");
         if in_repo.join("Dockerfile").is_file() {
-            return Some(format!("docker build -t {image} '{}'", in_repo.display()));
+            return Some(format!(
+                "docker build -t {image} {}",
+                install_shell_quote(&in_repo.to_string_lossy(), windows)
+            ));
         }
     }
     let stage = storage::state_dir().join("agent-sandbox");
     std::fs::create_dir_all(&stage).ok()?;
     std::fs::write(stage.join("Dockerfile"), REFERENCE_DOCKERFILE).ok()?;
-    Some(format!("docker build -t {image} '{}'", stage.display()))
+    Some(format!(
+        "docker build -t {image} {}",
+        install_shell_quote(&stage.to_string_lossy(), windows)
+    ))
+}
+
+/// Quote `path` as one argument for the shell the frontend runs the build in:
+/// PowerShell on Windows, bash elsewhere (`ProjectPill`/`ProjectDialog` pick the
+/// matching shell). Both take `'…'` literally, but they escape an apostrophe
+/// differently — doubled in PowerShell, `'\''` in POSIX shells. cmd.exe is never
+/// the target: it does not treat `'` as a quote at all, so a path with a space
+/// would split.
+pub(crate) fn install_shell_quote(path: &str, windows: bool) -> String {
+    if windows {
+        format!("'{}'", path.replace('\'', "''"))
+    } else {
+        format!("'{}'", path.replace('\'', "'\\''"))
+    }
 }
 
 // ── Tab-kill contract ─────────────────────────────────────────────────────
@@ -1412,7 +1469,11 @@ pub fn sandbox_spec_for(project_id: &str) -> Option<SandboxSpec> {
 }
 
 /// The project's directory (the bind-mount root), from the `projects.json`
-/// entry's flattened `extra["directory"]`, falling back to `project.json`.
+/// entry's flattened `extra["directory"]`, falling back to the parent of its
+/// `local_file` (always `<directory>/project.json`) for legacy entries. Never the
+/// `directory` *inside* `project.json`: that file sits in the container's own rw
+/// mount, and a value read from it would let the contained process choose what
+/// the next container mounts.
 pub fn project_dir_for(project_id: &str) -> Option<String> {
     if let Some(v) = project_entry_value(project_id, "directory") {
         if let Some(s) = v.as_str() {
@@ -1424,9 +1485,10 @@ pub fn project_dir_for(project_id: &str) -> Option<String> {
     let list_path = storage::state_dir().join("projects.json");
     let list: crate::schema::projects::ProjectsList = storage::read_json(&list_path).ok()?;
     let entry = list.iter().find(|e| e.id == project_id)?;
-    let project: crate::schema::project::Project =
-        storage::read_json(Path::new(&entry.local_file)).ok()?;
-    (!project.directory.is_empty()).then_some(project.directory)
+    Path::new(&entry.local_file)
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .filter(|s| !s.is_empty())
 }
 
 /// The project id whose tabs at `project_dir` would run **inside a container** —
@@ -1642,19 +1704,29 @@ const CLAUDE_UNMOUNTED: &[&str] = &[
 const AGENT_READ_ONLY: &[&str] = &["*.sh", "*.md"];
 
 /// Entries of `~/.codex` that are not mounted. Much shorter than
-/// [`CLAUDE_UNMOUNTED`] on purpose: both places Codex keeps a conversation
-/// **must** stay mounted, because `agent_session::codex_session_exists` reads
-/// them back to decide whether a tab can resume — unmounting either silently
+/// [`CLAUDE_UNMOUNTED`] on purpose: the rollout tree Codex keeps a conversation
+/// in **must** stay mounted, because `agent_session::codex_session_exists`
+/// reads it back to decide whether a tab can resume — unmounting it silently
 /// kills Codex resume in every container:
 ///
-/// - `sessions/`, the rollout logs releases up to 0.153.4 wrote;
-/// - `state_<n>.sqlite` (and its `-wal`/`-shm` siblings), the thread store
-///   0.153.4 writes instead. Nothing names these explicitly — they are simply
-///   entries that no rule excludes, which is the point of keeping this list
-///   short.
+/// - `sessions/`, the rollout logs Codex writes;
+/// - the SQLite thread store is handled separately in a durable per-scope
+///   directory mounted over `~/.codex`, because WAL/SHM files cannot safely be
+///   individual file mounts.
 ///
 /// `config.toml` is the staged-shadow destination (see [`staged_config_mounts`]).
 const CODEX_UNMOUNTED: &[&str] = &["history.jsonl", "config.toml"];
+
+/// Codex's SQLite files must live in the per-scope directory mounted over
+/// `~/.codex`, rather than being mounted one file at a time from the host.
+/// SQLite removes and recreates its `-wal`/`-shm` sidecars; a file bind pins the
+/// old inode, so a fenced tab could write a rollout while its thread index and
+/// paginated history disappeared with the tmpfs home. The next
+/// `codex resume <id>` then found only the rollout and failed in Codex's legacy
+/// `list_turns` path.
+fn is_codex_sqlite_entry(name: &str) -> bool {
+    name.contains(".sqlite")
+}
 
 /// Whether a directory entry name matches one of a pattern list. A pattern
 /// ending in `*` matches by prefix, one starting with `*` by suffix; everything
@@ -1676,7 +1748,11 @@ fn matches_entry(name: &str, patterns: &[&str]) -> bool {
 /// is what makes the exclusion real: an unmounted child is simply not reachable,
 /// and the container cannot create new top-level entries in the host's dir
 /// either. Entries matching [`AGENT_READ_ONLY`] land in the `ro` half.
-fn narrowed_agent_mounts(dir: &str, unmounted: &[&str]) -> (Vec<String>, Vec<String>) {
+fn narrowed_agent_mounts(
+    dir: &str,
+    unmounted: &[&str],
+    codex_state_overlay: bool,
+) -> (Vec<String>, Vec<String>) {
     let base = Path::new(dir);
     if !base.is_dir() {
         return (Vec::new(), Vec::new());
@@ -1687,7 +1763,10 @@ fn narrowed_agent_mounts(dir: &str, unmounted: &[&str]) -> (Vec<String>, Vec<Str
     let mut names: Vec<String> = entries
         .flatten()
         .filter_map(|e| e.file_name().to_str().map(str::to_string))
-        .filter(|n| !matches_entry(n, unmounted))
+        .filter(|n| {
+            !matches_entry(n, unmounted)
+                && !(codex_state_overlay && is_codex_sqlite_entry(n))
+        })
         .collect();
     // Deterministic order so the spec fingerprint doesn't flap with readdir order.
     names.sort();
@@ -1724,13 +1803,18 @@ pub(crate) fn agent_home_mounts(
     home: &str,
     live_sessions_src: &str,
     live_sessions_dst: &str,
+    codex_state_overlay: bool,
 ) -> (Vec<String>, Vec<String>) {
     let (mut rw, mut ro) = (Vec::new(), Vec::new());
     for (dir, unmounted) in [
         (format!("{home}/.claude"), CLAUDE_UNMOUNTED),
         (format!("{home}/.codex"), CODEX_UNMOUNTED),
     ] {
-        let (entry_rw, entry_ro) = narrowed_agent_mounts(&dir, unmounted);
+        let (entry_rw, entry_ro) = narrowed_agent_mounts(
+            &dir,
+            unmounted,
+            codex_state_overlay && dir.ends_with("/.codex"),
+        );
         rw.extend(entry_rw);
         ro.extend(entry_ro);
     }
@@ -1743,7 +1827,141 @@ pub(crate) fn agent_home_mounts(
             rw.push(format!("{cand}:{cand}"));
         }
     }
+    // OpenCode keeps every session in `~/.local/share/opencode/opencode.db`
+    // (plus `auth.json`) and its last model/prompt history under
+    // `~/.local/state/opencode`. Unmounted, a fenced tab wrote its conversation
+    // into the throwaway home and the restore's `opencode --continue` found no
+    // session to continue. Whole directories, for the same reason as Codex's
+    // store: SQLite replaces its `-wal`/`-shm` sidecars. The config dir is
+    // readable only — plugins and MCP commands declared there run in the host's
+    // uncontained OpenCode — and the cache (downloaded binaries) stays out.
+    for (rel, writable) in [
+        (".local/share/opencode", true),
+        (".local/state/opencode", true),
+        (".config/opencode", false),
+    ] {
+        let dir = format!("{home}/{rel}");
+        if Path::new(&dir).is_dir() {
+            if writable { &mut rw } else { &mut ro }.push(format!("{dir}:{dir}"));
+        }
+    }
+    // The other "continue last session" agents: only the session store their
+    // continue flag reads is mounted, so a restored tab finds its conversation.
+    // The rest of each home stays unmounted, exactly as before — hooks, tools and
+    // MCP configs live beside these, and read-only copies of config the CLI
+    // rewrites at startup would trade a lost session for a failed launch.
+    for rel in CONTINUE_AGENT_SESSION_STORES {
+        let path = format!("{home}/{rel}");
+        if Path::new(&path).is_dir() {
+            rw.push(format!("{path}:{path}"));
+        }
+    }
     (rw, ro)
+}
+
+/// Session stores of the agents `RESUMABLE_AGENTS` (frontend) relaunches with a
+/// "continue the most recent session" flag, relative to `$HOME`. Antigravity is
+/// absent because it keeps its conversations under `~/.gemini`, mounted above.
+const CONTINUE_AGENT_SESSION_STORES: &[&str] = &[
+    // Qwen Code ≥0.24: `projects/<cwd>/chats/*.jsonl`; older releases, `tmp/`.
+    ".qwen/projects",
+    ".qwen/tmp",
+    // GitHub Copilot CLI: `session-state/<id>/events.jsonl`.
+    ".copilot/session-state",
+    // Cursor Agent: `chats/<cwd hash>/<chat id>/`.
+    ".cursor/chats",
+    // Mistral Vibe: `logs/session/` (under `$VIBE_HOME`, default `~/.vibe`).
+    ".vibe/logs",
+    // Grok Build: `sessions/<working dir>/`.
+    ".grok/sessions",
+    // Droid: `sessions/<uuid>.{jsonl,settings.json}`, filed by working dir.
+    ".factory/sessions",
+];
+
+/// Durable, scope-local top level for Codex's mutable databases. It is outside
+/// `sandbox-stage`: that directory is deliberately cleared at Eldrun startup,
+/// while these files are the session index needed *after* a restart.
+pub(crate) fn codex_state_dir(scope_id: &str) -> PathBuf {
+    storage::state_dir()
+        .join("codex-state")
+        .join(sanitize_key(scope_id))
+}
+
+/// Seed a new scope from the host's resume databases, then return the directory
+/// that should be mounted over `~/.codex`.
+///
+/// `VACUUM INTO` takes a consistent SQLite snapshot including committed WAL
+/// pages. Copying the three files independently while an uncontained Codex is
+/// running can produce a corrupt or incomplete store. Once a scope owns a
+/// database we never refresh it from the host: fenced tabs keep advancing that
+/// private copy, and overwriting it would lose exactly the sessions this mount
+/// exists to preserve.
+pub(crate) fn prepare_codex_state(home: &str, scope_id: &str) -> PathBuf {
+    let target = codex_state_dir(scope_id);
+    prepare_codex_state_in(&Path::new(home).join(".codex"), &target);
+    target
+}
+
+fn prepare_codex_state_in(source: &Path, target: &Path) {
+    use rusqlite::{Connection, OpenFlags};
+    use std::sync::{Mutex, OnceLock};
+
+    // Two restored tabs can reach the first seed together. Serialize the
+    // absent-check/snapshot/rename sequence so neither can replace the other's
+    // just-created scope database.
+    static SEED_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let _seed_guard = SEED_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    if std::fs::create_dir_all(target).is_err() {
+        return;
+    }
+    // Codex persists config with an atomic rename, which replaces the staged
+    // symlink inside the overlay. Bubblewrap must create that link afresh on
+    // every spawn; Docker mounts the staged file over the same now-empty path.
+    let config = target.join("config.toml");
+    if config.is_dir() {
+        let _ = std::fs::remove_dir_all(&config);
+    } else {
+        let _ = std::fs::remove_file(&config);
+    }
+    let Ok(entries) = std::fs::read_dir(source) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        // Only the two stores required to resume a thread. Logs, queues and
+        // memories are intentionally born scope-local instead of multiplying
+        // tens of megabytes of unrelated host state into every project.
+        if !(name.ends_with(".sqlite")
+            && (name.starts_with("state") || name.starts_with("thread_history")))
+        {
+            continue;
+        }
+        let dest = target.join(name);
+        if dest.exists() {
+            continue;
+        }
+        let tmp = target.join(format!(".{name}.seed-{}", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+        let Ok(conn) = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
+            continue;
+        };
+        // SQLite accepts the destination as a bound filename expression; no
+        // path text is interpolated into SQL.
+        if conn.execute("VACUUM INTO ?1", [tmp.to_string_lossy().as_ref()]).is_ok() {
+            if std::fs::rename(&tmp, &dest).is_err() {
+                let _ = std::fs::remove_file(&tmp);
+            }
+        } else {
+            let _ = std::fs::remove_file(&tmp);
+        }
+    }
 }
 
 /// The Claude credential mount as `(src, dst)` pairs (the same pair shape as
@@ -2530,35 +2748,46 @@ fn apply_trust_paths(value: &mut serde_json::Value, trusted: &[String], roots: &
 }
 
 /// Whether Claude will skip its trust dialog in `cwd`: the host `~/.claude.json`
-/// already records the answer, or Eldrun recorded one the user gave inside a
-/// fenced/contained tab. Read-only.
+/// already records the answer, or — only when `staged` — Eldrun recorded one
+/// the user gave inside a fenced/contained tab. Read-only.
 ///
 /// The caller is the frontend's auto-`/rename`, which must not type a blind
 /// Enter into a launch that is about to ask a question — the default answer is
 /// `No, exit`.
-pub fn claude_folder_trusted(cwd: &str) -> bool {
+///
+/// `staged` says whether the spawn will read the staged `.claude.json` copy
+/// (fenced or containerized) rather than the host file. Eldrun's recorded trust
+/// reaches Claude only through that copy ([`apply_recorded_trust`]); an
+/// unfenced tab reads the host file, which never gets it. Counting the record
+/// there is how turning a project's fence off killed every new Claude tab: the
+/// folder had only ever been trusted inside the fence, the probe said
+/// "trusted", the dialog came up anyway, and the rename's Enter answered it.
+pub fn claude_folder_trusted(cwd: &str, staged: bool) -> bool {
     let home = paths::home_dir();
-    for candidate in [
+    let host_trusted = [
         home.join(".claude.json"),
         home.join(".claude").join(".claude.json"),
-    ] {
-        let Ok(bytes) = std::fs::read(&candidate) else {
-            continue;
-        };
-        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-            continue;
-        };
-        if value
-            .get("projects")
-            .and_then(|projects| projects.get(cwd))
-            .and_then(|entry| entry.get("hasTrustDialogAccepted"))
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
-        {
-            return true;
-        }
-    }
-    read_agent_trust().claude.iter().any(|path| path == cwd)
+    ]
+    .iter()
+    .filter_map(|candidate| std::fs::read(candidate).ok())
+    .filter_map(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+    .any(|value| trust_accepted_for(&value, cwd));
+    let recorded = if staged {
+        read_agent_trust().claude
+    } else {
+        Vec::new()
+    };
+    host_trusted || recorded.iter().any(|path| path == cwd)
+}
+
+/// Pure core of the host-file half of [`claude_folder_trusted`].
+fn trust_accepted_for(value: &serde_json::Value, cwd: &str) -> bool {
+    value
+        .get("projects")
+        .and_then(|projects| projects.get(cwd))
+        .and_then(|entry| entry.get("hasTrustDialogAccepted"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
 }
 
 /// Placeholder content for a shadowed agent-config file the host does not have
@@ -2643,7 +2872,47 @@ fn host_uid_gid() -> (u32, u32) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn host_trust_is_read_per_exact_folder() {
+        let value = serde_json::json!({"projects": {
+            "/p/a": {"hasTrustDialogAccepted": true},
+            "/p/b": {"hasTrustDialogAccepted": false},
+            "/p/c": {}
+        }});
+        assert!(trust_accepted_for(&value, "/p/a"));
+        assert!(!trust_accepted_for(&value, "/p/b"));
+        assert!(!trust_accepted_for(&value, "/p/c"));
+        assert!(!trust_accepted_for(&value, "/p/missing"));
+        assert!(!trust_accepted_for(&serde_json::json!({}), "/p/a"));
+    }
     use super::*;
+
+    #[test]
+    fn orphan_sweep_probes_only_when_docker_is_on_path() {
+        assert!(sweep_should_probe(true));
+        assert!(!sweep_should_probe(false));
+    }
+
+    #[test]
+    fn install_shell_quote_posix_flavor() {
+        assert_eq!(install_shell_quote("/home/a/x", false), "'/home/a/x'");
+        assert_eq!(install_shell_quote("/home/a/my dir", false), "'/home/a/my dir'");
+        assert_eq!(install_shell_quote("/home/o'brien/x", false), "'/home/o'\\''brien/x'");
+    }
+
+    #[test]
+    fn install_shell_quote_powershell_flavor() {
+        assert_eq!(
+            install_shell_quote(r"C:\Users\a\AppData\Local\eldrun\agent-sandbox", true),
+            r"'C:\Users\a\AppData\Local\eldrun\agent-sandbox'"
+        );
+        assert_eq!(
+            install_shell_quote(r"C:\Users\Jane Doe\p", true),
+            r"'C:\Users\Jane Doe\p'"
+        );
+        assert_eq!(install_shell_quote(r"C:\Users\o'brien\p", true), r"'C:\Users\o''brien\p'");
+    }
 
     fn env(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs
@@ -3324,6 +3593,85 @@ mod tests {
     }
 
     #[test]
+    fn agent_home_mounts_carry_opencode_sessions_and_read_only_its_config() {
+        let base = std::env::temp_dir().join(format!("eldrun-sbx-oc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let home = base.join("home");
+        let home_str = home.to_string_lossy().into_owned();
+        let pair = |rel: &str| format!("{home_str}/{rel}:{home_str}/{rel}");
+
+        // Never used OpenCode: nothing mounted, nothing created.
+        std::fs::create_dir_all(&home).unwrap();
+        let (rw, ro) = agent_home_mounts(&home_str, "/state/ls/p1", "/state/ls", false);
+        assert!(!rw.iter().chain(&ro).any(|m| m.contains("opencode")));
+        assert!(!home.join(".local/share/opencode").exists());
+
+        for rel in [
+            ".local/share/opencode",
+            ".local/state/opencode",
+            ".config/opencode",
+            ".cache/opencode",
+        ] {
+            std::fs::create_dir_all(format!("{home_str}/{rel}")).unwrap();
+        }
+        let (rw, ro) = agent_home_mounts(&home_str, "/state/ls/p1", "/state/ls", false);
+        // The session store `opencode --continue` reads must be writable.
+        assert!(rw.contains(&pair(".local/share/opencode")));
+        assert!(rw.contains(&pair(".local/state/opencode")));
+        // Config: readable, never writable (plugins/MCP run in the host's CLI).
+        assert!(ro.contains(&pair(".config/opencode")));
+        assert!(!rw.contains(&pair(".config/opencode")));
+        // Cache holds downloaded binaries: not mounted at all.
+        assert!(!rw.iter().chain(&ro).any(|m| m.contains(".cache/opencode")));
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn agent_home_mounts_carry_only_the_continue_agents_session_stores() {
+        let base = std::env::temp_dir().join(format!("eldrun-sbx-cont-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let home = base.join("home");
+        let home_str = home.to_string_lossy().into_owned();
+        let stores = [
+            ".qwen/projects",
+            ".qwen/tmp",
+            ".copilot/session-state",
+            ".cursor/chats",
+            ".vibe/logs",
+        ];
+        // Their neighbours: hooks, tools, MCP and permission config.
+        let neighbours = [
+            ".qwen/settings.json",
+            ".copilot/mcp-config.json",
+            ".cursor/cli-config.json",
+            ".vibe/hooks.toml",
+        ];
+        for rel in stores {
+            std::fs::create_dir_all(format!("{home_str}/{rel}")).unwrap();
+        }
+        for rel in neighbours {
+            std::fs::write(format!("{home_str}/{rel}"), b"x").unwrap();
+        }
+
+        let (rw, ro) = agent_home_mounts(&home_str, "/state/ls/p1", "/state/ls", false);
+        for rel in stores {
+            assert!(
+                rw.contains(&format!("{home_str}/{rel}:{home_str}/{rel}")),
+                "{rel} must be writable"
+            );
+        }
+        for rel in neighbours {
+            assert!(
+                !rw.iter().chain(&ro).any(|m| m.contains(rel)),
+                "{rel} must stay unmounted"
+            );
+        }
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
     fn agent_home_mounts_deny_the_named_holes_and_read_only_the_scripts() {
         let base = std::env::temp_dir().join(format!("eldrun-sbx-nar-{}", std::process::id()));
         let home = base.join("home");
@@ -3344,7 +3692,7 @@ mod tests {
         }
 
         let home_str = home.to_string_lossy().into_owned();
-        let (rw, ro) = agent_home_mounts(&home_str, "/state/ls/p1", "/state/ls");
+        let (rw, ro) = agent_home_mounts(&home_str, "/state/ls/p1", "/state/ls", false);
         let mounted = |set: &[String], name: &str| {
             let want = format!("{home_str}/.claude/{name}:{home_str}/.claude/{name}");
             set.contains(&want)
@@ -3503,6 +3851,7 @@ mod tests {
             tmux_session: None,
             tmux_attach: None,
             host_bound_uid: None,
+            schedule_target_id: None,
         };
         wrap_pty_options_docker(&mut opts).unwrap();
         assert_eq!(opts.cmd, "claude");
@@ -3529,6 +3878,7 @@ mod tests {
             tmux_session: None,
             tmux_attach: None,
             host_bound_uid: None,
+            schedule_target_id: None,
         };
         enforce_spawn_authority(&mut opts);
         assert!(!opts.sandbox, "box tabs must never spawn containerized");
@@ -3818,7 +4168,7 @@ mod tests {
         std::fs::create_dir_all(claude.join("todos")).unwrap();
 
         let dir = claude.to_string_lossy().into_owned();
-        let (mounts, _) = narrowed_agent_mounts(&dir, CLAUDE_UNMOUNTED);
+        let (mounts, _) = narrowed_agent_mounts(&dir, CLAUDE_UNMOUNTED, false);
 
         // Compare whole mount strings rather than picking the entry name back
         // out of them. `dir` comes from `temp_dir()`, so on Windows it carries a
@@ -3840,13 +4190,77 @@ mod tests {
         assert!(!mounts.iter().any(|m| m.ends_with("/projects")));
         assert!(!mounts.iter().any(|m| m.contains(".credentials.json")));
         // Stable across calls, so the spec fingerprint doesn't flap.
-        assert_eq!(narrowed_agent_mounts(&dir, CLAUDE_UNMOUNTED).0, mounts);
+        assert_eq!(narrowed_agent_mounts(&dir, CLAUDE_UNMOUNTED, false).0, mounts);
         // A dir that isn't there mounts nothing (never auto-created).
         assert_eq!(
-            narrowed_agent_mounts(&base.join("nope").to_string_lossy(), CLAUDE_UNMOUNTED),
+            narrowed_agent_mounts(
+                &base.join("nope").to_string_lossy(),
+                CLAUDE_UNMOUNTED,
+                false,
+            ),
             (Vec::new(), Vec::new())
         );
 
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn codex_overlay_owns_sqlite_families_but_keeps_directory_mounts() {
+        let base = std::env::temp_dir().join(format!("eldrun-codex-mount-{}", std::process::id()));
+        let home = base.join("home");
+        let codex = home.join(".codex");
+        std::fs::create_dir_all(codex.join("sessions")).unwrap();
+        for name in ["state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm"] {
+            std::fs::write(codex.join(name), b"").unwrap();
+        }
+
+        let home = home.to_string_lossy().into_owned();
+        let (overlay, _) = agent_home_mounts(&home, "/state/live/p", "/state/live", true);
+        let (native, _) = agent_home_mounts(&home, "/state/live/p", "/state/live", false);
+        let pair = |name: &str| format!("{home}/.codex/{name}:{home}/.codex/{name}");
+
+        assert!(overlay.contains(&pair("sessions")));
+        for name in ["state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm"] {
+            assert!(!overlay.contains(&pair(name)), "{name} must come from the overlay");
+            assert!(native.contains(&pair(name)), "macOS keeps using the host store");
+        }
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn codex_state_seed_includes_committed_wal_pages_and_is_not_refreshed() {
+        let base = std::env::temp_dir().join(format!("eldrun-codex-seed-{}", std::process::id()));
+        let source = base.join("host-codex");
+        let target = base.join("scope-state");
+        std::fs::create_dir_all(&source).unwrap();
+
+        let state = source.join("state_5.sqlite");
+        let conn = rusqlite::Connection::open(&state).unwrap();
+        conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+        conn.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+        conn.execute("CREATE TABLE threads (id TEXT PRIMARY KEY)", []).unwrap();
+        conn.execute("INSERT INTO threads VALUES ('from-wal')", []).unwrap();
+        // The large unrelated log store is deliberately not cloned per project.
+        rusqlite::Connection::open(source.join("logs_2.sqlite")).unwrap();
+
+        prepare_codex_state_in(&source, &target);
+        let seeded = rusqlite::Connection::open(target.join("state_5.sqlite")).unwrap();
+        assert_eq!(
+            seeded.query_row("SELECT id FROM threads", [], |row| row.get::<_, String>(0)).unwrap(),
+            "from-wal"
+        );
+        assert!(!target.join("logs_2.sqlite").exists());
+
+        // A later host row must not overwrite the scope's independently
+        // advancing store on another spawn.
+        conn.execute("INSERT INTO threads VALUES ('host-later')", []).unwrap();
+        prepare_codex_state_in(&source, &target);
+        assert_eq!(
+            seeded.query_row("SELECT count(*) FROM threads", [], |row| row.get::<_, i64>(0)).unwrap(),
+            1
+        );
+        drop(seeded);
+        drop(conn);
         std::fs::remove_dir_all(&base).ok();
     }
 
@@ -3856,6 +4270,7 @@ mod tests {
             "/home/alice",
             "/state/live_sessions/p1",
             "/state/live_sessions",
+            false,
         );
         // The ONE deliberately non-identical mount: the hook script's baked-in path
         // is served by this project's own slice.

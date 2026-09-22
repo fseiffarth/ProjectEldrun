@@ -12,12 +12,12 @@ import {
   type HintActionId,
   type HintCtx,
   type HintId,
-} from "../../lib/hints";
+} from "../../lib/shortcuts/hints";
 import {
   codexHookNeedsTrust,
   openCodexHooksTab,
   type CodexHookState,
-} from "../../lib/codexHooks";
+} from "../../lib/agents/codexHooks";
 import { HintBubble } from "../common/HintBubble";
 import { useT } from "../../lib/i18n";
 
@@ -35,7 +35,7 @@ const GAP_MS = 12_000;
 /**
  * The contextual-hint engine: watches app state, picks the next eligible hint
  * (pure `pickHint`), and renders it as a single anchored `HintBubble`. Mounted
- * once in `AppShell`. Selection/ordering/persistence live in `lib/hints.ts` and
+ * once in `AppShell`. Selection/ordering/persistence live in `lib/shortcuts/hints.ts` and
  * `stores/hints.ts`; this component owns timing, anchor measurement, and Esc.
  */
 export function HintHost() {

@@ -92,7 +92,7 @@ export function MailKeysDialog({ account, onClose }: MailKeysDialogProps) {
       >
         <div className="settings-title-row">
           <h2>
-            {t("mail.keys.title")} <UntestedTag />
+            {t("mail.keys.title")} <UntestedTag id="mail.keys.title" />
           </h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>
             ×

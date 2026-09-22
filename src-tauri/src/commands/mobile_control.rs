@@ -193,6 +193,42 @@ pub async fn mobile_attach_desktop_image(
     .map_err(|_| "write_failed".to_string())?
 }
 
+// ── Global inbox (phone → Send to desktop) ──────────────────────────────────
+// Files the phone sent to no project wait in `<state_dir>/inbox/`; the
+// header's inbox button lists them. Every command names a file by the leaf the
+// listing gave out and `inbox::global_file` re-checks it, so a name from the
+// webview can never reach outside that folder.
+
+/// The global inbox, newest first.
+#[tauri::command]
+pub async fn global_inbox_list() -> Vec<inbox::GlobalInboxFile> {
+    tauri::async_runtime::spawn_blocking(|| inbox::list_global(&storage::state_dir()))
+        .await
+        .unwrap_or_default()
+}
+
+/// Open one inbox file with the OS default application.
+#[tauri::command]
+pub fn global_inbox_open(name: String) -> Result<(), String> {
+    let path = inbox::global_file(&storage::state_dir(), &name).ok_or("file_not_found")?;
+    opener::open(&path).map_err(|e| e.to_string())
+}
+
+/// Open the global inbox folder in the OS file manager, creating it first so
+/// the button works before the first file arrives.
+#[tauri::command]
+pub fn global_inbox_reveal() -> Result<(), String> {
+    let dir = storage::state_dir().join(inbox::GLOBAL_INBOX_DIR);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    opener::open(&dir).map_err(|e| e.to_string())
+}
+
+/// Delete one inbox file. `false` when it was already gone.
+#[tauri::command]
+pub fn global_inbox_delete(name: String) -> Result<bool, String> {
+    inbox::remove_global(&storage::state_dir(), &name).map_err(|e| e.code().to_string())
+}
+
 /// Materialize the phone-install handoff where the root terminal can run it,
 /// returning the script's path — the state dir differs per OS, so the caller
 /// must not re-derive it. Keep the script embedded so this action also works
@@ -238,6 +274,62 @@ pub struct MobileHostRuntimeStatus {
     pub update_available: bool,
 }
 
+/// The leaf name every install writes and every start looks for.
+#[cfg(windows)]
+const HOST_BINARY_NAME: &str = "eldrun-mobile-host.exe";
+#[cfg(not(windows))]
+const HOST_BINARY_NAME: &str = "eldrun-mobile-host";
+
+/// Whether the installed sidecar is a *superseded copy of the same version*.
+///
+/// `update_available` was a version-string comparison alone — and `bin/<version>/`
+/// is keyed by that same string, so two builds of one version share the
+/// directory and the copy answering the phone is whichever build installed
+/// first. Between two pushes that is every dev build, and the gap is not
+/// cosmetic: the phone's bundle can run ahead through the live overlay
+/// (`live_pwa`), but the HTTP API answering it is the installed sidecar's own,
+/// so a route added after that copy was made 404s and the feature renders as
+/// "the desktop sent nothing" — which is how the project screen's outbox shelf
+/// stayed invisible with its code plainly in the window (2026-09-20). Nothing
+/// offered the update, because the versions matched.
+///
+/// An install copies the running image byte for byte, so a copy of a different
+/// size, or one older than that image, is behind it. Comparing the bytes
+/// themselves is not worth a debug binary's 700 MB on every status poll.
+fn binary_behind(installed: &Path, running: &Path) -> bool {
+    let (Ok(installed), Ok(running)) = (
+        std::fs::metadata(installed),
+        std::fs::metadata(running),
+    ) else {
+        // Nothing installed, or a running image no path names any more (a dev
+        // rebuild over the file): neither is a superseded copy, and claiming an
+        // update that `mobile_host_apply` would then fail to read is worse than
+        // staying quiet.
+        return false;
+    };
+    if installed.len() != running.len() {
+        return true;
+    }
+    match (installed.modified(), running.modified()) {
+        (Ok(installed), Ok(running)) => installed < running,
+        _ => false,
+    }
+}
+
+/// [`binary_behind`] for the copy this version's install would have written.
+fn sidecar_behind_window(control_dir: &Path) -> bool {
+    let Ok(running) = mobile_binary_source() else {
+        return false;
+    };
+    binary_behind(
+        &control_dir
+            .join("bin")
+            .join(env!("CARGO_PKG_VERSION"))
+            .join(HOST_BINARY_NAME),
+        &running,
+    )
+}
+
 #[tauri::command]
 pub async fn mobile_host_status() -> MobileHostRuntimeStatus {
     let config = HostConfig::load(&storage::state_dir()).ok();
@@ -253,7 +345,10 @@ pub async fn mobile_host_status() -> MobileHostRuntimeStatus {
             port: Some(port),
             origin,
             error: None,
-            update_available: version.as_deref() != Some(env!("CARGO_PKG_VERSION")),
+            update_available: version.as_deref() != Some(env!("CARGO_PKG_VERSION"))
+                || config
+                    .as_ref()
+                    .is_some_and(|config| sidecar_behind_window(&config.control_dir)),
             installed_version: version,
         },
         Ok(_) => MobileHostRuntimeStatus {
@@ -400,7 +495,7 @@ fn prune_old_versions(bin_root: &Path, keep: &str) {
 /// service sees the new one.
 #[cfg(unix)]
 fn install_mobile_binary(source: &Path, target_dir: &Path) -> Result<PathBuf, String> {
-    let target = target_dir.join("eldrun-mobile-host");
+    let target = target_dir.join(HOST_BINARY_NAME);
     let mut staged = tempfile::NamedTempFile::new_in(target_dir)
         .map_err(|error| format!("stage mobile host: {error}"))?;
     let mut source_file =
@@ -425,7 +520,7 @@ fn install_mobile_binary(source: &Path, target_dir: &Path) -> Result<PathBuf, St
 /// that file backs a running process, so callers stop the live host first.
 #[cfg(windows)]
 fn install_mobile_binary(source: &Path, target_dir: &Path) -> Result<PathBuf, String> {
-    let target = target_dir.join("eldrun-mobile-host.exe");
+    let target = target_dir.join(HOST_BINARY_NAME);
     let mut staged = tempfile::NamedTempFile::new_in(target_dir)
         .map_err(|error| format!("stage mobile host: {error}"))?;
     let mut source_file =
@@ -967,6 +1062,77 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod sidecar_staleness_tests {
+    use super::binary_behind;
+    use std::{
+        path::Path,
+        time::{Duration, SystemTime},
+    };
+
+    /// Write `bytes` and stamp the file `age` seconds before now, so the two
+    /// sides' order is the test's rather than the filesystem's timestamp
+    /// granularity.
+    fn file(path: &Path, bytes: &[u8], age: u64) {
+        std::fs::write(path, bytes).expect("write");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .expect("open")
+            .set_modified(SystemTime::now() - Duration::from_secs(age))
+            .expect("stamp");
+    }
+
+    /// A version string cannot see this: the installed copy and the window are
+    /// the same version, and the copy is an earlier build of it.
+    #[test]
+    fn an_older_same_version_copy_is_behind_the_running_image() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let installed = temp.path().join("installed");
+        let running = temp.path().join("running");
+        file(&installed, b"sidecar bytes", 600);
+        file(&running, b"sidecar bytes", 60);
+
+        assert!(binary_behind(&installed, &running));
+    }
+
+    #[test]
+    fn a_copy_of_another_size_is_behind_whichever_way_the_clock_went() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let installed = temp.path().join("installed");
+        let running = temp.path().join("running");
+        file(&installed, b"an older, longer sidecar", 60);
+        file(&running, b"sidecar bytes", 600);
+
+        assert!(binary_behind(&installed, &running));
+    }
+
+    /// What a finished install leaves: the same bytes, written after the image
+    /// they were copied from. The panel must stop offering the update.
+    #[test]
+    fn the_copy_an_install_just_wrote_is_not_behind() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let installed = temp.path().join("installed");
+        let running = temp.path().join("running");
+        file(&running, b"sidecar bytes", 600);
+        file(&installed, b"sidecar bytes", 60);
+
+        assert!(!binary_behind(&installed, &running));
+    }
+
+    /// Nothing installed yet, or a running image no path names any more: quiet,
+    /// not an update the install step would then fail to read.
+    #[test]
+    fn a_missing_file_on_either_side_claims_nothing() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let running = temp.path().join("running");
+        file(&running, b"sidecar bytes", 60);
+
+        assert!(!binary_behind(&temp.path().join("absent"), &running));
+        assert!(!binary_behind(&running, &temp.path().join("absent")));
+    }
+}
 
 #[cfg(all(test, unix))]
 mod unix_install_tests {

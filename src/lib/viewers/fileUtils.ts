@@ -57,6 +57,11 @@ export type InternalViewer =
   // opened from a diverged (amber) file in the orange list; routed to
   // `SyncMergeView`. Apply resolves the divergence (writes mirror + force-push).
   | "syncmerge"
+  // Git pull's merge/diff view: the same three-way `CompareView`, fed by git —
+  // ours ⇄ theirs of a conflicted merge (Apply writes + stages), else HEAD ⇄
+  // upstream as a look-only preview. Never auto-selected; opened from the Git
+  // panel's pull preview / merge bar; routed to `GitMergeView`.
+  | "gitmerge"
   | "odt"
   | "media"
   | "gif"
@@ -397,6 +402,32 @@ export const VIEWER_PREF_TYPES: ViewerTypeMeta[] = [
   },
 ];
 
+/**
+ * The line ending `text` uses: CRLF when any line ends that way, else LF.
+ *
+ * The "any CRLF ⇒ CRLF" rule rather than a majority vote, matching `bib.ts`'s
+ * own `lineEndingOf` and `table.ts` — a mixed file is being repaired towards one
+ * convention either way, and picking the Windows one never loses a `\r` somebody
+ * else's tooling put there.
+ */
+export function lineEndingOf(text: string): "\r\n" | "\n" {
+  return text.includes("\r\n") ? "\r\n" : "\n";
+}
+
+/**
+ * Rewrite every line ending in `text` as `eol`.
+ *
+ * Idempotent in both directions — it matches `\r?\n` rather than `\n`, so text
+ * that already uses the target ending is returned unchanged instead of being
+ * doubled into `\r\r\n`. That matters because the caller cannot generally know
+ * which convention a buffer is in: an editor buffer is LF once a `<textarea>`
+ * has normalized it, but the SEED of that same buffer still holds the file's
+ * own endings until the first keystroke goes through the DOM.
+ */
+export function applyLineEnding(text: string, eol: "\r\n" | "\n"): string {
+  return eol === "\r\n" ? text.replace(/\r?\n/g, "\r\n") : text.replace(/\r\n/g, "\n");
+}
+
 export function joinRel(base: string, name: string): string {
   return base ? `${base}/${name}` : name;
 }
@@ -550,29 +581,28 @@ function compareEntries(a: FileEntry, b: FileEntry, sortKey: SortKey, descending
   return descending ? -result : result;
 }
 
-export function fileIcon(ext: string | null): string {
+/** Which drawn icon a file row shows; `components/common/icons/FileIcon` renders it. */
+export type FileIconKind = "code" | "text" | "data" | "book" | "image" | "script" | "file";
+
+export function fileIconKind(ext: string | null): FileIconKind {
   switch (ext) {
-    case ".py": return "🐍";
-    case ".rs": return "🦀";
+    case ".py":
+    case ".rs":
     case ".ts":
-    case ".tsx": return "⟨⟩";
+    case ".tsx":
     case ".js":
-    case ".jsx": return "⚡";
-    case ".md": return "📝";
-    case ".json": return "{}";
-    case ".bib": return "📚";
+    case ".jsx": return "code";
+    case ".md": return "text";
+    case ".json": return "data";
+    case ".bib": return "book";
     case ".png":
     case ".jpg":
     case ".jpeg":
     case ".gif":
-    case ".svg": return "🖼";
-    case ".sh": return "⚙";
-    default: return "📄";
+    case ".svg": return "image";
+    case ".sh": return "script";
+    default: return "file";
   }
-}
-
-export function folderIcon(): string {
-  return "📁";
 }
 
 /**

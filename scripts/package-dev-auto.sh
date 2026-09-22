@@ -19,6 +19,10 @@
 #   pending marker instead of a second build; the running one loops once more
 #   when it finishes, so ten commits (or a rebase) cost one or two builds and
 #   the binary ends up matching the LAST tree, not an intermediate one.
+#   Each pass also waits until no commit has landed for SETTLE_SECONDS, so a
+#   burst of commits made seconds apart (a split commit series, a rebase) is
+#   one build of the last one — without it the first commit started a build
+#   at once and the rest queued a second (2026-09-17: five commits, two builds).
 # * **It never wins a fight for the machine.** The build is nice'd, ionice'd
 #   and put on SCHED_IDLE where available — the same posture heavy local jobs
 #   take in this project, because a 3-4 minute release build at full tilt is
@@ -62,6 +66,7 @@ STAMP="$APP_DIR/package-dev-auto.stamp"
 FAILED="$APP_DIR/package-dev-auto.failed"
 LOG="$APP_DIR/package-dev-auto.log"
 LOG_MAX_BYTES=$((4 * 1024 * 1024))
+SETTLE_SECONDS="${ELDRUN_DEV_BUILD_SETTLE:-30}"
 
 note() { printf '%s %s\n' "$(date -Is)" "$*"; }
 
@@ -158,6 +163,14 @@ run() {
 
   local status=0 passes=0 built=""
   while [ -f "$PENDING" ]; do
+    # Every queue() rewrites the marker, so its mtime is the last commit's time.
+    local age
+    while [ -f "$PENDING" ] \
+      && age=$(( $(date +%s) - $(stat -c %Y "$PENDING" 2>/dev/null || echo 0) )) \
+      && [ "$age" -lt "$SETTLE_SECONDS" ]; do
+      sleep $(( SETTLE_SECONDS - age ))
+    done
+    [ -f "$PENDING" ] || break
     # Cleared BEFORE the build: a commit landing mid-build re-creates it and
     # earns the next pass, rather than being swallowed by this one.
     rm -f "$PENDING"

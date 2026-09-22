@@ -102,6 +102,10 @@ const MAX_SEARCH_SCAN: usize = 50_000;
 /// The `meta` key set once the store's existing plaintext has been sealed.
 const META_ENCRYPTED: &str = "encrypted";
 
+/// How many of the user's own replies one message lists. A thread answered more
+/// often than this is read in the Sent folder, not in a strip above a body.
+const MAX_REPLIES: usize = 20;
+
 /// Bodies larger than this are content-addressed into `blobs/` instead of
 /// living in the row.
 pub const INLINE_BODY_LIMIT: usize = 256 * 1024;
@@ -114,6 +118,11 @@ pub struct MailStore {
     /// turned encryption on looks like, and it is the path every test below
     /// exercises.
     keys: Option<Arc<MailKeys>>,
+    /// Set once a sealed store's migration is known complete. From then on a
+    /// non-empty `TEXT` value in a sealed column is not "not migrated yet" but a
+    /// value this store never wrote — plaintext planted by whoever could write
+    /// `mail.db` — and reads as damaged instead of rendering unauthenticated.
+    refuse_plaintext: bool,
     /// Held only by [`MailStore::open_ephemeral`], and only so it is deleted
     /// when the store is dropped.
     _scratch: Option<tempfile::TempDir>,
@@ -153,19 +162,55 @@ impl MailStore {
             dir: dir.to_path_buf(),
             conn: Mutex::new(conn),
             keys,
+            refuse_plaintext: false,
             _scratch: None,
         };
         store.migrate()?;
+        let was_marked = store.keys.is_some() && store.marked_encrypted()?;
         let sealed = store.seal_existing()?;
         // Between the sealing pass and the vacuum, deliberately. The pass is
         // what strands a digest — it seals a value and leaves the key column
         // beside it untouched — and the vacuum is what stops the old cleartext
         // key from surviving in the freelist of the file that replaces it.
         let rekeyed = store.rekey_digest_columns()? > 0;
-        if sealed || rekeyed {
+        // A store that was never marked done also gets the vacuum when this
+        // pass found nothing left to seal: that is the store whose previous
+        // sealing pass completed and then died before its vacuum.
+        if sealed || rekeyed || (store.keys.is_some() && !was_marked) {
             store.vacuum_into_place()?;
         }
+        if store.keys.is_some() && !was_marked {
+            store.mark_encrypted()?;
+        }
+        if store.keys.is_some() {
+            store.seal_late_columns()?;
+            store.refuse_plaintext = true;
+        }
         Ok(store)
+    }
+
+    /// Whether the database in `dir` says it was sealed, read without keys.
+    ///
+    /// A missing key file cannot be told apart from "never encrypted" by the
+    /// key file alone, and treating a sealed store as new is what used to mint
+    /// a fresh key over it — overwriting the keychain entry that was the only way
+    /// back once `key.json` was restored from a backup.
+    pub fn is_marked_encrypted(dir: &Path) -> bool {
+        let db = dir.join("mail.db");
+        if !db.exists() {
+            return false;
+        }
+        let Ok(conn) = Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        else {
+            return false;
+        };
+        conn.query_row(
+            "SELECT value FROM meta WHERE key = ?1",
+            params![META_ENCRYPTED],
+            |r| r.get::<_, String>(0),
+        )
+        .map(|v| v == "1")
+        .unwrap_or(false)
     }
 
     /// A store that lives and dies with the process.
@@ -194,6 +239,7 @@ impl MailStore {
             dir: scratch.path().to_path_buf(),
             conn: Mutex::new(conn),
             keys: Some(keys),
+            refuse_plaintext: false,
             _scratch: Some(scratch),
         };
         store.migrate()?;
@@ -270,6 +316,14 @@ impl MailStore {
         use rusqlite::types::ValueRef;
         Ok(match r.get_ref(idx)? {
             ValueRef::Null => Some(String::new()),
+            // Empty (and the `'[]'`/`'{}'` JSON defaults) are column defaults,
+            // not content. Anything else in plain text inside a completed sealed
+            // store was not written by us.
+            ValueRef::Text(t)
+                if self.refuse_plaintext && !matches!(t, b"" | b"[]" | b"{}") =>
+            {
+                None
+            }
             ValueRef::Text(t) => Some(String::from_utf8_lossy(t).into_owned()),
             ValueRef::Blob(b) => match &self.keys {
                 Some(k) => mail_crypt::open(
@@ -283,6 +337,7 @@ impl MailStore {
                 // and is now being opened without them. Nothing to do but say so.
                 None => None,
             },
+            _ if self.refuse_plaintext => None,
             other => Some(other.as_str().unwrap_or_default().to_string()),
         })
     }
@@ -348,6 +403,10 @@ impl MailStore {
                 kind       TEXT NOT NULL,
                 unread     INTEGER NOT NULL DEFAULT 0,
                 total      INTEGER NOT NULL DEFAULT 0,
+                -- What the server reported beyond the local index at the last
+                -- sync; `refresh_counts` adds these to the local counts.
+                unread_unindexed INTEGER NOT NULL DEFAULT 0,
+                total_unindexed  INTEGER NOT NULL DEFAULT 0,
                 UNIQUE (account_id, path_key)
             );
             CREATE TABLE IF NOT EXISTS messages (
@@ -373,6 +432,9 @@ impl MailStore {
                 priority      TEXT NOT NULL DEFAULT '',
                 priority_source TEXT NOT NULL DEFAULT '',
                 priority_reason TEXT NOT NULL DEFAULT '',
+                -- Which message this one answers: `digest_of("reply", …)` of
+                -- its `In-Reply-To`. A lookup key, never read back as a value.
+                reply_key     TEXT NOT NULL DEFAULT '',
                 UNIQUE (folder_id, uid)
             );
             CREATE INDEX IF NOT EXISTS messages_by_folder ON messages (folder_id, date DESC);
@@ -457,6 +519,18 @@ impl MailStore {
         // that no longer opens. Every existing install takes exactly that path.
         conn.execute(
             "CREATE INDEX IF NOT EXISTS messages_by_priority ON messages (priority, date DESC)",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+        // "Your replies to this message" looks a message's answers up by this
+        // key. Additive and indexed after its ALTER, for the reasons above.
+        let _ = conn.execute(
+            "ALTER TABLE messages ADD COLUMN reply_key TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS messages_by_reply_key ON messages (reply_key)
+             WHERE reply_key != ''",
             [],
         )
         .map_err(|e| e.to_string())?;
@@ -572,6 +646,27 @@ impl MailStore {
             conn.execute_batch("DROP TABLE mail_remote_allow_v1;")
                 .map_err(|e| e.to_string())?;
         }
+        // Additive, and after the v1 → v2 folders rebuild above, whose new table
+        // does not carry them: a duplicate-column error just means they are there.
+        let _ = conn.execute(
+            "ALTER TABLE folders ADD COLUMN unread_unindexed INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE folders ADD COLUMN total_unindexed INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        // Rows written before `upsert_header` normalized `date` to UTC still
+        // carry the sender's offset and sort out of order (see there). Only mail
+        // a sync fetches again would be rewritten, so they are converted here.
+        // Idempotent: a converted row ends in `Z` and is not matched again.
+        conn.execute(
+            "UPDATE messages SET date = strftime('%Y-%m-%dT%H:%M:%SZ', date)
+             WHERE date <> '' AND date NOT LIKE '%Z'
+               AND strftime('%Y-%m-%dT%H:%M:%SZ', date) IS NOT NULL",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
         conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?1)",
             params![SCHEMA_VERSION.to_string()],
@@ -746,18 +841,68 @@ impl MailStore {
         .map_err(|e| e.to_string())
     }
 
-    /// Recompute a folder's counters from the rows actually stored.
+    /// Recompute a folder's counters from the rows actually stored, plus what
+    /// the last sync found on the server beyond them
+    /// ([`MailStore::set_server_counts`]).
+    ///
+    /// A sync indexes only a folder's newest headers, so the rows alone
+    /// undercount any mailbox with unread mail older than that tail — the header
+    /// badge read "the unread among the newest 100–200" rather than the unread.
+    /// Local rows still carry every change made here (a read, a move) at once;
+    /// the server's remainder only moves when a sync next measures it.
     pub fn refresh_counts(&self, folder_id: &str) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
         conn.execute(
             "UPDATE folders SET
-               total  = (SELECT COUNT(*) FROM messages WHERE folder_id = ?1),
-               unread = (SELECT COUNT(*) FROM messages WHERE folder_id = ?1 AND seen = 0)
+               total  = total_unindexed
+                        + (SELECT COUNT(*) FROM messages WHERE folder_id = ?1),
+               unread = unread_unindexed
+                        + (SELECT COUNT(*) FROM messages WHERE folder_id = ?1 AND seen = 0)
              WHERE id = ?1",
             params![folder_id],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    /// Record the server's own counts for a folder a sync just fetched the
+    /// newest headers of — call it after those headers are stored. What the
+    /// index lacks is kept as the difference, never below zero: rows the server
+    /// has since expunged, or read elsewhere past the tail, make the index
+    /// overshoot, and an overshoot is not a negative remainder.
+    pub fn set_server_counts(
+        &self,
+        folder_id: &str,
+        server_total: u32,
+        server_unread: u32,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        conn.execute(
+            "UPDATE folders SET
+               total_unindexed  = MAX(0, ?2
+                 - (SELECT COUNT(*) FROM messages WHERE folder_id = ?1)),
+               unread_unindexed = MAX(0, ?3
+                 - (SELECT COUNT(*) FROM messages WHERE folder_id = ?1 AND seen = 0))
+             WHERE id = ?1",
+            params![folder_id, server_total, server_unread],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Unread mail the server has in this folder that the index holds no row
+    /// for, as of the last sync.
+    pub fn unindexed_unread(&self, folder_id: &str) -> Result<u32, String> {
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        let n: Option<i64> = conn
+            .query_row(
+                "SELECT unread_unindexed FROM folders WHERE id = ?1",
+                params![folder_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        Ok(n.unwrap_or(0) as u32)
     }
 
     // ── Headers ─────────────────────────────────────────────────────────────
@@ -775,11 +920,18 @@ impl MailStore {
             .optional()
             .map_err(|e| e.to_string())?
             .unwrap_or(false);
+        // `date` is stored in UTC because every list orders by it as TEXT. The
+        // parser hands back the sender's own offset, and RFC 3339 strings with
+        // different offsets do not sort as the instants they name: a 06:00 at
+        // `+02:00` sorted above a 09:00 sent as `03:00-04:00`. `strftime`
+        // converts any offset to UTC and answers NULL for what it cannot read,
+        // which keeps that value as it came rather than blanking it.
         conn.execute(
             "INSERT INTO messages (id, account_id, folder_id, uid, subject, from_json, to_json,
                                    cc_json, date, seen, flagged, answered, has_attachments,
                                    size, preview, malformed, rfc_message_id, authres_json)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,COALESCE(strftime('%Y-%m-%dT%H:%M:%SZ', ?9), ?9),
+                     ?10,?11,?12,?13,?14,?15,?16,?17,?18)
              ON CONFLICT(id) DO UPDATE SET
                 subject = excluded.subject, from_json = excluded.from_json,
                 to_json = excluded.to_json, cc_json = excluded.cc_json,
@@ -887,6 +1039,7 @@ impl MailStore {
         query: Option<&str>,
         sort: MailSort,
         desc: bool,
+        unread_only: bool,
     ) -> Result<MailHeaderPage, String> {
         self.page(
             "folder_id = ?1 AND deleted = 0",
@@ -896,6 +1049,7 @@ impl MailStore {
             query,
             sort,
             desc,
+            unread_only,
         )
     }
 
@@ -932,9 +1086,14 @@ impl MailStore {
         query: Option<&str>,
         sort: MailSort,
         desc: bool,
+        unread_only: bool,
     ) -> Result<MailHeaderPage, String> {
         let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
         let limit = limit.clamp(1, 500);
+        // A second fixed literal, never caller text. `seen` is a plain column
+        // in a sealed store too, so the filter runs in SQL on both paths and
+        // the pager counts only what it would show.
+        let unread = if unread_only { " AND seen = 0" } else { "" };
         let needle = query.map(str::trim).filter(|q| !q.is_empty());
 
         // ── Encrypted + a query: decrypt-on-scan ────────────────────────────
@@ -943,7 +1102,7 @@ impl MailStore {
                 let needle = needle.to_lowercase();
                 let mut stmt = conn
                     .prepare(&format!(
-                        "SELECT {} FROM messages WHERE {scope_where} ORDER BY {}",
+                        "SELECT {} FROM messages WHERE {scope_where}{unread} ORDER BY {}",
                         Self::HEADER_COLUMNS,
                         Self::order_clause(sort, desc),
                     ))
@@ -992,14 +1151,14 @@ impl MailStore {
             // a sync bug rather than an encoding one.
             let total: u32 = conn
                 .query_row(
-                    &format!("SELECT COUNT(*) FROM messages WHERE {scope_where}"),
+                    &format!("SELECT COUNT(*) FROM messages WHERE {scope_where}{unread}"),
                     params![scope_param],
                     |r| r.get(0),
                 )
                 .map_err(|e| e.to_string())?;
             let mut stmt = conn
                 .prepare(&format!(
-                    "SELECT {} FROM messages WHERE {scope_where} ORDER BY {} LIMIT ?2 OFFSET ?3",
+                    "SELECT {} FROM messages WHERE {scope_where}{unread} ORDER BY {} LIMIT ?2 OFFSET ?3",
                     Self::HEADER_COLUMNS,
                     Self::order_clause(sort, desc),
                 ))
@@ -1028,7 +1187,7 @@ impl MailStore {
 
         let total: u32 = conn
             .query_row(
-                &format!("SELECT COUNT(*) FROM messages WHERE {scope_where} {filter}"),
+                &format!("SELECT COUNT(*) FROM messages WHERE {scope_where}{unread} {filter}"),
                 params![scope_param, pattern],
                 |r| r.get(0),
             )
@@ -1036,7 +1195,7 @@ impl MailStore {
 
         let mut stmt = conn
             .prepare(&format!(
-                "SELECT {} FROM messages WHERE {scope_where} {filter} ORDER BY {} LIMIT ?3 OFFSET ?4",
+                "SELECT {} FROM messages WHERE {scope_where}{unread} {filter} ORDER BY {} LIMIT ?3 OFFSET ?4",
                 Self::HEADER_COLUMNS,
                 Self::order_clause(sort, desc),
             ))
@@ -1098,6 +1257,55 @@ impl MailStore {
         )
         .optional()
         .map_err(|e| e.to_string())
+    }
+
+    /// Record which message this one answers (its `In-Reply-To`), as the keyed
+    /// digest `replies_to` looks up. Its own statement rather than a column of
+    /// `upsert_header`, so `MailHeader` — the wire contract — does not grow a
+    /// field nothing displays. A no-op once the key is in place, which on a
+    /// re-sync is every row.
+    pub fn set_reply_key(&self, message_id: &str, in_reply_to: Option<&str>) -> Result<(), String> {
+        let key = in_reply_to
+            .map(normalize_rfc_id)
+            .filter(|id| !id.is_empty())
+            .map(|id| self.digest_of("reply", id))
+            .unwrap_or_default();
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        conn.execute(
+            "UPDATE messages SET reply_key = ?1 WHERE id = ?2 AND reply_key != ?1",
+            params![key, message_id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// The answers the user already wrote to a message: mail in any account's
+    /// Sent folder whose `In-Reply-To` names it, oldest first. Only what the
+    /// local index holds — a reply sent from another client shows up once its
+    /// Sent folder has synced. A message that carried no `Message-ID` has none.
+    pub fn replies_to(&self, message_id: &str) -> Result<Vec<MailHeader>, String> {
+        let Some(rfc_id) = self.header(message_id)?.and_then(|h| h.rfc_message_id) else {
+            return Ok(Vec::new());
+        };
+        let rfc_id = normalize_rfc_id(&rfc_id);
+        if rfc_id.is_empty() {
+            return Ok(Vec::new());
+        }
+        let key = self.digest_of("reply", rfc_id);
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {} FROM messages
+                 WHERE reply_key = ?1 AND deleted = 0 AND id != ?2
+                   AND folder_id IN (SELECT id FROM folders WHERE kind = 'sent')
+                 ORDER BY date ASC, uid ASC LIMIT {MAX_REPLIES}",
+                Self::HEADER_COLUMNS
+            ))
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![key, message_id], |r| self.row_to_header(r))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
     }
 
     pub fn set_flag(&self, message_id: &str, flag: MailFlag, value: bool) -> Result<(), String> {
@@ -1170,6 +1378,13 @@ impl MailStore {
                 params![folder_id],
             )
             .map_err(|e| e.to_string())?;
+        // The unread beyond the index goes too: the command marks it on the
+        // server through the newest indexed UID (`mark_seen_through`).
+        conn.execute(
+            "UPDATE folders SET unread_unindexed = 0 WHERE id = ?1",
+            params![folder_id],
+        )
+        .map_err(|e| e.to_string())?;
         Ok(changed as u32)
     }
 
@@ -1324,6 +1539,7 @@ impl MailStore {
         query: Option<&str>,
         sort: MailSort,
         desc: bool,
+        unread_only: bool,
     ) -> Result<MailHeaderPage, String> {
         self.page(
             "priority = ?1 AND deleted = 0",
@@ -1333,6 +1549,7 @@ impl MailStore {
             query,
             sort,
             desc,
+            unread_only,
         )
     }
 
@@ -1409,6 +1626,43 @@ impl MailStore {
         }
         tx.commit().map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    /// Drop messages from the index for good — the row, its cached body, its
+    /// attachment rows, and every blob no other message still names.
+    ///
+    /// The counterpart of `move_messages` for a delete the server has already
+    /// carried out, and it is deliberately the *second* half of that pair: the
+    /// caller expunges first and calls this once the server agreed, so a refused
+    /// delete never leaves the index missing mail that is still in the mailbox.
+    ///
+    /// **Not `VACUUM`ed**, unlike `delete_account_mail`. A `DELETE` only moves
+    /// pages to the freelist, where a plain store's subject stays readable — but
+    /// that is `forget_message_content`'s standing trade too, and rewriting a
+    /// multi-gigabyte database to delete one mail would make the ordinary case
+    /// unusable. A sealed store has nothing readable there to begin with.
+    pub fn delete_messages(&self, message_ids: &[String]) -> Result<u32, String> {
+        let mut conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let mut removed = 0u32;
+        for id in message_ids {
+            tx.execute(
+                "DELETE FROM attachments WHERE message_id = ?1",
+                params![id],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.execute(
+                "DELETE FROM bodies_cache WHERE message_id = ?1",
+                params![id],
+            )
+            .map_err(|e| e.to_string())?;
+            removed += tx
+                .execute("DELETE FROM messages WHERE id = ?1", params![id])
+                .map_err(|e| e.to_string())? as u32;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        self.prune_blobs_locked(&conn)?;
+        Ok(removed)
     }
 
     // ── Bodies ──────────────────────────────────────────────────────────────
@@ -1609,6 +1863,62 @@ impl MailStore {
             .map_err(|e| e.to_string())
     }
 
+    /// Drop everything cached for one message — its attachment rows, its body
+    /// cache row — and every blob that leaves unreferenced.
+    ///
+    /// For a message that turned out to be end-to-end encrypted: a store written
+    /// before `mail_body` stopped persisting decrypted attachments holds their
+    /// plaintext under the at-rest key only, which is the collapse
+    /// `docs/context/mail_encryption.md` forbids. Opening it again removes it.
+    pub fn forget_message_content(&self, message_id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        conn.execute(
+            "DELETE FROM attachments WHERE message_id = ?1",
+            params![message_id],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM bodies_cache WHERE message_id = ?1",
+            params![message_id],
+        )
+        .map_err(|e| e.to_string())?;
+        self.prune_blobs_locked(&conn)
+    }
+
+    /// Remove every blob file no `attachments.blob` or `bodies_cache.raw_blob`
+    /// names. Content addressing dedupes, so a blob is only garbage once the
+    /// *last* row naming it is gone — a per-row delete would break another
+    /// message carrying the same PDF.
+    fn prune_blobs_locked(&self, conn: &Connection) -> Result<(), String> {
+        let dir = self.blobs_dir();
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return Ok(());
+        };
+        let mut live = std::collections::HashSet::new();
+        let mut stmt = conn
+            .prepare(
+                "SELECT blob FROM attachments
+                 UNION SELECT raw_blob FROM bodies_cache WHERE raw_blob IS NOT NULL",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            live.insert(row.map_err(|e| e.to_string())?);
+        }
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // Only files shaped like a blob id: anything else in the directory
+            // is not ours to delete.
+            let is_blob = name.len() == 64 && name.bytes().all(|b| b.is_ascii_hexdigit());
+            if is_blob && !live.contains(&name) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+        Ok(())
+    }
+
     /// One attachment's metadata plus the blob digest holding its bytes.
     pub fn attachment(
         &self,
@@ -1632,6 +1942,41 @@ impl MailStore {
     }
 
     // ── Drafts ──────────────────────────────────────────────────────────────
+
+    /// Atomic MCP compare-and-swap. A composer save clears origin/owner and
+    /// makes a racing agent edit/delete fail instead of reclaiming the draft.
+    pub fn change_agent_draft(&self, before: Option<&MailDraft>, after: Option<&MailDraft>) -> Result<(), String> {
+        let draft = after.or(before).ok_or("Missing draft")?;
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        let current: Option<Option<String>> = conn.query_row(
+            "SELECT account_id, json FROM drafts WHERE id = ?1", params![draft.id], |r| {
+                let account: String = r.get(0)?;
+                self.open_text(r, 1, &account, "drafts", "json", &draft.id)
+            }).optional().map_err(|e| e.to_string())?;
+        let expected = before.map(serde_json::to_value).transpose().map_err(|e| e.to_string())?;
+        let current = current.map(|s| s.ok_or("Draft cannot be decrypted"))
+            .transpose()?.map(|s| serde_json::from_str::<serde_json::Value>(&s)).transpose().map_err(|e| e.to_string())?;
+        // Normalize older drafts through the schema before comparing defaults.
+        let current = current.map(serde_json::from_value::<MailDraft>).transpose().map_err(|e| e.to_string())?
+            .map(serde_json::to_value).transpose().map_err(|e| e.to_string())?;
+        if current != expected { return Err("Draft changed; refresh before editing".into()); }
+        if let Some(next) = after {
+            if next.origin.is_none() || next.owner_session.is_none() || !next.staged.is_empty() || !next.bcc.is_empty() {
+                return Err("Invalid agent draft".into());
+            }
+            if before.is_none() {
+                let count: i64 = conn.query_row("SELECT COUNT(*) FROM drafts", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+                if count >= 500 { return Err("Draft storage limit reached; review existing drafts".into()); }
+            }
+            conn.execute("INSERT INTO drafts (id, account_id, json) VALUES (?1, ?2, ?3)
+                ON CONFLICT(id) DO UPDATE SET account_id = excluded.account_id, json = excluded.json",
+                params![next.id, next.account_id, self.seal_text(&next.account_id, "drafts", "json", &next.id,
+                    &serde_json::to_string(next).map_err(|e| e.to_string())?)]).map_err(|e| e.to_string())?;
+        } else {
+            conn.execute("DELETE FROM drafts WHERE id = ?1", params![draft.id]).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
 
     pub fn save_draft(&self, draft: &MailDraft) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
@@ -1679,6 +2024,28 @@ impl MailStore {
             Some(None) => Err("this draft could not be decrypted".into()),
             None => Ok(None),
         }
+    }
+
+    /// Every stored draft. Callers filter by `origin`: the mail view lists the
+    /// agent-written ones, and the root MCP tools serve each caller class its
+    /// own. A row that does not open or parse is skipped rather than failing the
+    /// list — `draft()` is where that error is told.
+    pub fn drafts(&self) -> Result<Vec<MailDraft>, String> {
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        let mut stmt = conn
+            .prepare("SELECT id, account_id, json FROM drafts ORDER BY rowid")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                let id: String = r.get(0)?;
+                let account_id: String = r.get(1)?;
+                self.open_text(r, 2, &account_id, "drafts", "json", &id)
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(rows
+            .filter_map(|row| row.ok().flatten())
+            .filter_map(|json| serde_json::from_str(&json).ok())
+            .collect())
     }
 
     pub fn delete_draft(&self, draft_id: &str) -> Result<(), String> {
@@ -1888,8 +2255,22 @@ impl MailStore {
                 "malformed",
                 "rfc_message_id",
                 "authres_json",
+                // A model's reason quotes the message, so it is sealed on write;
+                // leaving it off this list left every reason written before
+                // encryption was turned on in the clear, permanently.
+                "priority_source",
+                "priority_reason",
             ],
         )?;
+        // `reply_key` is a digest of a `Message-ID`, and in a store that ran
+        // plain it *is* that id. There is no sealed copy to re-digest it from,
+        // so it is dropped; the next sync writes every row's keyed one back.
+        {
+            let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+            changed += conn
+                .execute("UPDATE messages SET reply_key = '' WHERE reply_key != ''", [])
+                .map_err(|e| e.to_string())?;
+        }
         changed += self.seal_table(
             "bodies_cache",
             &["message_id"],
@@ -1913,14 +2294,70 @@ impl MailStore {
         changed += self.seal_table("mail_remote_allow", &["addr_key"], None, &["address"])?;
         changed += self.reseal_blobs()?;
         changed += self.reseal_outbox()?;
+        // Not marked done here. The flag is what makes the next open skip this
+        // pass — and with it the vacuum — so setting it before the vacuum had
+        // run meant a crash or a full disk in between left the old plaintext in
+        // the freelist for good. `open_with_keys` marks it once the vacuum is in.
+        Ok(changed > 0)
+    }
 
+    fn marked_encrypted(&self) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        conn.query_row(
+            "SELECT value FROM meta WHERE key = ?1",
+            params![META_ENCRYPTED],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+        .map(|v| v.as_deref() == Some("1"))
+        .map_err(|e| e.to_string())
+    }
+
+    /// Columns that were sealed on write but missing from `seal_existing`'s list
+    /// when a store was first migrated. That pass never runs again once a store
+    /// is marked, so these get their own one-time pass, recorded under its own
+    /// meta key.
+    fn seal_late_columns(&mut self) -> Result<(), String> {
+        const LATE: &str = "sealed_priority_columns";
+        {
+            let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+            let done: Option<String> = conn
+                .query_row("SELECT value FROM meta WHERE key = ?1", params![LATE], |r| {
+                    r.get(0)
+                })
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if done.as_deref() == Some("1") {
+                return Ok(());
+            }
+        }
+        let changed = self.seal_table(
+            "messages",
+            &["id"],
+            Some("account_id"),
+            &["priority_source", "priority_reason"],
+        )?;
+        if changed > 0 {
+            self.vacuum_into_place()?;
+        }
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, '1')",
+            params![LATE],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Record that sealing (and the vacuum after it) finished.
+    fn mark_encrypted(&self) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
         conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, '1')",
             params![META_ENCRYPTED],
         )
         .map_err(|e| e.to_string())?;
-        Ok(changed > 0)
+        Ok(())
     }
 
     /// Seal every still-cleartext value in `columns` of `table`.
@@ -2144,7 +2581,13 @@ impl MailStore {
             let Ok(bytes) = std::fs::read(&path) else {
                 continue;
             };
-            if mail_crypt::looks_sealed(&bytes) {
+            // Sealed means "opens under this key and its own name", not "starts
+            // with the envelope magic": an attachment crafted to begin with
+            // `ELMC\x01` would otherwise stay plaintext under its bare SHA-256
+            // name — exactly the confirmation oracle the keyed names remove.
+            if mail_crypt::looks_sealed(&bytes)
+                && mail_crypt::open(&keys.blob, &mail_crypt::blob_aad(&old_id), &bytes).is_ok()
+            {
                 continue;
             }
             let new_id = mail_crypt::blob_id(&keys.addr, &bytes);
@@ -2273,7 +2716,14 @@ impl MailStore {
             params![account_id],
         )
         .map_err(|e| e.to_string())?;
-        Ok(())
+        // "Blobs included", which the doc comment always promised: the rows
+        // naming them are gone, so the files would otherwise outlive the account.
+        self.prune_blobs_locked(&conn)?;
+        // And the rows themselves: a `DELETE` only moves pages to the freelist,
+        // where a plain store's subjects and bodies stay readable in `mail.db`.
+        // Drafts are deliberately kept — they are unsent work, not cached mail,
+        // and the confirmation only promises the latter.
+        conn.execute_batch("VACUUM").map_err(|e| e.to_string())
     }
 }
 
@@ -2394,6 +2844,12 @@ fn staged_row(draft_id: &str, staged_id: &str) -> String {
 /// Reduce an identifier to something that cannot name anything but a leaf
 /// inside the store. Ids are minted by the backend, so this is a belt: the
 /// braces are that nothing outside `mail_dir()` is ever joined onto.
+/// A `Message-ID` as both sides of the reply lookup spell it: `mail-parser`
+/// hands ids back bare, a composed `In-Reply-To` may carry its angle brackets.
+fn normalize_rfc_id(id: &str) -> &str {
+    id.trim().trim_start_matches('<').trim_end_matches('>').trim()
+}
+
 fn sanitize_id(id: &str) -> String {
     let cleaned: String = id
         .chars()
@@ -2493,6 +2949,18 @@ mod tests {
 
     /// The sync loop's arrival watermark: `None` before any message lands, then
     /// the highest UID stored — never a lower one, whatever order they arrive in.
+    #[test]
+    fn composer_claim_prevents_racing_agent_edits_and_deletes() {
+        let (_dir, store) = store();
+        let original = MailDraft { id:"owned".into(), account_id:"a1".into(), origin:Some("agent".into()), owner_session:Some("session".into()), ..Default::default() };
+        store.change_agent_draft(None, Some(&original)).unwrap();
+        let mut human = original.clone(); human.origin = None; human.owner_session = None; human.subject = "Human edit".into();
+        store.save_draft(&human).unwrap();
+        assert!(store.change_agent_draft(Some(&original), None).is_err());
+        assert!(store.change_agent_draft(Some(&original), Some(&original)).is_err());
+        assert_eq!(store.draft("owned").unwrap().unwrap().subject, "Human edit");
+    }
+
     #[test]
     fn folder_max_uid_tracks_the_high_water_mark() {
         let (_dir, store) = store();
@@ -2641,14 +3109,14 @@ mod tests {
             store.upsert_header(&h).unwrap();
         }
         let page = store
-            .headers_page(&f.id, 0, 10, None, MailSort::Date, true)
+            .headers_page(&f.id, 0, 10, None, MailSort::Date, true, false)
             .unwrap();
         assert_eq!(page.total, 25);
         assert_eq!(page.items.len(), 10);
         assert_eq!(page.items[0].uid, 25, "newest first");
 
         let page2 = store
-            .headers_page(&f.id, 20, 10, None, MailSort::Date, true)
+            .headers_page(&f.id, 20, 10, None, MailSort::Date, true, false)
             .unwrap();
         assert_eq!(page2.items.len(), 5, "the last page is short");
         assert_eq!(page2.items[0].uid, 5);
@@ -2681,7 +3149,7 @@ mod tests {
         }
 
         for sort in [MailSort::Flagged, MailSort::Attachments, MailSort::Size] {
-            let page = store.headers_page(&f.id, 0, 10, None, sort, true).unwrap();
+            let page = store.headers_page(&f.id, 0, 10, None, sort, true, false).unwrap();
             assert_eq!(
                 page.items[0].uid, 1,
                 "{sort:?} must put the marked mail first"
@@ -2694,10 +3162,90 @@ mod tests {
         }
 
         let asc = store
-            .headers_page(&f.id, 0, 10, None, MailSort::Size, false)
+            .headers_page(&f.id, 0, 10, None, MailSort::Size, false, false)
             .unwrap();
         assert_eq!(asc.items[0].uid, 5, "smallest first, newest of the ties");
         assert_eq!(asc.items[4].uid, 1, "the big one goes last");
+    }
+
+    /// Dates arrive with the sender's offset, and the list orders by the text.
+    /// A 06:00 UTC mail written `08:00+02:00` must still sort below a 09:00 UTC
+    /// one written `05:00-04:00`, which as strings it would not.
+    #[test]
+    fn date_order_is_by_instant_not_by_the_senders_offset() {
+        let (_d, store) = store();
+        let f = folder("a1", "INBOX");
+        store.upsert_folder(&f).unwrap();
+        store
+            .upsert_header(&header(&f, 1, "early", "2026-09-18T08:00:00+02:00"))
+            .unwrap();
+        store
+            .upsert_header(&header(&f, 2, "late", "2026-09-18T05:00:00-04:00"))
+            .unwrap();
+        store.upsert_header(&header(&f, 3, "undated", "")).unwrap();
+
+        let page = store
+            .headers_page(&f.id, 0, 10, None, MailSort::Date, true, false)
+            .unwrap();
+        let uids: Vec<u32> = page.items.iter().map(|h| h.uid).collect();
+        assert_eq!(uids, vec![2, 1, 3], "newest instant first, undated last");
+        assert_eq!(page.items[0].date, "2026-09-18T09:00:00Z");
+        assert_eq!(page.items[1].date, "2026-09-18T06:00:00Z");
+        assert_eq!(page.items[2].date, "", "an empty date stays empty");
+    }
+
+    /// Rows stored before the UTC rule are converted when the store opens.
+    #[test]
+    fn opening_the_store_converts_dates_stored_with_an_offset() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let store = MailStore::open(dir.path()).unwrap();
+            let f = folder("a1", "INBOX");
+            store.upsert_folder(&f).unwrap();
+            store
+                .upsert_header(&header(&f, 1, "old row", "2026-09-18T09:00:00Z"))
+                .unwrap();
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE messages SET date = '2026-09-18T08:00:00+02:00' WHERE uid = 1",
+                [],
+            )
+            .unwrap();
+        }
+        let store = MailStore::open(dir.path()).unwrap();
+        let h = store.header("a1|INBOX#1").unwrap().unwrap();
+        assert_eq!(h.date, "2026-09-18T06:00:00Z");
+    }
+
+    /// Unread-only is a filter over the folder, not over the page: the total
+    /// shrinks with it, and it composes with a query.
+    #[test]
+    fn unread_only_filters_the_folder_and_its_count() {
+        let (_d, store) = store();
+        let f = folder("a1", "INBOX");
+        store.upsert_folder(&f).unwrap();
+        for uid in 1..=6u32 {
+            let mut h = header(
+                &f,
+                uid,
+                if uid % 2 == 0 { "invoice" } else { "note" },
+                &format!("2026-07-{:02}T09:00:00Z", uid),
+            );
+            h.seen = uid > 2;
+            store.upsert_header(&h).unwrap();
+        }
+        let unread = store
+            .headers_page(&f.id, 0, 10, None, MailSort::Date, true, true)
+            .unwrap();
+        assert_eq!(unread.total, 2);
+        assert!(unread.items.iter().all(|h| !h.seen));
+        assert_eq!(unread.items[0].uid, 2, "still newest first");
+
+        let hit = store
+            .headers_page(&f.id, 0, 10, Some("invoice"), MailSort::Date, true, true)
+            .unwrap();
+        assert_eq!(hit.total, 1);
+        assert_eq!(hit.items[0].uid, 2);
     }
 
     #[test]
@@ -2713,7 +3261,7 @@ mod tests {
             .unwrap();
 
         let hits = store
-            .headers_page(&f.id, 0, 10, Some("invoi"), MailSort::Date, true)
+            .headers_page(&f.id, 0, 10, Some("invoi"), MailSort::Date, true, false)
             .unwrap();
         assert_eq!(hits.total, 1);
         assert_eq!(hits.items[0].subject, "invoice");
@@ -2727,12 +3275,13 @@ mod tests {
                 Some("'; DROP TABLE messages; --"),
                 MailSort::Date,
                 true,
+                false,
             )
             .unwrap();
         assert_eq!(hostile.total, 0);
         assert_eq!(
             store
-                .headers_page(&f.id, 0, 10, None, MailSort::Date, true)
+                .headers_page(&f.id, 0, 10, None, MailSort::Date, true, false)
                 .unwrap()
                 .total,
             2,
@@ -2762,6 +3311,48 @@ mod tests {
     }
 
     #[test]
+    fn counts_include_the_unread_mail_older_than_the_index() {
+        // A sync indexes only a folder's newest headers; the server's counts are
+        // what the badges must say, and local reads still move them at once.
+        let (_d, store) = store();
+        let f = folder("a1", "INBOX");
+        store.upsert_folder(&f).unwrap();
+        let a = header(&f, 1, "a", "2026-07-01T09:00:00Z");
+        store.upsert_header(&a).unwrap();
+        store
+            .upsert_header(&header(&f, 2, "b", "2026-07-02T09:00:00Z"))
+            .unwrap();
+        // The server holds 500 messages, 300 unread; two are in the index.
+        store.set_server_counts(&f.id, 500, 300).unwrap();
+        store.refresh_counts(&f.id).unwrap();
+        let row = store.folder(&f.id).unwrap().unwrap();
+        assert_eq!((row.total, row.unread), (500, 300));
+        assert_eq!(store.unindexed_unread(&f.id).unwrap(), 298);
+
+        store.set_flag(&a.id, MailFlag::Seen, true).unwrap();
+        store.refresh_counts(&f.id).unwrap();
+        assert_eq!(store.folder(&f.id).unwrap().unwrap().unread, 299);
+
+        // A re-listed folder (LIST carries no counts) keeps them after a refresh.
+        store.upsert_folder(&f).unwrap();
+        store.refresh_counts(&f.id).unwrap();
+        assert_eq!(store.folder(&f.id).unwrap().unwrap().unread, 299);
+
+        // An index that overshoots the server is not a negative remainder.
+        store.set_server_counts(&f.id, 1, 0).unwrap();
+        store.refresh_counts(&f.id).unwrap();
+        let row = store.folder(&f.id).unwrap().unwrap();
+        assert_eq!((row.total, row.unread), (2, 1));
+
+        // "Mark all read" clears the remainder with the rows.
+        store.set_server_counts(&f.id, 500, 300).unwrap();
+        store.mark_folder_seen(&f.id).unwrap();
+        store.refresh_counts(&f.id).unwrap();
+        assert_eq!(store.folder(&f.id).unwrap().unwrap().unread, 0);
+        assert_eq!(store.unindexed_unread(&f.id).unwrap(), 0);
+    }
+
+    #[test]
     fn a_deleted_message_leaves_the_listing() {
         let (_d, store) = store();
         let f = folder("a1", "INBOX");
@@ -2771,7 +3362,7 @@ mod tests {
         store.set_flag(&h.id, MailFlag::Deleted, true).unwrap();
         assert_eq!(
             store
-                .headers_page(&f.id, 0, 10, None, MailSort::Date, true)
+                .headers_page(&f.id, 0, 10, None, MailSort::Date, true, false)
                 .unwrap()
                 .total,
             0
@@ -2793,17 +3384,84 @@ mod tests {
             .unwrap();
         assert_eq!(
             store
-                .headers_page(&inbox.id, 0, 10, None, MailSort::Date, true)
+                .headers_page(&inbox.id, 0, 10, None, MailSort::Date, true, false)
                 .unwrap()
                 .total,
             0
         );
         assert_eq!(
             store
-                .headers_page(&archive.id, 0, 10, None, MailSort::Date, true)
+                .headers_page(&archive.id, 0, 10, None, MailSort::Date, true, false)
                 .unwrap()
                 .total,
             1
+        );
+    }
+
+    #[test]
+    fn deleting_a_message_takes_its_row_body_and_attachments() {
+        let (dir, store) = store();
+        let inbox = folder("a1", "INBOX");
+        store.upsert_folder(&inbox).unwrap();
+        let gone = header(&inbox, 1, "gone", "2026-07-01T09:00:00Z");
+        let kept = header(&inbox, 2, "kept", "2026-07-01T10:00:00Z");
+        store.upsert_header(&gone).unwrap();
+        store.upsert_header(&kept).unwrap();
+        let shared = store.put_blob(b"same pdf").unwrap();
+        let own = store.put_blob(b"only the doomed one").unwrap();
+        let meta = |part: &str| MailAttachmentMeta {
+            part_id: part.into(),
+            filename: "a.pdf".into(),
+            mime: "application/pdf".into(),
+            size: 8,
+            inline: false,
+            type_mismatch: None,
+        };
+        store.put_attachment(&gone.id, &meta("2"), &shared).unwrap();
+        store.put_attachment(&gone.id, &meta("3"), &own).unwrap();
+        store.put_attachment(&kept.id, &meta("2"), &shared).unwrap();
+        store
+            .cache_body(&gone.id, 1, Some("<p>x</p>"), None, "[]", 0, false, None)
+            .unwrap();
+
+        assert_eq!(
+            store.delete_messages(std::slice::from_ref(&gone.id)).unwrap(),
+            1
+        );
+
+        assert!(store.header(&gone.id).unwrap().is_none());
+        assert!(store.cached_body(&gone.id, 1).unwrap().is_none());
+        assert!(store.attachments(&gone.id).unwrap().is_empty());
+        // The blob only it named is gone; the one the other message still names
+        // survives — `prune_blobs_locked`'s rule, which a per-row delete would
+        // have broken.
+        assert!(!dir.path().join("blobs").join(&own).exists());
+        assert_eq!(store.get_blob(&shared).unwrap(), b"same pdf");
+        assert!(store.header(&kept.id).unwrap().is_some());
+    }
+
+    #[test]
+    fn deleting_reports_what_was_actually_in_the_index() {
+        let (_d, store) = store();
+        let inbox = folder("a1", "INBOX");
+        store.upsert_folder(&inbox).unwrap();
+        let h = header(&inbox, 1, "x", "2026-07-01T09:00:00Z");
+        store.upsert_header(&h).unwrap();
+
+        // A message the index no longer holds is not an error — the server may
+        // well have accepted the expunge — but it must not be counted either.
+        assert_eq!(
+            store
+                .delete_messages(&[h.id.clone(), "a1|INBOX|999".to_string()])
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .headers_page(&inbox.id, 0, 10, None, MailSort::Date, true, false)
+                .unwrap()
+                .total,
+            0
         );
     }
 
@@ -2845,6 +3503,34 @@ mod tests {
             store.cached_body("m1", 2).unwrap().is_none(),
             "a sanitizer bump must invalidate the cache"
         );
+    }
+
+    #[test]
+    fn forgetting_a_message_removes_only_blobs_nothing_else_names() {
+        let (dir, store) = store();
+        let shared = store.put_blob(b"same pdf").unwrap();
+        let own = store.put_blob(b"only m1").unwrap();
+        let meta = |part: &str| MailAttachmentMeta {
+            part_id: part.into(),
+            filename: "a.pdf".into(),
+            mime: "application/pdf".into(),
+            size: 8,
+            inline: false,
+            type_mismatch: None,
+        };
+        store.put_attachment("m1", &meta("2"), &shared).unwrap();
+        store.put_attachment("m1", &meta("3"), &own).unwrap();
+        store.put_attachment("m2", &meta("2"), &shared).unwrap();
+        store
+            .cache_body("m1", 1, Some("<p>x</p>"), None, "[]", 0, false, None)
+            .unwrap();
+
+        store.forget_message_content("m1").unwrap();
+
+        assert!(store.attachments("m1").unwrap().is_empty());
+        assert!(store.cached_body("m1", 1).unwrap().is_none());
+        assert!(!dir.path().join("blobs").join(&own).exists());
+        assert_eq!(store.get_blob(&shared).unwrap(), b"same pdf", "m2 still names it");
     }
 
     #[test]
@@ -2897,6 +3583,31 @@ mod tests {
 
     /// A staged file is a **copy**. Deleting the draft removes it; nothing in
     /// the store ever points back at the file the user picked.
+    /// `origin` marks an agent's draft; a draft stored before the field existed
+    /// (no `origin` key) reads back as the user's own.
+    #[test]
+    fn drafts_list_and_carry_their_origin() {
+        let (_d, store) = store();
+        let old: MailDraft =
+            serde_json::from_str(r#"{"id":"old","account_id":"a1","subject":"mine"}"#).unwrap();
+        assert_eq!(old.origin, None);
+        assert!(!serde_json::to_string(&old).unwrap().contains("origin"));
+        store.save_draft(&old).unwrap();
+        store
+            .save_draft(&MailDraft {
+                id: "d2".into(),
+                account_id: "a1".into(),
+                origin: Some("agent".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        let all = store.drafts().unwrap();
+        assert_eq!(all.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(), ["old", "d2"]);
+        assert_eq!(all[1].origin.as_deref(), Some("agent"));
+        store.delete_draft("d2").unwrap();
+        assert_eq!(store.drafts().unwrap().len(), 1);
+    }
+
     #[test]
     fn deleting_a_draft_removes_its_staged_copies() {
         let (dir, store) = store();
@@ -2985,7 +3696,7 @@ mod tests {
         assert!(store.get_blob(&blob).is_err(), "blobs are gone");
         assert_eq!(
             store
-                .headers_page(&f.id, 0, 10, None, MailSort::Date, true)
+                .headers_page(&f.id, 0, 10, None, MailSort::Date, true, false)
                 .unwrap()
                 .total,
             1,
@@ -3012,7 +3723,7 @@ mod tests {
         assert_eq!(store.folders("a2").unwrap().len(), 1);
         assert_eq!(
             store
-                .headers_page(&b.id, 0, 10, None, MailSort::Date, true)
+                .headers_page(&b.id, 0, 10, None, MailSort::Date, true, false)
                 .unwrap()
                 .total,
             1
@@ -3094,7 +3805,7 @@ mod tests {
             .unwrap();
 
         let page = store
-            .priority_page(MailPriority::Important, 0, 10, None, MailSort::Date, true)
+            .priority_page(MailPriority::Important, 0, 10, None, MailSort::Date, true, false)
             .unwrap();
         assert_eq!(page.total, 2);
         let accounts: Vec<&str> = page.items.iter().map(|h| h.account_id.as_str()).collect();
@@ -3167,10 +3878,10 @@ mod tests {
             .unwrap();
 
         let important = store
-            .priority_page(MailPriority::Important, 0, 10, None, MailSort::Date, true)
+            .priority_page(MailPriority::Important, 0, 10, None, MailSort::Date, true, false)
             .unwrap();
         let urgent = store
-            .priority_page(MailPriority::Urgent, 0, 10, None, MailSort::Date, true)
+            .priority_page(MailPriority::Urgent, 0, 10, None, MailSort::Date, true, false)
             .unwrap();
         assert_eq!(important.total, 1);
         assert_eq!(urgent.total, 1);
@@ -3196,6 +3907,7 @@ mod tests {
                 Some("account one"),
                 MailSort::Date,
                 true,
+                false,
             )
             .unwrap();
         assert_eq!(hit.total, 1);
@@ -3203,7 +3915,7 @@ mod tests {
 
         // `total` is the whole list, not the page — that is what the pager reads.
         let first = store
-            .priority_page(MailPriority::Important, 0, 1, None, MailSort::Date, true)
+            .priority_page(MailPriority::Important, 0, 1, None, MailSort::Date, true, false)
             .unwrap();
         assert_eq!(first.total, 2);
         assert_eq!(first.items.len(), 1);
@@ -3295,7 +4007,7 @@ mod tests {
 
         assert_eq!(
             store
-                .priority_page(MailPriority::Urgent, 0, 10, None, MailSort::Date, true)
+                .priority_page(MailPriority::Urgent, 0, 10, None, MailSort::Date, true, false)
                 .unwrap()
                 .total,
             0
@@ -3353,6 +4065,70 @@ mod tests {
             store.header(&id).unwrap().unwrap().priority,
             Some(MailPriority::Important)
         );
+    }
+
+    // ── Replies ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn replies_to_lists_the_users_own_answers_oldest_first() {
+        let (_d, store) = store();
+        let inbox = folder("a1", "INBOX");
+        let mut sent = folder("a1", "Sent");
+        sent.kind = MailFolderKind::Sent;
+        store.upsert_folder(&inbox).unwrap();
+        store.upsert_folder(&sent).unwrap();
+
+        let asked = header(&inbox, 1, "question", "2026-09-01T09:00:00Z");
+        store.upsert_header(&asked).unwrap();
+        // Someone else's answer in the inbox names the same message; it is not
+        // one the user wrote.
+        let theirs = header(&inbox, 2, "Re: question", "2026-09-01T10:00:00Z");
+        store.upsert_header(&theirs).unwrap();
+        store.set_reply_key(&theirs.id, Some("<1@example.com>")).unwrap();
+        let second = header(&sent, 8, "Re: question (2)", "2026-09-03T09:00:00Z");
+        let first = header(&sent, 7, "Re: question", "2026-09-02T09:00:00Z");
+        let unrelated = header(&sent, 9, "Re: other", "2026-09-02T09:00:00Z");
+        for h in [&second, &first, &unrelated] {
+            store.upsert_header(h).unwrap();
+        }
+        // Bare and bracketed spellings of one id meet.
+        store.set_reply_key(&second.id, Some("1@example.com")).unwrap();
+        store.set_reply_key(&first.id, Some(" <1@example.com> ")).unwrap();
+        store.set_reply_key(&unrelated.id, Some("<77@example.com>")).unwrap();
+
+        let ids: Vec<String> = store
+            .replies_to(&asked.id)
+            .unwrap()
+            .into_iter()
+            .map(|h| h.id)
+            .collect();
+        assert_eq!(ids, vec![first.id.clone(), second.id.clone()]);
+
+        // A re-sync rewrites the header and must leave the key alone; a reply
+        // whose `In-Reply-To` went away stops being one.
+        store.upsert_header(&first).unwrap();
+        assert_eq!(store.replies_to(&asked.id).unwrap().len(), 2);
+        store.set_reply_key(&first.id, None).unwrap();
+        assert_eq!(store.replies_to(&asked.id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_message_without_a_message_id_has_no_replies() {
+        let (_d, store) = store();
+        let inbox = folder("a1", "INBOX");
+        let mut sent = folder("a1", "Sent");
+        sent.kind = MailFolderKind::Sent;
+        store.upsert_folder(&inbox).unwrap();
+        store.upsert_folder(&sent).unwrap();
+        let mut asked = header(&inbox, 1, "question", "2026-09-01T09:00:00Z");
+        asked.rfc_message_id = None;
+        store.upsert_header(&asked).unwrap();
+        // An empty `In-Reply-To` must not turn into a key every id-less message matches.
+        let stray = header(&sent, 2, "Re:", "2026-09-02T09:00:00Z");
+        store.upsert_header(&stray).unwrap();
+        store.set_reply_key(&stray.id, Some("<>")).unwrap();
+        assert!(store.replies_to(&asked.id).unwrap().is_empty());
+        assert!(store.replies_to("no-such-message").unwrap().is_empty());
     }
 
     // ── Encryption at rest ──────────────────────────────────────────────────
@@ -3648,6 +4424,27 @@ mod tests {
         }
 
         #[test]
+        fn unread_only_filters_a_sealed_store_on_both_paths() {
+            let (_d, store) = sealed_store();
+            let f = folder("a1", "INBOX");
+            store.upsert_folder(&f).unwrap();
+            for (uid, seen) in [(1u32, false), (2, true), (3, false)] {
+                let mut h = header(&f, uid, "invoice", &format!("2026-07-0{uid}T09:00:00Z"));
+                h.seen = seen;
+                store.upsert_header(&h).unwrap();
+            }
+            let plain = store
+                .headers_page(&f.id, 0, 10, None, MailSort::Date, true, true)
+                .unwrap();
+            assert_eq!(plain.total, 2);
+            let scanned = store
+                .headers_page(&f.id, 0, 10, Some("invoice"), MailSort::Date, true, true)
+                .unwrap();
+            assert_eq!(scanned.total, 2);
+            assert!(scanned.items.iter().all(|h| !h.seen));
+        }
+
+        #[test]
         fn search_works_over_ciphertext_and_reports_when_it_stopped_early() {
             let (_d, store) = sealed_store();
             let f = folder("a1", "INBOX");
@@ -3660,7 +4457,7 @@ mod tests {
                 .unwrap();
 
             let hits = store
-                .headers_page(&f.id, 0, 10, Some("INVOI"), MailSort::Date, true)
+                .headers_page(&f.id, 0, 10, Some("INVOI"), MailSort::Date, true, false)
                 .unwrap();
             assert_eq!(hits.total, 1, "case-insensitive, like the LIKE it replaces");
             assert_eq!(hits.items[0].subject, "invoice 42");
@@ -3671,7 +4468,7 @@ mod tests {
 
             // No query: no scan at all, and the count is the real one.
             let all = store
-                .headers_page(&f.id, 0, 10, None, MailSort::Date, true)
+                .headers_page(&f.id, 0, 10, None, MailSort::Date, true, false)
                 .unwrap();
             assert_eq!(all.total, 2);
             assert_eq!(all.items[0].uid, 2, "still newest first");
@@ -3681,7 +4478,7 @@ mod tests {
                 .upsert_header(&header(&f, 3, "invoice 43", "2026-07-03T09:00:00Z"))
                 .unwrap();
             let page = store
-                .headers_page(&f.id, 1, 10, Some("invoice"), MailSort::Date, true)
+                .headers_page(&f.id, 1, 10, Some("invoice"), MailSort::Date, true, false)
                 .unwrap();
             assert_eq!(page.total, 2);
             assert_eq!(page.items.len(), 1);
@@ -3707,7 +4504,7 @@ mod tests {
                     .unwrap();
             }
             let full = store
-                .headers_page(&f.id, 0, 5, Some("needle"), MailSort::Date, true)
+                .headers_page(&f.id, 0, 5, Some("needle"), MailSort::Date, true, false)
                 .unwrap();
             assert_eq!(full.total, 20);
             assert!(
@@ -3735,6 +4532,7 @@ mod tests {
                     Some("budget"),
                     MailSort::Date,
                     true,
+                    false,
                 )
                 .unwrap();
             assert_eq!(hit.total, 1);
@@ -3746,6 +4544,7 @@ mod tests {
                     Some("nothing"),
                     MailSort::Date,
                     true,
+                    false,
                 )
                 .unwrap();
             assert_eq!(miss.total, 0);
@@ -3884,6 +4683,34 @@ mod tests {
             }
         }
 
+        /// The AAD stops a sealed value moving between rows, but a plain `TEXT`
+        /// value was accepted as-is — so anyone able to write `mail.db` could
+        /// put words in a subject without a "damaged" marker.
+        #[test]
+        fn plaintext_planted_in_a_sealed_store_reads_as_damaged() {
+            let dir = tempfile::tempdir().unwrap();
+            let f = folder("a1", "INBOX");
+            let h = header(&f, 1, "genuine", "2026-07-01T09:00:00Z");
+            {
+                let store = MailStore::open_with_keys(dir.path(), Some(keys(1))).unwrap();
+                store.upsert_folder(&f).unwrap();
+                store.upsert_header(&h).unwrap();
+                let conn = store.conn.lock().unwrap();
+                conn.execute(
+                    "UPDATE messages SET subject = 'planted' WHERE id = ?1",
+                    params![h.id],
+                )
+                .unwrap();
+            }
+            let store = MailStore::open_with_keys(dir.path(), Some(keys(1))).unwrap();
+            let back = store.header(&h.id).unwrap().unwrap();
+            assert_ne!(back.subject, "planted");
+            assert!(back
+                .malformed_headers
+                .unwrap_or_default()
+                .contains(&MALFORMED_SEALED.to_string()));
+        }
+
         #[test]
         fn reopening_a_sealed_store_needs_no_second_migration() {
             let dir = tempfile::tempdir().unwrap();
@@ -3899,7 +4726,7 @@ mod tests {
             assert_eq!(store.folders("a1").unwrap().len(), 1);
             assert_eq!(
                 store
-                    .headers_page(&f.id, 0, 10, None, MailSort::Date, true)
+                    .headers_page(&f.id, 0, 10, None, MailSort::Date, true, false)
                     .unwrap()
                     .total,
                 1
@@ -3952,6 +4779,49 @@ mod tests {
                     );
                 }
             }
+        }
+
+        /// `reply_key` is the same class of column: in a plain store it is the
+        /// `Message-ID` itself. Conversion drops it rather than leave it in the
+        /// clear, and the next sync's `set_reply_key` finds the replies again.
+        #[test]
+        fn converting_a_plain_store_drops_cleartext_reply_keys() {
+            let dir = tempfile::tempdir().unwrap();
+            let inbox = realistic_folder("a1", "INBOX");
+            let mut sent = realistic_folder("a1", "Sent");
+            sent.kind = MailFolderKind::Sent;
+            let asked = header(&inbox, 1, "question", "2026-09-01T09:00:00Z");
+            let answer = header(&sent, 1, "Re: question", "2026-09-02T09:00:00Z");
+            {
+                let store = MailStore::open(dir.path()).unwrap();
+                store.upsert_folder(&inbox).unwrap();
+                store.upsert_folder(&sent).unwrap();
+                store.upsert_header(&asked).unwrap();
+                store.upsert_header(&answer).unwrap();
+                store.set_reply_key(&answer.id, Some("1@example.com")).unwrap();
+                assert_eq!(store.replies_to(&asked.id).unwrap().len(), 1);
+            }
+
+            let store = MailStore::open_with_keys(dir.path(), Some(keys(1))).unwrap();
+            let key: String = store
+                .conn
+                .lock()
+                .unwrap()
+                .query_row("SELECT reply_key FROM messages WHERE id = ?1", params![answer.id], |r| r.get(0))
+                .unwrap();
+            assert_eq!(key, "", "the cleartext id is gone");
+            // The next sync.
+            store.set_reply_key(&answer.id, Some("1@example.com")).unwrap();
+            let found = store.replies_to(&asked.id).unwrap();
+            assert_eq!(found.len(), 1);
+            assert_eq!(found[0].id, answer.id);
+            let key: String = store
+                .conn
+                .lock()
+                .unwrap()
+                .query_row("SELECT reply_key FROM messages WHERE id = ?1", params![answer.id], |r| r.get(0))
+                .unwrap();
+            assert!(!key.contains("example.com"), "the key is a keyed digest now");
         }
 
         /// The same fault in a store an *earlier build* already converted: its

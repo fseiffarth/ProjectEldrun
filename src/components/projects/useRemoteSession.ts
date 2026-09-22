@@ -11,13 +11,13 @@ import {
 import { joinRemotePath, parseSshAddress, type ParsedSshAddress } from "./scaffold";
 import { useRemoteBrowse } from "./useRemoteBrowse";
 import { rememberArg, useSavedCredential } from "./useSavedCredential";
-import { useVpnStatusStore } from "../../stores/vpnStatus";
+import { useVpnStatusStore } from "../../stores/remote/vpn/vpnStatus";
 import { IS_WINDOWS } from "../../lib/platform";
 import {
   forgetConnection,
   markConnectionOpened,
   resolveRemoteStartDir,
-} from "../../lib/remoteConnect";
+} from "../../lib/remote/remoteConnect";
 import { useSettingsStore } from "../../stores/settings";
 import { useT, type TranslationKey } from "../../lib/i18n";
 import type { LogLine } from "../common/ConnectionLog";

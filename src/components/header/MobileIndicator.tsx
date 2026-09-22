@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { MobileSetupGuide } from "../mobile/MobileSetupGuide";
 import { useSettingsStore } from "../../stores/settings";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { useHeaderStatusReport } from "../../stores/headerStatus";
@@ -72,6 +74,12 @@ function MobileIcon({ tone }: { tone: StatusTone }) {
  * the battery and VPN controls rather than in a project pill. The sidecar is
  * the authority: a green phone means its authenticated admin socket replied,
  * not merely that the setting says it ought to be running.
+ *
+ * The icon is also there *before* Mobile is set up — dimmed, with no status to
+ * poll — and clicking it opens `MobileSetupGuide`. A feature nobody has turned
+ * on is a feature nobody goes hunting for in the settings scroll, so the phone
+ * icon is the door to it; "Show Mobile connection in header" still hides the
+ * widget outright for anyone who wants neither.
  */
 export function MobileIndicator() {
   const t = useT();
@@ -95,6 +103,7 @@ export function MobileIndicator() {
   const [lockingDown, setLockingDown] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [uploadNotice, setUploadNotice] = useState<string | null>(null);
+  const [showSetup, setShowSetup] = useState(false);
   const closeTimer = useRef<number | undefined>(undefined);
   const statusRequest = useRef(0);
   const reconnectingRef = useRef(false);
@@ -262,15 +271,41 @@ export function MobileIndicator() {
         : t("mobile.indStoppedTitle");
 
   // "Checking" is every poll of an ordinary healthy host, so only a real error
-  // escalates out of a collapsed header.
+  // escalates out of a collapsed header. Not set up is `off`: present, dormant,
+  // and never a reason to break a collapsed cluster open.
   useHeaderStatusReport(
     "mobile",
-    !mobileEnabled || !visible
+    !visible
       ? null
-      : { tone: tone === "error" ? "alert" : tone === "connected" ? "ok" : "off", label: title },
+      : !mobileEnabled
+        ? { tone: "off", label: t("mobile.indSetUpTitle") }
+        : { tone: tone === "error" ? "alert" : tone === "connected" ? "ok" : "off", label: title },
   );
 
-  if (!mobileEnabled || !visible) return null;
+  if (!visible) return null;
+
+  // Rendered from both branches so switching Mobile on from inside the guide
+  // cannot yank the guide out from under the click that did it.
+  const setupGuide = showSetup
+    ? createPortal(<MobileSetupGuide onClose={() => setShowSetup(false)} />, document.body)
+    : null;
+
+  if (!mobileEnabled) {
+    return (
+      <div className="global-apps-menu header-status-menu-anchor no-drag">
+        <button
+          type="button"
+          className="global-apps-menu-btn mobile-indicator-btn"
+          aria-label={t("mobile.indSetUpTitle")}
+          title={t("mobile.indSetUpTitle")}
+          onClick={() => setShowSetup(true)}
+        >
+          <MobileIcon tone="off" />
+        </button>
+        {setupGuide}
+      </div>
+    );
+  }
 
   return (
     <div
@@ -356,6 +391,7 @@ export function MobileIndicator() {
           </div>
         </div>
       )}
+      {setupGuide}
     </div>
   );
 }

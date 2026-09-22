@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::Sha256;
 
+use super::protocol::TAB_COLORS;
+
 type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -73,6 +75,9 @@ struct SavedTab {
     tmux_attach: Option<String>,
     #[serde(default)]
     ephemeral: bool,
+    /// The user's tab colour, a palette id (see `protocol::TAB_COLORS`).
+    #[serde(default)]
+    color: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -89,6 +94,9 @@ struct LiveTmux {
 pub enum ScopeKind {
     Project,
     Box,
+    /// The root console (`docs/context/root_console.md`, "On the phone"): the
+    /// one scope that is in neither list, behind its own switch and gate.
+    Root,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -99,6 +107,10 @@ pub struct PublicProject {
     pub kind: ScopeKind,
     pub live_sessions: usize,
     pub last_activity: Option<u64>,
+    /// Root only: how many staged root-agent proposals wait for a decision.
+    /// A count and nothing else — deciding them is the desktop's alone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_reviews: Option<usize>,
 }
 
 /// The one-line schedule summary the desktop's Agents view puts under an agent
@@ -113,6 +125,16 @@ pub struct TabSchedules {
     pub next: Option<String>,
 }
 
+/// One prompt an agent tab was given, as the desktop read it off the agent's
+/// own transcript. `at` is the record's ISO instant; the phone formats it in
+/// its own zone, and a record that carried none arrives without one.
+#[derive(Debug, Clone, Serialize)]
+pub struct TabPrompt {
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct PublicTab {
     pub id: String,
@@ -124,7 +146,10 @@ pub struct PublicTab {
     /// This intentionally never stores or infers terminal text in the sidecar.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_status: Option<String>,
-    /// The model an agent tab last answered with, as the desktop shortened it.
+    /// The model an agent tab's session is showing, in the words the session
+    /// itself prints — the desktop reads them off the pane. A tab whose pane
+    /// the desktop window does not hold falls back to the model it last
+    /// answered with, shortened from the transcript's id.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_model: Option<String>,
     /// Desktop wall clock (ms) of the tab's last working output and of its last
@@ -139,9 +164,22 @@ pub struct PublicTab {
     /// Absent for a shell tab and while the desktop is closed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schedules: Option<TabSchedules>,
+    /// The newest prompts this agent tab was given, oldest first, as the
+    /// desktop read them off the agent's transcript. Unlike `agent_status` this
+    /// is published for a quiet tab as well: "what was this session last asked"
+    /// is the line the phone's lists are opened for, and a session nobody has
+    /// prompted in an hour is exactly the one whose answer is worth showing.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub prompts: Vec<TabPrompt>,
     pub available: bool,
     pub viewer_busy: bool,
     pub last_activity: Option<u64>,
+    /// The tab's user-set colour as a palette id, absent when it has none. The
+    /// phone resolves the id to the same hex the desktop does, so a tab reads
+    /// as one colour on both surfaces; an id this build does not know is
+    /// dropped here rather than published for the phone to guess at.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -221,6 +259,16 @@ impl CatalogCache {
             Err(error) => self.last_valid.clone().ok_or(error),
         }
     }
+
+    /// Forget how old the snapshot is, so the next read goes to disk. For the
+    /// caller that has just changed what the snapshot describes and knows the
+    /// change is already written: a tab closed from the phone is out of the
+    /// session file by the time the desktop answers, and serving the rest of
+    /// the TTL from the pre-close snapshot puts the row back under the reader's
+    /// thumb. The snapshot itself is kept as the fallback for a failed read.
+    pub fn invalidate(&mut self) {
+        self.loaded_at = None;
+    }
 }
 
 fn enabled(value: &Option<Value>) -> bool {
@@ -266,6 +314,73 @@ pub fn opaque_control_id(state_dir: &Path, domain: &str, value: &str) -> Result<
     Ok(key_id(&key, domain, &[value]))
 }
 
+/// The root scope's own id, as the desktop's tab store and bridge spell it.
+const ROOT_SCOPE_ID: &str = "root";
+
+/// The root scope's id, or anything that maps onto its session directory.
+fn is_root_scope_id(id: &str) -> bool {
+    project_key(id) == ROOT_SCOPE_ID
+}
+
+/// What the root gate needs from outside the state dir, so a test can say it.
+pub struct RootEnv {
+    /// `paths::root_work_dir()`.
+    pub dir: PathBuf,
+    /// A root agent started now would run fenced — the three facts behind
+    /// `root_mcp_status`'s `review_enforced`. Only asked when it decides.
+    pub fenced: fn() -> bool,
+}
+
+impl RootEnv {
+    fn live() -> Self {
+        Self {
+            dir: crate::paths::root_work_dir(),
+            fenced: || {
+                crate::services::agent_fence::policy_enabled(None)
+                    && crate::services::agent_fence::platform_fenceable()
+                    && crate::services::agent_fence::bwrap_available()
+            },
+        }
+    }
+}
+
+/// Whether the root console is the phone's right now. Read per catalog load,
+/// so flipping any of its inputs needs no sidecar restart and an open root
+/// terminal detaches at `pty_bridge`'s next re-check.
+///
+/// Off unless `eldrun_mobile_host.root_access` is set. Then: a root agent
+/// without the MCP tools holds no right a project agent lacks, so root is
+/// open; with them, only while every write is staged (`root_mcp_review` =
+/// all, the default and the reading of any unknown value) behind a fence the
+/// agent cannot walk around — otherwise a prompt typed on the phone would
+/// write the calendar with nobody at the desk to see it. Unreadable settings
+/// refuse, as they do for the tools themselves.
+fn root_open(state_dir: &Path, env: &RootEnv) -> bool {
+    let Some(settings) = fs::read(state_dir.join("settings.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+    else {
+        return false;
+    };
+    let switched_on = settings
+        .get("eldrun_mobile_host")
+        .and_then(|host| host.get("root_access"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !switched_on {
+        return false;
+    }
+    let tools = settings.get("root_mcp").and_then(Value::as_bool).unwrap_or(true);
+    if !tools {
+        return true;
+    }
+    let staged = !matches!(
+        settings.get("root_mcp_review").and_then(Value::as_str),
+        Some("destructive" | "off")
+    );
+    staged && (env.fenced)()
+}
+
 fn project_key(id: &str) -> String {
     let out: String = id
         .chars()
@@ -305,10 +420,22 @@ fn resumable(tab: &SavedTab) -> bool {
         "gemini",
         "agy",
         "vibe",
+        "droid",
     ];
     tab.session_id.is_some()
         && (BUILTIN.contains(&tab.cmd.as_str())
             || tab.resume_args.as_ref().is_some_and(|v| !v.is_empty()))
+}
+
+/// Which agent an agent tab runs, as the phone names it: the registry's name
+/// for the tab's CLI, so a tab renamed to "release review" still says it is
+/// Claude — and the phone's per-agent readers (mode walk, paste, prompt echo)
+/// still recognise it. The command itself never crosses the browser API; an
+/// agent the registry does not list keeps its tab label, as before.
+fn agent_label_of(tab: &SavedTab) -> String {
+    crate::commands::agents::agent_label_for_bin(&tab.cmd)
+        .map(str::to_string)
+        .unwrap_or_else(|| tab.label.chars().take(120).collect())
 }
 
 fn canonical_below_any(path: &Path, roots: &[PathBuf]) -> bool {
@@ -326,9 +453,28 @@ fn mobile_local(project: &ProjectRecord) -> bool {
         && !enabled(&project.vm)
 }
 
+/// `tmux ls` through Eldrun's effective PATH, the one the desktop's own tmux
+/// spawns use (`services::tmux_local`). A headless sidecar (launchd/systemd
+/// user service) inherits a bare PATH, so a bare `tmux` misses Homebrew's on a
+/// Mac, or picks `/usr/bin/tmux` against a server a `~/.local/bin/tmux` started
+/// — and tmux refuses a client of another protocol version.
+fn tmux_ls_command(format: &str) -> Command {
+    let mut command = crate::paths::command_no_window("tmux");
+    command.args(["ls", "-F", format]);
+    command
+}
+
 fn live_tmux() -> HashMap<String, LiveTmux> {
-    let format = "#{session_name}\t#{session_activity}\t#{pane_current_path}";
-    let Ok(out) = Command::new("tmux").args(["ls", "-F", format]).output() else {
+    // Windows has no tmux, and local tabs there are never wrapped in one
+    // (`CenterPanel` disables local persistence on Windows), so there is nothing
+    // to list — and a spawn per catalog read would only ever fail. The desktop's
+    // Mobile settings say so rather than leaving an empty terminal list to explain
+    // itself.
+    if cfg!(target_os = "windows") {
+        return HashMap::new();
+    }
+    let format ="#{session_name}\t#{session_activity}\t#{pane_current_path}";
+    let Ok(out) = tmux_ls_command(format).output() else {
         return HashMap::new();
     };
     if !out.status.success() {
@@ -348,6 +494,10 @@ fn live_tmux() -> HashMap<String, LiveTmux> {
 
 impl Catalog {
     pub fn load(state_dir: &Path, host_key: &[u8]) -> Result<Self, String> {
+        Self::load_with(state_dir, host_key, &RootEnv::live())
+    }
+
+    fn load_with(state_dir: &Path, host_key: &[u8], root: &RootEnv) -> Result<Self, String> {
         let bytes =
             fs::read(state_dir.join("projects.json")).map_err(|e| format!("read projects: {e}"))?;
         let projects: Vec<ProjectRecord> =
@@ -361,8 +511,23 @@ impl Catalog {
             .unwrap_or_default();
         let live = live_tmux();
         let mut sources = Vec::new();
+        if root_open(state_dir, root) {
+            sources.push(ScopeSource {
+                raw_id: ROOT_SCOPE_ID.into(),
+                label: "Root".into(),
+                status: "active".into(),
+                kind: ScopeKind::Root,
+                roots: vec![root.dir.clone()],
+            });
+        }
         for project in &projects {
             if !project.eldrun_mobile_access || !mobile_local(project) {
+                continue;
+            }
+            // Root is listed above, by its own switch and gate, and is not a
+            // project: this refuses a hand-edited record that would borrow its
+            // session directory — and walk past that gate — by taking its id.
+            if is_root_scope_id(&project.id) {
                 continue;
             }
             let Some(root_raw) = project.directory.as_deref() else {
@@ -489,15 +654,21 @@ fn resolve_scope(
             id: key_id(host_key, "tab", &[&source.raw_id, tmux]),
             label: tab.label.chars().take(120).collect(),
             kind: tab.kind.clone(),
-            agent_label: (tab.kind == "agent").then(|| tab.label.chars().take(120).collect()),
+            agent_label: (tab.kind == "agent").then(|| agent_label_of(&tab)),
             agent_status: None,
             agent_model: None,
             working_at: None,
             done_at: None,
             schedules: None,
+            prompts: Vec::new(),
             available: live_row.is_some(),
             viewer_busy: false,
             last_activity: live_row.map(|r| r.activity),
+            color: tab
+                .color
+                .as_deref()
+                .filter(|id| TAB_COLORS.contains(id))
+                .map(str::to_string),
         };
         tabs.push(ResolvedTab {
             public,
@@ -512,6 +683,8 @@ fn resolve_scope(
         kind: source.kind,
         live_sessions: tabs.iter().filter(|t| t.public.available).count(),
         last_activity,
+        pending_reviews: (source.kind == ScopeKind::Root)
+            .then(|| crate::services::root_mcp_review::pending_count(state_dir)),
     };
     Some(ResolvedProject {
         public,
@@ -525,6 +698,18 @@ fn resolve_scope(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tmux_ls_runs_through_eldrun_path() {
+        let command = tmux_ls_command("#{session_name}");
+        let path = command
+            .get_envs()
+            .find(|(key, _)| *key == "PATH")
+            .and_then(|(_, value)| value)
+            .expect("PATH is set on the tmux ls spawn");
+        let first = std::env::split_paths(path).next().expect("non-empty PATH");
+        assert_eq!(first, crate::paths::extra_path_dirs()[0]);
+    }
 
     #[test]
     fn opaque_ids_are_domain_separated_and_stable() {
@@ -606,6 +791,231 @@ mod tests {
         let b = catalog.projects.iter().find(|p| p.raw_id == "p-b").expect("B");
         assert_eq!(a.tabs.len(), 1, "the healthy project keeps its tabs");
         assert!(b.tabs.is_empty(), "the corrupt one has none, and is still listed");
+    }
+
+    /// The cache is what keeps an idle phone from forking `tmux ls` twice a
+    /// second, and it is also what could answer a poll with a tab the reader
+    /// has just closed: the desktop rewrites the session file before it says
+    /// "closed", so the only stale thing left is the snapshot's remaining TTL.
+    /// The close route drops it (`invalidate`) and the next read goes to disk.
+    #[test]
+    fn an_invalidated_cache_re_reads_within_the_ttl() {
+        let dir = tempfile::tempdir().expect("state dir");
+        let state = dir.path();
+        let root = state.join("p");
+        fs::create_dir_all(&root).expect("root dir");
+        fs::write(
+            state.join("projects.json"),
+            serde_json::to_vec(&serde_json::json!([{
+                "id": "p-1",
+                "name": "P",
+                "status": "active",
+                "directory": root.to_string_lossy(),
+                "eldrun_mobile_access": true,
+            }]))
+            .expect("projects"),
+        )
+        .expect("write projects");
+        let sessions = state.join("sessions").join("p-1");
+        fs::create_dir_all(&sessions).expect("session dir");
+        let write_tabs = |tabs: serde_json::Value| {
+            fs::write(
+                sessions.join("terminals.json"),
+                serde_json::to_vec(&serde_json::json!({ "tabLayout": tabs })).expect("session"),
+            )
+            .expect("write session");
+        };
+        write_tabs(serde_json::json!([{
+            "label": "Shell",
+            "cmd": "bash",
+            "cwd": root.to_string_lossy(),
+            "kind": "shell",
+            "tmuxSession": "eldrun-p-1--shell-123456789",
+        }]));
+
+        let mut cache = CatalogCache::default();
+        let tabs = |catalog: &Catalog| catalog.projects[0].tabs.len();
+        assert_eq!(tabs(&cache.load(state, &[7; 32]).expect("first read")), 1);
+
+        // The close: the tab leaves the session file the catalog is read from.
+        write_tabs(serde_json::json!([]));
+        assert_eq!(
+            tabs(&cache.load(state, &[7; 32]).expect("cached read")),
+            1,
+            "the snapshot is still young, so the closed tab is still in it"
+        );
+        cache.invalidate();
+        assert_eq!(
+            tabs(&cache.load(state, &[7; 32]).expect("re-read")),
+            0,
+            "an invalidated cache reads the file the close rewrote"
+        );
+    }
+
+    /// A tab colour (#264) is published as the palette id the desktop stored, so
+    /// the phone resolves it to the same hex — and an id this build does not have
+    /// is dropped rather than passed on for the phone to guess at, which is the
+    /// same posture `clean_tab_color` takes on the way in.
+    #[test]
+    fn a_tab_publishes_a_palette_colour_and_drops_anything_else() {
+        let dir = tempfile::tempdir().expect("state dir");
+        let state = dir.path();
+        let root = state.join("p");
+        fs::create_dir_all(&root).expect("root dir");
+        fs::write(
+            state.join("projects.json"),
+            serde_json::to_vec(&serde_json::json!([{
+                "id": "p-1",
+                "name": "P",
+                "status": "active",
+                "directory": root.to_string_lossy(),
+                "eldrun_mobile_access": true,
+            }]))
+            .expect("projects"),
+        )
+        .expect("write projects");
+        let sessions = state.join("sessions").join("p-1");
+        fs::create_dir_all(&sessions).expect("session dir");
+        let tab = |suffix: &str, color: serde_json::Value| {
+            serde_json::json!({
+                "label": format!("Shell {suffix}"),
+                "cmd": "bash",
+                "cwd": root.to_string_lossy(),
+                "kind": "shell",
+                "tmuxSession": format!("eldrun-p-1--shell-10000000{suffix}"),
+                "color": color,
+            })
+        };
+        fs::write(
+            sessions.join("terminals.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "tabLayout": [
+                    tab("1", serde_json::json!("teal")),
+                    tab("2", serde_json::json!("chartreuse")),
+                    tab("3", serde_json::Value::Null),
+                ]
+            }))
+            .expect("session"),
+        )
+        .expect("write session");
+
+        let catalog = Catalog::load(state, &[7; 32]).expect("catalog");
+        let project = catalog.projects.first().expect("project");
+        let colors: Vec<Option<&str>> = project
+            .tabs
+            .iter()
+            .map(|t| t.public.color.as_deref())
+            .collect();
+        assert_eq!(colors, vec![Some("teal"), None, None]);
+    }
+
+    /// The root console reaches the phone by its own switch and gate only
+    /// (`root_open`) — never through a `projects.json` record hand-edited to
+    /// take the root scope's id (and with it `sessions/root/`).
+    #[test]
+    fn the_root_scope_is_listed_by_its_switch_and_gate_alone() {
+        let dir = tempfile::tempdir().expect("state dir");
+        let state = dir.path();
+        let root = state.join("root");
+        fs::create_dir_all(&root).expect("root dir");
+        fs::write(
+            state.join("projects.json"),
+            serde_json::to_vec(&serde_json::json!([{
+                "id": "root",
+                "name": "Borrowed",
+                "status": "active",
+                "directory": root.to_string_lossy(),
+                "eldrun_mobile_access": true,
+            }]))
+            .expect("projects"),
+        )
+        .expect("write projects");
+        fs::create_dir_all(state.join("sessions").join("root")).expect("session dir");
+        fs::write(
+            state.join("sessions").join("root").join("terminals.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "tabLayout": [{
+                    "label": "Claude",
+                    "cmd": "claude",
+                    "cwd": root.to_string_lossy(),
+                    "kind": "agent",
+                    "sessionId": "s1",
+                    "tmuxSession": "eldrun-root--agent-123456789",
+                }]
+            }))
+            .expect("session"),
+        )
+        .expect("write session");
+        let fenced = RootEnv { dir: root.clone(), fenced: || true };
+        let unfenced = RootEnv { dir: root.clone(), fenced: || false };
+        let load = |settings: Option<serde_json::Value>, env: &RootEnv| {
+            match settings {
+                Some(value) => fs::write(state.join("settings.json"), value.to_string()).expect("settings"),
+                None => { let _ = fs::remove_file(state.join("settings.json")); }
+            }
+            Catalog::load_with(state, &[7; 32], env).expect("catalog").projects
+        };
+        let host = |on: bool| serde_json::json!({ "enabled": true, "root_access": on });
+
+        // No settings, or the switch unset/off: the borrowed record is refused
+        // and nothing else lists root.
+        assert!(load(None, &fenced).is_empty());
+        assert!(load(Some(serde_json::json!({ "eldrun_mobile_host": { "enabled": true } })), &fenced).is_empty());
+        assert!(load(Some(serde_json::json!({ "eldrun_mobile_host": host(false) })), &fenced).is_empty());
+
+        // Switched on, default review, fenced: one Root row — the gate's, not
+        // the borrowed record's — with its tab and a pending count.
+        let listed = load(Some(serde_json::json!({ "eldrun_mobile_host": host(true) })), &fenced);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].public.kind, ScopeKind::Root);
+        assert_eq!(listed[0].public.label, "Root");
+        assert_eq!(listed[0].raw_id, "root");
+        assert_eq!(listed[0].tabs.len(), 1);
+        assert_eq!(listed[0].public.pending_reviews, Some(0));
+        // An unknown review value reads as `all`, as it does for the tools.
+        assert_eq!(load(Some(serde_json::json!({ "eldrun_mobile_host": host(true), "root_mcp_review": "later" })), &fenced).len(), 1);
+
+        // Tools on but writes not staged behind a fence: closed.
+        assert!(load(Some(serde_json::json!({ "eldrun_mobile_host": host(true) })), &unfenced).is_empty());
+        for level in ["destructive", "off"] {
+            assert!(
+                load(Some(serde_json::json!({ "eldrun_mobile_host": host(true), "root_mcp_review": level })), &fenced).is_empty(),
+                "{level}"
+            );
+        }
+        // Tools off: a root agent holds nothing extra, so neither matters.
+        assert_eq!(
+            load(Some(serde_json::json!({ "eldrun_mobile_host": host(true), "root_mcp": false, "root_mcp_review": "off" })), &unfenced).len(),
+            1
+        );
+        // Unreadable settings refuse.
+        fs::write(state.join("settings.json"), b"{").expect("corrupt settings");
+        assert!(Catalog::load_with(state, &[7; 32], &fenced).expect("catalog").projects.is_empty());
+
+        assert!(is_root_scope_id("root"));
+        assert!(!is_root_scope_id("rooted"));
+    }
+
+    /// The phone learns which agent a tab runs from the registry, not from the
+    /// tab's label, so a renamed tab still says "Claude"; an unlisted agent
+    /// keeps its label, and the command itself is never what is published.
+    #[test]
+    fn agent_label_names_the_cli_not_the_tab() {
+        let tab = |label: &str, cmd: &str| SavedTab {
+            label: label.to_string(),
+            cmd: cmd.to_string(),
+            cwd: String::new(),
+            kind: "agent".to_string(),
+            session_id: None,
+            resume_args: None,
+            tmux_session: None,
+            tmux_attach: None,
+            ephemeral: false,
+            color: None,
+        };
+        assert_eq!(agent_label_of(&tab("release review", "claude")), "Claude");
+        assert_eq!(agent_label_of(&tab("Codex", "codex")), "Codex");
+        assert_eq!(agent_label_of(&tab("My bot", "/opt/bot --x")), "My bot");
     }
 
     /// A mobile-enabled box is a scope of its own (#31aa): listed as `kind:

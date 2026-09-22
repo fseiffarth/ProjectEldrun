@@ -5,26 +5,31 @@ import { restoreProjectScope, useProjectsStore } from "../../stores/projects";
 import { BOX_SCOPE_PREFIX, boxScopeId, useBoxesStore } from "../../stores/boxes";
 import {
   RESUMABLE_AGENTS,
+  ROOT_SCOPE,
   useTabsStore,
   type TabEntry,
 } from "../../stores/tabs";
+import { ensureRootScopeHydrated, useRootOverlayStore } from "../../stores/rootOverlay";
+import { closeTabInScope } from "../../lib/remote/closeRemoteTab";
 import { useSettingsStore } from "../../stores/settings";
-import { calendarColor, useCalendarStore, visibleCalendarIds } from "../../stores/calendar";
+import { calendarColor, useCalendarStore, visibleCalendarIds } from "../../stores/calendar/calendar";
 import { lastTabReadAt, noteUserInput, useActivityStore } from "../../stores/activity";
-import { useAgentModelsStore } from "../../stores/agentModels";
-import { persistScopeLayout } from "../../stores/agentSchedules";
-import { sendCollectedPrompt, useAgentPromptsStore, type ProjectAgentPrompt } from "../../stores/agentPrompts";
-import { isTrashProject } from "../../lib/trashProject";
-import type { AgentUsageReport } from "../../lib/agentUsage";
+import { agentTabModelTag, useAgentModelsStore } from "../../stores/agents/agentModels";
+import { persistScopeLayout } from "../../stores/agents/agentSchedules";
+import { sendCollectedPrompt, useAgentPromptsStore, type ProjectAgentPrompt, type SentAgentPrompt } from "../../stores/agents/agentPrompts";
+import { isTrashProject } from "../../lib/projects/trashProject";
+import { isSessionCommand } from "../../lib/agents/prompt/chart";
+import { isTabColor } from "../../lib/theme/tabColors";
+import type { AgentUsageReport } from "../../lib/agents/agentUsage";
 import { METRIC, agentLabel, agentPromptLeaf, sub } from "../../lib/usageMetrics";
 import { dayKey } from "../../lib/usageRollup";
 import { resolveProjectDirectory } from "../../types";
 import type { CalendarEvent, CalendarTask, ProjectEntry, Subtask, TaskColumn } from "../../types";
 import type { MailFolder, MailHeader } from "../../types/mail";
 import { addSubtask, boardColumns, columnOf, dropAccepted, fallbackColumnId, provisionalRank, toggleTaskDone } from "../../lib/todoBoard";
-import { addDays, monthGrid, toStamp } from "../../lib/calendarTime";
-import { eventColor } from "../../lib/calendarCategories";
-import { expandEvents } from "../../lib/recurrence";
+import { addDays, monthGrid, toStamp } from "../../lib/calendar/calendarTime";
+import { eventColor } from "../../lib/calendar/calendarCategories";
+import { expandEvents } from "../../lib/calendar/recurrence";
 import {
   formatAddress,
   formatMailDate,
@@ -55,14 +60,19 @@ import {
   scheduleSummary,
   type ScheduleRule,
   type ScheduledAgentPrompt,
-} from "../../lib/agentSchedule";
+} from "../../lib/agents/agentSchedule";
 
 const MOBILE_DESKTOP_EVENT = "eldrun-mobile-desktop-request";
 
 interface AgentInfo { bin: string; installed: boolean }
 interface CatalogAgent { id: string; label: string; modes: string[] }
 interface AgentTabStatus { tmux_session: string; status: "working" | "question" | "done"; model?: string; working_at?: number; done_at?: number }
+/** The same readings for an agent tab with no status: a finished turn stays
+ * sorted among the finished ones on the phone after it has been read. */
+interface AgentTabTiming { tmux_session: string; working_at?: number; done_at?: number }
 interface AgentTabSchedules { tmux_session: string; total: number; enabled: number; next?: string }
+interface AgentTabPrompt { text: string; at?: string }
+interface AgentTabPrompts { tmux_session: string; prompts: AgentTabPrompt[] }
 interface CreateRequest {
   project_id: string;
   kind: "shell" | "agent";
@@ -164,6 +174,8 @@ interface MobileAgentTranscript {
   unchanged?: boolean;
   entries: { kind: string; text: string; at?: string; cut?: boolean }[];
   truncated: boolean;
+  /** Codex's context and rate-limit figures, passed through untouched. */
+  usage?: { contextLeft?: number; session?: { used: number; resetsAt?: number }; week?: { used: number; resetsAt?: number } };
 }
 interface MobileScheduleInput { enabled: boolean; message: string; rule: ScheduleRule }
 type ScheduleMutation =
@@ -195,6 +207,8 @@ type DesktopRequest =
   | { type: "schedules"; request_id: string; project_id: string; tmux_session: string }
   | { type: "schedule_mutate"; request_id: string; project_id: string; tmux_session: string; action: ScheduleMutation }
   | { type: "rename_tab"; request_id: string; project_id: string; tmux_session: string; label: string }
+  | { type: "color_tab"; request_id: string; project_id: string; tmux_session: string; color?: string | null }
+  | { type: "reorder_tab"; request_id: string; project_id: string; tmux_session: string; anchor_tmux_session: string; place: "before" | "after" }
   | { type: "close_tab"; request_id: string; project_id: string; tmux_session: string }
   | { type: "prompts"; request_id: string; project_id: string }
   | { type: "prompt_mutate"; request_id: string; project_id: string; action: PromptMutation }
@@ -202,11 +216,12 @@ type DesktopRequest =
   | { type: "agent_transcript"; request_id: string; project_id: string; tmux_session: string; version?: string | null; limit?: number | null }
   | { type: "tab_seen"; request_id: string; project_id: string; tmux_session: string }
   | { type: "tab_input"; request_id: string; project_id: string; tmux_session: string }
+  | { type: "tab_prompt"; request_id: string; project_id: string; tmux_session: string; message: string }
   | { type: "desktop_images"; request_id: string; project_id: string }
   | { type: "attach_desktop_image"; request_id: string; project_id: string; image_id: string };
 type DesktopResponse =
-| { status: "catalog"; agents: CatalogAgent[]; statuses: AgentTabStatus[]; schedules: AgentTabSchedules[] }
-  | { status: "activity"; statuses: AgentTabStatus[] }
+| { status: "catalog"; agents: CatalogAgent[]; statuses: AgentTabStatus[]; schedules: AgentTabSchedules[]; prompts: AgentTabPrompts[]; timings: AgentTabTiming[] }
+  | { status: "activity"; statuses: AgentTabStatus[]; prompts: AgentTabPrompts[] }
   | { status: "activated" }
   | { status: "created"; tmux_session: string }
   | { status: "todo"; board: TodoBoard }
@@ -215,6 +230,8 @@ type DesktopResponse =
   | { status: "mail"; mail: MobileMailView }
   | { status: "schedules"; schedules: ScheduledAgentPrompt[]; time_zone: string; next_runs: Record<string, string> }
   | { status: "renamed"; label: string }
+  | { status: "colored"; color?: string | null }
+  | { status: "reordered" }
   | { status: "closed" }
   | { status: "prompts"; prompts: ProjectAgentPrompt[] }
   | { status: "agent_status"; report: MobileAgentStatus }
@@ -312,8 +329,40 @@ interface MobileScope {
   project?: ProjectEntry;
 }
 
+/** The one thing the root gate needs that no store holds: whether a root agent
+ * started now would run fenced (`root_mcp_status`'s `review_enforced`). Read
+ * when the bridge mounts and again, in the background, each time the gate is
+ * asked — `mobileScope` is synchronous, so it answers from the last reading
+ * and stays closed until there has been one. */
+const rootFacts = { reviewEnforced: false };
+
+function refreshRootFacts(): void {
+  void invoke<{ review_enforced?: boolean }>("root_mcp_status")
+    .then((status) => { rootFacts.reviewEnforced = status.review_enforced === true; })
+    .catch(() => { rootFacts.reviewEnforced = false; });
+}
+
+/** The root console as a phone scope (`docs/context/root_console.md`, "On the
+ * phone"). The sidecar's `discovery::root_open` is the perimeter; this is the
+ * desktop-side repeat of the same rule, because the bridge is reachable without
+ * going through it: the switch is on, and either root agents carry no MCP tools
+ * or every write of theirs is staged behind a fence they cannot walk around. */
+function mobileRootScope(): MobileScope | undefined {
+  const settings = useSettingsStore.getState().settings;
+  if (settings?.eldrun_mobile_host?.root_access !== true) return undefined;
+  refreshRootFacts();
+  if (settings.root_mcp !== false) {
+    const level = settings.root_mcp_review;
+    if (level === "destructive" || level === "off" || !rootFacts.reviewEnforced) return undefined;
+  }
+  const cwd = useProjectsStore.getState().rootDir;
+  if (!cwd) return undefined;
+  return { id: ROOT_SCOPE, name: "Root", cwd, localFile: "" };
+}
+
 function mobileScope(id: string | undefined): MobileScope | undefined {
   if (!id) return undefined;
+  if (id === ROOT_SCOPE) return mobileRootScope();
   if (id.startsWith(BOX_SCOPE_PREFIX)) {
     const box = useBoxesStore.getState().boxes.find((entry) => boxScopeId(entry.id) === id);
     // A box never opened has no folder yet; the switch resolves one on enable,
@@ -326,14 +375,22 @@ function mobileScope(id: string | undefined): MobileScope | undefined {
   return { id: project.id, name: project.name, cwd: resolveProjectDirectory(project), localFile: project.local_file, project };
 }
 
-/** Every scope the phone may reach right now: the opted-in projects, then the
- * opted-in boxes. Walked from the two lists rather than the tab store's scope
- * keys so that each switch and the trust tiers gate its entry: a scope key is
- * not a permission, and the store also holds the root scope, which is neither. */
+/** Every scope the phone may reach right now: root behind its gate, the
+ * opted-in projects, then the opted-in boxes. Walked from the lists rather
+ * than the tab store's scope keys so that each switch and the trust tiers gate
+ * its entry: a scope key is not a permission. */
 function allMobileScopes(): MobileScope[] {
   const projects = useProjectsStore.getState().projects.flatMap((entry) => mobileScope(entry.id) ?? []);
   const boxes = useBoxesStore.getState().boxes.flatMap((entry) => mobileScope(boxScopeId(entry.id)) ?? []);
-  return [...projects, ...boxes];
+  const root = mobileScope(ROOT_SCOPE);
+  return [...(root ? [root] : []), ...projects, ...boxes];
+}
+
+/** Load a scope's saved tabs when the desktop has not opened it this session.
+ * A box needs none here: its tabs restore when it is opened. */
+async function restoreScope(scope: MobileScope): Promise<void> {
+  if (scope.project) await restoreProjectScope(scope.project).catch(() => {});
+  else if (scope.id === ROOT_SCOPE) await ensureRootScopeHydrated();
 }
 
 /** The phone receives these already-derived activity facts only. The desktop
@@ -378,10 +435,11 @@ function projectAgentStatuses(projectId: string): AgentTabStatus[] {
     const status: AgentTabStatus["status"] = state;
     // The phone sorts by these and tags the row with the model; the answer is
     // whatever the desktop knows at this poll (the model store throttles its
-    // own re-read), so the phone can be one poll behind, never wrong.
+    // own re-read), so the phone can be one poll behind, never wrong. The
+    // model is read off the pane first, which owes nothing to that throttle.
     void models.refresh(projectId, tab);
     const row: AgentTabStatus = { tmux_session: tab.tmuxSession, status };
-    const model = models.byTab[ptyId];
+    const model = agentTabModelTag(projectId, tab, models.byTab);
     if (model) row.model = model;
     const workingAt = status === "working" ? Date.now() : activity.lastWorkingByTab[ptyId];
     if (workingAt !== undefined) row.working_at = workingAt;
@@ -391,10 +449,141 @@ function projectAgentStatuses(projectId: string): AgentTabStatus[] {
   });
 }
 
+/** Timings of the agent tabs `projectAgentStatuses` leaves out (a quiet or
+ * already-read tab), so the phone's "last working" sort keeps a read turn in
+ * its place among the finished ones instead of dropping it to its tab-bar spot. */
+function projectAgentTimings(projectId: string): AgentTabTiming[] {
+  const activity = useActivityStore.getState();
+  return (useTabsStore.getState().tabsByScope[projectId] ?? []).flatMap((tab) => {
+    if (tab.kind !== "agent" || !tab.tmuxSession) return [];
+    const ptyId = `${projectId}:${tab.key}`;
+    if (mobileAgentState(ptyId) !== "idle") return [];
+    const row: AgentTabTiming = { tmux_session: tab.tmuxSession };
+    const workingAt = activity.lastWorkingByTab[ptyId];
+    if (workingAt !== undefined) row.working_at = workingAt;
+    const doneAt = activity.lastDoneByTab[ptyId];
+    if (doneAt !== undefined) row.done_at = doneAt;
+    return row.working_at === undefined && row.done_at === undefined ? [] : [row];
+  });
+}
+
+function agentTimings(projectId?: string): AgentTabTiming[] {
+  const scope = mobileScope(projectId);
+  return scope ? projectAgentTimings(scope.id) : [];
+}
+
 /** The same facts for *every* scope the phone may reach — projects and boxes
  * alike — for its flat activity list. */
 function allAgentStatuses(): AgentTabStatus[] {
   return allMobileScopes().flatMap((scope) => projectAgentStatuses(scope.id));
+}
+
+/** How many prompts of an agent tab's tail ride with an answer, and how much of
+ * each. Both are re-applied at the browser boundary by the sidecar; these are
+ * what makes the desktop send a readable list rather than a transcript. */
+const MOBILE_PROMPT_TAIL = 5;
+const MOBILE_PROMPT_CHARS = 240;
+
+/** The prompt history rows that went to `tab`, newest last, as card lines.
+ * Matched by the tab's launch id only: a label ("OpenCode") is shared by every
+ * tab of that agent the project ever had. The history is loaded on first use;
+ * until it arrives the tab shows what it would have without it. */
+function historyPromptsOf(projectId: string, tab: TabEntry): AgentTabPrompt[] {
+  if (!tab.sessionId) return [];
+  const store = useAgentPromptsStore.getState();
+  const history = store.historyByProject[projectId];
+  if (!history) {
+    if (!historyAsked.has(projectId)) {
+      historyAsked.add(projectId);
+      void store.loadHistory(projectId).catch(() => historyAsked.delete(projectId));
+    }
+    return [];
+  }
+  return history
+    .filter((row: SentAgentPrompt) => (row.tab_id ?? row.session_id) === tab.sessionId && row.result !== "missed" && row.result !== "failed")
+    .sort((a, b) => a.sent_at.localeCompare(b.sent_at))
+    .slice(-MOBILE_PROMPT_TAIL)
+    .map((row) => ({ text: row.message.slice(0, MOBILE_PROMPT_CHARS), at: row.sent_at }));
+}
+const historyAsked = new Set<string>();
+
+/**
+ * The prompt history records a phone send before Codex has written the
+ * corresponding rollout item. Keep that timestamp on the card until the
+ * rollout catches up, then prefer the transcript's own instant. A close pair
+ * with the same text is one prompt; an intentional later repeat remains one
+ * row of its own.
+ */
+function mergePromptRows(recent: readonly { text: string; at: string }[], sent: readonly AgentTabPrompt[]): AgentTabPrompt[] {
+  const rows = [
+    ...recent.map((prompt) => ({ text: prompt.text.slice(0, MOBILE_PROMPT_CHARS), at: prompt.at, source: "transcript" as const })),
+    ...sent.map((prompt) => ({ ...prompt, source: "sent" as const })),
+  ].sort((left, right) => (left.at ?? "").localeCompare(right.at ?? ""));
+  const merged: AgentTabPrompt[] = [];
+  for (const row of rows) {
+    const previous = merged[merged.length - 1];
+    const sameText = previous?.text === row.text;
+    const previousAt = previous?.at ? Date.parse(previous.at) : NaN;
+    const rowAt = row.at ? Date.parse(row.at) : NaN;
+    const sameSend = sameText && Number.isFinite(previousAt) && Number.isFinite(rowAt)
+      && Math.abs(previousAt - rowAt) <= 2 * 60_000;
+    if (sameSend) {
+      // A rollout timestamp is the CLI's source of truth once it is present.
+      if (row.source === "transcript") merged[merged.length - 1] = { text: row.text, at: row.at };
+      continue;
+    }
+    merged.push({ text: row.text, at: row.at });
+  }
+  return merged.slice(-MOBILE_PROMPT_TAIL);
+}
+
+/**
+ * What each agent tab of a scope was last asked — the tail the model tag is
+ * read with, published so the phone's lists can say it without opening the
+ * session.
+ *
+ * Every agent tab is answered for, not only the ones with a status: a session
+ * nobody has prompted since this morning is exactly the one whose last prompt
+ * is worth reading, and `projectAgentStatuses` drops it before it ever reaches
+ * its own refresh. The store's 10s floor is what keeps a 5s poll honest — one
+ * tail read per tab between two polls, the same read the Agents view here
+ * already pays for.
+ */
+function projectAgentPrompts(projectId: string): AgentTabPrompts[] {
+  const models = useAgentModelsStore.getState();
+  return (useTabsStore.getState().tabsByScope[projectId] ?? []).flatMap((tab) => {
+    if (tab.kind !== "agent" || !tab.tmuxSession) return [];
+    void models.refresh(projectId, tab);
+    const ptyId = `${projectId}:${tab.key}`;
+    const recent = models.recentByTab[ptyId] ?? [];
+    // An agent whose transcript is not read (OpenCode, Gemini, …) is known to
+    // have been asked what Eldrun itself sent it: the composers here and on the
+    // phone and the schedules all record into the prompt history.
+    const sent = historyPromptsOf(projectId, tab);
+    // Last, the prompt off the pane's own screen (`lib/agents/prompt/echo`); it
+    // carries no time, and a row without one is honest about that rather than
+    // inventing the read's. Not for OpenCode: its full-screen TUI has no prompt
+    // echo, and the reader took its panels for prompts.
+    const fallback = tab.cmd === "opencode" ? undefined : models.promptByTab[ptyId];
+    const promptTail = mergePromptRows(recent, sent);
+    const prompts: AgentTabPrompt[] = promptTail.length
+      ? promptTail
+      : sent.length
+        ? sent
+        : fallback
+          ? [{ text: fallback.slice(0, MOBILE_PROMPT_CHARS) }]
+          : [];
+    return prompts.length ? [{ tmux_session: tab.tmuxSession, prompts }] : [];
+  });
+}
+
+function agentPrompts(projectId?: string): AgentTabPrompts[] {
+  const scope = mobileScope(projectId);
+  return scope ? projectAgentPrompts(scope.id) : [];
+}
+
+function allAgentPrompts(): AgentTabPrompts[] {
+  return allMobileScopes().flatMap((scope) => projectAgentPrompts(scope.id));
 }
 
 /** Each agent tab's scheduled-prompt summary, computed here against the desktop
@@ -477,14 +666,20 @@ async function create(request: CreateRequest, t: ReturnType<typeof useT>): Promi
   if (!created.tmuxSession) {
     return { status: "error", code: "launch_failed", message: "Persistent terminal session was not created" };
   }
+  if (scope.id === ROOT_SCOPE) useTabsStore.getState().revealTabInScope(ROOT_SCOPE, created.key);
   return { status: "created", tmux_session: created.tmuxSession };
 }
 
 /** Make `scope` the one the desktop shows: a project is activated, a box is
  * opened (which restores its members' tabs box-locally and enters its scope,
- * exactly as the switcher's box pill does). */
+ * exactly as the switcher's box pill does). Root is never switched to — its
+ * console is raised over whatever is open, which is what gives its panes a
+ * terminal. */
 async function enterScope(scope: MobileScope): Promise<void> {
-  if (scope.project) await useProjectsStore.getState().activateProject(scope.project.id);
+  if (scope.id === ROOT_SCOPE) {
+    await ensureRootScopeHydrated();
+    useRootOverlayStore.getState().show();
+  } else if (scope.project) await useProjectsStore.getState().activateProject(scope.project.id);
   else await useBoxesStore.getState().openBox(scope.id.slice(BOX_SCOPE_PREFIX.length));
 }
 
@@ -536,10 +731,10 @@ function mobileTargetTab(scope: string, tmuxSession: string) {
 }
 
 /** Close one tab from the phone. Closing means here what it means on the
- * desktop (`lib/closeRemoteTab`): the tab leaves the layout and its viewer
- * dies, while the tmux session behind it keeps running and stays reattachable
- * from the Sessions view — a tap on a phone must not be able to end a running
- * agent.
+ * desktop (`lib/remote/closeRemoteTab`'s `closeTabInScope`, the one seam both
+ * use): the tab leaves the layout, its viewer dies, and the local tmux session it
+ * minted ends with it; a session on a remote host keeps running and stays
+ * reattachable from the Sessions view.
  *
  * The scope is restored first when the desktop has not opened that project this
  * session: the phone lists tabs from the saved session file, which outlives the
@@ -552,16 +747,78 @@ async function closeMobileTab(projectId: string, tmuxSession: string): Promise<D
   if (!scope) {
     return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
   }
-  if (scope.project) await restoreProjectScope(scope.project).catch(() => {});
+  await restoreScope(scope);
   const tab = mobileTargetTab(scope.id, tmuxSession);
   if (!tab) return { status: "error", code: "tab_not_found", message: "Tab is unavailable" };
-  useTabsStore.getState().removeTabInScope(scope.id, tab.key);
+  closeTabInScope(scope.id, tab.key);
   // CenterPanel's debounce persists the ACTIVE scope only, and the phone closes
   // a tab in whichever project it is looking at. Without this write the catalog
   // — which reads that same session file — keeps listing the closed tab, and a
   // relaunch brings it back.
   await persistScopeLayout(scope.id);
   return { status: "closed" };
+}
+
+/** Paint one tab from the phone, or clear its colour (#264).
+ *
+ * Scoped, restored and persisted like the close above, and for the same three
+ * reasons: the phone colours a tab in whichever project it is LOOKING at (not
+ * the one the window shows), a project the desktop has not opened this session
+ * has its tabs only in the session file, and `CenterPanel`'s debounce persists
+ * the active scope alone — so without the write here the catalog the phone
+ * re-reads would keep publishing the old colour, and a relaunch would undo it.
+ *
+ * The id is validated here as well as at the sidecar route, because this bridge
+ * is reachable without going through it. */
+async function colorMobileTab(
+  projectId: string,
+  tmuxSession: string,
+  color: string | null | undefined,
+): Promise<DesktopResponse> {
+  const scope = mobileScope(projectId);
+  if (!scope) {
+    return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
+  }
+  const next = color == null || color === "" ? undefined : color;
+  if (next !== undefined && !isTabColor(next)) {
+    return { status: "error", code: "invalid_color", message: "Tab colour is not in the palette" };
+  }
+  await restoreScope(scope);
+  const tab = mobileTargetTab(scope.id, tmuxSession);
+  if (!tab) return { status: "error", code: "tab_not_found", message: "Tab is unavailable" };
+  useTabsStore.getState().setTabColorInScope(scope.id, tab.key, next);
+  await persistScopeLayout(scope.id);
+  return { status: "colored", color: next ?? null };
+}
+
+/** Move one tab next to another from the phone, the same permutation the
+ * desktop Agents view's own drag performs (`reorderTabInScope`): the flat
+ * scope order — which is what the catalog publishes and the phone lists — and,
+ * when both tabs share a layout group, that group's tab bar too.
+ *
+ * The scope is restored first for the reason the close does it: the phone can
+ * be looking at a project this desktop session has not opened, and its rows
+ * come from the saved session file rather than from the store. The layout is
+ * persisted before answering, so the route's read-back is the new order. */
+async function reorderMobileTab(
+  projectId: string,
+  tmuxSession: string,
+  anchorTmuxSession: string,
+  place: "before" | "after",
+): Promise<DesktopResponse> {
+  const scope = mobileScope(projectId);
+  if (!scope) {
+    return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
+  }
+  await restoreScope(scope);
+  const tab = mobileTargetTab(scope.id, tmuxSession);
+  const anchor = mobileTargetTab(scope.id, anchorTmuxSession);
+  if (!tab || !anchor) return { status: "error", code: "tab_not_found", message: "Tab is unavailable" };
+  // A tab dropped on itself is where it already is; the store no-ops on it, and
+  // answering "reordered" keeps the phone reconciling against the real order.
+  useTabsStore.getState().reorderTabInScope(scope.id, tab.key, anchor.key, place);
+  await persistScopeLayout(scope.id);
+  return { status: "reordered" };
 }
 
 function scheduleTarget(projectId: string, tmuxSession: string): string | null {
@@ -1028,7 +1285,7 @@ async function calendarSnapshot(month: string): Promise<MobileCalendar> {
     await calendar.load();
     calendar = useCalendarStore.getState();
   }
-  const weekStart: 0 | 1 = useSettingsStore.getState().settings?.calendar_week_start === 1 ? 1 : 0;
+  const weekStart: 0 | 1 = useSettingsStore.getState().settings?.calendar_week_start === 0 ? 0 : 1;
   const grid = monthGrid(Number(month.slice(0, 4)), Number(month.slice(5, 7)), weekStart, 6);
   const windowStart = grid[0][0];
   const windowEnd = addDays(grid[5][6], 1);
@@ -1181,6 +1438,19 @@ function mailWriteGates() {
   const host = useSettingsStore.getState().settings?.eldrun_mobile_host;
   return { actions: host?.mail_actions === true, reply: host?.mail_reply === true };
 }
+
+/** Reading is a switch of its own, above both writes. Unlike them it defaults
+ * ON — unset is what pairing has always allowed — so turning it off is an
+ * explicit `false`. Off, every mail request is refused here, writes included. */
+function mailReadAllowed() {
+  return useSettingsStore.getState().settings?.eldrun_mobile_host?.mail_read !== false;
+}
+
+const MAIL_READ_DISABLED: DesktopResponse = {
+  status: "error",
+  code: "mail_read_disabled",
+  message: "Mail on the phone is switched off in Eldrun",
+};
 
 async function configuredMailAccounts() {
   return (await mailAccountsList()).slice(0, 12);
@@ -1370,6 +1640,30 @@ function markTabSeen(projectId: string, tmuxSession: string): DesktopResponse {
   return { status: "seen" };
 }
 
+/** The phone's composer sent `message` to this agent tab: recorded in the
+ * prompt history as delivered, the way the desktop composer records its own
+ * sends — the words never pass through this window, so this is the only way
+ * they reach the history. A session command (`/clear`, `/model`) is the CLI's,
+ * not a prompt, and is not recorded. A Claude or Codex prompt recorded here is
+ * not recorded again when its transcript is adopted (same words, near in time:
+ * `lib/agents/prompt/adopt`). */
+async function recordTabPrompt(projectId: string, tmuxSession: string, message: string): Promise<DesktopResponse> {
+  const scope = mobileScope(projectId);
+  if (!scope) {
+    return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
+  }
+  const tab = scheduleTargetTab(scope.id, tmuxSession);
+  if (!tab) return { status: "error", code: "tab_not_found", message: "Tab not found" };
+  const text = message.trim();
+  if (!text || isSessionCommand(text)) return { status: "seen" };
+  await useAgentPromptsStore.getState().record(scope.id, {
+    id: crypto.randomUUID(),
+    message: text,
+    sent: { tabLabel: tab.label, sessionId: tab.sessionId, agent: tab.cmd, result: "delivered" },
+  }).catch(() => []);
+  return { status: "seen" };
+}
+
 /** The phone typed into this agent tab. It types into a tmux client of its own,
  * so not one byte of it passes through this window — and the classifier only
  * ever calls output "working" or "done" when the session was COMMANDED this
@@ -1445,6 +1739,9 @@ async function agentTranscriptFor(
   const transcript = await invoke<MobileAgentTranscript>("agent_tab_transcript", {
     agent: tab.cmd,
     projectId: scope.id,
+    // OpenCode records no session id Eldrun can follow; its session is the
+    // newest one of the folder the tab runs in.
+    tabDir: tab.cwd || scope.cwd,
     sessionId: tab.sessionId,
     version: version ?? null,
     limit: limit ?? null,
@@ -1463,8 +1760,10 @@ async function handleRequest(
       agents: (await agentChoices()).map((entry) => entry.public),
       statuses: agentStatuses(request.project_id),
       schedules: await agentScheduleSummaries(request.project_id),
+      prompts: agentPrompts(request.project_id),
+      timings: agentTimings(request.project_id),
     };
-    case "activity": return { status: "activity", statuses: allAgentStatuses() };
+    case "activity": return { status: "activity", statuses: allAgentStatuses(), prompts: allAgentPrompts() };
     case "activate": return activate(request.project_id);
     case "create": return create(request.request, t);
     case "todo": return { status: "todo", board: await todoSnapshot() };
@@ -1473,13 +1772,15 @@ async function handleRequest(
     case "calendar": return { status: "calendar", calendar: await calendarSnapshot(request.month) };
     case "calendar_mutate": return calendarMutate(request.month, request.action);
     case "todo_mutate": return todoMutate(request.action);
-    case "mail_overview": return mailOverview();
-    case "mail_folder": return mailFolderPage(request.folder_id, request.offset);
-    case "mail_message": return mailMessage(request.folder_id, request.message_id, request.offset);
-    case "mail_mark": return mailMark(request.folder_id, request.message_id, request.offset, request.action);
-    case "mail_reply": return mailReply(request.folder_id, request.message_id, request.offset, request.body, t);
+    case "mail_overview": return mailReadAllowed() ? mailOverview() : MAIL_READ_DISABLED;
+    case "mail_folder": return mailReadAllowed() ? mailFolderPage(request.folder_id, request.offset) : MAIL_READ_DISABLED;
+    case "mail_message": return mailReadAllowed() ? mailMessage(request.folder_id, request.message_id, request.offset) : MAIL_READ_DISABLED;
+    case "mail_mark": return mailReadAllowed() ? mailMark(request.folder_id, request.message_id, request.offset, request.action) : MAIL_READ_DISABLED;
+    case "mail_reply": return mailReadAllowed() ? mailReply(request.folder_id, request.message_id, request.offset, request.body, t) : MAIL_READ_DISABLED;
     case "rename_tab": return renameAgentTab(request.project_id, request.tmux_session, request.label);
     case "close_tab": return closeMobileTab(request.project_id, request.tmux_session);
+    case "color_tab": return colorMobileTab(request.project_id, request.tmux_session, request.color);
+    case "reorder_tab": return reorderMobileTab(request.project_id, request.tmux_session, request.anchor_tmux_session, request.place);
     case "schedules": return schedulesFor(request.project_id, request.tmux_session);
     case "schedule_mutate": return mutateSchedule(request.project_id, request.tmux_session, request.action);
     case "prompts": return promptsFor(request.project_id);
@@ -1488,6 +1789,7 @@ async function handleRequest(
     case "agent_transcript": return agentTranscriptFor(request.project_id, request.tmux_session, request.version, request.limit);
     case "tab_seen": return markTabSeen(request.project_id, request.tmux_session);
     case "tab_input": return markTabInput(request.project_id, request.tmux_session);
+    case "tab_prompt": return recordTabPrompt(request.project_id, request.tmux_session, request.message);
     case "desktop_images": return desktopImagesFor(request.project_id);
     case "attach_desktop_image": return attachDesktopImage(request.project_id, request.image_id);
   }
@@ -1514,6 +1816,7 @@ export function MobileBridgeHost() {
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
+    refreshRootFacts();
     void listen<DesktopRequest>(MOBILE_DESKTOP_EVENT, (event) => {
       const request = event.payload;
       const run = async () => {
@@ -1530,7 +1833,7 @@ export function MobileBridgeHost() {
           }).catch(() => {});
         }
       };
-      if (request.type === "create" || request.type === "activate" || request.type === "rename_tab" || request.type === "close_tab" || request.type === "todo_mutate" || request.type === "alert_resolve" || request.type === "calendar_mutate" || request.type === "schedule_mutate" || request.type === "prompt_mutate" || request.type === "mail_mark" || request.type === "mail_reply") {
+      if (request.type === "create" || request.type === "activate" || request.type === "rename_tab" || request.type === "close_tab" || request.type === "color_tab" || request.type === "reorder_tab" || request.type === "todo_mutate" || request.type === "alert_resolve" || request.type === "calendar_mutate" || request.type === "schedule_mutate" || request.type === "prompt_mutate" || request.type === "mail_mark" || request.type === "mail_reply") {
         mutationQueue = mutationQueue.then(run, run);
       } else {
         void run();

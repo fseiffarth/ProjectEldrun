@@ -566,7 +566,10 @@
 }
 
 /* Dragging a download over empty tree space (not a specific folder) targets the
-   currently browsed folder — frame the whole tree area so the drop is legible. */
+   currently browsed folder — frame the whole tree area so the drop is legible.
+   `.file-tree` is the same frame for a file drag: its listing is the drop
+   target for the folder it shows (after a spring-load navigation). */
+.file-tree.move-drop-target,
 .side-panel-scroll.move-drop-target {
   outline: 2px dashed var(--accent);
   outline-offset: -3px;
@@ -934,6 +937,12 @@
 .alerts-row-wrap.muted .alerts-row {
   opacity: 0.55;
 }
+/* BellIcon draws at a fixed 15px; in the alerts rows it follows the text. */
+.alerts-bell {
+  width: 1.3em;
+  height: 1.3em;
+  vertical-align: -0.25em;
+}
 .alerts-muted-chip {
   font-size: 10px;
   line-height: 1;
@@ -1182,7 +1191,7 @@
   width: 64px;
   height: 16px;
   box-sizing: border-box;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   font-size: var(--text-xs);
   line-height: 1;
   letter-spacing: 0.02em;
@@ -1775,7 +1784,7 @@
   background: rgba(88, 166, 255, 0.06);
 }
 
-.file-icon { font-size: 12px; flex-shrink: 0; line-height: 1.3; }
+.file-icon { font-size: 12px; flex-shrink: 0; line-height: 1.3; color: var(--text-secondary); }
 .file-name { flex: 1; min-width: 0; overflow-wrap: anywhere; word-break: break-word; line-height: 1.3; }
 .file-size { font-size: 10px; color: var(--text-muted); flex-shrink: 0; line-height: 1.3; }
 .file-size.size-small  { color: var(--text-muted); }
@@ -1991,6 +2000,38 @@
 .file-delete-error {
   color: var(--danger);
   border-color: color-mix(in srgb, var(--danger) 40%, var(--border-subtle));
+}
+
+/* The ask-once "run this project's hooks / latexmkrc / prettier?" prompt
+   (ExecTrustHost): the files it would run, each expandable to its content, in the
+   same muted well as .file-delete-path. Scrolls rather than growing past the
+   window — a repo can carry a dozen hooks. */
+.exec-trust-items {
+  max-height: 40vh;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.exec-trust-item > summary {
+  padding: 5px 8px;
+  background: var(--control-bg);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: 11px;
+  word-break: break-all;
+  cursor: var(--cur-pointer, pointer);
+}
+.exec-trust-preview {
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border-subtle);
+  border-top: none;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 16em;
+  overflow: auto;
 }
 
 /* A yes/no that qualifies the operation rather than answering it — the import

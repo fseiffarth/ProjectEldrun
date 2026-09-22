@@ -159,7 +159,7 @@ export function MailFiltersDialog({ accounts, onClose }: MailFiltersDialogProps)
       >
         <div className="settings-title-row">
           <h2>
-            {t("mail.filters.title")} <UntestedTag />
+            {t("mail.filters.title")} <UntestedTag id="mail.filters.title" />
           </h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>
             ×

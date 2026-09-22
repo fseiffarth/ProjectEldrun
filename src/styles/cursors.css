@@ -4,7 +4,7 @@
    highest source order and nothing in the cascade depends on it sitting early.
 
    ── How the packs reach the app ────────────────────────────────────────────
-   `lib/cursorPacks.ts` draws the art on a canvas and hands back a map of custom
+   `lib/theme/cursorPacks.ts` draws the art on a canvas and hands back a map of custom
    properties; `stores/settings.applyCursor` writes them onto the ROOT element
    as inline vars and stamps `data-cursor="<pack>"` beside them. Each value is a
    complete `cursor` value with the keyword it replaces baked in as its own

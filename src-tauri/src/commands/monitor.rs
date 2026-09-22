@@ -31,7 +31,7 @@ use serde::Serialize;
 /// names, argv, GPU processes or sessions leave the host), `false` = the full
 /// reading a local sample gets. It is the machine's stored mode — careful for
 /// every remote machine until the user says that one is theirs, keyed by SSH
-/// target in `settings.careful_hosts` (`src/lib/carefulHost.ts`) — so the pane
+/// target in `settings.careful_hosts` (`src/lib/remote/carefulHost.ts`) — so the pane
 /// passes it on every poll and the answer holds from the first sample.
 ///
 /// `None` means the caller has no answer to pass, and only then does anything

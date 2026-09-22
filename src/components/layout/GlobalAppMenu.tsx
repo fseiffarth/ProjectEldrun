@@ -1,7 +1,7 @@
-import { useRef } from "react";
 import { GlobalAppBar } from "./GlobalAppBar";
 import { useT } from "../../lib/i18n";
-import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
+import { useHeaderMenu } from "../../hooks/useHeaderMenu";
+import { AppsGlyph } from "../header/HeaderGlyphs";
 
 const MENU_ID = "global-apps";
 
@@ -15,29 +15,14 @@ export function GlobalAppMenu() {
   // `open` is shared across every header hover-menu — see stores/headerHoverMenu
   // for why: it's what keeps switching from one menu straight into another from
   // showing both at once for the 250ms grace period.
-  const open = useHeaderHoverMenuStore((s) => s.openId === MENU_ID);
-  const openMenu = useHeaderHoverMenuStore((s) => s.open);
-  const closeMenu = useHeaderHoverMenuStore((s) => s.close);
-  const closeTimer = useRef<number | null>(null);
-
-  const reveal = () => {
-    if (closeTimer.current !== null) {
-      window.clearTimeout(closeTimer.current);
-      closeTimer.current = null;
-    }
-    openMenu(MENU_ID);
-  };
-
-  const scheduleClose = () => {
-    if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
-    closeTimer.current = window.setTimeout(() => {
-      closeMenu(MENU_ID);
-      closeTimer.current = null;
-    }, 250);
-  };
+  const menu = useHeaderMenu(MENU_ID);
+  const { open, reveal, scheduleClose } = menu;
 
   return (
     <div
+      ref={menu.ref}
+      onKeyDown={menu.onKeyDown}
+      onBlur={menu.onBlur}
       className="global-apps-menu no-drag"
       onMouseEnter={reveal}
       onMouseLeave={scheduleClose}
@@ -52,8 +37,9 @@ export function GlobalAppMenu() {
         aria-label={t("globalAppMenu.title")}
         aria-haspopup="menu"
         aria-expanded={open}
+        onClick={reveal}
       >
-        ▦
+        <AppsGlyph className="global-apps-menu-icon" />
       </button>
       {open && <GlobalAppBar />}
     </div>

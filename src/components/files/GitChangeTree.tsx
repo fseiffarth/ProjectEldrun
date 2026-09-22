@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useT } from "../../lib/i18n";
+import { FolderIcon } from "../common/icons/Icon";
 
 export interface FileChange {
   path: string;
@@ -116,7 +117,7 @@ function Row({
       >
         <span className="git-change-caret">{node.isDir ? (isCollapsed ? "▸" : "▾") : ""}</span>
         <span className="git-change-name">
-          {node.isDir ? "📁 " : ""}
+          {node.isDir ? <><FolderIcon /> </> : null}
           {node.name}
         </span>
         <Stat added={node.added} deleted={node.deleted} binary={node.binary} />

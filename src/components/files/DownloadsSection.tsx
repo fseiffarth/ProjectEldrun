@@ -3,10 +3,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { downloadDir } from "@tauri-apps/api/path";
 import { useSettingsStore } from "../../stores/settings";
 import { useWindowsStore } from "../../stores/windows";
-import { useDragStore } from "../../stores/drag";
-import { bindDragRelease } from "../../lib/dragPlatform";
-import { fmtModified, fmtSize, fileIcon, folderIcon, type FileEntry } from "../../lib/viewers/fileUtils";
+import { useDragStore } from "../../stores/drag/drag";
+import { bindDragRelease } from "../../lib/window/dragPlatform";
+import { fmtModified, fmtSize, type FileEntry } from "../../lib/viewers/fileUtils";
 import { useT } from "../../lib/i18n";
+import { FileIcon } from "../common/icons/FileIcon";
+import { InboxIcon } from "../common/icons/Icon";
 import { useResizableSection } from "./useResizableSection";
 
 /**
@@ -257,7 +259,7 @@ export function DownloadsSection({
         title={t("downloads.resizeHint")}
       />
       <div className="downloads-header">
-        <span className="downloads-title">📥 {t("downloads.title")}</span>
+        <span className="downloads-title"><InboxIcon /> {t("downloads.title")}</span>
         <div className="downloads-windows">
           {WINDOWS.map((w, i) => (
             <button
@@ -276,16 +278,14 @@ export function DownloadsSection({
           ))}
         </div>
         <button
-          className="toolbar-btn"
-          style={{ fontSize: 10, padding: "1px 6px", height: 20 }}
+          className="toolbar-btn toolbar-btn--sm"
           onClick={() => void refresh()}
           title={t("common.refresh")}
         >
           ⟳
         </button>
         <button
-          className="toolbar-btn"
-          style={{ fontSize: 10, padding: "1px 6px", height: 20 }}
+          className="toolbar-btn toolbar-btn--sm"
           onClick={onClose}
           title={t("downloads.hide")}
         >
@@ -323,7 +323,7 @@ export function DownloadsSection({
                 onClick={() => openPreview(entry)}
               >
                 <span className="file-icon">
-                  {entry.is_dir ? folderIcon() : fileIcon(entry.extension)}
+                  <FileIcon ext={entry.extension} isDir={entry.is_dir} />
                 </span>
                 <span className="file-name">{entry.name}</span>
                 <span className="downloads-meta">
@@ -336,8 +336,7 @@ export function DownloadsSection({
                 ) : (
                   !isRemote && (
                     <button
-                      className="toolbar-btn dl-copy-btn"
-                      style={{ fontSize: 10, padding: "1px 6px", height: 20 }}
+                      className="toolbar-btn toolbar-btn--sm dl-copy-btn"
                       onClick={(ev) => {
                         ev.stopPropagation();
                         void copyEntry(entry, targetFolder);

@@ -3,8 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useSettingsStore } from "../../stores/settings";
 import { useQuiesce, saverInterval } from "../../stores/power";
-import { useOllamaAutoloadStore } from "../../stores/ollamaAutoload";
-import { useOllamaUpgradeStore } from "../../stores/ollamaUpgrade";
+import { useOllamaAutoloadStore } from "../../stores/agents/ollamaAutoload";
+import { useOllamaUpgradeStore } from "../../stores/agents/ollamaUpgrade";
 import { useOllamaStatus } from "../../lib/ollamaStatus";
 import { UntestedTag } from "../common/UntestedTag";
 import {
@@ -16,7 +16,7 @@ import {
   type OllamaGpuStatus,
   type OllamaModelUpdate,
   type OllamaVersionStatus,
-} from "../../lib/localDrivers";
+} from "../../lib/agents/localDrivers";
 import { runInstallInTab, type InstallShellKind } from "../../lib/installCommand";
 import {
   formatBytes,
@@ -125,7 +125,7 @@ interface AgentInfo {
 /**
  * The tasks a loaded model can be tagged for. Each maps to a key under
  * `settings.ollama_roles`; a model wearing a tag is the one used for that task
- * (autocomplete + grammar in the editor, "Local Model" agent tabs), so several
+ * (autocomplete in the editor, "Local Model" agent tabs), so several
  * resident models can each own a different job. A task with no tag falls back to
  * the default `ollama_model`. Mirrors the consumers in `FileViewerPane`/`TabBar`.
  *
@@ -138,7 +138,10 @@ interface AgentInfo {
  */
 const MODEL_ROLES: Array<{ key: string; labelKey: TranslationKey; pending?: boolean }> = [
   { key: "autocomplete", labelKey: "localModel.role.autocomplete" },
-  { key: "grammar", labelKey: "localModel.role.grammar" },
+  // Plain text, Markdown and TeX ask for this one first (an instruct model suits
+  // prose; a fill-in-the-middle coder model suits code) and fall back to the
+  // `autocomplete` tag, so leaving it unset keeps one model for both.
+  { key: "autocomplete_prose", labelKey: "localModel.role.autocompleteProse" },
   { key: "tabs", labelKey: "localModel.role.tabs" },
   // `mail` was `pending` until Group Q; the mail assistant (#204–#208) now reads
   // this role, so the chip is live — a resident model can be pinned to it and the
@@ -333,7 +336,7 @@ function UpdateAction({
  * Hovering reveals the models currently loaded in memory (the running set from
  * `list_ollama_models_detailed`), each shown with a green "loaded" lamp. Clicking
  * a model's name makes it the default (`settings.ollama_model`); its task tags
- * (Autocomplete / Grammar / Tabs / Mail → `settings.ollama_roles`) pin individual jobs
+ * (Autocomplete / Tabs / Mail → `settings.ollama_roles`) pin individual jobs
  * to specific loaded models, so several can run different tasks in parallel. A
  * task with no tag falls back to the default model. Always shown: when Ollama
  * isn't installed (or no
@@ -374,6 +377,10 @@ export function LocalModelMenu() {
   // Installed agent CLIs (from list_agents), shown in the Agents section so the
   // ones already available are visible without opening "Manage agents".
   const [agents, setAgents] = useState<AgentInfo[]>([]);
+  // The agent CLIs the root MCP server is actually named to at launch
+  // (`root_mcp_status`); null until read — and on a backend that predates the
+  // field, which then shows no MCP chips rather than guessing.
+  const [wiredClis, setWiredClis] = useState<string[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Models currently being loaded into memory, keyed by name (from the global
@@ -570,6 +577,9 @@ export function LocalModelMenu() {
     invoke<AgentInfo[]>("list_agents")
       .then((all) => setAgents(all.filter((a) => a.installed)))
       .catch(() => {});
+    invoke<{ wired_clis?: string[] }>("root_mcp_status")
+      .then((status) => setWiredClis(status.wired_clis ?? null))
+      .catch(() => setWiredClis(null));
   };
 
   const reveal = () => {
@@ -791,6 +801,58 @@ export function LocalModelMenu() {
       : [...compactAgentIds, id];
     void updateSettings({ compact_tab_agents: next });
   };
+  // Which agents the root console offers. Opt-in, default none: a root agent
+  // gets the root MCP tools (calendar, board, project list) no project agent
+  // has. Read by `useAddTabMenuData` for the root scope's + menus.
+  const rootAgentIds = settings?.root_agents ?? [];
+  // Root = the agent may run in the root console; MCP = it runs there *with*
+  // the root MCP tools, so MCP implies Root. Stored as binaries, since that is
+  // all the backend sees at spawn; unset falls back to the root agents (before
+  // the chip was a switch, every root agent got the tools).
+  const mcpAgentIds = settings?.root_mcp_agents ?? rootAgentIds;
+  const matches = (ids: string[], a: AgentInfo) => ids.includes(a.id) || ids.includes(a.bin);
+  const without = (ids: string[], a: AgentInfo) => ids.filter((id) => id !== a.id && id !== a.bin);
+  const toggleRootAgent = (a: AgentInfo) => {
+    if (!matches(rootAgentIds, a)) {
+      void updateSettings({ root_agents: [...rootAgentIds, a.id] });
+      return;
+    }
+    // Off in root means off with the tools too.
+    void updateSettings({
+      root_agents: without(rootAgentIds, a),
+      root_mcp_agents: without(mcpAgentIds, a),
+    });
+  };
+  const toggleMcpAgent = (a: AgentInfo, inMcp: boolean) => {
+    if (inMcp) {
+      void updateSettings({ root_mcp_agents: without(mcpAgentIds, a) });
+      return;
+    }
+    void updateSettings({
+      root_agents: matches(rootAgentIds, a) ? rootAgentIds : [...rootAgentIds, a.id],
+      root_mcp_agents: [...without(mcpAgentIds, a), a.bin],
+    });
+  };
+  // Only a CLI the backend names the server to (`WIRED_CLIS`) can call the
+  // tools, and the two Settings switches can withhold them from every cloud
+  // agent at once — the chip still records the choice, its title says why it
+  // does nothing now.
+  const mcpOn = settings?.root_mcp !== false;
+  const mcpLocalOnly = settings?.root_mcp_local_only === true;
+  const agentMcp = (a: AgentInfo, inRoot: boolean) => {
+    const wired = !!wiredClis && (wiredClis.includes(a.bin) || wiredClis.includes(a.id));
+    const on = inRoot && matches(mcpAgentIds, a);
+    const titleKey: TranslationKey = !wired
+      ? "localModel.agentMcpNotWiredTitle"
+      : !mcpOn
+        ? "localModel.agentMcpOffTitle"
+        : mcpLocalOnly
+          ? "localModel.agentMcpLocalOnlyTitle"
+          : on
+            ? "localModel.agentMcpOnTitle"
+            : "localModel.agentMcpSetTitle";
+    return { wired, on, titleKey };
+  };
 
   const scheduleClose = () => {
     if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
@@ -806,7 +868,7 @@ export function LocalModelMenu() {
   };
 
   // When exactly one model is resident in memory, make it the model for
-  // everything — the default plus every task tag (autocomplete/grammar/tabs) —
+  // everything — the default plus every task tag (autocomplete/tabs/mail) —
   // so loading a single model "just works" without wiring each task by hand.
   // Tracked per resident model via a ref so we auto-apply once per newly-loaded
   // sole model: manual reassignments the user makes afterwards (while that model
@@ -840,7 +902,7 @@ export function LocalModelMenu() {
   }, [models, settings, updateSettings]);
 
   // "Load on Eldrun start": which models are warmed into memory at launch
-  // (`settings.ollama_autoload_models`, honoured by `stores/ollamaAutoload`).
+  // (`settings.ollama_autoload_models`, honoured by `stores/agents/ollamaAutoload`).
   // A chip per model rather than one global switch, because the whole point is
   // that different jobs want different models resident.
   const autoload = settings?.ollama_autoload_models ?? [];
@@ -861,8 +923,41 @@ export function LocalModelMenu() {
     else next[role] = model;
     void updateSettings({ ollama_roles: next });
   };
+  // Local models are in the root console by default (the opposite of agents:
+  // a local model reaches nothing beyond this machine), so what is stored is
+  // the models switched OFF there.
+  const rootOffModels = settings?.root_excluded_models ?? [];
+  const toggleRootModel = (model: string) => {
+    if (rootOffModels.includes(model)) {
+      void updateSettings({ root_excluded_models: rootOffModels.filter((m) => m !== model) });
+      return;
+    }
+    // Off in root means off with the tools too (MCP implies Root).
+    void updateSettings({
+      root_excluded_models: [...rootOffModels, model],
+      ollama_mcp_models: mcpModels.filter((m) => m !== model),
+    });
+  };
+  // Tools for a local model are opt-in, per model: without the chip a Vibe tab
+  // runs with tools off, which is what lets a completion-only model answer at
+  // all. With it, a root-console tab gets the root MCP tools (and only those) —
+  // wired at spawn by the backend, so it applies to tabs opened afterwards.
+  const mcpModels = settings?.ollama_mcp_models ?? [];
+  // Lit only with Root on too: a model switched off in root runs nowhere the
+  // tools reach.
+  const modelMcpOn = (model: string) => mcpModels.includes(model) && !rootOffModels.includes(model);
+  const toggleMcpModel = (model: string, on: boolean) => {
+    if (on) {
+      void updateSettings({ ollama_mcp_models: mcpModels.filter((m) => m !== model) });
+      return;
+    }
+    void updateSettings({
+      ollama_mcp_models: [...mcpModels.filter((m) => m !== model), model],
+      root_excluded_models: rootOffModels.filter((m) => m !== model),
+    });
+  };
 
-  // Putting the models back after an upgrade (`stores/ollamaUpgrade`). Reported
+  // Putting the models back after an upgrade (`stores/agents/ollamaUpgrade`). Reported
   // for the same reason the autoload below is: nobody is watching a restart
   // that takes minutes, and a load that starts by itself must say that it did.
   const beginUpgradeRestore = useOllamaUpgradeStore((s) => s.begin);
@@ -1012,9 +1107,24 @@ export function LocalModelMenu() {
         aria-label={t("localModel.ariaLabel")}
         aria-haspopup="menu"
         aria-expanded={open}
-        style={{ color: "var(--warning)" }}
       >
-        🧠
+        {/* A processor chip — on-device compute — drawn rather than typed, like
+            the 🔔: the 🧠 it replaces was a colour emoji that ignored the theme
+            and sat apart from the ✉ 🗓 ☑ beside it. The menu's own copy names
+            it by its title, "Models & agents". */}
+        <svg
+          className="local-model-icon"
+          viewBox="0 0 24 24"
+          fill="none"
+          xmlns="http://www.w3.org/2000/svg"
+          aria-hidden="true"
+        >
+          <g stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="6" y="6" width="12" height="12" rx="2" />
+            <rect x="9.5" y="9.5" width="5" height="5" rx="0.8" />
+            <path d="M9 2.5V6M12 2.5V6M15 2.5V6M9 18v3.5M12 18v3.5M15 18v3.5M2.5 9H6M2.5 12H6M2.5 15H6M18 9h3.5M18 12h3.5M18 15h3.5" />
+          </g>
+        </svg>
         {installed && (
           <span
             className={`local-model-status-dot ${status}`}
@@ -1075,11 +1185,13 @@ export function LocalModelMenu() {
             <span className="tab-new-menu-dot" style={{ color: "transparent" }}>
               ●
             </span>
-            {t("localModel.skillsLibrary")} <UntestedTag />
+            {t("localModel.skillsLibrary")} <UntestedTag id="localModel.skillsLibrary" />
           </button>
           {agents.map((a) => {
             const isDefault = a.id === defaultAgentCmd;
             const isCompact = compactAgentIds.includes(a.id) || compactAgentIds.includes(a.bin);
+            const inRoot = rootAgentIds.includes(a.id) || rootAgentIds.includes(a.bin);
+            const mcp = agentMcp(a, inRoot);
             return (
               <div key={a.id} className="local-model-agent-row" title={t("localModel.agentInstalled", { label: a.label })}>
                 {/* Green lamp mirrors a loaded model: this agent CLI is installed. */}
@@ -1111,6 +1223,33 @@ export function LocalModelMenu() {
                   >
                     {t("localModel.compactAgent")}
                   </button>
+                  <button
+                    type="button"
+                    className={`local-model-role-chip${inRoot ? " on" : ""}`}
+                    title={t(
+                      inRoot ? "localModel.isRootAgentTitle" : "localModel.setRootAgentTitle",
+                      { label: a.label },
+                    )}
+                    aria-pressed={inRoot}
+                    onClick={() => toggleRootAgent(a)}
+                  >
+                    {t("localModel.rootChip")}
+                  </button>
+                  {wiredClis && (
+                    <button
+                      type="button"
+                      className={`local-model-role-chip${mcp.on ? " on" : ""}${
+                        mcp.wired ? "" : " local-model-role-chip-unwired"
+                      }`}
+                      title={t(mcp.titleKey, { label: a.label })}
+                      aria-pressed={mcp.on}
+                      disabled={!mcp.wired && !mcp.on}
+                      onClick={() => toggleMcpAgent(a, mcp.on)}
+                    >
+                      {t("localModel.mcpChip")}
+                    </button>
+                  )}
+                  <UntestedTag id="localModelMenu.1" />
                 </div>
               </div>
             );
@@ -1231,7 +1370,7 @@ export function LocalModelMenu() {
               </button>
               <div className="local-model-autostart-text">
                 <span className="local-model-autostart-sentence">{restoreSentence}</span>
-                <UntestedTag />
+                <UntestedTag id="localModelMenu.2" />
               </div>
               {/* Waiting is the one phase with something to *stop*; the two
                   that ended without the models being back are the ones with
@@ -1283,7 +1422,7 @@ export function LocalModelMenu() {
               </button>
               <div className="local-model-autostart-text">
                 <span className="local-model-autostart-sentence">{autoNoteTitle}</span>
-                <UntestedTag />
+                <UntestedTag id="localModelMenu.3" />
               </div>
               {autoPhase !== "loading" && (
                 <div className="local-model-autostart-actions">
@@ -1415,7 +1554,7 @@ export function LocalModelMenu() {
                         </span>
                       </span>
                     </button>
-                    {/* Task tags: pin this model to a job (autocomplete/grammar/
+                    {/* Task tags: pin this model to a job (autocomplete/
                         tabs/mail). Several loaded models can each own a different
                         one. A `pending` tag adds "nothing reads this yet" to its
                         tooltip — the chip must not imply a job that doesn't run. */}
@@ -1441,6 +1580,40 @@ export function LocalModelMenu() {
                           </button>
                         );
                       })}
+                      <button
+                        type="button"
+                        className={`local-model-role-chip${
+                          rootOffModels.includes(m.name) ? "" : " on"
+                        }`}
+                        title={t(
+                          rootOffModels.includes(m.name)
+                            ? "localModel.setRootModelTitle"
+                            : "localModel.isRootModelTitle",
+                          { name: m.name },
+                        )}
+                        aria-pressed={!rootOffModels.includes(m.name)}
+                        onClick={() => toggleRootModel(m.name)}
+                      >
+                        {t("localModel.rootChip")}
+                      </button>
+                      <button
+                        type="button"
+                        className={`local-model-role-chip${modelMcpOn(m.name) ? " on" : ""}`}
+                        title={t(
+                          lacksTools(m)
+                            ? "localModel.mcpNoToolsTitle"
+                            : modelMcpOn(m.name)
+                              ? "localModel.isMcpModelTitle"
+                              : "localModel.setMcpModelTitle",
+                          { name: m.name },
+                        )}
+                        aria-pressed={modelMcpOn(m.name)}
+                        disabled={lacksTools(m) && !modelMcpOn(m.name)}
+                        onClick={() => toggleMcpModel(m.name, modelMcpOn(m.name))}
+                      >
+                        {t("localModel.mcpChip")}
+                      </button>
+                      <UntestedTag id="localModelMenu.4" />
                       {/* The row's own two verbs, grouped and right-aligned: the
                           task tags above are a wrapping set, these are a column. */}
                       <div className="local-model-row-actions">
@@ -1496,7 +1669,7 @@ export function LocalModelMenu() {
               {gpuStatus?.igpu_dropped && (
                 <div className="local-model-igpu-notice">
                   <div className="local-model-igpu-text">
-                    {t("localModel.igpuDropped")} <UntestedTag />
+                    {t("localModel.igpuDropped")} <UntestedTag id="localModel.igpuDropped" />
                   </div>
                   {gpuStatus.fix_cmd ? (
                     <button

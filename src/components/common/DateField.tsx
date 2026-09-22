@@ -18,10 +18,11 @@ import {
   startOfWeek,
   todayStr,
   weekdayLabel,
-} from "../../lib/calendarTime";
+} from "../../lib/calendar/calendarTime";
 import { useI18nStore, useT } from "../../lib/i18n";
 import { useSettingsStore } from "../../stores/settings";
 import { ContextMenuPortal } from "./ContextMenuPortal";
+import { CalendarIcon } from "./icons/Icon";
 
 /**
  * **The** day-entry field — `common/TimeField`'s other half, and the one control
@@ -101,7 +102,7 @@ export function DateField({
 }: Props) {
   const t = useT();
   const lang = useI18nStore((state) => state.lang);
-  const weekStart = (useSettingsStore((state) => state.settings?.calendar_week_start) ?? 0) as 0 | 1;
+  const weekStart = (useSettingsStore((state) => state.settings?.calendar_week_start) ?? 1) as 0 | 1;
   const [anchor, setAnchor] = useState<{ x: number; y: number } | null>(null);
   const today = todayStr();
   // The day the keyboard sits on, which is also the month the grid shows. Seeded
@@ -201,7 +202,7 @@ export function DateField({
           }
         }}
       >
-        <span className="date-field-icon" aria-hidden="true">🗓</span>
+        <CalendarIcon className="date-field-icon" />
         <span className="date-field-label">{label}</span>
       </button>
       {anchor ? (

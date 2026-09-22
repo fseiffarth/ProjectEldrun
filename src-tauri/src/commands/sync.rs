@@ -160,6 +160,12 @@ async fn resolve(
     pool: &RemotePoolState,
 ) -> Result<(RemoteTarget, Arc<Sftp>), String> {
     let target = remote_target_for(project_id).ok_or_else(|| "not a remote project".to_string())?;
+    // A contained mail reader has no mirror at all: "pull this to the host"
+    // would be the exfiltration path with the user's click on it
+    // (`services::mail_reader`). The trusted `projects.json` record decides.
+    if crate::services::vm::vm_spec_for(project_id).is_some_and(|spec| spec.mail_reader) {
+        return Err("this project is a mail reader and has no host-side mirror; turn \"mail reader\" off first".to_string());
+    }
     let sftp = pooled_sftp(pool, project_id)
         .await
         .ok_or_else(|| "remote project not connected — reconnect first".to_string())?;
@@ -369,7 +375,7 @@ pub struct BigFolderScan {
 /// numbers. With no flag to carry that distinction the explicit ask could only
 /// ever be refused, so the frontend was reduced to *saying* the census would be
 /// local-only. It now refuses with `hpc_mode`'s `HPC_GUARD` sentinel instead —
-/// the shape `disk_usage_scan` already uses — which `lib/hpcGuard`'s
+/// the shape `disk_usage_scan` already uses — which `lib/remote/hpc/hpcGuard`'s
 /// `withHpcConfirm` turns into a dialog naming the machine and one retry with
 /// `confirmed: true`. Per run, never remembered, exactly as the other gate.
 #[tauri::command]

@@ -67,6 +67,7 @@ import { swatchCss } from "./PdfSelectionBar";
 import { scrollIntoPdfBox } from "./scrollBox";
 import { isHighlight } from "../../../lib/viewers/pdfNotes";
 import type { PdfNote } from "../../../lib/viewers/pageModel";
+import { CommentIcon } from "../../common/icons/Icon";
 
 /** The right-click menu's position: where on screen it opens, where on the page it
  *  was asked for (big points), and the remark it was asked over, if any. */
@@ -433,7 +434,7 @@ export function PdfNoteLayer({
               onMenu({ clientX: e.clientX, clientY: e.clientY, x: n.x, y: n.y, noteId: n.id });
             }}
           >
-            <span aria-hidden="true">💬</span>
+            <CommentIcon />
           </button>
         );
       })}
@@ -625,7 +626,7 @@ export function PdfNoteLayer({
                 }}
               >
                 {ready ? t("pdfNotes.addHere") : t("pdfNotes.reading")}
-                <UntestedTag />
+                <UntestedTag id="pdfNoteLayer.1" />
               </button>
             )}
           </div>,

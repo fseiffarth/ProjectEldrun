@@ -6,7 +6,7 @@ import { useBoxesStore } from "../../stores/boxes";
 import { ROOT_SCOPE, useTabsStore } from "../../stores/tabs";
 import { SettingsCard, SettingsList, ToggleRow } from "../layout/settingsUi";
 import { UntestedTag } from "../common/UntestedTag";
-import { isTrashProject } from "../../lib/trashProject";
+import { isTrashProject } from "../../lib/projects/trashProject";
 import { IS_WINDOWS } from "../../lib/platform";
 import { runInstallInTab } from "../../lib/installCommand";
 import { translate, useI18nStore, useT } from "../../lib/i18n";
@@ -132,6 +132,21 @@ export function MobileSettings() {
   const rootDir = useProjectsStore((state) => state.rootDir);
   const setProjectMobileAccess = useProjectsStore((state) => state.setProjectMobileAccess);
   const stored = settings?.eldrun_mobile_host;
+  // The sidecar's `discovery::root_open`, repeated so the switch can say why
+  // root is missing from the phone while it is on.
+  const [reviewEnforced, setReviewEnforced] = useState(true);
+  const rootSwitchedOn = stored?.root_access === true;
+  useEffect(() => {
+    if (!rootSwitchedOn) return;
+    let live = true;
+    void invoke<{ review_enforced?: boolean }>("root_mcp_status")
+      .then((status) => { if (live) setReviewEnforced(status.review_enforced === true); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [rootSwitchedOn]);
+  const rootReview = settings?.root_mcp_review;
+  const rootGateClosed = settings?.root_mcp !== false
+    && (rootReview === "destructive" || rootReview === "off" || !reviewEnforced);
   const [displayName, setDisplayName] = useState(stored?.display_name ?? "Workstation");
   const [port, setPort] = useState(String(stored?.port ?? 8742));
   const [origin, setOrigin] = useState(stored?.serve_origin ?? "");
@@ -245,13 +260,15 @@ export function MobileSettings() {
    * read by the desktop bridge alone — the sidecar never sees mail settings.
    * They ride on the stored host settings untouched otherwise, so flipping one
    * never re-verifies Serve or restarts the host. */
-  const setMailGate = async (gate: "mail_actions" | "mail_reply", on: boolean) => {
+  const setMailGate = async (gate: "mail_read" | "mail_actions" | "mail_reply" | "root_access", on: boolean) => {
     setError(null);
     try {
       await updateSettings({
         eldrun_mobile_host: {
           ...(stored ?? { enabled: false }),
-          [gate]: on || undefined,
+          // `mail_read` defaults on, so only its "off" is stored; the writes
+          // default off, so only their "on" is.
+          [gate]: gate === "mail_read" ? (on ? undefined : false) : on || undefined,
         },
       });
     } catch (reason) {
@@ -282,8 +299,10 @@ export function MobileSettings() {
           display_name: displayName.trim() || "Workstation",
           port: parsedPort || 8742,
           serve_origin: origin.trim() || undefined,
+          mail_read: stored?.mail_read,
           mail_actions: stored?.mail_actions,
           mail_reply: stored?.mail_reply,
+          root_access: stored?.root_access,
         },
       });
       await invoke("mobile_host_apply", { enabled });
@@ -297,8 +316,8 @@ export function MobileSettings() {
   };
 
   // Same one-click shape as every other install-via-command flow: the command
-  // runs in a root terminal tab, watched through the centered install overlay
-  // right here in Settings — never a scope switch away from the panel.
+  // runs in a root terminal tab, watched in the root console floating over
+  // Settings — never a scope switch away from the panel.
   const setUpInTerminal = () => {
     const command = `tailscale serve --bg http://127.0.0.1:${guidePort}`;
     if (!window.confirm(tr("mobile.setUpConfirm", { command }))) return;
@@ -358,8 +377,10 @@ export function MobileSettings() {
           display_name: detected.display_name,
           port: detected.port,
           serve_origin: detected.origin,
+          mail_read: stored?.mail_read,
           mail_actions: stored?.mail_actions,
           mail_reply: stored?.mail_reply,
+          root_access: stored?.root_access,
         },
       });
     } catch (reason) {
@@ -404,8 +425,10 @@ export function MobileSettings() {
           display_name: displayName.trim() || "Workstation",
           port: Number(port) || 8742,
           serve_origin: origin.trim() || undefined,
+          mail_read: stored?.mail_read,
           mail_actions: stored?.mail_actions,
           mail_reply: stored?.mail_reply,
+          root_access: stored?.root_access,
         },
       });
       await invoke("mobile_host_apply", { enabled: false });
@@ -463,6 +486,11 @@ export function MobileSettings() {
       <p className="settings-help">
         {t("mobile.scopeHelp")}
       </p>
+      {IS_WINDOWS && (
+        <p className="settings-help">
+          {t("mobile.windowsTerminalsNote")} <UntestedTag id="mobile.windowsTerminalsNote" />
+        </p>
+      )}
       {/* The handoff script has a PowerShell twin on Windows, so the QR flow
           is offered on every desktop. */}
       <div className="mobile-phone-install">
@@ -576,19 +604,38 @@ export function MobileSettings() {
 
       <div className="settings-subheader">{t("mobile.mailWrites")}</div>
       <ToggleRow
-        label={<>{t("mobile.mailActions")} <UntestedTag /></>}
+        label={<>{t("mobile.mailRead")} <UntestedTag id="mobile.mailRead" /></>}
+        checked={stored?.mail_read !== false}
+        disabled={busy}
+        onChange={(event) => void setMailGate("mail_read", event.target.checked)}
+      />
+      <p className="settings-help">{t("mobile.mailReadHelp")}</p>
+      <ToggleRow
+        label={<>{t("mobile.mailActions")} <UntestedTag id="mobile.mailActions" /></>}
         checked={stored?.mail_actions ?? false}
         disabled={busy}
         onChange={(event) => void setMailGate("mail_actions", event.target.checked)}
       />
       <p className="settings-help">{t("mobile.mailActionsHelp")}</p>
       <ToggleRow
-        label={<>{t("mobile.mailReply")} <UntestedTag /></>}
+        label={<>{t("mobile.mailReply")} <UntestedTag id="mobile.mailReply" /></>}
         checked={stored?.mail_reply ?? false}
         disabled={busy}
         onChange={(event) => void setMailGate("mail_reply", event.target.checked)}
       />
       <p className="settings-help">{t("mobile.mailReplyHelp")}</p>
+
+      <div className="settings-subheader">{t("mobile.rootAccessHeader")}</div>
+      <ToggleRow
+        label={<>{t("mobile.rootAccess")} <UntestedTag id="mobile.rootAccess" /></>}
+        checked={stored?.root_access ?? false}
+        disabled={busy}
+        onChange={(event) => void setMailGate("root_access", event.target.checked)}
+      />
+      <p className="settings-help">{t("mobile.rootAccessHelp")}</p>
+      {stored?.root_access && rootGateClosed && (
+        <div className="project-dialog-error">{t("mobile.rootAccessClosed")}</div>
+      )}
 
       <div className="settings-subheader">{t("mobile.projectAccess")}</div>
       <p className="settings-help">
@@ -619,7 +666,7 @@ export function MobileSettings() {
       </div>
 
       {boxes.length > 0 && <>
-        <div className="settings-subheader">{t("mobile.boxAccess")} <UntestedTag /></div>
+        <div className="settings-subheader">{t("mobile.boxAccess")} <UntestedTag id="mobile.boxAccess" /></div>
         <p className="settings-help">{t("mobile.boxAccessHelp")}</p>
         <div className="mobile-project-access-list">
           {matchingBoxes.map((box) => (

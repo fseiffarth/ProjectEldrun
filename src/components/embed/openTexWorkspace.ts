@@ -5,9 +5,10 @@ import {
   hasTexCompiler,
   requestTexCenter,
   requestTexCompile,
-} from "../../stores/texCenter";
-import { resolveTexRoot } from "../../lib/viewers/tex";
+} from "../../stores/viewers/texCenter";
+import { resolveTexRoot } from "../../lib/viewers/tex/tex";
 import { basename, dirname } from "../../lib/paths";
+import { openTabInScope } from "../tabs/tabScopeContext";
 
 /**
  * The single open-a-LaTeX-file policy: open (or focus) the ONE "TeX workspace"
@@ -46,6 +47,10 @@ import { basename, dirname } from "../../lib/paths";
  * and moving the whole document there, or nothing at all, is not what a drop
  * of that file asked for. A plain open (a click, no destination) still focuses
  * the workspace in place and centers it on the clicked file.
+ *
+ * `scope` names the scope the workspace belongs to when it is not the active one
+ * (the root console's, `TabScopeContext`): the dedupe looks there and a fresh
+ * tab lands there. Omitted, both use the active scope.
  */
 export interface TexWorkspaceDrop {
   relocate: (existingKey: string) => void;
@@ -55,9 +60,11 @@ export async function openTexWorkspace(
   clickedPath: string,
   place?: (tab: Omit<TabEntry, "key">) => void,
   drop?: TexWorkspaceDrop,
+  scope?: string | null,
 ): Promise<void> {
   const root = await resolveTexRoot(clickedPath);
   const store = useTabsStore.getState();
+  const scopeTabs = scope ? store.tabsByScope[scope] ?? [] : store.tabs;
 
   // Represent "center shows the main document" as texActivePath === root (store
   // the root path), not undefined, so focusing an existing workspace on its own
@@ -75,7 +82,7 @@ export async function openTexWorkspace(
   // is not the root the click resolved to.
   const isLegacyEditor = (t: TabEntry) =>
     t.kind === "embed" && t.viewer === "tex" && t.embedPath === root;
-  const existing = store.tabs.find(
+  const existing = scopeTabs.find(
     (t) => (t.kind === "embed" && t.viewer === "texworkspace" && t.embedPath === root) || isLegacyEditor(t),
   );
   if (existing) {
@@ -92,6 +99,7 @@ export async function openTexWorkspace(
         viewer: "tex",
       };
       if (place) place(child);
+      else if (scope) openTabInScope(scope, child);
       else store.setActive(store.addTab(child).key);
       return;
     }
@@ -117,6 +125,10 @@ export async function openTexWorkspace(
 
   if (place) {
     place(tab);
+    return;
+  }
+  if (scope) {
+    openTabInScope(scope, tab);
     return;
   }
   const entry = store.addTab(tab);

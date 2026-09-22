@@ -63,7 +63,7 @@ export interface MailAccount {
   /** **VPN-only, default false.** While set, the backend opens no socket to
    *  this account unless an OpenVPN tunnel Eldrun knows about is up, and the
    *  header's interval check skips it quietly instead of failing — then checks
-   *  it the moment a tunnel comes up (`lib/vpnGate.ts`). */
+   *  it the moment a tunnel comes up (`lib/remote/vpn/vpnGate.ts`). */
   require_vpn?: boolean;
   /**
    * The `authserv-id` this account's receiving server writes into
@@ -99,6 +99,10 @@ export interface MailAiPrefs {
   /** Skip the review step for extracted events / to-do cards. **Default off** —
    *  mail must never quietly write to the user's own data. */
   auto_create?: boolean;
+  /** A **contained reader** agent may read this account's mail through the root
+   *  MCP tools. Unset = off. The opposite consent to every switch above: what
+   *  such an agent reads is sent to its cloud provider. */
+  agent_access?: boolean;
 }
 
 /**
@@ -551,6 +555,10 @@ export interface MailDraft {
   in_reply_to?: string;
   references?: string[];
   staged: StagedAttachment[];
+  /** Who wrote it, when that was not the user: `"agent"` (a root tab) or
+   *  `"reader"` (a contained reader, which reads mail from outside). A save
+   *  from the composer clears it. */
+  origin?: string;
 }
 
 export interface MailSendResult {
@@ -607,7 +615,7 @@ export interface MailPreviewBlob {
  * A calendar event the model read out of a message (#207).
  *
  * `start`/`end` are **local wall-clock ISO** with no zone (`2026-08-04T15:00`),
- * matching `lib/calendarTime`'s stamps, so they prefill `EventDialog` directly.
+ * matching `lib/calendar/calendarTime`'s stamps, so they prefill `EventDialog` directly.
  * `confidence` is the model's own 0..1 estimate; the backend has already applied
  * its floor (a value below it yields `null` rather than a low-confidence event),
  * and the field is carried only so the review UI can note it.

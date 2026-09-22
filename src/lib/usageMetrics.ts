@@ -12,6 +12,9 @@
 import type { TabKind } from "../stores/tabs";
 
 export const METRIC = {
+  /** `autocomplete.accept/dismiss.<mode>.<model>` — one outcome per suggestion. */
+  AUTOCOMPLETE_ACCEPT: "autocomplete.accept",
+  AUTOCOMPLETE_DISMISS: "autocomplete.dismiss",
   /** `agent.tab.<cmd>` — an agent tab was opened. */
   AGENT_TAB: "agent.tab",
   /** `agent.tab.local.<model>` — a local (Ollama-backed) agent tab was opened. */
@@ -96,6 +99,9 @@ const AGENT_LABELS: Record<string, string> = {
   gemini: "Google Gemini",
   agy: "Google Antigravity",
   vibe: "Mistral",
+  // Kiro's executable was renamed `kiro-cli`; the old leaf stays so
+  // counters written before the rename still decode.
+  "kiro-cli": "Kiro",
   kiro: "Kiro",
   cline: "Cline",
   aider: "Aider",
@@ -113,6 +119,12 @@ const AGENT_LABELS: Record<string, string> = {
   mini: "mini-SWE-agent",
   mentat: "Mentat",
   gpte: "GPT Engineer",
+  droid: "Droid",
+  auggie: "Auggie",
+  kilo: "Kilo Code",
+  cn: "Continue.dev",
+  junie: "JetBrains Junie",
+  codebuddy: "CodeBuddy",
   crush: "Crush",
   amp: "Amp",
   kimi: "Kimi Code",

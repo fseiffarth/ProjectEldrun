@@ -130,8 +130,8 @@ export interface UniverseInput {
   projects: ProjectEntry[]; boxes: ProjectBox[];
   tabsByScope: Record<string, TabEntry[]>;
   busyByTab; attentionByTab; lastDoneByTab;           // stores/activity, pty-id keyed
-  promptsByProject; historyByProject; linksByProject; // stores/agentPrompts
-  schedulesByTarget;                                  // stores/agentSchedules
+  promptsByProject; historyByProject; linksByProject; // stores/agents/agentPrompts
+  schedulesByTarget;                                  // stores/agents/agentSchedules
   now: Date;
 }
 
@@ -141,7 +141,7 @@ export type JobState = "working" | "needs-decision" | "finished" | "idle"
 
 export interface UniverseJob {
   id: string; kind: JobKind; state: JobState; label: string;
-  scope: string; tabKey?: string;          // → lib/tabJump's jumpToTab(scope, key)
+  scope: string; tabKey?: string;          // → lib/shortcuts/tabJump's jumpToTab(scope, key)
   agent?: string; model?: string; at: Date | null; card?: PromptChartCard;
 }
 
@@ -155,12 +155,12 @@ export function buildUniverse(input: UniverseInput): UniverseScope[];
 export function universeJobMatches(job: UniverseJob, filter: UniverseFilter): boolean;
 ```
 
-The card half **delegates to `buildPromptChart`** (`src/lib/agentPromptChart.ts`),
+The card half **delegates to `buildPromptChart`** (`src/lib/agents/prompt/chart.ts`),
 once per scope, with the strands that module already builds — a second derivation
 of what "queued" means would be a second answer to one question. Reuse
 `isPromptTargetTab` (exported by `PromptChartTab.tsx`) as the agent-tab predicate,
 and the activity precedence every other surface reads: **decision > working > done
-> idle**. Colours come from `src/lib/categoryColor.ts` (`primaryCategoryColor`,
+> idle**. Colours come from `src/lib/theme/categoryColor.ts` (`primaryCategoryColor`,
 `projectCategories`) — the same colours the blob tab and the pills already give a
 project.
 

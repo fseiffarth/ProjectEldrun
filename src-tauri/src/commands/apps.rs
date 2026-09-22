@@ -97,6 +97,8 @@ pub struct WindowRegistry {
     /// (see [`DetachedBounds`]). Written just before a switch-away hides the
     /// popout; read just after switch-back re-shows it, to restore its monitor.
     pub detached_bounds: HashMap<String, DetachedBounds>,
+    /// Wayland popouts parked without unmapping their compositor-owned surfaces.
+    pub detached_parking: crate::services::window_state::DetachedParking,
 }
 
 pub type WindowRegistryState = Arc<Mutex<WindowRegistry>>;
@@ -126,6 +128,11 @@ pub const ORIGIN_BLOB_FILE_VIEWER: &str = "blob_file_viewer";
 /// (#42). Project-owned: it follows the same project-switch hide/show parking
 /// path as the other project-owned window origins.
 pub const ORIGIN_DETACHED_SUBWINDOW: &str = "detached_subwindow";
+/// The project opened in the IDE its tree carries markers for ("Open in
+/// <IDE>" on the pill / file-tree root menu — `commands::ide`). Project-owned:
+/// listed in the Apps view and parked on project switch like a file opened
+/// from the tree.
+pub const ORIGIN_PROJECT_IDE: &str = "project_ide";
 
 fn default_window_origin() -> String {
     ORIGIN_MANUAL_LAUNCH.to_string()
@@ -143,6 +150,7 @@ pub fn is_project_opened_origin(origin: &str) -> bool {
             | ORIGIN_RESTORED
             | ORIGIN_DOWNLOADS
             | ORIGIN_BLOB_FILE_VIEWER
+            | ORIGIN_PROJECT_IDE
     )
 }
 
@@ -336,6 +344,12 @@ fn launch_command(exec: &str, args: &[String], file: Option<&str>) -> Command {
 
     let (program, leading_args) = split_exec_command(exec);
     let mut cmd = crate::paths::command_for_program(Path::new(program));
+    // Same reason as the terminal spawn: Eldrun's AT-SPI opt-out covers Eldrun's
+    // own window, not the app the user is launching (`services::webkit_a11y`).
+    #[cfg(target_os = "linux")]
+    if crate::services::webkit_a11y::installed() {
+        cmd.env_remove(crate::services::webkit_a11y::BUS_ADDRESS_VAR);
+    }
     cmd.args(leading_args);
     cmd.args(args);
     if let Some(file) = file {
@@ -355,7 +369,7 @@ fn launch_command(exec: &str, args: &[String], file: Option<&str>) -> Command {
 // ever mapping a window, hit the full budget every time.
 
 /// Offload a blocking launch body to a worker thread.
-async fn run_off_thread<T: Send + 'static>(
+pub(crate) async fn run_off_thread<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
     tokio::task::spawn_blocking(f)
@@ -605,6 +619,9 @@ fn open_file_blocking(
 /// process and emits a `script-finished` event (`{ runId, success }`) so the UI
 /// can show a running animation that clears on completion.
 ///
+/// `args` is the per-file argument string set from the ▶ button's right-click
+/// popover — the same raw string the foreground tab appends to its command line.
+///
 /// On Linux/Unix the script is run with `bash <path>`. Windows has no `bash`, so
 /// [`windows_script_command`] picks an interpreter by extension (`.ps1` →
 /// PowerShell, everything else → `cmd /C`, which honours `.bat`/`.cmd` and the
@@ -623,6 +640,7 @@ pub fn run_script_detached(
     cwd: Option<String>,
     run_id: Option<String>,
     project_id: Option<String>,
+    args: Option<String>,
 ) -> Result<(), String> {
     let path = Path::new(&script_path);
     if !path.is_absolute() {
@@ -630,13 +648,9 @@ pub fn run_script_detached(
     }
     crate::commands::fs::confine_project_path(path, project_id.as_deref())?;
     #[cfg(target_os = "windows")]
-    let mut cmd = windows_script_command(&script_path);
+    let mut cmd = windows_script_command(&script_path, args.as_deref());
     #[cfg(not(target_os = "windows"))]
-    let mut cmd = {
-        let mut cmd = Command::new("bash");
-        cmd.arg(&script_path);
-        cmd
-    };
+    let mut cmd = unix_script_command(&script_path, args.as_deref());
     if let Some(dir) = cwd.as_deref().filter(|d| !d.is_empty()) {
         cmd.current_dir(dir);
     }
@@ -1163,7 +1177,7 @@ pub fn embed_capability(
     let os_embeddable = {
         let ws = workspace.lock().unwrap();
         ws.backend.supports_embedding()
-    } && std::env::var("WAYLAND_DISPLAY").is_err();
+    } && !crate::platform::session_is_wayland();
 
     let global_apps = crate::commands::default_apps::get_default_apps()
         .map(|d| d.0)
@@ -1182,10 +1196,9 @@ pub fn embed_capability(
     }
 }
 
-/// Project-level default-app map for `project_id`, resolved via projects.json →
-/// the project's `local_file` → project.json `default_apps`. Returns an empty
-/// map when the id is absent or any read fails, so resolution then falls back to
-/// the global map / system default.
+/// Project-level default-app map for `project_id`, from the projects.json entry's
+/// `extra["default_apps"]`. Returns an empty map when the id is absent or any
+/// read fails, so resolution then falls back to the global map / system default.
 pub(crate) fn project_apps_for_id(project_id: Option<&str>) -> HashMap<String, String> {
     let Some(id) = project_id else {
         return HashMap::new();
@@ -1193,15 +1206,57 @@ pub(crate) fn project_apps_for_id(project_id: Option<&str>) -> HashMap<String, S
     let list_path = crate::storage::state_dir().join("projects.json");
     let list: Vec<crate::schema::ProjectEntry> =
         crate::storage::read_json(&list_path).unwrap_or_default();
-    let Some(entry) = list.into_iter().find(|e| e.id == id) else {
-        return HashMap::new();
-    };
-    let project: crate::schema::Project =
-        match crate::storage::read_json(Path::new(&entry.local_file)) {
-            Ok(p) => p,
-            Err(_) => return HashMap::new(),
-        };
-    project.default_apps.unwrap_or_default()
+    list.iter()
+        .find(|e| e.id == id)
+        .map(project_apps_from_entry)
+        .unwrap_or_default()
+}
+
+/// The project map as the trusted `projects.json` entry holds it
+/// (`extra["default_apps"]`). Never the in-folder `project.json` copy: that file
+/// is writable by a fenced agent, a container tab, a `git pull` or byte-sync, and
+/// an exec it names would launch on the host, unfenced, at the next open.
+fn project_apps_from_entry(entry: &crate::schema::ProjectEntry) -> HashMap<String, String> {
+    entry
+        .extra
+        .get("default_apps")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default()
+}
+
+/// The project-level default-app map, from the trusted registry only.
+#[tauri::command]
+pub fn get_project_default_apps(project_id: String) -> HashMap<String, String> {
+    project_apps_for_id(Some(&project_id))
+}
+
+/// Replace the project-level default-app map. Written to both stores like
+/// `set_project_python`: the `projects.json` mirror is what the open path reads,
+/// `project.json` keeps it with the project for display/export.
+#[tauri::command]
+pub fn set_project_default_apps(
+    project_id: String,
+    default_apps: HashMap<String, String>,
+) -> Result<HashMap<String, String>, String> {
+    let apps: HashMap<String, String> = default_apps
+        .into_iter()
+        .map(|(ext, exec)| (ext, exec.trim().to_string()))
+        .filter(|(ext, exec)| !ext.is_empty() && !exec.is_empty())
+        .collect();
+    crate::commands::projects::patch_project_entry_mirrored(
+        &project_id,
+        |entry| {
+            if apps.is_empty() {
+                entry.extra.remove("default_apps");
+            } else {
+                let value = serde_json::to_value(&apps).map_err(|e| e.to_string())?;
+                entry.extra.insert("default_apps".into(), value);
+            }
+            Ok(())
+        },
+        |project, ()| project.default_apps = (!apps.is_empty()).then(|| apps.clone()),
+    )?;
+    Ok(apps)
 }
 
 /// One installed application, surfaced to the "set default app" picker.
@@ -1506,8 +1561,13 @@ fn resolve_windows_launch_exec(exec: &str) -> Option<String> {
 /// `.cmd` directly and otherwise opens the file via its shell association. Either
 /// way the returned command spawns a child whose exit status the caller can wait
 /// on for the `script-finished` event.
+///
+/// `args` is the raw argument string from the file tree's ▶ popover, appended
+/// unparsed (`raw_arg`) so the interpreter splits it exactly as it would in the
+/// foreground terminal tab.
 #[cfg(target_os = "windows")]
-fn windows_script_command(script_path: &str) -> Command {
+fn windows_script_command(script_path: &str, args: Option<&str>) -> Command {
+    use std::os::windows::process::CommandExt;
     let is_ps1 = Path::new(script_path)
         .extension()
         .and_then(|ext| ext.to_str())
@@ -1515,7 +1575,7 @@ fn windows_script_command(script_path: &str) -> Command {
     // `command_no_window` sets CREATE_NO_WINDOW so a background "run script"
     // action doesn't pop a transient console window — its output is intentionally
     // not surfaced (callers wanting output open a terminal tab instead).
-    if is_ps1 {
+    let mut cmd = if is_ps1 {
         let mut cmd = crate::paths::command_no_window("powershell");
         cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
         cmd.arg(script_path);
@@ -1524,7 +1584,32 @@ fn windows_script_command(script_path: &str) -> Command {
         let mut cmd = crate::paths::command_no_window("cmd");
         cmd.args(["/C", script_path]);
         cmd
+    };
+    if let Some(extra) = args.map(str::trim).filter(|a| !a.is_empty()) {
+        cmd.raw_arg(extra);
     }
+    cmd
+}
+
+/// Build the [`Command`] that runs `script_path` detached on Unix: `bash <path>`,
+/// or — when the ▶ popover set arguments — `bash -c 'exec bash "$0" <args>' <path>`,
+/// so the raw argument string is word-split, quote-removed and expanded by a shell
+/// exactly as the foreground terminal tab's command line would be. The path rides
+/// as `$0`, never inside the `-c` string, so a path with quotes cannot break it.
+#[cfg(not(target_os = "windows"))]
+fn unix_script_command(script_path: &str, args: Option<&str>) -> Command {
+    let mut cmd = Command::new("bash");
+    match args.map(str::trim).filter(|a| !a.is_empty()) {
+        Some(extra) => {
+            cmd.arg("-c")
+                .arg(format!("exec bash \"$0\" {extra}"))
+                .arg(script_path);
+        }
+        None => {
+            cmd.arg(script_path);
+        }
+    }
+    cmd
 }
 
 #[cfg(target_os = "windows")]
@@ -2533,6 +2618,7 @@ mod tests {
             ORIGIN_RESTORED,
             ORIGIN_DOWNLOADS,
             ORIGIN_BLOB_FILE_VIEWER,
+            ORIGIN_PROJECT_IDE,
         ] {
             assert!(is_project_opened_origin(origin), "{origin} must be listed");
         }
@@ -2793,6 +2879,46 @@ mod tests {
         assert!(is_embeddable_exec("blender"));
     }
 
+    /// An entry whose in-folder `project.json` carries `folder_json` — the file a
+    /// fenced agent, a container tab or a `git pull` can rewrite.
+    fn entry_with_poisoned_folder(
+        dir: &std::path::Path,
+        folder_json: &str,
+        extra: serde_json::Value,
+    ) -> crate::schema::ProjectEntry {
+        let local_file = dir.join("project.json");
+        std::fs::write(&local_file, folder_json).unwrap();
+        crate::schema::ProjectEntry {
+            id: "p".into(),
+            name: "p".into(),
+            status: "active".into(),
+            position: 0,
+            local_file: local_file.to_string_lossy().into_owned(),
+            extra: serde_json::from_value(extra).unwrap(),
+        }
+    }
+    #[test]
+    fn project_apps_ignore_the_in_folder_project_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entry = entry_with_poisoned_folder(
+            tmp.path(),
+            r#"{"id":"p","name":"p","directory":"/x","default_apps":{".pdf":"/x/evil.sh"}}"#,
+            serde_json::json!({}),
+        );
+        assert!(project_apps_from_entry(&entry).is_empty());
+    }
+
+    #[test]
+    fn project_apps_come_from_the_registry_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entry = entry_with_poisoned_folder(
+            tmp.path(),
+            r#"{"id":"p","name":"p","directory":"/x","default_apps":{".pdf":"/x/evil.sh"}}"#,
+            serde_json::json!({"default_apps": {".pdf": "okular"}}),
+        );
+        assert_eq!(project_apps_from_entry(&entry)[".pdf"], "okular");
+    }
+
     #[test]
     fn project_apps_for_id_empty_without_id() {
         assert!(project_apps_for_id(None).is_empty());
@@ -2880,12 +3006,43 @@ mod tests {
     #[test]
     fn windows_script_command_picks_interpreter_by_extension() {
         // .ps1 → PowerShell; .bat / .cmd / everything else → cmd /C.
-        let ps1 = windows_script_command(r"C:\tmp\build.ps1");
+        let ps1 = windows_script_command(r"C:\tmp\build.ps1", None);
         assert_eq!(ps1.get_program().to_string_lossy(), "powershell");
 
         for script in [r"C:\tmp\build.bat", r"C:\tmp\run.cmd", r"C:\tmp\go.sh"] {
-            let cmd = windows_script_command(script);
+            let cmd = windows_script_command(script, Some("--x 1"));
             assert_eq!(cmd.get_program().to_string_lossy(), "cmd");
         }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn unix_script_command_runs_bare_without_args() {
+        let cmd = unix_script_command("/p/run.sh", Some("   "));
+        assert_eq!(cmd.get_program().to_string_lossy(), "bash");
+        let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(args, vec!["/p/run.sh"]);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn unix_script_command_hands_args_to_a_shell_with_the_path_as_dollar_zero() {
+        let cmd = unix_script_command("/p/it's.sh", Some(" --n 2 \"a b\" "));
+        let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(args, vec!["-c", "exec bash \"$0\" --n 2 \"a b\"", "/p/it's.sh"]);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn unix_script_command_passes_args_through_to_the_script() {
+        let dir = std::env::temp_dir().join(format!("eldrun-args-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("echo args.sh");
+        std::fs::write(&script, "printf '%s|' \"$@\"\n").unwrap();
+        let out = unix_script_command(script.to_str().unwrap(), Some("one \"two three\""))
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "one|two three|");
     }
 }

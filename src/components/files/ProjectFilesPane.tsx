@@ -4,26 +4,27 @@ import { FileTree } from "./FileTree";
 import { DownloadsSection } from "./DownloadsSection";
 import { GitHistory } from "./GitHistory";
 import { ProjectFilesSettingsDialog, useProjectFileFilters } from "./ProjectFilesSettings";
-import { remoteMemberTreeDir } from "../../lib/fileMove";
+import { remoteMemberTreeDir } from "../../lib/projects/fileMove";
 import { useProjectsStore } from "../../stores/projects";
-import { useRemoteStatusStore } from "../../stores/remoteStatus";
-import { useSyncStore } from "../../stores/sync";
-import { confirmSyncTransfer } from "../../stores/syncConfirm";
+import { useRemoteStatusStore } from "../../stores/remote/remoteStatus";
+import { useSyncStore } from "../../stores/remote/sync";
+import { confirmSyncTransfer } from "../../stores/remote/syncConfirm";
 import { useBigFoldersStore } from "../../stores/bigFolders";
-import { useRemoteMachinesStore } from "../../stores/remoteMachines";
+import { useRemoteMachinesStore } from "../../stores/remote/remoteMachines";
 import {
   autoFileSource,
   fileSourceSettled,
   useFileSourcePrefStore,
   viewerSourceKey,
   type FileSourceSide,
-} from "../../stores/fileSourcePref";
+} from "../../stores/remote/fileSourcePref";
 import { BOX_SCOPE_PREFIX, boxScopeId, useBoxesStore } from "../../stores/boxes";
 import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
 import type { ProjectBox, ProjectEntry } from "../../types";
 import type { SortKey } from "../../lib/viewers/fileUtils";
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
+import { FolderIcon } from "../common/icons/Icon";
 
 /**
  * THE project file view — the tree, the remote sync row and the Downloads
@@ -189,7 +190,7 @@ export function FileSourceSwitch({
 export interface BoxRoot {
   rootId: string;
   label: string;
-  icon: string;
+  icon: React.ReactNode;
   dir: string;
   localFile?: string;
   variant: "box" | "member";
@@ -225,7 +226,7 @@ export function useBoxRoots(scope: string): { activeBox: ProjectBox | null; boxR
       roots.push({
         rootId: p.id,
         label: p.name,
-        icon: "📁",
+        icon: <FolderIcon />,
         dir,
         localFile: p.local_file,
         variant: "member",
@@ -320,7 +321,7 @@ function BoxRootSection({
     projectDir: treeDir,
     remoteBlocked,
   });
-  const toolbarBtnStyle = { fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 } as const;
+  const toolbarBtnStyle = { marginLeft: 2 } as const;
   return (
     <div
       className={`file-root file-root--${variant}${collapsed ? " is-collapsed" : ""}${
@@ -384,7 +385,7 @@ function BoxRootSection({
             </button>
           ))}
           <button
-            className="toolbar-btn"
+            className="toolbar-btn toolbar-btn--sm"
             style={toolbarBtnStyle}
             onClick={() => {
               const sub = rel.replace(/^\/+|\/+$/g, "");
@@ -399,7 +400,7 @@ function BoxRootSection({
           </button>
           {localFile && project && (
             <button
-              className="toolbar-btn"
+              className="toolbar-btn toolbar-btn--sm"
               style={toolbarBtnStyle}
               onClick={() => setShowSettings(true)}
               title={t("projectFilesView.projectSettingsTitle")}
@@ -407,7 +408,7 @@ function BoxRootSection({
               ⚙
             </button>
           )}
-          <UntestedTag />
+          <UntestedTag id="projectFilesPane.1" />
           {remote && (
             <span style={{ marginLeft: "auto" }}>
               <FileSourceSwitch source={source} onChange={setSource} />
@@ -443,7 +444,6 @@ function BoxRootSection({
             key={`${rootId}|${treeDir}`}
             projectDir={treeDir}
             projectId={rootId}
-            localFile={localFile}
             sortKey={sortKey}
             descending={descending}
             onSortChange={onSortChange}
@@ -780,7 +780,7 @@ export function ProjectFilesPane({
             const autoAll = !!syncMap?.[""]?.auto;
             return (
               <button
-                className="toolbar-btn"
+                className="toolbar-btn toolbar-btn--sm"
                 style={{
                   fontSize: 10,
                   padding: "1px 6px",
@@ -808,15 +808,14 @@ export function ProjectFilesPane({
               is how it is re-opened (e.g. once the project is finally connected,
               so the host column can be filled in). */}
           <button
-            className="toolbar-btn"
-            style={{ fontSize: 10, padding: "1px 6px", height: 20 }}
+            className="toolbar-btn toolbar-btn--sm"
             onClick={() => useBigFoldersStore.getState().open(projectId)}
             title={t("projectFilesPane.bigFoldersTitle")}
           >
             {t("projectFilesPane.bigFolders")}
           </button>
-          <UntestedTag />
-          {/* Both directions ask first (`stores/syncConfirm`). This is the widest
+          <UntestedTag id="projectFilesPane.2" />
+          {/* Both directions ask first (`stores/remote/syncConfirm`). This is the widest
               transfer in the app — one click over the *whole* tree, in whichever
               direction the source switch happens to be on — so the one thing it
               must never be is ambiguous about which side it is about to
@@ -835,7 +834,7 @@ export function ProjectFilesPane({
             </span>
           )}
           <button
-            className="toolbar-btn"
+            className="toolbar-btn toolbar-btn--sm"
             style={{
               fontSize: 10,
               padding: "1px 6px",
@@ -953,7 +952,6 @@ export function ProjectFilesPane({
                 key={`${projectId ?? ""}|${treeDir}`}
                 projectDir={treeDir}
                 projectId={projectId}
-                localFile={project?.local_file}
                 sortKey={sortKey}
                 descending={descending}
                 onSortChange={compact ? undefined : onSortChange}

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTabScope } from "../tabs/tabScopeContext";
 import { invoke } from "@tauri-apps/api/core";
 import { Toggle } from "../common/Toggle";
 import { useWindowsStore } from "../../stores/windows";
@@ -10,8 +11,6 @@ import {
   type SortKey,
   STANDARD_PROJECT_FILES,
   disabledViewers,
-  fileIcon,
-  folderIcon,
   fmtModified,
   fmtSize,
   joinRel,
@@ -27,6 +26,7 @@ import { createDeckFile } from "../../lib/viewers/deck/create";
 import { UntestedTag } from "../common/UntestedTag";
 import { RenameDialog, containingFolderLabel } from "./RenameDialog";
 import { useDialogs } from "../common/PromptDialogs";
+import { FileIcon } from "../common/icons/FileIcon";
 import { useT, type TranslationKey } from "../../lib/i18n";
 
 type ProjectJson = Record<string, unknown>;
@@ -61,6 +61,8 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
   const projects = useProjectsStore((s) => s.projects);
   const viewerPrefs = useSettingsStore((s) => s.settings?.viewer_prefs);
   const disabledViewerSet = useMemo(() => disabledViewers(viewerPrefs), [viewerPrefs]);
+  // Root console: opened viewers are root's tabs (see tabScopeContext).
+  const tabScope = useTabScope();
   const [relPath, setRelPath] = useState("");
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -99,7 +101,7 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
       setShownPaths([]);
       return;
     }
-    invoke<ProjectJson>("load_project", { localFile })
+    invoke<ProjectJson>("get_project_panel_prefs", { localFile })
       .then((project) => {
         setHiddenEndings(readStringList(project, "panel_hidden_endings"));
         setHiddenPaths(readStringList(project, "panel_hidden_paths"));
@@ -201,6 +203,7 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
       origin: "middle_file_browser",
       external: ev?.shiftKey ?? false,
       disabled: disabledViewerSet,
+      scope: tabScope,
     });
   }
 
@@ -290,6 +293,7 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
           origin: "middle_file_browser",
           external: false,
           disabled: disabledViewerSet,
+          scope: tabScope,
         });
       },
     );
@@ -455,7 +459,7 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
         {deckEnabled && (
           <button onClick={() => void createDeck()}>
             {t("fileTree.newPresentation")}
-            <UntestedTag />
+            <UntestedTag id="fileBrowser.1" />
           </button>
         )}
         <button onClick={renameSelected} disabled={!canMutate}>{t("fileBrowser.rename")}</button>
@@ -505,7 +509,7 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
                   onDoubleClick={(e) => activate(entry, e)}
                   onContextMenu={(e) => showEntryContextMenu(e, entry)}
                 >
-                  <span><b>{entry.is_dir ? folderIcon() : fileIcon(entry.extension)}</b>{entry.name}</span>
+                  <span><b><FileIcon ext={entry.extension} isDir={entry.is_dir} /></b>{entry.name}</span>
                   <span>{entry.is_dir ? t("fileBrowser.folder") : entry.extension || entry.mime || t("fileBrowser.file")}</span>
                   <span>{entry.is_dir ? "" : fmtSize(entry.size)}</span>
                   <span>{fmtModified(entry.modified_secs)}</span>
@@ -522,7 +526,7 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
                   onDoubleClick={(e) => activate(entry, e)}
                   onContextMenu={(e) => showEntryContextMenu(e, entry)}
                 >
-                  <span>{entry.is_dir ? folderIcon() : fileIcon(entry.extension)}</span>
+                  <span><FileIcon ext={entry.extension} isDir={entry.is_dir} /></span>
                   <b>{entry.name}</b>
                 </button>
               );
@@ -591,7 +595,7 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
                         onClick={() => runContextAction(() => void createDeck())}
                       >
                         {t("fileTree.newPresentation")}
-                        <UntestedTag />
+                        <UntestedTag id="fileBrowser.2" />
                       </button>
                     </div>
                   )}

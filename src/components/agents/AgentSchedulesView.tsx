@@ -1,19 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AGENT_SORTS, DEFAULT_AGENT_SORT, isAgentSort, sortAgentTabs, type AgentSort } from "../../../shared/agentSort";
-import { relativeToNow, scheduleStatus, scheduleSummary, type ScheduledAgentPrompt } from "../../lib/agentSchedule";
-import { agentModelsFor, buildPreface, prefaceCommandsFor } from "../../lib/agentPrefaces";
+import { relativeToNow, scheduleStatus, scheduleSummary, type ScheduledAgentPrompt } from "../../lib/agents/agentSchedule";
+import { agentModelsFor, buildPreface, prefaceCommandsFor } from "../../lib/agents/agentPrefaces";
 import { useI18nStore, useT } from "../../lib/i18n";
-import { jumpToTab, openPromptChartTab } from "../../lib/tabJump";
+import { jumpToTab, openPromptChartTab } from "../../lib/shortcuts/tabJump";
 import { useActivityStore } from "../../stores/activity";
-import { continueKey, useAgentContinueStore } from "../../stores/agentContinue";
-import { useAgentModelsStore } from "../../stores/agentModels";
-import { queuePromptForTab } from "../../stores/agentPrompts";
-import { persistScopeLayout, scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agentSchedules";
+import { continueKey, useAgentContinueStore } from "../../stores/agents/agentContinue";
+import { agentTabModelTag, useAgentModelsStore } from "../../stores/agents/agentModels";
+import { queuePromptForTab } from "../../stores/agents/agentPrompts";
+import { persistScopeLayout, scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agents/agentSchedules";
 import { useSettingsStore } from "../../stores/settings";
 import { isResumableAgentTab, useTabsStore, type TabEntry } from "../../stores/tabs";
 import { Dropdown } from "../common/Dropdown";
 import { MarkdownPromptField } from "../common/MarkdownPromptField";
 import { AgentScheduleDialog } from "./AgentScheduleDialog";
+import { AgentScheduleProposal } from "./AgentScheduleProposal";
 import { isPromptTargetTab } from "./PromptChartTab";
 
 interface Props { scope: string; active: boolean }
@@ -235,6 +236,12 @@ export function AgentSchedulesView({ scope, active }: Props) {
         const summary = scheduleSummary(schedules, now);
         const queued = schedules.filter((schedule) => scheduleStatus(schedule, now).kind === "due");
         const state = stateOf(tab);
+        // The session's own status line, read off the pane, with the
+        // transcript's shortened id behind it (`agentTabModelTag`). Read here
+        // rather than held in the store: a `/model` typed into the session
+        // changes the screen and nothing else, and this row is re-rendered on
+        // the 30-second tick and on every edge the activity store reports.
+        const model = agentTabModelTag(scope, tab, modelByTab);
         const open = unfolded.includes(tab.key);
         const slot = drop?.anchor === tab.key ? ` drop-${drop.place}` : "";
         return <div
@@ -250,7 +257,7 @@ export function AgentSchedulesView({ scope, active }: Props) {
             <div className="agent-prompts-tab-head">
               {renaming === tab.key ? <input className="agent-prompts-rename" defaultValue={tab.label} autoFocus aria-label={t("tabBar.renameAriaLabel")} ref={(node) => node?.select()} onKeyDown={(event) => { if (event.key === "Enter") commitRename(tab.key, event.currentTarget.value); if (event.key === "Escape") setRenaming(null); }} onBlur={(event) => commitRename(tab.key, event.target.value)} /> : <><button className="agent-prompts-tab-name" type="button" title={t("agentPrompts.jumpTitle", { tab: tab.label })} onClick={() => jumpToTab(scope, tab.key)}><strong>{tab.label}</strong></button><button className="agent-composer-chip agent-prompts-rename-btn" type="button" title={t("common.rename")} aria-label={t("tabBar.renameAriaLabel")} onClick={() => setRenaming(tab.key)}>✎</button></>}
               <small>{tab.cmd}</small>
-              {modelByTab[`${scope}:${tab.key}`] && <small className="agent-prompts-model" data-testid="agent-model" title={t("agentPrompts.modelTagTitle")}>{modelByTab[`${scope}:${tab.key}`]}</small>}
+              {model && <small className="agent-prompts-model" data-testid="agent-model" title={t("agentPrompts.modelTagTitle")}>{model}</small>}
               {!isResumableAgentTab(tab) && <small className="danger-text">{t("agentPrompts.nonResumable")}</small>}
             </div>
             <small className="agent-prompts-tab-when" data-testid="agent-tab-times">{timesLabel(tab, state)}</small>
@@ -263,6 +270,10 @@ export function AgentSchedulesView({ scope, active }: Props) {
             <button className="agent-composer-chip" type="button" onClick={() => jumpToTab(scope, tab.key)}>↗ {t("agentPrompts.jump")}</button>
             <button className={`agent-composer-chip${open ? " active" : ""}`} type="button" aria-pressed={open} onClick={() => setUnfolded((keys) => keys.includes(tab.key) ? keys.filter((key) => key !== tab.key) : [...keys, tab.key])}>{t("agentPrompts.composerToggle")}</button>
             <button className={`agent-composer-chip${tab.autoContinue ? " active" : ""}`} type="button" aria-pressed={!!tab.autoContinue} data-testid="agent-continue-toggle" onClick={() => { setAutoContinue(scope, tab.key, !tab.autoContinue); void persistScopeLayout(scope); }}>⟳ {t("agentContinue.toggle")}</button>
+            {schedules.filter((s) => s.origin).map((schedule) => <div key={schedule.id}>
+              <small>{schedule.message}</small>
+              <AgentScheduleProposal projectId={scope} targetId={tab.scheduleTargetId!} schedule={schedule} />
+            </div>)}
             <button className="settings-btn sm" type="button" onClick={() => setDialog(tab)}>◷ {t("agentPrompts.schedulesButton")}</button>
           </div>
         </div>;

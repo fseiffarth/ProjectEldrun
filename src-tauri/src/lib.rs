@@ -553,18 +553,42 @@ fn install_webview_crash_reporter(app: &tauri::App) {
     }
 }
 
+/// How many times ONE window's renderer is reloaded after it dies before the
+/// reporter stops trying — a page that kills its renderer on load would
+/// otherwise loop forever.
+const MAX_RENDERER_RELOADS: u32 = 5;
+
+/// The reload budget, pure: `prior` is how many crashes this window had already
+/// counted. Kept **per window** by every caller. It was one process-wide static
+/// per OS, so a popout or a live browser page crash-looping five times used up
+/// the main window's reloads for the rest of the session.
+fn renderer_reload_allowed(prior: u32) -> bool {
+    prior < MAX_RENDERER_RELOADS
+}
+
+/// macOS's hook is app-wide (one builder callback for every window), so the
+/// per-window count there lives in a map keyed by webview label. Counts the
+/// crash and answers whether that window may reload.
+#[cfg(any(target_os = "macos", test))]
+fn bump_renderer_reloads(counts: &mut std::collections::BTreeMap<String, u32>, label: &str) -> bool {
+    let n = counts.entry(label.to_string()).or_insert(0);
+    let allowed = renderer_reload_allowed(*n);
+    *n = n.saturating_add(1);
+    allowed
+}
+
 /// Hook one window's renderer-crash signal. Safe to call on any window, at any
 /// point after it is built.
 #[cfg(target_os = "linux")]
 pub(crate) fn hook_webview_crash_reporter(window: &tauri::WebviewWindow) {
     use webkit2gtk::{WebProcessTerminationReason, WebViewExt};
 
-    static RELOADS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    const MAX_RELOADS: u32 = 5;
-
     let label = window.label().to_string();
     let _ = window.with_webview(move |webview| {
         let label = label.clone();
+        // This window's own budget: the hook runs once per window, so a counter
+        // made here and moved into the handler is per-window by construction.
+        let crashes = std::sync::atomic::AtomicU32::new(0);
         webview
             .inner()
             .connect_web_process_terminated(move |view, reason| {
@@ -574,10 +598,14 @@ pub(crate) fn hook_webview_crash_reporter(window: &tauri::WebviewWindow) {
                 );
                 crash_log_append(&msg);
                 eprintln!("{msg}");
+                // An intentional restart (the memory watchdog's) is not a crash
+                // and must not spend the budget — so this stays before the count.
                 if reason == WebProcessTerminationReason::TerminatedByApi {
                     return;
                 }
-                if RELOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < MAX_RELOADS {
+                if renderer_reload_allowed(
+                    crashes.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                ) {
                     view.reload();
                 }
             });
@@ -602,11 +630,10 @@ pub(crate) fn hook_webview_crash_reporter(window: &tauri::WebviewWindow) {
     };
     use webview2_com::ProcessFailedEventHandler;
 
-    static RELOADS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    const MAX_RELOADS: u32 = 5;
-
     let label = window.label().to_string();
     let _ = window.with_webview(move |webview| {
+        // This window's own reload budget (see `renderer_reload_allowed`).
+        let crashes = std::sync::atomic::AtomicU32::new(0);
         // SAFETY: COM calls on the live controller Tauri handed us, on the
         // thread `with_webview` runs on (the webview's own); the handler is
         // reference-counted by WebView2 for as long as it is registered.
@@ -637,7 +664,9 @@ pub(crate) fn hook_webview_crash_reporter(window: &tauri::WebviewWindow) {
                 crash_log_append(&msg);
                 eprintln!("{msg}");
                 if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED
-                    && RELOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < MAX_RELOADS
+                    && renderer_reload_allowed(
+                        crashes.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                    )
                 {
                     if let Some(view) = sender.as_ref() {
                         let _ = view.Reload();
@@ -671,8 +700,9 @@ pub(crate) fn hook_webview_crash_reporter(window: &tauri::WebviewWindow) {
 /// than beside the per-window Linux/Windows hooks.
 #[cfg(target_os = "macos")]
 fn with_webview_crash_reporter(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
-    static RELOADS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    const MAX_RELOADS: u32 = 5;
+    // Per-window budgets behind one app-wide hook: keyed by webview label.
+    static RELOADS: std::sync::Mutex<std::collections::BTreeMap<String, u32>> =
+        std::sync::Mutex::new(std::collections::BTreeMap::new());
     builder.on_web_content_process_terminate(|webview| {
         let msg = format!(
             "=== WEBVIEW '{}' TERMINATED {} (WebContent process died) ===",
@@ -681,7 +711,11 @@ fn with_webview_crash_reporter(builder: tauri::Builder<tauri::Wry>) -> tauri::Bu
         );
         crash_log_append(&msg);
         eprintln!("{msg}");
-        if RELOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < MAX_RELOADS {
+        let allowed = RELOADS
+            .lock()
+            .map(|mut counts| bump_renderer_reloads(&mut counts, webview.label()))
+            .unwrap_or(false);
+        if allowed {
             let _ = webview.reload();
         }
     })
@@ -691,6 +725,133 @@ fn with_webview_crash_reporter(builder: tauri::Builder<tauri::Wry>) -> tauri::Bu
 /// [`hook_webview_crash_reporter`]); nothing to add to the builder.
 #[cfg(not(target_os = "macos"))]
 fn with_webview_crash_reporter(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
+    builder
+}
+
+/// One item of the explicit macOS menu bar, as data — so the one decision that
+/// matters (what is in it, and what is not) is testable on Linux, where the
+/// builder below cannot even compile.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MacMenuItem {
+    About,
+    Services,
+    Hide,
+    HideOthers,
+    /// Eldrun's own "Quit Eldrun" (⌘Q, id [`MAC_MENU_QUIT_ID`]), not the
+    /// predefined `terminate:` one.
+    Quit,
+    Undo,
+    Redo,
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
+    Minimize,
+    Fullscreen,
+    Separator,
+}
+
+#[cfg(any(target_os = "macos", test))]
+const MAC_MENU_QUIT_ID: &str = "eldrun-quit";
+
+/// The macOS menu bar: (submenu title, items). Tauri would otherwise install
+/// its default menu, and that one is wrong for Eldrun in two ways:
+///
+/// - It binds **⌘W to Close Window**. The webview sees the key first, but from
+///   a terminal or editor the frontend used to let it pass, and the menu then
+///   closed the main window — i.e. quit the whole app — for a "close tab".
+///   So there is **no Close Window item anywhere** here, and ⌘W is the
+///   frontend's close-tab (`useKeyboard`).
+/// - Its Quit is `terminate:`, which skips the window's close handler (layout
+///   flush, tmux reap). The custom Quit closes the main window instead, so
+///   AppShell's `onCloseRequested` teardown runs, then `RunEvent::Exit`.
+///
+/// The **Edit submenu is mandatory**: its predefined Copy/Paste dispatch
+/// `copy:`/`paste:` to WKWebView, which is how ⌘C/⌘V reach xterm and every
+/// input. A frontend ⌘V handler instead would double-paste.
+#[cfg(any(target_os = "macos", test))]
+fn macos_menu_plan() -> Vec<(&'static str, Vec<MacMenuItem>)> {
+    use MacMenuItem::*;
+    vec![
+        (
+            "Eldrun",
+            vec![About, Separator, Services, Separator, Hide, HideOthers, Separator, Quit],
+        ),
+        ("Edit", vec![Undo, Redo, Separator, Cut, Copy, Paste, SelectAll]),
+        ("Window", vec![Minimize, Fullscreen]),
+    ]
+}
+
+#[cfg(target_os = "macos")]
+fn build_macos_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
+    type Item = Box<dyn IsMenuItem<tauri::Wry>>;
+
+    let mut submenus: Vec<Submenu<tauri::Wry>> = Vec::new();
+    for (title, entries) in macos_menu_plan() {
+        let mut items: Vec<Item> = Vec::new();
+        for entry in entries {
+            let item: Item = match entry {
+                MacMenuItem::About => Box::new(PredefinedMenuItem::about(app, None, None)?),
+                MacMenuItem::Services => Box::new(PredefinedMenuItem::services(app, None)?),
+                MacMenuItem::Hide => Box::new(PredefinedMenuItem::hide(app, None)?),
+                MacMenuItem::HideOthers => Box::new(PredefinedMenuItem::hide_others(app, None)?),
+                MacMenuItem::Quit => Box::new(MenuItem::with_id(
+                    app,
+                    MAC_MENU_QUIT_ID,
+                    "Quit Eldrun",
+                    true,
+                    Some("CmdOrCtrl+Q"),
+                )?),
+                MacMenuItem::Undo => Box::new(PredefinedMenuItem::undo(app, None)?),
+                MacMenuItem::Redo => Box::new(PredefinedMenuItem::redo(app, None)?),
+                MacMenuItem::Cut => Box::new(PredefinedMenuItem::cut(app, None)?),
+                MacMenuItem::Copy => Box::new(PredefinedMenuItem::copy(app, None)?),
+                MacMenuItem::Paste => Box::new(PredefinedMenuItem::paste(app, None)?),
+                MacMenuItem::SelectAll => Box::new(PredefinedMenuItem::select_all(app, None)?),
+                MacMenuItem::Minimize => Box::new(PredefinedMenuItem::minimize(app, None)?),
+                MacMenuItem::Fullscreen => Box::new(PredefinedMenuItem::fullscreen(app, None)?),
+                MacMenuItem::Separator => Box::new(PredefinedMenuItem::separator(app)?),
+            };
+            items.push(item);
+        }
+        let refs: Vec<&dyn IsMenuItem<tauri::Wry>> = items.iter().map(|i| i.as_ref()).collect();
+        submenus.push(Submenu::with_items(app, title, true, &refs)?);
+    }
+    let refs: Vec<&dyn IsMenuItem<tauri::Wry>> = submenus
+        .iter()
+        .map(|s| s as &dyn IsMenuItem<tauri::Wry>)
+        .collect();
+    Menu::with_items(app, &refs)
+}
+
+/// macOS: install the explicit menu bar (see [`macos_menu_plan`]) and route its
+/// custom Quit through the main window's close, so the frontend teardown runs.
+#[cfg(target_os = "macos")]
+fn with_macos_menu(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
+    builder
+        .menu(build_macos_menu)
+        .on_menu_event(|app, event| {
+            if event.id().0 != MAC_MENU_QUIT_ID {
+                return;
+            }
+            use tauri::Manager;
+            match app.get_webview_window("main") {
+                Some(main) => {
+                    if main.close().is_err() {
+                        app.exit(0);
+                    }
+                }
+                None => app.exit(0),
+            }
+        })
+}
+
+/// Linux and Windows get no menu bar: Tauri installs none there, and one would
+/// draw into Windows' undecorated overlay header.
+#[cfg(not(target_os = "macos"))]
+fn with_macos_menu(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     builder
 }
 
@@ -842,6 +1003,14 @@ pub fn run() {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
 
+    // WebKit's AT-SPI bridge aborts the web process on a stale text offset, and
+    // Eldrun's constantly rewriting UI produces those by the second whenever a
+    // screen reader is attached (2026-09-17: two renderer SIGABRTs, both taking
+    // the window's tabs with them). Opt out before the first webview is built;
+    // `ELDRUN_ENABLE_A11Y=1` keeps the bridge. See `services::webkit_a11y`.
+    #[cfg(target_os = "linux")]
+    services::webkit_a11y::install();
+
     // Before the logger appends this run's `=== STARTED … ===` line, so the cap
     // is enforced against what previous runs left rather than a moment later.
     services::state_gc::cap_crash_log();
@@ -907,7 +1076,7 @@ pub fn run() {
     let usage_watch = services::usage_stats::new_state();
     let mobile_desktop = commands::mobile_control::MobileDesktopState::default();
 
-    with_webview_crash_reporter(tauri::Builder::default())
+    with_macos_menu(with_webview_crash_reporter(tauri::Builder::default()))
         .manage(pty_registry)
         .manage(win_registry)
         .manage(workspace)
@@ -935,6 +1104,9 @@ pub fn run() {
             // than waiting for the next login. Off the main thread, bounded,
             // and a no-op when Mobile is off or the host is already up.
             commands::mobile_control::start_host_on_launch();
+            // The root console's MCP endpoint (`services::root_mcp`): loopback,
+            // token minted here per run, handed only to root-scope agent tabs.
+            commands::root_mcp::start(_app.handle().clone());
             // A SIGTERM/SIGINT (the dev launcher's Ctrl+C, a `kill`, a session
             // logout) used to end the process with none of the teardown the
             // window's × runs: PTY subtrees, local tmux sessions, the Mobile
@@ -943,7 +1115,11 @@ pub fn run() {
             // the same cleanup for every clean exit. `AppHandle::exit` from a
             // runtime thread goes through the event-loop proxy, which is what
             // makes the exit events deliverable at all. Unix only: Windows has
-            // no signals, and its console close is a hard kill either way.
+            // no such signals, and needs no bridge for the session-end case —
+            // tao's hidden top-level window receives `WM_ENDSESSION` at logoff
+            // or shutdown and ends the loop, which Tauri delivers as
+            // `RunEvent::Exit`, so the same teardown runs there already. (A
+            // console close only exists in the debug build's console.)
             #[cfg(unix)]
             {
                 let handle = _app.handle().clone();
@@ -1064,6 +1240,7 @@ pub fn run() {
             // Cheap: one small file per project, and it no-ops after the first
             // run. See `services::terminal_service::migrate_project_sessions_once`.
             services::terminal_service::migrate_project_sessions_once();
+            commands::projects::migrate_panel_prefs_once();
             // A crashed run's staged agent transcripts go home BEFORE the window
             // can restore a tab: the resume probe reads the host dir, and the
             // stage root is wiped here too, so no fenced spawn can race it.
@@ -1178,6 +1355,10 @@ pub fn run() {
             commands::mobile_control::mobile_tailscale_serve_status,
             commands::mobile_control::mobile_desktop_images,
             commands::mobile_control::mobile_attach_desktop_image,
+            commands::mobile_control::global_inbox_list,
+            commands::mobile_control::global_inbox_open,
+            commands::mobile_control::global_inbox_reveal,
+            commands::mobile_control::global_inbox_delete,
             commands::default_apps::get_default_apps,
             commands::default_apps::save_default_apps,
             // Projects
@@ -1187,6 +1368,8 @@ pub fn run() {
             commands::projects::save_project,
             commands::projects::set_project_description,
             commands::projects::set_project_name,
+            commands::projects::plan_project_dir_rename,
+            commands::projects::rename_project_dir,
             commands::projects::set_project_sandbox,
             commands::projects::set_project_sandbox_spec,
             commands::vm::vm_doctor,
@@ -1202,6 +1385,7 @@ pub fn run() {
             commands::vm::remote_download_to,
             commands::projects::set_project_remote_control,
             commands::projects::set_project_agent_fence,
+            commands::projects::set_project_schedule_mcp,
             commands::projects::set_project_mobile_access,
             commands::projects::sandbox_preflight,
             commands::python::python_interpreters,
@@ -1238,6 +1422,17 @@ pub fn run() {
             commands::projects::load_tab_session,
             commands::projects::adopt_folder_tab_layout,
             commands::projects::root_work_dir,
+            commands::root_mcp::root_mcp_status,
+            commands::root_mcp::root_mcp_security_status,
+            commands::root_mcp::root_mcp_session_access,
+            commands::root_mcp::root_mcp_session_revoke,
+            commands::root_mcp::root_mcp_review_list,
+            commands::root_mcp::root_mcp_review_apply,
+            commands::root_mcp::root_mcp_review_reject,
+            commands::root_mcp::root_mcp_review_apply_all,
+            commands::root_mcp::root_mcp_review_undo,
+            commands::root_mcp::root_mcp_import_list,
+            commands::root_mcp::root_mcp_import_remove,
             commands::projects::projects_root_dir,
             commands::projects::remote_mirror_root_dir,
             commands::projects::open_in_file_manager,
@@ -1257,11 +1452,17 @@ pub fn run() {
             commands::projects::detach_project_from_remote,
             commands::projects::get_time_today,
             commands::projects::archive_project,
+            commands::projects::forget_project,
             commands::projects::list_archived_projects,
             commands::projects::restore_archived_project,
             commands::projects::delete_archived_project,
             commands::projects::archived_mirror_unsynced,
             commands::projects::clear_archive,
+            // Full project export / import (docs/context/project_transfer.md)
+            commands::project_transfer::preview_project_export,
+            commands::project_transfer::export_project,
+            commands::project_transfer::inspect_project_export,
+            commands::project_transfer::import_project_export,
             // Project boxes (meta-project grouping)
             commands::boxes::get_boxes,
             commands::boxes::save_boxes,
@@ -1287,6 +1488,7 @@ pub fn run() {
             commands::calendar::create_calendar,
             commands::calendar::update_calendar,
             commands::calendar::delete_calendar,
+            commands::calendar::restore_calendar,
             commands::calendar::calendar_read_ics,
             commands::calendar::calendar_write_ics,
             commands::calendar::calendar_fetch_ics,
@@ -1295,7 +1497,7 @@ pub fn run() {
             // CalDAV accounts (docs/caldav_plan.md, Phases 1-3).
             // A sync is deliberately two commands: `caldav_fetch` speaks the
             // protocol and hands back iCalendar text unparsed, the frontend
-            // parses it with `src/lib/ics.ts` (the one parser that understands
+            // parses it with `src/lib/calendar/ics.ts` (the one parser that understands
             // folding/RRULE/VALARM), and `caldav_apply` reconciles the result
             // into calendar.json by `caldav_href` — a field-level merge, never
             // the delete-and-reinsert `calendar_replace_events` does, because
@@ -1335,10 +1537,12 @@ pub fn run() {
             commands::mail::mail_sync,
             commands::mail::mail_sync_cancel,
             commands::mail::mail_headers,
+            commands::mail::mail_replies,
             commands::mail::mail_body,
             commands::mail::mail_flag,
             commands::mail::mail_mark_folder_read,
             commands::mail::mail_move,
+            commands::mail::mail_purge,
             // Priority marks (Important / Urgent). The only mail commands that
             // touch no network at all: the lists span every account, and no IMAP
             // folder can hold two accounts' mail, so the mark is a local column
@@ -1363,6 +1567,8 @@ pub fn run() {
             commands::mail::mail_extract_task,
             commands::mail::mail_ai_classify_apply,
             commands::mail::mail_draft_save,
+            commands::mail::mail_agent_drafts,
+            commands::mail::mail_draft_discard,
             commands::mail::mail_draft_send,
             commands::mail::mail_attach_pick,
             commands::mail::mail_attach_remove,
@@ -1618,9 +1824,18 @@ pub fn run() {
             commands::apps::start_file_drag,
             commands::apps::cancel_file_drag,
             commands::apps::embed_capability,
+            commands::apps::get_project_default_apps,
+            commands::apps::set_project_default_apps,
+            commands::exec_trust::exec_trust_approve,
+            commands::projects::set_project_panel_prefs,
+            commands::projects::get_project_panel_prefs,
             commands::apps::list_installed_apps,
+            commands::ide::detect_project_ides,
+            commands::ide::open_project_in_ide,
+            commands::ide::set_ide_launcher,
             // Workspace / network
             commands::workspace::workspace_info,
+            commands::workspace::workspace_capabilities,
             commands::workspace::workspace_switch,
             commands::workspace::desktop_owns_super_key,
             commands::workspace::show_window,
@@ -1631,8 +1846,10 @@ pub fn run() {
             commands::subwindow::detach_subwindow,
             commands::subwindow::attach_subwindow,
             commands::subwindow::detached_window_frontmost,
+            commands::subwindow::desktop_coordinates_supported,
             commands::subwindow::snap_detached_window,
             commands::subwindow::sync_detached_scope,
+            commands::subwindow::detached_window_is_parked,
             // The deck presenter's audience window (M#90)
             commands::presenter::open_presenter_window,
             commands::presenter::close_presenter_window,
@@ -1655,6 +1872,13 @@ pub fn run() {
             commands::git::git_generate_commit_message,
             commands::git::git_commit,
             commands::git::git_push,
+            commands::git_pull::git_fetch,
+            commands::git_pull::git_pull_preview,
+            commands::git_pull::git_pull_apply,
+            commands::git_pull::git_merge_state,
+            commands::git_pull::git_merge_abort,
+            commands::git_pull::git_merge_commit,
+            commands::git_pull::git_merge_sides,
             commands::git::git_clone,
             commands::git::git_remote_visibility,
             commands::git::git_file_statuses,
@@ -1710,6 +1934,9 @@ pub fn run() {
             commands::crash::report_frontend_error,
             // Debug diagnostics
             commands::debug::debug_app_resource_usage,
+            commands::debug::app_build_commit,
+            commands::debug::dev_build_status,
+            commands::debug::dev_build_relaunch,
             commands::debug::webview_rss_kib,
             commands::debug::webview_renderer_rss,
             commands::debug::webview_renderer_claim,
@@ -1730,7 +1957,7 @@ pub fn run() {
             commands::ollama::install_vibe,
             commands::ollama::vibe_install_strategy,
             commands::agents::agent_is_installed,
-            commands::agents::npm_is_installed,
+            commands::agents::node_runtime_status,
             commands::agents::probe_binaries,
             commands::agents::list_agents,
             commands::agents::codex_hook_status,
@@ -1770,8 +1997,23 @@ pub fn run() {
             commands::ollama::search_ollama_registry,
             // Local code/text autocomplete (opt-in, local-only)
             commands::ollama::complete_text,
-            // Local grammar/spelling check (opt-in, local-only)
-            commands::ollama::check_grammar,
+            commands::ollama::prepare_text_completion,
+            commands::ollama::cancel_text_completion,
+            commands::copilot::copilot_setup,
+            commands::copilot::copilot_project_policy,
+            commands::copilot::copilot_set_project_policy,
+            commands::copilot::copilot_complete,
+            commands::copilot::copilot_prepare,
+            commands::copilot::copilot_cancel,
+            commands::copilot::copilot_close_editor,
+            commands::copilot::copilot_shown,
+            commands::copilot::copilot_accepted,
+            commands::copilot::copilot_account,
+            commands::copilot::copilot_message_action,
+            commands::copilot::copilot_sign_in,
+            commands::copilot::copilot_finish_sign_in,
+            commands::copilot::copilot_sign_out,
+            commands::copilot::copilot_stop,
             // Dictionary spell check (Hunspell dictionaries, local-only)
             commands::spell::spell_check,
             commands::spell::spell_languages,
@@ -1899,6 +2141,14 @@ pub fn run() {
                 // is deliberately left alone: Ollama is a machine service as
                 // often as it is an Eldrun detail.
                 commands::ollama::shutdown_owned_server();
+                // The fenced Copilot language servers (one per consented project).
+                tauri::async_runtime::block_on(commands::copilot::stop_all_for_exit());
+                // Let the machine sleep again if a talk was on: the presenter's
+                // own unmount never runs on an exit the frontend didn't drive.
+                // Idempotent, and non-blocking on every OS (Windows only drops
+                // the parked thread's sender — no join inside the shutdown
+                // budget).
+                let _ = commands::presenter::presenter_release_sleep();
                 // Tear down any OpenVPN tunnels brought up for VPN-gated
                 // remote projects so no privileged tunnel outlives the app.
                 // Best-effort: a tunnel the close-path already asked about and was
@@ -1948,6 +2198,76 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// tauri-utils merges `tauri.macos.conf.json` over the base config with RFC
+    /// 7396 merge-patch, which REPLACES arrays: a `windows` array there drops
+    /// every key of the base window it does not repeat. `visible: false` is the
+    /// one that matters — the window must stay hidden until
+    /// `restore_main_window` has placed it.
+    #[test]
+    fn every_window_config_starts_hidden() {
+        for (name, text) in [
+            ("tauri.conf.json", include_str!("../tauri.conf.json")),
+            ("tauri.macos.conf.json", include_str!("../tauri.macos.conf.json")),
+        ] {
+            let conf: serde_json::Value = serde_json::from_str(text).unwrap();
+            let windows = conf["app"]["windows"].as_array().unwrap();
+            assert!(!windows.is_empty(), "{name}");
+            for w in windows {
+                assert_eq!(w["visible"], serde_json::Value::Bool(false), "{name}: {w}");
+            }
+        }
+    }
+
+    #[test]
+    fn macos_menu_never_offers_close_window_and_keeps_edit() {
+        let plan = macos_menu_plan();
+        let titles: Vec<&str> = plan.iter().map(|(t, _)| *t).collect();
+        assert_eq!(titles, ["Eldrun", "Edit", "Window"]);
+        // No item of any submenu is a window close (⌘W is the frontend's).
+        for (_, items) in &plan {
+            for item in items {
+                assert!(!format!("{item:?}").contains("Close"), "{item:?}");
+            }
+        }
+        // Edit carries the four ⌘-editing items xterm and inputs rely on.
+        let edit = &plan[1].1;
+        for needed in [MacMenuItem::Copy, MacMenuItem::Paste, MacMenuItem::Cut, MacMenuItem::SelectAll] {
+            assert!(edit.contains(&needed), "{needed:?}");
+        }
+        // Exactly one Quit, in the app menu, and it is Eldrun's own.
+        let quits: usize = plan
+            .iter()
+            .map(|(_, items)| items.iter().filter(|i| **i == MacMenuItem::Quit).count())
+            .sum();
+        assert_eq!(quits, 1);
+        assert_eq!(plan[0].1.last(), Some(&MacMenuItem::Quit));
+        assert!(!MAC_MENU_QUIT_ID.is_empty());
+        assert!(plan[2].1.contains(&MacMenuItem::Minimize));
+        assert!(plan[2].1.contains(&MacMenuItem::Fullscreen));
+    }
+
+    #[test]
+    fn renderer_reload_budget_allows_five() {
+        assert!((0..MAX_RENDERER_RELOADS).all(renderer_reload_allowed));
+        assert!(!renderer_reload_allowed(MAX_RENDERER_RELOADS));
+        assert!(!renderer_reload_allowed(u32::MAX));
+    }
+
+    #[test]
+    fn renderer_reload_budgets_are_per_window() {
+        let mut counts = std::collections::BTreeMap::new();
+        // A popout crash-looping spends only its own budget …
+        for _ in 0..MAX_RENDERER_RELOADS {
+            assert!(bump_renderer_reloads(&mut counts, "detached-p-g1"));
+        }
+        assert!(!bump_renderer_reloads(&mut counts, "detached-p-g1"));
+        // … and the main window still gets all of its reloads.
+        for _ in 0..MAX_RENDERER_RELOADS {
+            assert!(bump_renderer_reloads(&mut counts, "main"));
+        }
+        assert!(!bump_renderer_reloads(&mut counts, "main"));
+    }
 
     #[test]
     fn iso_now_uses_z_suffix() {

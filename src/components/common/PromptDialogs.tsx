@@ -1,7 +1,9 @@
-import { type ReactNode, useCallback, useState } from "react";
+import { useModalFocus } from "../../hooks/useModalFocus";
+import { type ReactNode, useCallback, useId, useLayoutEffect, useState } from "react";
 import { UntestedTag } from "./UntestedTag";
 import { createPortal } from "react-dom";
 import { useT } from "../../lib/i18n";
+import type { UntestedId } from "../../lib/untested";
 
 /**
  * The three shapes every in-app question takes — ask for a name, ask yes/no,
@@ -76,8 +78,9 @@ export type ChoiceSpec = {
   title: ReactNode;
   body?: ReactNode;
   options: ChoiceOption[];
-  /** The feature asking has not been live-verified yet. */
-  untested?: boolean;
+  /** The asking feature's row in the untested register (`lib/untested`):
+   *  set → the title wears the pill until that row is stamped tested. */
+  untested?: UntestedId;
 };
 
 /** A `window.alert` replacement. */
@@ -88,23 +91,34 @@ export type MessageSpec = {
   error?: boolean;
 };
 
-/** The dialog frame every one of these wears — portaled, backdrop-dismissed. */
-function DialogShell({
+/** The dialog frame every one of these wears — portaled, backdrop-dismissed.
+ *  Exported for a question too specific for the helpers below. */
+export function DialogShell({
   onDismiss,
   children,
 }: {
   onDismiss: () => void;
   children: ReactNode;
 }) {
+  const ref = useModalFocus(onDismiss);
+  const titleId = useId();
+  useLayoutEffect(() => {
+    const heading = ref.current?.querySelector("h2");
+    if (heading) heading.id = titleId;
+  }, [ref, titleId]);
   return createPortal(
-    <div className="modal-backdrop" onMouseDown={onDismiss}>
+    <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onDismiss(); }}>
       <div
+        ref={ref}
+        tabIndex={-1}
+        aria-labelledby={titleId}
         className="file-delete-dialog"
         role="dialog"
         aria-modal="true"
         onMouseDown={(e) => e.stopPropagation()}
       >
         {children}
+        <UntestedTag id="desktop.modalFocus" />
       </div>
     </div>,
     document.body,
@@ -133,6 +147,7 @@ export function TextPromptDialog({
 }) {
   const t = useT();
   const [value, setValue] = useState(initial);
+  const errorId = useId();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -164,6 +179,8 @@ export function TextPromptDialog({
         className="file-paste-name"
         autoFocus
         aria-label={label}
+        aria-invalid={!!error}
+        aria-describedby={error ? errorId : undefined}
         value={value}
         disabled={busy}
         onChange={(e) => {
@@ -172,14 +189,13 @@ export function TextPromptDialog({
         }}
         onKeyDown={(e) => {
           if (e.key === "Enter") void submit();
-          if (e.key === "Escape") onCancel();
         }}
         onFocus={(e) => {
           const dot = selectStem ? initial.lastIndexOf(".") : -1;
           e.currentTarget.setSelectionRange(0, dot > 0 ? dot : initial.length);
         }}
       />
-      {error && <div className="file-delete-path file-delete-error">{error}</div>}
+      {error && <div id={errorId} role="alert" className="file-delete-path file-delete-error">{error}</div>}
       <div className="file-delete-actions">
         <button type="button" onClick={onCancel} disabled={busy}>
           {t("common.cancel")}
@@ -206,13 +222,13 @@ export function ConfirmDialog({
       <h2>{title}</h2>
       <p className="file-delete-body">{body}</p>
       <div className="file-delete-actions">
-        <button type="button" onClick={onCancel}>
+        <button type="button" autoFocus={danger} onClick={onCancel}>
           {t("common.cancel")}
         </button>
         <button
           type="button"
           className={danger ? "danger" : undefined}
-          autoFocus
+          autoFocus={!danger}
           onClick={onConfirm}
         >
           {confirmLabel ?? t("common.ok")}
@@ -252,7 +268,7 @@ export function ChoiceDialog({
   title,
   body,
   options,
-  untested = false,
+  untested,
   onCancel,
   onPick,
 }: ChoiceSpec & { onCancel: () => void; onPick: (id: string) => void }) {
@@ -262,7 +278,7 @@ export function ChoiceDialog({
     <DialogShell onDismiss={onCancel}>
       <h2>
         {title}
-        {untested && <UntestedTag />}
+        {untested && <UntestedTag id={untested} />}
       </h2>
       {body != null && <p className="file-delete-body">{body}</p>}
       <div className="file-delete-choices" role="listbox" aria-label={typeof title === "string" ? title : undefined}>
@@ -276,9 +292,6 @@ export function ChoiceDialog({
             title={o.hint}
             autoFocus={o.id === focusId}
             onClick={() => onPick(o.id)}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") onCancel();
-            }}
           >
             <span className="file-delete-choice-label">{o.label}</span>
             {o.detail != null && <span className="file-delete-choice-detail">{o.detail}</span>}

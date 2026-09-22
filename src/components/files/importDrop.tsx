@@ -291,7 +291,7 @@ export function useImportDrop({ projectDir, enabled, destRel, onImported }: Opti
               own, expecting a `.dialog-scroll` child this dialog never had. */}
           <div className="file-delete-dialog" onMouseDown={(e) => e.stopPropagation()}>
             <h2>
-              {t("importDrop.title")} <UntestedTag />
+              {t("importDrop.title")} <UntestedTag id="importDrop.title" />
             </h2>
             <p>
               <strong>{conflict.name}</strong> {t("importDrop.existsIn")}{" "}

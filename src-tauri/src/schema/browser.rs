@@ -207,3 +207,164 @@ pub struct BrowserCapabilities {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub platform_note: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn json<T: Serialize>(value: &T) -> serde_json::Value {
+        serde_json::to_value(value).expect("serialize")
+    }
+
+    /// The frontend's typed wrappers switch on these lowercase words; a
+    /// renamed variant would fall through to "unknown" silently.
+    #[test]
+    fn tls_state_is_lowercase_and_defaults_to_unknown() {
+        assert_eq!(json(&TlsState::Secure), "secure");
+        assert_eq!(json(&TlsState::Insecure), "insecure");
+        assert_eq!(json(&TlsState::Unknown), "unknown");
+        assert_eq!(TlsState::default(), TlsState::Unknown);
+        assert_eq!(
+            serde_json::from_str::<TlsState>("\"secure\"").unwrap(),
+            TlsState::Secure
+        );
+        assert!(serde_json::from_str::<TlsState>("\"Secure\"").is_err());
+        assert_eq!(SecurityState::default().tls, TlsState::Unknown);
+        assert!(!SecurityState::default().vpn_active);
+    }
+
+    /// The three-into-two mapping from the type doc: allow has no `reason`
+    /// key at all, confirm is `allowed` *with* a reason, block is neither.
+    #[test]
+    fn url_verdict_encodes_allow_confirm_block_as_documented() {
+        let base = UrlVerdict {
+            allowed: true,
+            reason: None,
+            display_url: "https://example.com/".into(),
+            punycode_warning: None,
+            scheme: "https".into(),
+            is_loopback: false,
+        };
+        let allow = json(&base);
+        assert_eq!(allow["allowed"], true);
+        assert!(allow.get("reason").is_none(), "allow carries no reason key");
+        assert!(allow.get("punycode_warning").is_none());
+
+        let confirm = json(&UrlVerdict {
+            reason: Some("loopback".into()),
+            is_loopback: true,
+            ..base.clone()
+        });
+        assert_eq!(confirm["allowed"], true);
+        assert_eq!(confirm["reason"], "loopback");
+
+        let block = json(&UrlVerdict {
+            allowed: false,
+            reason: Some("scheme:file".into()),
+            ..base
+        });
+        assert_eq!(block["allowed"], false);
+        assert_eq!(block["reason"], "scheme:file");
+    }
+
+    /// The punycode warning is present exactly when the ASCII host differs —
+    /// absent (not null) otherwise, so the chrome's "render both" rule keys on
+    /// presence.
+    #[test]
+    fn punycode_warning_is_absent_not_null() {
+        let plain = SecurityState {
+            tls: TlsState::Secure,
+            scheme: "https".into(),
+            host_display: "example.com".into(),
+            punycode_warning: None,
+            vpn_active: false,
+        };
+        assert!(json(&plain).get("punycode_warning").is_none());
+        let homograph = SecurityState {
+            host_display: "аpple.com".into(),
+            punycode_warning: Some("xn--pple-43d.com".into()),
+            ..plain
+        };
+        let out = json(&homograph);
+        assert_eq!(out["punycode_warning"], "xn--pple-43d.com");
+        let back: SecurityState = serde_json::from_value(out).unwrap();
+        assert_eq!(back, homograph);
+    }
+
+    /// The module's one rule: no type here carries a path. A download outcome
+    /// is a flag plus a display name, and its default is "nothing saved".
+    #[test]
+    fn download_types_carry_a_display_name_and_never_a_path() {
+        let outcome = DownloadOutcome::default();
+        assert!(!outcome.saved);
+        assert_eq!(json(&outcome), serde_json::json!({ "saved": false }));
+
+        let request = DownloadRequest {
+            download_id: "d1".into(),
+            file_name: "setup.exe".into(),
+            mime_type: None,
+            size_bytes: Some(1024),
+            sniff_mismatch: true,
+        };
+        let out = json(&request);
+        let keys: Vec<&str> = out.as_object().unwrap().keys().map(String::as_str).collect();
+        assert!(
+            keys.iter().all(|k| !k.contains("path") && !k.contains("dir")),
+            "a path-shaped key leaked: {keys:?}"
+        );
+        assert!(out.get("mime_type").is_none());
+        assert_eq!(out["size_bytes"], 1024);
+        assert_eq!(out["sniff_mismatch"], true);
+    }
+
+    /// `browser:blocked` names the live window it happened in when it has one,
+    /// and omits the key — rather than writing null — when it does not.
+    #[test]
+    fn blocked_navigation_window_label_is_optional_on_the_wire() {
+        let attributed = BlockedNavigation {
+            display_url: "http://192.0.2.1/".into(),
+            reason: "private-network".into(),
+            window_label: Some("browser-3".into()),
+        };
+        assert_eq!(json(&attributed)["window_label"], "browser-3");
+        let background = BlockedNavigation {
+            window_label: None,
+            ..attributed
+        };
+        assert!(json(&background).get("window_label").is_none());
+        let back: BlockedNavigation =
+            serde_json::from_str(r#"{"display_url":"u","reason":"no-host"}"#).unwrap();
+        assert!(back.window_label.is_none());
+    }
+
+    /// A reader page round-trips with its nested security readout intact and
+    /// keeps `requested_url` and `final_url` as distinct fields.
+    #[test]
+    fn reader_page_round_trips_with_both_urls() {
+        let page = ReaderPage {
+            requested_url: "http://example.com".into(),
+            final_url: "https://example.com/".into(),
+            display_url: "https://example.com/".into(),
+            title: "Example".into(),
+            html: "<p>hi</p>".into(),
+            security: SecurityState {
+                tls: TlsState::Secure,
+                scheme: "https".into(),
+                host_display: "example.com".into(),
+                punycode_warning: None,
+                vpn_active: true,
+            },
+            truncated: false,
+            blocked_remote_assets: 2,
+        };
+        let back: ReaderPage = serde_json::from_value(json(&page)).unwrap();
+        assert_eq!(back, page);
+        assert_ne!(back.requested_url, back.final_url);
+        let caps = BrowserCapabilities {
+            live_windows_supported: false,
+            reader_supported: true,
+            platform_note: None,
+        };
+        assert!(json(&caps).get("platform_note").is_none());
+    }
+}

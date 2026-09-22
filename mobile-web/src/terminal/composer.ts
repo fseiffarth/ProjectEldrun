@@ -5,5 +5,6 @@ export {
   PASTE_END,
   PASTE_START,
   agentInputWrites,
+  bracketsAgentMessage,
   sanitizeAgentMessage,
 } from "../../../shared/agentComposer";

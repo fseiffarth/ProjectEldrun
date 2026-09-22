@@ -4,10 +4,10 @@ import { Dropdown } from "../common/Dropdown";
 import { isoWeekKeys, summarizeBuckets } from "../../lib/usageRollup";
 import { formatBytes } from "../../lib/formatBytes";
 import { useProjectsStore } from "../../stores/projects";
-import { useRemoteStatusStore } from "../../stores/remoteStatus";
+import { useRemoteStatusStore } from "../../stores/remote/remoteStatus";
 import { useSettingsStore } from "../../stores/settings";
-import { isCarefulHost, primaryTargetOf } from "../../lib/carefulHost";
-import { isHpcHost } from "../../lib/hpcHost";
+import { isCarefulHost, primaryTargetOf } from "../../lib/remote/carefulHost";
+import { isHpcHost } from "../../lib/remote/hpc/hpcHost";
 import { useT } from "../../lib/i18n";
 
 export interface NetworkInterfaceSnapshot {
@@ -59,7 +59,11 @@ export interface TrafficPoint {
 }
 
 interface Props {
-  projectId: string;
+  /** Whose network this is, or `null` in the ROOT scope — the machine Eldrun
+   *  runs on, with no project behind it. A root tab therefore has no remote
+   *  half at all: no host to be careful of, no SSH link, no per-project usage
+   *  totals — exactly the shape a LOCAL project already renders. */
+  projectId: string | null;
   visible: boolean;
   onConnect?: () => void;
 }
@@ -338,7 +342,7 @@ export function NetworkTrafficPane({ projectId, visible, onConnect }: Props) {
   // and the snapshot is a `/proc` read of this machine.
   const project = useProjectsStore((s) => s.projects.find((p) => p.id === projectId));
   const settings = useSettingsStore((s) => s.settings);
-  const sshState = useRemoteStatusStore((s) => s.byProject[projectId]?.ssh);
+  const sshState = useRemoteStatusStore((s) => (projectId ? s.byProject[projectId]?.ssh : undefined));
   const isRemoteProject = !!project?.remote;
   const sshDown = isRemoteProject && sshState !== "connected";
   // The HPC tag outranks the Light/Detailed answer, exactly as `SystemMonitorPane`
@@ -360,9 +364,16 @@ export function NetworkTrafficPane({ projectId, visible, onConnect }: Props) {
     setSessionTx(0);
   }, [view, selectedInterface, projectId]);
 
+  // What the backend commands are asked about. A root tab names no project, and
+  // an id no project carries is exactly what `remote::remote_target_for` finds
+  // no host for — so the snapshot is the `/proc` read of this machine, the same
+  // answer a local project gets. Root never reaches the link view (its buttons
+  // render only for a remote project), so this id is only ever the host view's.
+  const snapshotId = projectId ?? "";
+
   useEffect(() => {
     // A disconnected remote project samples nothing at all — see `sshDown`.
-    if (!visible || !projectId || sshDown) return;
+    if (!visible || sshDown) return;
     // A hidden tab does not sample. Start with a fresh baseline when it becomes
     // visible again so bytes transferred while hidden are not folded into the
     // first visible rate/session-total point.
@@ -378,7 +389,7 @@ export function NetworkTrafficPane({ projectId, visible, onConnect }: Props) {
         let counterSample: CounterSample | null = null;
         if (view === "link") {
           const result = await invoke<SshLinkSnapshot>("network_ssh_link_snapshot", {
-            projectId,
+            projectId: snapshotId,
           });
           if (cancelled) return;
           setLink(result);
@@ -396,7 +407,7 @@ export function NetworkTrafficPane({ projectId, visible, onConnect }: Props) {
           const includeConnections = tick % CONNECTION_POLL_EVERY === 0;
           tick += 1;
           const result = await invoke<NetworkHostSnapshot>("network_host_snapshot", {
-            projectId,
+            projectId: snapshotId,
             includeConnections,
           });
           if (cancelled) return;
@@ -439,11 +450,14 @@ export function NetworkTrafficPane({ projectId, visible, onConnect }: Props) {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [projectId, selectedInterface, view, visible, sshDown, pollMs]);
+  }, [snapshotId, selectedInterface, view, visible, sshDown, pollMs]);
 
   // Persisted per-project SSH-link usage (accrued in the background by
   // `services::net_usage`), refreshed slowly since it changes at most every
-  // ~30 s. Independent of the 1 s live poll and of the host/link view.
+  // ~30 s. Independent of the 1 s live poll and of the host/link view. Root asks
+  // nothing: it has no link to have moved bytes over, and the empty id this
+  // command takes means *every* project's totals (the recap's reading), which is
+  // not what a machine-wide tab would be showing.
   useEffect(() => {
     if (!visible || !projectId) return;
     let cancelled = false;

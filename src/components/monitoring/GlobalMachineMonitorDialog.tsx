@@ -1,5 +1,5 @@
 import { createPortal } from "react-dom";
-import { useGlobalMachineMonitorStore } from "../../stores/globalMachineMonitor";
+import { useGlobalMachineMonitorStore } from "../../stores/remote/globalMachineMonitor";
 import { SystemMonitorPane } from "./SystemMonitorPane";
 import { useT } from "../../lib/i18n";
 

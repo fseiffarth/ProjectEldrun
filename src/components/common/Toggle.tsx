@@ -14,6 +14,7 @@ export function Toggle({
   size,
   title,
   "aria-label": ariaLabel,
+  "aria-describedby": ariaDescribedBy,
 }: {
   checked: boolean;
   onChange: ChangeEventHandler<HTMLInputElement>;
@@ -21,6 +22,7 @@ export function Toggle({
   size?: "sm";
   title?: string;
   "aria-label"?: string;
+  "aria-describedby"?: string;
 }) {
   return (
     <span className={`eld-switch${size === "sm" ? " eld-switch-sm" : ""}`}>
@@ -31,6 +33,7 @@ export function Toggle({
         onChange={onChange}
         title={title}
         aria-label={ariaLabel}
+        aria-describedby={ariaDescribedBy}
       />
       <span className="eld-switch-track" aria-hidden="true" />
     </span>

@@ -10,7 +10,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { App } from "./App";
 import { installCrashReporter } from "./crashReporter";
-import { installCustomScrollbars } from "./lib/customScrollbar";
+import { installCustomScrollbars } from "./lib/theme/customScrollbar";
 import "@fontsource-variable/inter";
 import "@fontsource-variable/jetbrains-mono";
 import "./styles/index.css";

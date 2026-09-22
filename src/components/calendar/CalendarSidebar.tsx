@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Calendar } from "../../types";
-import { calendarSyncStatus, useCalDavStore } from "../../stores/caldav";
-import { addMonths, datePart, monthGrid, monthName, todayStr, weekdayLabel } from "../../lib/calendarTime";
+import { calendarSyncStatus, useCalDavStore } from "../../stores/calendar/caldav";
+import { addMonths, datePart, monthGrid, monthName, todayStr, weekdayLabel } from "../../lib/calendar/calendarTime";
 import { useI18nStore, useT } from "../../lib/i18n";
+import { BellIcon } from "../common/BellIcon";
+import { UntestedTag } from "../common/UntestedTag";
+import { LinkIcon, LockIcon } from "../common/icons/Icon";
 
 /** The palette a new calendar picks from. */
 const CALENDAR_COLORS = [
@@ -224,19 +227,31 @@ export function CalendarSidebar({
       <div className="cal-list">
         <div className="cal-list-head">
           <span className="cal-list-title">{t("calendarSidebar.calendarsTitle")}</span>
-          <button className="cal-link-btn" onClick={() => setAdding((a) => !a)}>
-            {t("calendarSidebar.newButton")}
-          </button>
-          <button className="cal-link-btn" onClick={() => setSubscribing((s) => !s)}>
-            {t("calendarSidebar.subscribeButton")}
-          </button>
-          <button
-            className="cal-link-btn"
-            onClick={onOpenCaldav}
-            title={t("caldav.manageAccountsTitle")}
-          >
-            {t("caldav.accountsButton")}
-          </button>
+          {/* Title and actions sit on separate rows: three actions beside the
+              title overflowed the 190px sidebar and clipped the last one. */}
+          <div className="cal-list-actions">
+            <button
+              className={`cal-chip${adding ? " cal-chip-on" : ""}`}
+              aria-pressed={adding}
+              onClick={() => setAdding((a) => !a)}
+            >
+              {t("calendarSidebar.newButton")}
+            </button>
+            <button
+              className={`cal-chip${subscribing ? " cal-chip-on" : ""}`}
+              aria-pressed={subscribing}
+              onClick={() => setSubscribing((s) => !s)}
+            >
+              <LinkIcon /> {t("calendarSidebar.subscribeButton")}
+            </button>
+            <button
+              className="cal-chip"
+              onClick={onOpenCaldav}
+              title={t("caldav.manageAccountsTitle")}
+            >
+              <LockIcon /> {t("caldav.accountsButton")}
+            </button>
+          </div>
         </div>
 
         {adding ? (
@@ -309,16 +324,25 @@ export function CalendarSidebar({
               title={cal.visible ? t("calendarSidebar.hideCalendarTitle") : t("calendarSidebar.showCalendarTitle")}
             />
 
-            <input
-              type="color"
+            {/* The swatch is painted by the label's own background, not by the
+                native colour well: in the live window the well stayed white
+                while the calendar took the picked colour everywhere else. The
+                input still sits on top, invisible, as the click target. */}
+            <label
               className="cal-color-dot"
-              // `<input type="color">` takes only `#rrggbb`; anything else (a
-              // CalDAV `#rrggbbaa` that slipped through, an empty string) makes
-              // it render black, which is a colour the calendar does not have.
-              value={swatchColor(draftColor[cal.id] ?? cal.color)}
+              style={{ background: swatchColor(draftColor[cal.id] ?? cal.color) }}
               title={t("calendarSidebar.colorTitle")}
-              onChange={(e) => pickColor(cal, e.target.value)}
-            />
+            >
+              <input
+                type="color"
+                // `<input type="color">` takes only `#rrggbb`; anything else (a
+                // CalDAV `#rrggbbaa` that slipped through, an empty string) makes
+                // it render black, which is a colour the calendar does not have.
+                value={swatchColor(draftColor[cal.id] ?? cal.color)}
+                aria-label={t("calendarSidebar.colorTitle")}
+                onChange={(e) => pickColor(cal, e.target.value)}
+              />
+            </label>
 
             {editing === cal.id ? (
               <input
@@ -345,6 +369,18 @@ export function CalendarSidebar({
                 {cal.name}
               </span>
             )}
+
+            {/* Reminders on/off for this calendar. Shown on hover while on, and
+                always while off; the header's own bell, struck through when off — a mute nobody can see is a missed meeting. */}
+            <button
+              className={`cal-link-btn cal-list-refresh cal-list-alerts${cal.alerts_off ? " cal-list-alerts-off" : ""}`}
+              aria-pressed={!cal.alerts_off}
+              title={cal.alerts_off ? t("calendarSidebar.alertsOffTitle") : t("calendarSidebar.alertsOnTitle")}
+              onClick={() => onUpdateCalendar({ ...cal, alerts_off: !cal.alerts_off })}
+            >
+              <BellIcon className="cal-list-alerts-icon" off={cal.alerts_off} />
+              <UntestedTag id="calendarSidebar.alerts" />
+            </button>
 
             {cal.source_url ? (
               <button

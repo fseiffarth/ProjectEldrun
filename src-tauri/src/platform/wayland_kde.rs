@@ -1,11 +1,15 @@
-//! KDE Wayland workspace backend — best-effort shell integration.
+//! KDE Plasma (Wayland) workspace backend — workspace info only.
 //!
-//! Current project switching is wired through per-window hide/show backend
-//! methods. KDE Wayland does not yet implement per-window workspace movement,
-//! so those methods are no-ops for now while workspace info still uses DBus.
-//! - Eldrun is made sticky at startup.
-//! - Supports KDE 5 and KDE 6 (DBus interface paths differ).
-//! - Falls back gracefully if the DBus service is unavailable.
+//! - **No parking.** A Wayland client may not hide or move another app's
+//!   toplevel, and no KWin script is installed, so `show_window`/`hide_window`
+//!   are no-ops and `can_park` is false (Settings says so).
+//! - **No sticky.** `make_sticky` is a no-op as well.
+//! - `info()` asks KWin's `VirtualDesktopManager` over the session bus. Known
+//!   gap: `current` and `desktops` are D-Bus *properties* there, not methods, so
+//!   these calls fail and the label degrades to "KDE vd ?". Nothing renders the
+//!   label today; fixing it needs a live KWin to verify against.
+//! - Construction fails only without a session bus, and `detect_backend` then
+//!   falls through to the next backend.
 
 use zbus::blocking::Connection;
 
@@ -79,10 +83,14 @@ impl WorkspaceBackend for KdeWaylandBackend {
         Ok(())
     }
 
+    fn can_park(&self) -> bool {
+        // show/hide above are no-ops: a project switch leaves every window.
+        false
+    }
+
     fn make_sticky(&self, _eldrun_pid: u32) -> Result<(), String> {
-        // On KDE Wayland, stickiness is managed via KWin JS scripting or DBus.
-        // The Eldrun window appears on all desktops because it's the host process;
-        // full sticky implementation requires the KWin scripting API (Phase 7 follow-up).
+        // Not implemented: making a window sticky on KWin/Wayland needs the KWin
+        // scripting API, which this backend does not use.
         Ok(())
     }
 

@@ -126,7 +126,7 @@ html, body, #root {
   width: 148px;
   height: 2px;
   overflow: hidden;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: color-mix(in srgb, var(--border-color, #33415e) 80%, transparent);
 }
 
@@ -283,7 +283,7 @@ html, body, #root {
 
 /* ── Global scrollbar baseline ───────────────────────────────────────────
    Every native scrollbar is turned off here, statically, for the whole app;
-   `lib/customScrollbar.ts` paints a square themed thumb over each scroll
+   `lib/theme/customScrollbar.ts` paints a square themed thumb over each scroll
    container instead. That module's header says why the app draws its own bars
    at all. What matters HERE is why the hiding half cannot live in JS.
 
@@ -316,7 +316,7 @@ html, body, #root {
   height: 0;
 }
 
-/* How the stylesheet tells `lib/customScrollbar.ts` "this strip scrolls and
+/* How the stylesheet tells `lib/theme/customScrollbar.ts` "this strip scrolls and
    shows nothing at all" — the tab strip, the project pill row, the address
    display. It replaces the old signal, `scrollbar-width: none`, which stopped
    distinguishing anything the moment the rule above made that the value
@@ -341,7 +341,7 @@ html, body, #root {
 }
 
 /* ── Custom (square) scrollbars ─────────────────────────────────────────
-   The thumbs `lib/customScrollbar.ts` paints. Read that module's header for
+   The thumbs `lib/theme/customScrollbar.ts` paints. Read that module's header for
    why the app draws its own bars at all; the short of it is that WebKitGTK
    honors only `scrollbar-width`/`scrollbar-color`, and neither can square a
    corner. Everything here is positioning and colour — the module owns when a

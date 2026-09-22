@@ -43,8 +43,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       extensions (`.exe`/`.cmd`/`.bat`/`.ps1`).
       - [x] 🤖 Automated test — `paths::path_finder_is_where_on_windows_which_elsewhere`
       - [ ] 🖐️ Manual test — "Manage agents" lists installed agents on Windows
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **30b — Cross-platform per-process CPU/RSS sampling.** ✅ Done. `sysstat`
       was entirely `#![cfg(target_os = "linux")]`, so `project_cpu_percent` and
       `debug_app_resource_usage` returned 0 on Windows. Refactored into a shared
@@ -59,8 +65,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [x] 🤖 Automated test — `sysstat` tests now run on Windows too
         (`sum_jiffies`/`sum_rss_kib` against the live process, tree walk, cache)
       - [ ] 🖐️ Manual test — pill popup shows live CPU/RSS on Windows
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **30c — Native PID liveness.** ✅ Done. `check_pid_alive`
       (`commands/apps.rs`) no longer shells out to `tasklist` on Windows; it uses
       `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` + `GetExitCodeProcess`,
@@ -70,8 +82,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [x] 🤖 Automated test — covered by `cargo build --lib` compile + existing
         callers; no behavioral unit test (needs a live pid)
       - [ ] 🖐️ Manual test
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **30d — App discovery + launching on Windows.** ✅ Done. Linux XDG
       `.desktop` discovery is gated behind `cfg(not(windows))`; Windows now enumerates
       Start-Menu `.lnk` shortcuts (`%ProgramData%` + `%APPDATA%`, recursive, deduped
@@ -85,8 +103,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [x] 🤖 Automated test — `cargo test --lib apps` (incl. a Windows-gated
         interpreter-selection test) passes
       - [ ] 🖐️ Manual test
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **30e — Screenshot capture on Windows.** ✅ Done. `commands/screenshot.rs`
       refactored to a cfg-selected `platform` submodule (Linux tool-spawn unchanged).
       Windows uses native Win32 GDI — `GetSystemMetrics(SM_*VIRTUALSCREEN)` for the
@@ -96,8 +120,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       freed on success and error paths. Added `Win32_Graphics_Gdi`.
       - [x] 🤖 Automated test — shared filename/date tests retained; build verified
       - [ ] 🖐️ Manual test
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **30f — VPN-gated projects on Windows.** ✅ Done — and since upgraded
       twice: first from the original graceful-degradation stub to a **real
       backend** (direct `openvpn.exe` spawn — worked only from an elevated
@@ -120,8 +150,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [ ] 🖐️ Manual test — connect a VPN-gated project from an *unelevated*
         Eldrun with `OpenVPNServiceInteractive` running (expect the group-
         membership refusal first if not in "OpenVPN Administrators")
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **30g — Windows crash hook** (2026-07-11; ✅ Done · 🧪 CI-unverified).
       The native-fault analog of the Unix signal handlers: `install_seh_filter`
       (`lib.rs`) opens crash.log at startup, keeps the raw HANDLE in
@@ -133,8 +169,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [x] 🤖 Automated test — `format_crash_line_*` (4 tests, run on Linux)
       - [ ] 🖐️ Manual test — force a native crash on Windows; crash.log gains a
         `=== CRASH:` line with the exception code
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **30h — Windows whole-system monitor** (2026-07-11; ✅ Done · 🧪
       CI-unverified). `sysstat.rs` Windows backend fills a real
       `SystemSnapshot`: aggregate CPU via `GetSystemTimes` (kernel includes
@@ -149,8 +191,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         `decode_ansi_nul_*` (run on Linux)
       - [ ] 🖐️ Manual test — System Monitor pane shows live CPU/mem/processes
         on Windows
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **30i — Windows local network snapshot** (2026-07-11; ✅ Done · 🧪
       CI-unverified). `commands/network.rs` Windows `local_snapshot` via
       `GetIfTable2`: alias name (UTF-16, `utf16_nul_to_string`), octet
@@ -161,8 +209,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [x] 🤖 Automated test — `utf16_alias_decoding_stops_at_nul` (Linux-run)
       - [ ] 🖐️ Manual test — Network pane lists adapters with live byte counts
         on Windows
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **30j — Windows SSH password auth via askpass** (2026-07-11; ✅ Done ·
       🧪 CI-unverified). Password auth no longer hard-requires `sshpass`: when
       the installed OpenSSH honors `SSH_ASKPASS_REQUIRE` (≥ 8.4 —
@@ -180,8 +234,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         `windows_askpass_shim_echoes_env_without_cmd_interpolation` (Linux-run)
       - [ ] 🖐️ Manual test — password-SSH project connects without sshpass on
         Win11 (OpenSSH ≥ 8.4) and via sshpass on Win10 1903
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **30k — Windows position_window + popout occlusion** (2026-07-11; ✅
       Done · 🧪 CI-unverified). `platform/windows.rs` overrides
       `position_window` (`SetWindowPos` with `SWP_NOSIZE|SWP_NOZORDER|
@@ -193,8 +253,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         x86_64-pc-windows-msvc`); the pure occlusion logic is X11/macOS-side
       - [ ] 🖐️ Manual test — file drop places the app on the drop monitor; a
         popout behind the main window refuses the drop-merge
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
 
     - [x] **30l — Windows panel-toggle key: F9, not the Win key** (2026-07-15;
       ✅ Done). The lone-Meta panel toggle was enabled on Windows, but the lone
@@ -208,8 +274,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         a fixed key branch
       - [ ] 🖐️ Manual test — F9 toggles panels on Windows; Win+X no longer
         flickers them
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **30m — Windows one-click agent install** (2026-07-15; ✅ Done).
       `install_agent` hard-refused off Linux/macOS even though the registry
       already carried `install_cmd_windows` for most agents. Now
@@ -223,8 +295,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         `windows_installer_command_picks_interpreter_per_command` (Windows-run)
       - [ ] 🖐️ Manual test — one-click install of an agent on Windows streams
         its log and flips to "installed"
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **30n — Windows disk-capacity probe** (2026-07-15; ✅ Done).
       `duscan::capacity_of` returned `None` on Windows, silently dropping the
       disk-usage pane's total/free capacity bar. Added a `#[cfg(windows)]` arm
@@ -233,16 +311,33 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [x] 🤖 Automated test — `capacity_of_home_reports_a_plausible_volume`
         (runs on every OS)
       - [ ] 🖐️ Manual test — disk-usage pane shows the capacity bar on Windows
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **30o — no docker spawn at Windows startup** (2026-07-15; ✅ Done).
       Containers are Unix-only, but `sandbox::sweep_orphans` ran unconditionally
       at startup, spawning `docker --version` (and `docker ps` when Docker
       Desktop exists) for nothing on Windows. Now gated on `cfg!(unix)`.
+      **Superseded 2026-09-16 by 32a:** the premise went stale when the
+      2026-09-03 parity sweep gave containers a Windows path — `up()` has had no
+      OS gate since, so the `cfg!(unix)` guard left crashed-Eldrun containers
+      running. The no-spawn intent is preserved by gating on
+      `binary_on_path("docker")`, which walks PATH without spawning.
       - [x] 🤖 Automated test — compile-covered; behavior is an early return
       - [ ] 🖐️ Manual test — n/a
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
 
 31. **macOS support follow-ups.** macOS has initial cross-platform code (state
     paths, default shell, browser profiles, network detection, Unix symlinks),
@@ -268,8 +363,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [ ] 🖐️ Manual test — needs a real macOS build to confirm the libc bindings
         (`proc_taskinfo`/`proc_bsdinfo`/`proc_listallpids`) resolve in pinned
         `libc 0.2`; if any is absent, add a minimal `extern "C"`/`#[repr(C)]` decl.
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [~] **31b — macOS workspace backend** (2026-07-11; ✅ Code-complete, ⚠️
       **unverified** — compile-blind on Linux, no macOS SDK). macOS no longer
       falls to `NullBackend`: `platform/macos.rs` implements `WorkspaceBackend`
@@ -291,8 +392,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         round-trip, `frontmost_at_point` occlusion cases)
       - [ ] 🖐️ Manual test — on a mac: project switch hides/shows foreign apps;
         Eldrun/Finder/Dock never hidden; quitting Eldrun unhides everything
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [~] **31c — macOS whole-system monitor** (2026-07-11; ✅ Code-complete, ⚠️
       **unverified**, compile-blind). `sysstat.rs` macOS `system_snapshot`:
       per-core CPU via `host_processor_info` (ticks → **nanoseconds** so units
@@ -307,8 +414,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         `bsd_process_state_*` (Linux-run)
       - [ ] 🖐️ Manual test — System Monitor pane populates on a mac; CPU% of a
         busy process roughly matches Activity Monitor
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [~] **31d — macOS local network snapshot** (2026-07-11; ✅ Code-complete,
       ⚠️ **unverified**, compile-blind). `network.rs` spawns `netstat -ibn`
       (chosen over the raw `NET_RT_IFLIST2` sysctl — hand-declared
@@ -320,8 +433,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         real-shaped fixture)
       - [ ] 🖐️ Manual test — Network pane lists en0/lo0/utun* with live byte
         counts on a mac
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [~] **31e — macOS OpenVPN backend** (2026-07-11; ✅ Code-complete, ⚠️
       **unverified**, compile-blind). Replaces the "not yet supported" stubs:
       `osascript -e 'do shell script … with administrator privileges'` starts
@@ -340,8 +459,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [ ] 🖐️ Manual test — VPN project on a mac: admin prompt → lamp green →
         disconnect (second prompt) → lamp red; interactive mode types
         `sudo openvpn …` into the root tab
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [ ] **31f — macOS ssh-link traffic via nettop** (design note, no code).
       ControlMaster exists on macOS, so remote projects mux fine; what's
       missing is per-socket byte counters for the ssh-link monitor +
@@ -350,6 +475,244 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       `nettop -P -x -L 1 -p <master-pid>` and parse its CSV (`bytes_in`/
       `bytes_out` columns) into the existing `SshLinkSnapshot`. Needs a mac to
       verify nettop's CSV shape/permissions before writing the parser.
+
+32. **OS parity sweep (2026-09-16).** ✅ Code-complete, ⚠️ **none of it
+    verified live** — see `docs/os_parity_sweep_plan.md` for the full merged
+    plan, what was refuted, and what was deferred and why. Every item below
+    passed `cargo test`, clippy, the Windows cross-check (25 → 0 warnings),
+    `npm run build`/`test`/`lint`.
+    - [x] **32a — orphan containers swept on Windows.** The startup sweep
+      skipped Windows on a premise that went stale (see 30o); now gated on
+      `binary_on_path("docker")`.
+      - [x] 🤖 Automated test — `sweep_should_probe`
+      - [ ] 🖐️ Manual test — kill Eldrun from Task Manager with a container up,
+        relaunch, `docker ps` shows no `eldrun-*`
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
+    - [x] **32b — image build uses the platform shell and quoting.** The
+      one-click build ran `/bin/bash` on Windows; `default` would have been
+      cmd.exe, which ignores `'…'`. Now PowerShell plus `install_shell_quote`
+      (apostrophes were broken on POSIX too).
+      - [x] 🤖 Automated test — `install_shell_quote` table, `containerBuildShell`
+      - [ ] 🖐️ Manual test — project path with a space and an apostrophe →
+        build image → PowerShell tab, build succeeds
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
+    - [x] **32c — copy+delete only on a real cross-device rename.** Any rename
+      error triggered the fallback, so a locked file on Windows could leave a
+      duplicated, half-deleted tree. `paths::is_cross_device` (never compares
+      raw codes across OSes); `move_tree` keeps `|| dst.exists()` so an
+      interrupted archive still resumes.
+      - [x] 🤖 Automated test — predicate per-cfg tests, `move_tree` tempdir resume
+      - [ ] 🖐️ Manual test — Windows: keep a file in a folder open, move the
+        folder — an error, and no duplicate at the destination
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
+    - [x] **32d — saved downloads marked as from the internet.** Mail
+      attachments and browser downloads carried no provenance:
+      `web_safety::mark_downloaded` writes `Zone.Identifier` on Windows (only
+      when absent, so an engine-written mark is kept) and
+      `com.apple.quarantine` on macOS. Best-effort, never fatal, no new
+      path-taking command.
+      - [x] 🤖 Automated test — body/xattr value format; `no_command_takes_a_path`
+      - [ ] 🖐️ Manual test — Windows: Explorer shows "Unblock", Office opens it
+        in Protected View. macOS: a saved `.command` triggers Gatekeeper
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
+    - [x] **32e — the phone's sidecar finds tmux.** It spawned bare `tmux`
+      without Eldrun's augmented PATH, so a Homebrew tmux was invisible and the
+      phone's tab list came back empty. The attach keeps its `CommandBuilder`
+      with an absolute tmux and no creation flags (they would detach a ConPTY
+      child). Windows now short-circuits and says so in Mobile settings.
+      - [x] 🤖 Automated test — builder PATH assertions in discovery/pty_bridge
+      - [ ] 🖐️ Manual test — macOS with Homebrew tmux: the phone lists
+        terminals. Windows: the settings note appears and the phone lists none
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
+    - [x] **32f — fenced macOS agents can write the ordinary device files.**
+      The Seatbelt profile denied all writes and never re-allowed `/dev/null`,
+      so `> /dev/null` failed inside a fenced tab. Allows `/dev/null`, `zero`,
+      `tty`, `dtracehelper`, `/dev/fd` — deliberately **not** `/dev/ttys*`,
+      which would let an agent write into other tabs' terminals.
+      - [x] 🤖 Automated test — profile ordering/content assertions (Linux-run)
+      - [ ] 🖐️ Manual test — a fenced tab runs `git status >/dev/null && echo ok`
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
+    - [x] **32g — Docker Desktop / OrbStack CLIs on the macOS PATH**, and the
+      **Tailscale CLI inside the app bundle** for App Store installs.
+      - [x] 🤖 Automated test — `supplemental_path_dirs_for(Macos, …)`,
+        `tailscale_program` with an injected `exists`
+      - [ ] 🖐️ Manual test — per-user Docker Desktop: the container tier is
+        offered. App Store Tailscale with no CLI on PATH: Mobile Serve reads
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
+    - [x] **32h — the fence install hint follows the distribution.** The
+      one-click bubblewrap install hardcoded apt, and the fence fails closed, so
+      a non-Debian user had no working path. `package_install_cmd` covers
+      apt/dnf/pacman/zypper and returns `None` (button hidden) otherwise.
+      - [x] 🤖 Automated test — os-release fixture table incl. `ID_LIKE` precedence
+      - [ ] 🖐️ Manual test — Fedora/Arch: the pill's install button runs
+        dnf/pacman; an unknown distribution hides it
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
+    - [x] **32i — the presenter's sleep inhibitor dies with Eldrun.** It
+      spawned `systemd-inhibit … sleep infinity` with nothing tying it to
+      Eldrun and no release on exit, so a quit or crash mid-talk kept the
+      machine awake until logout. Now `systemd-inhibit … cat` holding a piped
+      stdin (PDEATHSIG follows the forking *thread*, so it was the wrong tool),
+      plus a release in `RunEvent::Exit`.
+      - [x] 🤖 Automated test — argv builder; a pipe-close test proving the tie
+      - [ ] 🖐️ Manual test — present, `kill -9` Eldrun, then
+        `systemd-inhibit --list` shows no Eldrun row
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
+    - [x] **32j — the renderer reload budget is per window.** One process-wide
+      counter meant a crash-looping popout could spend the main window's budget.
+      - [x] 🤖 Automated test — pure budget helper; macOS label map
+      - [ ] 🖐️ Manual test — hard to force; watch crash.log for a popout that
+        loops while the main window still reloads
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
+    - [x] **32k — onboarding names the panel key that works here.** The copy
+      hardcoded "Super" where the code already uses F9 (GNOME/KDE); it now asks
+      `livePanelToggleKey()` and waits for the desktop probe.
+      - [x] 🤖 Automated test — extended `SuperKeyOwnership`
+      - [ ] 🖐️ Manual test — GNOME/KDE: How to start and the Feature Guide say
+        F9; Cinnamon still says Super
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
+    - [x] **32l — Settings says when the desktop cannot park windows.** A
+      `can_park()` backend capability (default true, null backend false) behind
+      `workspace_capabilities`; the dead `workspace_info` fetch in `HeaderBar`
+      is gone. Carries `UntestedTag`.
+      - [x] 🤖 Automated test — backend capability test; the row renders only
+        when `can_park === false`
+      - [ ] 🖐️ Manual test — GNOME Wayland: Settings → Layout shows the note;
+        Cinnamon or KDE X11 shows none
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
+    - [x] **32m — macOS gets an explicit menu, and ⌘W closes a tab.** Tauri's
+      default menu bound ⌘W to Close Window, and a focused terminal swallowed
+      the app's own chord, so ⌘W quit the whole app. The menu now omits Close
+      Window, keeps **Edit** (which is what makes ⌘C/⌘V work in xterm — an
+      explicit handler would double-paste) and routes ⌘Q through the window
+      close so the frontend teardown runs. The keyboard bypass is strictly
+      `IS_MAC && metaKey && !ctrlKey`, so ⌃W still reaches every shell.
+      - [x] 🤖 Automated test — pure menu plan (no CloseWindow, Edit present);
+        vitest for ⌘W vs ⌃W on macOS and Ctrl+W unchanged on Linux
+      - [ ] 🖐️ Manual test — macOS: ⌘W in a focused terminal and in a popout
+        closes the tab; ⌃W deletes a word; ⌘Q quits cleanly; ⌘C/⌘V still work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
+    - [x] **32n — macOS window stays hidden until its placement is restored.**
+      The per-platform config replaced the window array (RFC 7396), dropping
+      `visible: false`, so the window flashed at its default spot on launch.
+      - [x] 🤖 Automated test — a Rust test reading both config files
+      - [ ] 🖐️ Manual test — macOS: no visible flash before the saved placement
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
+    - [x] **32o — housekeeping.** One Wayland predicate instead of three
+      disagreeing copies (`Some("")` was read as X11); the deb drops the unused
+      `libappindicator3-1` (universe-only on 26.04) and recommends
+      bubblewrap/tmux/cups-client; the Windows dead-code warnings go 25 → 0 by
+      cfg narrowing, never a blanket `allow`; staged clippy on the macOS CI job;
+      `src-tauri/CLAUDE.md`, `docs/context/agent_authority.md` and `README.md`
+      match the code again.
+      - [x] 🤖 Automated test — covered by the existing suites and both cross-checks
+      - [ ] 🖐️ Manual test — Ubuntu: `dpkg -I` on the CI .deb shows the new
+        Depends/Recommends
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
 
 254. **The bare Super key belongs to the desktop, not to the OS.** ✅ Fixed
     2026-09-07, ⚠️ untested live. `useKeyboard` gated its lone Meta/Super panel
@@ -368,7 +731,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     GNOME, KDE/Plasma and Unity claim it; Cinnamon, XFCE, sway and unknown
     desktops do not), read once per session through
     `commands::workspace::desktop_owns_super_key` and cached in
-    `src/lib/superKey.ts`. F9 stays the toggle everywhere, and `FIXED_KEYS`
+    `src/lib/shortcuts/superKey.ts`. F9 stays the toggle everywhere, and `FIXED_KEYS`
     advertises whichever key is actually live. A probe that cannot be answered
     keeps the binding: `src/` hot-reloads while `src-tauri/` does not, so a
     window running ahead of its backend must not lose the key on the desktops
@@ -380,8 +743,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] 🖐️ Manual test — on GNOME: press Super for the overview and come back
       to Eldrun with the side panel still there; F9 still toggles it; the F1
       sheet lists F9, not Super. On Cinnamon: Super still toggles.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
     **Follow-up (2026-09-07, same day, ⚠️ untested live):** the probe only
     helps a window whose backend can answer it, and the one on the desk could
@@ -403,8 +772,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       all leave the side panel in place. Then F9 (or a lone Super on Cinnamon)
       hides the panels and a toast names the key; the same key brings them
       back with no toast.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 209. **Getting the app onto a machine, and keeping it current.** The two ends
     of distribution that were never Eldrun's own: what the installer looks
@@ -429,8 +804,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [ ] 🖐️ Manual test — run the CI-built `.exe` on Windows: the setup
         program wears the Eldrun icon, the welcome/finish page shows the
         sidebar, and the inner pages show the header
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **209b — Check for a new release, and install it.** ✅ Done.
       Settings → Updates: `services::app_update` reads the project's
       `/releases/latest` from the GitHub API, compares numerically (a lexical
@@ -449,18 +830,55 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [x] 🤖 Automated test — `services::app_update` (13: version compare,
         pre-release ordering, the URL allowlist incl. a look-alike host, asset
         pick per platform, untrusted asset names, release parsing) +
-        `src/__tests__/UpdatesPanel.test.tsx` (5: no URL/path crosses the IPC
+        `src/__tests__/system/UpdatesPanel.test.tsx` (5: no URL/path crosses the IPC
         boundary, nothing downloads on open, `manual` offers no install)
       - [ ] 🖐️ Manual test — with an AppImage install and a newer release
         published: open Settings → Updates, check, download, install, restart,
         and confirm the new version runs
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
       - [ ] **Open:** no automatic check. A check happens only when the panel
         is opened, so a user who never visits it never learns of a release. An
         opt-in "check on launch" (default off) is the obvious follow-up and was
         left out deliberately rather than forgotten — it is the one part that
         reaches the network unasked.
+
+- [~] **31af — Mobile Focus: a swipe shows the agent's status line** (2026-09-15;
+  ✅ code-complete and automated tests passing, ⚠️ untested on a phone — and a
+  rebuild + restart first, since the phone serves the bundle baked into the
+  binary). Focus cuts the agent TUI's bottom frame (31v), and with it the rows
+  drawn under the input box: cwd, branch, model, mode, context %, and any custom
+  statusline, whose free text the composer chips have no shape for. A left→right
+  swipe across the output now opens a strip under it with those rows verbatim
+  (`statusFrameLines` in `mobile-web/src/terminal/statusLine.ts`). A right→left
+  swipe or the strip's ✕ closes it, and a screen with no frame says "No status
+  line on screen". `mobile-web/src/terminal/focusSwipe.ts` listens passively, so
+  scrolling and selection stay native. It counts only a decisively horizontal
+  swipe (≥ 56 px, ≥ 2× the vertical travel, ≤ 700 ms), and ignores one starting
+  within 16 px of a screen edge (Android back), on an input, or inside something
+  that can still scroll sideways. Swipe-only, never persisted. Tested in
+  `src/__tests__/mobile/MobileTerminalFocusStatusLine.test.tsx`.
+      - [ ] **Manual QA:** open a Claude agent tab → Focus → swipe right across
+        the output: a strip opens under it showing the status row exactly as
+        the desktop draws it (custom statusline included); swipe left, and
+        separately tap ✕, and it closes; vertical scrolling of the output still
+        works and never opens it; a wide code block still pans sideways instead
+        of opening it; a swipe starting at the screen edge triggers Android's
+        back gesture, not the strip; Terminal view shows no strip
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
 
 - [~] **31ae — Every phone section glyph asks for emoji presentation** (2026-09-14;
   ✅ code-complete, tests passing, ⚠️ phone QA pending after a PWA rebuild,
@@ -471,8 +889,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   test (`MobileSectionGlyphs`) guards the invisible selector.
       - [ ] **Manual QA:** on the phone all four tab-bar icons and the Home alert
         rows are colour emoji, none grey outline.
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
 
 - [~] **31ad — `eldrun-send`: files from agent terminals to the phone** (2026-09-14;
   implemented, pending live QA). See `docs/mobile_send_plan.md`. Local and
@@ -489,22 +913,34 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   7. `eldrun-send --clear` empties the strip; with the desktop closed, existing
      outbox files still list through the sidecar.
   8. Send text named `.png` and an SVG; both preview as inert text.
+  9. Focus posts each file into the chat as an agent message (2026-09-15,
+     `Untested` pill in its caption): with the stored session shown, a plot
+     sits under the answer that sent it, not at the bottom; on the screen
+     source (Session → Screen) the files close the chat; the strip above the
+     composer shows only in the Terminal view.
   Windows PowerShell and macOS runtime behavior also require platform QA.
 
-- [~] **31ac — "Set up in terminal" opens the install overlay** (2026-09-14;
+- [~] **31ac — "Set up in terminal" opens in the root console** (2026-09-14;
   ✅ code-complete, tests passing, ⚠️ live QA pending). The Tailscale Serve
   guide's button switched the whole window to the root scope and opened a tab
   there, unlike every other one-click install. It now goes through
-  `runInstallInTab`: the root tab still owns the PTY, and the centered install
-  overlay mirrors it right over Settings; closing the overlay leaves the
-  command running in the root terminal with the usual toast. The confirmation
+  `runInstallInTab`: the root tab still owns the PTY, and the root console
+  floats over Settings with that tab in front (2026-09-17 — the separate
+  install overlay was merged into the console); closing it leaves the command
+  running in its root tab. The confirmation
   before running stays.
       - [ ] **Manual QA:** Settings → Mobile → open "Set up Tailscale Serve" →
         *Set up in terminal* → confirm. Expect the overlay terminal over
         Settings running `tailscale serve --bg …`, the active project unchanged,
         and a root tab holding the same terminal after closing the overlay
-        - [ ] ✅ Works
-        - [ ] ❌ Doesn't work
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
 
 - [~] **31ab — Mobile Focus reads as a chat** (2026-09-05; ✅ code-complete and
   automated tests passing, ⚠️ phone QA pending — and a rebuild + restart first,
@@ -525,9 +961,13 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   `Terminal.tsx` renders it per history chunk, open chunk and live tail, still
   memoized on the chunk reference. Copy still copies the transcript as printed,
   marker included; a shell tab is untouched. Tested in
-  `src/__tests__/MobileChatTurns.test.ts` (7 cases) and
+  `src/__tests__/mobile/MobileChatTurns.test.ts` (7 cases) and
   `MobileTerminalReadableView.test.tsx` (2 cases); `/terminal-preview.html`
   shows two exchanges.
+  - [ ] Manual phone QA (2026-09-15): Codex labelled dividers such as
+    `─ Worked for 2m ─────` show only their label in Focus, with no wrapped
+    white rules; input-frame labels remain hidden. Regression coverage in
+    `MobileReadableScreen.test.ts`; live verification pending.
   - [ ] 🖐️ Manual phone QA — open a Claude agent tab in Focus and send a prompt
     from the composer: it appears as a bubble on the right, in the same violet
     as the "Sent" strip, without the `>`; the answer sits on the left as
@@ -535,8 +975,65 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     question's numbered rows stay on the left and answerable; the live input
     box is still not painted; Copy still includes `> `; a Codex tab shows the
     same for `›`; a shell tab shows no bubbles.
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - 2026-09-16 fix: a user bubble sometimes held text the user never typed.
+    Two sources feed the bubbles and both leaked. **Stored session** (the
+    default for Claude/Codex): the not-a-prompt filter was a short start-only
+    prefix list, so `<tool_use_error>` blocks and a `<total_tokens>` block
+    appended *behind* a prompt were shown as the user's words. It is now a
+    bound *plus* a shape — `CLI_BLOCK_TAGS` and "opens and closes with that
+    same tag" — because a shape alone cannot tell a CLI's private block from
+    someone pasting `<div>hello</div>`; `strip_trailing_blocks` cuts only
+    those tags off the end, and `isCompactSummary`/`isVisibleInTranscriptOnly`
+    join `isMeta`/`isSidechain` as never-a-prompt. **Screen reading**: `❯` is
+    no longer an echo marker (no CLI echoes with it — it is the select-dialog
+    cursor, so every `❯ Opus 4.1` and `/resume` row became the reader's
+    words), `✨` counts only for a tab whose label names Kimi, the empty box's
+    own placeholder and a box the TUI is still drawing are not submissions,
+    and a bubble stops at a tool-result gutter or a footer row.
+    The mirror direction — a guard costing the user their own words — turned
+    out to be just as real and is now covered too: a pasted `tree` stays in
+    the bubble (frame strokes are not stop rows), `> try "npm ci" first` is a
+    prompt and not the placeholder, an answer *about* a key no longer
+    swallows the prompt above it, and a columned status row is told from
+    prose by *columns* carrying status rather than fields (`classify` reads a
+    branch out of the same segment as the path, which scored the ordinary
+    sentence `~/eldrun/projects/app (main)` two and handed the prompt to the
+    agent). The same parser feeds the desktop's last-prompt line, so both
+    directions reach the prompt chart too.
+    Gates: 202 mobile tests, 46 `agent_session` + 4 `agent_transcript` Rust
+    tests, clippy clean, `mobile:build` and `vite build` green, lint clean on
+    the changed files. Backend and PWA both changed, so this needs
+    `npm run package:dev` and a relaunch before a phone sees it.
+    Known and deliberately left: a prompt whose *continuation* is itself a
+    columned row (`opus-4.1   ~/a`) still reads as a box; a Codex gutter drawn
+    `└─ ` rather than `└ ` would land in a bubble (not seen in any version);
+    a quoted `│ > … │` inside a plan box is byte-identical to Gemini's framed
+    echo after the frame is stripped, so it cannot be separated without a live
+    capture; and the Kimi `✨` branch hangs off a renamable tab label, which is
+    harmless only because the phone cannot open a Kimi tab today (31ag).
+  - [ ] 🖐️ Manual phone QA — in a Claude and a Codex tab, check the bubbles
+    hold only what was typed: run a slash command (`/model`) and confirm its
+    `⎿` result stays on the left; scroll back to an old screen and confirm no
+    stale draft or `Try "…"` placeholder appears as a bubble; open `/model`
+    and confirm its `❯` rows stay left. Then the mirror: paste a `tree` into a
+    prompt and send it — the whole thing stays in one bubble; send `try "npm
+    ci" first` and `where am I?` and confirm each still appears as yours.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31aa — Project boxes reach the phone** (2026-09-05; ✅ code-complete
   and automated tests passing, ⚠️ phone QA pending — and a rebuild + restart
@@ -566,8 +1063,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     opened in the box after the switch are listed and attach; a member with
     its own switch off is *not* in the list; switch the box off: it vanishes
     from the phone within a poll.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31z — The phone's ✓ ticks a card instead of moving it** (2026-09-05;
   ✅ code-complete and automated tests passing, ⚠️ phone QA pending — and a
@@ -587,15 +1090,21 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   `dateColumn`'s three refusals) instead of offering a move that errors; and a
   refusal that does arrive is read as prose — *"Overdue, Today and the backlog
   follow the card's own deadline"* — rather than as its code. Tested in
-  `src/__tests__/MobileTodoDateColumns.test.tsx`.
+  `src/__tests__/mobile/MobileTodoDateColumns.test.tsx`.
   - [ ] 🖐️ Manual phone QA — with the desktop open: tick a card on the phone's
     board → it goes to Done there and on the desktop, and the desktop's card
     shows a completion date; untick it → it comes back to the backlog. Open a
     card's Move picker: for a late card only Overdue (plus Doing/custom/archive
     columns) is selectable, for a card due today only Today, and Overdue is
     greyed for anything not late. Moving a card into Doing and back still works.
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31y — The phone's Alerts rows carry the desktop's Done ✓** (2026-09-04;
   ✅ code-complete and automated tests passing, ⚠️ phone QA pending — and a
@@ -629,8 +1138,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     → the row goes and the appointment is still in the desktop calendar,
     listed under the strip's 🔕 count. Then close Eldrun on the desktop and tap
     a ✓ → "could not be completed", the row still there.
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31g — Eldrun Mobile sidecar on macOS & Windows** (2026-08-26; ✅
   Code-complete, ⚠️ needs live QA on real macOS/Windows machines).
@@ -649,12 +1164,24 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   hidden on Windows and state-dir-aware on macOS.
   - [ ] 🖐️ Manual test — macOS: enable Mobile in Settings, confirm the launch
     agent starts, pair a phone, attach a tmux tab
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
   - [ ] 🖐️ Manual test — Windows: enable Mobile, confirm the host starts and
     survives logoff/logon, pair a phone, open mail/calendar/to-dos
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31h — Mobile composer status chips** (2026-08-28; ✅ Code-complete, ⚠️
   needs live QA on a phone against a real Claude Code / Codex tab).
@@ -668,12 +1195,18 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   prompt, only positive matches, generic "Model"/"Mode" labels otherwise.
   Tapping the model chip sends `/model` and the mode chip sends Shift+Tab, so
   the chip labels follow the TUI's own redraw — both taps now open a list sheet
-  instead (see 31j). Tested in `src/__tests__/MobileStatusLine.test.ts`.
+  instead (see 31j). Tested in `src/__tests__/mobile/MobileStatusLine.test.ts`.
   - [ ] 🖐️ Manual test — on the phone, open a Claude tab: chips show the
     model/mode from the statusline, `/model` picker opens from the model chip,
     mode chip cycles plan/accept-edits, ＋ inserts `@` into the draft
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31x — Mobile Agents mode: every waiting session, no project grouping**
   (2026-09-03; ✅ code-complete and automated tests passing, ⚠️ phone QA pending
@@ -699,7 +1232,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   the bridge gates each project through the same `mobileProject` check as every
   other handler, so the Mobile switch and the remote/sandbox/VM tiers hold.
   Behind the mode, neither the project list nor the alerts feed is polled.
-  Locked by `src/__tests__/MobileAgentsMode.test.tsx` and the `host.rs` activity
+  Locked by `src/__tests__/mobile/MobileAgentsMode.test.tsx` and the `host.rs` activity
   route tests.
   - [ ] 🖐️ Manual phone QA — with two projects each holding a busy agent tab:
     open Projects → **Agents** and see both, waiting-first, each naming its
@@ -709,8 +1242,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     working → question → done; close desktop Eldrun and see the "Desktop
     unavailable" line instead of an empty-and-quiet reading; with everything
     idle, confirm the list is empty and says so
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31i — Mobile lazy terminal history, whole session** (2026-08-28;
   ✅ Code-complete, ⚠️ needs live QA on a phone; the tmux `history-limit` half
@@ -727,13 +1266,19 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   limit at creation), the sidecar replay captures the same depth
   (`pty_bridge::MOBILE_SCROLLBACK_LINES`), and the phone xterm's scrollback
   matches (`PHONE_SCROLLBACK`). Copy copies exactly what is revealed. Tested in
-  `src/__tests__/MobileReadableScreen.test.ts` (lazy-history describe block).
+  `src/__tests__/mobile/MobileReadableScreen.test.ts` (lazy-history describe block).
   - [ ] 🖐️ Manual test — on the phone, open an agent tab with a long session:
     "Show earlier output" appears, reveals older lines without the view
     jumping, repeated taps walk back to the session start, reconnect (airplane
     mode toggle) replays without duplicating lines
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31j — Mobile model/mode chips open a list, not a TUI dialog**
   (2026-08-28; ✅ Code-complete, ⚠️ needs live QA on a phone against a real
@@ -755,15 +1300,21 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     session where it was and says so. A session whose mode no family claims
     keeps the old single-cycle tap. `statusLine` learned Codex's bare `auto`
     (anchored, so Claude's `auto-compact` and `~/…/auto/…` stay unmatched).
-  Tested in `src/__tests__/MobileSelectPrompt.test.ts` and
-  `src/__tests__/MobileOptionSheet.test.tsx`.
+  Tested in `src/__tests__/mobile/MobileSelectPrompt.test.ts` and
+  `src/__tests__/mobile/MobileOptionSheet.test.tsx`.
   - [ ] 🖐️ Manual test — on the phone, open a Claude tab: the model chip opens
     a list of the real models with the current one checked, tapping one
     switches it (chip label follows), ✕ closes both sheet and picker; the mode
     chip opens the four modes, tapping Plan lands in plan mode, tapping bypass
     on a session without it reports the failure and leaves the mode unchanged
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31l — Mobile Focus mode chips for all agent families** (2026-08-28;
   ✅ Code-complete, ⚠️ needs live QA on a phone).
@@ -781,6 +1332,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   - **Gemini CLI** — deliberately no family: since ~0.5 the approval mode is
     only prompt colour + aria-label, nothing the readable view can parse, so
     the chip keeps blind-cycling. Its `NN% used` context column is read.
+    *Superseded by 31ag (2026-09-15): the mode is text after all, on the row
+    above the box, and Gemini has a family now.*
   - Vibe/OpenCode are alt-screen TUIs (Focus already hands them to Terminal);
     Aider is a plain REPL. `scripts/backend-stale.sh` now also flags a stale
     *embedded* mobile bundle (mobile-web src newer than mobile-dist, or
@@ -792,8 +1345,50 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     walking Default→Plan→Default confirms both ways; a Qwen tab lists five
     modes and lands on the tapped one (incl. YOLO, whose prompt turns `*`);
     a Gemini tab still blind-cycles but shows its `% used` as context
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+- [~] **31ag — Mobile Focus beyond Claude Code** (2026-09-15; ✅ code-complete
+  for the screen half, ⚠️ untested live; phone needs a rebuild + restart).
+  A survey of all 26 other agent CLIs, read out of their published bundles
+  (`docs/mobile_focus_cli_survey.md`), and what it changed:
+  - `chatTurns`: Gemini `✦`, Qwen `◆︎` and Kimi Code `●` answers lay out as
+    answers; Kimi Code's `✨` echo is a prompt bubble.
+  - `statusLine`: a `*` input line with a draft counts only beside the word
+    YOLO, so a markdown bullet at the bottom of an unrecognized TUI is no longer
+    cut as the input box; Gemini's approval mode is read from the row *above*
+    its box (and cut with it); `ctx` labels a context figure.
+  - `agentModes`: a Gemini family (default silent / accept edits / plan on
+    Shift+Tab, YOLO on Ctrl+Y) — this supersedes 31l's "no Gemini family".
+  - [ ] 🖐️ Manual test — on the phone, a Gemini tab: answers show without `✦`;
+    the mode chip reads default / accept edits / plan as Shift+Tab cycles on
+    the desktop, and the sheet walks between them; a Claude tab whose answer
+    ends in a `* item` list still shows the list's last rows.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] **Follow-ups** (see the survey for each spec):
+    - [ ] Stored-session readers in `agent_transcript.rs` for the full-screen
+      and inline CLIs that keep one: Gemini, Qwen, Kimi Code, Pi, Vibe,
+      OpenCode/Crush/Goose (SQLite), Aider, Copilot, Muse.
+    - [ ] Widen `discovery.rs::resumable`'s list and publish the tab's `cmd`,
+      so families stop depending on a renamable label.
+    - [ ] Live captures, then patterns, for Aider, mini-SWE-agent, Cursor
+      agent, Goose, Grok Build, Kimi Code modes, OpenCode `--mini`, Codex 0.155
+      `↳ Recap:`.
+    - [ ] Registry fixes: Kiro binary is `kiro-cli`; Kimi Code / Pi / Amp
+      packages moved; archived Mentat / GPT Engineer / Plandex / SWE-agent.
 
 - [~] **31n — Mobile Focus: + attaches from the phone; sheets freeze the view**
   (2026-08-31; ✅ Code-complete, ⚠️ needs live QA on a phone — and a rebuild +
@@ -810,6 +1405,10 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     composer (oversized files never leave the phone; failures name the reason).
     The write is defensive (`inbox.rs`): sanitized + stamped name,
     `create_new`, inbox must canonicalize below the project root.
+  - **+ → "From the gallery"** (2026-09-17): the same drop behind a second
+    hidden input with `accept="image/*,video/*"`. A bare file input lands in
+    the file browser on many Android phones; a media `accept` is what opens
+    the photo picker (iOS: the library). Same 24 MiB limit, same `@` reference.
   - **Frozen reading view**: while the model or mode sheet is up, the Focus
     pane keeps the frame it held when the sheet opened; the `/model` picker
     and the Shift+Tab status redraws are still *read* from the live screen
@@ -821,8 +1420,24 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     and Claude reads the image; pick a >24 MB video → refused without upload;
     + → A project file inserts a bare `@`. Open the Model sheet → the picker
     text does not appear behind the sheet; close it → the view resumes
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual test — on the phone: + → From the gallery opens the photo
+    picker (not the file browser); pick two photos → both land in the draft
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31u — Mobile Focus: + attaches an image from the desktop** (2026-09-03;
   ✅ Code-complete, ⚠️ needs live QA on a phone — and a rebuild + restart
@@ -852,8 +1467,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     lands in the draft and the file is in `<project>/.eldrun/inbox/`; send and
     Claude reads it. Clear the clipboard, reopen the sheet → no clipboard row.
     With Eldrun closed → the sheet says the desktop is not answering.
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31x — Mobile Focus: the agent's pictures reach the phone** (2026-09-05;
   ✅ code-complete, automated tests passing — `outbox.rs` unit tests, the
@@ -887,8 +1508,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     tap → full screen, Close returns; ✕ → strip gone; copy a second image →
     strip returns with only the new one. Put a `.txt` renamed to `.png` there
     → not listed. With Eldrun closed → the strip still lists what is there.
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31w — Reconnect survives the binary being replaced under a live
   window** (2026-09-03; ✅ code-complete and automated tests passing, ⚠️ not
@@ -914,8 +1541,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     the Mobile menu: the host restarts (`journalctl --user -u
     eldrun-mobile-host` shows a fresh `Started`) instead of reporting
     `os error 2`, and the phone reaches it again.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31o — Mobile names which machine failed, instead of "Host unavailable"**
   (2026-09-01; ✅ Code-complete, ⚠️ needs live QA on a phone — and a rebuild +
@@ -941,14 +1574,20 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     rejected device, so a rejected **origin** — the host refusing the address
     the app was opened from, which re-pairing cannot fix — sent the reader to a
     pairing screen that could only fail again.
-  - Tested in `src/__tests__/MobileConnectionError.test.ts` (10 cases).
+  - Tested in `src/__tests__/mobile/MobileConnectionError.test.ts` (10 cases).
   - [ ] 🖐️ Manual test — on the phone: turn Tailscale off → "Can't reach your
     desktop" naming Tailscale *and* a sleeping desktop, not "Host unavailable";
     turn airplane mode on → "This phone is offline" instead; with Tailscale up
     but Eldrun closed on the desktop → an error naming *Eldrun Mobile* /
     *Eldrun* rather than the phone; each shows a `status code` line
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31k — Mobile fingerprint unlock is the default** (2026-08-28;
   ✅ Code-complete, ⚠️ needs live QA on a phone).
@@ -980,8 +1619,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     button on iOS), a fingerprint alone unlocks, cancelling it leaves the PIN
     path working, a fresh setup on a biometric-capable phone states
     PIN-as-fallback
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31m — Mobile to-do board: sticky filters, FAB, hide archived**
   (2026-08-30; ✅ Code-complete, ⚠️ needs live QA on a phone).
@@ -1001,15 +1646,21 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   between the bar and the editor backdrop); + Column stays as a small button
   at the top. **The search moved directly under the header** and the "synced
   through the desktop" notice to the foot of the screen. Tested in
-  `src/__tests__/MobileTodoBoard.test.ts`.
+  `src/__tests__/mobile/MobileTodoBoard.test.ts`.
   - [ ] 🖐️ Manual test — on the phone: tick "Hide done", leave the board and
     come back (still ticked); the board opens with archived cards hidden and
     the archive column still showing its count; unticking "Hide archived"
     reveals them and is remembered; the ＋ button adds a card and never sits
     under the tab bar or over the editor; the last column is fully scrollable
     past the button
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31t — Rename an agent tab from the phone** (2026-09-02; ✅ code-complete
   and automated tests passing, ⚠️ phone QA pending). A tab's name was the one
@@ -1039,8 +1690,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     desktop Eldrun closed the sheet says to open it rather than failing
     silently; no ✎ appears on a shell tab; check the Model/mode/Schedule chips
     read centered in a narrow terminal.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 - [~] **31ab — Close a tab from the phone** (2026-09-05; ✅ code-complete and
   automated tests passing, ⚠️ phone QA pending — and a rebuild + restart first:
   the sidecar route, the desktop bridge and the embedded PWA all changed). The
@@ -1053,7 +1710,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   pass `true` where `DELETE /api/v1/tabs/{id}` passes `false`.
   - **Closing is the desktop's ×, and nothing stronger.** The tab leaves the
     layout and its viewer dies; the tmux session behind it keeps running and
-    stays reattachable from the desktop's Sessions view — `lib/closeRemoteTab`'s
+    stays reattachable from the desktop's Sessions view — `lib/remote/closeRemoteTab`'s
     rule, applied rather than restated. A tap on a phone must not be able to
     end a running agent, which is also why the sheet says so in place of a
     yes/no confirm, and why the plan's deferred "tab termination" is still
@@ -1068,7 +1725,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     only, so a close in a project the desktop is not showing would never be
     written and the phone's own catalog — which is read out of
     `sessions/<id>/terminals.json` — would list the closed tab for ever. The
-    bridge writes the scope itself (`persistScopeLayout`, `stores/agentSchedules`'
+    bridge writes the scope itself (`persistScopeLayout`, `stores/agents/agentSchedules`'
     `persistScheduleBinding` renamed to what it always did, since a rename from
     the phone needed the same write and never made it). A project the desktop
     has not restored this session is restored first through
@@ -1089,8 +1746,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     a tab, close that tab from the desktop and watch the phone say the session
     is gone rather than hanging; with desktop Eldrun closed the sheet says to
     open it rather than failing silently.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31u — Mobile status chip: the session's state and the agent's own usage**
   (2026-09-02; ✅ code-complete and automated tests passing, ⚠️ phone QA
@@ -1125,8 +1788,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     hop, each above the one below it — CLI 15s < desktop 20s < sidecar 25s <
     phone 30s. The three copies of the mail-message timeout `matches!` became
     `DesktopRequest::response_timeout`/`desktop_timeout` on the way.
-  - Tested in `src/__tests__/MobileUsageReport.test.ts` (7) and
-    `src/__tests__/MobileStatusSheet.test.tsx` (7), plus the service's own Rust
+  - Tested in `src/__tests__/mobile/MobileUsageReport.test.ts` (7) and
+    `src/__tests__/mobile/MobileStatusSheet.test.tsx` (7), plus the service's own Rust
     tests.
   - [ ] 🖐️ Manual phone QA — on a Claude tab: the Status chip shows the tab's
     lamp and opens with the session state, the model/mode/context the composer
@@ -1135,8 +1798,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     when it did not); on a Codex tab the sheet still shows the state and the
     tally but says Codex has no readable usage; with desktop Eldrun closed it
     names Eldrun rather than "request failed"
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31v — Mobile Focus stops above the session's own input box**
   (2026-09-02; ✅ code-complete and automated tests passing, ⚠️ phone QA pending
@@ -1156,7 +1825,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   session is waiting on would be the one unrecoverable mistake here, so a
   numbered row means no frame and nothing is cut. Blank rows and the box's
   labelled top rule directly above go with it, or the output would trail off
-  into a rule and a gap. Tested in `src/__tests__/MobileSelectPrompt.test.ts`
+  into a rule and a gap. Tested in `src/__tests__/mobile/MobileSelectPrompt.test.ts`
   (3 cases).
   - [ ] 🖐️ Manual phone QA — open a Claude agent tab in Focus: the answer ends
     at the last real output line, with no rule, no `❯`, no statusline and no
@@ -1164,8 +1833,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     correctly; Copy copies without the chrome; when the agent asks a permission
     question the numbered options stay visible and answerable; Terminal view is
     unchanged; a shell tab is unchanged.
-    - [ ] ✅ Works
-    - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31s — Mobile Terminal view reaches the whole session** (2026-09-02;
   ✅ code-complete and automated tests passing, ⚠️ phone QA pending). tmux sizes
@@ -1209,8 +1884,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     scrollback without a jump; dragging back reaches the prompt again; a short
     session (desktop window no taller than the phone's box) scrolls history from
     the first pixel as before.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 - [~] **31t — Mail writes from the phone: mark read/star and reply-only**
   (2026-09-03; ✅ code-complete and automated tests passing, ⚠️ phone QA
   pending). Mail was the one companion surface with no write at all, and the
@@ -1237,8 +1918,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       arrive at the sender.
     - [ ] 🖐️ Manual test — flip a switch off while the phone has the message
       open; tap the control; expect the "Switched off in Eldrun" explanation.
-- [~] **31s — The phone's `done` tag clears when the tab is read** (2026-09-02;
-  ✅ code-complete and automated tests passing, ⚠️ phone QA pending). The
+- [x] **31s — The phone's `done` tag clears when the tab is read** (2026-09-02;
+  ✅ verified live on the phone 2026-09-20). The
   `done` pill on the project screen is the desktop's own attention flag, and
   nothing on the phone ever retired it: opening the tab, reading the finished
   turn and backing out left the pill exactly where it was, so every tab the
@@ -1255,13 +1936,22 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   needs a rebuild + restart, and the embedded PWA is compiled in. Locked by
   `MobileTabSeen.test.tsx`, `MobileTerminalStatusLamp.test.tsx` and the
   `protocol.rs` seen-request test.
-  - [ ] 🖐️ Manual phone QA — let an agent finish a turn with the phone
-    elsewhere, see `done` on the project screen, open the tab and back out: the
-    pill is gone (and gone on the desktop tab bar too); a tab still waiting on a
-    question keeps its `question` pill after a look; with desktop Eldrun closed
-    the terminal still attaches normally.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+  - [ ] 🖐️ Manual phone QA — verified live 2026-09-20 on the running dev
+    build: a finished Claude tab reported `done` by the desktop's own catalog
+    answer dropped out of it one poll after the phone opened it, and the tab's
+    finished ring was gone on the desktop tab bar. Traced with a same-user
+    client on `desktop-control.sock`: a hand-sent `TabSeen` answers `seen` and
+    retires the tag, and the phone's own attach does the same. Still unchecked:
+    a `question` pill surviving a look, and attaching with desktop Eldrun
+    closed.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [x] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 - [~] **31r — The phone comes back where it was** (2026-09-02; ✅ code-complete
   and automated tests passing, ⚠️ phone QA pending). Eldrun Mobile saved only
   the terminal it was last *sent into* (`rememberLastTab` fired on the way in
@@ -1282,8 +1972,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     the app standing on To-do (or Calendar/Mail) and reopen: it lands there;
     open a terminal and reopen while it is open: it lands in the terminal;
     close the desktop tab and reopen the PWA: it lands on the project.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 - [~] **31q — Mobile collected prompts** (2026-09-02; ✅ code-complete and
   automated tests passing, ⚠️ phone QA pending). "◷ Collected prompts" on the
   project screen opens the project's tab-free prompt list (desktop #249)
@@ -1299,8 +1995,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     Agents view follow; Send now to an idle agent and watch it typed on the
     desktop; Schedule… lands in the tab sheet with the text; with desktop
     Eldrun closed the sheet disables writes and says so.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 - [~] **31p — Mobile per-tab schedule sheet** (2026-09-01; ✅ code-complete and
   automated tests passing, ⚠️ phone QA pending). Every agent tab on the
   project's tab overview carries its own schedule line and a **◷ Schedules**
@@ -1325,7 +2027,808 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     refresh; edit it on desktop and see the open sheet refresh; close desktop
     Eldrun and verify the explanatory disabled state without losing terminal
     access; verify auth/origin rejection from an unpaired client.
-  - [ ] ✅ Works
-  - [ ] ❌ Doesn't work
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+- [~] **31ah — The phone's PWA updates on commit, without a relaunch** (2026-09-17;
+  ✅ code-complete, automated tests passing and the publish→load contract smoke-tested
+  end-to-end, ⚠️ not verified on a phone — and the first pickup costs exactly one
+  relaunch, since the overlay support is itself compiled in). The bundle is baked
+  into the binary (`build.rs` embeds `mobile-dist/`) and the running window keeps
+  its old inode across an install, so freezing a commit never reached the phone
+  until the user relaunched: on 2026-09-17 the sidecar was serving
+  `index-BxC6mmm7.js` while the installed binary held `index-B6ra4vC5.js` and the
+  tree held a third.
+  - `scripts/package-dev.sh` now publishes the bundle it just built into
+    `target/mobile-pwa/` with a `.stamp` (`built`, `commit`, `entry`), and
+    `services::mobile_control::live_pwa` serves that instead of the embedded copy.
+    In `--head` mode it publishes **before** cargo starts, so a commit reaches the
+    phone in seconds rather than after the two-minute compile. Written under
+    `target/` rather than `$HOME` on purpose: commits come from agent tabs, where
+    `agent_fence` replaces `$HOME` with a tmpfs that dies with the tab — the same
+    trap that made the binary install silently evaporate (2026-09-04).
+  - Three guards: opt-in at compile time (`ELDRUN_MOBILE_LIVE_DIR`, set only by
+    `package-dev.sh` and `start-eldrun-tauri-hotreload.sh`, so a released binary
+    has no overlay path at all); never backwards (an overlay older than
+    `MOBILE_ASSETS_BUILT_AT` is refused, so a stale branch cannot shadow a fresh
+    binary); all-or-nothing (a bundle missing its shell or its stamped entry is
+    refused whole, since mixing two bundles is a white screen).
+  - **Open:** the overlay carries the PWA, not the sidecar's HTTP API. A mobile
+    feature whose backend half is not in the running window will now *render* and
+    then fail its request, where before it simply was not there. `backend:stale`
+    reports that gap ("THE PHONE IS AHEAD OF THE RUNNING BACKEND") rather than
+    hiding it, and a relaunch is the same remedy as before.
+  - [ ] 🖐️ Manual phone QA — commit anything touching `mobile-web/`, wait for the
+    post-commit freeze, pull-to-refresh on the phone and confirm the build stamp
+    in the UI moved without the desktop being relaunched; then confirm
+    `npm run backend:stale` names the published bundle.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+- [~] **31ai — The phone says what each session was last asked** (2026-09-18;
+  ✅ code-complete, automated tests passing, ⚠️ not verified on a phone). Every
+  agent tab on the phone is called "Claude", and until now the only reading that
+  told two of them apart was a status word. A session's card in a project now
+  carries its **last prompts, always open** — the newest first and given room to
+  wrap, up to four older ones on one line each — and a row in the flat Agents
+  list carries the last one under its label. No disclosure control: an expander
+  answers "which tab did I set on the docs" one tap at a time, which is the work
+  the line exists to save.
+  - The reading is the desktop's own and costs no new read. `stores/agents/agentModels`
+    already tails each agent's transcript for the model pill and the Agents
+    view's "last prompt:" line (`agent_tab_recent_prompts` →
+    `agent_session_recent_prompts`), so the tail is simply kept
+    (`recentByTab`) instead of being reduced to its last entry, and rides the
+    catalog/activity answer as `AgentTabPrompts` the way the schedule summary
+    rides it. However a prompt was submitted — typed into the TUI, pasted, sent
+    from the phone, delivered by a schedule — the transcript has it.
+  - Published for a **quiet** tab too, which is the one asymmetry with the status
+    rows beside it: `projectAgentStatuses` drops an idle tab before its own
+    refresh (right for the Agents list, which deliberately lists nothing quiet),
+    and the session nobody has prompted since this morning is exactly the one
+    whose last prompt is worth reading. A prompt line is not a claim that
+    anything is running.
+  - Bounded twice — the desktop sends at most 5 prompts of 240 characters, and
+    the sidecar re-applies both at the browser boundary, since the far side is
+    someone else's build. Timestamps are the transcript's own ISO instants,
+    formatted in the **phone's** zone rather than sliced like the desktop-local
+    schedule string.
+  - Needs a rebuild **and** a desktop restart: the sidecar, the bridge and the
+    PWA all changed.
+  - [ ] 🖐️ Manual phone QA — open a project with two agent tabs, confirm each
+    card lists its own recent prompts newest-first with the last one legible;
+    type a prompt straight into a tab on the desktop and confirm it appears on
+    the phone within a poll; leave a tab idle for an hour and confirm its card
+    still shows what it was asked; check the Agents list carries the last prompt
+    under each row; check an agent with no readable transcript (Gemini/Qwen)
+    shows its screen-echoed line rather than an empty block.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 ---
+
+- [~] **31aj — Mobile Focus reads an OpenCode session** (2026-09-18; ✅
+  code-complete, automated tests passing, ⚠️ not verified on a phone). Plain
+  `opencode` is a full-screen TUI and Focus hands it to the Terminal view; its
+  **minimal interface** (`opencode --mini`) writes scrollback instead, and Focus
+  rendered that as a wall: every tool call in full, the start-up banner, the
+  turn footer, and OpenCode's own live status row painted into the
+  conversation — while the composer's model, mode and status chips stayed
+  empty, because a mini frame has no `>` input box for `statusLine` to anchor
+  on. Everything below was read off captures of a real 1.18.31 session replayed
+  through the phone's own emulator at 60/80/100 columns, not out of the bundle;
+  `mobile-web/src/terminal/openCodeMini.ts` holds the shapes and the reasoning
+  for each.
+  - **The frame** is found by its status row (` BUILD   223.0K (21%) · ctrl+p
+    cmd`), the last non-blank row of every mini frame, scoped to a tab whose
+    label names OpenCode — the same tie-break `agentModes` uses, and the only
+    thing that tells a bare ` BUILD` from a line of output. The box above it
+    (blanks, and its `Ask anything…` placeholder) goes with it; a draft typed on
+    the desktop stays in the reading view, the harmless direction.
+  - **The chips**: the agent in capitals is the mode, `223.0K (21%)` the
+    context, and the model comes from the turn footer `▣ Build · Muse Spark 1.3
+    Free · 6.2s` — the one place a mini session prints its display name — or
+    from the `model <id>` notice the status row shows right after a switch.
+  - **The turns**: the banner, the turn footer and each tool call (`→ ✱ ◈ %
+    ✗`, `# … Task`) are dropped the way Claude Code's tool calls are; the bash
+    tool's `$ cmd` and its output stay, being the session's own words. OpenCode
+    **wraps its own rows**, so a block is held together by the blank row that
+    ends it rather than by an indent — that is what keeps a wrapped prompt in
+    one bubble and drops a wrapped `✱ Grep …` whole instead of stranding its
+    tail as the agent's first answer line.
+  - **Its wrapping is undone** with the pane's own column count, so the phone
+    re-wraps at its width — what `readableScreen` does for every other CLI by
+    rejoining the rows xterm wrapped. A break is only undone when the wrap
+    explains it (the row ran into the last column, or the next word would not
+    have fitted), and the seam is read the same way: a space the wrap kept
+    comes back, a long token broken at its own `/`, `-` or `.` is rejoined with
+    nothing between.
+  - **Mode is a readout.** `opencode --mini` binds no key that switches its
+    agent — Tab, Shift+Tab and the leader keybinds belong to the full-screen
+    TUI and do nothing in mini, and its ctrl+p palette offers "Switch model"
+    and "Variant cycle" only (verified against 1.18.31). The family is marked
+    `fixed`: the sheet lists Build and Plan with the current one marked and says
+    the agent is settled at `--agent` time, and the chip presses nothing.
+  - **Model works.** Mini has no `/model` — sending one would submit the word to
+    the model as a prompt, a turn nobody asked for — so the chip opens
+    OpenCode's own picker through the palette (ctrl+p, `model`, Enter) and the
+    sheet lists the rows it drew. A tap answers by typing into the picker's
+    search field (ctrl+u, the row's label, Enter), which is how a person uses
+    it; tapping one of its group headings narrows the list, which the sheet
+    reads as the next step. Verified end-to-end against a live session locally,
+    never on a phone.
+  - The alt-screen notice now names `--mini` for an OpenCode tab, which is the
+    only way into any of this.
+  - [ ] 🖐️ Manual phone QA — start a tab with `opencode --mini`, ask it
+    something that uses tools, and confirm: the chat shows prompts and answers
+    with no tool rows, no banner and no ` BUILD` row; paragraphs re-wrap to the
+    phone rather than breaking at the pane's width, with URLs and paths intact;
+    the mode chip reads Build and its sheet explains it cannot switch; the model
+    chip opens OpenCode's picker and a tap changes the model (the next turn's
+    footer names the new one); the status chips show the context percentage; a
+    left→right swipe shows the ` BUILD …` status row; a plain `opencode` tab
+    still offers the Terminal view with the `--mini` hint.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] **Follow-ups**: model *variants* (ctrl+t, OpenCode's reasoning-effort
+    equivalent) have no chip yet; a stored-session reader for
+    `~/.local/share/opencode/opencode.db` would give Focus a history that
+    reaches past the pane's scrollback (see the survey).
+
+---
+
+- [~] **31ak — Arrange a project's tabs by hand from the phone** (2026-09-18; ✅
+  code-complete, automated tests passing, ⚠️ not verified on a phone). The
+  phone could sort its agent tabs (last working, last done, arrival) and could
+  not *place* them: the flat Agents list had the picker, a project screen had no
+  control at all, and neither had a way to say "this one belongs above that
+  one". A project's tab list now carries the same three-way picker, with the
+  arrival order named **Manual (tab order)** — because on this screen that order
+  IS the desktop's tab bar — and under it every card grows a **⠿ grip** that
+  drags it into place.
+  - The order it writes is the desktop's own, not a phone-local preference. A
+    drop is `PUT /api/v1/tabs/{id}/order` with the anchor tab's opaque id and a
+    side, which the sidecar turns into `DesktopRequest::ReorderTab`; the bridge
+    runs `reorderTabInScope` — the same store action the desktop Agents view's
+    drag calls, so the flat scope order and, where both tabs share a layout
+    group, the tab bar itself move together — then persists the scope's layout
+    before answering, because the route reads the new order back out of the
+    catalog's own session file.
+  - Offered under the manual order alone. The other two are computed from what
+    the agents did, so a dropped row would spring back the next time one of them
+    worked; the desktop's drag follows the same rule.
+  - Both tabs cross as opaque ids and must resolve to one scope
+    (`tab_scope_mismatch`): two projects have two layouts and no shared order a
+    move could be expressed in. A tab dropped on itself is refused before any
+    desktop call.
+  - The list rearranges on the drop and reconciles with the order the desktop
+    answers with; a refusal puts the row back and says to open desktop Eldrun.
+    The 5 s poll is paused across the write, or a reply carrying the pre-drop
+    order would yank the card back for a second.
+  - The grip's arrow keys move a tab one place, since a drag is reachable by
+    neither a keyboard nor a screen reader, and the page scrolls itself when the
+    finger reaches either edge — a list of ten tabs is taller than the phone.
+  - The cross-project **Agents** list is deliberately untouched: its rows span
+    projects, so there is no one tab bar for a manual order to be written into.
+  - Needs a rebuild **and** a desktop restart: the sidecar, the bridge and the
+    PWA all changed.
+  - [ ] 🖐️ Manual phone QA — open a project with three or more tabs, pick
+    **Manual (tab order)**, drag a card to the top and confirm the Eldrun
+    window's tab bar moved with it; confirm the order survives a pull-to-refresh
+    and a relaunch; drag a card past the bottom of the screen and confirm the
+    page scrolls under the finger; switch to **Last working** and confirm the
+    grips disappear; close desktop Eldrun and confirm a drag reports "Open
+    desktop Eldrun to rearrange tabs" and puts the card back.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+- [~] **31al — Codex and Claude read alike on the phone** (2026-09-19; ✅
+  code-complete, automated tests passing, ⚠️ not verified on a phone).
+  - Claude Code 2.1.278 dropped "esc to interrupt" from its spinner
+    (`✶ Cascading… (36s · ↓ 2.1k tokens)`), so the Session view's "working"
+    row never showed for Claude; `agentBusy` now reads that row by its shape.
+  - Codex 0.155 animates one-dot braille sparkles over its composer; one next
+    to `›` hid the input box, so Focus's frame cut and the facts flipped every
+    repaint (the flicker). `readableScreen` reads those eight cells as blank.
+  - Codex's facts row now matches Claude's: context left and the 5h/week
+    windows come from its rollout's `token_count` events
+    (`agent_transcript::TranscriptUsage`), and no fact row shows the project
+    path any more.
+  - Codex's "Last prompts" on the tab cards: the prompt reads looked only at
+    the last 512 KB, and a Codex turn writes each tool result twice, so a busy
+    session's prompt fell out of it. The prompt reads now widen to 16 MB.
+  - OpenCode cards showed their TUI's panels as "prompts" (the screen-echo
+    fallback misreads its full-screen frame); that fallback is gone for
+    OpenCode. Instead the phone reports each composer prompt as it sends it
+    (`POST /api/v1/tabs/{id}/prompt` → `DesktopRequest::TabPrompt`), the desktop
+    records it in the tab's prompt history, and a tab whose transcript is not
+    read lists its history rows. Empty, the card says prompts sent from Eldrun
+    show there. Claude/Codex rows dedupe against transcript adoption.
+  - Needs a rebuild **and** a desktop restart (backend + embedded PWA).
+  - [ ] 🖐️ Manual phone QA — prompt a Claude tab, open it in Focus → Session:
+    the "Working" dots show until the turn ends. Open a Codex tab in Focus
+    while it works: no flicker, the composer frame stays cut, and the row
+    under the output shows model · mode · `NN% context` · `5h NN%` ·
+    `week NN%`, no path. Back on the project screen, the Codex card's "Last
+    prompts" names the prompt it is working on. Send a prompt to an OpenCode
+    tab from the phone: its card lists it (with the time) after the next poll,
+    and the desktop prompt chart shows it once — also for a Claude tab.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+- [~] **31am — The agent's files live in a gallery, not in the chat** (2026-09-20;
+  ✅ code-complete, automated tests passing, ⚠️ not verified on a phone).
+  - What `eldrun-send` puts in `.eldrun/outbox/` no longer renders in the
+    Focus chat, and the **From the agent** strip above the composer is gone:
+    a picture between the turns buried the answer that mentioned it, and the
+    chat rewrote itself every time a file arrived.
+  - Instead a button beside the tab name counts what the agent sent and opens
+    the gallery (`mobile-web/src/components/OutboxGallery.tsx`): a grid of
+    thumbnails and file cards, newest first, in both Focus and Terminal. A tap
+    opens the file full screen (`OutboxViewer`, unchanged: save, share, inert
+    text, PDFs in a new tab, other kinds as downloads) and ✕ lands back on the
+    grid. The strip's ✕ ("hide these files") is gone with it — nothing to
+    dismiss when nothing intrudes.
+  - `terminal/outboxTimeline.ts` (which placed a file after the turn it
+    followed) is deleted; `terminal/fileLabels.ts` now holds the age/size
+    wording the composer and the gallery share.
+  - Needs a rebuild of the embedded PWA (`npm run build` did it) and a
+    desktop restart to serve it.
+  - [ ] 🖐️ Manual phone QA — on a tab whose agent ran `eldrun-send`: the chat
+    holds turns only (no pictures, no cards), and the button beside the tab
+    name shows the count. Tap it → the grid, newest first → tap a picture →
+    full screen → ✕ → back on the grid → ✕ → back to the chat. Switch to
+    Terminal → the same button, no strip above the composer. Send another file
+    → the count rises within ~8 s without the chat moving.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+- [~] **31an — Arrange the phone's project list by hand** (2026-09-20; ✅
+  code-complete, automated tests passing, ⚠️ not verified on a phone). The
+  Projects list came in the host's order only — live sessions first, then last
+  activity, then name — so the two projects a day is spent in kept swapping
+  places under the thumb. Every row in the **Active** list now carries the same
+  **⠿ grip** the tab cards wear, and drags into place.
+  - The order is **this phone's**, not the desktop's: it is a `localStorage`
+    preference (`prefs.ts` → `readOrder`/`writeOrder`, `projectOrder.ts`), so a
+    drag needs no desktop Eldrun, cannot be refused, and leaves the Eldrun
+    window's own project pills exactly where their owner put them. Unlike 31ak
+    (tab order), nothing crosses the bridge — no route, no sidecar, no protocol
+    change, and no desktop restart is needed for it.
+  - The host's order stays the fallback: a project that has never been placed
+    keeps it and follows the placed ones, which is also where a project that has
+    only just become active arrives rather than in the middle of an arranged
+    list. A project the list is not carrying right now (its sessions ended)
+    keeps its stored place around the block of listed rows, so an unrelated drag
+    does not demote it (`mergeProjectOrder`).
+  - Grips are drawn in the **Active** list only, and only with more than one row:
+    a search result is an answer to a query, where the best match belongs at the
+    top. The stored order is capped at 200 ids.
+  - The drag itself is now one implementation for both lists
+    (`mobile-web/src/rowDrag.ts`, lifted out of the project screen): pointer
+    captured to the grip, edge scrolling, and the arrow keys for a keyboard or a
+    screen reader. The project screen's tab drag is unchanged in behaviour.
+  - Needs a rebuild of the embedded PWA (`npm run build` did it) and a desktop
+    restart to serve it.
+  - [ ] 🖐️ Manual phone QA — with three or more active projects: drag the
+    bottom row to the top and confirm it stays there through a poll, a trip into
+    a project and back, and an app relaunch; confirm the desktop's project pills
+    did **not** move; hold a grip and drag past the bottom edge and confirm the
+    page scrolls under the finger; switch to **Search**, confirm no grips;
+    start a session in a project that was not listed and confirm it joins the
+    end rather than jumping into the arranged block.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+---
+
+- [~] **31ao — A question in Focus is a list to tap, not a highlight to walk**
+  (2026-09-20; ✅ code-complete, automated tests passing, ⚠️ not verified on a
+  phone). The stored session cannot carry a choice the agent has not been given
+  yet, so Focus → Session shows the live screen under it ("On screen now").
+  It showed the dialog as **text** — Claude's permission prompt, an
+  `AskUserQuestion`, Codex's approval — rows and all, answerable only by
+  walking the highlight with the arrow keys, which is what the phone has no
+  room for.
+  - The rows are now a list (`QuestionList`), numbered as the dialog numbered
+    them, each row a tap. What sits *above* the rows — the question and
+    whatever the agent printed to ask it — is still shown as the screen drew
+    it; `readSelectPrompt` now reports where the rows start (`start`) so the
+    two can be told apart, and the rows are not printed twice.
+  - A tap sends the same arrow keys and Enter the on-screen key row sends
+    (`selectKeys`), so a tapped row lands exactly as a walked one. Nothing
+    here decides what the options are.
+  - The tapped row says "Sending…" and the list is closed to a second tap
+    until the session redraws. If the answer never lands (6 s), the list goes
+    live again rather than leaving a block that can no longer be answered.
+  - **Bounded to the dialog, 2026-09-20.** "Above the rows" was everything
+    since the last prompt echo, so a Codex tab that had not been prompted yet
+    put its whole startup banner — version, model, directory, the `/fast` tip,
+    a config warning — under "On screen now", and a mid-turn question repeated
+    the answer the conversation above already shows (measured against the live
+    pane: 16 of 21 lines were banner). `readSelectPrompt` now also reports
+    `question` (the block directly above the rows) and `context` (that block
+    and one more, ≤ 10 lines): the question is the list's own heading, the
+    context stays as the screen drew it — in Claude's permission dialog the
+    file and the diff — and nothing above it is shown. The block label says
+    **"Waiting for your answer"** rather than "On screen now".
+  - The heading is drawn in the reading view's type, dedented, with the
+    emphasis kept and the palette dropped: Codex paints its question on a
+    near-white card, which in this dark view was a white slab. Only the
+    heading — the screen around it keeps the colours the session sent.
+  - Needs a rebuild of the embedded PWA (`npm run build` did it) and a desktop
+    restart to serve it.
+  - [ ] 🖐️ Manual phone QA — open a Claude tab in Focus → Session and ask it
+    for an edit it must request permission for: the question shows with
+    **1 / 2 / 3** as tappable rows, the row Claude highlights marked. Tap row
+    2 → it says "Sending…", the desktop's dialog takes that answer, and the
+    list is replaced by the turn. Repeat with a `/model`-style multi-row
+    dialog and with Codex's approval prompt. Confirm a numbered list inside an
+    agent's ordinary answer is *not* turned into tappable rows.
+  - [ ] 🖐️ Manual phone QA — a fresh Codex tab whose first screen is a
+    question (the "Luna Reserve / Upgrade / Add Credits" prompt does it): the
+    block holds the question and the line that says why it is asked, in the
+    reading view's own type — no white card, no startup banner — and the three
+    rows below it answer it.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+---
+
+- [~] **31ap — Fold a column away on the phone's to-do board** (2026-09-20; ✅
+  code-complete, automated tests passing, ⚠️ not verified on a phone). The board
+  is one column under another on a phone, so a board of six is mostly scrolling
+  past the four that are not today's problem — Done and the archive worst of
+  all, since both are read once a week and neither can be removed.
+  - Tapping a **column's name** folds it shut and tapping it again opens it
+    (`aria-expanded` on the name, a caret beside it). The head stays whole while
+    folded — the name, the count, and the four verbs — so a folded column can
+    still be renamed, reordered or deleted without opening it.
+  - The fold is **this phone's**, like the two hide switches beside it: a
+    `localStorage` set of column ids (`prefs.ts` → `readOrder`/`writeOrder`,
+    `todoCollapsedColumns`), so it needs no desktop round trip and the desktop
+    board is untouched. Ids of columns the board no longer has are dropped as
+    the set is written.
+  - A folded column with cards behind it says so ("3 cards folded away"), which
+    is what keeps a search honest: the head's badge counts every matching card
+    and the line counts the ones the fold is holding, so a search whose only
+    hits are in a folded column does not read as a search that found nothing.
+  - Needs a rebuild of the embedded PWA (`npm run build` did it) and a desktop
+    restart to serve it.
+  - [ ] 🖐️ Manual phone QA — fold Done and the archive: both heads keep their
+    counts, the cards go, and the fold survives a poll, a trip into another tab
+    and an app relaunch. Search for a word that only matches a card in a folded
+    column and confirm the column says how many it is holding; open it and the
+    card is there. Rename and reorder a folded column from its head. Delete a
+    folded column and confirm the fold does not come back on a new column.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+- [~] **31aq — The phone keeps a half-typed message** (2026-09-20; ✅
+  code-complete, automated tests passing, ⚠️ not verified on a phone). The
+  composer's text lived in React state and nowhere else, so every way out of a
+  session took it: the back chevron unmounts the terminal screen, and a phone
+  puts a PWA away and cold-starts it whenever it likes. A message typed on the
+  way to the desk — the long ones are exactly the ones typed away from it — was
+  gone by the time the reader came back to finish it.
+  - The draft is now kept on the phone (`mobile-web/src/drafts.ts`,
+    `eldrun.mobile.drafts`), **keyed by tab**: two agent tabs each hold their own
+    half-finished thought, and a draft never surfaces in the session it was not
+    meant for. Opening a tab restores its own text; an empty composer — sent or
+    cleared — forgets it, because there is then nothing to come back to.
+  - Never crosses the bridge. An unsent message is not something the desktop is
+    told about; this sits beside the view preferences (`prefs.ts`) for that
+    reason and is read by nothing else.
+  - Written 400 ms after the typing stops, and flushed again on unmount and on
+    `pagehide` — a store write is synchronous and re-serializes the record, so
+    per keystroke would put it between the reader and their next letter, and
+    `pagehide` is the last word a phone gives a PWA it is killing.
+  - Bounded: the newest 20 tabs' drafts, 20 000 characters each, and anything
+    that is not the written shape reads as no draft at all rather than being
+    trusted into a composer.
+  - Needs a rebuild of the embedded PWA (`npm run build` did it) and a desktop
+    restart to serve it.
+  - [ ] 🖐️ Manual phone QA — type half a message into an agent tab, go back to
+    the tab list and open the tab again: the text is there, and a second tab's
+    composer is empty. Send it and re-open the tab: the composer is empty.
+    Type again, switch to another app and let the phone kill the PWA, then
+    relaunch: the text is back. Type into a shell tab and confirm the same.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+- [~] **31ar — A project's header carries its tab order** (2026-09-20; ✅
+  code-complete, automated tests passing, ⚠️ not verified on a phone). The
+  project screen spent two rows on its own chrome: the back chevron and the
+  project's name, and under them a **Sort** row for a picker set about once a
+  week. A phone screen holds five tab cards, so that row cost a card.
+  - The header is now one line — chevron, name, order — read the way an agent
+    tab's header is (`.terminal-title` beside the back button, the control on the
+    right, which is where that screen's view switch sits). The name takes the
+    room it needs and ellipsizes; the select takes the width its own value needs,
+    and under 420 px the word "Sort" goes, the select keeping its label for a
+    screen reader.
+  - Still only drawn when there are two or more tabs to order, and the order is
+    still this phone's own (`projectTabsSort`), unchanged.
+  - Needs a rebuild of the embedded PWA (`npm run build` did it) and a desktop
+    restart to serve it.
+  - [ ] 🖐️ Manual phone QA — open a project with several tabs: the chevron, the
+    project's name and the picker are on one line, the cards start right under
+    it, and changing the order still rearranges them and survives a relaunch.
+    Open a project whose name is long and confirm the name ellipsizes rather than
+    pushing the picker off the screen; on a narrow phone confirm the picker is
+    still reachable with one thumb. Open a project with one tab and confirm the
+    header carries no picker.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+- [~] **31as — The open mark leaves the ✕'s corner, and a fullscreen agent's
+  question reaches the phone** (2026-09-20; ✅ code-complete, automated tests
+  passing, ⚠️ not verified on a phone).
+  - An agent card's status pill and the `›` that says the card opens the
+    session sat in its top-right corner, a few pixels from the ✕ that closes
+    the tab — the one tap on that card nobody wants to miss. They now sit on
+    the card's foot, right end, beside the schedule line; the opener itself is
+    stretched over the whole card (head, prompts and foot), so a tap anywhere
+    the ✕, the grip, the colour dot, the name or the ◷ has not claimed still
+    opens the session. A shell card is one row and keeps its `›` where it was.
+  - Focus showed no question for a Claude tab run with `"tui": "fullscreen"`:
+    Claude then draws its whole session on the alternate screen, and Focus
+    dropped every live screen read there — the frame is repainted whole and has
+    no scrollback, so it was absorbed nowhere and read for nothing. The stored
+    session cannot carry a choice the agent has not been given yet, so the
+    question reached the phone in no way at all. The frame is now read for the
+    live facts only — the question, the working row, the status row and the
+    model picker — while the reading view and the history stay on the stored
+    session (`docs/mobile_focus_cli_survey.md`).
+  - Claude Code's AskUserQuestion draws the highlighted row's **preview** in a
+    panel beside the rows. Its frame stood in the rows' second column, so every
+    option carried a note of box-drawing characters; a second column that opens
+    with a frame edge is now dropped as the panel it is. Ground truth: a real
+    215-column capture, replayed through `readableScreen`, now a fixture in
+    `src/__tests__/mobile/MobileSelectPrompt.test.ts`.
+  - Needs a rebuild of the embedded PWA and a desktop restart to serve it.
+  - [ ] 🖐️ Manual phone QA — open a project: on an agent card the pill and `›`
+    are at the bottom right, and tapping the card (including that corner) opens
+    the session while ✕ still only closes it. Then, in a Claude tab running
+    fullscreen, have the agent ask a question: in Focus the question and its
+    rows appear under the stored session, the rows carry no box-drawing notes,
+    and tapping one answers it. While the turn runs, the "Working" dots show;
+    swiping right shows the status line.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+- [~] **31at — Antigravity's model and effort reach the phone** (2026-09-20; ✅
+  code-complete, automated tests passing, ⚠️ not verified on a phone).
+  - The model chip on an `agy` tab read **"Gemini"**: Antigravity prints its
+    model as a phrase with the reasoning effort beside it (`Gemini 3.8 Flash ·
+    high`), and `statusLine` matched the family token and dropped the rest. The
+    footer's right-hand column is read whole now, `effort` is a status field of
+    its own, and the chip prints both.
+  - Tapping the chip opened an **empty sheet** that timed out over a dialog
+    left open in the session: Antigravity's `Switch Model` list carries no row
+    numbers and marks its highlight with the same `>` its input box draws, so
+    `selectPrompt` recognized nothing. It is read by its heading and its
+    `Search:` field now (`mobile-web/src/terminal/antigravity.ts`), and its
+    rows are numbered from the window note (`[1-6 of 7 items]`) — absolute
+    positions, so the existing walk-by-number answers it unchanged.
+  - **The effort is on that same dialog**, as a slider under the rows
+    (`◂ ●━━━◉───○ ▸` over `low medium high`), belonging to whichever model the
+    highlight is on, and Enter applies model and effort together. So the sheet
+    asks in two steps where the dialog draws one: the tap walks the highlight —
+    accepting nothing — the dialog redraws its slider for that model, and the
+    stops it then offers are the second step. A model with no slider (every
+    Claude model Antigravity offers) is accepted as soon as the walk lands.
+  - The dialog is drawn *under* the input box, so the reading view now cuts at
+    that box: without it a model row read as the input line and the dialog's
+    own rows as the status under it.
+  - Ground truth: `agy` 1.2.7 driven through a pty at 80×24 and replayed
+    through the phone's emulator; the surviving screens are the fixtures in
+    `src/__tests__/mobile/MobileAntigravity.test.ts` and
+    `src/__tests__/mobile/MobileAntigravityModel.test.tsx`
+    (`docs/mobile_focus_cli_survey.md` holds the shapes).
+  - Needs a rebuild of the embedded PWA (`npm run build` did it) and a desktop
+    restart to serve it.
+  - [ ] 🖐️ Manual phone QA — open an `agy` tab on the phone: the model chip
+    reads the model *and* its effort (`Gemini 3.8 Flash · high`). Tap it: the
+    sheet lists all seven models with the session's own marked. Tap a Gemini
+    model — the sheet then asks for the effort, with the stop the dialog is on
+    marked; tap another stop and the session's footer changes to it. Repeat
+    with a Claude model: it applies at once, with no effort step. Check that
+    closing the sheet closes the dialog in the session too.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+- [~] **31au — A chat message is held, and the hold says what to do with it**
+  (2026-09-20; ✅ code-complete, automated tests passing, ⚠️ not verified on a
+  phone).
+  - Copy and read-aloud were two small buttons hanging beside every bubble.
+    They are a sheet now (`mobile-web/src/components/MessageMenu.tsx`), opened
+    by a click-hold on the message itself — 450 ms, and a finger that wanders
+    more than 12 px is scrolling the chat, not holding it. A right-click is
+    the same press on a mouse, and the browser's own long-press callout is off
+    over a bubble so it cannot fight that press.
+  - A prompt offers the same two as an answer: the reader's own words are read
+    back. Both readings have it — the stored session (`TranscriptTurns`) and
+    the screen (`ReadableTurns`) — and a pending prompt, which is an ordinary
+    prompt bubble, comes with it.
+  - The message is read at the moment of the press and kept, so the sheet acts
+    on what the bubble said; a raw screen row or tool output is no message and
+    a hold on one opens nothing.
+  - The bubbles gained the width the buttons reserved.
+  - Needs a rebuild of the embedded PWA (`npm run build` did it) and a desktop
+    restart to serve it.
+  - [ ] 🖐️ Manual phone QA — in an agent tab's Focus view, hold a finger on one
+    of the agent's answers: the sheet opens with the message's first words,
+    **Copy message** and **Read aloud**. Copy says "Copied" and closes itself;
+    the clipboard holds that one message. Hold the answer again and tap Read
+    aloud — the phone speaks it and the row becomes **Stop reading**, which
+    stops it. Do the same on one of your own prompts, on both the Session and
+    the Screen reading. Then scroll the chat by dragging from inside a bubble:
+    no sheet opens, and no text gets selected.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+- [ ] **31av — A box tab says which member it runs in** (planned 2026-09-20,
+  not built; plan: `docs/mobile_box_parity_plan.md`). A box's tabs run in
+  several roots — the box folder and each *local* member's tree — and the
+  phone shows no hint of which, so two `claude` tabs in a four-member box are
+  indistinguishable unless their labels differ. The desktop never has this
+  problem: its `+` menu names the member outright.
+  - `PublicTab` gains `member: Option<String>` (the member project's display
+    name; absent in the box folder and on every project scope), and the box's
+    Home row gains its local-member count. `resolve_scope` already
+    canonicalizes `roots` and tests each tab with `canonical_below_any`; the
+    only new input is a name per root, so `ScopeSource.roots` carries
+    `(PathBuf, Option<String>)` and `ResolvedProject` a parallel label vec —
+    `roots` itself keeps its shape so no existing check moves.
+  - The phone prints it as a chip beside the tab name, the same treatment the
+    model tag got in 99db99c — the working sibling, not a new one.
+  - **Decide before merging:** a member project's name currently never reaches
+    the phone unless that project has its own Mobile switch on. This publishes
+    it on the box's switch alone. Defensible (the switch already discloses
+    that member's tabs, labels and transcripts), but it widens what the switch
+    means — say so in `docs/context/project_boxes.md`. No path, project id or
+    member id leaves the desktop in this item.
+  - Tests: the `discovery.rs` box case gains a member-root tab, a box-folder
+    tab and the "raw ids never appear" assertion; a PWA render test beside
+    `MobileTabModel.test.tsx`.
+  - Blocked on 31aa's manual phone QA — that path has never run on a phone,
+    and this would put new UI on top of it.
+  - Needs a rebuild of the embedded PWA and a desktop restart to serve it.
+
+- [ ] **31aw — Open a tab in a box member's root from the phone** (planned
+  2026-09-20, not built; plan: `docs/mobile_box_parity_plan.md`). The phone's
+  `create` uses `scope.cwd`, which for a box is always the box folder, so the
+  more useful half of a box — start an agent *in that repo* — is unreachable
+  from the phone. The desktop offers **Files / Shell / ⟨agent⟩ — ⟨member⟩**
+  rows (`NewTabMenu.tsx`, `TabBar.tsx`, via `boxMembersOfScope`).
+  - A box row publishes `members: [{ id, name }]` with `id` opaque
+    (`key_id(host_key, "member", [scope, member project])`, which adds
+    `"member"` to `valid_opaque_control_domain` and its test), and the create
+    request gains an optional `member_id`. The sidecar resolves it to the
+    member's canonical root the same way it already rewrites `project_id` to
+    `raw_id`, checked against that scope's own `roots` so a member id from
+    another box cannot cross scopes; the bridge then takes `cwd` from it.
+    Unknown, cross-scope, or on a project scope → `invalid_request`.
+  - Phone side: a member selector on the create row, box scopes only, box
+    folder still the default so the one-tap flow is unchanged. Shell and agent
+    only — the phone has no files surface, so the desktop's "Files — ⟨member⟩"
+    row has no counterpart here.
+  - Supersedes 31av's plain member count (`members.len()`), and wants 31av
+    first: that item settles the name-disclosure question with fewer moving
+    parts.
+  - Tests: `host.rs` — a create naming a member lands in that member's root,
+    a member id from another box is refused, one on a project scope is
+    refused; `MobileBoxAccess.test.tsx` — the bridge builds the spec with the
+    member's cwd under the box's scope key.
+  - Needs a rebuild of the embedded PWA and a desktop restart to serve it.
+
+- [~] **31ax — The model chip works on a plain `opencode` tab** (2026-09-20; ✅
+  code-complete, automated tests passing, ⚠️ not verified on a phone). 31aj
+  read OpenCode's picker off `opencode --mini`, but the `+` menu launches plain
+  `opencode` — the full-screen TUI — and that is what every OpenCode tab here
+  actually runs. Its picker is the same overlay drawn with different geometry,
+  and none of it was read: the sheet listed nothing and timed out after six
+  seconds, so the tab's model could not be changed from the phone.
+  - Ground truth is a pty capture of 1.18.31 at 60 and 215 columns, replayed
+    through the phone's own emulator and run through the real parsers
+    (`docs/mobile_focus_cli_survey.md` holds the shapes). The keys were right
+    all along — ctrl+p, `model`, Enter opens it in the full TUI too, and ctrl+u
+    plus the row's label answers it; only the reading was wrong.
+  - `readOpenCodePicker` now reads the overlay **by the title's column** rather
+    than by an indent: centred dialogs, provider groups separated by a blank
+    row, the `●` that marks the session's current model, the key-hints footer
+    that ends the list, and the composer box and status bar the dialog is
+    painted over — whose `┃` and whose `ctrl+p commands` land on either side of
+    it and are cut by column. Mini gains the same two fixes it needed (a list
+    that runs past its first group, and the row it is on).
+  - `readableScreen` no longer reads a box-drawing bar deep inside a row as
+    that row's left frame. Stripping it took the whole indent with it, which
+    pulled the overlaid rows out of column with the rest of the dialog. The
+    status strip is dedented instead (`dedentRows`), so a centred fullscreen
+    box still reads flush on a phone.
+  - [ ] 🖐️ Manual phone QA — on a plain `opencode` tab, tap the model chip:
+    the sheet lists the models by provider with the current one marked, a tap
+    switches it (the status row says `model <id>`, and the footer under the box
+    names the new one), the sheet closes by itself, and its ✕ closes the
+    dialog in the session too. Then confirm a `--mini` tab still lists and
+    answers its own picker.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - Needs a rebuild of the embedded PWA and a desktop restart to serve it.
+  - **Still open for a plain `opencode` tab**: the Reader view. The full TUI
+    has no scrollback, so Reader falls back to the stored session
+    (`services::opencode_store`), which carries the prompts and the agent's
+    *text* answers only — a turn that was all tool calls shows as nothing, and
+    an interrupted one as a prompt with no reply. Either the reader learns to
+    show OpenCode's tool/patch steps, or the tab is started `--mini`.
+
+- [~] **31ay — The project screen shows what the desktop sent** (2026-09-20; ✅
+  code-complete, automated tests passing — the sidecar's project-outbox route
+  test and `MobileProjectOutbox.test.tsx`; ⚠️ not verified on a phone, and it
+  needs a rebuild + restart first: the sidecar gained two routes and the phone
+  serves the bundle baked into the binary). 31x put the agent's files behind
+  the gallery button on one tab's Focus screen, which is where they are least
+  findable: `eldrun-send` is run from whichever tab is to hand, and the reader
+  who wants the file opened the *project*. A shelf under the tab cards shows
+  them where the project is.
+  - **Sidecar**: `GET /api/v1/projects/{id}/outbox` and `…/outbox/{name}`,
+    the same `outbox.rs` listing and bytes as the tab routes — the outbox
+    belongs to the project, so a file sent from a tab that has since been
+    closed is still listed, and a project with no agent tab at all still has
+    one. Unknown project → `project_not_found`; every refused name is still
+    one `file_not_found`.
+  - **Phone**: the project screen polls the listing every 8 s while the page
+    is visible (`OUTBOX_POLL`, the Focus screen's own cadence) and draws a
+    **From the desktop** shelf under the cards when there is something on it —
+    the gallery's own tiles (`OutboxGrid`), newest six, a picture full screen,
+    a PDF in the browser's viewer, anything else saved. Past six, **All N
+    files** opens the same gallery sheet the Focus button does.
+  - [ ] 🖐️ Manual phone QA — run `eldrun-send <file>` in a project tab (a PNG,
+    a PDF and a `.zip`), open that project on the phone: within ~8 s the shelf
+    stands under the tab cards with the newest first; tap the picture → full
+    screen, Close returns; the PDF opens in the browser; the zip saves. Send
+    seven more → the shelf still shows six and **All 10 files** opens the
+    sheet with all of them. Close the tab the files were sent from → the shelf
+    is unchanged. With Eldrun closed → the shelf still lists what is there.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+- [~] **31az — The root console on the phone** (2026-09-21; ✅ code-complete,
+  automated tests passing — `discovery`'s
+  `the_root_scope_is_listed_by_its_switch_and_gate_alone`,
+  `MobileRootAccess.test.tsx`, `scopeCaption` in `MobileProjectOrder.test.tsx`;
+  ⚠️ not verified on a phone, and it needs a rebuild + restart first: the
+  sidecar's catalog changed and the phone serves the bundle baked into the
+  binary). Plan and rationale: `docs/mobile_root_plan.md`,
+  `docs/context/root_console.md` ("On the phone"). Root is a phone scope behind
+  its own default-off switch (Settings → Eldrun Mobile → Root console) and a
+  gate: with the root MCP tools on it is listed only while write review is
+  "all" and root agents are fenced. Approvals stay on the desktop; the phone's
+  root row shows the count of waiting proposals.
+  - [ ] 🖐️ Manual phone QA — switch "Root console on the phone" on: a **Root**
+    row (`★ root`) appears on the phone with the console's shell/agent tabs;
+    open a running root agent and type into it; ＋ → an agent: the root console
+    rises on the desktop over the open project (no scope switch) with the new
+    tab in front; ask it for a calendar entry → nothing is written, the
+    desktop's ✓ Approvals shows it, and the phone row reads "1 awaiting
+    approval at the desk". Set MCP write review to "Destructive only" → Settings
+    shows the "Closed right now" line, the row leaves the phone within a few
+    seconds and an open root terminal detaches; back to "All writes" → it
+    returns. Switch the root MCP tools off with review still weakened → the
+    row is listed. Switch root access off → gone.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+*Not coming to the phone (decided, not forgotten — see
+`docs/mobile_box_parity_plan.md`): editing a box from the phone (membership,
+rename, Dissolve), listing a box's members as project rows, a per-member
+status column, and box-folder file browsing.*

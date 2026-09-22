@@ -17,7 +17,7 @@
  * interpreted as markup. Keep this invariant if extending.
  */
 
-import { overlaySpecAt } from "./beamer";
+import { overlaySpecAt } from "./tex/beamer";
 
 export type Lang =
   | "js"

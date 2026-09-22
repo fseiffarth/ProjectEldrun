@@ -1,3 +1,5 @@
+import type { TranslationKey } from "../../src/lib/i18n";
+
 export interface MobileSpeechRecognitionAlternative {
   transcript: string;
 }
@@ -32,7 +34,10 @@ export interface MobileSpeechRecognition {
   onresult: ((event: MobileSpeechRecognitionResultEvent) => void) | null;
   onerror: ((event: MobileSpeechRecognitionErrorEvent) => void) | null;
   onend: (() => void) | null;
-  start(): void;
+  onspeechstart?: (() => void) | null;
+  onspeechend?: (() => void) | null;
+  /** With a track, the recognizer hears that capture instead of opening its own. */
+  start(track?: MediaStreamTrack): void;
   stop(): void;
   abort(): void;
 }
@@ -104,17 +109,129 @@ export async function prepareOnDeviceSpeech(
   }
 }
 
-export function transcriptsFrom(
-  event: MobileSpeechRecognitionResultEvent,
-): { final: string; interim: string } {
-  const final: string[] = [];
-  const interim: string[] = [];
-  for (let index = event.resultIndex; index < event.results.length; index += 1) {
-    const result = event.results[index];
-    const text = result?.[0]?.transcript ?? "";
-    (result?.isFinal ? final : interim).push(text);
+/** What one recognition session has finalized, and how much of it is already
+ * in the composer. */
+export interface DictationProgress {
+  /** The finalized words of the recognizer's current result list. */
+  heard: string[];
+  /** How many of `heard` were already put into the composer. */
+  inserted: number;
+  /** Where the "Heard:" preview starts: the words before it were sent or cleared. */
+  shownFrom: number;
+}
+
+export const DICTATION_START: DictationProgress = { heard: [], inserted: 0, shownFrom: 0 };
+
+/** A word as two readings are compared: case and punctuation ignored, since a
+ * recognizer repeating "fix the login" may repeat it as "Fix the login,". */
+function wordKey(word: string): string {
+  return word.toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+}
+
+/** How many leading words two readings agree on. */
+function sharedHead(a: string[], b: string[]): number {
+  let count = 0;
+  while (count < a.length && count < b.length && wordKey(a[count]) === wordKey(b[count])) count += 1;
+  return count;
+}
+
+function startsWithWords(words: string[], head: string[]): boolean {
+  return sharedHead(words, head) === head.length;
+}
+
+function wordsOf(text: string): string[] {
+  const clean = sanitizeVoiceTranscript(text);
+  return clean ? clean.split(" ") : [];
+}
+
+/** How many of `a`'s words turn up in `b`, in order. */
+function wordsInOrder(a: string[], b: string[]): number {
+  let count = 0;
+  let from = 0;
+  for (const word of a) {
+    const at = b.findIndex((other, index) => index >= from && wordKey(other) === wordKey(word));
+    if (at < 0) continue;
+    count += 1;
+    from = at + 1;
   }
-  return { final: final.join(" "), interim: interim.join(" ") };
+  return count;
+}
+
+/** Whether `next` is `prev` said again: extended, or re-read with a word or
+ * two revised. One word is too little to call a revision of. */
+function sameSpeech(prev: string[], next: string[]): boolean {
+  if (prev.length === 0) return false;
+  if (startsWithWords(next, prev)) return true;
+  return prev.length > 1 && wordsInOrder(prev, next) * 5 >= prev.length * 3;
+}
+
+/**
+ * Everything the recognizer has said in this session, read off the WHOLE
+ * result list and never from `resultIndex` alone. Chrome on Android hands back
+ * results it already finalized with every later event, and finalizes one
+ * utterance several times over as it grows ("how are", "how are you", each
+ * final). A final that repeats the whole list so far, or only the utterance
+ * before it, replaces what it repeats: comparing against the whole list alone
+ * caught the first utterance of a session and doubled every later one.
+ */
+export function readDictation(
+  event: MobileSpeechRecognitionResultEvent,
+): { heard: string[]; interim: string } {
+  let heard: string[] = [];
+  /** Where the last utterance starts in `heard`. */
+  let utterance = 0;
+  let interim: string[] = [];
+  for (let index = 0; index < event.results.length; index += 1) {
+    const result = event.results[index];
+    const words = wordsOf(result?.[0]?.transcript ?? "");
+    if (words.length === 0) continue;
+    if (!result.isFinal) interim = [...interim, ...words];
+    else if (heard.length > 0 && startsWithWords(words, heard)) heard = words;
+    else if (sameSpeech(heard.slice(utterance), words)) heard = [...heard.slice(0, utterance), ...words];
+    else {
+      utterance = heard.length;
+      heard = [...heard, ...words];
+    }
+  }
+  const last = heard.slice(utterance);
+  if (interim.length > 0 && startsWithWords(interim, heard)) interim = interim.slice(heard.length);
+  else if (interim.length > 0 && startsWithWords(interim, last)) interim = interim.slice(last.length);
+  return { heard, interim: interim.join(" ") };
+}
+
+/**
+ * Folds a new reading into the progress: the words not yet in the composer
+ * (`insert`, possibly empty) and the progress once they are. A reading that
+ * is the last one extended or revised is the same speech, so only the words
+ * past the inserted count are new — a revised word already in the composer
+ * stays as it was put there, rather than the whole sentence going in a second
+ * time. A reading that starts elsewhere, or came back shorter, and has little
+ * in common with the last is a new result list (Chrome on Android starts one
+ * after a pause), so none of it is inserted yet.
+ */
+export function advanceDictation(
+  progress: DictationProgress,
+  heard: string[],
+): { progress: DictationProgress; insert: string } {
+  const restarted = progress.heard.length > 0 && heard.length > 0
+    && (sharedHead(heard, progress.heard) === 0 || heard.length < progress.heard.length)
+    && wordsInOrder(progress.heard, heard) * 5 < progress.heard.length * 3;
+  const inserted = restarted ? 0 : progress.inserted;
+  return {
+    insert: heard.slice(inserted).join(" "),
+    progress: { heard, inserted: Math.max(inserted, heard.length), shownFrom: restarted ? 0 : progress.shownFrom },
+  };
+}
+
+/** After a send or a clear. The heard words stay counted as inserted — the
+ * recognizer will read them back — but the preview stops quoting them. */
+export function settleDictation(progress: DictationProgress): DictationProgress {
+  return { ...progress, shownFrom: progress.inserted };
+}
+
+/** What "Heard:" quotes: the words since the last send or clear, then the live guess. */
+export function dictationPreview(progress: DictationProgress, interim: string): string {
+  return [...progress.heard.slice(progress.shownFrom), ...(interim ? [interim] : [])].join(" ");
 }
 
 /** Voice text is terminal input, so never forward terminal control bytes. */
@@ -125,22 +242,24 @@ export function sanitizeVoiceTranscript(value: string): string {
     .trim();
 }
 
-export function speechRecognitionError(error: string): string {
+/** The message for a recognizer error, as an i18n key; `null` for an abort,
+ * which is the app stopping it and nothing to tell the user about. */
+export function speechRecognitionError(error: string): TranslationKey | null {
   switch (error) {
     case "not-allowed":
     case "service-not-allowed":
-      return "Microphone access was denied. Allow it for this Eldrun Mobile site and try again.";
+      return "mobile.voice.errDenied";
     case "audio-capture":
-      return "No phone microphone is available.";
+      return "mobile.voice.errNoMic";
     case "network":
-      return "The phone's speech service is unavailable. Check its connection and try again.";
+      return "mobile.voice.errNetwork";
     case "language-not-supported":
-      return "The phone's speech service does not support this language.";
+      return "mobile.voice.errLanguage";
     case "no-speech":
-      return "No speech was heard. Tap the microphone and try again.";
+      return "mobile.voice.errNoSpeech";
     case "aborted":
-      return "";
+      return null;
     default:
-      return "Voice typing stopped unexpectedly. Try again or use the keyboard microphone.";
+      return "mobile.voice.errStopped";
   }
 }

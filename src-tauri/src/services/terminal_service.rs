@@ -199,6 +199,23 @@ pub fn load_terminal_session(project_id: &str) -> TerminalSession {
     session
 }
 
+/// Re-point the saved tab layout's paths after the project folder moved from
+/// `old` to `new` (see [`storage::rewrite_path_prefix`]). Read and written as
+/// plain JSON so fields this build does not model survive. A project with no
+/// saved layout is fine; returns whether the file changed.
+pub fn rewrite_session_paths(project_id: &str, old: &str, new: &str) -> Result<bool, String> {
+    let path = storage::project_session_dir(project_id).join(TERMINALS_FILE);
+    if !path.exists() {
+        return Ok(false);
+    }
+    let mut session: Value = storage::read_json(&path).map_err(|e| e.to_string())?;
+    if !storage::rewrite_path_prefix(&mut session, old, new) {
+        return Ok(false);
+    }
+    storage::write_json_atomic(&path, &session).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
 /// Read the state-dir session file verbatim (no sanitizing, no fallback).
 fn read_state_session(project_id: &str) -> Option<TerminalSession> {
     let path = storage::project_session_dir(project_id).join(TERMINALS_FILE);
@@ -248,7 +265,7 @@ const AGENT_CMDS: &[&str] = &[
     "ollama",
 ];
 
-/// Script interpreters a Run tab persists as its `cmd` (`lib/shellScriptRun.ts`'s
+/// Script interpreters a Run tab persists as its `cmd` (`lib/terminal/shellScriptRun.ts`'s
 /// `ScriptShell`, plus bare `sh`). A Python Run tab persists `cmd: ""` and types
 /// its command line as input instead, so no interpreter path appears here.
 const SCRIPT_INTERP_CMDS: &[&str] = &["sh", "bash", "zsh", "fish", "ksh", "powershell", "cmd"];
@@ -471,8 +488,24 @@ pub fn adopt_project_tree_session(
     project_id: &str,
     local_file: &str,
 ) -> Result<TerminalSession, String> {
-    let mut session = read_project_tree_session(local_file)
+    let session = read_project_tree_session(local_file)
         .ok_or_else(|| "no saved layout in this folder".to_string())?;
+    adopt_untrusted_session(project_id, session)
+}
+
+/// Store a session that arrived from **outside this installation** as
+/// `project_id`'s layout, sanitized. Returns what was stored.
+///
+/// The one path both untrusted adoptions share: the project-tree copy
+/// ([`adopt_project_tree_session`]) and a project export bundle
+/// (`commands::project_transfer`). A bundle is a file that can be mailed, so its
+/// layout gets exactly the treatment a cloned repository's does — same
+/// sanitizer, same dropped `open_apps` — rather than a second, looser rule that
+/// would quietly become the way in.
+pub fn adopt_untrusted_session(
+    project_id: &str,
+    mut session: TerminalSession,
+) -> Result<TerminalSession, String> {
     sanitize_untrusted_layout(&mut session.tab_layout);
     // `open_apps` is not adopted: a folder-supplied list of host commands to
     // launch is precisely what the move was about, and no legitimate workflow

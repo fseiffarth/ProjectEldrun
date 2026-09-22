@@ -62,6 +62,37 @@ standing hole to a code-hosting site. `restrict=on` + `guestfwd` at a fixed
 guest address (10.0.2.100:3128) <!-- privacy-check: ok — QEMU slirp, not a real host -->means the guest-side proxy env never changes
 across boots even though the host-side port does.
 
+## The contained mail reader
+
+`VmSpec.mail_reader` (trusted from `projects.json` → `extra["vm"]` only; the
+in-folder `project.json` grants nothing) makes this VM the one place an agent
+may *read* mail through the root MCP (`docs/mail_mcp_plan.md`,
+`docs/context/root_console.md` §Mail). The local fence cannot substitute:
+`bwrap --unshare-net` cannot reach a host-loopback proxy, and an env-offered
+proxy is one the agent can unset.
+
+- **The flag is a request, not a fact.** `services::mail_reader::refusal` runs
+  on every mail call against live state: spec *and booted* egress are `Proxy`,
+  no GitHub opt-in, no `allow_hosts`, no unexpired temporary allow, the live
+  proxy's list equals the default, the VM is in this process's registry, and
+  there is no host-side mirror. Each miss refuses by name.
+- **The flag guards the knob.** `vm_set_spec` refuses a flagged spec that is
+  wider than that (`widen_refusal`), `vm_allow_temporarily` refuses outright,
+  and the byte-sync entry (`commands::sync::resolve`) refuses a reader — "pull
+  this to the host" would be the exfiltration path with your click on it.
+- **A second `guestfwd`**, only for a flagged project under `Proxy`: a fixed
+  guest address (`root_mcp::READER_GUEST_HOST:PORT`) mapped to the host's
+  root-MCP port. `Origin` refusal and the bearer check are unchanged. It is in
+  the QEMU argv, so setting the flag applies from the next boot.
+- **The token** is minted in `pty_spawn` for an agent spawn into a flagged VM
+  (class `Reader`, wired CLIs only) and travels in the remote command's
+  environment. Everything in the VM can see it; the VM is the unit of
+  containment.
+- **The residual, in the reader's terms:** it can still exfiltrate to the
+  allowed endpoints — its provider's API host receives everything it reads, and
+  an injected agent could call it with an attacker's key. The UI says "narrowed
+  and logged", never "sealed". Like the whole tier, never booted live.
+
 ## Per-VM SSH identity, and why host-key confirmation is bypassed
 
 A recreated VM has a new host key; the user's real `~/.ssh/known_hosts` must

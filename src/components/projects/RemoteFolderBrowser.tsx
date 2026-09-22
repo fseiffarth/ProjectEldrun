@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { Dropdown } from "../common/Dropdown";
-import { fileIcon, folderIcon } from "../../lib/viewers/fileUtils";
+import { FileIcon } from "../common/icons/FileIcon";
 import type { RemoteEntry } from "../../types";
 import { useT } from "../../lib/i18n";
 
@@ -132,7 +132,7 @@ export function RemoteFolderBrowser({
               }}
             >
               <span className="remote-entry-icon file-icon">
-                {entry.is_dir ? folderIcon() : fileIcon(remoteEntryExt(entry.name))}
+                <FileIcon ext={remoteEntryExt(entry.name)} isDir={entry.is_dir} />
               </span>
               <span className="remote-entry-name">{entry.name}</span>
             </div>

@@ -42,7 +42,7 @@
  * and the tree defers to Source rather than showing a structure that isn't the
  * file's.
  *
- * Pure: no React, no Tauri, no fs. Unit-tested in `src/__tests__/Yaml*.test.ts`.
+ * Pure: no React, no Tauri, no fs. Unit-tested in `src/__tests__/viewers/Yaml*.test.ts`.
  */
 
 import type { TranslationKey } from "../i18n";
@@ -247,14 +247,25 @@ const SPECIAL_FIRST = new Set([
   "%", "@", "`",
 ]);
 
-/** True when the value must be quoted to survive a round-trip as written. */
-export function needsQuoting(value: string): boolean {
+/** True when the value must be quoted to survive a round-trip as written.
+ *
+ *  `flow` is the context the value is being written INTO, and it is not
+ *  cosmetic: inside a flow collection (`[a, b]`, `{k: v}` — i.e. every JSON-
+ *  shaped region) the structural characters end the scalar wherever they appear,
+ *  so an unquoted `a, b` written into `[x]` becomes TWO items and an unquoted
+ *  `a]b` closes the collection early and tears the rest of the file. In block
+ *  context those same characters are ordinary text and quoting them would
+ *  rewrite perfectly good plain scalars, which is why this is a parameter and
+ *  not a blanket rule — the same bargain `bib.ts`'s `bibLiteral(value, delim)`
+ *  and `table.ts`'s `encodeCell(v, delimiter)` already strike. */
+export function needsQuoting(value: string, flow = false): boolean {
   if (value === "") return true;
   if (/^\s|\s$/.test(value)) return true;
   if (SPECIAL_FIRST.has(value[0])) return true;
   if (value.includes(": ") || value.endsWith(":")) return true;
   if (value.includes(" #")) return true;
   if (/[\n\r\t]/.test(value)) return true;
+  if (flow && /[,[\]{}]/.test(value)) return true;
   return false;
 }
 
@@ -292,22 +303,30 @@ function encodeSingle(value: string): string {
  * cannot carry it. In `strict` (JSON) there are no plain scalars at all, so
  * anything that is not a bare literal comes back quoted.
  */
-export function encodeScalar(value: string, style: ScalarStyle, strict = false): string {
+export function encodeScalar(
+  value: string,
+  style: ScalarStyle,
+  strict = false,
+  flow = false,
+): string {
   if (style === "double") return encodeDouble(value);
   if (style === "single") return value.includes("\n") ? encodeDouble(value) : encodeSingle(value);
   if (strict) return isJsonLiteral(value.trim()) ? value.trim() : encodeDouble(value);
-  return needsQuoting(value) ? encodeDouble(value) : value;
+  return needsQuoting(value, flow) ? encodeDouble(value) : value;
 }
 
 /** A mapping key, quoted only when it must be — which in JSON is always. */
-export function encodeKey(key: string, strict = false): string {
+export function encodeKey(key: string, strict = false, flow = false): string {
   if (
     strict ||
     key === "" ||
     /^\s|\s$/.test(key) ||
     SPECIAL_FIRST.has(key[0]) ||
     key.includes(":") ||
-    key.includes("#")
+    key.includes("#") ||
+    // A key is a scalar too, and inside `{…}` it ends at the first `,` or brace
+    // exactly as a value does — `{a: 1, x,y: 2}` is not a two-key mapping.
+    (flow && /[,[\]{}]/.test(key))
   ) {
     return encodeDouble(key);
   }
@@ -321,7 +340,12 @@ export function encodeKey(key: string, strict = false): string {
  * created as an EMPTY FLOW collection (`{}` / `[]`) — a real, empty collection in
  * either dialect, which the tree then adds children to in flow style.
  */
-export function literalFor(type: YamlValueType, value: string, strict = false): string {
+export function literalFor(
+  type: YamlValueType,
+  value: string,
+  strict = false,
+  flow = false,
+): string {
   switch (type) {
     case "number":
       return value.trim() === "" ? "0" : value.trim();
@@ -335,7 +359,7 @@ export function literalFor(type: YamlValueType, value: string, strict = false): 
       return "[]";
     default:
       if (strict) return encodeDouble(value);
-      return needsQuoting(value) || parsesAsNonString(value) ? encodeDouble(value) : value;
+      return needsQuoting(value, flow) || parsesAsNonString(value) ? encodeDouble(value) : value;
   }
 }
 
@@ -1388,7 +1412,7 @@ export function setValue(text: string, doc: YamlDoc, node: YamlNode, next: strin
     return insertLines(text, node.line + 1, body);
   }
 
-  const literal = encodeScalar(next, node.style, doc.strict);
+  const literal = encodeScalar(next, node.style, doc.strict, node.inFlow);
   // An empty value has no token to replace: the splice point sits right after the
   // `:`/`-`, so the leading space has to come with the literal.
   const lead = node.style === "empty" ? " " : "";
@@ -1441,7 +1465,7 @@ export function setListItems(
   if (inlineListValues(node) === null) return text;
   const rawFor = new Map<string, string>();
   for (const c of node.children) if (!rawFor.has(c.value)) rawFor.set(c.value, c.raw);
-  const enc = (v: string) => rawFor.get(v) ?? encodeScalar(v, "plain", doc.strict);
+  const enc = (v: string) => rawFor.get(v) ?? encodeScalar(v, "plain", doc.strict, isFlow(node));
 
   if (isFlow(node)) {
     return splice(text, node.flowOpen, node.end, `[${values.map(enc).join(", ")}]`);
@@ -1461,7 +1485,12 @@ export function renameKey(text: string, doc: YamlDoc, node: YamlNode, nextKey: s
   if (node.keyRaw === null || node.keyStart < 0 || nextKey === "") return text;
   // A key already written quoted stays quoted, whatever the dialect.
   const quoted = node.keyRaw[0] === '"' || node.keyRaw[0] === "'";
-  return splice(text, node.keyStart, node.keyEnd, encodeKey(nextKey, doc.strict || quoted));
+  return splice(
+    text,
+    node.keyStart,
+    node.keyEnd,
+    encodeKey(nextKey, doc.strict || quoted, node.inFlow),
+  );
 }
 
 /** The lines a BLOCK node owns: its own, plus the comment run written above it.
@@ -1685,7 +1714,7 @@ export function addChild(
   // "+ key" on a list writes an item, not a key: `- name: api`.
   const asItem = parent.kind === "seq" && kind === "key";
   const pair = `${encodeKey(key, doc.strict)}:${literal ? ` ${literal}` : ""}`;
-  const flowPair = `${encodeKey(key, doc.strict)}: ${literal || "null"}`;
+  const flowPair = `${encodeKey(key, doc.strict, true)}: ${literal || "null"}`;
 
   // A placeholder INSIDE a flow collection — `{a: null}`, `[a, null]`, and so every
   // null in a JSON file — has no lines to grow into: it holds a span, and a flow
@@ -1769,7 +1798,7 @@ export function addRootEntry(
   const body = strict
     ? kind === "item"
       ? `[${literal}]`
-      : `{${encodeKey(key, true)}: ${literal || "null"}}`
+      : `{${encodeKey(key, true, true)}: ${literal || "null"}}`
     : kind === "item"
       ? `- ${literal}`.trimEnd()
       : `${encodeKey(key)}:${literal ? ` ${literal}` : ""}`;

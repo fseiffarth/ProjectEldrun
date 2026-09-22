@@ -14,15 +14,27 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     or poll on the open file's mtime/hash.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 44. **TeX viewer: preview off by default.** Default the TeX viewer to the source
     editor rather than auto-rendering a preview; make preview an explicit toggle.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 45. **Auto-complete in native text viewers (pre-defined model).** Add code/text
     auto-completion across all native text viewers, driven by a pre-defined
@@ -37,17 +49,208 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     (`commands/ollama.rs`). *Accept (while a ghost is showing):* `Tab` inserts the
     whole suggestion; `Right` (→) inserts only the next word and keeps the rest
     ghosted (walk word-by-word); `Esc` dismisses.
+    *Roadmap 1–5 (2026-09-18):* bounded caret context, capability-based native
+    FIM (chat fallback for references/empty suffix/unsupported insert), cancellable
+    streaming with socket teardown, and matching-input type-through implemented.
+    Chat preserves the document language; thinking is off and known non-text
+    models are skipped. Regression coverage exercises Unicode/chunk boundaries,
+    cancellation before startup/first token, stale output and matching edits.
+    *Roadmap 6–9 (2026-09-18):* five-second shared model discovery; bounded
+    automatic same-project imports/open-tab references and TeX label/bib keys;
+    prose chat instructions and streaming sentence/line stops; Alt+→ line accept,
+    Alt+[/] three lazy candidates, a bounded 60-second per-editor completion cache,
+    and local accept/dismiss counts by mode/model in the usage recap. Manual
+    references take priority; automatic references are disk snapshots refreshed
+    on requests. Test the new keys, reference edits, German prose, caret revisits
+    and recap counters live before removing UntestedTag.
+    Live checks: load a local model in the brain menu, enable Autocomplete in a
+    text/TeX tab, then Ctrl+Space mid-file; verify streaming, type its matching
+    prefix, accept with →/Tab, and interrupt with typing/Esc/tab switches. Repeat
+    with an insert-capable model, attached references, and a long document.
+    Compare first-token latency and suggestion quality; the UntestedTag remains.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
+
+45a. **Optional GitHub Copilot provider for autocomplete — in progress (2026-09-18).**
+    Add Copilot alongside Ollama, preserving Ollama as the default for existing
+    settings. First release: local code files, explicit project opt-in, manual
+    Ctrl+Space and debounced automatic suggestions. Keep prose on its existing
+    Ollama role initially; remote files, attached references and prose support
+    follow after their context and URI handling are verified.
+
+    Integration source: GitHub's official
+    [Copilot Language Server](https://github.com/github/copilot-language-server-release).
+    Its documented editor protocol provides inline completions, browser device
+    sign-in, cancellation, and shown/partial/full acceptance notifications.
+    Use its LSP interface over stdio for autocomplete. Eldrun's existing Copilot
+    agent-tab launcher is a separate integration.
+
+    - [ ] **Verify the protocol in a standalone probe.** Initialize the server,
+      sign in, synchronize an unsaved document, request an inline completion,
+      and cancel it. Check credential persistence, content exclusions, workspace
+      access, supported installation platforms and server-version compatibility.
+      Do not launch or restart Eldrun for the probe. Resolve credential storage
+      before shipping; no tokens in settings, browser storage or logs, and no
+      changes to another editor's configuration.
+    - [ ] **Extract completion-provider adapters.** Move provider-specific work
+      out of `src/components/embed/FileViewerPane.tsx` into a shared interface
+      with Ollama and Copilot implementations. Reuse ghost text, cancellation,
+      visibility guards and acceptance controls. Carry document versions,
+      replacement ranges, provider identity and opaque completion IDs rather
+      than reducing every result to a string. Support both Ollama's streaming
+      updates and Copilot's returned completion items.
+    - [ ] **Add settings and setup.** Offer Ollama / GitHub Copilot for code
+      autocomplete; missing provider settings retain today's behavior and
+      persisted settings round-trip without losing existing values. Keep the
+      current code/prose Ollama model assignments. Provide one-click installation
+      in a terminal tab, browser sign-in, sign-out and connection/quota status.
+      Use `useExperimental`, `UntestedTag`, the shared dialog scheme and i18n
+      strings. Surface relevant server account/billing messages. Provider changes
+      invalidate in-flight work and displayed suggestions.
+    - [ ] **Enforce cloud consent and context boundaries.** Require explicit
+      project-level opt-in before supplying documents to Copilot; enforce this
+      in the backend as well as the UI. Document synchronization needs its own
+      context policy: the current bounded Ollama prefix/suffix does not describe
+      what a language server receives. Explain that document content may leave
+      the machine, verify additional workspace reads, and honor exclusions.
+      Keep contexts isolated by project and account. Do not silently switch from
+      Ollama to Copilot or bypass a local-only project policy. Disabling consent
+      must cancel work and release synchronized project documents.
+    - [ ] **Implement the managed backend service.** Add an `AppHandle`-free
+      Rust service for process lifecycle and framed JSON-RPC, with thin Tauri
+      commands using camelCase payloads. Handle initialization, incremental
+      document open/change/close synchronization, focus changes, status messages,
+      timeouts, explicit request cancellation and bounded crash recovery.
+      Launch only an installed, resolved server executable; manage and reap its
+      child subtree on shutdown. Scope IPC results to the requesting window and
+      reject stale document versions. Pause hidden-pane work and synchronize
+      current content before requesting again when shown.
+    - [ ] **Adapt editor behavior to provider capabilities.** Preserve Tab,
+      word/line acceptance, Esc and type-through. Normalize line endings and
+      UTF-16 positions, convert compatible ranges into safe insertions, and
+      reject replacements the current ghost UI cannot represent safely. Cycle
+      actual returned candidates. The documented Copilot inline request has no
+      Eldrun Sentence/Block/Scope controls: hide unsupported controls rather
+      than implying they affect generation. Preserve original item metadata for
+      shown and partial/full acceptance notifications; report acceptance once
+      with correct offsets. Initially avoid reusing cached Copilot items across
+      document versions or server sessions. Include provider identity in local
+      usage metrics and any later cache keys.
+    - [ ] **Validate and document the implementation.** Add meaningful tests for
+      settings migration, disabled-provider/no-consent behavior, Unicode and
+      CRLF positions, replacement ranges, cancellation races, stale responses,
+      project isolation, partial acceptance and sign-in/server failures. Keep
+      existing Ollama regression coverage passing. Update affected file-map rows
+      when adding or reshaping files and follow the third-party update checklist
+      for the new wrapped server. Run `npm run build`, `npm test`,
+      `cargo test --manifest-path src-tauri/Cargo.toml`, `npm run lint`,
+      `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings`,
+      and `git diff --check`. After backend edits run `npm run backend:stale`
+      and report its result without restarting the app.
+
+    Live checks for the user after the new backend is available: install/sign in,
+    opt in one local project, enable Copilot for code and request a suggestion;
+    accept by word, line and Tab, type through a matching prefix, then interrupt
+    with edits, caret movement, Esc and tab switches. Verify a second project
+    receives no Copilot context without consent, disabling consent stops work,
+    and changing back to Ollama restores its existing behavior. Exercise logout,
+    unavailable network, exclusions and quota errors. Keep `UntestedTag` until
+    the user confirms these checks; no live verification yet.
+
+    Implementation evidence (2026-09-18): Ollama's streaming/model/cache work is
+    extracted into `ollamaCompletionProvider.ts`; `completionProvider.ts` retains
+    original items and tests UTF-16/CRLF, safe ranges and cumulative acceptance.
+    Rust `services/copilot/{rpc,policy}.rs` supplies bounded framing, cancellation,
+    timeouts and directory-bound consent checks, with migration/isolation tests.
+    Wiring (2026-09-18, second pass): `services/copilot/{process,documents,session}.rs`
+    add the narrow fence, incremental sync and the per-project session; thin
+    commands in `commands/copilot.rs`; `copilotCompletionProvider.ts` + editor
+    selection/feedback; `CopilotCompletionCard` (provider, one-click install,
+    project consent, device sign-in) under Settings → Experimental. The real
+    1.547.0 server starts inside the fence and returns error 1000 through the
+    session (ignored test). All gates pass. Boxes above stay unticked: nothing
+    has run live, and sign-in/`checkStatus` are untested against a real account.
+    `scripts/copilot-probe.py` verified CLS 1.547.0 initialization, incremental
+    unsaved document sync, unauthenticated error 1000 and cancellation -32800.
+    Its inspected default auth store writes plaintext; the isolated probe blocks
+    `auth.db` and uses its in-memory fallback. Production credential policy and
+    authenticated workspace/exclusion behavior still need verification before
+    enabling sign-in. See `docs/context/copilot_completion.md`.
+
+45b. **More autocomplete providers: HTTP FIM, richer local context, next-edit
+    — planned (2026-09-18).** Follows #45a, which is in progress. Builds on its
+    `CompletionProvider` interface (`src/lib/viewers/completion/completionProvider.ts`) and
+    reuses its settings, consent and acceptance machinery; nothing here waits on
+    the Copilot language-server service. Rationale (web survey 2026-09-18): a
+    fill-in-the-middle HTTP endpoint takes the same bounded prefix/suffix Ollama
+    already gets, so it needs no process lifecycle, document sync or device
+    sign-in. Zed ships a comparable provider set (Zeta, Mercury, Sweep, Ollama,
+    Codestral, Copilot). Supermaven is sunset; Tabby would be a second local
+    model server beside Ollama, so neither is planned.
+
+    Order: HTTP FIM providers first, then richer local context, then next-edit.
+
+    - [ ] **Mistral Codestral FIM provider.** Codestral's `/v1/fim/completions`
+      endpoint (`prompt` + `suffix`, `max_tokens`, `stop`, streaming) maps onto
+      the existing `completionWindow()` prefix/suffix. Verify the request shape,
+      streaming format and endpoint choice (dedicated Codestral key vs. general
+      Mistral key) in a standalone probe first. The HTTP call runs in the Rust
+      backend with thin camelCase commands, never a webview `fetch` (the CSP is
+      the perimeter). The API key goes only in the OS keychain: never in
+      settings, browser storage or logs. Same project opt-in and backend-enforced
+      consent as Copilot in #45a; it sends only the bounded window, which the
+      consent text must say. Map Sentence/Block/Scope onto `max_tokens`/`stop`
+      only where that is honest; otherwise hide them, as #45a does.
+    - [ ] **Inception Mercury Coder FIM provider.** Same shape (FIM endpoint,
+      API key, very low latency). Share one generic "HTTP FIM" adapter with
+      Codestral if the probe confirms compatible request/response formats;
+      per-vendor code stays limited to endpoint, auth header and model id.
+    - [ ] **Richer local context (llama.cpp `/infill`).** Optional llama-server
+      endpoint as a local provider. Besides prefix/suffix, `/infill` accepts
+      extra context chunks. Feed it a bounded ring buffer of recently edited or
+      viewed chunks, the way llama.vim does, taken only from the same project
+      and cleared when the project or provider changes. Check whether Ollama can
+      take the same extra context through its prompt before adding a second
+      local server.
+    - [ ] **Next-edit prediction (later).** Sweep Next-Edit (1.5B, open weights,
+      runs locally), Zed's Zeta2 (open weights) and Mercury Edit 2 (API) predict
+      a replacement near the caret, not an insertion at it. That needs a
+      replacement/diff preview in the editor. Today's ghost UI deliberately
+      rejects replacements (#45a), so design that preview first, then serve the
+      local models through Ollama or llama-server.
+    - [ ] **Validate.** Tests for key-absent/consent-absent behavior (no
+      request leaves the machine), streaming and cancellation, stop sequences,
+      provider switching, extra-context project isolation, and settings
+      round-trip. Run the full gates plus `npm run backend:stale` after backend
+      edits. Tag new providers with `UntestedTag` behind `useExperimental`.
+
+    Live checks for the user: add a Codestral key, opt in one project and
+    request suggestions (manual and automatic, all acceptance paths). Confirm a
+    project without consent sends nothing, removing the key disables the
+    provider cleanly, and switching back to Ollama restores today's behavior.
+    Repeat for Mercury and the llama-server provider. No implementation or live
+    verification yet.
 
 46. **Undo/redo in native text/TeX viewers.** Add an undo/redo history to the
     in-app text and TeX editors (keyboard `Ctrl+Z`/`Ctrl+Shift+Z` plus buttons).
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 47. **Save icon instead of "save/saved" text (+ optional autosave).** Replace the
     textual save/saved status in the text/TeX viewer with a save icon that
@@ -55,8 +258,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     diff-aware reload as the counterpart for external changes).
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 48. **Per-file-type native-viewer settings + document supported types.** A single
     settings surface to configure native-viewer behavior keyed by file type, and
@@ -64,8 +273,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     Ties into #44 (per-type preview defaults) and #45 (per-type completion).
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 49. **Make file links in text/TeX viewers visibly clickable.** Render links that
     point at files with a clear affordance (underline / dotted underline) so they
@@ -73,8 +288,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     governs *where* a clicked link opens.)
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 50. **Link-open routing: same subwindow, or drag-to-set-default.** When a file
     link (#49) is clicked, open the target in the **same** subwindow by default;
@@ -84,31 +305,55 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     linked file(s) with it).
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 51. **Native `.odt` / `.xlsx` viewer.** Add an in-app viewer for OpenDocument /
     spreadsheet files. First decide whether it's worth it / already feasible via
     an existing Tauri-side renderer before building one.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 52. **Image viewer: zoom/scroll to the cursor.** Improve image-viewer scrolling so
     zoom centers on the mouse cursor rather than the viewport origin.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 53. **Drag images (and their tabs) out as drop sources.** Make images in the image
     viewer — and image tabs — draggable as drop sources, e.g. drag an image/text
     tab and drop it into a browser file-upload field.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 54. **TeX compile output → PDF in a new tab + compiler options.** Open the
     compiled PDF as its own tab (it is a real file), and add compiler options to
@@ -116,8 +361,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     `compile_tex` affordance from Group D.14.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 55. **Adjustable text size in the text/TeX/Markdown editors.** Add an `A−`/`A+`
     control (and `Ctrl` +/−, `Ctrl`+0 to reset) that scales the editor font. In
@@ -128,8 +379,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     (alongside #45's autocomplete).
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 66. **SyncTeX PDF↔source navigation + subtex→main compile wiring.** Make the
     compiled PDF and its `.tex` source navigable both ways, and let a child file
@@ -151,8 +408,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     the leaf records; the CLI stays as the fallback for a PDF with no map.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 67. **Find in the text/TeX viewers.** Add an in-editor search bar to the shared
     `CodeEditor` (so it covers both the text and TeX viewers). `Ctrl`/`Cmd`+`F`
@@ -166,8 +429,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     and scrolls the match into view. Pure helpers `findMatches`/`decorateSearchRanges`.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 68. **Image viewer: auto-reload on disk change.** Give the image viewer the same
     diff-aware reload as the editors/PDF (#43): `useBlobUrl` polls `file_mtime`
@@ -178,8 +447,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     dimensions change.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 69. **Persist viewer scroll/zoom across reopen + restart.** The in-app PDF, text,
     and image viewers remember the reader's position so reopening a file — or
@@ -195,8 +470,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     unchanged write never churns the saveLayout debounce.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 70. **TeX viewer: `Ctrl`+`S` saves and recompiles.** ✅ Implemented ·
     🧪 Awaiting live QA. In the LaTeX viewer (engine
@@ -209,8 +490,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       anywhere under `src/__tests__/`. The empty boxes here mean "untested",
       not "unstarted".
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 71. **Find in the native PDF viewer (`Ctrl`+`F`).** Add an in-document search bar
     to the pdf.js-backed PDF viewer (the counterpart to #67's editor search).
@@ -221,14 +508,20 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     case toggle, and `Esc` to close. Each page's text is extracted lazily on first
     use via `getTextContent()` (shared `pageTextItemBoxes`, the same boxes SyncTeX
     word-refinement uses) and cached per document; the pure `pdfPageMatches`
-    (`lib/viewers/tex.ts`) slices matches into big-point boxes (one per text run a
+    (`lib/viewers/tex/tex.ts`) slices matches into big-point boxes (one per text run a
     match straddles). Matches paint as translucent overlays over the page canvases
     (`.file-viewer-pdf-search-hit`), the current one brighter and scrolled into
     view. Pure helper `pdfPageMatches`.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 80. **PDF page arranging + merging, on ONE code base with the print preview.**
     Turn the read-only PDF viewer into a page organiser: reorder, delete, turn,
@@ -261,11 +554,11 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       an external change while dirty raises a banner instead of clobbering either
       side. pdf.js *detaches* the buffer it is handed, so each source keeps a pristine
       byte copy for pdf-lib.
-    - **Cross-window drag (`stores/pdfDrag.ts` + `commands/pdf_clip.rs`).** Two
+    - **Cross-window drag (`stores/drag/pdfDrag.ts` + `commands/pdf_clip.rs`).** Two
       windows are separate WebViews with separate JS heaps, so the pages are built
       into a small PDF, parked in a backend slot, and only the *token* rides the
       event. Position comes from polling the OS cursor in physical desktop px
-      (`lib/coords`), because DOM pointer events don't cross an OS window boundary on
+      (`lib/window/coords`), because DOM pointer events don't cross an OS window boundary on
       WebKitGTK — the same reason the tab drag-dock does it. On release every window
       gets the END carrying the last polled cursor; only the one whose rect contains
       it claims the drop and acks. Copy is the default; **Shift moves**, and the
@@ -283,15 +576,21 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     - [ ] 🖐️ Manual test — **the cross-window drag is the one to watch**: it is the
       WebKitGTK-sensitive path. Also re-check the print preview still reorders/prints
       as before, and that saving works on a **remote (SSH)** project's PDF.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 87. *(This is group-M's #87; group-O has a different #87.)*
     **Python in the native code viewer: Run, Debug, breakpoints, go-to-definition.**
     Turn the text editor into a usable Python workbench for the three things a
     script actually needs, without importing an LSP or a DAP client.
 
-    - **Run / Debug open a terminal tab** (`lib/pythonRun.ts`) rather than a bespoke
+    - **Run / Debug open a terminal tab** (`lib/terminal/pythonRun.ts`) rather than a bespoke
       execution path — the same one-click-open-a-tab-and-run policy as
       `installCommand.ts`. That is what makes them work everywhere Eldrun already
       works, *for free*: a shell tab carries the project's locality and sandboxing,
@@ -364,8 +663,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       **remote (SSH)** project runs on the host with the *host's* interpreter, and
       that Ctrl+Click into a package (`from .pkg import thing` re-exported by its
       `__init__`) lands on the real definition.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 88. **Native YAML/JSON viewer: an editable structure tree.** Give `.yaml`/`.yml`/
     `.json` the same shape markdown has — a rendered half and a source half behind
@@ -432,8 +737,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       that `Ctrl`+`Z` walks it back. Check a flow/JSON-formatted file adds and
       deletes in its own style, and that a file with an anchor/merge key
       (`<<: *base`) renders those rows read-only instead of offering a broken input.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 89. **CSV table viewer: a separator you can name, and cells you can edit.**
     📄 **Doc drift:** `README.md:369` still describes the table viewer as a
@@ -499,8 +810,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       Columns list, confirm they come back on a second click and survive a reopen,
       and that editing a cell to the *right* of a hidden one still writes the right
       field.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - [ ] **Deferred:** inserting/deleting a **column** (a row op is one splice; a
       column op is one splice per row, and every splice invalidates the offsets
       after it — the same constraint `moveNodeTo` faces in `yaml.ts`). Editing an
@@ -605,8 +922,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       resize and rotate objects and confirm the guides name the right reason;
       recompile the `.tex` with a slide inserted and confirm layers follow their
       slides; confirm the autosave lands (there is no save button by design).
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - [ ] 🖐️ Manual test (dual-window, **on real hardware with a projector or
       second monitor**) — `D` opens the audience window fullscreen on the *other*
       display, not over the notes; advancing on either window moves both; `←`
@@ -615,8 +938,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       ending the talk; `Esc` ends the talk and takes the audience window with it;
       opening the second display twice re-uses one window. With **one** monitor
       it opens windowed and decorated, draggable onto the projector.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - [ ] **Known gap:** `compile_tex` is **local-only** (no remote dispatch), so
       a remote project must compile on its local mirror. (It is also a
       *synchronous* Tauri command, so every compile freezes the window — see
@@ -635,7 +964,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     a `.bib` keeps everything it had (highlighting, find/replace, blame, compare,
     autocomplete, the save/undo path).
 
-    - **The cards edit the TEXT** (`lib/viewers/bib.ts`), the #88 bargain applied
+    - **The cards edit the TEXT** (`lib/viewers/tex/bib.ts`), the #88 bargain applied
       to a second format: every action is a splice, so field order, the alignment
       somebody sorted by hand, brace-protected `{LaTeX}` capitalization, an older
       file's `"…"` quoting and the `%` comments all survive an edit, and a card
@@ -659,7 +988,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       `\cite` completion dropdown, is now an adapter over the same parse, so the
       card view and the completion list cannot disagree about what is in a `.bib`.
       Ctrl+clicking `\bibliography{refs}` in a `.tex` now lands in the cards.
-    - Tested in `src/__tests__/BibViewer.test.ts` (21 cases: the tolerant parse,
+    - Tested in `src/__tests__/tex/BibViewer.test.ts` (21 cases: the tolerant parse,
       the delimiter/locked-value rules, and every op's splice-not-rewrite
       guarantee).
     - [ ] 🖐️ Manual test — open a real `.bib` (a Zotero/Mendeley export, ideally
@@ -668,8 +997,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       `Ctrl+Z` undoes it as one step, that the filter finds an entry by author and
       by title, that a fold survives closing and reopening the tab, and that
       deleting a field leaves no blank line behind.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 92. **The PDF's own hyperlinks (`hyperref` cross-references and URLs).** ✅
     Implemented · 🖐️ untested. A PDF carries its links as *link annotations* — a
@@ -716,7 +1051,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       against the canvas rather than the event's own target; the boxes take the
       crosshair cursor while it is armed. Only pages of the file itself carry a
       link layer — a merged-in page's destinations point into *its* document.
-    - Tested in `src/__tests__/PdfLinks.test.ts` (the geometry, the destination
+    - Tested in `src/__tests__/pdf/PdfLinks.test.ts` (the geometry, the destination
       slot rules, and every annotation shape that must be dropped).
     - [ ] 🖐️ Manual test — open a `hyperref` PDF (any LaTeX paper with citations):
       confirm a `\cite` jumps to the bibliography entry and `←` comes back, that a
@@ -724,8 +1059,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       a zoom and a page turn, that a `\url` raises the confirm and Cancel opens
       nothing, and that Ctrl+click on a link still reverse-searches into the
       source.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 93. **Black out text in a PDF, securely (#pdf-redact).** ✅ Implemented ·
     🖐️ untested. The viewer could rearrange a PDF but not remove anything *from* a
@@ -773,7 +1114,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       them onto the rasters it prints, and a page dragged into another viewer or
       window is exported *burned in* — a mark that travelled as an editable
       overlay would arrive as a page whose text is still there under a box.
-    - Tested in `src/__tests__/PdfRedact.test.ts` — including end to end through
+    - Tested in `src/__tests__/pdf/PdfRedact.test.ts` — including end to end through
       pdf-lib: a real PDF with real text is marked, saved, and its decoded content
       streams are searched for the word that was supposed to be destroyed.
     - [ ] 🖐️ Manual test — open a PDF, arm ▮, drag over a line (confirm the box
@@ -782,8 +1123,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       counts, that the saved page renders identically minus the blacked areas, and
       that selecting/copying that page — or `pdftotext` over the file — returns
       none of the redacted text.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 94. **Delete a PDF's metadata (#pdf-meta).** ✅ Implemented · 🖐️ untested.
     The blackout tool covers what is *on* the page; nothing covered what the file
@@ -824,7 +1171,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       that a redacted sheet's images are not yet registered.
     - **The deletion travels with a page dragged out**, for the blackouts' reason:
       those bytes are what lands in the other viewer.
-    - Tested in `src/__tests__/PdfSave.test.ts`, asserting against the **saved
+    - Tested in `src/__tests__/pdf/PdfSave.test.ts`, asserting against the **saved
       bytes** rather than the object model — the failure being guarded against is
       precisely a field that survives in the file after the model says it is gone.
     - [ ] 🖐️ Manual test — open a PDF with a real author/producer (anything out of
@@ -833,8 +1180,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       `exiftool` on the file: confirm it reports no Title/Author/Creator/Producer
       and no dates, that `strings` over the file finds none of the old values, and
       that the pages still render and their text still selects.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 95. **Remarks on a PDF (#pdf-notes).** ✅ Implemented · 🖐️ untested.
     The viewer could rearrange a PDF, black text out of it and strip its
@@ -875,7 +1228,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       rail and a page dragged into another document all cover them for free; a
       **flattened** (blacked-out) sheet keeps its remarks though it keeps nothing
       else, since a comment about what was destroyed is the reader's own work.
-    - Tested in `src/__tests__/PdfNotes.test.ts`, asserting against the **saved
+    - Tested in `src/__tests__/pdf/PdfNotes.test.ts`, asserting against the **saved
       bytes**: that a remark is a real `/Text` annotation, that an untouched page's
       comments are unmoved, that a touched page's are replaced rather than doubled,
       that a link is never disturbed, and that two copies of one duplicated sheet
@@ -885,8 +1238,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       note is there with its text; edit and delete it in that viewer, reopen here
       and confirm Eldrun shows the change; then open a PDF that already carries
       comments, add one of your own and Save, and confirm both survive.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 96. **Selecting text in a PDF (#pdf-textselect).** ✅ Implemented · 🖐️ untested.
     The reader paints pages to a canvas, and a canvas has no text in it. Until
@@ -959,7 +1318,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       would address one the page had never heard of. The read is hoisted to the
       viewer, keyed by source/page/rotation, requested by a page when it comes
       near and by the panel for the whole document when it opens.
-    - Tested in `src/__tests__/PdfNotes.test.ts`: the reading order and the ring,
+    - Tested in `src/__tests__/pdf/PdfNotes.test.ts`: the reading order and the ring,
       that the arrangement's set wins over the file's for a sheet it has taken
       over, that a remark is addressed by its entry so a reorder follows it, the
       drag clamp, and what `isPristineExceptNotes` refuses to let an autosave
@@ -971,8 +1330,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       is listed with its page, walk it with ↑/↓ and confirm the page follows and
       the marker flashes; then reorder two pages and confirm the panel says
       autosave is holding and nothing is written until Save.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 98. **Ctrl+F over a word split across two lines (#71).** ✅ Implemented ·
     🖐️ untested. A PDF has no words and no lines — only positioned runs of glyphs
@@ -985,7 +1350,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     page.
 
     - **A break is now read, not ignored** (`pageHaystack` in
-      `lib/viewers/tex.ts`): a trailing hyphen at a line end is dropped, joining
+      `lib/viewers/tex/tex.ts`): a trailing hyphen at a line end is dropped, joining
       the halves into the word the typesetter split; any other break becomes a
       space, which is what it means to a reader — unless one of the two sides
       already carries whitespace.
@@ -1008,14 +1373,20 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     - The blackout tool's "black out all N matches" inherits all of it, since it
       marks from exactly these boxes: a redacted name that wrapped is now covered
       on both lines.
-    - Tested in `src/__tests__/TexSync.test.ts`.
+    - Tested in `src/__tests__/tex/TexSync.test.ts`.
     - [ ] 🖐️ Manual test — find a paper with a hyphenated line break, search for
       the whole word and confirm both halves highlight (hyphen included) and that
       Enter walks onto it; search a two-word phrase that wraps and confirm it is
       found; then check a page range like "3–4" split over a line does not match
       "34".
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 99. **Selection without a mode, highlights with remarks, and copy-on-select
     (#pdf-textselect, #pdf-notes).** ✅ Implemented · 🖐️ untested. Three asks that
@@ -1081,9 +1452,9 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       are already on the page, and a copy of them in the annotation is a second
       version of the sentence that stops being true the moment the document is
       edited. Asserted against the saved bytes.
-    - Tested in `src/__tests__/PdfNotes.test.ts` (model, annotation read, and the
-      saved bytes), `src/__tests__/PdfSelection.test.ts` (the rect merge) and
-      `src/__tests__/PdfNoteUi.test.tsx` (a highlight through the real UI).
+    - Tested in `src/__tests__/pdf/PdfNotes.test.ts` (model, annotation read, and the
+      saved bytes), `src/__tests__/pdf/PdfSelection.test.ts` (the rect merge) and
+      `src/__tests__/pdf/PdfNoteUi.test.tsx` (a highlight through the real UI).
     - [ ] 🖐️ Manual test — open a PDF and drag across a paragraph with no tool
       armed: the selection should follow the words, a bar should appear over the
       end of it, and the text should already be on the clipboard (paste it
@@ -1095,26 +1466,38 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       must still be clickable, Ctrl-click must still reverse-search, the blackout
       and ✂ tools must still take their drag, and a selection dragged across a
       page break must produce one highlight per page.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 100. **Markdown viewer: cross-file `#fragment` navigation.** ✅ Implemented ·
     A preview link like `docs/guide.md#setup` now opens the target *and*
     scrolls its preview to the heading. The click posts the fragment to
-    `stores/mdAnchor` keyed by the target's absolute path (`openLinkedFile`
+    `stores/viewers/mdAnchor` keyed by the target's absolute path (`openLinkedFile`
     may re-activate an existing tab, so a prop cannot carry it — the same
-    shape as `stores/editorJump` for SyncTeX line targets); the target's
+    shape as `stores/viewers/editorJump` for SyncTeX line targets); the target's
     `MarkdownView` consumes it once its preview is rendered. Fragment→id
     matching (`matchAnchorId` in `lib/viewers/markdown.ts`) tries the decoded
     fragment verbatim, then its slugified form (a link written as the
     heading's visible text), then case-insensitively; in-page `#anchor`
     clicks go through the same matcher.
-    - [x] 🤖 Automated test (`src/__tests__/MdAnchor.test.ts`)
+    - [x] 🤖 Automated test (`src/__tests__/viewers/MdAnchor.test.ts`)
     - [ ] 🖐️ Manual test — in one md file write `[x](other.md#some-heading)`
       and click it in Preview: the other file should open scrolled to that
       heading; click again from the source file (repeat jump must re-fire).
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 101. **Markdown relationship graph (opt-in `md_graph`).** ✅ Implemented ·
     A third "Graph" mode on the markdown viewer, behind the `md_graph`
@@ -1127,13 +1510,19 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     through the same `openLinkedFile` routing a preview link uses. Reads ride
     the confined `read_file_text` with the pane's project scope; the crawl is
     one bounded pass per look, never a background poll.
-    - [x] 🤖 Automated test (`src/__tests__/MdGraph.test.ts`)
+    - [x] 🤖 Automated test (`src/__tests__/viewers/MdGraph.test.ts`)
     - [ ] 🖐️ Manual test — enable the flag, open `PROJECT.md` in a scaffolded
       project, switch to Graph: the scaffold files should ring the center;
       click `README.md` to open it; delete a linked file and rebuild (↻) to
       see it dashed red.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 102. **`PROJECT.md` scaffold: the navigation entry point.** ✅ Implemented ·
     New and imported projects (and the scaffold repair) now also get a
@@ -1148,15 +1537,21 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     - [ ] 🖐️ Manual test — create a new project and check `PROJECT.md`
       exists, links resolve in the viewer, and an existing project picks it
       up via scaffold repair without touching other files.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 103. **PDF region capture rides the global Screenshot app.** ✅ Implemented ·
     The PDF viewer's ✂ "select and copy as image" toolbar tool is gone; the
     same region capture is now armed by the header's global Screenshot button
     instead. Pressing Screenshot while a PDF viewer is visible offers the shot
     to it first (claimable `eldrun:screenshot-capture` window event,
-    `lib/screenshot.ts`; first visible viewer claims, so the OS region tool is
+    `lib/window/screenshot.ts`; first visible viewer claims, so the OS region tool is
     only spawned when no PDF is on screen). The drag captures from the rendered
     page canvas (document-sharp, pending blackouts burned in), copies the PNG
     to the clipboard AND files it as `eldrun-screenshots/Screenshot-….png` (was `screenshots/`, see #835) in the
@@ -1168,8 +1563,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       clipboard paste and the new file under `eldrun-screenshots/`; press Screenshot
       with no PDF visible and check the OS region tool still runs; Esc while
       armed cancels without a shot.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 211. **Migrate project: step-by-step scaffold/entry migration.** ✅ Implemented ·
     Project Settings (file-view gear) grew a Migration section whose "Migrate
@@ -1185,15 +1586,21 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     condition on disk, so a stale accept is a no-op, never an overwrite.
     Frontend: `ProjectMigrationDialog.tsx` + pure `migration.ts` helpers.
     - [x] 🤖 Automated test (`commands/projects.rs` migration tests,
-      `src/__tests__/ProjectMigration.test.ts`)
+      `src/__tests__/projects/ProjectMigration.test.ts`)
     - [ ] 🖐️ Manual test — needs a backend restart (two new commands). On an
       old project (or one with a deleted scaffold file / legacy `# Claude
       Context` stub): open the file view's ⚙ → Migrate project…, check each
       step lists correctly, decline one step and apply — the declined change
       must not happen, the accepted ones must; re-open: only the declined
       step remains; an up-to-date project says so.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 212. **Project remarks follow-ups.** REMARKS.md v1 leaves directory roll-up
     badges, FileBrowser's unscoped context menu, MarkdownView's edit-mode
     add-at-line button, and fs-watch-driven live badge refresh for later. The
@@ -1226,7 +1633,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       opened in the workspace centre would be answering for both.
     - i18n: `texWorkspace.hideStructure` / `showStructure` / `back` /
       `backEmpty`, 4 strings × 5 languages.
-    - [x] 🤖 Automated test (`src/__tests__/TexWorkspace.test.tsx` (h) fold →
+    - [x] 🤖 Automated test (`src/__tests__/tex/TexWorkspace.test.tsx` (h) fold →
       rail → back, persisted; (i) sidebar click then ← returns the centre and
       the button goes inert again)
     - [ ] 🖐️ Manual test — open a multi-file `.tex` as a workspace: fold the
@@ -1235,8 +1642,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       `.tex`, a graphic and a `\ref` in turn and walk back through them with ←;
       check the button's tooltip names the file it would return to, that it is
       inert on the main document, and that a resize still works after unfolding.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 250. **TeX workspace: an Up step to the parent's `\input` line, and hotkeys
     for Up and Back.** ✅ Done 2026-09-02, code-complete and **live-unverified**.
@@ -1270,7 +1683,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       the chord, so the textarea's own paragraph selection never runs.
     - i18n: `texWorkspace.up` / `upEmpty` / `backChord`,
       `shortcutHelp.group.tex`, 4 strings × 5 languages.
-    - [x] 🤖 Automated test (`src/__tests__/TexStructure.test.ts`: line/column
+    - [x] 🤖 Automated test (`src/__tests__/tex/TexStructure.test.ts`: line/column
       per reference incl. a nested child and a graphic, `texStructureParent`
       for child/graphic/root/unlisted; `TexWorkspace.test.tsx` (m) ↑ inert on
       the main, climbs from the child with the jump to line 3, ← returns; (n)
@@ -1286,8 +1699,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       buttons, and that the chords do nothing with a terminal tab focused. Then
       rebind `texUp` in Settings → Keyboard Shortcuts and confirm the tooltip
       and the key follow.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 241. **PDF viewer: present the file fullscreen in a window of its own.** ✅
     Implemented (2026-09-01, untested live) · `▶ Fullscreen` in the PDF toolbar
@@ -1322,7 +1741,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       while it is up, so the projector does not blank in a long Q&A.
     - i18n: `pdfViewer.fullscreenPresent{Title,DirtyTitle,Label,Btn}` and
       `pdfPresent.{waiting,opening,loadError,keyHint}`, 8 strings × 5 languages.
-    - [x] 🤖 Automated test (`src/__tests__/PdfPresent.test.ts`: one label per
+    - [x] 🤖 Automated test (`src/__tests__/pdf/PdfPresent.test.ts`: one label per
       path, never confused with a deck label, valid as a window label and through
       `?present=`, page clamped before the document is open)
     - [ ] 🖐️ Manual test — open a PDF, scroll to a middle sheet and press
@@ -1333,8 +1752,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       second one opening. On a two-monitor machine, confirm it takes the *other*
       screen. With unsaved page changes, confirm the tooltip says so and the
       window shows the saved file.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 242. **TeX editor: grey out `comment` blocks, and a linewise comment toggle.** ✅
     Implemented (2026-09-01, untested live) · Two halves of the same gesture —
@@ -1363,7 +1788,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     - Commits through the ordinary `edit()` path, so undo/redo, the dirty mark
       and the syntax overlay all stay consistent, and the selection is restored
       over the same text afterwards.
-    - [x] 🤖 Automated test (`src/__tests__/EditorLineComment.test.ts`: markers
+    - [x] 🤖 Automated test (`src/__tests__/editor/EditorLineComment.test.ts`: markers
       per language, round-trip, partial→full, indent alignment, blank-line skip,
       selection ending at a line start; `Highlight.test.ts`: the comment block,
       an unclosed one, and other environments unaffected)
@@ -1374,8 +1799,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       covers them; press again and the text comes back exactly as it was. Try it
       with the caret on a single line, on a block that is already half
       commented, and in a `.py`/`.ts` file (`#`/`//`).
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 243. **TeX editor: Ctrl+click an `\input{…}` that isn't there yet offers to
     create it.** ✅ Implemented (2026-09-01, untested live) · Following a
@@ -1415,7 +1846,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       reason (the one create that routes over SFTP). The folder step is the
       exception, project-addressed `create_dir`, so a remote project fails it
       with the host's own message rather than silently.
-    - [x] 🤖 Automated test (`src/__tests__/TexLinks.test.ts`: what each command
+    - [x] 🤖 Automated test (`src/__tests__/tex/TexLinks.test.ts`: what each command
       would create, the declines, the folder pair, `texPathExists` and the
       command it stats with, folder-then-file creation, an existing folder left
       alone, and the re-check writing nothing when the file was there)
@@ -1426,8 +1857,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       sibling `\input{notes}` (no folder line), with `\bibliography{refs}` (opens
       the bib cards), and Ctrl+click a `\includegraphics{figs/plot}` that is
       missing — no offer, as before. Cancel must leave the document untouched.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 245. **LaTeX editor: the standard features it was still missing.** ✅
     Implemented (2026-09-01, untested live) · The TeX viewer could compile,
@@ -1505,13 +1942,13 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       document is prose), and a bare `\` opens nothing — it is the first
       keystroke of `\\`, `\[` and `\%`, and a list of every command over it
       would fight the typist.
-    - [x] 🤖 Automated tests (`src/__tests__/TexCompletions.test.ts` — the two
+    - [x] 🤖 Automated tests (`src/__tests__/tex/TexCompletions.test.ts` — the two
       new contexts and their refusals, the `\newcommand`-family and
       environment parsers, and every branch of both inserts including the
-      nested-`\end` case; `src/__tests__/TexLogWarnings.test.ts` — a realistic
+      nested-`\end` case; `src/__tests__/tex/TexLogWarnings.test.ts` — a realistic
       two-file log: kinds, lines from both spellings, file attribution across a
       close, a wrapped warning, a package marker, deduplication, and errors not
-      being read as warnings; `src/__tests__/TexWordCount.test.ts` — body vs.
+      being read as warnings; `src/__tests__/tex/TexWordCount.test.ts` — body vs.
       preamble, headings/captions counted apart, math as objects, verbatim and
       machinery arguments skipped, and the unterminated-group cases;
       `commands::tex::tests::compile_env_disables_log_line_wrapping`)
@@ -1527,8 +1964,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       the build succeeds, and a collapsed **Warnings** card appears; open it,
       and the row names the right file and line and jumps there. Press
       **Words** and check the count against `texcount` if it is installed.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 246. **The native editor aligns its own Enter, and marks the indents it draws.**
     ✅ Implemented (2026-09-01, untested live) · The code editor had a Tab that
@@ -1566,7 +2009,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       tab rewritten as spaces, because one substituted character would slide
       every guide after it off its column; painted as a gradient rather than a
       `border-left`, which would add a pixel of width and do the same.
-    - [x] 🤖 Automated test (`src/__tests__/EditorAutoIndent.test.ts`: the carry,
+    - [x] 🤖 Automated test (`src/__tests__/editor/EditorAutoIndent.test.ts`: the carry,
       block openers and exits, the file's own unit, strings and comments not
       read as code, continuation alignment across lines, the between-a-pair
       case, `\begin` with and without a waiting `\end`, nesting, a `\begin`
@@ -1583,8 +2026,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       no second one. Check the guides line up with the text in a tab-indented
       file and in the wrapped LaTeX editor, and that Shift+Enter still writes a
       plain newline.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 247. **TeX editor: hover a snippet, see it typeset.** ✅ Implemented
     (2026-09-01, untested live) · The viewer could compile the whole document
@@ -1592,7 +2041,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     never "is *this* formula right" — the question actually asked while writing
     one, and asked dozens of times per page. Resting the pointer on a fragment
     now typesets that fragment alone and shows it over the source.
-    - **What counts as a snippet** (`texSnippetRanges`, `lib/viewers/tex.ts`):
+    - **What counts as a snippet** (`texSnippetRanges`, `lib/viewers/tex/tex.ts`):
       inline math, display math, and a **whitelist** of self-contained
       environments (`equation`/`align`/`gather`/`multline`/`cases`/the matrix
       family/`array`/`tabular`/`tikzpicture`/…) **plus `figure` and `table`
@@ -1643,7 +2092,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       (persisted in the tab's `viewerState`, seeded from
       `viewer_prefs.tex.hover_preview`). Absent from a machine with no TeX
       engine, like the rest of the compile UI.
-    - [x] 🤖 Automated test (`src/__tests__/TexHoverPreview.test.ts`: what is and
+    - [x] 🤖 Automated test (`src/__tests__/tex/TexHoverPreview.test.ts`: what is and
       is not a previewable fragment, delimiters included in the range, nesting,
       commented-out math, `\$` and `\\[2mm]` left alone, offset lookup, preamble
       slicing and the null for a child file, cache-key identity, error-line
@@ -1684,8 +2133,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       its wash exactly under the pointer after scrolling and in wrap mode (the
       hit layer was missing from the overlay alignment CSS and is now
       hit-tested via elementsFromPoint).
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 248. **Dictionary spell check in the native editors.** ✅ Implemented (untested
     live). A deterministic, model-free spelling provider beside the #45 LLM
@@ -1760,8 +2215,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       (the system's) shows no ×. Pull the network and Download another
       language: a red "Failed: …" appears on the row and nothing half-written
       is listed.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 248. **TeX workspace: the structure sidebar can add a file to the document.** ✅
     Implemented (2026-09-01, untested live) · The sidebar listed what a document
@@ -1787,7 +2248,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       spliced line on its own.
     - Asked in the app's own prompt chrome (`useDialogs`), so a failed create or
       splice keeps the typed name with the reason beside it (#244's rule).
-    - [x] 🤖 Automated test (`src/__tests__/TexLinks.test.ts`: the splice above
+    - [x] 🤖 Automated test (`src/__tests__/tex/TexLinks.test.ts`: the splice above
       `\end{document}` / past a commented one / onto a fragment / into an empty
       parent; create+insert, adopt-without-second-`\input`, spelled-differently
       matching, exists-but-unreferenced, the declines touching nothing;
@@ -1801,8 +2262,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       refused with the reason, the typed name kept. With unsaved edits in the
       main file the dialog refuses until you save. Center a chapter first and
       add a file — the `\input` lands in the chapter, not the main.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 249. **Editor overlays: make the link/grammar/unclosed hover hit-tests O(1) like
     the snippet layer's.** The 2026-09-01 hover-preview speed pass replaced the
@@ -1862,11 +2329,11 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       differently from "\end{enumerate} has no matching \begin{enumerate}", and
       one generic "opening delimiter is missing its closing partner" was wrong
       text for half of them.
-    - [x] 🤖 Automated tests (`src/__tests__/TexDelimiterMatch.test.ts` —
+    - [x] 🤖 Automated tests (`src/__tests__/tex/TexDelimiterMatch.test.ts` —
       mismatched names flagging both halves, a stray `\end`, the inner-`\begin`
       blame, crossed environments, repeated/nested same-name pairs, a
       commented-out `\end`, and spacing inside the braces;
-      `src/__tests__/EditorBracketMatch.test.ts` — the hint reaching
+      `src/__tests__/editor/EditorBracketMatch.test.ts` — the hint reaching
       `data-hint`, escaped)
     - [ ] 🖐️ Manual test — frontend only, hot-reloads. In a `.tex` file write
       `\begin{itemize}` … `\end{enumerate}`: **both** lines should underline
@@ -1875,8 +2342,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       an `\end{center}` with no `\begin{center}` anywhere — that line is red.
       Confirm a well-formed document with nested and repeated environments is
       clean, and that an `\end` inside a `%` comment is ignored.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 252. **TeX workspace: the structure tree says *which file* is broken.**
     Implemented 2026-09-02, not yet verified live. The Errors and Warnings cards
@@ -1906,10 +2379,10 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       be attributed to one file in the list and another in the badge. Errors in
       a file the structure does not list (a `.sty`, a package) have no row to
       land on and stay in the cards only.
-    - [x] 🤖 Automated tests (`src/__tests__/TexErrors.test.ts` — bucketing by
+    - [x] 🤖 Automated tests (`src/__tests__/tex/TexErrors.test.ts` — bucketing by
       resolved path, first-line-wins, the no-file warning falling back to the
       root, a warning with no line leaving no jump target, and the empty map;
-      `src/__tests__/TexWorkspace.test.tsx` — a failing build badges the child's
+      `src/__tests__/tex/TexWorkspace.test.tsx` — a failing build badges the child's
       row and not the main's, and the pill centers the child with a `requestJump`
       on the reported line)
     - [ ] 🖐️ Manual test — frontend only, hot-reloads. Open a multi-file TeX
@@ -1918,8 +2391,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       document's row nothing. Click the pill — the chapter centers with the
       caret on the error line. Fix it and compile again: the red pill goes, and
       any amber warning pills land on the files the Warnings card names.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 253. **TeX editor: beamer mode — wrap a selection in an overlay with a slide
     number.** Implemented 2026-09-02, not yet verified live. Writing a deck means
@@ -1955,8 +2434,8 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       selection when focus moves to the bar's number field; the live selection
       wins when there is one, the remembered one is used only while the draft
       still holds exactly that text there.
-    - Pure half in `src/lib/viewers/beamer.ts`; tests in
-      `src/__tests__/Beamer.test.ts`, `Highlight.test.ts` (the token) and
+    - Pure half in `src/lib/viewers/tex/beamer.ts`; tests in
+      `src/__tests__/tex/Beamer.test.ts`, `Highlight.test.ts` (the token) and
       `TexViewer.test.tsx` (toggle → bar → Wrap; a beamer document opens with
       the bar on). Frontend only, hot-reloads.
     - [ ] 🖐️ Manual test — open a `.tex` with `\documentclass{beamer}`: the
@@ -1969,8 +2448,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       `<2->`, `<3->`, `<4->`. Click into the *from* field first, then Wrap — the
       selection made before the click must still be the one wrapped. Specs
       should read bold in the number colour.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 254. **TeX editor: double-click a command, see its other uses.** Implemented
     2026-09-05, not yet verified live. Double-clicking a control sequence in a
@@ -1992,7 +2477,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       elsewhere can never leave a mark painted over moved text.
     - A new transparent overlay layer (`.file-viewer-occurrence-layer`), the
       same scroll-synced, metric-matched stack as the search/link/bracket
-      layers. Pure half in `src/lib/viewers/tex.ts` (`texCommandAt`,
+      layers. Pure half in `src/lib/viewers/tex/tex.ts` (`texCommandAt`,
       `texCommandOccurrences`); tests in `TexDelimiterMatch.test.ts` and
       `TexCommandOccurrences.test.tsx`. Frontend only, hot-reloads.
     - [ ] 🖐️ Manual test — open a `.tex` with a macro used several times.
@@ -2001,8 +2486,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       starting with the same letters must stay unmarked. Type anything, or
       click elsewhere: the marks go. Double-click a plain word: nothing is
       marked. Scroll — the marks must stay glued to their text.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 266. **Hover tooltips name the keyboard shortcut, and the TeX build gets one.**
     Implemented 2026-09-08, not yet verified live. A control that a chord also
@@ -2026,11 +2517,11 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       tab, since `closeTab` closes that one and naming the chord on any other
       would advertise a key that closes a different tab than the one under the
       pointer.
-    - *Files: `src/lib/shortcutHint.ts` (new), `src/lib/shortcuts.ts`,
+    - *Files: `src/lib/shortcuts/shortcutHint.ts` (new), `src/lib/shortcuts/shortcuts.ts`,
       `src/components/embed/FileViewerPane.tsx`,
       `src/components/tabs/TabBar.tsx`, `src/lib/i18n.ts` (+ the four
       dictionaries).* Frontend only, hot-reloads.
-    - [x] 🤖 Automated test — `src/__tests__/TexViewer.test.tsx` (Ctrl+Shift+B
+    - [x] 🤖 Automated test — `src/__tests__/tex/TexViewer.test.tsx` (Ctrl+Shift+B
       from the textarea compiles; the button's tooltip names the chord).
     - [ ] 🖐️ Manual test — in a TeX workspace, press Ctrl+Shift+B with the
       caret in the source: it should save and build exactly as the button does,
@@ -2039,24 +2530,30 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       the chord; rebind `texCompile` in Settings → Shortcuts and the tooltip
       follows. Hover the ◫ / hide / close subwindow buttons and the active
       tab's ×: each names its chord, and an inactive tab's × does not.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 270. **TeX editor: the Beamer and Preview switches are the project's, not the
     tab's.** Implemented 2026-09-10, not yet verified live. Both toggles wrote
     to the tab's `ViewerState`, so every `.tex` of a deck had to be told
     "beamer" on its own and a fresh tab of the same document opened without
-    the bar. Now one row per project (`stores/texViewPref`, localStorage keyed
+    the bar. Now one row per project (`stores/viewers/texViewPref`, localStorage keyed
     by project id, `"root"` for the root scope, capped at 200 rows like
     `fileSourcePref`), read live by every TeX pane of the project — center,
     workspace, popout — and surviving a project switch and a relaunch. Absent
     means the old default: beamer follows the document, the preview follows
     `viewer_prefs.tex`. The per-tab `texBeamer`/`texHoverPreview` rows in old
     sessions are ignored.
-    - *Files: `src/stores/texViewPref.ts` (new),
+    - *Files: `src/stores/viewers/texViewPref.ts` (new),
       `src/components/embed/FileViewerPane.tsx`, `src/stores/tabs.ts`.*
       Frontend only, hot-reloads.
-    - [x] 🤖 Automated test — `src/__tests__/TexViewPref.test.ts` (merge,
+    - [x] 🤖 Automated test — `src/__tests__/tex/TexViewPref.test.ts` (merge,
       persist, junk rows dropped) and `TexViewer.test.tsx` (a second file of
       the project opens with the bar / the preview off, through a fresh module
       registry = the relaunch path; another project keeps its default).
@@ -2066,8 +2563,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       quit and relaunch Eldrun: both files still show the bar and Preview
       off; a different project's `.tex` is unaffected. A beamer document with
       no click still opens with the bar.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 828. **Markdown: remote images load on request, never on open.** A README's
     badges rendered broken: the renderer emitted `<img src="https://…">`, which
@@ -2079,7 +2582,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     (remembered per document for the session), and Load goes through the new
     `markdown_remote_image` command on the reader's hardened fetch — https on
     every hop, no loopback/private address even on hop 0, image content types
-    only, 2 MB cap — landing as a `blob:` URL. Files: `lib/remoteImages.ts`,
+    only, 2 MB cap — landing as a `blob:` URL. Files: `lib/remote/remoteImages.ts`,
     `lib/viewers/markdown.ts`, `components/embed/FileViewerPane.tsx`,
     `commands/markdown.rs`, `services/browser_engine.rs`. Implemented 2026-09-14
     (`2ee40a3`), **not live-tested; Load needs a backend restart.**
@@ -2088,8 +2591,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       network request, the "not loaded (N)" bar names the hosts. Click Load →
       the badges appear; close and reopen the file in the same session → still
       loaded. An image pointing at `http://127.0.0.1/…` stays a chip after Load.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 829. **TeX: a latexmk exit code is not the document's verdict.** latexmk exits
     non-zero for things that are not document errors (a `latexmkrc` treating
@@ -2102,7 +2611,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     `Collected error summary` and `Latexmk:` cause lines — titling a real
     failure and standing beside a forgiven one. Files: `commands/tex.rs`,
     `components/embed/FileViewerPane.tsx`, `components/files/FileTree.tsx`,
-    `lib/viewers/tex.ts`. Implemented 2026-09-08 (`d81f579`), **not live-tested;
+    `lib/viewers/tex/tex.ts`. Implemented 2026-09-08 (`d81f579`), **not live-tested;
     backend change.**
     - [x] 🤖 Automated test — cargo `commands::tex` (verdict + driver note),
       `TexViewer`
@@ -2110,8 +2619,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       fresh PDF shows, with latexmk's note beside it rather than a failure card.
       Introduce a real `\undefinedmacro` → a failure card titled by the engine
       error. Delete the PDF, break the document → no stale PDF shown as success.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 830. **TeX: copy an error, a warning, or the whole log.** Every diagnostics row
     is a jump button and the app sets `user-select: none`, so a TeX error was the
@@ -2126,8 +2641,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       clicking a row's ⧉ copies `file:line: message` without moving the caret;
       the card head's ⧉ and the log's ⧉ copy everything, including lines scrolled
       out of view.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 831. **TeX hover preview marks the fragment its card is showing.** With a
     preview card open nothing tied the card back to its source line. An
@@ -2140,8 +2661,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     - [ ] 🖐️ Manual test — hover a formula until its card opens: the formula's
       source is ringed while the card stays; type elsewhere → ring stays; edit
       inside the formula so it no longer matches → ring goes.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 832. **TeX: Beamer completions in a deck; `\begin{` accept closes its brace.**
     `TEX_BEAMER_COMMANDS` (`\frametitle`, `\usetheme`, `\pause`, `\only`,
@@ -2150,13 +2677,19 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     `block`/`alertblock`/`exampleblock` join environments with a `{}` title
     seed. Accepting an environment after an unclosed `\begin{`/`\end{` writes
     the missing `}` and, for `\begin`, opens the block. Frontend:
-    `lib/viewers/tex.ts`. Implemented 2026-09-09 (`e7f36e6`), **not live-tested**.
+    `lib/viewers/tex/tex.ts`. Implemented 2026-09-09 (`e7f36e6`), **not live-tested**.
     - [x] 🤖 Automated test — `TexCompletions`
     - [ ] 🖐️ Manual test — in a beamer deck type `\frame` → `\frametitle` is
       offered; in an article it is not. Type `\begin{ali`, accept `align` → the
       line reads `\begin{align}` with a body and `\end{align}`.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 833. **HTML preview anchors scroll in-page** (+ VPN dropdown tidy). A rendered
     HTML file is a `sandbox=""` srcdoc frame whose base URL fell back to
@@ -2172,8 +2705,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       Preview: clicking an entry scrolls to it and `:target` styling applies.
       Open the VPN dropdown with the tunnel up and no project holding it → no
       holders line.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 834. **Print: a paged document takes its page box from the engine.** Sheets
     sized from the paper (29.65 cm) overflowed WebKitGTK's 27.84 cm print page
@@ -2186,8 +2725,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     - [ ] 🖐️ Manual test — print a 3-page document (portrait and one rotated
       image) to PDF: exactly 3 pages, no blank interleaves, the rotated image
       fits its sheet; scale 50 % shrinks the image, not the margins.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 835. **Screenshots and saved attachments land in `eldrun-`prefixed, always-ignored
     folders.** `screenshots/` is a name a project plausibly owns (docs images),
@@ -2198,7 +2743,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     data is not un-ignored). Scaffold repair runs only on request, so the write
     paths call `ensure_generated_dir_ignored` — append the one pattern (or write
     a minimal `.gitignore`) before the first file lands, refusing any other
-    folder. Files: `commands/{projects,mail,screenshot}.rs`, `lib/screenshot.ts`,
+    folder. Files: `commands/{projects,mail,screenshot}.rs`, `lib/window/screenshot.ts`,
     `lib/mail.ts`, `components/layout/ScreenshotSaveOverlay.tsx`,
     `components/mail/MailMessageView.tsx`, `components/embed/pdf/PdfViewer.tsx`.
     Implemented 2026-09-14 (`296c396`), **not live-tested; backend change.**
@@ -2208,5 +2753,158 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       `.gitignore` gains that line before the file exists, and `git status` is
       clean. Save a mail attachment to the emails folder → `eldrun-emails/`,
       same. A project with no `.gitignore` gets a minimal one.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
+
+840. **Table and BibTeX parsers break their own text-preservation promise on
+    four inputs.** Found 2026-09-15 by the edge-case sweep; each case is an
+    `it.skip` in `TableEdgeCases` / `BibEdgeCases` naming the bug, so un-skip
+    the test when the fix lands. (1) `table.ts parseTable`: the docstring says a
+    mid-field `"` in an unquoted field is a literal, but any `"` opens a quoted
+    region — `a,b"c,d` parses as two cells, not three. (2) `bib.ts
+    deleteBibField` on a CRLF file eats the LF of the *previous* line's CRLF
+    while keeping the deleted field's own, leaving a bare `\r`. (3) `addBibField`
+    and (4) `addBibEntry` hardcode `\n`, so one card edit gives a CRLF file mixed
+    endings. Files: `lib/viewers/table.ts`, `lib/viewers/tex/bib.ts`. Fixed the
+    same day: a quote opens a quoted region only at the start of a field; the
+    delete takes the field's own line ending; add-field and add-entry write
+    the file's line ending. **Not live-tested.**
+    - [x] 🤖 Automated test — `TableEdgeCases`, `BibEdgeCases`
+    - [ ] 🖐️ Manual test — edit a card in a CRLF `.bib`; `file` still reports
+      CRLF line terminators and git shows one changed line.
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
+
+842. **Native viewers review: the deferred items.** An eight-agent read-only
+    review of the TeX/Markdown/YAML/PDF viewers on 2026-09-16 produced
+    `docs/native_viewers_review.md`, which holds the findings, the corrected and
+    withdrawn ones, and the per-item plans. Landed from it: the editor's line-
+    ending contract (V-01) and YAML flow-context quoting (V-05). **Still open,
+    each needing a decision rather than a patch:** *V-21* — "Delete all
+    metadata" leaves `/T` (a real name, typed into the card's author field) on
+    every PDF remark, although the button's own wording promises no author;
+    folding it into that action is one i18n rewording, adding a second checkbox
+    would be one intent wearing two switches. *V-22* — coalescing a PDF page-rail
+    drag into one undo entry changes what Ctrl+Z means, and `PageStrip` has two
+    hosts, so the print preview inherits the decision. *V-23* — `links.ts:18-20`
+    states a `Launch`/`GoToR` is never rendered; pdf.js sets `url` from `/F` for
+    both, so either arrives as an ordinary external link when `/F` is `http://…`
+    (no execution hole — the confirm stands — but a false invariant in a
+    security comment). *V-24* — the backend write path, below. *V-25* —
+    `PageStrip` has no keyboard path at all; `TableView` is the sibling to copy.
+    *V-26* — closing a tab with autosave **off** discards the draft, which
+    `ViewerEfficiency.test.ts:37` and `DeckView.tsx:462-470` both state is
+    deliberate; the fix was landed here and **reverted** for that reason, and the
+    three candidates (leave it / flush on close / add the unsaved-work prompt the
+    design currently refuses) are a user's call.
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
+
+843. **A PDF is written by two processes with no lock (V-04/V-24).** latexmk
+    writes the PDF in place via `-outdir` — `tex.rs`'s only two `fs::rename`
+    calls are the `.fmt` cache — and repeatedly across one build, while
+    `write_file_bytes_local` (`fs.rs:1659`) is a plain create+truncate+write with
+    no temp file, no rename and no lock. The PDF viewer's remark autosave is a
+    1.2 s `setTimeout` that no user action triggers, its staleness flag cannot
+    become true while the pane is hidden, and the poll is 1500 ms against that
+    1200 ms timer even when visible. So either the engine truncates our bytes
+    (the remark is gone and the panel reported success) or we truncate its
+    half-written file. The **frontend gate** — re-stat immediately before the
+    write instead of trusting a cached flag, which also subsumes the own-write
+    mtime latch and the `stripMeta`-without-materialise hole — is `src/` and
+    hot-reloads. The **class** fix is `src-tauri/`: compile into a scratch
+    out-dir and `fs::rename` the finished PDF into place, plus a compare-and-swap
+    `write_file_text(expectedMtime)`. Backend, so it needs a deliberate restart.
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test — open a TeX document's PDF, write a remark, switch tab
+      within a second and recompile: the compile output survives and the remark
+      is either saved or honestly refused.
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
+
+845. **Clicking a checkbox in a rendered README can tick a different one.**
+    `markdown.ts`'s list collector has no fence bookkeeping while
+    `toggleTaskCheckbox` (:639) has it, so the two disagree about what a task
+    line is. A fenced block indented inside a list item is folded into the list
+    region (the continuation branch at :609), and its `- [ ]` lines render as
+    real checkboxes; the click handler then addresses the toggler **by DOM
+    ordinal**, so box 0 flips the first *real* task and the last box matches
+    nothing and silently does nothing. Shape: `- item`, a 4-space ```` ``` ````,
+    `- [ ] shown`, the closing fence, `- [ ] real`.
+    Two candidate fixes, and the second is the one to take: (a) give the
+    collector the same fence bookkeeping — resynchronises two structural
+    analyses that will drift again at the next block type; (b) put the source
+    line on the item (`ListItem` gains `line`, set from the collector's loop
+    index), emit it as `data-md-task-line`, and address the line instead of the
+    ordinal — which deletes the second analysis from the addressing path and
+    makes an unaddressable checkbox impossible to draw, the structural form of
+    `yaml.ts`'s "refuse when unsure" rule. Blast radius for (b) is one consumer
+    (`FileViewerPane.tsx:7959`), but it changes a contract stated in
+    `renderList`'s own doc comment ("checkboxes are emitted in document order, so
+    their DOM order is the toggler's index") and threads an index through the
+    collector, `renderList` and `openItem`. **Deliberately not landed with the
+    rest of the 2026-09-16 review** — a rendering-contract change wants its own
+    pass, not the tail of a long one. Files: `lib/viewers/markdown.ts`,
+    `components/embed/FileViewerPane.tsx`. See `docs/native_viewers_review.md`
+    V-07. There is no component test of `MarkdownView` at all today.
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test — a README with a fenced block indented inside a list
+      item: every checkbox ticks the line it sits on.
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
+
+844. **`npm test` runs the suite roughly twice.** `vitest.config`'s `exclude` is
+    `[...configDefaults.exclude, "target/**"]`, so the run also sweeps every
+    `*.test.ts(x)` under `.claude/worktrees/` — 952 duplicate test files across
+    two live worktrees against 479 in the tree itself (1431 files / 15390 tests
+    observed, where the UI unification plan recorded 957 / 10282 the same day).
+    The wall clock roughly doubles, failures are reported against
+    `.claude/worktrees/…` paths that read like the tree's own, and a stale
+    worktree can fail a run for code nobody is editing. Add `".claude/**"` beside
+    `"target/**"`. Separately, the DOM-timing tests in `YamlViewer.test.tsx`
+    (hover tints, drag reorder) are **flaky under load**: an intermediate run
+    reported 49 failures that a re-run of the identical command on identical code
+    did not reproduce — dangerous because the obvious reading is "my change broke
+    this".
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS

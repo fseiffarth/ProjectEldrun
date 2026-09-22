@@ -6,14 +6,18 @@ import {
   occurrenceEnded,
   occurrenceStale,
   useCalendarStore,
-} from "../../stores/calendar";
+} from "../../stores/calendar/calendar";
 import { useSettingsStore } from "../../stores/settings";
-import { formatTime, timePart } from "../../lib/calendarTime";
+import { formatTime, timePart } from "../../lib/calendar/calendarTime";
 import { useUse24h } from "../../lib/timeFormat";
-import { conferenceLink } from "../../lib/conference";
+import { conferenceLink } from "../../lib/calendar/conference";
 import { joinConference } from "../../lib/linkTarget";
 import { useT } from "../../lib/i18n";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
+import { CalendarGlyph } from "./HeaderGlyphs";
+import { mutedCalendarIds } from "../../lib/calendar/alarms";
+import { BellIcon } from "../common/BellIcon";
+import { VideoIcon } from "../common/icons/Icon";
 
 const MENU_ID = "calendar";
 
@@ -148,6 +152,8 @@ export function CalendarIndicator() {
     [enabled, events, calendars, now],
   );
 
+  const muted = useMemo(() => mutedCalendarIds(calendars), [calendars]);
+
   if (!enabled) return null;
 
   const count = eventsLeftToday(events, calendars, now);
@@ -196,9 +202,7 @@ export function CalendarIndicator() {
         // pointer will ever open, and Escape is its way back out.
         onFocus={reveal}
       >
-        <span className="calendar-indicator-icon" aria-hidden="true">
-          🗓
-        </span>
+        <CalendarGlyph className="calendar-indicator-icon" />
         {count > 0 && (
           <span className="calendar-indicator-badge" aria-hidden="true">
             {count > 99 ? "99+" : count}
@@ -275,6 +279,13 @@ export function CalendarIndicator() {
                           <span className="cal-menu-title">
                             {occ.title || t("calendar.untitled")}
                           </span>
+                          {/* Not in the badge's number (`eventsLeftToday`): the
+                              mark is what lets the list still explain the count. */}
+                          {muted.has(occ.calendarId) ? (
+                            <span className="cal-menu-muted" title={t("calendar.indicatorMutedTitle")}>
+                              <BellIcon off />
+                            </span>
+                          ) : null}
                         </button>
                         {/* Direct connection: this is the whole reason to read
                             the day from the header rather than opening the
@@ -282,7 +293,7 @@ export function CalendarIndicator() {
                             want is the door, not the grid. It **names the
                             service** in its tooltip rather than saying "join",
                             because the link may have been derived from the
-                            event's location or notes (`lib/conference.ts`), and
+                            event's location or notes (`lib/calendar/conference.ts`), and
                             where a click is about to send you is exactly the
                             fact a one-word button hides. */}
                         {call && (
@@ -297,7 +308,7 @@ export function CalendarIndicator() {
                               joinConference(call.url);
                             }}
                           >
-                            <span aria-hidden="true">📹</span>
+                            <VideoIcon />
                             <span className="cal-menu-join-text">{t("calendar.join")}</span>
                           </button>
                         )}

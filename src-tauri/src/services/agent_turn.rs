@@ -31,6 +31,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 use crate::services::agent_session::{live_sessions_dir, project_live_sessions_dir};
@@ -91,18 +92,29 @@ pub fn bind_tab(uid: &str, pty_id: &str, project_id: Option<&str>) {
     if uid.is_empty() || uid.chars().any(|c| !(c.is_ascii_alphanumeric() || c == '-')) {
         return;
     }
-    let mut b = bindings().lock().unwrap();
     // One PTY, one uid: a respawn under a new uid must not leave the old key
-    // pointing at this PTY.
-    b.retain(|_, v| v != pty_id);
-    b.insert(uid.to_string(), pty_id.to_string());
-    drop(b);
+    // pointing at this PTY, nor its turn state and job flag behind it.
+    on_tab_gone(pty_id);
+    bindings().lock().unwrap().insert(uid.to_string(), pty_id.to_string());
+    states().lock().unwrap().remove(uid);
+    jobs().lock().unwrap().remove(uid);
     clear_record(uid, project_id);
 }
 
-/// Drop the binding(s) of a PTY that is gone.
+/// Drop the binding(s) of a PTY that is gone, and whatever was recorded about
+/// its turn: a key reused by a later tab must start blank.
 pub fn on_tab_gone(pty_id: &str) {
-    bindings().lock().unwrap().retain(|_, v| v != pty_id);
+    let mut b = bindings().lock().unwrap();
+    let gone: Vec<String> =
+        b.iter().filter(|(_, v)| v.as_str() == pty_id).map(|(k, _)| k.clone()).collect();
+    b.retain(|_, v| v != pty_id);
+    drop(b);
+    let mut states = states().lock().unwrap();
+    let mut jobs = jobs().lock().unwrap();
+    for uid in gone {
+        states.remove(&uid);
+        jobs.remove(&uid);
+    }
 }
 
 /// The PTY id bound to `uid`, if any.
@@ -154,6 +166,222 @@ pub fn resolve_event(path: &Path) -> Option<(String, TurnState)> {
 struct TurnPayload {
     id: String,
     state: &'static str,
+    /// Whether a shell this agent started was running at the last scan (see
+    /// [`refresh_jobs`]). It rides every event rather than being folded into
+    /// `state` because the two are independent: a turn that is over while a
+    /// background job runs is not a finished tab, and a turn being worked with
+    /// a command running alongside it is two things at once — which is what
+    /// lets the window paint the agent's work and its commands apart.
+    job: bool,
+}
+
+/// How often the tool-shell scan runs while agent tabs are bound. What it
+/// answers ("is a command of this agent's still running?") only has to be fresh
+/// to a couple of seconds, and the walk costs one `stat` read per process plus
+/// an `environ` read per shell.
+const JOB_POLL: Duration = Duration::from_secs(2);
+
+/// How stale a scan may be before a hook record triggers a fresh one. Records
+/// arrive in bursts — a `PostToolUse` per tool, several a second for quick ones
+/// — and walking `/proc` for each of them would cost more than the flag is
+/// worth; within this window the last scan's answer is reused.
+const JOB_SCAN_MAX_AGE: Duration = Duration::from_millis(500);
+
+/// uid → whether a shell of that agent's was running at the last scan.
+fn jobs() -> &'static Mutex<HashMap<String, bool>> {
+    static J: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+    J.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// uid → the state its hooks last reported, so a job that starts or ends can be
+/// relayed on its own, without waiting for the agent to say anything next. The
+/// state is also half of what makes a running shell a BACKGROUND job (see
+/// [`is_background_job`]).
+fn states() -> &'static Mutex<HashMap<String, TurnState>> {
+    static S: OnceLock<Mutex<HashMap<String, TurnState>>> = OnceLock::new();
+    S.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// When [`refresh_jobs`] last walked `/proc`.
+fn last_scan() -> &'static Mutex<Option<Instant>> {
+    static L: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+    L.get_or_init(|| Mutex::new(None))
+}
+
+/// Record what the hooks just said about `uid`. `Idle` is the session's end:
+/// its state and job flag go with it.
+fn note_state(uid: &str, state: TurnState) {
+    if state == TurnState::Idle {
+        states().lock().unwrap().remove(uid);
+        jobs().lock().unwrap().remove(uid);
+        return;
+    }
+    states().lock().unwrap().insert(uid.to_string(), state);
+}
+
+/// Whether a shell of `uid`'s agent was running at the last scan.
+fn job_flag(uid: &str) -> bool {
+    jobs().lock().unwrap().get(uid).copied().unwrap_or(false)
+}
+
+/// One scan of the tool shells the bound tabs are running, and what the change
+/// is worth telling the window: `(pty, last state, job)` for every tab whose
+/// flag MOVED. `except` is the tab whose own verdict the caller is emitting in
+/// the same breath — its flag is updated, its event left to the caller. A tab
+/// whose hooks have said nothing yet is skipped: there is no state to carry the
+/// flag on. A scan younger than [`JOB_SCAN_MAX_AGE`] is reused as it stands.
+fn refresh_jobs(except: Option<&str>) -> Vec<(String, TurnState, bool)> {
+    {
+        let mut last = last_scan().lock().unwrap();
+        if last.is_some_and(|at| at.elapsed() < JOB_SCAN_MAX_AGE) {
+            return Vec::new();
+        }
+        *last = Some(Instant::now());
+    }
+    let bound: Vec<(String, String)> = bindings()
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(uid, pty)| (uid.clone(), pty.clone()))
+        .collect();
+    let states = states().lock().unwrap();
+    // Only a tab whose hooks have spoken can be asked about: the state is what
+    // tells a backgrounded shell from the tool call the agent is waiting on, and
+    // a tab with no state has no event to carry a flag on either.
+    let want: HashMap<&str, TurnState> = bound
+        .iter()
+        .filter_map(|(uid, _)| states.get(uid).map(|state| (uid.as_str(), *state)))
+        .collect();
+    let live = tool_shell_uids(&want);
+    let mut jobs = jobs().lock().unwrap();
+    let mut out = Vec::new();
+    for (uid, pty) in &bound {
+        let running = live.contains(uid.as_str());
+        // A tab first seen without a job has nothing to announce: absent and
+        // `false` are the same statement, and only a transition is news.
+        let moved = jobs.insert(uid.clone(), running).unwrap_or(false) != running;
+        if !moved || except == Some(uid.as_str()) {
+            continue;
+        }
+        if let Some(state) = states.get(uid) {
+            out.push((pty.clone(), *state, running));
+        }
+    }
+    // A tab that is gone takes its flag with it (`on_tab_gone` does the same for
+    // one closed between scans).
+    jobs.retain(|uid, _| want.contains_key(uid.as_str()));
+    out
+}
+
+/// Shells a tool call runs in. A background job is one of these, never one of
+/// the agent's other long-lived children (an MCP server, Codex's code-mode host).
+#[cfg(any(target_os = "linux", test))]
+const SHELL_COMMS: &[&str] = &["bash", "sh", "dash", "zsh", "fish", "ksh", "mksh"];
+
+/// Whether a process is a shell the agent started for a tool call: a shell
+/// running Claude Code's Bash-tool wrapper (it sources the CLI's shell
+/// snapshot), or a shell whose parent is Codex (or its sandbox helper, whose
+/// 15-byte `comm` still starts with `codex`). The tab's launcher shell
+/// (`bash -c 'claude' …`, the fence's launch script) is neither.
+#[cfg(any(target_os = "linux", test))]
+fn is_agent_tool_shell(comm: &str, cmdline: &str, parent_comm: &str) -> bool {
+    SHELL_COMMS.contains(&comm)
+        && (cmdline.contains("/shell-snapshots/snapshot-") || parent_comm.starts_with("codex"))
+}
+
+/// How Claude Code's Bash tool spells "and don't wait for it": the backgrounded
+/// command is the only one whose wrapper redirects stdin, so the eval'd string
+/// is followed by `< /dev/null` before the wrapper's trailing `pwd -P`. A
+/// foreground call has the two adjacent. Measured against a running tab
+/// (2026-09-20), both jobs and tool calls, and matched as that whole seam so a
+/// `< /dev/null` INSIDE the command (which lands before the closing quote)
+/// cannot be mistaken for it.
+#[cfg(any(target_os = "linux", test))]
+const CLAUDE_BACKGROUND_SEAM: &str = "' < /dev/null && pwd -P >|";
+
+/// Whether a tool shell that is running is one the agent put in the BACKGROUND
+/// — the thing worth its own mark — rather than the tool call it is sitting and
+/// waiting on. Two readings, and either is enough:
+///
+///  - the turn is over (`done`): whatever is still running outlived it, which is
+///    the definition of a background job and the reading this started as. It is
+///    also the net under the other one: no wrapper spelling can betray it.
+///  - Claude's wrapper says so ([`CLAUDE_BACKGROUND_SEAM`]) — the only reading
+///    that can tell the two apart WHILE a turn runs, which is what makes the
+///    "agent and a command at once" mark possible.
+///
+/// Codex has no such seam, so a background exec of its own is only seen once its
+/// turn ends. Better that than every `bash -lc` it waits on reading as a job.
+#[cfg(any(target_os = "linux", test))]
+fn is_background_job(cmdline: &str, state: TurnState) -> bool {
+    state == TurnState::Done || cmdline.contains(CLAUDE_BACKGROUND_SEAM)
+}
+
+/// The tab uid a NUL-separated environment block belongs to, if it sets one.
+#[cfg(any(target_os = "linux", test))]
+fn environ_uid(environ: &[u8]) -> Option<String> {
+    environ
+        .split(|b| *b == 0)
+        .find_map(|kv| kv.strip_prefix(&b"ELDRUN_TAB_UID="[..]))
+        .and_then(|v| std::str::from_utf8(v).ok())
+        .map(str::to_string)
+}
+
+/// Which of the tabs in `want` (uid → the state its hooks last reported) have a
+/// BACKGROUND job of their agent's running right now — one walk of `/proc` for
+/// the whole fleet, since a walk per tab is the same work repeated. What counts
+/// as backgrounded, rather than a tool call the agent is waiting on, is
+/// [`is_background_job`].
+///
+/// The PTY's process tree cannot answer this — an agent tab runs under tmux, so
+/// the agent hangs off the tmux server, not the tab's PTY — but every process
+/// under the tab inherits `ELDRUN_TAB_UID`, fenced ones included (bubblewrap
+/// moves the pid namespace, not the owner, so the host still reads their
+/// environ). Linux reads `/proc`; elsewhere no tab ever reports a job. A
+/// contained agent's shells belong to the container's user and a remote one's
+/// live on its host, so those report none either.
+#[cfg(target_os = "linux")]
+fn tool_shell_uids(want: &HashMap<&str, TurnState>) -> std::collections::HashSet<String> {
+    fn stat_of(pid: &str) -> Option<(String, String)> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let comm = stat.get(stat.find('(')? + 1..stat.rfind(')')?)?.to_string();
+        let ppid = stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.to_string();
+        Some((comm, ppid))
+    }
+    let mut out = std::collections::HashSet::new();
+    if want.is_empty() {
+        return out;
+    }
+    let Ok(dir) = std::fs::read_dir("/proc") else { return out };
+    for entry in dir.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().filter(|n| n.bytes().all(|b| b.is_ascii_digit())) else {
+            continue;
+        };
+        // `comm` first: a stat read is cheap, and only shells go on to have
+        // their environment read.
+        let Some((comm, ppid)) = stat_of(pid) else { continue };
+        if !SHELL_COMMS.contains(&comm.as_str()) {
+            continue;
+        }
+        let Ok(environ) = std::fs::read(format!("/proc/{pid}/environ")) else { continue };
+        let Some(uid) = environ_uid(&environ) else { continue };
+        let Some(state) = want.get(uid.as_str()) else { continue };
+        if out.contains(&uid) {
+            continue;
+        }
+        let cmdline = crate::sysstat::cmdline(pid.parse().unwrap_or(0)).unwrap_or_default();
+        let parent_comm = stat_of(&ppid).map(|(c, _)| c).unwrap_or_default();
+        if is_agent_tool_shell(&comm, &cmdline, &parent_comm) && is_background_job(&cmdline, *state) {
+            out.insert(uid);
+        }
+    }
+    out
+}
+
+#[cfg(not(target_os = "linux"))]
+fn tool_shell_uids(_want: &HashMap<&str, TurnState>) -> std::collections::HashSet<String> {
+    std::collections::HashSet::new()
 }
 
 /// Watch the live-sessions tree for turn records and relay each write as an
@@ -163,6 +391,7 @@ struct TurnPayload {
 pub fn start(app: AppHandle) {
     std::thread::spawn(move || {
         use notify::{RecursiveMode, Watcher};
+        use std::sync::mpsc::RecvTimeoutError;
         let root = live_sessions_dir();
         if let Err(e) = std::fs::create_dir_all(&root) {
             eprintln!("agent_turn: create {}: {e}", root.display());
@@ -190,11 +419,34 @@ pub fn start(app: AppHandle) {
             eprintln!("agent_turn: watch {}: {e}", root.display());
             return;
         }
+        let emit = |id: String, state: TurnState, job: bool| {
+            let _ = app.emit(TURN_EVENT, TurnPayload { id, state: state.as_str(), job });
+        };
         // Keep the watcher alive for as long as events flow; the loop ends only
-        // when the sender side is dropped, i.e. never before the app exits.
-        for path in rx {
-            if let Some((id, state)) = resolve_event(&path) {
-                let _ = app.emit(TURN_EVENT, TurnPayload { id, state: state.as_str() });
+        // when the sender side is dropped, i.e. never before the app exits. The
+        // timeout is the tool-shell poll, which costs nothing while no tab is
+        // bound.
+        loop {
+            match rx.recv_timeout(JOB_POLL) {
+                Ok(path) => {
+                    if let (Some((id, state)), Some(uid)) = (resolve_event(&path), uid_of(&path)) {
+                        note_state(&uid, state);
+                        // The flag beside a brand-new verdict is this moment's,
+                        // not the last poll's: a `done` lands the instant the
+                        // agent's last tool finished, and a job that ended with
+                        // it must not be reported as still running.
+                        for (pty, st, job) in refresh_jobs(Some(&uid)) {
+                            emit(pty, st, job);
+                        }
+                        emit(id, state, job_flag(&uid));
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    for (pty, st, job) in refresh_jobs(None) {
+                        emit(pty, st, job);
+                    }
+                }
+                Err(RecvTimeoutError::Disconnected) => break,
             }
         }
         drop(watcher);
@@ -263,5 +515,163 @@ mod tests {
         assert_eq!(pty_for("new-uid-2").as_deref(), Some(pty));
         on_tab_gone(pty);
         assert_eq!(pty_for("new-uid-2"), None);
+    }
+
+    #[test]
+    fn only_the_agents_own_tool_shells_count_as_background_jobs() {
+        let claude_tool = "/bin/bash -c source /home/u/.claude/shell-snapshots/snapshot-bash-1-x.sh 2>/dev/null || true && eval 'npm test'";
+        assert!(is_agent_tool_shell("bash", claude_tool, "claude"));
+        assert!(is_agent_tool_shell("bash", "/bin/bash -lc cargo build", "codex"));
+        assert!(is_agent_tool_shell("bash", "bash -lc sleep 60", "codex-linux-san"));
+        // The tab's launcher, a Codex helper, an MCP server: none is a job.
+        assert!(!is_agent_tool_shell("bash", "bash -c claude --resume x; exec bash -l", "tmux: server"));
+        assert!(!is_agent_tool_shell("codex-code-mod", "codex-code-mode-host", "codex"));
+        assert!(!is_agent_tool_shell("node", "node mcp-server.js", "claude"));
+        // The snapshot path marks a shell, not whatever the shell runs.
+        assert!(!is_agent_tool_shell("npm", claude_tool, "bash"));
+    }
+
+    #[test]
+    fn only_a_backgrounded_command_is_a_job_while_the_turn_runs() {
+        // Both lines are Claude's Bash-tool wrapper as a running tab writes it
+        // (measured 2026-09-20); the `< /dev/null` seam is the whole difference.
+        let fg = "/bin/bash -c source /home/u/.claude/shell-snapshots/snapshot-bash-1-x.sh 2>/dev/null || true && eval 'npm test' && pwd -P >| /tmp/claude-e9e6-cwd";
+        let bg = "/bin/bash -c source /home/u/.claude/shell-snapshots/snapshot-bash-1-x.sh 2>/dev/null || true && eval 'sleep 300; echo done' < /dev/null && pwd -P >| /tmp/claude-89e8-cwd";
+        assert!(!is_background_job(fg, TurnState::Working));
+        assert!(is_background_job(bg, TurnState::Working));
+        // A `< /dev/null` the USER wrote lands inside the eval'd string, before
+        // its closing quote, so it is not the seam.
+        let inner = "/bin/bash -c source /home/u/.claude/shell-snapshots/snapshot-bash-1-x.sh 2>/dev/null || true && eval 'npm test < /dev/null' && pwd -P >| /tmp/claude-1111-cwd";
+        assert!(!is_background_job(inner, TurnState::Working));
+        // Once the turn is over, anything still running outlived it — the
+        // reading that needs no wrapper spelling, and Codex's only one.
+        assert!(is_background_job(fg, TurnState::Done));
+        assert!(is_background_job("bash -lc cargo build", TurnState::Done));
+        assert!(!is_background_job("bash -lc cargo build", TurnState::Decision));
+    }
+
+    #[test]
+    fn environ_match_is_exact_on_the_uid() {
+        let env = b"HOME=/h\0ELDRUN_TAB_UID=aaaa-1\0PATH=/bin\0";
+        assert_eq!(environ_uid(env).as_deref(), Some("aaaa-1"));
+        assert_eq!(environ_uid(b"X_ELDRUN_TAB_UID=aaaa-1\0"), None);
+        assert_eq!(environ_uid(b"HOME=/h\0"), None);
+    }
+
+    /// Force the next `refresh_jobs` to walk `/proc` rather than reuse the last
+    /// scan (which a sibling test may have taken a moment ago).
+    fn rescan() {
+        *last_scan().lock().unwrap() = None;
+    }
+
+    /// A scan reports every bound tab's change, so two tests scanning at once
+    /// would take each other's events. They run one at a time.
+    fn scan_lock() -> &'static Mutex<()> {
+        static S: OnceLock<Mutex<()>> = OnceLock::new();
+        S.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn a_tab_with_no_job_reports_none_and_says_so_only_once() {
+        let _guard = scan_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let uid = format!("job-none-{}", std::process::id());
+        let pty = "proj-j:agent-none";
+        bind_tab(&uid, pty, None);
+        note_state(&uid, TurnState::Working);
+        rescan();
+        // Nothing carries this uid: the flag starts false and stays false, so
+        // the first scan settles it and no later one has anything to report.
+        assert!(refresh_jobs(None).iter().all(|(p, _, _)| p != pty));
+        assert!(!job_flag(&uid));
+        rescan();
+        assert!(refresh_jobs(None).iter().all(|(p, _, _)| p != pty));
+        on_tab_gone(pty);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_live_backgrounded_shell_is_a_job_and_a_live_tool_call_is_not() {
+        let _guard = scan_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let bg_uid = format!("job-bg-{}", std::process::id());
+        let fg_uid = format!("job-fg-{}", std::process::id());
+        let bg_pty = "proj-j:agent-bg";
+        let fg_pty = "proj-j:agent-fg";
+        let tmp = std::env::temp_dir().join(format!("eldrun-job-{}", std::process::id()));
+        let snap = tmp.join("shell-snapshots");
+        std::fs::create_dir_all(&snap).unwrap();
+        let snapshot = snap.join("snapshot-bash-test.sh");
+        std::fs::write(&snapshot, "").unwrap();
+        bind_tab(&bg_uid, bg_pty, None);
+        bind_tab(&fg_uid, fg_pty, None);
+        // Both agents are mid-turn: one backgrounded a command, the other is
+        // waiting on the tool call in front of it.
+        note_state(&bg_uid, TurnState::Working);
+        note_state(&fg_uid, TurnState::Working);
+        // Claude's wrapper, both spellings (the trailing `&& pwd -P` is what
+        // keeps bash from exec-ing into `sleep`, exactly as the real one does).
+        let cwd_file = tmp.join("cwd");
+        let spawn = |uid: &str, redirect: &str| {
+            std::process::Command::new("bash")
+                .arg("-c")
+                .arg(format!(
+                    "source {} 2>/dev/null || true && eval 'sleep 30'{redirect} && pwd -P >| {}",
+                    snapshot.display(),
+                    cwd_file.display(),
+                ))
+                .env("ELDRUN_TAB_UID", uid)
+                .spawn()
+                .unwrap()
+        };
+        let mut backgrounded = spawn(&bg_uid, " < /dev/null");
+        let mut foreground = spawn(&fg_uid, "");
+        // The scan that raises the flag after the fact carries the state the
+        // hooks last reported, so the window can paint it without the agent
+        // having to say anything more.
+        let mut announced = false;
+        let raised = (0..50).any(|_| {
+            std::thread::sleep(Duration::from_millis(20));
+            rescan();
+            announced |=
+                refresh_jobs(None).contains(&(bg_pty.to_string(), TurnState::Working, true));
+            job_flag(&bg_uid)
+        });
+        assert!(raised, "the scan never found the backgrounded shell");
+        assert!(announced, "the flag went up without an event");
+        // The tool call the other agent is waiting on is not a job: it is what
+        // "working" already says.
+        assert!(!job_flag(&fg_uid), "a foreground tool call was read as a job");
+        // A flag that has not moved is not re-announced.
+        rescan();
+        assert!(refresh_jobs(None).iter().all(|(p, _, _)| p != bg_pty));
+        // Its turn ends while it still runs: now it HAS outlived the turn, and
+        // that reading needs no wrapper spelling (it is Codex's only one).
+        note_state(&fg_uid, TurnState::Done);
+        rescan();
+        assert!(refresh_jobs(None).contains(&(fg_pty.to_string(), TurnState::Done, true)));
+        // The tab whose verdict the caller is emitting is left to the caller,
+        // flag updated all the same.
+        let _ = backgrounded.kill();
+        let _ = backgrounded.wait();
+        let _ = foreground.kill();
+        let _ = foreground.wait();
+        rescan();
+        assert!(refresh_jobs(Some(&bg_uid)).iter().all(|(p, _, _)| p != bg_pty));
+        assert!(!job_flag(&bg_uid));
+        on_tab_gone(bg_pty);
+        on_tab_gone(fg_pty);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn a_session_end_forgets_the_tabs_state_and_flag() {
+        let uid = format!("job-idle-{}", std::process::id());
+        let pty = "proj-j:agent-idle";
+        bind_tab(&uid, pty, None);
+        note_state(&uid, TurnState::Working);
+        jobs().lock().unwrap().insert(uid.clone(), true);
+        note_state(&uid, TurnState::Idle);
+        assert!(!states().lock().unwrap().contains_key(&uid));
+        assert!(!job_flag(&uid));
+        on_tab_gone(pty);
     }
 }

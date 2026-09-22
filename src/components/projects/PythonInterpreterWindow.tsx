@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { resolveProjectDirectory, type ProjectEntry } from "../../types";
 import { useProjectsStore } from "../../stores/projects";
-import { listInterpreters, type PyInterpreter } from "../../lib/pythonRun";
+import { listInterpreters, type PyInterpreter } from "../../lib/terminal/pythonRun";
 import { useT } from "../../lib/i18n";
 
 /**

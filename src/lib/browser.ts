@@ -7,7 +7,7 @@
  *
  *  1. **No wrapper takes a filesystem path**, because no command does. The only
  *     way bytes reach the disk is {@link browserDownloadDecide}, where the
- *     *backend* raises the OS save dialog. `src/__tests__/BrowserTripwire.test.ts`
+ *     *backend* raises the OS save dialog. `src/__tests__/browser/BrowserTripwire.test.ts`
  *     asserts this mechanically, so "just add a path here" is a red build.
  *  2. **The reader frame's CSP is the mail client's constant, imported, not
  *     copied.** Two policy strings that are supposed to be identical will drift;
@@ -263,7 +263,7 @@ export interface Phrase {
  * The list is therefore a **contract with the Rust side**: `REASON_TOKENS` in
  * `src-tauri/src/services/web_safety.rs` is the canonical enumeration, a Rust
  * test proves it covers every `BlockReason`/`ConfirmReason` variant, and
- * `src/__tests__/BrowserTripwire.test.ts` reads that array out of the Rust
+ * `src/__tests__/browser/BrowserTripwire.test.ts` reads that array out of the Rust
  * source and fails if any entry is missing here or from `en`. Neither half can
  * move without the other.
  *
@@ -418,10 +418,11 @@ export function securityTone(security: SecurityState | null | undefined): Securi
       : "unknown";
 }
 
-/** The chip's glyph. Words carry the meaning (Plan B §7.1 rule 7: icons alone
+/** The chip's glyph beside its word; `null` for "secure", which the chip
+ *  draws as a lock. Words carry the meaning (Plan B §7.1 rule 7: icons alone
  *  are a solved failure); this is only the ornament beside them. */
-export function securityGlyph(tone: SecurityTone): string {
-  return tone === "secure" ? "🔒" : tone === "insecure" ? "⚠" : "•";
+export function securityGlyph(tone: SecurityTone): string | null {
+  return tone === "secure" ? null : tone === "insecure" ? "⚠\uFE0E" : "•";
 }
 
 /**

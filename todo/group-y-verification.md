@@ -25,8 +25,14 @@ missing capability — is the project's dominant risk.
        locally with a throwaway spec; the step itself is one `npm test` call).
      - [ ] 🖐️ Manual test — push a branch with a failing vitest and watch CI red.
        *Still open: nothing has watched this go red on GitHub yet.*
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 162. ~~**`privacy-check.sh` is mandated but wired to nothing.**~~ **DONE
      2026-07-28.** Wired in both places, because neither alone is enough — the
@@ -51,8 +57,14 @@ missing capability — is the project's dominant risk.
        with rc=1. (The literal is kept out of this file on purpose — writing it
        here would trip the very scan it documents.)
      - [ ] 🖐️ Manual test
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 163. **No mechanical quality gate at all.** **MOSTLY DONE 2026-07-28** — the two
      halves that catch defects are in; `cargo fmt --check` is not, and that is
@@ -92,8 +104,14 @@ missing capability — is the project's dominant risk.
        `cargo clippy -- -D warnings` both exit 0 on the current tree, and both
        suites (2476 vitest / 1630 cargo) stay green across every fix above.
      - [ ] 🖐️ Manual test
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 164. **First live-QA session — unblock the 145 manual boxes.** `TODO.md`'s
      verification section used to say *"do not launch Eldrun from the agent"*,
@@ -111,8 +129,14 @@ missing capability — is the project's dominant risk.
        presenter** — code-complete, never run, and #93/#94 both lose authored
        work with no prompt.
      - [ ] 🖐️ Manual test — this item *is* the manual test.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
      - *Status 2026-07-28: not started, and not startable unattended.* (a) mail
        crypto needs a real IMAP/SMTP account and a correspondent's OpenPGP key —
        neither exists in this environment; (b) the `invoke('list_projects')`
@@ -166,8 +190,14 @@ missing capability — is the project's dominant risk.
      - [ ] 🤖 Automated test — existing suites must stay green across the split
        (`FileViewerPane` is imported by 19 test files, `tabs.ts` by 61).
      - [ ] 🖐️ Manual test
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 167. **The frozen dev build goes stale between commits.** ✅ DONE 2026-09-03
      (code-complete, one live build verified; the coalescing and failure paths
@@ -205,14 +235,26 @@ missing capability — is the project's dominant risk.
      - [ ] 🖐️ Manual test — with uncommitted edits in the tree, commit an
        unrelated file: the frozen binary's version names the commit without
        "+local", and the uncommitted edits are not in it.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
      - [ ] 🖐️ Manual test — commit twice in quick succession: expect one
        "rebuilding the frozen snapshot" line per commit, a single build in
        `~/.local/share/eldrun/package-dev-auto.log` with a second pass at the
        end, and one "Eldrun (dev) rebuilt" notification naming the newer sha.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
      - **A failed pass stopped the queue (2026-09-15), fixed, not
        live-tested.** A change split over two commits (`50465af` registered a
        Tauri command `8078639` only then defined) made pass 2 fail; the loop
@@ -232,16 +274,34 @@ missing capability — is the project's dominant risk.
        afterwards. Then relaunch "Eldrun (dev)" with two unfrozen commits
        (`git config eldrun.autoDevBuild false` for the test): a notification
        says "2 commit(s) behind".
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
      - [ ] 🖐️ Manual test — `git config eldrun.autoDevBuild false`, commit:
        expect no line, no build, and `--status` to say why.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
      - [ ] 🖐️ Manual test — break the build (a type error), commit: expect the
        critical notification pointing at the log, and the previously installed
        binary left untouched.
-       - [ ] ✅ Works
-       - [ ] ❌ Doesn't work
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
 
 ---

@@ -1,7 +1,7 @@
 import type { LinkOpenTarget } from "./browser";
-import type { PyMainVerdict } from "../lib/pythonMainCache";
-import type { AgentCron } from "../lib/agentCron";
-import type { CursorPack } from "../lib/cursorPacks";
+import type { PyMainVerdict } from "../lib/terminal/pythonMainCache";
+import type { AgentCron } from "../lib/agents/agentCron";
+import type { CursorPack } from "../lib/theme/cursorPacks";
 import type { TranslationKey } from "../lib/i18n";
 
 export interface GlobalAppEntry {
@@ -25,8 +25,8 @@ export interface GlobalAppEntry {
 export type AutocompleteMode = "sentence" | "block" | "scope";
 
 /**
- * Category of a local-model grammar/spelling issue, mirroring the Rust
- * `check_grammar` output. Drives the underline colour in the editor overlay.
+ * Category of an editor proofreading issue. Drives the underline colour in the
+ * editor overlay; the dictionary spell check only ever reports `"spelling"`.
  *  - `"spelling"` — a misspelled word / typo (red).
  *  - `"grammar"` — a grammar or punctuation mistake (blue).
  *  - `"style"` — a style/wording suggestion (green).
@@ -34,8 +34,8 @@ export type AutocompleteMode = "sentence" | "block" | "scope";
 export type GrammarCategory = "spelling" | "grammar" | "style";
 
 /**
- * One proofreading issue returned by the local-model grammar check, mirroring the
- * Rust `GrammarIssue`. `bad` is the exact offending substring (the frontend
+ * One proofreading issue returned by the dictionary spell check (`spell_check`),
+ * mirroring the Rust `GrammarIssue`. `bad` is the exact offending substring (the frontend
  * locates it in the draft to draw the underline); `line` is its 1-based line in
  * the checked text, used as a disambiguation hint when resolving the range.
  */
@@ -45,11 +45,6 @@ export interface GrammarIssue {
   suggestion: string;
   category: GrammarCategory;
   message: string;
-  /** Which provider produced the issue — set frontend-side on receipt, never on
-   *  the wire. `"dict"` (the Hunspell `spell_check` command) adds the
-   *  "Add to dictionary" action to the tooltip; absent/`"model"` is the LLM
-   *  `check_grammar` provider. */
-  source?: "model" | "dict";
 }
 
 export interface ViewerPref {
@@ -61,9 +56,6 @@ export interface ViewerPref {
   /** Default completion-length mode for this type (#45 modes). Cycled live
    *  in-editor with Shift+Tab while a suggestion is showing; absent → "sentence". */
   autocomplete_mode?: AutocompleteMode;
-  /** Whether the local-model grammar/spelling check is enabled for this type.
-   *  Local-only (Ollama) and opt-in; default OFF. */
-  grammar_check?: boolean;
   /** Whether the dictionary (Hunspell) spell check is enabled for this type.
    *  Needs no model — deterministic, milliseconds, offline. Default OFF: red
    *  underlines nobody asked for are noise in a code editor. */
@@ -80,7 +72,7 @@ export interface ViewerPref {
 
 /**
  * A serializable keyboard chord (Group L / #62). Mirrors the Rust `ChordDescriptor`
- * and `src/lib/shortcuts.ts`'s `ChordDescriptor`. `key` is a normalized
+ * and `src/lib/shortcuts/shortcuts.ts`'s `ChordDescriptor`. `key` is a normalized
  * `KeyboardEvent.key`; modifier flags default to false when absent.
  */
 export interface KeyboardChord {
@@ -148,9 +140,16 @@ export interface Settings {
     serve_origin?: string;
     /** A paired phone may mark read/unread and star. Unset is off. */
     mail_actions?: boolean;
+    /** A paired phone may read mail at all. Unset is ON (what pairing always
+     * meant); an explicit false hides accounts, folders and bodies. */
+    mail_read?: boolean;
     /** A paired phone may send a plain-text reply whose recipient the desktop
      * derives from the original. Unset is off; independent of `mail_actions`. */
     mail_reply?: boolean;
+    /** A paired phone may reach the root console's tabs. Unset is off; the
+     * sidecar also holds it closed while root-agent writes are not staged
+     * behind the fence (`docs/context/root_console.md`, "On the phone"). */
+    root_access?: boolean;
   };
   /** Show Eldrun Mobile's host-connection control in the desktop header. This
    * defaults to on when Mobile itself is enabled; an explicit false hides it. */
@@ -184,7 +183,7 @@ export interface Settings {
   /** Corner style override: `"square"` or `"rounded"`; unset = the active
    *  theme's own radius tokens. Applied by `stores/settings.applyCorners`. */
   ui_corners?: CornerStyle;
-  /** Custom mouse-cursor pack (`lib/cursorPacks`); unset = the system cursors.
+  /** Custom mouse-cursor pack (`lib/theme/cursorPacks`); unset = the system cursors.
    *  Applied by `stores/settings.applyCursor`, which draws the art from the
    *  LIVE theme — so the pointer follows the theme, the custom accent and the
    *  Theme Customizer's token overrides rather than being a fixed asset.
@@ -197,7 +196,7 @@ export interface Settings {
    *  (`ollama_models_path` clears itself the same way). */
   ui_cursor?: CursorPack | null;
   /** Per-token color overrides from the Theme Customizer, keyed by CSS custom
-   *  property (`{"--bg-panel": "#101820"}`). Only the `lib/themeTokens` catalog
+   *  property (`{"--bg-panel": "#101820"}`). Only the `lib/theme/themeTokens` catalog
    *  names, holding `#rrggbb`/`#rrggbbaa`, are honoured — see
    *  `stores/settings.normalizeThemeVars`, which is what stands between a
    *  hand-edited settings.json and an arbitrary inline-CSS write. Cross-theme
@@ -213,7 +212,7 @@ export interface Settings {
    *  the root style the moment it is loaded. Round-trips through the backend's
    *  `extra` catch-all — no Rust field needed. */
   ui_theme_presets?: ThemePreset[];
-  /** Calendar: first column of the week — `0` = Sunday (default), `1` = Monday. */
+  /** Calendar: first column of the week — `0` = Sunday, `1` = Monday (default). */
   calendar_week_start?: 0 | 1;
   /** Calendar: the view a fresh calendar tab opens on. Default `"month"`. */
   calendar_default_view?: CalendarViewKind;
@@ -242,6 +241,19 @@ export interface Settings {
    *  — and `experimental()` additionally means "on in debug", which would put a
    *  third header button in every developer's window unasked. */
   todo_board?: boolean;
+  /** Root console: whether Eldrun serves its own MCP tools to root agents
+   *  (`services::root_mcp`). **Default true** — absent means on. Off hands new
+   *  root agents no endpoint and refuses the ones already holding the token. */
+  root_mcp?: boolean;
+  schedule_mcp?: boolean;
+  root_mcp_review?: "all" | "destructive" | "off";
+  /** Root console: serve the MCP tools to local-model tabs only. Absent means
+   *  off. On, cloud agent CLIs get no endpoint and running ones are refused. */
+  root_mcp_local_only?: boolean;
+  /** Root console: serve the MCP endpoint's mail tools. Absent means **off** —
+   *  switched on separately from `root_mcp`, and above every per-account
+   *  `agent_access`. */
+  root_mcp_mail?: boolean;
   /** Side panel: the **Alerts** group in the file viewer — urgent mail, the
    *  calendar entries about to start, and the to-do cards whose due date is here
    *  or past, merged into one time-ordered strip. **Default true.**
@@ -350,8 +362,23 @@ export interface Settings {
    *  the familiar Claude/Codex/Gemini quick picks; an empty array is a deliberate
    *  choice to show agents only after searching. */
   compact_tab_agents?: string[];
+  /** Built-in agent registry ids the root console's + menus offer, set by the
+   *  🧠 menu's "Root" chips. Opt-in: unset or empty offers none there (root
+   *  agents get the root MCP tools). */
+  root_agents?: string[];
+  /** Agent CLI binaries given the root MCP tools in the root console, set by
+   *  the 🧠 menu's "MCP" chips (Root = may run there, MCP = runs there with the
+   *  tools). Unset falls back to `root_agents`. Read at spawn by the backend. */
+  root_mcp_agents?: string[];
+  /** Local (Ollama) model names switched OFF for the root console by the 🧠
+   *  menu's "Root" chips. Opt-out: unset means every model is offered there. */
+  root_excluded_models?: string[];
+  /** Local (Ollama) model names given the root MCP tools by the 🧠 menu's
+   *  "MCP" chips. Opt-in: other local-model tabs run with tools off. Read at
+   *  spawn by the backend (`services::root_mcp`). */
+  ollama_mcp_models?: string[];
   /** Prefix chips per agent command for the side panel's agent composer; unset
-   *  falls back to `lib/agentPrefaces`' defaults, `[]` means none. */
+   *  falls back to `lib/agents/agentPrefaces`' defaults, `[]` means none. */
   agent_preface_commands?: Record<string, string[]>;
   /** Model names per agent command, typed as that CLI's own `/model <name>`. */
   agent_models?: Record<string, string[]>;
@@ -376,7 +403,7 @@ export interface Settings {
    *  configured local time, one short message is sent to that agent in the Trash
    *  project, so its usage window starts *then* rather than whenever the first
    *  real prompt happens to be typed. A global time list with per-agent
-   *  participation and per-agent overrides; read through `lib/agentCron.ts`,
+   *  participation and per-agent overrides; read through `lib/agents/agentCron.ts`,
    *  which is also where the semantics of every field live. Round-trips through
    *  the backend settings `extra` catch-all — no Rust field needed, since
    *  nothing in the backend reads it. Unset = nothing scheduled. */
@@ -409,8 +436,9 @@ export interface Settings {
    *  Settings panel's one-click drop-in (`ollama_models_dir_plan`). */
   ollama_models_path?: string | null;
   /** Per-task local-model assignments (🧠 menu role chips). Maps a task key —
-   *  `"autocomplete"`, `"grammar"`, `"tabs"` or `"mail"` — to the model name that
-   *  should serve it, so several loaded models can run different jobs in parallel.
+   *  `"autocomplete"`, `"autocomplete_prose"`, `"tabs"` or `"mail"` —
+   *  to the model name that should serve it (`autocomplete_prose` covers plain
+   *  text, Markdown and TeX, and falls back to `autocomplete`), so several loaded models can run different jobs in parallel.
    *  A task absent here falls back to `ollama_model`, then to any loaded model.
    *  `"mail"` is written by the chip and **read by nothing yet**: the mail task it
    *  names (importance scoring, summaries) is not built. It is offered ahead of
@@ -418,6 +446,17 @@ export interface Settings {
    *  mail — and is the kind of thing to have answered before the feature runs,
    *  not after; the chip's tooltip says nothing reads it so far. */
   ollama_roles?: Record<string, string>;
+  /** Missing provider retains Ollama; prose keeps its existing Ollama role. */
+  code_completion_provider?: "ollama" | "copilot";
+  /** Experimental entry point; this alone never authorizes cloud context. */
+  copilot_completion?: boolean;
+  /** Eldrun-owned consent, bound to both project id and canonical directory. */
+  completion_project_policies?: Record<string, {
+    directory: string;
+    copilot: boolean;
+    local_only: boolean;
+    [key: string]: unknown;
+  }>;
   /** Hunspell dictionary code (e.g. `en_US`) for the editors' dictionary spell
    *  check. Unset means the default — an installed English variant when there
    *  is one. Machine-wide (the language you write in is not per project);
@@ -458,7 +497,7 @@ export interface Settings {
    *  here precisely because the check needs the file's *content*: on a remote
    *  listing that is an SFTP round trip per file, which is why it used to be
    *  skipped there (and ▶ wrongly shown on every `.py`). Bounded and pruned by
-   *  `lib/pythonMainCache`. Round-trips through the backend's `extra` catch-all —
+   *  `lib/terminal/pythonMainCache`. Round-trips through the backend's `extra` catch-all —
    *  no Rust field needed. */
   python_main_scripts?: Record<string, PyMainVerdict>;
   run_scripts_in_background?: boolean;
@@ -473,12 +512,14 @@ export interface Settings {
    *  so the running session can be monitored/steered from the Claude app/web. Only
    *  Claude supports this flag; other agents ignore the setting. */
   agent_remote_control?: boolean;
-  /** Default-on filesystem fence for local agent tabs. Linux uses bubblewrap;
-   * remote-host and non-Linux tabs report that it is not enforced. */
+  /** Default-on filesystem fence: bubblewrap on Linux, Seatbelt on macOS.
+   * Remote-host and Windows tabs are not fenced. Applies on spawn. */
   agent_fence?: boolean;
   /** Extra host toolchain/config paths exposed read-only inside the fence.
    * Unset uses the backend defaults; an explicit empty list exposes none. */
   agent_fence_paths?: string[];
+  /** Opt-in access to Cargo registry credential files in exposed toolchains. */
+  agent_fence_cargo_credentials?: boolean;
   /** When true (the default), the usage recap opens by itself on the first launch
    *  of each day. Turning it off stops the popup, not the counting — the recap
    *  stays reachable from Settings. */
@@ -525,13 +566,13 @@ export interface Settings {
   connections_headless?: boolean;
   /** Hosts marked **careful** — "this machine is shared and policed, keep
    *  Eldrun's background load off it" — keyed by canonical SSH target
-   *  (`lib/machineSync`'s `targetKey`, i.e. `user@host:port`), because one login
+   *  (`lib/remote/machineSync`'s `targetKey`, i.e. `user@host:port`), because one login
    *  node is simultaneously a primary `remote`, a worker and a global machine.
    *  The value is the user's EXPLICIT answer; a target absent from the map is
    *  **careful** — the default for every remote machine — which is why this is a
    *  map and not a list: an explicit `false` ("this one is mine") must be
    *  distinguishable from an unanswered host, or the default would keep
-   *  re-enabling itself. See `lib/carefulHost.ts`. */
+   *  re-enabling itself. See `lib/remote/carefulHost.ts`. */
   careful_hosts?: Record<string, boolean>;
   /** Machines tagged **HPC** — a shared cluster login node — keyed by the same
    *  SSH target as `careful_hosts`. Ticked on the login form and shown as a badge
@@ -539,7 +580,7 @@ export interface Settings {
    *  much Eldrun *looks at*, this governs what it *does*: a tagged host is careful
    *  regardless, and its disk-usage scan, giant-folder census, background sync +
    *  lockstep loops, silent auto-connect and unannounced login-node compute are
-   *  all gated behind it. See `lib/hpcHost.ts`. */
+   *  all gated behind it. See `lib/remote/hpc/hpcHost.ts`. */
   hpc_hosts?: Record<string, boolean>;
   /** Path of the stored `.ovpn` config brought up automatically **on launch** —
    *  armed from the header's VPN menu, with no project behind it. Unset/null = no
@@ -568,7 +609,7 @@ export interface Settings {
    *  widens always-on UI timers to reduce CPU/battery drain. */
   energy_saver?: "off" | "battery" | "always";
   /** Fast mode: drop the display aids that cost a directory walk, a standing
-   *  poll or a per-file read. **Default false.** Read through `lib/fastMode`
+   *  poll or a per-file read. **Default false.** Read through `lib/agents/fastMode`
    *  (`useFastMode` / `fastModeActive`), which is also where the exact list of
    *  what it withdraws lives — never off this key directly, so the list has one
    *  home and every surface withdraws the same things.
@@ -632,9 +673,12 @@ export interface Settings {
   /** Per-type native-viewer prefs (#48): opt-in local autocomplete (#45). */
   viewer_prefs?: Record<string, ViewerPref>;
   global_apps?: Record<string, GlobalAppEntry>;
+  /** User-chosen program per IDE id for "Open in <IDE>" (`IdeMenuItems`);
+   *  an absent id means auto-detect. Written by `set_ide_launcher`. */
+  ide_launchers?: Record<string, string>;
   /**
    * User overrides for the rebindable navigation chords (Group L / #62), keyed
-   * by `ShortcutAction` id (see `src/lib/shortcuts.ts`). Any action absent here
+   * by `ShortcutAction` id (see `src/lib/shortcuts/shortcuts.ts`). Any action absent here
    * falls back to its built-in default; an empty/missing map preserves the
    * original hard-coded behaviour.
    */
@@ -646,7 +690,7 @@ export interface Settings {
   /** True once the first-run "How to start" welcome has been shown/dismissed, so
    *  it never re-opens automatically. Re-openable manually from Settings. */
   onboarding_seen?: boolean;
-  /** Ids of contextual hints (see `src/lib/hints.ts`) the user has seen/dismissed
+  /** Ids of contextual hints (see `src/lib/shortcuts/hints.ts`) the user has seen/dismissed
    *  or implicitly acted on, so each surfaces at most once. */
   hints_seen?: string[];
   /** Master switch for the contextual hint system; default ON when unset. */
@@ -664,7 +708,7 @@ export interface Settings {
 
 /**
  * The main window's geometry in PHYSICAL desktop px — the canonical cross-window
- * space (`src/lib/coords.ts`), which is also what `outerPosition`/`outerSize`
+ * space (`src/lib/window/coords.ts`), which is also what `outerPosition`/`outerSize`
  * report and what `setPosition`/`setSize` consume.
  *
  * `x`/`y`/`w`/`h` is the *restore* (non-maximized) rect: while the window is
@@ -707,7 +751,7 @@ export interface StoredVpnConfig {
   name: string;
 }
 
-/** A globally connected worker machine (`stores/globalMachines.ts`):
+/** A globally connected worker machine (`stores/remote/globalMachines.ts`):
  *  authenticated once via the ordinary login mechanism, with no
  *  `remote_path` — project-free, unlike {@link ComputeHost}. Drag-and-dropped
  *  onto an SSH project to become a `shared_fs` compute host there (a value
@@ -839,6 +883,10 @@ export interface VmSpec {
   /** Allow github.com (+ API/raw hosts) through the proxy. Opt-in, default
    *  off — the initial clone uses a *temporary* allow instead. */
   allow_github?: boolean;
+  /** This VM is a contained mail reader: its agent tabs are served the root
+   *  MCP's mail read tools while the box stays at the default proxy allowlist.
+   *  Trusted only from the state-dir record, never the in-folder project.json. */
+  mail_reader?: boolean;
 }
 
 /** `vm_doctor`'s verdict: can this machine boot project VMs, and if not, why
@@ -984,6 +1032,7 @@ export interface SshTooling {
 }
 
 export interface ProjectEntry {
+  schedule_mcp?: "off" | "propose" | "apply";
   id: string;
   name: string;
   /** "current" | "active" | "inactive" */
@@ -1080,6 +1129,102 @@ export interface UnsyncedReport {
   verified: boolean;
 }
 
+/* ── Project export / import (docs/context/project_transfer.md) ───────────── */
+
+/** What a `.eldrunproj` bundle actually carries (Rust `BundleContents`). */
+export interface BundleContents {
+  dir: boolean;
+  state: boolean;
+  mirror: boolean;
+  gitHistory: boolean;
+  /** `node_modules`, `.venv`, `target`, … were left out of the bundle. */
+  rebuildableSkipped: boolean;
+  files: number;
+  bytes: number;
+}
+
+/** `preview_project_export` — what an export would carry, with sizes, so the
+ *  dialog's toggles have numbers attached. */
+export interface ExportPreview {
+  projectId: string;
+  name: string;
+  remote: boolean;
+  directory: string | null;
+  directoryMissing: boolean;
+  mirror: string | null;
+  mirrorMissing: boolean;
+  files: number;
+  bytes: number;
+  gitFiles: number;
+  gitBytes: number;
+  rebuildableFiles: number;
+  rebuildableBytes: number;
+  tabs: number;
+  boxNames: string[];
+  suggestedFileName: string;
+  /** Machine token (`"vm"` / `"trash"`) when this project cannot be exported. */
+  blocked?: string;
+}
+
+/** `export_project`'s answer. `notes` are machine tokens worded by
+ *  `transfer.note.*`. */
+export interface ExportReport {
+  path: string;
+  bytes: number;
+  files: number;
+  payloadBytes: number;
+  remote: boolean;
+  notes: string[];
+}
+
+/** `project-export` progress event payload. */
+export interface ExportProgress {
+  projectId: string;
+  phase: "start" | "file" | "done";
+  done: number;
+  total: number;
+}
+
+/** `inspect_project_export` — a bundle's manifest, read without unpacking. */
+export interface BundleInfo {
+  path: string;
+  format: number;
+  appVersion: string;
+  exportedAt: string;
+  projectId: string;
+  name: string;
+  remote: boolean;
+  description: string | null;
+  gitType: string | null;
+  directory: string | null;
+  mirror: string | null;
+  contents: BundleContents;
+  tabs: number;
+  boxNames: string[];
+  timeDays: number;
+  /** A project with the bundle's own id is already registered here, so the
+   *  import gets a fresh one (the original stays put). */
+  idInUse: boolean;
+  /** Name of the project a remote bundle's host+path already belongs to. */
+  siteConflict?: string;
+  suggestedParent: string;
+}
+
+/** `import_project_export`'s answer. */
+export interface ImportBundleResult {
+  entry: ProjectEntry;
+  directory: string;
+  mirror?: string | null;
+  files: number;
+  tabsRestored: number;
+  /** Tabs the sanitizer downgraded to a plain shell (unknown command). */
+  tabsDowngraded: number;
+  newId: boolean;
+  boxesJoined: string[];
+  boxesMissing: string[];
+  notes: string[];
+}
+
 /** Supported git-hosting providers for publishing a project's repo. */
 export type GitProvider = "github" | "gitlab";
 
@@ -1144,7 +1289,7 @@ export interface ProjectBox {
  *
  * All timestamps are **local wall-clock**: `"YYYY-MM-DDTHH:MM"` when timed,
  * `"YYYY-MM-DD"` when all-day. Ends are **exclusive** (an all-day event on the
- * 8th ends `"2026-07-09"`). See `src/lib/calendarTime.ts` for the math.
+ * 8th ends `"2026-07-09"`). See `src/lib/calendar/calendarTime.ts` for the math.
  */
 
 /** The views a calendar tab can show. */
@@ -1186,6 +1331,18 @@ export interface Calendar {
    */
   caldav_account_id?: string;
   caldav_href?: string;
+  /**
+   * Filled from an `.ics` file (`stores/calendar/importIcs`). Rides `extra`
+   * like the keys above; the root agent's read tools show such a calendar's
+   * text as external. Absent on calendars imported before the mark existed.
+   */
+  imported?: boolean;
+  /**
+   * Reminders for this calendar's events are switched off — no popup, no OS
+   * notification (`stores/calendar/alarms`). Rides `extra` like the keys above;
+   * absent means on. Independent of `visible`.
+   */
+  alerts_off?: boolean;
 }
 
 /** How often a recurring event repeats. */
@@ -1200,10 +1357,33 @@ export interface Rrule {
   byweekday?: number[];
   /** Monthly only: day of month (1-31). Absent → the event's own day. */
   bymonthday?: number | null;
+  /**
+   * Monthly and yearly: the numbered weekdays to fire on — `{ n: 2, day: 2 }` is
+   * the 2nd Tuesday, `{ n: -1, day: 5 }` the last Friday. Monthly counts within
+   * each month; yearly within the month the event starts in (iCalendar's
+   * `FREQ=YEARLY;BYMONTH=11;BYDAY=4TH`). Takes precedence over `bymonthday`.
+   */
+  bynthweekday?: NthWeekday[];
   /** Inclusive last date (`"YYYY-MM-DD"`) the rule may fire on. */
   until?: string | null;
   /** Total occurrences, counting the first. */
   count?: number | null;
+  /**
+   * The RRULE value exactly as imported, kept only when the fields above could
+   * not hold all of it (an `HOURLY` part, `BYSETPOS` over several days, several
+   * `BYMONTHDAY`s…). Export writes it back verbatim while the rule still says
+   * what it said on import, so a CalDAV push never replaces the server's rule
+   * with Eldrun's reduced reading of it. Any edit to the rule drops it.
+   */
+  ics_value?: string | null;
+}
+
+/** One numbered weekday of a recurrence: the `n`th (negative: from the end) `day`. */
+export interface NthWeekday {
+  /** `1`…`5` from the start of the month, `-1`…`-5` from its end. */
+  n: number;
+  /** `0` = Sunday … `6` = Saturday. */
+  day: number;
 }
 
 /** A single occurrence edited away from its master ("this event only"). */
@@ -1237,7 +1417,7 @@ export interface CalendarEvent {
   notes?: string;
   /** The video call's join URL (`http(s)` only). Its own field rather than a
    *  convention on `location`, because a Join button must not be a guess about
-   *  what a room name means — see `lib/conference.ts`, which still *derives* one
+   *  what a room name means — see `lib/calendar/conference.ts`, which still *derives* one
    *  from `location`/`notes` for the imported invitations that carry it there. */
   conference?: string;
   category?: string;
@@ -1254,7 +1434,7 @@ export interface CalendarEvent {
   caldav_etag?: string;
   /** The iCalendar `UID` this row arrived with — the calendar object's identity
    *  everywhere outside this app. Empty for a row written here, which serializes
-   *  under a stable synthetic uid instead (`lib/ics.ts`'s `icsUid`). Never
+   *  under a stable synthetic uid instead (`lib/calendar/ics.ts`'s `icsUid`). Never
    *  displayed; it exists so a row can go *back* to the server as the object it
    *  came from rather than as a second copy of it. */
   uid?: string;

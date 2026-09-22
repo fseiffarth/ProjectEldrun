@@ -104,7 +104,7 @@ export function SpellDictionaryPicker() {
       <SettingRow
         label={
           <>
-            {t("projectSettings.spellLanguage")} <UntestedTag />
+            {t("projectSettings.spellLanguage")} <UntestedTag id="projectSettings.spellLanguage" />
           </>
         }
         help={t("projectSettings.spellLanguageHelp")}
@@ -138,7 +138,7 @@ export function SpellDictionaryPicker() {
       <SettingRow
         label={
           <>
-            {t("projectSettings.spellAddLanguage")} <UntestedTag />
+            {t("projectSettings.spellAddLanguage")} <UntestedTag id="projectSettings.spellAddLanguage" />
           </>
         }
         help={

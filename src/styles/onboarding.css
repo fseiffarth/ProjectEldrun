@@ -711,35 +711,8 @@
   margin-top: 0;
 }
 
-.lesson-item {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  text-align: left;
-  padding: 10px 12px;
-  border-radius: var(--radius);
-  border: 1px solid var(--border-color);
-  background: var(--bg-panel);
-  color: var(--text-primary);
-  cursor: var(--cur-pointer, pointer);
-  transition: border-color var(--transition), background var(--transition);
-}
-
-.lesson-item:hover {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 8%, var(--bg-panel));
-}
-
-.lesson-item-title {
-  font-weight: 600;
-  font-size: 13px;
-}
-
-.lesson-item-blurb {
-  color: var(--text-secondary);
-  font-size: var(--text-md);
-  line-height: 1.4;
-}
+/* `.lesson-item` (+ `-title`/`-blurb`) is declared with `.settings-nav-item` in
+   settings-chrome.css — one style for the app's "pick a destination" lists. */
 
 /* ── Fancy themes: make the buttons live up to the name ──────────────────
    The plain `dark`/`light` themes keep flat, utilitarian buttons. The

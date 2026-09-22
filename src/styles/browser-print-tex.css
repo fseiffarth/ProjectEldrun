@@ -19,16 +19,6 @@
    animated blurred box-shadow — that is software-rendered under WebKitGTK with
    DMABUF off and costs whole frames (project_webkit_paint_perf). */
 
-.browser-pane {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  min-height: 0;
-  background: var(--bg-panel);
-  color: var(--text-primary);
-  font-size: 13px;
-}
-
 .browser-toolbar {
   display: flex;
   align-items: center;
@@ -470,16 +460,6 @@
    button/strip shapes deliberately mirror `.settings-btn`/`.mail-toolbar` so a pane
    the user meets once does not look like a different application. */
 
-.print-pane {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  min-height: 0;
-  background: var(--bg-panel);
-  color: var(--text-primary);
-  font-size: 13px;
-}
-
 .print-toolbar {
   display: flex;
   align-items: center;
@@ -589,7 +569,7 @@
   text-transform: uppercase;
   letter-spacing: 0.04em;
   padding: 1px 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   border: 1px solid var(--accent);
   color: var(--accent);
 }
@@ -680,16 +660,6 @@
 
 /* Skills Library (docs/skills_plan.md) — the print pane's layout applied to a
    list+preview split rather than a single scrolling column. */
-.skills-pane {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  min-height: 0;
-  background: var(--bg-panel);
-  color: var(--text-primary);
-  font-size: 13px;
-}
-
 .skills-toolbar {
   display: flex;
   align-items: center;
@@ -930,7 +900,7 @@
   text-transform: uppercase;
   letter-spacing: 0.04em;
   padding: 1px 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   border: 1px solid var(--accent);
   color: var(--accent);
 }
@@ -1155,7 +1125,7 @@
   align-items: center;
   justify-content: center;
   border: none;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   font-size: 10px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;

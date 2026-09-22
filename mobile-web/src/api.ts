@@ -1,17 +1,27 @@
 /** One row of the phone's list. `kind` says whether it is a project or a box
  * (#31aa) — a box is a scope of its own on the desktop, always "active" here,
  * and a host older than the field sends none, which reads as a project. */
-export interface ProjectRow { id: string; label: string; status: string; kind?: "project" | "box"; live_sessions: number; last_activity?: number }
+export interface ProjectRow { id: string; label: string; status: string; kind?: "project" | "box" | "root"; live_sessions: number; last_activity?: number; /** Root only: staged root-agent proposals awaiting a decision — which is made at the desk, never here. */ pending_reviews?: number }
 export type AgentStatus = "working" | "question" | "done";
 /** The desktop's own one-line summary of a tab's scheduled prompts: what the
  * Agents view prints under an agent tab, so the project overview says the same
  * thing without opening the sheet. `next` is desktop-local wall clock. */
 export interface TabSchedules { total: number; enabled: number; next?: string }
-/** `agent_model` is the model the tab last answered with, shortened by the
- * desktop; `working_at`/`done_at` are desktop wall-clock ms of the tab's last
- * working output and last finished turn. All three are the desktop's own
- * readings and absent while it is closed or before the tab has done either. */
-export interface TabRow { id: string; label: string; kind: "shell" | "agent"; agent_label?: string; agent_status?: AgentStatus; agent_model?: string; working_at?: number; done_at?: number; schedules?: TabSchedules; available: boolean; viewer_busy: boolean; last_activity?: number }
+/** `agent_model` is the model the tab's session is showing, as the desktop
+ * reads it off the pane's own status line — the same words, and the same
+ * parse, as the model chip in Focus (`terminal/statusLine`); for a tab whose
+ * pane the desktop window does not hold it falls back to the model the tab
+ * last answered with, shortened from the transcript's id. `working_at`/
+ * `done_at` are desktop wall-clock ms of the tab's last working output and
+ * last finished turn. All three are the desktop's own readings and absent
+ * while it is closed or before the tab has done either. */
+/** One prompt an agent tab was given, as the desktop read it off the agent's
+ * own transcript — typed into the terminal, pasted, sent from here or by a
+ * schedule alike. `at` is the transcript record's ISO instant, which the phone
+ * formats in its own zone; a record that carried none arrives without one, and
+ * so does the one line a transcript-less agent leaves on its own screen. */
+export interface TabPrompt { text: string; at?: string }
+export interface TabRow { id: string; label: string; kind: "shell" | "agent"; agent_label?: string; agent_status?: AgentStatus; agent_model?: string; working_at?: number; done_at?: number; schedules?: TabSchedules; prompts?: TabPrompt[]; available: boolean; viewer_busy: boolean; last_activity?: number; /** The tab's colour as a palette id (see `tabColors.ts`); absent when it has none. */ color?: string }
 export interface AgentRow { id: string; label: string; modes: ("plan" | "auto")[] }
 /** One agent tab in the cross-project activity list: an ordinary tab row plus
  * the project it lives in, because that list is flat and a tab label on its own
@@ -280,6 +290,41 @@ export function renameTab(tabId: string, label: string): Promise<{ tab?: TabRow;
   return api(`/api/v1/tabs/${encodeURIComponent(tabId)}`, { method: "PUT", body: JSON.stringify({ label }) });
 }
 
+/** `PUT /api/v1/tabs/{id}/color` — paint one tab, agent or shell, with a colour
+ * from the palette, or clear it by passing `null`. Only the palette id crosses;
+ * both surfaces resolve it to the same hex (see `tabColors.ts`). Its own route
+ * rather than a field on the rename above, because the rename is agent-only
+ * while a colour is for any tab the phone lists. A bridge call, so it needs
+ * desktop Eldrun open. */
+export function setTabColor(tabId: string, color: string | null): Promise<{ tab?: TabRow; color?: string | null }> {
+  return api(`/api/v1/tabs/${encodeURIComponent(tabId)}/color`, { method: "PUT", body: JSON.stringify({ color }) });
+}
+
+/** `POST /api/v1/tabs/{id}/prompt` — tell the desktop what the composer just
+ * sent to this agent tab, for its prompt history: the words went to tmux over
+ * the terminal socket, where the desktop never sees them. Fire-and-forget —
+ * the prompt is already on its way, and a lost report costs a list row. */
+export function reportSentPrompt(tabId: string, message: string): Promise<unknown> {
+  return api(`/api/v1/tabs/${encodeURIComponent(tabId)}/prompt`, { method: "POST", body: JSON.stringify({ message }) });
+}
+
+/** Which side of the anchor tab a dragged row lands on — the desktop's own
+ * `reorderTabInScope` vocabulary, so both surfaces mean one thing by a drop. */
+export type TabPlace = "before" | "after";
+
+/** `PUT /api/v1/tabs/{id}/order` — move one tab next to another inside the same
+ * project, the phone's half of the desktop Agents view's drag reorder. Both
+ * tabs are named by their opaque ids; the answer is the project's tab ids in
+ * the order the desktop now holds them, which is what the list reconciles
+ * against after having rearranged itself on the drop. A bridge call, so it
+ * needs desktop Eldrun open. */
+export function reorderTab(tabId: string, anchorId: string, place: TabPlace): Promise<{ tabs?: string[] }> {
+  return api(`/api/v1/tabs/${encodeURIComponent(tabId)}/order`, {
+    method: "PUT",
+    body: JSON.stringify({ anchor: anchorId, place }),
+  });
+}
+
 /** `DELETE /api/v1/tabs/{id}` — close one tab, agent or shell. Closing is the
  * desktop's own ×: the tab leaves the Eldrun window, and the session behind it
  * keeps running and stays reattachable from the desktop's Sessions view. Like
@@ -358,6 +403,19 @@ export interface SessionTranscript {
   entries: TranscriptEntry[];
   /** Earlier turns exist that this answer does not carry. */
   truncated: boolean;
+  /** The session's own usage figures, where its transcript records them
+   *  (Codex's rollout does; Claude's does not). */
+  usage?: SessionUsage;
+}
+
+/** One rate-limit window of a stored session: percent used, and the reset in
+ *  Unix seconds. */
+export interface SessionUsageWindow { used: number; resetsAt?: number }
+export interface SessionUsage {
+  /** Percent of the context window left. */
+  contextLeft?: number;
+  session?: SessionUsageWindow;
+  week?: SessionUsageWindow;
 }
 
 /** `GET /api/v1/tabs/{id}/transcript` — the Focus view's stored-session feed.
@@ -451,24 +509,46 @@ export async function attachDesktopImage(tabId: string, imageId: string): Promis
  * bytes say, not the extension; `modified` is unix seconds. */
 export interface OutboxFile { name: string; kind: string; size: number; modified: number }
 
-/** `GET /api/v1/tabs/{id}/outbox` — the images the agent put out for the
- * phone, newest first. Read from disk by the sidecar, so it answers with the
- * desktop closed too. */
-export async function listOutbox(tabId: string, signal?: AbortSignal): Promise<OutboxFile[]> {
-  const { files } = await api<{ files: OutboxFile[] }>(`/api/v1/tabs/${encodeURIComponent(tabId)}/outbox`, { signal });
+/** Which door onto one project's outbox a read goes through: the session the
+ * files were sent from (the Focus screen), or the project itself (the project
+ * screen's shelf, which has no tab to name and outlives every closed one).
+ * Both answer the same directory — the outbox belongs to the project. */
+export type OutboxScope = { tab: string } | { project: string };
+
+function outboxBase(scope: OutboxScope): string {
+  return "tab" in scope
+    ? `/api/v1/tabs/${encodeURIComponent(scope.tab)}/outbox`
+    : `/api/v1/projects/${encodeURIComponent(scope.project)}/outbox`;
+}
+
+/** `GET …/outbox` — the files the desktop put out for the phone, newest
+ * first. Read from disk by the sidecar, so it answers with the desktop closed
+ * too. */
+export async function listOutbox(scope: OutboxScope, signal?: AbortSignal): Promise<OutboxFile[]> {
+  const { files } = await api<{ files: OutboxFile[] }>(outboxBase(scope), { signal });
   return files;
 }
 
 /** The URL an `<img>` loads one outbox image from — same origin, so the
  * session cookie rides along and the CSP's `img-src 'self'` lets it render. */
-export function outboxFileUrl(tabId: string, name: string, download = false): string {
-  return `/api/v1/tabs/${encodeURIComponent(tabId)}/outbox/${encodeURIComponent(name)}${download ? "?download=1" : ""}`;
+export function outboxFileUrl(scope: OutboxScope, name: string, download = false): string {
+  return `${outboxBase(scope)}/${encodeURIComponent(name)}${download ? "?download=1" : ""}`;
 }
 
-export async function uploadToInbox(tabId: string, file: Blob, name: string): Promise<InboxAttachment> {
+/** `DELETE …/outbox/{name}` — drop one of those files. The sidecar deletes
+ * only a leaf its own listing handed out, and the route carries the
+ * exact-origin check every mutating one does; the caller drops the row it
+ * asked about rather than waiting for the next poll. */
+export async function deleteOutboxFile(scope: OutboxScope, name: string): Promise<void> {
+  await api<{ removed: boolean }>(`${outboxBase(scope)}/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
+
+/** POSTs a raw file to one of the desktop's drop boxes and returns the status
+ * and JSON body, mapping a refusal to the desktop's wire code. */
+async function postFile<T>(url: string, file: Blob): Promise<[number, T | undefined]> {
   let response: Response;
   try {
-    response = await fetch(`/api/v1/tabs/${encodeURIComponent(tabId)}/inbox?name=${encodeURIComponent(name)}`, {
+    response = await fetch(url, {
       method: "POST",
       body: file,
       credentials: "same-origin",
@@ -480,7 +560,7 @@ export async function uploadToInbox(tabId: string, file: Blob, name: string): Pr
     if (error instanceof DOMException && error.name === "AbortError") throw new ApiError(0, "timeout");
     throw new ApiError(0, "offline");
   }
-  let body: { error?: string; attachment?: InboxAttachment } | undefined;
+  let body: (T & { error?: string }) | undefined;
   try {
     body = await response.json() as typeof body;
   } catch {
@@ -488,6 +568,27 @@ export async function uploadToInbox(tabId: string, file: Blob, name: string): Pr
   }
   if (response.status === 401) onUnauthorized?.();
   if (!response.ok) throw new ApiError(response.status, body?.error ?? "request_failed");
-  if (!body?.attachment?.reference) throw new ApiError(response.status, "malformed_response");
+  return [response.status, body];
+}
+
+export async function uploadToInbox(tabId: string, file: Blob, name: string): Promise<InboxAttachment> {
+  const [status, body] = await postFile<{ attachment?: InboxAttachment }>(
+    `/api/v1/tabs/${encodeURIComponent(tabId)}/inbox?name=${encodeURIComponent(name)}`,
+    file,
+  );
+  if (!body?.attachment?.reference) throw new ApiError(status, "malformed_response");
   return body.attachment;
+}
+
+/** A file the phone sent to the desktop's global inbox: its stored name and
+ * size only — it belongs to no project, so there is nothing to reference. */
+export interface DesktopInboxFile { name: string; size: number }
+
+/** `POST /api/v1/inbox` — **Send to desktop**: the file lands in the desktop's
+ * own inbox (`<state_dir>/inbox/`), not in any project, and the desktop's
+ * header lists it. */
+export async function uploadToDesktop(file: Blob, name: string): Promise<DesktopInboxFile> {
+  const [status, body] = await postFile<{ file?: DesktopInboxFile }>(`/api/v1/inbox?name=${encodeURIComponent(name)}`, file);
+  if (!body?.file?.name) throw new ApiError(status, "malformed_response");
+  return body.file;
 }

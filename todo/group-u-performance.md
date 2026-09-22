@@ -1,6 +1,6 @@
 ## Group U — Interface Cost & Responsiveness
 
-*Created 2026-08-26. Files: `src/lib/fastMode.ts`, `src/stores/power.ts`,
+*Created 2026-08-26. Files: `src/lib/agents/fastMode.ts`, `src/stores/power.ts`,
 `src/styles/themes.css`, plus the surfaces each item names.*
 
 *The group exists because none of the others fit and the subject is real: what
@@ -21,7 +21,7 @@ screen is not.*
 210. **Fast mode.** ✅ Done 2026-08-26, code-complete and **live-unverified**.
     One global toggle (Settings → Fast mode, default off) that withdraws the
     display aids whose cost is a directory walk, a standing poll, or a read of
-    every file in view. The list lives in `src/lib/fastMode.ts` — one home, so
+    every file in view. The list lives in `src/lib/agents/fastMode.ts` — one home, so
     the help text and the code cannot drift — and everything on it has to share
     three properties: it costs work nobody asked for, its absence is *legible*
     (no spinner, no "…" that never resolves), and nothing is lost but the aid.
@@ -55,7 +55,7 @@ screen is not.*
     It composes with Energy Saver rather than replacing it, and it is reactive
     throughout — turning it off restores every surface in place, with no
     relaunch and no remount, which is what makes it safe to try.
-    - [x] 🤖 Automated test — `src/__tests__/FastMode.test.tsx` (8: the gate is
+    - [x] 🤖 Automated test — `src/__tests__/agents/FastMode.test.tsx` (8: the gate is
       never inferred — unset, `false` and an unloaded store all read off; the
       root attribute; and a withdrawn surface renders nothing **and** asks the
       backend nothing, then comes back when the toggle flips) plus the schema
@@ -64,8 +64,14 @@ screen is not.*
       group totals go, the pills lose their git dots, hovering a pill or a tab
       shows a plain tooltip instead of a card, the header loses its CPU/RAM row,
       and nothing animates. Turn it off: all of it comes back without a restart.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - [ ] **Open:** the withdrawals are all frontend. The costs a *backend*
       loop pays regardless — the byte-sync pass, the lockstep poll, the usage
       watcher — are untouched, and are gated today only by the HPC tag. Whether
@@ -92,7 +98,7 @@ screen is not.*
     SSH round trip, so the wait was the *point* at which the panel was least
     usable.
 
-    `src/lib/fileViewSnapshots.ts` keeps the last state of each (project, root
+    `src/lib/projects/fileViewSnapshots.ts` keeps the last state of each (project, root
     dir, folder) — entries, per-file git statuses, folder sizes and their
     ignored split — plus the git bar's counts per repo, in module scope, where
     they outlive the components. A reveal seeds every one of those from the
@@ -110,7 +116,7 @@ screen is not.*
     listing that FAILS (the snapshot is dropped, so the error shows rather than
     resurrected rows) and a remote pool that cannot be asked (the git bar
     clears) — are not seeded at all.
-    - [x] 🤖 Automated test — `src/__tests__/SidePanelReveal.test.tsx` (9: a
+    - [x] 🤖 Automated test — `src/__tests__/shell/SidePanelReveal.test.tsx` (9: a
       cold first frame is empty, a revealed one is not; the stale seed upgrades
       to what the folder now holds; the git counts survive a close; plus the
       LRU bounds and read-as-use on both snapshot maps).
@@ -120,8 +126,14 @@ screen is not.*
       terminal while the panel is closed and reveal it: the change is on screen
       a moment later. Worth repeating on a remote project, where the round
       trips this skips are the expensive ones.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - [ ] **Open:** in memory only, deliberately — a listing must not survive a
       relaunch, after which the filesystem has had unbounded time to move on.
       Whether the *folder sizes* are worth persisting (they are the expensive
@@ -166,8 +178,14 @@ screen is not.*
       rounded corners and neutral header, `system` following an OS light/dark
       flip live, muted text legibility in the three tinted themes, and the
       compare-view take/chip colors in a diff on a light theme.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 218. **Accent color + corner style overrides.** ✅ Done 2026-08-30,
     code-complete and **live-unverified**. The payoff of #217's derived
@@ -189,7 +207,7 @@ screen is not.*
       `APPEARANCE_CHANGED_EVENT` (DetachedApp listener) + the popout's own
       settings load. Pre-paint: `index.html` re-applies validated
       `eldrun-accent`/`eldrun-corners` localStorage caches before first paint.
-    - [x] 🤖 Automated test — `src/__tests__/Appearance.test.ts` (normalize/
+    - [x] 🤖 Automated test — `src/__tests__/theme/Appearance.test.ts` (normalize/
       apply/clear/invalid-input for both overrides; "system" resolution).
     - [ ] 🖐️ Manual test — pick a swatch: pills, focus rings, scrollbar and
       buttons recolor at once, in every theme including Plain Dark/Light;
@@ -197,8 +215,14 @@ screen is not.*
       restores each theme's own accent. Flip Corners to Rounded on fancy_dark
       and Square on Soft Dark; check a popout follows live and a relaunch
       paints the override before first frame (after a backend restart).
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 219. **Accent-colored chrome seam + a third chrome surface.** ✅ Done
     2026-08-31, code-complete and **live-unverified**. Two changes to how the
@@ -230,8 +254,14 @@ screen is not.*
       drop shadow there); a subwindow's tab bar and the file panel's header
       block are each distinguishable from the top bar AND from the pane/panel
       under them — **Plain Dark and Plain Light included**.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 220. **Theme Customizer — every color variable, in its own window.** ✅ Done
     2026-08-31, code-complete and **live-unverified**. Settings → *Theme
@@ -250,7 +280,7 @@ screen is not.*
       riding the backend's `extra` catch-all — **no Rust field, so no backend
       restart**. Cross-theme like the accent and applied *after* it, so a
       hand-picked `--accent-hover` beats the one derived from the accent.
-    - Safety: `lib/themeTokens` is an allow-list and
+    - Safety: `lib/theme/themeTokens` is an allow-list and
       `stores/settings.normalizeThemeVars` the gate — these values are written
       as inline custom properties, so an unvalidated pair from a hand-edited
       settings.json would be an arbitrary-CSS write. `--accent` is rejected
@@ -325,7 +355,7 @@ screen is not.*
       one scroll from being clipped. A palette pick reaches the accent
       6-digit — `ui_accent` has no alpha channel and a translucent accent would
       fade every control derived from it.
-    - [x] 🤖 Automated test — `src/__tests__/ThemeVars.test.ts` (the allow-list
+    - [x] 🤖 Automated test — `src/__tests__/theme/ThemeVars.test.ts` (the allow-list
       gate, hex validation incl. the 8-digit alpha form, clearing an override
       really clears it, the pre-paint cache holds only validated values, every
       catalog token exists in the stylesheet **and has an example string**, the
@@ -341,8 +371,14 @@ screen is not.*
       and that Settings itself no longer carries either. Check `--bg-side-panel`
       moves the side panel and nothing else, and that `--bg-panel` still moves
       the rest.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - [ ] 🖐️ Manual test (saved themes) — build a look (theme + accent + a
       couple of tokens + corners), name it, Save. Change everything, then Load
       it back: theme, accent, colors and corners all return, in the popouts
@@ -351,8 +387,14 @@ screen is not.*
       Open ▤ on a row: the strip shows the colors currently on screen (an
       override you just made included) and picking one sets that token; on the
       accent row it sets the accent.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - **Top frame** (2026-08-31): a section of its own for Eldrun's title bar,
       the group the customizer was missing most. The bar is a composite — a
       fill (`--bg-header`, a gradient in the fancy themes, `--glass-header` in
@@ -382,8 +424,14 @@ screen is not.*
       Light Lavender: the fill knob still works over the frosted glass and the
       drop shadow under the seam survives. Reset each, and the bar returns to
       its theme's own look.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - **Subwindows, and the ink on both headers** (2026-08-31): the same
       treatment for a subwindow's own header. `--subwindow-header-bg` /
       `--subwindow-header-border` (the tab bar and the line under it; the bar
@@ -425,16 +473,28 @@ screen is not.*
       its own kind color. Set `--subwindow-focus-frame`: the outline round the
       focused subwindow follows, so does its Shift+↑/↓ number, and so does the
       split preview while dragging a tab across.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - [ ] 🖐️ Manual test (top-bar ink) — set `--top-frame-text` to
       something obvious: the clock, the project pill labels and the box chip all
       take it in one go. Open the app-launcher (▦) and an indicator menu from
       the same bar: **their** text is still the theme's, not the bar's. Set
       `--top-frame-text-muted`: the drag grip and the version dim to it. Reset,
       and every one of them returns to the theme's tiers.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 ---
 
@@ -470,13 +530,25 @@ screen is not.*
       tree still re-lists on the touch and its git letters still update after
       the commit (mutating git commands still take their locks and still fire
       the watch).
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - [ ] 🖐️ Manual test (stale result) — click ↻ at the root and immediately
       enter a subfolder: the subfolder's rows and crumb stay; the root's rows
       never flash back in.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 222. **The top bar's status readouts collapse into one lamp; every global
     button moved right of the project strip.** ✅ Done 2026-08-31,
@@ -511,20 +583,38 @@ screen is not.*
       folded member's state. Click `‹`: all six come back inline and each one's
       own hover menu still opens flush with the bar's bottom edge. Click `›`
       and relaunch — it is still collapsed.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - [ ] 🖐️ Manual test (escalation) — while collapsed, pull the network cable
       (or disconnect WiFi): the connection icon appears in the bar on its own
       and the summary lamp turns red. Reconnect: it folds away again. Same with
       a VPN connect (amber while connecting, folds once green) and a global
       machine that fails to connect (stays out until it is fixed or removed).
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - [ ] 🖐️ Manual test (no pointless fold) — on a desktop with no battery, no
       VPN, no machines and the resource rows switched off, the toggle must not
       render at all rather than hiding a single lamp behind a chevron.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 ---
 
@@ -541,7 +631,7 @@ screen is not.*
     Codex `already has an active writer` error was the restore churn's
     symptom, not the cause.
 
-    Frontend (`lib/rendererWatchdog.ts`): mounted in `AppShell` *and*
+    Frontend (`lib/window/rendererWatchdog.ts`): mounted in `AppShell` *and*
     `DetachedApp`, each window acts on its own renderer and reloads only
     itself (a popout re-seeds from main, as it does after a crash-reload).
     Which renderer is "ours" is **probed**, since no engine we ship on says
@@ -562,15 +652,27 @@ screen is not.*
       in the dev build with one popout open: the footer reads `RSS main …` and
       `win-1 …` (not `pid …`) within a few seconds, and the two numbers match
       `ps -o rss -p <WebKitWebProcess pids>` to within a few MB.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - [ ] 🖐️ Manual test (right window reloads) — temporarily set
       `RENDERER_CEILING_MB` to 512 in `rendererWatchdog.ts` (hot-reloads) with a
       popout open: within a minute the **popout** blinks and comes back with its
       tabs, the main window does not; crash.log names the popout's label. Set
       the ceiling back.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - [x] 🔍 What the popout held: **two PDF viewers** — `talk/main.pdf`
       (57 pages, 135 images, 97 of them over a megapixel, recompiled at 09:46
       that morning) and the poster. Measured headlessly with the installed
@@ -590,8 +692,14 @@ screen is not.*
       the end so every thumbnail paints, then watch the footer's `win-1` RSS
       settle: it should stay in the hundreds of MB, not climb past 1.5 GB,
       and recompiling the talk a few times should not ratchet it upwards.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - [x] 🔍 **2026-09-02, the popout again at 4.1–7.2 GB across six ceiling
       reports while the talk was being recompiled — and this time a watchdog
       reload did NOT free it** ("4744 MB still ≥ ceiling 271 s after a reload").
@@ -628,8 +736,14 @@ screen is not.*
       an `ipc-fallback` entry above it means the fallback theory is confirmed.
       Also open the popout's devtools console once and look for "IPC custom
       protocol failed".
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
     **2026-09-07 — the second step (⚠️ untested live, backend not compiled
     here: no toolchain in the agent fence).** The kind clause answered: the
@@ -671,14 +785,26 @@ screen is not.*
       `=== WEBVIEW 'main' RENDERER REPLACED …` and NO `TERMINATED … reason=`
       reload from the crash reporter. Tabs and PTYs are back. Restore the
       ceiling.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - [ ] 🖐️ Manual test (the ceiling fits the machine) — after a backend
       restart, on the 64 GB box the first `renderer-watchdog` line of a session
       (if any) says `≥ 16384 MB ceiling`, not 4096; with the old backend it
       still says 4096 (no RAM reading → the floor).
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - [ ] 🖐️ Manual test (what leaks) — with only agent tabs open, note the
       footer's `main` RSS, leave the agents idle 10 min, note it again; then
       let one agent stream output for 10 min and note it again. Idle-flat but
@@ -687,8 +813,14 @@ screen is not.*
       `WEBKIT_DISABLE_DMABUF_RENDERER=0 ./start-eldrun-tauri-hotreload.sh` —
       the 2026-08 verdict that kept DMABUF off was taken on Cinnamon/X11 with
       an older Mesa, and the DMABUF-off path is what runs here.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 ---
 
@@ -744,8 +876,14 @@ screen is not.*
       from a shell: the process must die at once (exit by signal 11), and
       `~/.local/share/eldrun/crash.log` must gain exactly ONE
       `=== CRASH: SIGSEGV code=… addr=0x0 ===` line, not a stream.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 ---
 
@@ -781,16 +919,28 @@ screen is not.*
       `fancy_light` reads the same near-black as its body text, `light_lavender`
       stays dark lavender and `fancy_dark` stays white — the last two exactly as
       before, since their hardcoded rules already painted those pixels.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
     - [ ] 🖐️ Manual test (the knob now works) — Settings → *Theme colors* →
       Customize, find `--helix-orange` under "Other": its swatch shows the
       **current theme's** project-name colour rather than a fixed apricot, and
       editing the hex moves the project pill labels in every theme, including
       `fancy_dark` and `light_lavender`, where it previously did nothing. Reset
       the row and each theme returns to its own value.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 250. **Custom mouse cursors: three packs, drawn from the live theme.** ✅ Done
     2026-09-01, code-complete and **live-unverified**. `Settings.ui_cursor`,
@@ -798,7 +948,7 @@ screen is not.*
     (accent body, contrast outline, soft halo), **Pixel** (the same shapes on a
     16-pixel grid, upscaled with smoothing off) and **Ink** (monochrome, text
     colour on the window's own ground); unset is the system cursors.
-    - **The art is drawn at runtime, not shipped.** `lib/cursorPacks.ts`
+    - **The art is drawn at runtime, not shipped.** `lib/theme/cursorPacks.ts`
       rasterises twelve shapes (arrow, hand, I-beam, open hand, fist, move, the
       two resize axes and their `col`/`row` twins, crosshair, deny) onto a
       canvas and emits `data:image/png` URLs, so the pointer takes the live
@@ -823,7 +973,7 @@ screen is not.*
       pack. Deliberately *not* pre-painted from `index.html` — twelve canvas
       renders is not what a pre-paint script is for, and a frame of the system
       arrow at launch costs nothing.
-    - [x] 🤖 Automated test — `src/__tests__/CursorPacks.test.ts` (normalize,
+    - [x] 🤖 Automated test — `src/__tests__/theme/CursorPacks.test.ts` (normalize,
       every shape emitted with its hotspot and keyword fallback, both clear
       paths, the no-canvas no-op, and a corpus scan that fails on a bare
       `cursor: pointer;` anywhere in the stylesheet).
@@ -834,8 +984,14 @@ screen is not.*
       (double arrow). Switch the theme and change the accent — the pointer
       recolors with them. Check a popout window follows live, then set it back
       to System and confirm the desktop's own cursors return everywhere.
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 - [ ] Native viewer follow-up: measure wrapped-editor layout before redesigning it;
   evaluate document virtualization, media streaming, and broader document caching
@@ -856,8 +1012,8 @@ screen is not.*
     (viewer, deck, present window, TeX hover preview). The renderer memory
     report now prints `/proc/<pid>/status`'s `Threads:` (Linux only), which is
     what tells a leaked Worker from a canvas. Files: `lib/viewers/pdfLoad.ts`,
-    `components/embed/{pdf,deck}/…`, `lib/viewers/texPreview.ts`,
-    `lib/rendererWatchdog.ts`, `sysstat.rs`, `commands/debug.rs`. Implemented
+    `components/embed/{pdf,deck}/…`, `lib/viewers/tex/texPreview.ts`,
+    `lib/window/rendererWatchdog.ts`, `sysstat.rs`, `commands/debug.rs`. Implemented
     2026-09-08 (`7c06db6`, `a3b5b58`), **not live-tested; thread count needs a
     backend restart.**
     - [x] 🤖 Automated test — `PdfLoad` (destroy on rejection),
@@ -865,5 +1021,50 @@ screen is not.*
     - [ ] 🖐️ Manual test — open a TeX document's PDF and compile ten times while
       it is visible; the renderer memory report's thread count stays flat
       (compare `grep Threads /proc/<renderer pid>/status` before and after).
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
+
+859. **A screen reader killed the renderer: Eldrun opts out of WebKit's AT-SPI
+    bridge.** Clicking the Downloads section's `→` (file a download into the
+    project) blanked the window twice on 2026-09-17 and copied nothing. The
+    copy path was never the problem: the apport core shows `WebKitWebProcess`
+    aborting in WebKit 2.48's `org.a11y.atspi.Text` handler — it remaps the
+    requested offset through a table whose bounds check is a `CRASH()`, not a
+    clamp, so an offset that went stale between an assistive client's cache and
+    its query takes the whole renderer down. Eldrun is the worst case for it
+    (terminals, lamps and trees rewrite text continuously), GNOME's Orca was
+    running — it binds Super+Alt+S, and it crash-loops against the same bridge —
+    and the same path's `g_utf8_substring: assertion 'end_pos >= start_pos'`
+    criticals had been in `eldrun-dev.log` for days. `services::webkit_a11y`
+    now exports `WEBKIT_A11Y_BUS_ADDRESS` empty at the top of `run()`, before
+    the first webview exists; `ELDRUN_ENABLE_A11Y=1` hands the bridge back, and
+    an address the environment already carries always wins. The variable is
+    process-wide, so `terminal::build_command` and `commands::apps::
+    launch_command` strip it again when Eldrun was the one that set it — no
+    *other* WebKitGTK app launched from a tab loses its own accessibility.
+    Files: `services/webkit_a11y.rs`, `lib.rs`, `terminal/mod.rs`,
+    `commands/apps.rs`. Implemented 2026-09-17, **not live-verified; needs a
+    backend rebuild and a relaunch.**
+    - [x] 🤖 Automated test — `webkit_a11y` (install precedence: inherited
+      address wins, opt-in wins, an off-looking opt-in is not an opt-in)
+    - [ ] 🖐️ Manual test — turn the screen reader on (Super+Alt+S, or
+      `systemctl --user start orca`), then work the UI that crashed before:
+      open the side panel's Downloads section and click `→` on a file. The file
+      lands in the project and the window stays up. Confirm the bridge is
+      really off — `tr '\0' '\n' < /proc/<eldrun pid>/environ | grep A11Y`
+      prints `WEBKIT_A11Y_BUS_ADDRESS=` — and that a GUI app launched from a
+      terminal tab does *not* inherit it.
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS

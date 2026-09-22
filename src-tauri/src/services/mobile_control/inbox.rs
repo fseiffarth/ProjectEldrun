@@ -14,6 +14,12 @@
 //! stamped, the file is created with `create_new` (never overwriting), and the
 //! inbox directory must canonicalize *below* the project root — a planted
 //! `.eldrun` symlink cannot redirect the bytes elsewhere.
+//!
+//! The **global inbox** (`<state_dir>/inbox/`) is the same drop box for a file
+//! that belongs to no project — the phone's *Send to desktop*. It lives in
+//! Eldrun's own state, never in a project folder, so nothing is filed into a
+//! project without the user moving it there; the desktop lists, opens and
+//! deletes it by leaf name through the functions below.
 
 use std::{
     fs,
@@ -24,6 +30,8 @@ use std::{
 
 /// Project-relative directory the phone's files land in.
 pub const INBOX_DIR: &str = ".eldrun/inbox";
+/// State-dir-relative directory of the global inbox (no project).
+pub const GLOBAL_INBOX_DIR: &str = "inbox";
 /// One file the phone may send. A phone photo is a few MiB; a short video
 /// clip fits; a movie does not belong in an agent prompt.
 pub const MAX_INBOX_FILE: usize = 24 * 1024 * 1024;
@@ -37,7 +45,8 @@ const MAX_NAME: usize = 80;
 pub struct Stored {
     /// The file name as written (stamped, sanitized, made unique).
     pub name: String,
-    /// `INBOX_DIR/name` — what the phone puts after the `@`.
+    /// `INBOX_DIR/name` — what the phone puts after the `@`. For the global
+    /// inbox it is `GLOBAL_INBOX_DIR/name` and never leaves the desktop.
     pub reference: String,
     pub size: u64,
 }
@@ -150,11 +159,18 @@ fn inbox_total(dir: &Path) -> Result<u64, InboxError> {
 /// Writes `bytes` into `root/.eldrun/inbox/` under a stamped, sanitized,
 /// unique name. `root` must be the project's canonical directory.
 pub fn store(root: &Path, raw_name: &str, bytes: &[u8]) -> Result<Stored, InboxError> {
-    store_at(root, raw_name, bytes, SystemTime::now())
+    store_at(root, INBOX_DIR, raw_name, bytes, SystemTime::now())
+}
+
+/// Writes `bytes` into the global inbox, `state_dir/inbox/`, exactly as
+/// `store` writes a project's.
+pub fn store_global(state_dir: &Path, raw_name: &str, bytes: &[u8]) -> Result<Stored, InboxError> {
+    store_at(state_dir, GLOBAL_INBOX_DIR, raw_name, bytes, SystemTime::now())
 }
 
 fn store_at(
     root: &Path,
+    rel_dir: &str,
     raw_name: &str,
     bytes: &[u8],
     now: SystemTime,
@@ -168,7 +184,7 @@ fn store_at(
     if !root.is_dir() {
         return Err(InboxError::Unavailable);
     }
-    let dir = root.join(INBOX_DIR);
+    let dir = root.join(rel_dir);
     fs::create_dir_all(&dir).map_err(|e| InboxError::Io(e.to_string()))?;
     // A `.eldrun` or `inbox` link planted in the tree must not carry the
     // bytes out of the project.
@@ -199,7 +215,7 @@ fn store_at(
                     return Err(InboxError::Io(error.to_string()));
                 }
                 return Ok(Stored {
-                    reference: format!("{INBOX_DIR}/{name}"),
+                    reference: format!("{rel_dir}/{name}"),
                     name,
                     size: bytes.len() as u64,
                 });
@@ -209,6 +225,80 @@ fn store_at(
         }
     }
     Err(InboxError::Io("no free name in the inbox".into()))
+}
+
+/// One file waiting in the global inbox, as the desktop lists it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct GlobalInboxFile {
+    pub name: String,
+    pub size: u64,
+    /// Unix seconds the file landed (its mtime).
+    pub modified: u64,
+}
+
+/// Whether `name` is a leaf `store` could have written: `safe_name`'s
+/// alphabet behind the stamp, no separator, no leading dot, bounded. Anything
+/// else in the folder is not the inbox's and is neither listed nor touched.
+pub fn valid_global_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().count() <= MAX_NAME + 32
+        && !name.starts_with('.')
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '.' || c == '-' || c == '_')
+}
+
+/// The global inbox's regular files, newest first. A missing inbox is empty.
+pub fn list_global(state_dir: &Path) -> Vec<GlobalInboxFile> {
+    let Ok(entries) = fs::read_dir(state_dir.join(GLOBAL_INBOX_DIR)) else {
+        return Vec::new();
+    };
+    let mut files: Vec<GlobalInboxFile> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            if !valid_global_name(&name) {
+                return None;
+            }
+            // `DirEntry::metadata` does not follow a symlink: only files the
+            // inbox itself wrote are listed.
+            let meta = entry.metadata().ok()?;
+            if !meta.is_file() {
+                return None;
+            }
+            let modified = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_secs());
+            Some(GlobalInboxFile { name, size: meta.len(), modified })
+        })
+        .collect();
+    files.sort_by(|a, b| b.modified.cmp(&a.modified).then_with(|| b.name.cmp(&a.name)));
+    files
+}
+
+/// The absolute path of one listed file — `None` for a name the listing would
+/// not show, a symlink, or a file that is gone.
+pub fn global_file(state_dir: &Path, name: &str) -> Option<PathBuf> {
+    if !valid_global_name(name) {
+        return None;
+    }
+    let path = state_dir.join(GLOBAL_INBOX_DIR).join(name);
+    let meta = fs::symlink_metadata(&path).ok()?;
+    meta.is_file().then_some(path)
+}
+
+/// Deletes one listed file. `Ok(false)` when there was nothing to delete.
+pub fn remove_global(state_dir: &Path, name: &str) -> Result<bool, InboxError> {
+    let Some(path) = global_file(state_dir, name) else {
+        return Ok(false);
+    };
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(InboxError::Io(error.to_string())),
+    }
 }
 
 #[cfg(test)]
@@ -254,13 +344,13 @@ mod tests {
     fn a_file_lands_stamped_in_the_inbox_and_is_never_overwritten() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        let first = store_at(root, "IMG_1.jpg", b"one", at(T0)).unwrap();
+        let first = store_at(root, INBOX_DIR, "IMG_1.jpg", b"one", at(T0)).unwrap();
         assert_eq!(first.name, "20260831-120000-IMG_1.jpg");
         assert_eq!(first.reference, ".eldrun/inbox/20260831-120000-IMG_1.jpg");
         assert_eq!(first.size, 3);
         assert_eq!(fs::read(root.join(&first.reference)).unwrap(), b"one");
 
-        let second = store_at(root, "IMG_1.jpg", b"two", at(T0)).unwrap();
+        let second = store_at(root, INBOX_DIR, "IMG_1.jpg", b"two", at(T0)).unwrap();
         assert_eq!(second.name, "20260831-120000-IMG_1-2.jpg");
         assert_eq!(fs::read(root.join(&first.reference)).unwrap(), b"one");
         assert_eq!(fs::read(root.join(&second.reference)).unwrap(), b"two");
@@ -269,7 +359,7 @@ mod tests {
     #[test]
     fn a_traversing_name_stays_inside_the_inbox() {
         let dir = tempfile::tempdir().unwrap();
-        let stored = store_at(dir.path(), "../../escape.txt", b"x", at(T0)).unwrap();
+        let stored = store_at(dir.path(), INBOX_DIR, "../../escape.txt", b"x", at(T0)).unwrap();
         assert_eq!(stored.name, "20260831-120000-escape.txt");
         assert!(dir.path().join(INBOX_DIR).join(&stored.name).is_file());
         assert!(!dir.path().join("escape.txt").exists());
@@ -278,11 +368,11 @@ mod tests {
     #[test]
     fn empty_oversized_and_rootless_uploads_are_refused() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(store_at(dir.path(), "a.txt", b"", at(T0)), Err(InboxError::Empty));
+        assert_eq!(store_at(dir.path(), INBOX_DIR, "a.txt", b"", at(T0)), Err(InboxError::Empty));
         let big = vec![0u8; MAX_INBOX_FILE + 1];
-        assert_eq!(store_at(dir.path(), "a.bin", &big, at(T0)), Err(InboxError::TooLarge));
+        assert_eq!(store_at(dir.path(), INBOX_DIR, "a.bin", &big, at(T0)), Err(InboxError::TooLarge));
         assert_eq!(
-            store_at(&dir.path().join("missing"), "a.txt", b"x", at(T0)),
+            store_at(&dir.path().join("missing"), INBOX_DIR, "a.txt", b"x", at(T0)),
             Err(InboxError::Unavailable)
         );
     }
@@ -296,9 +386,49 @@ mod tests {
         fs::create_dir_all(root.join(".eldrun")).unwrap();
         std::os::unix::fs::symlink(outside.path(), root.join(".eldrun").join("inbox")).unwrap();
         assert_eq!(
-            store_at(&root, "leak.txt", b"x", at(T0)),
+            store_at(&root, INBOX_DIR, "leak.txt", b"x", at(T0)),
             Err(InboxError::Unavailable)
         );
         assert!(fs::read_dir(outside.path()).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn the_global_inbox_lists_opens_and_removes_only_its_own_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path();
+        assert!(list_global(state).is_empty());
+        let old = store_at(state, GLOBAL_INBOX_DIR, "boarding pass.pdf", b"pdf", at(T0)).unwrap();
+        assert_eq!(old.reference, "inbox/20260831-120000-boarding_pass.pdf");
+        let new = store_at(state, GLOBAL_INBOX_DIR, "photo.jpg", b"jpeg!", at(T0 + 60)).unwrap();
+        let inbox = state.join(GLOBAL_INBOX_DIR);
+        fs::write(inbox.join(".hidden"), b"x").unwrap();
+        fs::create_dir(inbox.join("sub")).unwrap();
+        let names: Vec<_> = list_global(state).into_iter().map(|f| f.name).collect();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&old.name) && names.contains(&new.name));
+        assert_eq!(global_file(state, &new.name), Some(inbox.join(&new.name)));
+        assert_eq!(global_file(state, "../settings.json"), None);
+        assert_eq!(global_file(state, ".hidden"), None);
+        assert_eq!(global_file(state, "sub"), None);
+        assert_eq!(remove_global(state, &old.name), Ok(true));
+        assert_eq!(remove_global(state, &old.name), Ok(false));
+        assert_eq!(remove_global(state, "../settings.json"), Ok(false));
+        assert_eq!(list_global(state).len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_in_the_global_inbox_is_neither_listed_nor_removed_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("keep.txt");
+        fs::write(&target, b"keep").unwrap();
+        let inbox = dir.path().join(GLOBAL_INBOX_DIR);
+        fs::create_dir_all(&inbox).unwrap();
+        std::os::unix::fs::symlink(&target, inbox.join("link.txt")).unwrap();
+        assert!(list_global(dir.path()).is_empty());
+        assert_eq!(global_file(dir.path(), "link.txt"), None);
+        assert_eq!(remove_global(dir.path(), "link.txt"), Ok(false));
+        assert!(target.is_file());
     }
 }

@@ -113,7 +113,7 @@ export function YamlGrid({
       <div className="yaml-cards">
         <div className="yaml-cards-bar">
           <span className="yaml-cards-bar-spacer" />
-          <UntestedTag />
+          <UntestedTag id="yamlGrid.1" />
         </div>
         <div className="yaml-tree-notice">
           <p>{t("yamlGrid.noEntriesYet")}</p>
@@ -156,7 +156,7 @@ export function YamlGrid({
           ))}
         </nav>
         <span className="yaml-cards-bar-spacer" />
-        <UntestedTag />
+        <UntestedTag id="yamlGrid.2" />
       </div>
 
       {levels.map((level, i) => (
@@ -376,6 +376,15 @@ function LevelGrid({
       setDrag(live.current);
     }
   };
+  // A cancelled gesture writes NOTHING — see `hooks/useListReorder`, which states
+  // the rule for a grip drag among siblings. `drop()`'s fallback when the pointer
+  // is outside the list is card 0, so committing on cancel let a press-and-twitch
+  // move a card to the front of its level and splice the file.
+  const abort = () => {
+    live.current = null;
+    setDrag(null);
+  };
+
   const drop = () => {
     const d = live.current;
     live.current = null;
@@ -412,7 +421,7 @@ function LevelGrid({
                     e.currentTarget.releasePointerCapture?.(e.pointerId);
                     drop();
                   },
-                  onPointerCancel: drop,
+                  onPointerCancel: abort,
                 }
               : null,
           };

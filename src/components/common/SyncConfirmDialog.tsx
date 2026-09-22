@@ -1,6 +1,6 @@
 import { useT } from "../../lib/i18n";
 import { fmtSize } from "../../lib/viewers/fileUtils";
-import { useSyncConfirmStore } from "../../stores/syncConfirm";
+import { useSyncConfirmStore } from "../../stores/remote/syncConfirm";
 import { UntestedTag } from "./UntestedTag";
 
 /**
@@ -103,7 +103,7 @@ export function SyncConfirmDialog() {
         <div className="file-delete-dialog" onMouseDown={(e) => e.stopPropagation()}>
           <h2>
             {t(host ? "syncConfirm.deleteHostTitle" : "syncConfirm.deleteLocalTitle")}{" "}
-            <UntestedTag />
+            <UntestedTag id="syncConfirmDialog.1" />
           </h2>
           <p>
             {t(host ? "syncConfirm.deleteHostBody" : "syncConfirm.deleteLocalBody", {
@@ -149,7 +149,7 @@ export function SyncConfirmDialog() {
     <div className="modal-backdrop" onMouseDown={cancel}>
       <div className="file-delete-dialog" onMouseDown={(e) => e.stopPropagation()}>
         <h2>
-          {t(pull ? "syncConfirm.pullTitle" : "syncConfirm.pushTitle")} <UntestedTag />
+          {t(pull ? "syncConfirm.pullTitle" : "syncConfirm.pushTitle")} <UntestedTag id="syncConfirmDialog.2" />
         </h2>
         <p>
           {t(BODY_KEYS[pull ? "pull" : "push"][replaces ? "over" : "new"][scope], {

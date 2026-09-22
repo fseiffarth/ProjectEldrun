@@ -6,7 +6,7 @@ import {
   REMARKS_FILE, REMARKS_TEMPLATE, addRemark as addRemarkText,
   editRemarkText, parseRemarks, remarkCountsByFile, removeRemark,
   setRemarkDone, type ProjectRemark,
-} from "../lib/projectRemarks";
+} from "../lib/projects/projectRemarks";
 
 export interface ProjectRemarksEntry {
   remarks: ProjectRemark[];

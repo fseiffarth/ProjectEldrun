@@ -380,7 +380,7 @@ Two files land in one small commit and are then treated as frozen for the phase:
   `npx tsc --noEmit` meaningful from the start.
 
 Plus `src/lib/mail.ts` — **the** invoke wrapper module (the convention
-`lib/hpcWorkspace.ts` and `lib/slurm.ts` follow). No component calls
+`lib/remote/hpc/hpcWorkspace.ts` and `lib/remote/hpc/slurm.ts` follow). No component calls
 `invoke("mail_*")` directly; every command has exactly one typed wrapper.
 
 **Command surface (frozen contract).** All `pub async fn`, all
@@ -465,7 +465,7 @@ export type MailFlag = "seen" | "flagged" | "answered" | "deleted";
 
 - **F1 (Phase 1)** — the tab wiring (§1 rows 1-14); `src/stores/mail.ts`
   (accounts, folders, headers, selection, sync status — global, one store across
-  scopes, like `stores/calendar.ts`); `src/lib/mail.ts` wrappers;
+  scopes, like `stores/calendar/calendar.ts`); `src/lib/mail.ts` wrappers;
   `components/mail/MailPane.tsx` (three-pane: folder rail / header list / message
   view), `MailList.tsx`, `MailMessageView.tsx` (the sandboxed iframe + "Load
   images" toggle), `MailAccountDialog.tsx` (canonical `.modal-backdrop >

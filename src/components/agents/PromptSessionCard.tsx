@@ -1,8 +1,10 @@
 import { useState, type PointerEvent as ReactPointerEvent } from "react";
+import { toDateStr } from "../../lib/calendar/calendarTime";
 import { useI18nStore, useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
-import type { PromptChartCard } from "../../lib/agentPromptChart";
-import { formatTimelineInstant } from "../../lib/agentPromptTimeline";
+import type { PromptChartCard } from "../../lib/agents/prompt/chart";
+import { formatTimelineInstant } from "../../lib/agents/prompt/timeline";
+import { CARD_OWN_KEYS } from "./PromptCard";
 
 interface Props {
   /** The session's sent prompts inside the window, oldest first. */
@@ -67,6 +69,9 @@ export function PromptSessionCard({
   const first = cards[0];
   const latest = cards[cards.length - 1];
   const sessionId = latest.history?.session_id;
+  // A session that runs past midnight says so: "23:10 – 01:40" alone reads
+  // as a span that ends before it starts.
+  const crossesDay = !!first.at && !!latest.at && toDateStr(first.at) !== toDateStr(latest.at);
   const className = [
     "agent-prompt-card todo-card is-sent is-session",
     cards.some((card) => matchedKeys.has(card.key)) ? "" : "is-dimmed",
@@ -83,6 +88,16 @@ export function PromptSessionCard({
       data-prompt-card={latest.id}
       data-testid="prompt-chart-session"
       style={{ "--prompt-strand": color } as React.CSSProperties}
+      tabIndex={0}
+      role="button"
+      aria-expanded={expanded}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        if (event.target !== event.currentTarget && (event.target as Element).closest(CARD_OWN_KEYS)) return;
+        event.preventDefault();
+        onSelect();
+        setExpanded((value) => !value);
+      }}
       onClick={(event) => {
         if (onToggleSelect && (event.ctrlKey || event.metaKey)) { onToggleSelect(); return; }
         onSelect();
@@ -99,7 +114,7 @@ export function PromptSessionCard({
         <small>{latest.history?.tab_label || t("promptChart.noAgent")}</small>
       </div>
       <small className="agent-prompt-card-fact">
-        {t("promptChart.sessionPrompts", { count: cards.length })} · {when(first.at, false)} – {when(latest.at, false)}
+        {t("promptChart.sessionPrompts", { count: cards.length })} · {when(first.at, crossesDay)} – {when(latest.at, crossesDay)}
       </small>
       <div className="agent-prompt-session-ticks" aria-hidden="true">
         {cards.map((card, index) => (

@@ -5,6 +5,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Read-only by default; the release job opts into `contents: write` itself.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -27,10 +31,20 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           PUSH_BEFORE: ${{ github.event.before }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.sha }}
-          # $USER/$HOME here are the runner's ("runner", "/home/runner"), not the
-          # developer's, so those two patterns would only match innocuous text.
+          # The PR's own head, not `github.sha`: on a pull_request run that is the
+          # synthetic refs/pull/N/merge commit GitHub creates, authored with the
+          # account's primary (real) address, so the identity check refused every
+          # PR regardless of its contents. A push run has no pull_request and falls
+          # back to github.sha, which is then a real commit — a merge made on
+          # GitHub still gets its identity checked there.
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          # $USER/$HOME/hostname here are the runner's ("runner", "/home/runner"),
+          # not the developer's, so those patterns would only match innocuous text.
           PRIVACY_CHECK_SKIP_IDENTITY: '1'
+          # Private literals the scan must refuse but no committed file may hold
+          # (a real name, personal addresses, institution domains), one per line.
+          # Optional: an unset secret is an empty denylist, and a fork's PR gets none.
+          PRIVACY_CHECK_DENYLIST_TEXT: ${{ secrets.PRIVACY_DENYLIST }}
         run: |
           set -euo pipefail
           empty_tree=4b825dc642cb6eb9a060e54bf8d69288fbee4904
@@ -90,12 +104,12 @@ jobs:
           cache: npm
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           components: clippy
 
       - name: Rust cache
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ./src-tauri -> target
 
@@ -135,10 +149,10 @@ jobs:
           cache: npm
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
 
       - name: Rust cache
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ./src-tauri -> target
 
@@ -169,10 +183,10 @@ jobs:
           cache: npm
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
 
       - name: Rust cache
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ./src-tauri -> target
 
@@ -203,10 +217,12 @@ jobs:
           cache: npm
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          components: clippy
 
       - name: Rust cache
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ./src-tauri -> target
 
@@ -221,6 +237,13 @@ jobs:
 
       - name: Run backend tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      # Staged gate: the macOS-only arms have never been linted (nothing that
+      # lints on Linux can compile them), so the first runs are expected to
+      # report findings. Fix what it prints, then remove `continue-on-error`.
+      - name: Lint backend (clippy, staged)
+        continue-on-error: true
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
   package-windows:
     name: package-windows
@@ -241,10 +264,10 @@ jobs:
           cache: npm
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
 
       - name: Rust cache
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ./src-tauri -> target
 
@@ -303,10 +326,10 @@ jobs:
           cache: npm
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
 
       - name: Rust cache
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ./src-tauri -> target
 
@@ -358,12 +381,12 @@ jobs:
           cache: npm
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: x86_64-apple-darwin,aarch64-apple-darwin
 
       - name: Rust cache
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ./src-tauri -> target
 
@@ -483,7 +506,7 @@ jobs:
           } > release-body.md
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import type { PageList } from "../../../lib/viewers/pageModel";
-import type { TextItemBox } from "../../../lib/viewers/tex";
+import type { TextItemBox } from "../../../lib/viewers/tex/tex";
 import type { PdfSources } from "./pdfDoc";
 import { pageTextItemBoxes } from "./pageText";
 

@@ -7,7 +7,7 @@
  * Deliberate variants that do NOT fold into this one:
  * - `lib/gpu.ts` `formatBytes` — GPU readouts print MB under a GiB (the
  *   nvidia-smi-shaped convention all three GPU surfaces share).
- * - `lib/diskUsage.ts` `formatBytes` — compact single-letter units (`K`/`M`/`G`)
+ * - `lib/projects/diskUsage.ts` `formatBytes` — compact single-letter units (`K`/`M`/`G`)
  *   for the disk-usage pane's dense rows; pinned by its own tests.
  * - `dev/perfStats.ts` `fmtBytes` — dev-only compact form (`"4.2KB"`).
  * - `lib/mail.ts` `formatSize` keeps its ""-for-invalid guard (an attachment

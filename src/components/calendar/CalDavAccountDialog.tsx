@@ -13,8 +13,8 @@ import {
   caldavDiscover,
   caldavForgetPassword,
   caldavPasswordState,
-} from "../../lib/caldav";
-import { useCalDavStore } from "../../stores/caldav";
+} from "../../lib/calendar/caldav";
+import { useCalDavStore } from "../../stores/calendar/caldav";
 import { useT } from "../../lib/i18n";
 import type { CalDavAccount, CalDavCollection } from "../../types/caldav";
 
@@ -227,7 +227,7 @@ export function CalDavAccountDialog({
       <div className="settings-dialog caldav-dialog" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-title-row">
           <h2>
-            {account ? t("caldav.dialogEdit") : t("caldav.dialogNew")} <UntestedTag />
+            {account ? t("caldav.dialogEdit") : t("caldav.dialogNew")} <UntestedTag id="caldav.dialogNew" />
           </h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>
             ×
@@ -303,7 +303,7 @@ export function CalDavAccountDialog({
             <span className="caldav-field-hint">{t("caldav.syncIntervalHint")}</span>
           </label>
 
-          {/* The VPN gate (`lib/vpnGate.ts`), the mail dialog's row. */}
+          {/* The VPN gate (`lib/remote/vpn/vpnGate.ts`), the mail dialog's row. */}
           <label className="caldav-field caldav-field-check">
             <span className="caldav-check-row">
               <input
@@ -335,7 +335,7 @@ export function CalDavAccountDialog({
                 onChange={(e) => patch({ allow_write: e.target.checked })}
               />
               <span>{t("caldav.allowWrite")}</span>
-              <UntestedTag />
+              <UntestedTag id="calDavAccountDialog.1" />
             </span>
             <span className="caldav-field-hint">{t("caldav.allowWriteHint")}</span>
           </label>

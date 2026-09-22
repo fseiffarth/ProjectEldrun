@@ -5,7 +5,7 @@
 //! host as a remote project;
 //! this module lets the user submit/query/cancel jobs without memorizing the
 //! commands, and the frontend turns the resulting log files and interactive shells
-//! into ordinary terminal tabs (`lib/slurm.ts`).
+//! into ordinary terminal tabs (`lib/remote/hpc/slurm.ts`).
 //!
 //! Structure mirrors `commands::python`: each command resolves `project_dir` to a
 //! remote target with `remote_target_for_dir` (threading a specific worker host via

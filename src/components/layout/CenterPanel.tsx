@@ -20,6 +20,7 @@ import { pickEdge, previewInset } from "../tabs/dragGeometry";
 import { dragPreviewLayout } from "../tabs/dragPreview";
 import {
   BLOB_TAB_CMD,
+  ROOT_SCOPE,
   DEFAULT_MIN_SUBWINDOW_PX,
   EMPTY_GROUP_ID,
   allGroups,
@@ -35,14 +36,15 @@ import {
   type LayoutNode,
 } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
-import { useDragStore } from "../../stores/drag";
+import { useRootOverlayStore } from "../../stores/rootOverlay";
+import { useDragStore } from "../../stores/drag/drag";
 import { useSubwindowNavStore } from "../../stores/subwindowNav";
 import { useKeyboardSteeringStore } from "../../stores/keyboardSteering";
 import { useWindowFocused } from "../../hooks/useWindowFocused";
-import { useScrollSyncStore } from "../../stores/scrollSync";
-import { useWindowMoveStore } from "../../stores/windowMove";
-import { useDetachAnimStore } from "../../stores/detachAnim";
-import { useTabLandStore } from "../../stores/tabLand";
+import { useScrollSyncStore } from "../../stores/viewers/scrollSync";
+import { useWindowMoveStore } from "../../stores/drag/windowMove";
+import { useDetachAnimStore } from "../../stores/drag/detachAnim";
+import { useTabLandStore } from "../../stores/drag/tabLand";
 import { TAB_ACCENT } from "../tabs/newTabItems";
 import { commitDrop } from "../tabs/commitDrop";
 import {
@@ -55,15 +57,15 @@ import {
   physToClient,
   type PhysPoint,
   type WindowFrame,
-} from "../../lib/coords";
-import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
-import { shouldPersistTab, shouldPersistLocalTab } from "../../lib/tmuxSession";
-import { isTrashProject } from "../../lib/trashProject";
+} from "../../lib/window/coords";
+import { bindDragRelease, dragPlatform } from "../../lib/window/dragPlatform";
+import { shouldPersistTab, shouldPersistLocalTab } from "../../lib/terminal/tmuxSession";
+import { isTrashProject } from "../../lib/projects/trashProject";
 import { IS_WINDOWS } from "../../lib/platform";
 import { restoreProjectScope, useProjectsStore } from "../../stores/projects";
 import { BOX_SCOPE_PREFIX, boxFolderOfScope, restoreBoxScope, useBoxesStore } from "../../stores/boxes";
-import { useRemoteMachinesStore } from "../../stores/remoteMachines";
-import { useRemoteStatusStore } from "../../stores/remoteStatus";
+import { useRemoteMachinesStore } from "../../stores/remote/remoteMachines";
+import { useRemoteStatusStore } from "../../stores/remote/remoteStatus";
 import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
 import { useT } from "../../lib/i18n";
 
@@ -87,6 +89,7 @@ function CenterPanelImpl() {
   const scope = useTabsStore((s) => s.scope);
   const focusedGroupId = useTabsStore((s) => s.focusedGroupId);
   const windowFocused = useWindowFocused();
+  const rootConsoleOpen = useRootOverlayStore((st) => st.open);
   const layout = useTabsStore((s) => s.layout);
   const layoutByScope = useTabsStore((s) => s.layoutByScope);
   const setScope = useTabsStore((s) => s.setScope);
@@ -119,7 +122,15 @@ function CenterPanelImpl() {
   // WebView2 can keep the frame aligned with the cursor during the OS move loop.
   const windowMoving = useWindowMoveStore((s) => s.moving);
 
-  const { projects, activeId } = useProjectsStore();
+  // Two field selectors, not the whole store: a bare `useProjectsStore()`
+  // re-rendered this panel on every projects-store write, switch/connection
+  // toasts included, none of which it reads. Deliberately NOT one object
+  // selector (`(s) => ({ projects, activeId })`): that returns a fresh object
+  // per call, which zustand 5 without `useShallow` rejects ("getSnapshot should
+  // be cached") or loops on. `projects` is replaced by reference on change and
+  // `activeId` is a string|null, so plain selectors compare correctly.
+  const projects = useProjectsStore((s) => s.projects);
+  const activeId = useProjectsStore((s) => s.activeId);
   // Bumped on every pill click, even one re-selecting the already-active
   // project. It is what lets the restore effect below leave a box scope when
   // the user clicks the project they were in before opening the box —
@@ -576,7 +587,7 @@ function CenterPanelImpl() {
 
   // ── Cross-window drag-to-dock (#42) ───────────────────────────────────────
   // A popped-out window dragged back streams its OS cursor (PHYSICAL desktop px —
-  // the canonical cross-window space, see lib/coords) to this main window. We map
+  // the canonical cross-window space, see lib/window/coords) to this main window. We map
   // it into OUR client px via our own frame (innerPhys/scale — the only DPI-correct
   // conversion), drive the SAME drop preview as an in-window tab drag (via
   // `resolveTarget` + the drag store), and dock the group on release.
@@ -1036,6 +1047,11 @@ function CenterPanelImpl() {
           // While a group is fullscreen, only that group's active pane shows.
           const visible =
             isCurrentScope &&
+            // The root console shows the root scope's tabs itself (attach-only
+            // views of these panes). With no project open the root scope is
+            // also what THIS panel shows, and two visible views of one PTY
+            // would take turns resizing it — so the panel's copy stands down.
+            !(rootConsoleOpen && scopeKey === ROOT_SCOPE) &&
             groupId != null &&
             activeKeyOfGroup.get(groupId) === tab.key &&
             (!fsActive || groupId === fullscreenGroupId);
@@ -1214,7 +1230,9 @@ function CenterPanelImpl() {
                 tab={tab}
                 scope={scopeKey}
                 visible={visible}
-                focused={visible && windowFocused && groupId === focusedGroupId}
+                // The root console owns the keyboard while it is up; flipping
+                // this back on close is what returns focus to the pane under it.
+                focused={visible && windowFocused && !rootConsoleOpen && groupId === focusedGroupId}
                 groupId={groupId}
                 onConnect={getConnect(scopeKey)}
                 holdRemoteTerminal={holdRemoteTerminal}
@@ -1256,7 +1274,7 @@ function CenterPanelImpl() {
 
 /**
  * The one-shot "fly-out" played when a tab or subwindow is dropped OUT of the
- * main window into its own OS window (see stores/detachAnim). A card appears at
+ * main window into its own OS window (see stores/drag/detachAnim). A card appears at
  * the gesture's last in-window position and — via a CSS animation — lifts,
  * scales, and fades while sliding toward the edge the content exited through, so
  * the detach reads as the content being ejected into its own window. Clears
@@ -1416,7 +1434,7 @@ const GHOST_THUMB_W = 280; // px; the thumbnail's on-screen width.
 export function DragGhost() {
   const t = useT();
   // Eff #14: subscribe to COARSE PRIMITIVE selectors (mirroring
-  // SplitPreviewOverlay / stores/drag.ts), not the whole `drag` object. The
+  // SplitPreviewOverlay / stores/drag/drag.ts), not the whole `drag` object. The
   // ghost still re-renders each frame to follow the pointer (pointerX/Y change),
   // but the heavy `previewNode` / its dimensions are read as stable primitives,
   // so the clone-mount effect's deps don't churn and React diffs only the moved
@@ -1510,7 +1528,7 @@ export function DragGhost() {
 /**
  * The scroll-link toggle that sits on the divider between two side-by-side
  * viewer subwindows. When enabled, scrolling one subwindow proportionally
- * scrolls the other (see stores/scrollSync). Subscribes narrowly to its own
+ * scrolls the other (see stores/viewers/scrollSync). Subscribes narrowly to its own
  * linked state so unrelated link changes don't re-render it. Stops pointer/click
  * propagation so toggling never starts a divider resize drag.
  */

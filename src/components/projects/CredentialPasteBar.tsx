@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { UntestedTag } from "../common/UntestedTag";
 import { useT, type TranslationKey } from "../../lib/i18n";
-import { writePtyInput } from "../../lib/terminalInput";
+import { writePtyInput } from "../../lib/terminal/terminalInput";
 
 /**
  * "Paste it for me" for a **login terminal** — the row of buttons above the embedded
@@ -117,7 +117,7 @@ export function CredentialPasteBar({
           {entry.label}
         </button>
       ))}
-      <UntestedTag />
+      <UntestedTag id="credentialPasteBar.1" />
       {note && <span className="ssh-optional-hint credential-paste-note">{note}</span>}
     </div>
   );

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { ProjectFilesView } from "../files/ProjectFilesView";
 import { useFileSource } from "../files/ProjectFilesPane";
 import { openProjectFilesTab } from "../files/ProjectFilesTab";
@@ -15,7 +16,7 @@ import { useActivityStore, type AttentionKind } from "../../stores/activity";
 import { resolveProjectDirectory, type FilesPanelView } from "../../types";
 import { useT } from "../../lib/i18n";
 import { RailSwitchSideIcon } from "../common/EdgeRailIcons";
-import { sidePanelViewKey, sidePanelViewPatch } from "../../lib/sidePanelView";
+import { sidePanelViewKey, sidePanelViewPatch } from "../../lib/projects/sidePanelView";
 import { terminalCharsPerSecond } from "../../dev/terminalOutputRate";
 import {
   RENDERER_CEILING_MB,
@@ -24,10 +25,11 @@ import {
   readRendererRss,
   rendererName,
   type RendererRss,
-} from "../../lib/rendererWatchdog";
+} from "../../lib/window/rendererWatchdog";
 // Single source of truth for the displayed version: package.json is kept in
 // lockstep with the Tauri manifests on each version bump.
 import { version as APP_VERSION } from "../../../package.json";
+import { PinIcon } from "../common/icons/Icon";
 
 interface Props {
   open: boolean;
@@ -169,7 +171,16 @@ export function SidePanel({
   onMouseLeave,
 }: Props) {
   const t = useT();
-  const { projects, activeId } = useProjectsStore();
+  // The commit the running binary was compiled from — not the frontend's,
+  // which hot-reloads past it. Fixed for the process, so read once.
+  const [buildCommit, setBuildCommit] = useState<string | null>(null);
+  useEffect(() => {
+    Promise.resolve(invoke<string | null>("app_build_commit"))
+      .then((commit) => setBuildCommit(commit ?? null))
+      .catch(() => {});
+  }, []);
+  const projects = useProjectsStore((s) => s.projects);
+  const activeId = useProjectsStore((s) => s.activeId);
   const sidePanelFolderByProject = useProjectsStore((s) => s.sidePanelFolderByProject);
   const setSidePanelFolder = useProjectsStore((s) => s.setSidePanelFolder);
   const rootDir = useProjectsStore((s) => s.rootDir);
@@ -212,6 +223,7 @@ export function SidePanel({
   // hidden subwindow's tabs are still running underneath the pane, so they keep
   // reporting status even while parked.
   const busyByTab = useActivityStore((s) => s.busyByTab);
+  const busyKindByTab = useActivityStore((s) => s.busyKindByTab);
   const attentionByTab = useActivityStore((s) => s.attentionByTab);
   // One status per hidden group's tab, rolled up per group and overall, so the
   // Hidden section still says "something's running in there" without needing
@@ -303,7 +315,7 @@ export function SidePanel({
             onClick={onTogglePin}
             title={t(pinned ? "sidePanel.unpinTitle" : "sidePanel.pinTitle")}
           >
-            📌
+            <PinIcon />
           </button>
         )}
       </>
@@ -345,11 +357,17 @@ export function SidePanel({
                     {keys.map((k, ki) => {
                       const label = scopeTabs?.find((t) => t.key === k)?.label ?? k;
                       const status = tabStatuses[ki];
+                      // A chip has one border, so it says the same thing the
+                      // pill's bars do: the shell colour when a COMMAND is all
+                      // the tab is running (`BusyKind` "shell"), the agent's
+                      // otherwise — a tab doing both is drawn as the agent.
+                      const shell =
+                        status === "working" && busyKindByTab[`${scope}:${k}`] === "shell";
                       return (
                         <button
                           key={k}
                           type="button"
-                          className={`hidden-sw-chip${status ? ` ${status}` : ""}`}
+                          className={`hidden-sw-chip${status ? ` ${status}` : ""}${shell ? " shell" : ""}`}
                           title={t("sidePanel.restoreFocusedOn", { label })}
                           onClick={() => unhideGroup(h.id, { activeKey: k })}
                         >
@@ -391,7 +409,10 @@ export function SidePanel({
           <span className="debug-badge">DEBUG</span>
         </>
       )}
-      <span className="app-version-label">v{APP_VERSION}</span>
+      <span className="app-version-label">
+        v{APP_VERSION}
+        {buildCommit && <span className="app-version-commit"> · {buildCommit}</span>}
+      </span>
     </div>
   );
 

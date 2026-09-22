@@ -1,4 +1,4 @@
-import { useHostKeyPromptStore } from "../../stores/hostKeyPrompt";
+import { useHostKeyPromptStore } from "../../stores/remote/hostKeyPrompt";
 import { UntestedTag } from "./UntestedTag";
 import { useT } from "../../lib/i18n";
 
@@ -33,7 +33,7 @@ export function HostKeyConfirmDialog() {
     <div className="modal-backdrop">
       <div className="project-dialog host-key-dialog">
         <h2 className="host-key-title">
-          {t("hostKey.title")} <UntestedTag />
+          {t("hostKey.title")} <UntestedTag id="hostKey.title" />
         </h2>
         <p className="host-key-lede">
           {t("hostKey.ledePre")} <strong>{pending.target}</strong> {t("hostKey.ledePost")}

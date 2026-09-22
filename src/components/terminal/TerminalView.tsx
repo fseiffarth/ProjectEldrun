@@ -11,8 +11,8 @@ import { useT } from "../../lib/i18n";
 import { useExperimental } from "../../lib/experimental";
 import { cmdToKind, isDetachedPtyId, type TabKind } from "../../stores/tabs";
 import { isInterruptInput, lastPtyOutputAt, notePtySpawn, noteUserInput, splitPtyId, useActivityStore } from "../../stores/activity";
-import { useAgentTaskStore } from "../../stores/agentTask";
-import { noteInput } from "../../lib/promptCount";
+import { useAgentTaskStore } from "../../stores/agents/agentTask";
+import { noteInput } from "../../lib/agents/promptCount";
 import { METRIC, agentPromptLeaf, sub } from "../../lib/usageMetrics";
 import { ROOT_SCOPE, bumpUsage, markAgentActive } from "../../stores/usage";
 import {
@@ -21,13 +21,13 @@ import {
   onTerminalReady,
   onTerminalReplay,
   type TerminalOutputRange,
-} from "../../lib/terminalBus";
-import { hpcGuardRefusal } from "../../lib/hpcGuard";
-import { useHpcGuardStore } from "../../stores/hpcGuardPrompt";
-import { CSI_U_SHIFT_TAB, FORCE_SELECTION_MODIFIER, agentMouseDownAction, claimInitialInput, decodeOsc52Clipboard, initialInputForPty, isClaudeCommand, isCodexCommand, isTerminalAutoReply, isTerminalIdentityResponse, isTerminalReport, stripTerminalQueries } from "../../lib/terminalControl";
-import { registerTerminal, unregisterTerminal } from "../../lib/terminalRegistry";
-import { clearPtyInput, writePtyInput } from "../../lib/terminalInput";
-import { registerScheduledAgentInput } from "../../lib/scheduledAgentInput";
+} from "../../lib/terminal/terminalBus";
+import { hpcGuardRefusal } from "../../lib/remote/hpc/hpcGuard";
+import { useHpcGuardStore } from "../../stores/remote/hpc/hpcGuardPrompt";
+import { CSI_U_SHIFT_TAB, FORCE_SELECTION_MODIFIER, SILENT_START_MS, agentMouseDownAction, bufferTail, claimInitialInput, decodeOsc52Clipboard, initialInputForPty, claudeLaunchName, isClaudeCommand, isCodexCommand, isTerminalAutoReply, isTerminalIdentityResponse, isTerminalReport, showsAgentTrustDialog, silentStartNotice, stripTerminalQueries, suppressNativeContextMenu, terminalProgramLabel, type SilentStartNotice } from "../../lib/terminal/terminalControl";
+import { registerTerminal, unregisterTerminal } from "../../lib/terminal/terminalRegistry";
+import { clearPtyInput, writePtyInput } from "../../lib/terminal/terminalInput";
+import { registerScheduledAgentInput } from "../../lib/agents/scheduledAgentInput";
 import "@xterm/xterm/css/xterm.css";
 
 // Hoisted to module scope: keystroke input fires this on every key, so we reuse
@@ -86,7 +86,7 @@ interface Props {
   // Attach this tab to an existing named tmux session instead of spawning one
   // (TODO #85 Sessions view). Takes precedence over `tmuxSession`. No-op locally.
   tmuxAttach?: string | null;
-  /** Host-bound marker id (#150) — see `lib/hostBound.ts`. */
+  /** Host-bound marker id (#150) — see `lib/remote/hostBound.ts`. */
   hostBoundUid?: string | null;
   // Whether this pane is laid out on screen (single-mode active tab, or any
   // pane in grid mode). Drives display + xterm fit.
@@ -334,6 +334,13 @@ const MAX_FONT_SIZE = 32;
  *  into it. Shared by the local arming and the digest-backed fallback below so
  *  a hidden pane is held to the same cushion as a visible one. */
 const SCHEDULED_SETTLE_MS = 1200;
+/** How long after an agent tab's auto-typed line is submitted the keystrokes
+ *  held back meanwhile are replayed — a beat for the TUI to clear its box. */
+const HELD_INPUT_FLUSH_MS = 300;
+/** Longest an agent tab holds the user's keystrokes back waiting to type its
+ *  launch line (boot wait is capped at 5 s after ready; this covers a slow
+ *  spawn too). Past it the hold lifts and what was held is dropped. */
+const HOLD_INPUT_MAX_MS = 15000;
 
 function clampFontSize(n: number): number {
   return Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, Math.round(n)));
@@ -364,6 +371,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   const initialInputPending = useRef(false);
   const initialEnterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const openWatchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const silentStartTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const firstOutputAt = useRef<number | null>(null);
   const scheduledReady = useRef(false);
   const terminalReadySeen = useRef(false);
@@ -393,6 +401,14 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     const lines = text.split("\n").length;
     return lines > 1 ? t("terminal.copiedLines", { n: lines }) : t("terminal.copiedChars", { n: text.length });
   };
+  // What a tab still blank SILENT_START_MS after its launch says (see the timer
+  // armed beside the spawn below); a ref for the same reason as the two above.
+  const silentStartTextRef = useRef<(kind: SilentStartNotice, program: string) => string>(() => "");
+  silentStartTextRef.current = (kind, program) =>
+    t(kind === "pending" ? "terminal.silentStartPending" : "terminal.silentStartNoOutput", {
+      program: program || t("terminal.silentStartShell"),
+      s: SILENT_START_MS / 1000,
+    });
 
   const focusedRef = useRef(focused);
   visibleRef.current = visible;
@@ -708,6 +724,10 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
           ptyId: id,
           ready: scheduledInputReady,
           bracketedPaste: () => term.modes.bracketedPasteMode === true,
+          // The family decides whether the markers are used at all: a prompt
+          // pasted into Claude Code arrives as `<pasted_content>` rather than
+          // as the question (`bracketsAgentMessage`).
+          agent: cmd,
           recordAuthorizedInput: () => {
             noteUserInput(id);
             countSubmit();
@@ -719,12 +739,62 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         })
       : undefined;
 
+    /** A keystroke (or paste) of the user's, on its way to the PTY. */
+    const forwardInput = (data: string) => {
+      // A bare Escape / Ctrl+C is the user cutting the agent off: its hook
+      // verdict of "working" would otherwise stand (an interrupted turn fires
+      // no Stop) — see noteUserInput.
+      //
+      // Only a person's keystrokes are stamped. xterm also answers the TUI's
+      // queries and sends focus / mouse reports through this same callback
+      // (`isTerminalAutoReply`); they reach the PTY like anything else, but
+      // stamped as input they read as a prompt the user just submitted, and
+      // a scheduled prompt aimed at a tab that was merely clicked into then
+      // waited for a Stop that no submission was going to bring.
+      if (!isTerminalAutoReply(data)) {
+        noteUserInput(id, isInterruptInput(data));
+        if (noteInput(id, data) > 0) countSubmit();
+      }
+      writePtyInput(id, PTY_ENCODER.encode(data)).catch(console.error);
+    };
+
+    // An agent tab's auto-typed line (Claude's `/rename <project>`, which also
+    // names the Remote Control session) is typed a second or more after launch,
+    // once the TUI has booted. Anything the user typed in that window landed in
+    // the same input box and the two ran together — `/rename Projhello`. So the
+    // user's keystrokes are held until that line has been submitted and then
+    // replayed in order; the program's own terminal replies (DA, cursor
+    // position, focus) still pass straight through, since its boot waits on them.
+    // A launch that types nothing after all (trust dialog, already claimed)
+    // DROPS what was held: flushed into Claude's trust dialog, an Enter would
+    // answer `No, exit`. `HOLD_INPUT_MAX_MS` bounds the hold for a spawn that
+    // never reports ready, so the pane can never lock the keyboard for good.
+    //
+    // A Claude whose version takes `--name` never gets the line typed at all:
+    // `pty_spawn` puts the name on the launch argv and answers `named`, and the
+    // hold lifts the moment it does. Only a Claude Eldrun cannot vouch for (a
+    // container's or a remote host's, an old or not-yet-probed host CLI) is
+    // still typed at. `launchNamed` is null until the spawn has answered.
+    const launchName = attachOnly ? null : claudeLaunchName(cmd, initialInput);
+    let launchNamed: boolean | null = launchName ? null : false;
+    let holdingInput = !attachOnly && !!initialInput && (kind === "agent" || kind === "local_agent");
+    const heldInput: string[] = [];
+    let holdInputTimer: ReturnType<typeof setTimeout> | null = null;
+    const releaseHeldInput = (flush: boolean) => {
+      if (!holdingInput) return;
+      holdingInput = false;
+      if (holdInputTimer) clearTimeout(holdInputTimer);
+      const held = heldInput.splice(0);
+      if (flush && !cancelled) for (const data of held) forwardInput(data);
+    };
+    if (holdingInput) holdInputTimer = setTimeout(() => releaseHeldInput(false), HOLD_INPUT_MAX_MS);
+
     // Wire keyboard input → PTY write. The input stamp is what licenses this
     // tab's later output to show as "working"/"done" (see noteUserInput).
     //
     // This is also the one place Eldrun sees everything the user asks an agent,
     // so the usage recap's "you asked them N things" is counted here (see
-    // lib/promptCount): Enter with content pending = one submit.
+    // lib/agents/promptCount): Enter with content pending = one submit.
     term.onData((data) => {
       if (staleParse > 0 && isTerminalReport(data)) {
         return; // an answer to a query xterm only just parsed out of replayed output
@@ -743,21 +813,11 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       if (initialInputPending.current && data && !data.startsWith("\x1b")) {
         initialInputPending.current = false;
       }
-      // A bare Escape / Ctrl+C is the user cutting the agent off: its hook
-      // verdict of "working" would otherwise stand (an interrupted turn fires
-      // no Stop) — see noteUserInput.
-      //
-      // Only a person's keystrokes are stamped. xterm also answers the TUI's
-      // queries and sends focus / mouse reports through this same callback
-      // (`isTerminalAutoReply`); they reach the PTY like anything else, but
-      // stamped as input they read as a prompt the user just submitted, and
-      // a scheduled prompt aimed at a tab that was merely clicked into then
-      // waited for a Stop that no submission was going to bring.
-      if (!isTerminalAutoReply(data)) {
-        noteUserInput(id, isInterruptInput(data));
-        if (noteInput(id, data) > 0) countSubmit();
+      if (holdingInput && !isTerminalAutoReply(data)) {
+        heldInput.push(data); // replayed once the auto-typed line is in (above)
+        return;
       }
-      writePtyInput(id, PTY_ENCODER.encode(data)).catch(console.error);
+      forwardInput(data);
     });
 
     // A terminal bell means the agent wants to be looked at NOW, so it shortcuts
@@ -924,19 +984,25 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         return false;
       }
       if (!e.ctrlKey || !e.shiftKey) return true;
+      // preventDefault on both chords: returning false only stops xterm, not the
+      // webview. WebKitGTK binds Ctrl+Shift+V to its own paste command, whose
+      // native `paste` event lands on xterm's textarea and pastes a second copy
+      // next to pasteClipboard's (the "pastes twice" report).
       if (e.code === "KeyC") {
+        e.preventDefault();
         const sel = term.getSelection();
         if (sel) copyToClipboard(sel);
         return false;
       }
       if (e.code === "KeyV") {
+        e.preventDefault();
         pasteClipboard();
         return false;
       }
       return true;
     });
 
-    // Subscribed by id through the shared bus (lib/terminalBus) rather than each
+    // Subscribed by id through the shared bus (lib/terminal/terminalBus) rather than each
     // pane calling `listen()` itself — the backend emits these window-wide, not
     // scoped per PTY, so one `listen()` per mounted terminal meant every output
     // chunk from every running PTY was dispatched to and filtered by every
@@ -983,6 +1049,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         if (!claimInitialInput(id, initialInput)) {
           initialInputSent.current = true;
           initialInputPending.current = false;
+          releaseHeldInput(false);
           return;
         }
         initialInputSent.current = true;
@@ -1003,9 +1070,28 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
           const elapsed = Date.now() - scheduledAt;
           const firstOut = firstOutputAt.current;
           const ready =
-            firstOut !== null && Date.now() - firstOut >= READY_CUSHION_MS;
+            launchNamed !== null && firstOut !== null && Date.now() - firstOut >= READY_CUSHION_MS;
           if (!ready && elapsed < MAX_WAIT_MS) {
             initialEnterTimer.current = setTimeout(typeWhenReady, 100);
+            return;
+          }
+          if (launchNamed) {
+            initialInputPending.current = false;
+            return; // named at launch — nothing to type
+          }
+          // Last look before typing, for every agent: a CLI asking whether to
+          // trust the folder must be answered by the user, never by our Enter
+          // (Claude's default is `No, exit`; Codex's and Gemini's default is to
+          // trust). For Claude it also backs up the backend probe below, which
+          // can be wrong (a stale backend, a trust store the spawn does not read).
+          const active = termRef.current?.buffer?.active;
+          if (
+            kind === "agent" &&
+            active &&
+            showsAgentTrustDialog(bufferTail(active))
+          ) {
+            initialInputPending.current = false;
+            releaseHeldInput(false);
             return;
           }
           // Typed on the user's behalf — they triggered the flow that
@@ -1018,6 +1104,9 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
           initialEnterTimer.current = setTimeout(() => {
             initialInputPending.current = false;
             writePtyInput(id, new Uint8Array([0x0d])).catch(console.error);
+            // What the user typed meanwhile goes into the prompt the submitted
+            // line leaves behind, not onto its end.
+            initialEnterTimer.current = setTimeout(() => releaseHeldInput(true), HELD_INPUT_FLUSH_MS);
           }, 200);
         };
 
@@ -1033,7 +1122,15 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         const submittableTab = async (): Promise<boolean> => {
           if (!isClaudeCommand(cmd)) return true;
           try {
-            return await invoke<boolean>("claude_folder_trusted", { cwd });
+            // The scope decides which `.claude.json` the spawn reads — the
+            // fence's staged copy carries trust Eldrun recorded, the host
+            // file does not — so the probe needs it, not just the folder.
+            return await invoke<boolean>("claude_folder_trusted", {
+              cwd,
+              projectId: projectId ?? null,
+              sandbox,
+              localOnly,
+            });
           } catch {
             // An older backend does not expose the probe — preserve the
             // previous behavior rather than silently dropping the rename.
@@ -1044,6 +1141,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
           if (cancelled) return;
           if (!submittable) {
             initialInputPending.current = false;
+            releaseHeldInput(false);
             return;
           }
           typeWhenReady();
@@ -1051,7 +1149,12 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       }
     });
 
+    // How far this lifecycle's launch got, for the silent-start notice below.
+    let spawnState: "pending" | "spawned" | "failed" = "pending";
+    let exited = false;
+
     unlistenExit.current = onTerminalExit(id, () => {
+      exited = true;
       writeTerm("\r\n\x1b[33m[process exited]\x1b[0m\r\n");
     });
 
@@ -1126,13 +1229,22 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       // about the previous occupant of this id, so a reopened project's resume
       // replay can't ride an old input stamp into a "working"/"done" glow.
       notePtySpawn(id);
-      const spawn = () =>
-        invoke("pty_spawn", {
-          opts: { id, cmd, args, env, cwd, cols: term.cols, rows: term.rows, local_only: localOnly, sandbox, agent: kind === "agent" || kind === "local_agent", project_id: projectId ?? null, remote_host_id: remoteHostId ?? null, tmux_session: tmuxSession ?? null, tmux_attach: tmuxAttach ?? null, host_bound_uid: hostBoundUid ?? null },
+      const spawn = async () => {
+        const spawned = await invoke<{ named?: boolean } | null>("pty_spawn", {
+          opts: { id, cmd, args, env, cwd, cols: term.cols, rows: term.rows, local_only: localOnly, sandbox, agent: kind === "agent" || kind === "local_agent", project_id: projectId ?? null, schedule_target_id: scheduleTargetId ?? null, remote_host_id: remoteHostId ?? null, tmux_session: tmuxSession ?? null, tmux_attach: tmuxAttach ?? null, host_bound_uid: hostBoundUid ?? null },
+          sessionName: launchName,
         });
+        // An older backend answers nothing: `named` absent types the line as before.
+        launchNamed = spawned?.named === true;
+        if (launchNamed) releaseHeldInput(true);
+      };
       try {
         await spawn();
+        spawnState = "spawned";
       } catch (e) {
+        // Every branch below either prints why or asks the user first, so a
+        // silent-start notice would only talk over it.
+        spawnState = "failed";
         if (cancelled) return;
         // **The HPC tag's refusal, made actionable** (G.24). `pty_spawn` dials the
         // host before wrapping a remote tab, and on a machine tagged HPC it
@@ -1188,6 +1300,31 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     queueMicrotask(() => {
       if (!cancelled) void setupAndSpawn();
     });
+
+    // A launch that never completes leaves the pane blank with nothing to say
+    // why — the output-router handshake or `pty_spawn` itself simply never
+    // resolves, and on a light theme the pane is plain white (a "+ OpenCode" tab,
+    // 2026-09-15, whose program never started). So a tab that owns its launch
+    // and has shown nothing after SILENT_START_MS says which of the two it is.
+    // Attach-only views spawn nothing and are excluded. Output is judged by this
+    // view's own stream, and — once the spawn is through, so a previous
+    // occupant's stamp cannot count — by the activity digests a hidden pane gets
+    // instead of a stream. Fires once.
+    if (!attachOnly) {
+      silentStartTimer.current = setTimeout(() => {
+        silentStartTimer.current = null;
+        if (cancelled) return;
+        const notice = silentStartNotice({
+          spawn: spawnState,
+          sawOutput:
+            firstOutputAt.current !== null ||
+            (spawnState === "spawned" && lastPtyOutputAt(id) !== undefined),
+          exited,
+        });
+        if (!notice) return;
+        writeTerm(`\r\n\x1b[33m[${silentStartTextRef.current(notice, terminalProgramLabel(cmd))}]\x1b[0m\r\n`);
+      }, SILENT_START_MS);
+    }
 
     // Resize observer — handles container-level resizes (e.g. panel open/close)
     // and the hidden→visible transition (display:none→flex changes the box from
@@ -1285,6 +1422,14 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // usual way to grab the last line) releases there, and its copy should not
     // wait out the debounce either.
     const onDocMouseUp = () => flushSelectionCopy();
+    // Every pane, not just agent ones: whichever program grabbed the mouse owns
+    // the right-click (see `suppressNativeContextMenu`). The element is captured
+    // here so the cleanup detaches from the node it attached to.
+    const contextMenuTarget = containerRef.current;
+    const onContextMenu = (e: MouseEvent) => {
+      if (suppressNativeContextMenu(e, term.modes.mouseTrackingMode !== "none")) e.preventDefault();
+    };
+    contextMenuTarget?.addEventListener("contextmenu", onContextMenu);
 
     if (zoomable) {
       containerRef.current?.addEventListener("wheel", onWheel, { passive: false });
@@ -1297,12 +1442,15 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       cancelled = true;
       clearPtyInput(id);
       if (initialEnterTimer.current) clearTimeout(initialEnterTimer.current);
+      if (holdInputTimer) clearTimeout(holdInputTimer);
       if (scheduledSettleTimer.current) clearTimeout(scheduledSettleTimer.current);
       unregisterScheduled?.();
       if (openWatchTimer.current) clearTimeout(openWatchTimer.current);
+      if (silentStartTimer.current) clearTimeout(silentStartTimer.current);
       if (selectionCopyTimer) clearTimeout(selectionCopyTimer);
       oscHandler.dispose();
       window.removeEventListener("resize", doFit);
+      contextMenuTarget?.removeEventListener("contextmenu", onContextMenu);
       if (zoomable) {
         containerRef.current?.removeEventListener("wheel", onWheel);
         containerRef.current?.removeEventListener("mousedown", onMouseDownCapture, true);

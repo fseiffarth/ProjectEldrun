@@ -2,7 +2,7 @@ import { useEffect, useMemo } from "react";
 
 import type { CalendarTask } from "../../types";
 import type { MailHeader } from "../../types/mail";
-import { useCalendarStore } from "../../stores/calendar";
+import { useCalendarStore } from "../../stores/calendar/calendar";
 import { useMailStore } from "../../stores/mail";
 import {
   releaseUrgentMailPoll,

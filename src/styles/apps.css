@@ -25,7 +25,7 @@
   justify-content: center;
   padding: 16px;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--text-md);
 }
 
 .file-browser-toolbar,
@@ -44,7 +44,7 @@
   padding-top: 4px;
   padding-bottom: 4px;
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: var(--text-sm);
 }
 
 .file-browser-toolbar button,
@@ -56,7 +56,7 @@
   border: 1px solid var(--control-border);
   background: var(--control-bg);
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: var(--text-md);
   padding: 2px 8px;
   border-radius: var(--radius-sm);
 }
@@ -97,7 +97,7 @@
 
 .file-browser-path span {
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: var(--text-sm);
   max-width: 160px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -136,7 +136,7 @@
   background: transparent;
   color: var(--text-secondary);
   cursor: var(--cur-pointer, pointer);
-  font-size: 12px;
+  font-size: var(--text-md);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -158,7 +158,7 @@
 .file-browser-error {
   padding: 8px 12px;
   color: var(--danger);
-  font-size: 12px;
+  font-size: var(--text-md);
   border-bottom: 1px solid var(--border-subtle);
 }
 
@@ -172,7 +172,7 @@
   gap: 6px;
   margin-top: 8px;
   padding: 4px 8px 2px;
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -199,7 +199,7 @@
   min-height: 30px;
   padding: 0 12px;
   border-bottom: 1px solid var(--border-subtle);
-  font-size: 12px;
+  font-size: var(--text-md);
 }
 
 .file-browser-list-head {
@@ -208,7 +208,7 @@
   z-index: 1;
   background: var(--bg-panel);
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: var(--text-sm);
   font-weight: 600;
   text-transform: uppercase;
 }
@@ -246,7 +246,7 @@
 
 .file-browser-row b {
   color: var(--accent);
-  font-size: 11px;
+  font-size: var(--text-sm);
   font-weight: 600;
   min-width: 28px;
 }
@@ -283,7 +283,7 @@
 .file-browser-tile b {
   max-width: 100%;
   overflow-wrap: anywhere;
-  font-size: 12px;
+  font-size: var(--text-md);
   font-weight: 500;
   text-align: center;
 }
@@ -292,7 +292,7 @@
   min-height: 28px;
   border-bottom: none;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--text-sm);
 }
 
 /* ── Migrated main-branch app bars and hover strips ─────────────────── */
@@ -368,7 +368,7 @@
 
 .global-app-fallback-icon {
   width: 18px;
-  font-size: 15px;
+  font-size: var(--text-lg);
   line-height: 1;
   text-align: center;
   flex-shrink: 0;
@@ -393,7 +393,7 @@
 .global-app-edit-current {
   margin-bottom: 8px;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--text-md);
 }
 
 .global-app-edit-row {
@@ -415,33 +415,6 @@
 
 .side-panel.open {
   pointer-events: auto;
-}
-
-.project-switcher-root-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 40px;
-  height: 40px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--control-border);
-  cursor: var(--cur-pointer, pointer);
-  flex-shrink: 0;
-  background: var(--control-bg);
-  color: var(--text-secondary);
-}
-
-.project-switcher-root-btn:hover {
-  background: var(--control-hover-bg);
-  color: var(--text-primary);
-  border-color: var(--text-muted);
-}
-
-.project-switcher-root-btn.active {
-  background: var(--pill-active-bg);
-  color: var(--text-primary);
-  border-color: var(--pill-active-border);
-  box-shadow: inset 0 4px 0 var(--accent);
 }
 
 /* The add-project button: same compact, blend-into-the-header style as
@@ -605,7 +578,7 @@
 .pill-folder-icon {
   display: inline-flex;
   flex-shrink: 0;
-  font-size: 15px;
+  font-size: var(--text-lg);
   position: relative;
 }
 
@@ -677,7 +650,7 @@
   background: transparent;
   color: var(--text-primary);
   padding: 0 9px;
-  font-size: 12px;
+  font-size: var(--text-md);
   outline: none;
   transition: background var(--transition), border-color var(--transition);
 }
@@ -768,7 +741,7 @@
 .project-search-empty {
   padding: 8px;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--text-md);
 }
 
 .project-switcher-add-wrap {
@@ -804,7 +777,7 @@
 .project-switcher-box-add-title {
   padding: 5px 7px 2px;
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: var(--text-md);
   font-weight: 600;
 }
 
@@ -834,7 +807,7 @@
 .project-switcher-box-add-empty {
   padding: 8px;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--text-md);
 }
 
 .project-switcher-add-menu button {
@@ -889,6 +862,10 @@
   flex-direction: column;
   gap: 12px;
   background: var(--bg-elevated);
+  /* These dialogs portal into <body>, which carries no color, so without this
+     bare text nodes inherit black — the same note `.stats-dialog`
+     (stats-deck.css) and `.file-delete-dialog` (file-tree.css) already carry. */
+  color: var(--text-primary);
   /* No boxed outline, same as the popover menus: a 1px frame drawn around the
      accent wash reads as a pale stripe running outside the dialog rather than
      as its edge, and it is the elevation shadow that actually separates a modal
@@ -908,10 +885,17 @@
    scrolling dialog uses `.dialog-framed` (its surface is overflow:hidden and
    never scrolls, so this inset:0 overlay covers the whole fixed frame while the
    inner `.dialog-scroll` scrolls beneath it). A non-framed dialog is short
-   enough never to scroll, so the overlay covers it too. */
+   enough never to scroll, so the overlay covers it too.
+
+   The popover menus (projects-tabs.css's `.context-menu` family) carry the very
+   same overlay for the same reason, so they are declared here with it rather
+   than as a second identical copy. */
 .project-dialog::before,
 .settings-dialog::before,
-.stats-dialog::before {
+.stats-dialog::before,
+.context-menu::before,
+.tab-new-menu::before,
+.project-switcher-add-menu::before {
   content: "";
   position: absolute;
   inset: 0;
@@ -1048,7 +1032,7 @@
 
    It is a SIBLING of `.dialog-scroll`, never a child, and that is the whole
    point: the app paints its own overlay scrollbar thumb over a container's
-   right edge (`lib/customScrollbar.ts`), spanning the scroll box's full height
+   right edge (`lib/theme/customScrollbar.ts`), spanning the scroll box's full height
    — so a header inside the scroll had the thumb running up over the accent
    band and across the ✕ in the corner. Outside it, the thumb starts beneath
    the header, which is the same split `.menu-scroll-region` makes for the
@@ -1082,7 +1066,7 @@
 }
 .shortcut-help-section h3 {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--text-md);
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -1090,7 +1074,7 @@
 }
 .shortcut-help-intro {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--text-base);
   color: var(--text-secondary);
 }
 .shortcut-help-row {
@@ -1100,12 +1084,12 @@
   grid-template-columns: 140px 1fr;
   gap: 12px;
   align-items: baseline;
-  font-size: 13px;
+  font-size: var(--text-base);
 }
 .shortcut-help-row kbd {
   justify-self: start;
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--text-md);
   font-weight: 600;
   padding: 1px 6px;
   color: var(--text-primary);
@@ -1126,8 +1110,33 @@
 }
 .shortcut-help-footer {
   margin: 4px 0 0;
-  font-size: 12px;
+  font-size: var(--text-md);
   color: var(--text-secondary);
   border-top: 1px solid var(--border-subtle);
   padding-top: 10px;
+}
+
+/* Settings categories stay visible while the selected panel scrolls. */
+.settings-dialog.settings-with-navigation {
+  width: min(960px, calc(100vw - 32px));
+  display: grid;
+  grid-template-columns: minmax(150px, 210px) minmax(0, 1fr);
+}
+.settings-navigation { min-height: 0; overflow-y: auto; padding: 16px 10px; border-right: 1px solid var(--border-color); }
+.settings-navigation-links { display: flex; flex-direction: column; gap: 4px; }
+.settings-navigation-links .settings-btn { text-align: left; white-space: normal; }
+.settings-navigation-links [aria-current] { color: var(--accent); border-color: var(--accent); }
+.settings-navigation-compact { display: none; }
+.settings-panel-content { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+.settings-panel-content > .settings-title-row { flex-shrink: 0; padding: 18px 24px; margin: 0; }
+.dialog-fixed-footer { flex-shrink: 0; padding: 12px 24px 18px; border-top: 1px solid var(--border-color); }
+.dialog-fixed-footer .project-dialog-error { max-height: 20vh; overflow: auto; }
+.project-form-heading { margin: 12px 0 0; font-size: 14px; color: var(--text-primary); }
+@media (max-width: 700px) {
+  .settings-dialog.settings-with-navigation { display: flex; }
+  .settings-navigation { overflow: visible; border-right: 0; border-bottom: 1px solid var(--border-color); flex-shrink: 0; }
+  .settings-navigation-links { display: none; }
+  .settings-navigation-compact { display: block; }
+  .settings-navigation-compact .dropdown-trigger { width: 100%; }
+  .settings-navigation-compact .dropdown-menu { max-height: 45vh; overflow-y: auto; }
 }

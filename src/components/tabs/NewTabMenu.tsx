@@ -1,16 +1,17 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import {
+  BLOB_TAB_CMD,
   BROWSER_TAB_CMD,
   PRINTING_TAB_CMD,
   DISKUSAGE_TAB_CMD,
+  MONITOR_TAB_CMD,
   NETWORK_TAB_CMD,
   SKILLSLIBRARY_TAB_CMD,
   PROMPTCHART_TAB_CMD,
   type TabEntry,
 } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
+import { useProjectsStore } from "../../stores/projects";
 import { PROJECT_FILES_TAB_CMD } from "../../stores/tabs";
 import {
   SHELL_ITEMS,
@@ -22,15 +23,19 @@ import {
   type StaticMenuItem,
 } from "./newTabItems";
 import { AddTabMenuList } from "./AddTabMenuList";
+import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import { useAddTabMenuData } from "./useAddTabMenuData";
+import { localModelMenuGroup, useLocalModelPlacement } from "./localModelGroup";
 import { useAgentWorktreePicker } from "./agentWorktrees";
 import { useExperimental } from "../../lib/experimental";
 import { useT } from "../../lib/i18n";
-import { registerHostBoundTab } from "../../lib/hostBound";
+import { registerHostBoundTab } from "../../lib/remote/hostBound";
 
 interface Props {
-  /** Scope (project id or "root") the new tab belongs to. Gates the project-only
-   *  sections (Network Traffic, which needs a host/SSH link). */
+  /** Scope (project id or "root") the new tab belongs to. Feeds the shared
+   *  entry data (`useAddTabMenuData`) and the host-bound registration; no
+   *  section but the root-only 3D project cloud is gated on it — the monitoring
+   *  trio answers for the machine, so the root console offers all three. */
   scope: string;
   /** cwd for the new tab (the popout group's project directory). */
   projectCwd: string;
@@ -59,26 +64,33 @@ interface Props {
  */
 export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onClose, onManageAgents }: Props) {
   const t = useT();
-  const menuRef = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState(anchor);
 
   // Experimental — off for users, on in debug. This menu is the DETACHED
   // window's, and it is a separate React root: an entry added only to `TabBar`
   // exists in the main window and is silently missing from every popout.
   const webBrowser = useExperimental("web_browser");
   const browserHome = useSettingsStore((s) => s.settings?.browser_home_url);
+  // The 3D project cloud is the root scope's own view (TabBar offers it there
+  // only), so the root console's "+" carries it too. A popout's projects store
+  // is inert and empty, which keeps it out of every popout's copy.
+  const hasProjects = useProjectsStore((s) => s.projects.length > 0);
+  const showProjects3d = scope === "root" && hasProjects;
 
   // All the probe/registry/settings plumbing behind the entries is the shared
   // hook — one implementation with TabBar's "+" menu, so the two cannot drift.
   const {
     localModel,
+    localModelOffInRoot,
     localDrivers,
     enabledAgents,
+    vibeForLocalModel,
     compactAgentBins,
     customAgents,
     installedCustom,
     boxMembers,
   } = useAddTabMenuData(scope);
+  // This menu only exists while open, so the GPU gate probes for its lifetime.
+  const localModelGpu = useLocalModelPlacement(localModel, true);
 
   // "+ agent" on a project with linked worktrees asks which one first (#23).
   // The popout cannot tell a remote project from a local one (it is inert to
@@ -86,43 +98,13 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
   const worktreePicker = useAgentWorktreePicker({ projectCwd, projectName, enabled: true });
   const { asking } = worktreePicker;
 
-  // Outside-click / Escape closes the menu — except while the worktree question
-  // is up: its dialog is portaled outside the menu, so a click into it would
+  // Outside-click / Escape dismissal and the viewport clamp are the shared
+  // `ContextMenuPortal`'s — the same one TabBar's "+" menu and tab context menu
+  // use, so the popout's copy can't drift from theirs. The one local rule: while
+  // the worktree question is up, dismissal is suspended (`dismiss={!asking}`).
+  // Its dialog is portaled outside the menu, so a click into it would otherwise
   // read as an outside click, unmount this menu, and take the pending answer
   // (and the tab) with it. The dialog owns Escape for that stretch.
-  useEffect(() => {
-    if (asking) return;
-    const onDown = (e: MouseEvent) => {
-      if (menuRef.current?.contains(e.target as Node)) return;
-      onClose();
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [asking, onClose]);
-
-  // Keep the menu inside the viewport (mirrors TabBar's clamp).
-  useLayoutEffect(() => {
-    const el = menuRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const margin = 8;
-    let nx = pos.x;
-    let ny = pos.y;
-    if (rect.right > window.innerWidth - margin) {
-      nx = Math.max(margin, window.innerWidth - margin - rect.width);
-    }
-    if (rect.bottom > window.innerHeight - margin) {
-      ny = Math.max(margin, window.innerHeight - margin - rect.height);
-    }
-    if (nx !== pos.x || ny !== pos.y) setPos({ x: nx, y: ny });
-  }, [pos]);
 
   const pickStatic = (item: StaticMenuItem) => {
     void worktreePicker.specFor(item).then((spec) => {
@@ -189,13 +171,17 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
     }
   };
 
-  return createPortal(
+  return (
     <>
     {worktreePicker.dialogs}
-    <div
-      className="tab-new-menu"
-      ref={menuRef}
-      style={{ position: "fixed", left: pos.x, top: pos.y }}
+    <ContextMenuPortal
+      x={anchor.x}
+      y={anchor.y}
+      onClose={onClose}
+      className="tab-new-menu tab-add-menu"
+      dismiss={!asking}
+      // Same as the main bar's "+": stays under its button, scrolls when tall.
+      keepBelow
     >
       <AddTabMenuList
         groups={[
@@ -237,7 +223,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                     label: t("newTabMenu.boxMemberFiles", { name: m.name }),
                     dot: "▤",
                     color: TAB_ACCENT.projectfiles,
-                    untested: true,
+                    untested: "newTabMenu.boxMemberFiles",
                     onPick: () => {
                       onPick({
                         label: t("newTabMenu.boxMemberFiles", { name: m.name }),
@@ -254,7 +240,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                     key: `boxshell:${m.id}`,
                     label: t("newTabMenu.boxMemberShell", { name: m.name }),
                     color: TAB_ACCENT.shell,
-                    untested: true,
+                    untested: "newTabMenu.boxMemberShell",
                     onPick: () => {
                       onPick({
                         label: t("newTabMenu.boxMemberShell", { name: m.name }),
@@ -270,44 +256,16 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                 ]),
               }]
             : []),
-          {
-            label: localModel
-              ? t("newTabMenu.groupLocalModelWithName", { model: localModel })
-              : t("newTabMenu.groupLocalModel"),
-            entries: localModel
-              ? [
-                  ...(enabledAgents?.has("vibe")
-                    ? [{
-                        key: "vibe",
-                        label: "Mistral",
-                        color: TAB_ACCENT["local_agent"],
-                        onPick: () => void pickOllamaModel(localModel),
-                      }]
-                    : []),
-                  // `heavy_harness` cautions, it never withholds — see
-                  // lib/localDrivers.ts. The row stays pickable because which
-                  // local models cope is not something the backend can probe.
-                  ...localDrivers.filter((d) => d.available).map((d) => ({
-                    key: d.id,
-                    label: d.label,
-                    color: TAB_ACCENT["local_agent"],
-                    caution: d.heavy_harness
-                      ? t("newTabMenu.localDriverHeavyHarness", { agent: d.label })
-                      : undefined,
-                    onPick: () => void pickLocalLaunch(d.id, d.label, localModel),
-                  })),
-                ]
-              : [],
-            // An empty list has two causes and they need different sentences:
-            // no agent is installed, or the model can't drive the ones that
-            // are. Without the second, withholding the entries would read as a
-            // bug — the agent is right there in the Agents group above.
-            hint: !localModel
-              ? t("newTabMenu.noLocalModelHint")
-              : localDrivers.some((d) => d.needs_tools_unsupported)
-                ? t("newTabMenu.localModelNoToolsHint", { model: localModel })
-                : t("newTabMenu.noLocalAgentHint"),
-          },
+          localModelMenuGroup({
+            localModel,
+            localModelOffInRoot,
+            localDrivers,
+            vibeForLocalModel,
+            gpu: localModelGpu,
+            onVibe: (model) => void pickOllamaModel(model),
+            onLaunch: (id, label, model) => void pickLocalLaunch(id, label, model),
+            t,
+          }),
           {
             label: t("newTabMenu.groupShell"),
             entries: SHELL_ITEMS.filter((i) => i.kind === "shell").map((item) => ({
@@ -327,11 +285,28 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
               onPick: () => pickStatic(item),
             })),
           },
-          // Disk Usage can scan anywhere, so it is offered in every scope; Network
-          // Traffic is per-project (host/SSH link), so the root scope has none.
+          // The same three `TabBar` offers, in the same order — this menu is the
+          // ROOT CONSOLE's and every popout's, and System Monitor was missing
+          // from both: a whole-machine view with nowhere to open it when no
+          // project is on screen. Network Traffic joins it for the same reason;
+          // without a project its remote half simply does not render, leaving
+          // this machine's interfaces and sockets (see `NetworkTrafficPane`).
           {
             label: t("newTabMenu.groupMonitoring"),
             entries: [
+              {
+                key: "monitor",
+                label: t("newTabMenu.itemSystemMonitor"),
+                color: TAB_ACCENT.monitor,
+                untested: "newTabMenu.itemSystemMonitor",
+                onPick: () =>
+                  pickFixed({
+                    label: t("newTabMenu.itemSystemMonitor"),
+                    cmd: MONITOR_TAB_CMD,
+                    cwd: projectCwd,
+                    kind: "monitor",
+                  }),
+              },
               {
                 key: "diskusage",
                 label: t("newTabMenu.itemDiskUsage"),
@@ -345,22 +320,40 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                     kind: "diskusage",
                   }),
               },
-              ...(scope !== "root"
-                ? [{
-                    key: "network",
+              {
+                key: "network",
+                label: t("newTabMenu.itemNetworkTraffic"),
+                color: TAB_ACCENT.network,
+                untested: "newTabMenu.itemNetworkTraffic",
+                onPick: () =>
+                  pickFixed({
                     label: t("newTabMenu.itemNetworkTraffic"),
-                    color: TAB_ACCENT.network,
-                    onPick: () =>
-                      pickFixed({
-                        label: t("newTabMenu.itemNetworkTraffic"),
-                        cmd: NETWORK_TAB_CMD,
-                        cwd: projectCwd,
-                        kind: "network",
-                      }),
-                  }]
-                : []),
+                    cmd: NETWORK_TAB_CMD,
+                    cwd: projectCwd,
+                    kind: "network",
+                  }),
+              },
             ],
           },
+          ...(showProjects3d
+            ? [{
+                label: t("newTabMenu.groupWorkspace"),
+                entries: [{
+                  key: "blob",
+                  label: t("newTabMenu.itemProjects3d"),
+                  dot: "◍",
+                  color: TAB_ACCENT.projects3d,
+                  untested: "newTabMenu.itemProjects3d#root",
+                  onPick: () =>
+                    pickFixed({
+                      label: t("newTabMenu.tabLabelProjects"),
+                      cmd: BLOB_TAB_CMD,
+                      cwd: projectCwd,
+                      kind: "projects3d",
+                    }),
+                }],
+              }]
+            : []),
           {
             label: t("printing.title"),
             entries: [{
@@ -368,7 +361,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
               label: t("printing.title"),
               dot: "⎙",
               color: TAB_ACCENT.printing,
-              untested: true,
+              untested: "printing.title#2",
               onPick: () =>
                 pickFixed({
                   label: t("printing.title"),
@@ -390,7 +383,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
               label: t("skillsLibrary.title"),
               dot: "◧",
               color: TAB_ACCENT.skillslibrary,
-              untested: true,
+              untested: "skillsLibrary.title",
               onPick: () =>
                 pickFixed({
                   label: t("skillsLibrary.title"),
@@ -410,7 +403,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
               label: t("promptChart.heading"),
               dot: "⧗",
               color: TAB_ACCENT.promptchart,
-              untested: true,
+              untested: "promptChart.heading#2",
               onPick: () =>
                 pickFixed({
                   label: t("promptChart.heading"),
@@ -426,9 +419,9 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                 entries: [{
                   key: "browser",
                   label: t("newTabMenu.browser"),
-                  dot: "🌐",
+                  dot: "◎",
                   color: TAB_ACCENT.browser,
-                  untested: true,
+                  untested: "newTabMenu.browser",
                   onPick: () =>
                     pickFixed({
                       label: t("newTabMenu.browser"),
@@ -442,8 +435,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
             : []),
         ]}
       />
-    </div>
-    </>,
-    document.body,
+    </ContextMenuPortal>
+    </>
   );
 }

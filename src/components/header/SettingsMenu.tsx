@@ -1,6 +1,9 @@
-import { useRef } from "react";
+import { UntestedTag } from "../common/UntestedTag";
+import { MenuShortcut } from "../common/MenuShortcut";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
+import { useHeaderMenu } from "../../hooks/useHeaderMenu";
 import { useT } from "../../lib/i18n";
+import { SettingsGlyph } from "./HeaderGlyphs";
 
 const MENU_ID = "settings";
 
@@ -29,26 +32,9 @@ const MENU_ID = "settings";
  */
 export function SettingsMenu() {
   const t = useT();
-  const open = useHeaderHoverMenuStore((s) => s.openId === MENU_ID);
-  const openMenu = useHeaderHoverMenuStore((s) => s.open);
+  const menu = useHeaderMenu(MENU_ID);
+  const { open, reveal, scheduleClose } = menu;
   const closeMenu = useHeaderHoverMenuStore((s) => s.close);
-  const closeTimer = useRef<number | null>(null);
-
-  const reveal = () => {
-    if (closeTimer.current !== null) {
-      window.clearTimeout(closeTimer.current);
-      closeTimer.current = null;
-    }
-    openMenu(MENU_ID);
-  };
-
-  const scheduleClose = () => {
-    if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
-    closeTimer.current = window.setTimeout(() => {
-      closeMenu(MENU_ID);
-      closeTimer.current = null;
-    }, 250);
-  };
 
   const fire = (event: string, detail?: unknown) => {
     closeMenu(MENU_ID);
@@ -59,6 +45,9 @@ export function SettingsMenu() {
 
   return (
     <div
+      ref={menu.ref}
+      onKeyDown={menu.onKeyDown}
+      onBlur={menu.onBlur}
       className="global-apps-menu no-drag"
       onMouseEnter={reveal}
       onMouseLeave={scheduleClose}
@@ -75,35 +64,36 @@ export function SettingsMenu() {
         // here would open on enter and immediately shut (the rule every hover
         // menu in this header follows).
         onClick={reveal}
-        onFocus={reveal}
       >
-        ⚙
+        <SettingsGlyph className="settings-menu-icon" />
       </button>
       {open && (
         // The app's canonical dropdown-list chrome, shared with the switcher's
         // + menu — one look for one kind of thing, not a second copy of it.
-        <div className="project-switcher-add-menu">
-          <button onClick={() => fire("eldrun:open-settings", "main")}>
+        <div className="project-switcher-add-menu" role="menu">
+          <button role="menuitem" onClick={() => fire("eldrun:open-settings", "main")}>
             {t("settings.title")}
           </button>
-          <button onClick={() => fire("eldrun:open-settings", "help")}>
+          <button role="menuitem" onClick={() => fire("eldrun:open-settings", "help")}>
             {t("nav.help.title")}
           </button>
-          <button onClick={() => fire("eldrun:open-shortcut-help")}>
+          <button role="menuitem" onClick={() => fire("eldrun:open-shortcut-help")}>
             {t("shortcutHelp.title")}
+            <MenuShortcut chord="shortcutHelp" />
           </button>
-          <button onClick={() => fire("eldrun:open-how-to-start")}>
+          <button role="menuitem" onClick={() => fire("eldrun:open-how-to-start")}>
             {t("projectSwitcher.howToStartMenu")}
           </button>
-          <button onClick={() => fire("eldrun:start-tour")}>
+          <button role="menuitem" onClick={() => fire("eldrun:start-tour")}>
             {t("settings.takeTour")}
           </button>
-          <button onClick={() => fire("eldrun:start-advanced-tour")}>
+          <button role="menuitem" onClick={() => fire("eldrun:start-advanced-tour")}>
             {t("settings.takeAdvancedTour")}
           </button>
-          <button onClick={() => fire("eldrun:open-lessons")}>
+          <button role="menuitem" onClick={() => fire("eldrun:open-lessons")}>
             {t("settings.lessons")}
           </button>
+          <UntestedTag id="desktop.headerMenus" />
         </div>
       )}
     </div>

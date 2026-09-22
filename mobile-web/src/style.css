@@ -31,26 +31,145 @@ nav button,.keys button { flex:1; }
    the select taking the width the label leaves. */
 .activity-sort { display:flex; align-items:center; gap:10px; margin:-8px 0 12px; color:#9aa0b4; font-size:.9rem; }
 .activity-sort select { flex:1; width:auto; padding:8px 30px 8px 10px; background-position:right 10px center; }
+/* The same control in a screen's header instead, beside the name and the back
+   chevron, the way an agent tab's header carries its view switch: a phone screen
+   holds about five cards, and the order is set once a week. The select takes the
+   width its own value needs rather than everything the name is not using, and on
+   a narrow phone the word "Sort" goes — an order reads as one from its value, and
+   the select keeps its label for a screen reader. */
+.activity-sort.in-header { flex:0 1 auto; min-width:0; margin:0; }
+.activity-sort.in-header select { flex:0 1 auto; max-width:11rem; }
+@media (max-width:420px) { .activity-sort.in-header > span { display:none; } }
+/* The project screen's header runs on two rows: the chevron and the name on the
+   first, the gallery, the sort and ＋ on the second, so the name keeps the width. */
+.project-header { flex-wrap:wrap; row-gap:6px; }
+.project-header-tools { flex:1 0 100%; display:flex; align-items:center; gap:10px; min-width:0; }
+.project-header-tools .activity-sort.in-header { flex:1 1 auto; }
+.project-header-tools .activity-sort.in-header > span { display:inline; }
+.project-header-tools .activity-sort.in-header select { flex:1 1 auto; max-width:none; }
+.project-header-tools .new-tab { margin-left:auto; }
 .cards { display:grid; gap:10px; }
 .card { width:100%; text-align:left; justify-content:space-between; padding:16px; background:rgba(28,31,43,.92); }
 .card span:first-child { display:grid; gap:4px; }
 .card-trailing { flex:0 0 auto; gap:10px; }
-/* An agent tab reads as one block: the card opens the session, and under it a
-   foot says what is scheduled and carries the two controls that need no
-   session — rename, and the scheduled prompts. It is the desktop Agents view's
+/* An agent tab reads as one block: the card opens the session (its name
+   renames it), and under it a foot says what is scheduled and carries the
+   controls that need no session — the scheduled prompts, and close. It is the desktop Agents view's
    tab row, stacked for a 360px phone: a bare ◷ in the row's gutter never said
    that scheduling had moved out here. */
-.tab-card { display:grid; border:1px solid #383c4d; border-radius:11px; background:rgba(28,31,43,.92); }
+.tab-card { position:relative; display:grid; border:1px solid #383c4d; border-radius:11px; background:rgba(28,31,43,.92); }
 .tab-card .card { border:0; background:transparent; }
-.tab-card-foot { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; padding:0 16px 14px; }
+/* #264 — a tab the user has coloured. The desktop spends the tab's bottom rule
+   on the colour; a card has no such edge, so it spends its left border, which
+   stays visible however far the card's own content scrolls past. The hue comes
+   in as `--tab-color` from the row (one palette, resolved to hex the same way
+   in both surfaces), so this rule needs no per-colour class. */
+.tab-card.has-tab-color { border-left:3px solid var(--tab-color); }
+/* The same left edge on a plain `.card` — the Activity list's rows, which are
+   buttons rather than tab cards. One rule for both, so a colour reads the same
+   wherever a tab is listed. */
+.card.has-tab-color { border-left:3px solid var(--tab-color); }
+/* The colour picker's chips (`ColorSheet`). A dot plus its name, not a bare
+   swatch: nine unlabelled circles is a guessing game on a phone, and the name
+   is also what a screen reader reads out. Two per row at 360px. */
+.tab-color-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; padding:2px 6px; }
+.tab-color-chip { display:flex; align-items:center; gap:9px; padding:10px 12px; background:rgba(56,60,80,.8); font-size:.92rem; text-align:left; }
+.tab-color-chip.is-current { border-color:#7c6cff; background:#3b326e; }
+.tab-color-chip-dot { flex:0 0 auto; width:16px; height:16px; border-radius:50%; }
+.tab-color-chip-dot.none { border:1px solid #6f7488; background:transparent; }
+/* #264 — manual tab order. The grip sits beside the card's own button rather
+   than on it: a press anywhere else on the card opens the session, and the two
+   must not be the same gesture. `touch-action:none` is what keeps the drag from
+   being read as a page scroll on a phone, and the captured pointer is what
+   keeps it once it has started. */
+.tab-card-head { display:flex; align-items:stretch; min-width:0; }
+.tab-card-head .card { flex:1 1 auto; min-width:0; }
+/* The colour chooser: a small dot in the card's upper-left corner. The button
+   is wider than the dot so a thumb can hit it, and the card's own left padding
+   closes up so the label does not drift right. */
+.tab-card-dot { position:relative; z-index:1; flex:0 0 auto; align-self:flex-start; width:34px; padding:21px 0 12px 8px; border:0; border-radius:11px 0 0 0; background:transparent; line-height:0; }
+.tab-card-dot span { display:block; width:11px; height:11px; margin:0 auto; border:1px solid #6f7488; border-radius:50%; }
+.tab-card.has-tab-color .tab-card-dot span { border-color:var(--tab-color); background:var(--tab-color); }
+.tab-card-head .tab-card-dot + .card { padding-left:6px; }
+/* The opener is stretched over the whole card — head, prompts and foot — so
+   the mark that says so can sit on the foot's right end rather than beside the
+   ✕. Everything that is its own control (the dot, the name, ✕, the grip, ◷)
+   lifts itself above it; the rest of the card is the opener's. */
+.tab-card-main { position:relative; }
+.tab-card-main.unavailable > span { opacity:.45; }
+.tab-card-open { position:absolute; inset:0; padding:0; border:0; border-radius:11px; background:transparent; }
+.tab-card-open:disabled { opacity:1; }
+.tab-card-name { position:relative; z-index:1; justify-self:start; min-width:0; margin:-4px -6px; padding:4px 6px; border:0; border-radius:6px; background:transparent; text-align:left; }
+.tab-card-name strong { text-decoration:underline dotted #6f7488; text-underline-offset:4px; overflow-wrap:anywhere; }
+/* The name and the model tag share one row: the tag is the fact one scans a
+   list of tabs for, and a line of its own would push every card's prompts down.
+   The name keeps the row's spare width (a long one wraps within it) and the tag
+   its own, so it is never the thing that gets cut. The stronger selector is
+   what beats `.card span:first-child`, which would otherwise stack the two. */
+.tab-card-head .tab-card-main .tab-card-title { display:flex; align-items:baseline; gap:8px; min-width:0; }
+/* Plain muted words beside the name, in no box at all: the status pill's
+   outline is how a *state* is marked, and wearing it made a fact that never
+   changes look like one more thing to read. It says what the session's own
+   status line says (`agentModel.screenModelTag`), so the tag and the chip over
+   the keyboard are one reading in two places. The name keeps the row's spare
+   width; it is the tag that gets cut. */
+.tab-card-main .tab-card-model { position:relative; z-index:1; display:inline-block; flex:0 1 auto; max-width:45%; margin:-4px -6px -4px 0; padding:4px 6px 4px 0; border:0; border-radius:6px; background:transparent; color:#9498aa; font-size:.72rem; font-weight:600; text-align:left; text-transform:none; text-decoration:underline dotted #6f7488; text-underline-offset:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.tab-card-main .tab-card-model:disabled { opacity:1; text-decoration:none; }
+.tab-card-grip { position:relative; z-index:1; flex:0 0 auto; width:44px; padding:0; border:0; border-left:1px solid #2d3040; border-radius:0 11px 0 0; background:transparent; color:#6f7488; font-size:1.05rem; touch-action:none; cursor:grab; }
+.tab-card-grip:active { cursor:grabbing; color:#d3d6e4; }
+/* A card that is only its head — the home screen's project rows, which wear the
+   same row so their grip sits beside the opener rather than on it. With no
+   prompts or schedule line under it the grip reaches the card's bottom edge, so
+   it is that corner it has to round rather than a rule running into nothing. */
+.tab-card.one-row .tab-card-grip { border-radius:0 11px 11px 0; }
+.tab-card.dragging { opacity:.65; }
+/* The slot the dropped card would land in, drawn on the card it lands beside.
+   An outline rather than a moved card: the list itself does not rearrange until
+   the finger lifts, so the line is the whole preview. */
+.tab-card.drop-before { box-shadow:inset 0 3px 0 0 #7c6cff; }
+.tab-card.drop-after { box-shadow:inset 0 -3px 0 0 #7c6cff; }
+.reorder-hint { margin:-4px 0 12px; color:#9aa0b4; font-size:.84rem; }
+.tab-card-foot { display:flex; align-items:center; gap:4px; padding:0 16px 8px 8px; }
 .tab-card-when { min-width:0; flex:1 1 auto; }
-.tab-card-actions { display:flex; flex:0 0 auto; gap:8px; }
-.card-action { padding:8px 12px; background:rgba(56,60,80,.8); font-size:.9rem; }
-.card-action.accent { background:#3b326e; border-color:#7c6cff; }
-.agent-status { padding:4px 8px; border:1px solid currentColor; border-radius:0; font-weight:700; text-transform:capitalize; }
+/* The state and the ›, on the foot's right end. The foot's own right padding is
+   the gap to the card's edge, so the cluster keeps the ✕'s column without
+   sitting under it. */
+.tab-card-foot .card-trailing { margin-left:auto; color:#9498aa; }
+/* The card's icon-only controls: the ✕ in its top-right corner and the ◷ that
+   leads the schedule line. A 36px hit box around a small glyph, borderless
+   like `.sheet-close`, so they read as controls without shouting over the tab. */
+.tab-card-icon { position:relative; z-index:1; flex:0 0 auto; display:grid; place-items:center; width:36px; height:36px; padding:0; border:0; border-radius:9px; background:transparent; color:#9498aa; font-size:1rem; line-height:1; }
+.tab-card-icon:active { background:rgba(56,60,80,.8); color:#d3d6e4; }
+.tab-card-icon.accent { color:#a99cff; font-size:1.15rem; }
+.tab-card-close { align-self:flex-start; margin:6px 6px 0 0; font-size:.9rem; }
+.tab-card-close:active { color:#ff9aa6; }
+.tab-card-head .tab-card-main { padding-right:4px; }
+/* The same pill the sheets' headings wear (`.option-sheet h2 small`), as a
+   class, for the places that mark an unverified feature outside a heading. */
+.untested { margin-left:6px; color:#8fb8ff; font-size:.62rem; text-transform:uppercase; }
+/* What each agent session was last asked, between the card and its foot. Always
+   drawn, never behind a disclosure: it is what tells two "claude" tabs apart.
+   The newest prompt wraps to three lines, the ones behind it are one each, so a
+   card's height is bounded whatever the prompts were. */
+.tab-card-prompts { display:grid; gap:4px; padding:0 16px 12px; min-width:0; }
+.tab-card-prompts-label { font-size:.72rem; text-transform:uppercase; letter-spacing:.06em; color:#6f7488; }
+.tab-card-prompt { display:flex; gap:8px; margin:0; min-width:0; color:#9498aa; font-size:.86rem; }
+.tab-card-prompt.latest { color:#d3d6e4; }
+.tab-card-prompt.empty { color:#6f7488; font-style:italic; }
+.tab-card-prompt-when { flex:0 0 auto; color:#6f7488; font-variant-numeric:tabular-nums; }
+.tab-card-prompt-text { min-width:0; overflow:hidden; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:1; overflow-wrap:anywhere; }
+.tab-card-prompt.latest .tab-card-prompt-text { -webkit-line-clamp:3; }
+/* The same reading on the flat Agents list, where a row is one tap tall: two
+   lines, then ellipsis. */
+.activity-prompt { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; color:#b6bacb; overflow-wrap:anywhere; }
+.agent-status { display:inline-flex; align-items:center; gap:5px; padding:4px 8px; border:1px solid currentColor; border-radius:0; font-weight:700; text-transform:capitalize; }
 .agent-status.working { color:#6fe29c; background:#173827; }
 .agent-status.question { color:#ffd36b; background:#493b1d; }
 .agent-status.done { color:#91e6a9; background:#193a29; }
+/* The desktop tab strip's status glyph, leading the word. ▶ runs large beside
+   ? and ✓, so it is set smaller — the same correction the desktop makes. */
+.agent-status-glyph { font-size:.85em; line-height:1; }
+.agent-status.working .agent-status-glyph { font-size:.7em; }
 small { color:#9498aa; }
 .count { min-width:34px; text-align:center; padding:6px; border-radius:0; background:#312a57; }
 .notice,.error { padding:12px; border-radius:10px; }
@@ -65,6 +184,12 @@ small { color:#9498aa; }
 .create { display:grid; gap:9px; margin-top:22px; }
 .agent-create > button:first-child { flex:1; text-align:left; }
 .mode { text-transform:capitalize; }
+/* The same rows inside the ＋ sheet, where the heading and the note above them
+   are the space the margin used to buy. */
+.new-tab-sheet .create { margin-top:4px; }
+/* The ＋ at the end of the project header. Square against the back chevron
+   opposite it, and it never shrinks: the project's name is what gives way. */
+.new-tab { flex:0 0 auto; min-width:44px; padding:8px 12px; font-size:1.25rem; line-height:1.1; }
 .home-header { gap:10px; }
 .home-brand { display:flex; flex:1; align-items:center; gap:8px; min-width:0; }
 .home-brand strong { font-size:1.05rem; letter-spacing:.01em; }
@@ -81,8 +206,8 @@ small { color:#9498aa; }
 .tabbed > .screen { padding-bottom:calc(76px + max(24px,env(safe-area-inset-bottom))); }
 .projects-row { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:17px; }
 .projects-row h1 { font-size:1.2rem; }
-.mobile-alerts { display:grid; gap:10px; margin-top:28px; }
-.mobile-alerts h2 { margin:0; font-size:1.2rem; }
+.mobile-alerts,.phone-settings { display:grid; gap:10px; margin-top:28px; }
+.mobile-alerts h2,.phone-settings h2 { margin:0; font-size:1.2rem; }
 .mobile-alert-list { display:grid; gap:8px; }
 /* The ✓ rides beside the row, never inside it: a button in a button is invalid
    markup and would fold finishing the thing into the tap that opens it. */
@@ -141,6 +266,11 @@ button.mobile-alert-row { cursor:pointer; }
 .todo-mobile-column-head button { min-width:32px; padding:6px 7px; border-color:transparent; background:transparent; color:#8b90a3; }
 .todo-mobile-column-head button:active { background:#232838; }
 .todo-mobile-column-head button.danger { color:#c08b93; }
+/* The fold sits inside the head's <h2>, so it has to opt out of the head's
+   own button treatment and read as the heading it is wrapping. */
+.todo-mobile-column-head .todo-column-fold { display:flex; align-items:center; gap:7px; min-width:0; padding:7px 4px 7px 0; border:0; background:transparent; color:inherit; text-align:left; }
+.todo-fold-caret { flex:0 0 auto; color:#8b90a3; font-size:.75rem; }
+.todo-mobile-column.folded { gap:6px; }
 .todo-column-empty { margin:0; padding:10px 2px; color:#767b8d; font-size:.85rem; }
 .todo-mobile-card { display:grid; gap:8px; padding:12px; background:#161a25; border:1px solid #272c3a; border-radius:11px; }
 .todo-mobile-card.done { opacity:.62; }
@@ -281,6 +411,18 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .terminal-title h1,.terminal-title small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .terminal-view-switch { display:flex; gap:3px; padding:3px; border:1px solid #34384a; border-radius:10px; background:#151822; }
 .terminal-view-switch button { padding:6px 9px; border:0; border-radius:7px; background:transparent; font-size:.76rem; }
+/* An agent tab's Focus opens a list once it is up: where Focus reads from. */
+.view-caret { display:inline-block; width:5px; height:5px; margin:0 1px 2px 6px; border-right:1.5px solid currentColor; border-bottom:1.5px solid currentColor; transform:rotate(45deg); opacity:.75; }
+.focus-menu-backdrop { position:fixed; inset:0; z-index:12; }
+.focus-menu { position:absolute; top:calc(env(safe-area-inset-top) + 50px); right:10px; display:grid; gap:3px; width:min(300px,calc(100vw - 20px)); padding:6px; border:1px solid #383c4d; border-radius:14px; background:#171a24; color:#e7e9f2; box-shadow:0 12px 28px rgba(4,5,9,.6); }
+.focus-menu button { display:flex; align-items:center; gap:12px; width:100%; padding:11px 12px; border:0; border-radius:10px; background:#1e2230; text-align:left; }
+.focus-menu button[aria-checked="true"] { color:#8fb6ff; background:#1c2336; }
+.focus-menu button.unavailable { opacity:.6; }
+.focus-menu button > span { display:grid; flex:1; gap:3px; min-width:0; }
+.focus-menu strong { font-weight:600; }
+.focus-menu em { margin-left:6px; color:#8fb8ff; font-size:.6rem; font-style:normal; text-transform:uppercase; letter-spacing:.05em; }
+.focus-menu small { color:#98a0b4; font-size:.8rem; overflow-wrap:anywhere; }
+.focus-menu svg { width:19px; height:19px; flex:0 0 auto; fill:none; stroke:currentColor; stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; }
 .terminal-body { position:relative; min-height:0; overflow:hidden; }
 /* tmux sizes a window to its widest client, so the phone's emulator is a
    desktop-width screen (see terminal/wideOutput.ts). Terminal view pans across
@@ -288,12 +430,17 @@ body.terminal-open { min-height:0; overflow:hidden; }
    because terminal/touchScroll.ts drives both itself. Sharing the gesture with
    the browser (`pan-x`) did not work: it arbitrates over the same first pixels
    the drag handler was already scrolling. Without the scroller the right of
-   every long line was simply cut off. */
-.terminal { position:absolute; inset:0; min-height:0; padding:5px; overflow-x:auto; overflow-y:hidden; overscroll-behavior:contain; touch-action:none; -webkit-overflow-scrolling:touch; scrollbar-color:#454b62 #0b0d13; scrollbar-width:thin; }
-.terminal::-webkit-scrollbar { height:7px; }
-.terminal::-webkit-scrollbar-track { background:#0b0d13; }
-.terminal::-webkit-scrollbar-thumb { border-radius:0; background:#454b62; }
-.terminal.focus-source { visibility:hidden; pointer-events:none; }
+   every long line was simply cut off.
+   Scoped to the host box: xterm's own root element is `class="terminal xterm"`,
+   and a bare `.terminal` made it an `inset:0`, `overflow-y:hidden` box too —
+   clipped to the phone's height, so the rows below the fold (the live prompt)
+   added nothing to the host's scroll extent and stayed under the composer
+   (measured: scrollHeight 578 = clientHeight for a 768px-tall screen). */
+.terminal-body > .terminal { position:absolute; inset:0; min-height:0; padding:5px; overflow-x:auto; overflow-y:hidden; overscroll-behavior:contain; touch-action:none; -webkit-overflow-scrolling:touch; scrollbar-color:#454b62 #0b0d13; scrollbar-width:thin; }
+.terminal-body > .terminal::-webkit-scrollbar { height:7px; }
+.terminal-body > .terminal::-webkit-scrollbar-track { background:#0b0d13; }
+.terminal-body > .terminal::-webkit-scrollbar-thumb { border-radius:0; background:#454b62; }
+.terminal-body > .terminal.focus-source { visibility:hidden; pointer-events:none; }
 .terminal .xterm,.terminal .xterm-viewport { height:100%; overscroll-behavior:contain; }
 /* xterm gives `.xterm-screen` an explicit cols-wide pixel width. Letting the
    terminal element grow to it is what gives the scroller something to
@@ -312,7 +459,7 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .terminal-wide-hint::before { left:0; background:linear-gradient(270deg,rgba(11,13,19,0),rgba(11,13,19,.94)); }
 .terminal-wide-hint::after { right:0; background:linear-gradient(90deg,rgba(11,13,19,0),rgba(11,13,19,.94)); }
 .terminal-wide-hint.wide-left::before,.terminal-wide-hint.wide-right::after { opacity:1; }
-.terminal.focus-source ~ .terminal-wide-hint { display:none; }
+.terminal-body > .terminal.focus-source ~ .terminal-wide-hint { display:none; }
 .alt-screen-notice { position:absolute; inset:0; display:grid; align-content:center; justify-items:center; gap:9px; padding:26px; text-align:center; background:linear-gradient(180deg,#10131b,#0b0d13); }
 .alt-screen-notice strong { color:#e7e9f2; font-size:1rem; }
 .alt-screen-notice span { max-width:30ch; color:#9298aa; font-size:.85rem; line-height:1.5; }
@@ -353,15 +500,93 @@ body.terminal-open { min-height:0; overflow:hidden; }
    the stored session (`TranscriptTurns`): the same chat, the agent's own
    words. The stored session is prose from a file, not a screen, so it reads
    in the UI face; an answer keeps its line breaks and wraps at the phone's
-   edge. */
+   edge. An answer is a bubble on the left, the mirror of the prompt's; tool
+   output and raw screen rows (`.agent` without `.answer`) stay flat. */
+.readable-turn.agent.answer { width:auto; max-width:92%; padding:8px 12px; border-radius:16px 16px 16px 4px; background:#1d2030; color:#e3e6f2; }
+/* A message carries no buttons: what can be done with it — copy it, hear it
+   read — is a click-hold on the bubble away (`useMessageMenu`), so the chat
+   spends its width on words. The system's own long-press callout would fight
+   that press, so it is off over a bubble. */
+.readable-turn.user,.readable-turn.agent.answer { position:relative; -webkit-touch-callout:none; }
+.readable-turn.agent.answer .readable-line { padding-left:0; text-indent:0; }
+/* A slash command (`CommandDivider`) steers the CLI rather than talking to
+   the agent, so it is no bubble: a hairline across the chat with the command
+   centred on it, in the prompt's violet. */
+.readable-command { display:flex; align-items:center; gap:10px; width:100%; margin:6px 0; color:#a99cf0; font:500 .8rem/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; -webkit-touch-callout:none; }
+.readable-command::before,.readable-command::after { content:""; flex:1 1 0; min-width:16px; border-top:1px solid #3a3466; }
+.readable-command-text { flex:0 1 auto; min-width:0; max-width:80%; text-align:center; overflow-wrap:anywhere; }
 .readable-lines.transcript { font:400 .9rem/1.5 Inter,ui-sans-serif,system-ui,sans-serif; }
+/* The stored session holds one bubble per message the agent wrote, so the
+   "let me check…" notes of a turn stand apart from its answer; a new prompt
+   opens an exchange with more air above it than the bubbles inside one. */
+.readable-lines.chat.transcript { gap:12px; }
+.readable-lines.transcript > .readable-turn.user:not(:first-child) { margin-top:16px; }
+/* The text of a `/goal` sits right under its rule: one exchange, not two. */
+.readable-lines.transcript > .readable-command + .readable-turn.user { margin-top:0; }
+/* …and is outlined in the rule's violet, so it reads as that command's
+   text rather than a prompt of its own. */
+.readable-turn.user.command-args { border:1px solid #7a6ad8; }
+.readable-lines.transcript .readable-turn.agent.answer { border:1px solid #2a2e42; }
 .transcript-text { margin:0; min-width:0; white-space:pre-wrap; overflow-wrap:break-word; }
+/* An answer's Markdown (`answerHtml`): formatting only, in the chat's own
+   palette — nothing in it is a link or loads anything. */
+.transcript-md { min-width:0; overflow-wrap:break-word; }
+.transcript-md > :first-child { margin-top:0; }
+.transcript-md > :last-child { margin-bottom:0; }
+.transcript-md p { margin:0 0 .6em; }
+.transcript-md h1,.transcript-md h2,.transcript-md h3,.transcript-md h4,.transcript-md h5,.transcript-md h6 { margin:.9em 0 .4em; color:#f1f2f8; font-weight:650; line-height:1.3; }
+.transcript-md h1 { font-size:1.12rem; }
+.transcript-md h2 { font-size:1.04rem; }
+.transcript-md h3,.transcript-md h4,.transcript-md h5,.transcript-md h6 { font-size:.95rem; }
+.transcript-md strong { color:#f4f5fa; font-weight:650; }
+.transcript-md em { font-style:italic; }
+.transcript-md del { opacity:.7; }
+.transcript-md ul,.transcript-md ol { margin:0 0 .6em; padding-left:1.25em; }
+.transcript-md li { margin:.2em 0; }
+.transcript-md li::marker { color:#8c84d8; }
+.transcript-md li > ul,.transcript-md li > ol { margin:.2em 0 0; }
+.transcript-md .task-item { list-style:none; margin-left:-1.1em; }
+.transcript-md .md-task { display:inline-block; width:1.1em; color:#8c84d8; }
+.transcript-md code { padding:.08em .35em; border-radius:5px; background:#2a2e42; color:#dcd6ff; font:400 .82rem/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; overflow-wrap:anywhere; }
+.transcript-md pre { margin:0 0 .6em; padding:8px 10px; overflow-x:auto; border-radius:8px; background:#12141c; -webkit-overflow-scrolling:touch; }
+.transcript-md pre code { padding:0; background:none; color:#e3e6f2; white-space:pre; overflow-wrap:normal; }
+.transcript-md blockquote { margin:0 0 .6em; padding:2px 0 2px 10px; border-left:3px solid #4a4f68; color:#b9bdcc; }
+.transcript-md hr { margin:.8em 0; border:0; border-top:1px solid #34384a; }
+.transcript-md .md-link { color:#b7c9ff; }
+.transcript-md .md-math { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:.85em; }
+.transcript-md .md-table { display:block; max-width:100%; margin:0 0 .6em; overflow-x:auto; border-collapse:collapse; font-size:.82rem; -webkit-overflow-scrolling:touch; }
+.transcript-md .md-table th,.transcript-md .md-table td { padding:4px 8px; border:1px solid #34384a; text-align:left; vertical-align:top; }
+.transcript-md .md-table th { background:#252a3c; font-weight:650; }
+.transcript-md .md-alert { margin:0 0 .6em; padding:6px 10px; border-left:3px solid #8fb8ff; border-radius:6px; background:#161a26; }
+.transcript-md .md-alert-title { margin:0 0 .2em; color:#8fb8ff; font-size:.78rem; font-weight:650; text-transform:uppercase; letter-spacing:.04em; }
+.transcript-md .md-alert-warning,.transcript-md .md-alert-caution { border-left-color:#e7b45a; }
+.transcript-md .md-alert-warning .md-alert-title,.transcript-md .md-alert-caution .md-alert-title { color:#e7b45a; }
+.transcript-md .tok-comment { color:#7d8497; font-style:italic; }
+.transcript-md .tok-string { color:#9fd86a; }
+.transcript-md .tok-keyword,.transcript-md .tok-attr { color:#d9bfff; }
+.transcript-md .tok-num { color:#efba5d; }
+.transcript-md .tok-type { color:#e8dca0; }
+.transcript-md .tok-func,.transcript-md .tok-prop { color:#a4a0e8; }
+.transcript-md .tok-tag { color:#f47868; }
+.transcript-md .tok-arg { font-style:italic; }
 .transcript-cut { display:block; margin-top:4px; color:#9298aa; font-size:.72rem; }
 /* What the screen is drawing right now, under the stored session: shown only
    while it holds a choice the session is waiting on. */
 .transcript-screen { display:grid; gap:6px; padding:8px 10px; border-left:3px solid #8fb8ff; border-radius:8px; background:#14161e; }
 .transcript-screen small { color:#8fb8ff; font-size:.62rem; text-transform:uppercase; letter-spacing:.05em; }
-.readable-tools button[aria-pressed="true"] { border-color:#6c5ce7; color:#dcd6ff; }
+/* Under the stored session while the live screen shows the agent mid-turn. */
+.transcript-working { display:flex; align-items:center; gap:8px; padding:6px 10px; color:#9da3b6; font:500 .78rem/1.4 Inter,ui-sans-serif,system-ui,sans-serif; }
+.transcript-working-dots { display:inline-flex; gap:3px; }
+.transcript-working-dots i { width:5px; height:5px; border-radius:50%; background:#8fb8ff; animation:transcript-working 1.2s ease-in-out infinite; }
+.transcript-working-dots i:nth-child(2) { animation-delay:.2s; }
+.transcript-working-dots i:nth-child(3) { animation-delay:.4s; }
+@keyframes transcript-working { 0%, 80%, 100% { opacity:.25; } 40% { opacity:1; } }
+/* What the agent's own spinner prints about the turn — elapsed time, tokens —
+   pushed to the end of the working row. Tabular figures so a ticking timer
+   does not shuffle the row on every repaint. */
+.transcript-working-facts { margin-left:auto; color:#787f93; font-size:.72rem; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.transcript-working-facts em { color:#8fb8ff; font-size:.6rem; font-style:normal; text-transform:uppercase; letter-spacing:.05em; }
+@media (prefers-reduced-motion: reduce) { .transcript-working-dots i { animation:none; opacity:.7; } }
 .readable-notice { margin-bottom:10px; padding:8px 10px; border-left:3px solid #747b90; border-radius:8px; background:#14161e; color:#9298aa; font:400 .78rem/1.45 Inter,ui-sans-serif,system-ui,sans-serif; }
 .readable-earlier { display:block; width:100%; margin-bottom:10px; padding:9px 10px; border:1px solid #34384a; border-radius:9px; background:#151823; color:#9da3b6; font:500 .78rem/1.4 Inter,ui-sans-serif,system-ui,sans-serif; text-align:center; }
 .readable-earlier:active { background:#1c2030; color:#c8cdda; }
@@ -371,15 +596,45 @@ body.terminal-open { min-height:0; overflow:hidden; }
    looking at, and the stream reserves room below it so nothing is covered. */
 .readable-tools { position:absolute; right:10px; bottom:12px; display:flex; gap:6px; }
 .readable-tools button { padding:5px 10px; border:1px solid #34384a; border-radius:9px; background:rgba(16,19,27,.86); color:#9da3b6; font-size:.72rem; backdrop-filter:blur(6px); }
-.readable-tools small { align-self:center; padding:3px 8px; border-radius:999px; background:rgba(16,19,27,.86); color:#8fb8ff; font-size:.6rem; text-transform:uppercase; letter-spacing:.05em; backdrop-filter:blur(6px); }
+/* The rows an agent draws under its input box (cwd, model, mode, context…),
+   which Focus otherwise cuts away: swiped in from the left over the bottom of
+   the reading view, above its tools. Inside `.terminal-body`, so it can never
+   cover the composer. Slides by transform + opacity only. */
+.focus-statusline { position:absolute; left:8px; right:8px; bottom:46px; z-index:1; max-height:45%; overflow:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; padding:8px 10px 9px; border:1px solid #383c4d; border-radius:9px; background:#11141c; color:#dfe3ee; font-size:.78rem; animation:focus-statusline-in .16s ease-out; }
+.focus-statusline-head { position:sticky; left:0; display:flex; align-items:center; gap:8px; min-width:0; margin-bottom:6px; }
+.focus-statusline-head strong { flex:1 1 auto; font-weight:650; }
+.focus-statusline-head strong small { margin-left:6px; color:#8fb8ff; font-size:.62rem; text-transform:uppercase; }
+.focus-statusline-head button { flex:0 0 auto; padding:4px 9px; border:0; border-radius:7px; background:rgba(255,255,255,.09); color:inherit; font-size:.8rem; }
+.focus-statusline-row { width:max-content; min-width:100%; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; line-height:1.45; white-space:pre; }
+.focus-statusline-empty { color:#9298aa; }
+@keyframes focus-statusline-in { from { opacity:0; transform:translateX(-14px); } to { opacity:1; transform:none; } }
+@media (prefers-reduced-motion:reduce) { .focus-statusline { animation:none; } }
 .readable-jump { position:absolute; left:50%; bottom:12px; transform:translateX(-50%); padding:8px 14px; border:1px solid #4c5165; border-radius:999px; background:rgba(23,26,36,.94); color:#e7e9f2; font-size:.78rem; box-shadow:0 6px 18px rgba(0,0,0,.35); }
 .terminal-controls { min-height:0; overflow:auto; }
 .last-sent { display:grid; grid-template-columns:auto minmax(0,1fr); gap:8px; align-items:start; margin:6px 7px 0; padding:8px 10px; border-radius:9px; background:#211d35; color:#dcd6ff; font-size:.78rem; }
 .last-sent span { color:#9e91e9; font-weight:750; text-transform:uppercase; letter-spacing:.06em; }
 .last-sent p { margin:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; unicode-bidi:plaintext; }
-.session-facts { display:flex; align-items:center; gap:10px; margin:6px 14px 0; color:#8b90a5; font-size:.72rem; font-family:ui-monospace,SFMono-Regular,monospace; white-space:nowrap; overflow:hidden; }
-.session-facts .fact-path { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; }
-.session-facts .fact-branch,.session-facts .fact-context { flex:0 0 auto; }
+/* Scrolls sideways rather than clipping: an agent tab's row leads with its
+   model / mode / status buttons, and a phone can't fit them beside every fact.
+   The path gives way first, down to a stub, before the row scrolls. */
+.session-facts { display:flex; align-items:center; gap:10px; margin:2px 10px 0; padding:0 4px; color:#8b90a5; font-size:.72rem; font-family:ui-monospace,SFMono-Regular,monospace; white-space:nowrap; overflow-x:auto; overflow-y:hidden; scrollbar-width:none; }
+.session-facts::-webkit-scrollbar { display:none; }
+.session-facts .fact-branch,.session-facts .fact-context,.session-facts .fact-limit { flex:0 0 auto; }
+.session-facts .fact-limit.high { color:#f0a35e; }
+/* A fact you can tap: the row's own type and colour, a shade brighter, with a
+   hit area padded out past the glyphs. The row's own padding and trimmed
+   margin absorb it, so plain facts sit where they did; a negative margin
+   would only have been clipped by the row's overflow. */
+.fact-action { display:flex; align-items:center; gap:5px; flex:0 0 auto; max-width:14em; margin:0 -4px; padding:5px 4px; border:0; border-radius:6px; background:transparent; color:#b9bed0; font:inherit; }
+.fact-action:active { background:rgba(255,255,255,.08); }
+.fact-action:disabled { color:#8b90a5; opacity:.6; }
+.fact-action-label { min-width:0; overflow:hidden; text-overflow:ellipsis; text-decoration:underline dotted rgba(185,190,208,.45); text-underline-offset:3px; }
+/* The same lamp the tab row shows, so the state reads without opening the
+   sheet. `idle` is dim rather than absent: a missing lamp reads as broken. */
+.fact-lamp { width:7px; height:7px; flex:0 0 auto; border-radius:50%; background:#5a6178; }
+.fact-lamp.working { background:#6fe29c; box-shadow:0 0 6px #6fe29c; }
+.fact-lamp.question { background:#ffd36b; box-shadow:0 0 6px #ffd36b; }
+.fact-lamp.done { background:#91e6a9; }
 .prompt-composer { display:flex; flex-direction:column; gap:2px; margin:7px 7px 2px; padding:6px 8px 8px 12px; border:1px solid #454a60; border-radius:16px; background:#171a24; box-shadow:0 6px 20px rgba(0,0,0,.18); }
 .prompt-composer:focus-within { border-color:#8c7df4; box-shadow:0 0 0 2px rgba(120,104,217,.4),0 6px 20px rgba(0,0,0,.18); }
 .prompt-composer textarea { width:100%; min-height:42px; max-height:116px; resize:none; border:0; padding:8px 0; appearance:none; -webkit-appearance:none; background-color:#171a24 !important; color:#fff !important; -webkit-text-fill-color:#fff; caret-color:#fff; line-height:1.35; }
@@ -389,29 +644,6 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .composer-bar svg { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:1.9; stroke-linecap:round; stroke-linejoin:round; }
 .composer-bar .composer-dictate,.composer-bar .send-icon { display:grid; place-items:center; width:40px; min-width:40px; height:40px; padding:0; border:0; border-radius:10px; }
 .composer-add { display:grid; place-items:center; flex:0 0 auto; width:36px; height:36px; padding:0; border:0; border-radius:50%; background:transparent; color:#c8cdda; }
-/* Model / mode / status. The chips share one shrinkable group that owns the
-   whole gap between the + button and the dictate/send cluster, so they sit
-   centred in it instead of being shoved against the right-hand buttons: on a
-   phone the three chips at their natural width overflow the bar, and loose
-   chips filled the row edge to edge with the flex gap as their only margin.
-   `max-width` is a share of the group rather than a slice of the viewport for
-   the same reason — the viewport also has to hold three buttons. */
-.composer-chips { display:flex; align-items:center; justify-content:center; flex:1 1 auto; gap:6px; min-width:0; padding:0 5px; }
-/* `justify-content` is load-bearing: a chip is a flex container, so without it
-   the label sits against the left edge as soon as the bar shrinks the chip
-   below its content width. The label is wrapped in its own element for the same
-   reason — `text-overflow` has no effect on a flex container's anonymous text,
-   so a clipped label was cut mid-glyph. */
-.composer-chip { display:flex; align-items:center; justify-content:center; flex:0 1 auto; gap:5px; min-width:0; max-width:40%; overflow:hidden; padding:8px 13px; border:0; border-radius:999px; background:#232735; color:#e2e5f0; font-size:.82rem; }
-.composer-chip svg { width:15px; height:15px; flex:0 0 auto; }
-.composer-chip-label { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
-/* The status chip carries the same lamp the tab row shows, so the state is
-   readable without opening the sheet. `idle` is deliberately dim rather than
-   absent: a chip whose lamp disappears reads as broken. */
-.composer-chip-lamp { width:8px; height:8px; flex:0 0 auto; border-radius:50%; background:#5a6178; }
-.composer-chip-lamp.working { background:#6fe29c; box-shadow:0 0 7px #6fe29c; }
-.composer-chip-lamp.question { background:#ffd36b; box-shadow:0 0 7px #ffd36b; }
-.composer-chip-lamp.done { background:#91e6a9; }
 .composer-spacer { flex:1 0 0; }
 /* The draft row: the textarea and, while there is a draft, a ✕ that empties
    it — a phone keyboard has no select-all, and a long dictated draft was
@@ -419,10 +651,13 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .composer-field { display:flex; align-items:flex-start; gap:4px; }
 .composer-field textarea { flex:1 1 auto; min-width:0; }
 .composer-clear { display:grid; place-items:center; flex:0 0 auto; width:32px; height:32px; margin-top:5px; padding:0; border:0; border-radius:50%; background:#2a2e3e; color:#c8cdda; }
-.composer-clear svg { width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:2.2; stroke-linecap:round; }
+.composer-clear svg { width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; }
 .composer-dictate { color:#dcd6ff; background:transparent; }
 .composer-dictate.listening { color:#fff; background:#7a3151; box-shadow:0 0 0 2px rgba(227,107,154,.22); }
 .composer-dictate.listening svg rect { fill:currentColor; stroke:none; }
+/* The level ring: a static ring scaled by the measured level, never an animated shadow. */
+.composer-dictate { position:relative; }
+.composer-dictate.listening::after { content:""; position:absolute; inset:0; border-radius:inherit; border:2px solid #e36b9a; opacity:calc(.15 + var(--mic-level, 0) * .75); transform:scale(calc(1 + var(--mic-level, 0) * .35)); transition:transform 80ms linear, opacity 80ms linear; pointer-events:none; }
 .send-icon { color:#fff; background:#6c5ce7; }
 .send-icon svg { fill:currentColor; stroke:#fff; }
 .send-icon svg path:last-child { stroke:#6c5ce7; }
@@ -433,8 +668,9 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .keys button.selected { background:#8c7df4; color:#0b0d13; }
 .voice-feedback { margin:6px 6px 0; padding:9px 11px; border-radius:9px; background:#29253d; color:#e8e3ff; font-size:.86rem; overflow-wrap:anywhere; }
 .voice-feedback.error { background:#3b2027; color:#ffb4c0; }
+.voice-feedback em { margin-left:6px; color:#8fb8ff; font-size:.6rem; font-style:normal; text-transform:uppercase; letter-spacing:.05em; }
 .danger { color:#ff9aa6; }
-/* The composer chips' bottom sheet: a phone list in place of walking a TUI
+/* The facts row buttons' bottom sheet: a phone list in place of walking a TUI
    dialog with the arrow keys. */
 .sheet-backdrop { position:fixed; inset:0; z-index:12; display:flex; align-items:flex-end; background:rgba(4,5,9,.7); }
 .option-sheet { display:grid; gap:11px; width:100%; max-height:82dvh; padding:8px 10px calc(16px + env(safe-area-inset-bottom)); border-top:1px solid #383c4d; border-radius:20px 20px 0 0; background:#171a24; overflow:auto; overscroll-behavior:contain; }
@@ -502,6 +738,18 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .option-list button.current small { color:#7ea3dd; }
 .option-list svg { width:21px; height:21px; flex:0 0 auto; fill:none; stroke:currentColor; stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; }
 .sheet-pending { flex:0 0 auto; color:#c8cdda; font-size:.78rem; }
+/* The same list, inline in the reading view: the choice an agent is waiting on
+   (`QuestionList`). It carries the number the dialog printed beside each row,
+   so the list on the phone reads as the one on the screen — and a row the
+   session highlights is the one Enter would take, not an answer given. */
+/* Its heading: the dialog's own question, in the reading view's own type
+   rather than the colours the TUI painted its card with (`ReadableRow`
+   `plain`). Flush left — the rows below it carry the indent. */
+.question-ask { display:grid; gap:2px; padding:0 2px 2px; }
+.question-ask .readable-line { padding-left:0; text-indent:0; }
+.question-list button:disabled { opacity:.6; }
+.question-list button > .question-number { flex:0 0 auto; display:grid; place-items:center; width:22px; height:22px; border-radius:7px; background:#2a3044; color:#9da3b6; font:600 .76rem/1 Inter,ui-sans-serif,system-ui,sans-serif; }
+.question-list button.current > .question-number { background:#2b3550; color:#8fb6ff; }
 /* Launch curtain — the desktop app's `.startup-splash` ported (see base.css):
    the Eldrun mark inside two counter-rotating orbit rings, over the brand name,
    the state, and a sweeping progress hairline. The colours are literals rather
@@ -538,30 +786,45 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .inbox-upload strong { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:650; }
 .inbox-upload span { flex:1 1 auto; min-width:0; overflow-wrap:anywhere; }
 .inbox-upload button { flex:0 0 auto; padding:4px 9px; border:0; border-radius:7px; background:rgba(255,255,255,.09); color:inherit; font-size:.8rem; }
-/* The pictures the agent left in the project's outbox: a thumbnail strip
-   above the composer, one tap to a full-screen view. */
-.outbox-strip { margin:6px 7px 0; padding:8px 10px 9px; border-radius:9px; background:#1b2333; color:#d8e2f5; font-size:.78rem; }
-.outbox-strip-head { display:flex; align-items:center; gap:8px; min-width:0; }
-.outbox-strip-head strong { flex:0 0 auto; font-weight:650; }
-.outbox-strip-head strong small { margin-left:6px; color:#8fb8ff; font-size:.62rem; text-transform:uppercase; }
-.outbox-strip-head span { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#95a6c8; }
-.outbox-strip-head button { flex:0 0 auto; padding:4px 9px; border:0; border-radius:7px; background:rgba(255,255,255,.09); color:inherit; font-size:.8rem; }
-.outbox-thumbs { display:flex; gap:8px; margin-top:8px; overflow-x:auto; overscroll-behavior-x:contain; -webkit-overflow-scrolling:touch; scroll-snap-type:x proximity; }
-.outbox-thumb { flex:0 0 auto; display:grid; gap:3px; width:96px; padding:0; border:0; background:transparent; color:#95a6c8; font-size:.68rem; text-align:left; scroll-snap-align:start; }
-.outbox-thumb img { display:block; width:96px; height:72px; object-fit:cover; border:1px solid #34384a; border-radius:7px; background:#0f131c; }
-.outbox-thumb span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* What the agent sent this tab, as a sheet of its own: the button beside the
+   tab name opens it, in both views — the files never sit in the chat. */
+.terminal-gallery { flex:0 0 auto; display:flex; align-items:center; gap:4px; padding:4px 8px; border:1px solid #34384a; border-radius:999px; background:#1b2333; color:#d8e2f5; font-size:.82rem; line-height:1; }
+.terminal-gallery small { color:#8fb8ff; font-size:.72rem; font-weight:650; }
+.outbox-gallery-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(112px,1fr)); gap:10px; padding:0 4px 4px; }
+.outbox-gallery-grid .outbox-thumb,.outbox-gallery-grid .outbox-file { width:100%; }
+.outbox-gallery-grid .outbox-thumb img { width:100%; height:84px; }
+.outbox-gallery-grid .outbox-thumb strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#d8e2f5; font-size:.72rem; font-weight:600; }
 .outbox-viewer { position:fixed; inset:0; z-index:13; display:grid; grid-template-rows:auto minmax(0,1fr); background:rgba(4,5,9,.94); color:#e6e9f2; }
 .outbox-viewer-head { display:flex; align-items:center; gap:8px; min-height:0; padding:calc(8px + env(safe-area-inset-top)) 10px 8px; }
 .outbox-viewer-head h2 { flex:1; margin:0; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.95rem; }
 .outbox-viewer-head small { flex:0 0 auto; color:#95a6c8; font-size:.72rem; }
 .outbox-viewer img { justify-self:center; align-self:center; max-width:100%; max-height:100%; object-fit:contain; }
 
-.outbox-entry { flex:0 0 auto; scroll-snap-align:start; }
+.outbox-entry { display:grid; gap:2px; min-width:0; }
 .outbox-file { display:grid; gap:5px; width:160px; padding:9px; border:1px solid #34384a; border-radius:7px; background:#0f131c; color:#d8e2f5; text-align:left; text-decoration:none; font-size:.75rem; }
 .outbox-file strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .outbox-file span { color:#95a6c8; }
-.outbox-details { border:0; background:transparent; color:#8fb8ff; font-size:.7rem; padding:5px 0; }
+.outbox-entry-actions { display:flex; flex-wrap:wrap; align-items:center; gap:10px; min-width:0; }
+.outbox-details,.outbox-save { border:0; background:transparent; color:#8fb8ff; font-size:.7rem; padding:5px 0; text-decoration:none; }
+.outbox-save { display:inline-flex; align-items:center; gap:3px; }
+.outbox-details { margin-left:auto; }
+.outbox-delete { margin-left:auto; border:0; background:transparent; color:#f2b8b5; font-size:.8rem; padding:5px 0; }
+.outbox-details + .outbox-delete { margin-left:0; }
+/* A gallery column is 112px wide, so the two answers wrap rather than run off
+   the tile when the name row leaves them nothing. */
+.outbox-confirm { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-left:auto; }
+.outbox-confirm button { border:1px solid #34384a; border-radius:999px; background:#141a26; color:#d8e2f5; font-size:.7rem; padding:4px 8px; }
+.outbox-confirm .outbox-delete-yes { border-color:#6b2f33; background:#2a1416; color:#f2b8b5; }
+.outbox-entry-error { padding:0 2px; color:#f2b8b5; font-size:.7rem; }
 .outbox-viewer-head a, .outbox-text-body a, .outbox-viewer > a { color:#8fb8ff; }
 .outbox-text-body { overflow:auto; padding:12px; }
 .outbox-text-body pre { margin:0 0 12px; white-space:pre-wrap; overflow-wrap:anywhere; font-size:.8rem; }
 .outbox-viewer:has(> [role=alert]) { grid-template-rows:auto auto minmax(0,1fr); }
+/* The same tiles on the project screen, under the tab cards: what the desktop
+   sent this project rather than one of its sessions. The grid is the gallery
+   sheet's own, so a file reads the same wherever it is met. */
+.outbox-shelf { display:grid; gap:8px; margin-top:20px; }
+.outbox-shelf-head { display:flex; align-items:baseline; gap:6px; padding:0 4px; }
+.outbox-shelf-head h2 { margin:0; font-size:.92rem; font-weight:650; }
+.outbox-shelf-head small { margin-left:auto; color:#9aa0b4; font-size:.74rem; }
+.outbox-shelf-all { justify-self:start; margin-left:4px; padding:6px 11px; border:1px solid #34384a; border-radius:999px; background:#141a26; color:#8fb8ff; font-size:.8rem; }

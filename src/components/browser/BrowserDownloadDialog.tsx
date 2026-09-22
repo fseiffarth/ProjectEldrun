@@ -14,7 +14,7 @@ import type { DownloadRequest } from "../../types/browser";
  * there. Cancel deletes the quarantined file and writes nothing. The frontend
  * never constructs, receives or names a destination — that is the capability
  * boundary this feature is built around, and
- * `src/__tests__/BrowserTripwire.test.ts` asserts it mechanically.
+ * `src/__tests__/browser/BrowserTripwire.test.ts` asserts it mechanically.
  *
  * There is deliberately **no** "open when done": that is arbitrary write plus
  * exec, the one hole the design exists to avoid. And there is no "save all" —
@@ -42,7 +42,7 @@ export function BrowserDownloadDialog({
       >
         <div className="settings-title-row">
           <h2>
-            {t("browser.downloadTitle")} <UntestedTag />
+            {t("browser.downloadTitle")} <UntestedTag id="browser.downloadTitle" />
           </h2>
           <button type="button" className="dialog-close-btn" onClick={() => onDecide(false)}>
             ×

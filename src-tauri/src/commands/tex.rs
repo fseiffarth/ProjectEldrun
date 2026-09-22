@@ -892,6 +892,9 @@ fn compile_tex_blocking(
     }
 
     if cap.latexmk {
+        // latexmk executes a `latexmkrc`/`.latexmkrc` in its working directory
+        // as Perl — project content, so ask once (`services::exec_trust`).
+        crate::services::exec_trust::require(crate::services::exec_trust::TrustKind::Latexmkrc, dir)?;
         let flag = latexmk_flag(engine.as_deref());
         // Taken before the build so a PDF this run wrote can be told from one an
         // earlier run left behind (see {@link pdf_stamp}).

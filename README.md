@@ -2,6 +2,9 @@
 
 # Eldrun
 
+See [STATUS.md](STATUS.md) for what has been live-verified and
+[ROADMAP.md](ROADMAP.md) for remaining work.
+
 **A project-centric desktop layer that swaps your entire working context — windows, files, apps, Git state, layout, and AI agent terminals — as a single unit when you switch projects, and runs any of those projects on a remote machine or HPC cluster as if it were sitting on your laptop.**
 
 [![CI](https://github.com/fseiffarth/ProjectEldrun/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/fseiffarth/ProjectEldrun/actions/workflows/ci-cd.yml)
@@ -46,11 +49,53 @@ ships a phone app for it, and without any vendor's relay in between. See
 [Every agent from your phone](#every-agent-from-your-phone-the-third-differentiator).
 
 Built with **Tauri 2 + React + TypeScript**. Linux (X11 / KDE Wayland),
-Windows, and macOS all get native workspace, app-launch, and default-app
-integration; Linux is the verified reference, the other two are code-complete
-and CI-built but not yet exercised on real hardware (see the platform table).
+Windows, and macOS have native workspace, app-launch, and default-app
+integration. Linux X11 is the reference platform; KDE Wayland needs live QA,
+and Windows/macOS are CI-built with real-hardware checks still pending
+(see the platform table).
 
----
+**Contents:**
+[At a glance](#at-a-glance) ·
+[Why Eldrun](#why-eldrun) ·
+[Download](#download) ·
+[Features](#features)
+([project desktop](#project-desktop-the-first-differentiator) ·
+[remote machines & HPC clusters](#remote-machines--hpc-clusters-the-second-differentiator) ·
+[every agent from your phone](#every-agent-from-your-phone-the-third-differentiator) ·
+[agents and terminals](#agents-and-terminals) ·
+[projects and boxes](#projects-and-boxes) ·
+[isolation tiers](#isolation-tiers-container-vm-and-the-trash-workspace) ·
+[workspace apps](#workspace-apps) ·
+[files, viewers, and editing](#files-viewers-and-editing) ·
+[interface and learning](#interface-and-learning)) ·
+[Building from source](#building-from-source) ·
+[Project storage](#project-storage) ·
+[Current limits](#current-limits) ·
+[Vision](#vision) ·
+[License](#license)
+
+## At a glance
+
+![Eldrun functionality map](screenshots/eldrun-functionality.svg)
+
+**①** pick a project — or a box, or the disposable trash project — and the
+desktop swaps to it. **②** inside, a tiling tab layout hosts agent terminals
+(27 built-in CLIs plus your own, with resume support depending on the CLI),
+shells, native file viewers, and the app tabs Eldrun renders itself instead of
+sending you to another window — every one of those agent tabs is also readable
+and answerable from a phone through Eldrun Mobile, whichever vendor it belongs
+to. Alongside them sit the side panel (Files · Git
+· Search · Apps · Agents) and the header, where mail, the calendar, the to-do board, the
+machine hub, and the VPN live next to the global app toolbar. **③** the
+project-desktop layer — window parking, default-app mapping, time tracking and
+its daily recap, external windows, pop-out tab windows — follows the active
+project automatically. **④** and the project carries the machines it runs on:
+its tabs, jobs, and files can live on an SSH host, a GPU box, an HPC cluster, a
+container, or a VM without changing how any of the above works.
+
+And here's how that looks in the running app:
+
+![Current Eldrun screen](screenshots/eldrun-current.png)
 
 ## Why Eldrun
 
@@ -70,71 +115,7 @@ need to work on two projects at the same time, simply *box* them — the box
 behaves like one project with a shared desktop, file tree, and agent tabs —
 and unbox afterwards, leaving both projects exactly as they were.
 
-Inside a project, Eldrun is an operational cockpit — a root control terminal for
-the workspace, agent terminals scoped to the project (Claude, Codex, Gemini, or
-a local Ollama model), a tiling tab layout, a hover-revealed file panel with
-built-in viewers, and cross-project app controls that follow you between
-projects. Around that core it has grown the surfaces you'd otherwise leave the
-window for: mail, a calendar with a to-do board, a reader-mode browser, a print
-manager, an Agent Skills library, TeX workspaces, a slide presenter, and a
-private daily recap — each of them a list and a handful of verbs Eldrun can
-render itself.
-
-**And the same friction exists one layer down: your work rarely runs where you
-sit.** The heavy half of a project belongs on a server, a GPU box, or an HPC
-cluster, and the usual answer is a second, worse workflow — a bare `ssh` window,
-`scp`/`rsync` by hand, `vim` instead of your editor, tmux discipline you have to
-remember, and SLURM incantations you look up every time. Eldrun makes the remote
-machine a *property of the project* instead of a separate way of working: you
-open the project, and its terminals, agents, and jobs are already on the right
-host, its files are already in the file tree, and its Git history is already in
-sync — with no mount, and no second toolchain to keep in your head.
-
-## Vision
-
-> Select a project → Eldrun restores its complete working context.
-
-A project's context already spans terminals, files, apps, windows, Git state,
-layout — **and the machines it runs on**; the direction of travel adds notes,
-AI/task metadata, and workflow state, so a project carries everything it needs to
-be resumed exactly where you left it, whether that is on this laptop or on a
-login node three networks away.
-
-The implementation runs natively on **Linux (X11 and KDE Wayland)**,
-**Windows**, and **macOS** — each with per-project window parking in its own
-idiom (desktops, `SW_HIDE`, app hide/unhide) — and the design is cross-platform
-by intent. The long-term shape is a stable Eldrun core behind pluggable
-compositor/window backends (X11, KDE/KWin, Hyprland, GNOME Shell, i3, Sway, and
-other Wayland environments; the Win32 backend on Windows; AppKit on macOS), and
-eventually an Eldrun-native compositor for full control of projects, windows,
-and layout.
-
-See [VISION.md](docs/VISION.md) for the full strategy and platform rationale.
-
-## At a glance
-
-![Eldrun functionality map](screenshots/eldrun-functionality.svg)
-
-**①** pick a project — or a box, or the disposable trash project — and the
-desktop swaps to it. **②** inside, a tiling tab layout hosts agent terminals
-(26 built-in CLIs plus your own, resumable, with a per-tab Plan/Auto mode),
-shells, native file viewers, and the app tabs Eldrun renders itself instead of
-sending you to another window — every one of those agent tabs is also readable
-and answerable from a phone through Eldrun Mobile, whichever vendor it belongs
-to. Alongside them sit the side panel (Files · Git
-· Search · Apps) and the header, where mail, the calendar, the to-do board, the
-machine hub, and the VPN live next to the global app toolbar. **③** the
-project-desktop layer — window parking, default-app mapping, time tracking and
-its daily recap, external windows, pop-out tab windows — follows the active
-project automatically. **④** and the project carries the machines it runs on:
-its tabs, jobs, and files can live on an SSH host, a GPU box, an HPC cluster, a
-container, or a VM without changing how any of the above works.
-
-And here's how that looks in the running app:
-
-![Current Eldrun screen](screenshots/eldrun-current.png)
-
-## How Eldrun compares
+### How Eldrun compares
 
 Agent orchestrators (Vibe Kanban, Conductor, Claude Squad, the Claude Code
 desktop app) manage agent *processes inside a repo* — task delegation, git
@@ -160,12 +141,7 @@ started in a plain terminal — cannot be reached at all. Eldrun Mobile reaches
 every agent tab in every project from the phone over your own tailnet, because
 it attaches to the tab's session on your desktop rather than to a vendor
 service: one phone app for all agents, independent of whether one exists for
-that agent. A picture the agent wants you to see — a screenshot it took, a
-plot it rendered — it runs `eldrun-send <file>`, and the phone shows it.
-Local and container tabs can send any file up to 24 MiB: images open full
-screen, text opens a preview, PDFs open a browser tab, and other files download.
-Share is available where the phone browser supports file sharing; stdin works
-with `command | eldrun-send -n tests.log`.
+that agent.
 
 Eldrun occupies the gap none of them fill: project ownership of *windows and
 desktop context*, project ownership of *the machines the work runs on*, and one
@@ -175,26 +151,23 @@ task orchestrators rather than a replacement — you can run one inside an Eldru
 project terminal for parallel task delegation while Eldrun handles switching the
 desktop between projects.
 
-## Stack
-
-- **Frontend:** React 18, TypeScript, Vite, Tailwind CSS, Zustand
-- **Terminal UI:** xterm.js (`@xterm/xterm`, `@xterm/addon-fit`, `@xterm/addon-web-links`)
-- **Backend:** Rust, Tauri v2
-- **PTY:** `portable-pty` crate
-- **Companion PWA:** a separate Vite bundle under `mobile-web/`, served by a
-  loopback sidecar (built by the same `npm run build`)
-- **Workspace:** `zbus` (DBus) and `xcb` (X11) on Linux; the Win32 API
-  (`windows` crate — `SW_HIDE`/`SW_SHOW`, `EnumWindows`, virtual-desktop manager,
-  shell-link/icon resolution) on Windows
-
 ## Download
 
 Prebuilt packages are published on the
 [Releases page](https://github.com/fseiffarth/ProjectEldrun/releases). From the
 [latest release](https://github.com/fseiffarth/ProjectEldrun/releases/latest),
 grab the `.AppImage` (portable Linux) or `.deb` (Debian/Ubuntu), or the `.exe`
-installer on Windows. To build from source instead, follow the requirements
-below.
+installer on Windows, or the unsigned universal Intel/Apple Silicon `.dmg`
+on macOS. The CI release workflow publishes each platform whose packaging job
+succeeds. To build from source instead, follow the requirements below.
+
+The macOS `.dmg` is neither signed nor notarized, so Gatekeeper refuses to open
+the app as downloaded ("damaged" or "cannot be opened"). After dragging Eldrun
+into Applications, clear the download quarantine once:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Eldrun.app
+```
 
 The Linux packages are built on Ubuntu 24.04, so they need glibc 2.39 or newer
 (Ubuntu 24.04+, Debian 13+, Fedora 40+). On an older distro the loader fails
@@ -206,65 +179,51 @@ looks when you open that screen — Eldrun never checks in the background — an
 restarting is always yours to do. A copy installed from the `.deb` (or by any
 other package manager) downloads the new build but leaves installing it to you.
 
-## Requirements
+### Optional tools
 
-- Linux desktop (X11 or KDE Wayland) **or** Windows 10/11
-- Rust toolchain (`rustup`) and Node 18+
-- Remote/SSH and HPC projects (optional): nothing to install locally beyond
-  OpenSSH — no `sshfs`, no FUSE. On the host: `tmux` for persistent sessions
-  (optional), plus `openvpn` locally for VPN-gated hosts
-- Containerized projects (optional): Docker. VM projects (optional): QEMU/KVM
-- Print manager (optional): CUPS on Linux/macOS — nothing to install on Windows
-- Eldrun Mobile (optional): Tailscale on this machine and on the phone
-- Local model features — Vibe tabs, autocomplete, grammar check, the mail
-  assistant (all optional and off by default): Ollama
+A release build needs nothing beyond the OS. Each of these unlocks one
+feature, and every one of them is optional:
 
-```bash
-# Install Rust (all platforms): https://rustup.rs
+- Remote/SSH and HPC projects: nothing to install locally beyond OpenSSH — no
+  `sshfs`, no FUSE. On the host: `tmux` for persistent sessions, plus
+  `openvpn` locally for VPN-gated hosts
+- Containerized projects: Docker. VM projects: QEMU/KVM
+- Print manager: CUPS on Linux/macOS — nothing to install on Windows
+- Eldrun Mobile: Tailscale on this machine and on the phone
+- Local model features — Vibe tabs, autocomplete, the mail
+  assistant, the root console's agent tools (all off by default): Ollama
 
-# Linux: Tauri system dependencies (Debian / Ubuntu)
-sudo apt install libwebkit2gtk-4.1-dev libssl-dev libgtk-3-dev \
-    libayatana-appindicator3-dev librsvg2-dev
+### Platform support
 
-# Install JS deps
-npm install
-```
+| Platform                  | Status             | Notes                                                                                        |
+| ------------------------- | ------------------ | -------------------------------------------------------------------------------------------- |
+| **Linux — X11**           | Yes                | Two-desktop workspace parking model (EWMH/xcb). Primary development target.                  |
+| **Linux — KDE Wayland**   | Yes                | Per-project virtual desktop model via KWin DBus scripting. KDE 5 and KDE 6 supported.        |
+| **Linux — other Wayland** | Partial            | Null backend (no workspace switching, no sticky windows). Terminal and file management work. |
+| **Windows**               | Yes (alpha)        | Win32 `SW_HIDE`/`SW_SHOW` parking model (+ best-effort virtual-desktop pinning). Start-Menu app launch with `.lnk`/icon resolution, shell file associations, external-window tracking, OpenVPN, SSH/SFTP remote projects, Claude/Codex agent resume, project containers via Docker Desktop, project VMs via QEMU + WHPX, Eldrun Mobile (Run-key sidecar), in-app browser live pages (deny-all permission handler), DXGI GPU readouts, and a WebView2 renderer crash reporter. No agent fence (no unprivileged sandbox on Windows), no tmux session persistence, no ControlMaster link counters. CI-verified only. |
+| **macOS**                 | Yes (unverified)   | App-granular window parking via `NSRunningApplication` hide/unhide (no public per-window API), `.app` scanner, LaunchServices file defaults, Keychain, `caffeinate` presenter inhibitor, `sandbox-exec` agent fence, project containers (Docker Desktop), project VMs via QEMU + HVF (arm64 guests on Apple silicon), Eldrun Mobile (launchd agent), `nettop` SSH-link counters, IOKit GPU readouts. Compiles and tests on the CI macOS runner; not yet exercised on real hardware. |
 
-On Windows the Tauri webview uses the system WebView2 runtime (preinstalled on
-Windows 11); no GTK/WebKit packages are needed.
+## Features
 
-## Run
-
-A development build with hot-reload (all platforms):
-
-```bash
-npm run tauri:dev
-```
-
-On Linux you can also use the convenience scripts in `docs/`:
-`docs/start-eldrun-tauri.sh` (packaged build) and
-`docs/start-eldrun-tauri-hotreload.sh` (hot reload). The desktop launchers
-`docs/Eldrun.desktop` and `docs/EldrunHotReload.desktop` carry a
-`/path/to/projecteldrun/...` placeholder — point them at your checkout, then
-install them:
-
-```bash
-cp docs/Eldrun*.desktop ~/.local/share/applications/
-update-desktop-database ~/.local/share/applications/
-```
-
-## Main Features
+Inside a project, Eldrun is an operational cockpit — a root control terminal for
+the workspace, agent terminals scoped to the project (Claude, Codex, Gemini, or
+a local Ollama model), a tiling tab layout, a hover-revealed file panel with
+built-in viewers, and cross-project app controls that follow you between
+projects. Around that core it has grown the surfaces you'd otherwise leave the
+window for: mail, a calendar with a to-do board, a reader-mode browser, a print
+manager, an Agent Skills library, TeX workspaces, a slide presenter, and a
+private daily recap — each of them a list and a handful of verbs Eldrun can
+render itself.
 
 ### Project desktop (the first differentiator)
 
 - **Workspace management**: X11 two-desktop parking model, KDE Wayland
   per-project virtual desktop model, and a Windows `SW_HIDE`/`SW_SHOW` parking
-  model (with best-effort virtual-desktop pinning); global app windows stay
-  visible across all project switches.
-- **External window tracking**: file opens use `xdg-open` (Linux) / the shell
-  open verb (Windows); launched windows are tracked by PID — found via
-  `EnumWindows` on Windows — and shown in the side panel instead of embedded in
-  the UI.
+  model (with best-effort virtual-desktop pinning). macOS parks applications
+  through hide/unhide. Global app windows stay visible across project switches.
+- **External window tracking**: file opens use `xdg-open` (Linux), the shell
+  open verb (Windows), or LaunchServices (macOS). Launched apps are tracked and
+  shown in the side panel; macOS tracking and parking operate per application.
 - **Default app mapping**: file extensions use per-project overrides, global
   defaults, system MIME defaults, or a manual "Open With" picker.
 - **Time tracking**: Eldrun records active project sessions and shows today's
@@ -281,6 +240,14 @@ without an sshfs/FUSE mount anywhere.
   header's machines indicator — see a live CPU/GPU usage bar per machine,
   connect/disconnect, arm silent auto-connect on launch, and drag a machine onto
   a project to attach it as a compute host.
+- **Point a project at a host**: enter an SSH address (`user@host[:port]`),
+  connect, and browse the remote filesystem in-app to pick the project root —
+  no mount involved: the file tree and file I/O go over SFTP, terminal and
+  agent tabs run **on the remote host** over `ssh -tt` (multiplexed over a
+  ControlMaster socket), and git runs on the host, with the agent CLI
+  auto-detected/bootstrapped there and authenticated with the remote's own
+  login. Auth uses your existing SSH setup (keys / agent / `~/.ssh/config`) or
+  a password you can optionally save to the OS keychain.
 - **Run on the remote host**: a project can point at a host — at creation, or by
   *extending* an existing local project onto one in place — and run its agent,
   shell, and Python tabs *on that host* over `ssh -tt`, with the file tree, Git,
@@ -345,25 +312,56 @@ does not have to ship a phone app for the agent you are running.
 - Raw project ids, paths, commands, and tmux targets never cross the browser
   API — the sidecar core (`services::mobile_control`) is `AppHandle`-free and
   path-free by construction.
+- **Reader** presents a chat view of a session. For Claude and Codex it reads
+  stored prompts and answers, with explicit truncation limits; when that record
+  is unavailable it falls back to the terminal screen. Model selection,
+  scheduled prompts, closing tabs, and the `eldrun-send` file outbox are also
+  available from the phone.
+- **Files from the agent to the phone**: a picture the agent wants you to see —
+  a screenshot it took, a plot it rendered — it runs `eldrun-send <file>`, and
+  the phone shows it. Local and container tabs can send any file up to 24 MiB:
+  images open full screen, text opens a preview, PDFs open a browser tab, and
+  other files download. Every tile offers Save and Delete, and the project
+  screen reaches the whole gallery from its header as well as from the shelf
+  under its tab cards. Share is available where the phone browser supports
+  file sharing; stdin works with `command | eldrun-send -n tests.log`.
 - The phone gets a touch terminal (readable-screen mode, touch scrolling, a
-  composer, voice input), a to-do board, last-tab restore, an offline shell, and
-  a local lock. Access is granted **per project**; remote and VM projects are
-  excluded, as are containerized ones — with the Trash workspace as the single
+  composer, voice input), a to-do board, Alerts with Done actions, opt-in mail
+  flag/reply actions, last-tab restore, an offline app shell, and a local lock.
+  Project boxes are selectable scopes too. Access is granted **per project**;
+  remote and VM projects are excluded, as are containerized ones — with the Trash workspace as the single
   deliberate exception.
 - A desktop header control shows host status; Settings carries the opt-in, the
-  security-health readout, and a read-only phone-install handoff.
+  security-health readout, and one-click terminal setup.
 
-*Linux MVP; the macOS LaunchAgent phase and real-phone security QA remain.*
+*Host setup is implemented for Linux (systemd user service), macOS (launchd),
+and Windows (Run key). Cross-platform and full real-phone security/acceptance QA
+remain; some Mobile UI has been live-tested.*
 
-### Project cockpit
+### Agents and terminals
 
-- **Agent-terminal orchestration**: create Claude, Codex, Gemini, a dozen other
-  agent CLIs, or plain shell
+- **Agent-terminal orchestration**: create Claude, Codex, Gemini, Muse Code,
+  and the other built-in agent CLIs, or plain shell
   tabs from the tab bar; create local Ollama-backed Vibe tabs from installed
   models; rename, close, and reorder them by drag and drop. The `+` menu's
   Agents group is searchable, its quick picks are configurable, and you can
   register your own agent CLI through "＋ Add agent…". Tab layout is persisted
-  per project.
+  per project. Settings shows installed CLI versions against the versions
+  Eldrun was checked with.
+- **Agents view and prompt chart** *(implemented, live QA pending)*: inspect
+  each tab's activity, latest prompt, and model from the side panel; open a
+  project-scoped chart tab with a zoomable timeline of sent, queued, and
+  scheduled prompts. Collect Markdown drafts on a strip or free-position board,
+  tag/filter them, select several cards, and link related prompts or ordered
+  follow-ups. Prompt history records the answering model when available.
+- **Scheduled prompts and chains**: one-time, daily, or selected-weekday rules
+  deliver to an idle agent while the desktop app is open. The chart allows one
+  independent rule per tab; further prompts can follow through an **after**
+  link. Follow-ups wait for the source turn to finish and then stay idle for
+  five minutes. Claude/Codex hooks provide turn state when available; other
+  agents use a best-effort output/idle fallback. Due schedules have a one-hour
+  catch-up window and record missed deliveries. Delivery replaces any unsent
+  terminal composer draft, including in a focused tab.
 - **Tiling subwindows**: the center panel is a tiling layout — drag a tab onto
   another subwindow's left/right/top/bottom edge to split that direction into a
   new pane, or onto its center to move the tab in. Splits resize with draggable
@@ -374,6 +372,79 @@ does not have to ship a phone app for the agent you are running.
   Dock it back with the ⤓ button (re-docks into the main layout; session-only, so
   it re-docks on restart too). Closing the popped-out window instead closes its
   tabs for good — they are not docked back and do not restore on next launch.
+- **Root control terminal**: opens in `~/eldrun/root/` with workspace-level
+  context files.
+- **Project terminals**: each active project gets a PTY tab scoped to its
+  directory, with best-effort project-local XDG sandbox paths.
+- **Ollama model management**: the Settings Ollama panel shows installed
+  models, running CPU/GPU state, parameter and quantization details, plus
+  catalog install, update, unload, and delete controls.
+
+#### Agent CLIs, resume, and tools
+
+Eldrun launches agents in xterm.js PTY tabs. The table below describes the
+current integration state.
+
+| Agent | Resume behavior | Live verification |
+| --- | --- | --- |
+| **Claude** (`claude`) | Per-tab conversation via session hooks; preserves the CLI-selected permission mode on resume. | Core tab use confirmed; newer resume/activity paths still have open checks. |
+| **Codex** (`codex`) | Per-tab conversation via hooks or hook-free binding, including the SQLite session index. | Core tab use confirmed; newer binding/activity paths still have open checks. |
+| **Gemini** (`gemini`) | Continues the latest conversation in the directory. | Core tab use confirmed; restore remains less precise than Claude/Codex. |
+| **Vibe** (`vibe`) | Continues the latest saved session. | Pending. |
+| **Ollama via Vibe** | Isolated per-model `VIBE_HOME`; continue-latest where a resumable tab is available. | Partial. |
+| **Qwen, OpenCode, Copilot, Cursor, Grok, Antigravity, Droid** | CLI-specific continue-latest flags. | Pending. |
+| **Kiro, Cline, Aider, OpenClaw, Goose, Pi, Plandex, SWE-agent, Mini SWE-agent, Crush, Amp, Kimi, Qoder, Muse Code, Auggie, Kilo Code, Continue.dev, Junie, CodeBuddy** | Launch support; no built-in tab restore path. | Pending. |
+| **Custom agents** | Optional resume arguments supplied by the user. | Depends on the command. |
+| **Shell** | Respawns an ordinary shell or reattaches its tmux session where configured. | Core tab use confirmed. |
+
+The default agent command is set in Settings, and each new tab can select a
+built-in or custom CLI. The agent fence and project runtime tier determine
+filesystem access; project-local XDG paths alone are not an isolation boundary.
+
+**Session resume.** Claude and Codex track each tab's own conversation across
+restarts. Eldrun installs session hooks keyed by `ELDRUN_TAB_UID`, so a
+`/clear` can update the recorded live session. Codex also has hook-free binding,
+including its SQLite-backed session index; its hooks may need one-time `/hooks`
+trust. Qwen, OpenCode, Copilot, Cursor, Grok, Gemini, Antigravity, and Vibe have
+continue-latest restore paths. Those cannot distinguish several conversations
+in the same directory as precisely as Claude/Codex. Custom agents can supply
+resume arguments; agents without a supported resume path are not restored.
+
+**Permission and activity.** Set permission mode inside the agent CLI. On Claude
+resume, Eldrun reapplies the mode its hook recorded to preserve that choice.
+Claude/Codex turn hooks also drive working, decision-needed, and finished states;
+agents without a hook verdict use terminal-output heuristics.
+
+**Eldrun's tools (MCP).** Agents opened in the root console are the one kind
+that get Eldrun's own tools: calendar, to-do board, project sweeps, and the
+"open this overlay" verbs (see [Workspace apps](#workspace-apps)). Claude gets
+an inline `--mcp-config`, Codex a `-c mcp_servers.eldrun.*` override, and every
+other CLI the `ELDRUN_ROOT_MCP_URL`/`ELDRUN_ROOT_MCP_TOKEN` environment — on
+the command line, never in the CLI's own config files. Reads are annotated
+read-only and writes destructive, so a CLI that asks before tools asks for the
+right ones; approval itself stays the CLI's own. Settings has the single
+switch, on by default.
+
+**Custom agents.** Any other agent CLI can be registered from "＋ Add agent…" in
+the tab menu and then appears in the Agents group like the built-ins.
+
+Local Ollama models are available from the tab `+` menu when Ollama is
+installed and reachable. Eldrun can start the Ollama service, list installed
+models, and create a `vibe` tab for a selected model. The per-model `VIBE_HOME`
+config pins `active_model`, registers the Ollama provider, and disables Vibe
+tool calls for local models so local tabs do not mutate global `~/.vibe`
+configuration.
+For tool-capable models, the local-agent picker also supports Claude Code,
+Codex, OpenCode, Droid, and OpenClaw through the installed Ollama/CLI integration,
+with availability and model capability checks.
+
+### Projects and boxes
+
+- **Project creation and import**: the `+` button creates a new git-backed
+  project or imports an existing directory (keep in place, copy, or move).
+- **Project switcher**: the header's scope picker selects projects, boxes, Root,
+  and Trash. Project pills show activity and pending decisions; hover to inspect
+  the path, Git state, today's active time, and live CPU%.
 - **Project boxes (meta-project grouping)**: temporarily join two or more
   projects into a *box* — its own pill in the switcher — for side-by-side file
   work, cross-project copy-paste, PDF merges across members, and box-rooted
@@ -387,24 +458,8 @@ does not have to ship a phone app for the agent you are running.
   (Unix), so agent CLIs can traverse into every member's tree; hover the pill
   to list members and click one to jump to it. Box membership lives in a
   sibling `boxes.json`, so `projects.json` is untouched. Box tab scopes
-  persist and restore like a project's; box tabs run locally and uncontained
-  in v1.
-- **Root control terminal**: opens in `~/eldrun/root/` with workspace-level
-  context files.
-- **Project terminals**: each active project gets a PTY tab scoped to its
-  directory, with best-effort project-local XDG sandbox paths.
-- **Project creation and import**: the `+` button creates a new git-backed
-  project or imports an existing directory (keep in place, copy, or move).
-- **Remote (SSH) projects**: optionally point a project at a remote host. Enter
-  an SSH address (`user@host[:port]`), connect, and browse the remote filesystem
-  in-app to pick the project root — no mount involved: the file tree and file I/O
-  go over SFTP, terminal and agent tabs run **on the remote host** over `ssh -tt`
-  (multiplexed over a ControlMaster socket), and git runs on the host, with the
-  agent CLI auto-detected/bootstrapped there and authenticated with the remote's
-  own login. Auth uses your existing SSH setup (keys / agent / `~/.ssh/config`)
-  or a password you can optionally save to the OS keychain. See
-  [Remote machines & HPC clusters](#remote-machines--hpc-clusters-the-second-differentiator)
-  for the fleet, sync, session, and cluster features built on top.
+  persist and restore like a project's; box tabs run locally, with local agents
+  covered by the agent fence and access derived from the box's member roots.
 - **Publish to GitHub / GitLab**: a local (or SSH-remote) git project can be
   published to a new GitHub or GitLab repository from the project pill menu.
   Choose the provider and public/private; Eldrun runs `gh repo create …
@@ -412,52 +467,8 @@ does not have to ship a phone app for the agent you are running.
   followed by `git push` (GitLab) via the system CLI (over `ssh` on the host
   where the bytes live for remote projects), then records the new push target
   (`git_type` becomes `remote-public`/`remote-private`) and provider. Requires
-  the chosen provider's CLI — `gh` or `glab` — installed and authenticated, or a
-  token set under Settings → Git hosting.
-- **Project switcher**: search, switch, and close projects; a running-task
-  indicator spins on pills with live terminal output (even backgrounded
-  projects); hover over a pill to see the project path, status, today's active
-  time, and live CPU%.
-- **Right file panel**: browse, open, create, rename, delete, copy/cut/paste,
-  and reveal project files, with a breadcrumb trail and per-file git status
-  markers (modified, untracked, staged, committed-but-unpushed, ignored). A
-  **Git** view shows the current branch, clickable branch pills for checkout,
-  and a commit list whose entries open an editable commit-message window (amend
-  HEAD, agent-generated messages, or checkout). A **Search** view runs a
-  project-wide literal content search and lists matching lines that jump straight
-  into the in-app viewer. The panel can be pinned open instead of hover-revealed;
-  additional views list tracked external windows.
-- **Local autocomplete (opt-in, private)**: in the editable text/LaTeX/markdown
-  viewers, `Ctrl+Space` requests a single completion from a **local Ollama**
-  model (`Tab` accepts, `Esc` dismisses). It is OFF by default; each editor tab
-  has its own **Autocomplete** toggle + length-mode (Sentence/Block/Scope) in the
-  header that overrides the per-type default, so you can enable it just for the
-  tab you're in. Nothing is sent anywhere unless you enable it, and if Ollama
-  isn't running it fails silently — no remote calls, ever.
-- **Local grammar check (opt-in, private)**: the same editable viewers can run a
-  **local Ollama** proofreader after a typing pause, underlining spelling (red),
-  grammar (blue), and style (green) issues; hover a mark for the explanation and a
-  one-click fix. Like autocomplete it is OFF by default with a per-tab **Grammar**
-  toggle in the header, and entirely local — no text leaves the machine.
-- **Python run and debug** *(experimental, off by default)*: run or debug a `.py`
-  file straight from the viewer — breakpoints, `pdb`, and go-to-definition
-  included. The tab opens against the
-  interpreter the backend ranks highest (project venv, then the rest); the
-  frontend does not second-guess that ranking.
-- **Global app toolbar**: cross-project roles — Browser, Password Manager, Video
-  Conferencing, Media Player, Notes, Screenshot, Screen Recorder, Chat — with
-  launch-or-raise and icon resolution. The Screenshot role launches straight into
-  interactive region selection when the configured tool supports it. Mail,
-  Calendar, File Manager, System Monitor, and the Print Manager have been retired
-  from this bar because Eldrun now renders them itself (see
-  [Workspace apps](#workspace-apps)); an existing `settings.json` keeps the
-  configured commands, so a role that comes back finds them.
-- **Ollama model management**: the Settings Ollama panel shows installed
-  models, running CPU/GPU state, parameter and quantization details, plus
-  catalog install, update, unload, and delete controls.
-- **Hover-revealed panels**: the global app bar and right file panel appear on
-  pointer hover and disappear when the pointer leaves, keeping the center
-  terminal unobstructed; the side panel can also be pinned permanently open.
+  the chosen provider's CLI — `gh` or `glab` — installed, with authentication
+  from the CLI or a saved token under Settings → Git hosting.
 
 ### Isolation tiers: container, VM, and the Trash workspace
 
@@ -465,7 +476,7 @@ A project's tabs run in one of four trust tiers, and the tier is a property of
 the project rather than a different way of working.
 
 - **Local** — shells and agents run on the host, in the project directory.
-- **Containerized** *(local projects, Linux/Docker)*: flip the pill's "run this
+- **Containerized** *(local projects, Docker; Docker Desktop on Windows/macOS)*: flip the pill's "run this
   project in a container" toggle and every shell and agent tab `docker exec`s
   into **one** session-lived, capability-dropped container. The project folder
   stays on the host, bind-mounted at its *identical* absolute path — so the file
@@ -485,10 +496,12 @@ the project rather than a different way of working.
   and it is containerized for **all** tabs (not just agents), so a stale shell
   in it can never become a host escape.
 
-Orthogonally, an agent tab has three composing authority axes: the project's
-container sandbox, *where* the tab runs (local / primary host / worker), and —
-behind an experimental setting — a **Plan** or **Auto** agent mode, which is a
-launch flag, so switching it respawns the tab and resumes its conversation.
+Local agent tabs also have a default-on **agent fence**: bubblewrap on Linux
+and `sandbox-exec` on macOS, with writable access limited to allowed project
+roots and required agent state. An unavailable Linux fence blocks the launch;
+Windows reports that no fence is available. Eldrun controls the project's
+container and the tab's location (local / primary host / worker). The agent's
+permission mode is selected in its own CLI; Eldrun has no Plan/Auto toggle.
 
 ### Workspace apps
 
@@ -515,35 +528,142 @@ follows debug mode, so they are all on in a development build.
   left their machine. Message HTML is sanitized and rendered in a script-less
   sandboxed frame, always in the order *decrypt → parse → sanitize → render*.
   An opt-in **local-model** assistant (Ollama) can summarize or draft — on
-  device, or not at all.
+  device, or not at all. PDF attachments preview inside the mail pane.
 - **Calendar**: month, week/time-grid, and agenda views; drag to create; alarms
   and reminders; `.ics` import (with a review step) and export. **CalDAV
   accounts** sync against a real server — a sync merges by resource URL rather
-  than replacing, so a local edit is never silently overwritten.
+  than replacing, so a local edit is never silently overwritten. Two-way push
+  is opt-in per account, with a conflict dialog; mail and CalDAV accounts can
+  also wait for a required VPN before connecting.
 - **To-do board**: a Trello-style board of cards in columns, with steps, tags,
   and due dates. The cards *are* the calendar's tasks — one store, not a second
   one — flanked by an agenda rail and an urgent-mail rail.
 - **Browser**: a reader-mode tab (text and images, **no scripts**) behind the
   same sanitizer and SSRF guards as mail, with a security chip, a start page,
-  and downloads — plus one deliberate click out to the real page in your own
-  browser.
+  and downloads. Settings → Browser can opt into live pages, which open in a
+  separate Eldrun webview window with an ephemeral profile and no Eldrun IPC
+  privileges. Live pages run scripts; reader mode stays script-free. Opening
+  the page in your external browser is also available.
 - **Print manager**: every printer this machine knows, its queue, and the verbs
   — pause/resume a printer, cancel a stuck job, send a test page. CUPS on
   Linux/macOS, PowerShell on Windows; read-only by default, and a missing print
-  system is reported as a state rather than an error.
+  system is reported as a state rather than an error. Native viewers have a
+  print preview with copy count and document-specific settings; PDFs support
+  `Ctrl+P`, and the preview follows its submitted job through the queue.
 - **Agent Skills library**: browse `SKILL.md` catalogs from git sources and
   one-click install a skill into a project's `.claude/skills/` or into the
   machine's personal `~/.claude/skills/`, which every project here sees.
   Claude-only.
 - **Deck presenter**: lay slides over a PDF or a LaTeX base, then present with
   speaker notes, a timer, and a second audience display or window.
+- **Agent tools for the calendar and the board (MCP)**: an agent opened in the
+  root console (`Ctrl+Shift+R`) — a cloud CLI, or a **local Ollama model**
+  behind a tool-capable CLI — gets Eldrun's own tools and can manage these
+  surfaces for you: "add a calendar entry on Friday at 14:00, one hour",
+  "move every event of that calendar into the other one", "put a card on the
+  board for project X", "what did I finish this week?". The calendar tools list,
+  add, edit, move, and delete events (a CalDAV-backed calendar pushes them as it
+  would a dialog edit); the board tools add, edit, complete, reopen, move, and
+  delete cards through the same gestures a drag uses; plus read-only sweeps —
+  which projects have uncommitted work, what is out of sync with its host, last
+  week's time and usage. **Mail tools are next**. The tools live on a loopback endpoint behind a per-run bearer token
+  that is never written to disk, and **no project's agents ever get them**. One
+  switch in Settings turns it all off without a restart: new root agents are
+  handed nothing and the ones already running are refused.
 - **Daily recap**: a private, local-only summary of your day — which agents and
   models you used, prompts asked, shell commands, file churn, commits, and time
   per project. It opens once on the first launch of each day. Nothing leaves the
   machine and nothing is uploaded anywhere.
 
-### Learning the app
+### Files, viewers, and editing
 
+Drag a file from the tree onto a subwindow's tab bar to open it in a tab; the
+viewer is chosen by extension. In-progress types open in the external default
+app until they land.
+
+| Viewer | Extensions | Status | Notes |
+| ------ | ---------- | ------ | ----- |
+| **Text / code** | `.txt` `.toml` `.py` `.rs` `.ts` `.ini` + many more, plus extensionless files like `Dockerfile` | ✅ Shipping | Editable editor: line-number gutter, syntax highlighting, Tab/Shift+Tab indent, undo/redo (`Ctrl+Z`/`Ctrl+Shift+Z`), find (`Ctrl+F`) and find-and-replace (`Ctrl+R`) with match nav + case toggle, save (`Ctrl+S`); unsaved lines marked; non-destructive auto-reload banner; opt-in local autocomplete and dictionary spell check. |
+| **Markdown** | `.md` `.markdown` `.mdx` | ✅ Shipping | Rendered preview with an Edit/Preview toggle; links to local files are clickable. Fenced `mermaid` code blocks render as diagrams and `$…$`/`$$…$$` as math (KaTeX with `trust: false`, mermaid script-free). Remote images load only on request. |
+| **YAML / JSON** | `.yaml` `.yml` `.json` | ✅ Shipping | Editable structure tree with a Tree/Source toggle: retype a value, rename a key, add a key or list item (with a type picker), reorder, delete. Both of YAML's syntaxes are first-class — block (`key:`) and flow (`{a: 1}`, which is exactly JSON, on one line or spread over many) — and each keeps the style it is written in. The tree edits the file's own text, so comments, quoting and layout survive an edit; it withholds the affordance rather than botch a construct it can't rewrite (anchors, merge keys). Source is the full code editor. |
+| **BibTeX bibliography** | `.bib` `.bibtex` | ✅ Shipping (untested) | Card list with a Cards/Source toggle: one card per entry, its `field = {value}` pairs as editable rows. Retype a value, rename a field or the citation key, change the entry type, add or delete a field, delete an entry, add a new entry, copy a citation key. A filter box searches every key, type and field value (a real bibliography is thousands of records), and cards fold individually — both survive reopening the tab. Like the YAML tree it edits the file's own text, so field order, brace-protected `{DNA}` capitalization, `"…"` quoting, alignment and `%` comments survive an edit; a value it can't rewrite safely (a `@string` macro, a `#` concatenation) is shown read-only rather than mangled, and text outside every entry is reported rather than hidden. Duplicate citation keys are flagged. Source is the full code editor. |
+| **LaTeX** | `.tex` | ✅ Shipping | Opens as a **single workspace tab per document**: a left sidebar of the main file's `\input` children and graphics switches the center in-tab, and the compiled PDF opens as its own tab tied to the source. Code editor + compile (when a TeX engine is on `PATH`, shell-escape stripped); `\ref`/`\cite` completion from `\label` keys and `.bib` entries; parsed compile errors jump to the line; bidirectional SyncTeX sync across tiled or detached panes. Typeset fragment hover previews and Beamer overlay controls have project-wide toggles; build with `Ctrl+Shift+B`. |
+| **PDF** | `.pdf` | ✅ Shipping | Rendered with a themed zoom toolbar. Blacking text out (untested) is a real redaction, not a black rectangle: drag over anything — or search and black out every hit in one click — and saving *rasterises* the pages you marked, so the covered text is gone from the file rather than hidden under a shape that any copy, extract or annotation delete would lift. Only marked pages are flattened; the rest keep their text. Marks are undoable, follow the page if you reorder it, and touch the file only when you confirm the save. |
+| **Presentation deck** | `.eldeck.json` | ✅ Shipping (experimental, untested) | Native slide authoring over a PDF or LaTeX base: layered objects, build steps, speaker notes, and PDF export. Present in-tab or across two displays. Behind `deck_presenter`. |
+| **Images** | `.png` `.jpg` `.bmp` `.webp` … | ✅ Shipping | Zoom-to-cursor / pan; draggable out as an OS drop source. An **Annotate** overlay adds freehand pen, rectangle, arrow, and text markup with colour/width controls, undo, and clear, then flattens it into a saved copy (`…-annotated.png`, or overwrite for a `.png`). |
+| **Animated GIF** | `.gif` | ✅ Shipping | Frame-level transport on top of the image viewer's zoom/pan: play/pause, frame stepping, scrubber, playback speed, loop toggle, frame/delay readout. Decoded in-app (pure LZW decoder), so it works over SFTP too; a GIF the decoder can't handle degrades to the native animated `<img>`. |
+| **Table / CSV** | `.csv` `.tsv` | ✅ Shipping | Editable cells and headers, row insertion/deletion, undo/redo, save/autosave, delimiter detection/override, filtering, sorting, and resizable columns. Edits preserve untouched source text, quoting, and line endings; only visible rows are rendered. |
+| **Jupyter notebook** | `.ipynb` | ✅ Shipping | Read-only render of cells top-to-bottom — markdown cells, Python-highlighted code cells, and their classified outputs. |
+| **Diff / patch** | `.diff` `.patch` | ✅ Shipping | Color-coded add/del rendering that reads in light and dark themes. |
+| **OpenDocument Text** | `.odt` | ✅ Shipping | Read-only: unzips the archive and renders `content.xml` to a safe HTML subset (headings, lists, tables, images). |
+| **Spreadsheet** | `.xlsx` `.xls` `.xlsm` | ✅ Shipping | Read-only backend reader (calamine) into the sortable/filterable table grid, with a sheet picker. |
+| **SQLite** | `.db` `.sqlite` `.sqlite3` | ✅ Shipping | Read-only table browser: table list + paged row grid. |
+| **HTML / SVG** | `.html` `.htm` `.svg` | ✅ Shipping | Editable source editor with a sandboxed (no-script) live preview, Preview ⇄ Source toggle. |
+| **Audio / video** | `.mp3` `.mp4` `.webm` `.wav` … | ✅ Shipping | Native in-tab `<audio>`/`<video>` player. |
+
+Other office formats (`.docx`, `.pptx`, `.ods`, …) open in their external
+default app. Viewer behaviour is configured per file type under **Settings →
+Native Viewers**: the per-type autocomplete and spell-check defaults (each tab
+can override them from its header) plus a global autosave switch. The text/LaTeX/Markdown editors carry an `A−`/`A+` text-size control
+(`Ctrl` +/−, `Ctrl`+0 to reset; scales the Markdown preview too), persisted
+per file type. Every viewer remembers where you left off — editor/PDF scroll
+position, PDF/image zoom, and image pan persist per tab, so reopening a file (or
+restarting Eldrun) restores your position instead of jumping to the top.
+
+- **File side panel**: place it on either side; its closed edge rail opens
+  Files, Git, Apps, or Agents on hover or click. Browse, open, create, rename,
+  delete, copy/cut/paste, and reveal project files, with a breadcrumb trail and
+  per-file git status
+  markers (modified, untracked, staged, committed-but-unpushed, ignored). A
+  **Git** view shows the current branch, clickable branch pills for checkout,
+  and a commit list whose entries open an editable commit-message window (amend
+  HEAD, agent-generated messages, or checkout). A **Search** view runs a
+  project-wide literal content search and lists matching lines that jump straight
+  into the in-app viewer. The panel can be pinned open instead of hover-revealed;
+  additional views list tracked external windows.
+- **Downloads and project captures**: browse configured download source folders
+  in the file panel and move/copy files into a project. Screenshots and saved
+  mail attachments use Eldrun-prefixed, ignored project folders; Eldrun does
+  not rewrite another browser's preferences or download directory.
+- **Local autocomplete (opt-in, private)**: in the editable text/LaTeX/markdown
+  viewers, `Ctrl+Space` requests a single completion from a **local Ollama**
+  model (`Tab` accepts, `Esc` dismisses). It is OFF by default; each editor tab
+  has its own **Autocomplete** toggle + length-mode (Sentence/Block/Scope) in the
+  header that overrides the per-type default, so you can enable it just for the
+  tab you're in. Nothing is sent anywhere unless you enable it, and if Ollama
+  isn't running it fails silently — no remote calls, ever.
+- **Dictionary spell check**: a model-free Hunspell provider checks prose in
+  the native editors, with downloadable language dictionaries and a personal
+  dictionary; code, TeX commands, and other non-prose regions are skipped.
+- **Python run and debug** *(experimental, off by default)*: run or debug a `.py`
+  file straight from the viewer — breakpoints, `pdb`, and go-to-definition
+  included. The tab opens against the
+  interpreter the backend ranks highest (project venv, then the rest); the
+  frontend does not second-guess that ranking.
+
+### Interface and learning
+
+- **Global app toolbar**: cross-project roles — Browser, Password Manager, Video
+  Conferencing, Media Player, Notes, Screenshot, Screen Recorder, Chat — with
+  launch-or-raise and icon resolution. The Screenshot role launches straight into
+  interactive region selection when the configured tool supports it. Mail,
+  Calendar, File Manager, System Monitor, and the Print Manager have been retired
+  from this bar because Eldrun now renders them itself (see
+  [Workspace apps](#workspace-apps)); an existing `settings.json` keeps the
+  configured commands, so a role that comes back finds them.
+- **Hover-revealed panels**: the global app bar and file side panel appear on
+  pointer hover and disappear when the pointer leaves, keeping the center
+  terminal unobstructed; the side panel can also be pinned permanently open.
+- **Appearance and responsiveness**: a Theme Customizer with saved presets,
+  keyboard steering and shortcut help, Fast mode, and Energy Saver. Hidden
+  viewers suspend background work and hidden terminals buffer output until
+  shown. Settings groups less frequently changed controls under Advanced
+  options.
+- **Network indicator**: probes connectivity and shows online/offline plus wired
+  or wireless state.
+- **Keyboard shortcuts**: `F11` toggles fullscreen; `F9` toggles panels while
+  Eldrun is focused. A bare `Super` also toggles panels where the desktop does
+  not claim that key (GNOME, KDE, and Windows do).
 - **Guided tour and lessons**: a first-run tour plus ~30 step-by-step lessons
   that anchor onto the real UI — adding a project, arranging tabs, the YAML and
   PDF viewers, TeX workspaces, the presenter, Python run/debug, the browser,
@@ -555,150 +675,77 @@ follows debug mode, so they are all on in a development build.
   (`src/lib/i18n.ts`) — English, German, Spanish, French, and Italian, with
   English as the source of truth and the fallback.
 
-### In-app file viewers
+## Building from source
 
-Drag a file from the tree onto a subwindow's tab bar to open it in a tab; the
-viewer is chosen by extension. In-progress types open in the external default
-app until they land.
+- Linux desktop (X11 or KDE Wayland), Windows 10/11, or macOS
+- Rust toolchain (`rustup`) and a current Node.js LTS release (matching CI)
 
-| Viewer | Extensions | Status | Notes |
-| ------ | ---------- | ------ | ----- |
-| **Text / code** | `.txt` `.toml` `.py` `.rs` `.ts` `.ini` + many more, plus extensionless files like `Dockerfile` | ✅ Shipping | Editable editor: line-number gutter, syntax highlighting, Tab/Shift+Tab indent, undo/redo (`Ctrl+Z`/`Ctrl+Shift+Z`), find (`Ctrl+F`) and find-and-replace (`Ctrl+R`) with match nav + case toggle, save (`Ctrl+S`); unsaved lines marked; non-destructive auto-reload banner; opt-in local autocomplete and grammar check. |
-| **Markdown** | `.md` `.markdown` `.mdx` | ✅ Shipping | Rendered preview with an Edit/Preview toggle; links to local files are clickable. fenced `mermaid` code blocks render as diagrams and `$…$`/`$$…$$` as math (KaTeX with `trust: false`, mermaid script-free). |
-| **YAML / JSON** | `.yaml` `.yml` `.json` | ✅ Shipping | Editable structure tree with a Tree/Source toggle: retype a value, rename a key, add a key or list item (with a type picker), reorder, delete. Both of YAML's syntaxes are first-class — block (`key:`) and flow (`{a: 1}`, which is exactly JSON, on one line or spread over many) — and each keeps the style it is written in. The tree edits the file's own text, so comments, quoting and layout survive an edit; it withholds the affordance rather than botch a construct it can't rewrite (anchors, merge keys). Source is the full code editor. |
-| **BibTeX bibliography** | `.bib` `.bibtex` | ✅ Shipping (untested) | Card list with a Cards/Source toggle: one card per entry, its `field = {value}` pairs as editable rows. Retype a value, rename a field or the citation key, change the entry type, add or delete a field, delete an entry, add a new entry, copy a citation key. A filter box searches every key, type and field value (a real bibliography is thousands of records), and cards fold individually — both survive reopening the tab. Like the YAML tree it edits the file's own text, so field order, brace-protected `{DNA}` capitalization, `"…"` quoting, alignment and `%` comments survive an edit; a value it can't rewrite safely (a `@string` macro, a `#` concatenation) is shown read-only rather than mangled, and text outside every entry is reported rather than hidden. Duplicate citation keys are flagged. Source is the full code editor. |
-| **LaTeX** | `.tex` | ✅ Shipping | Opens as a **single workspace tab per document**: a left sidebar of the main file's `\input` children and graphics switches the center in-tab, and the compiled PDF opens as its own tab tied to the source. Code editor + compile (when a TeX engine is on `PATH`, shell-escape stripped); `\ref`/`\cite` completion from `\label` keys and `.bib` entries; parsed compile errors jump to the line; bidirectional SyncTeX sync across tiled or detached panes. |
-| **PDF** | `.pdf` | ✅ Shipping | Rendered with a themed zoom toolbar. Blacking text out (untested) is a real redaction, not a black rectangle: drag over anything — or search and black out every hit in one click — and saving *rasterises* the pages you marked, so the covered text is gone from the file rather than hidden under a shape that any copy, extract or annotation delete would lift. Only marked pages are flattened; the rest keep their text. Marks are undoable, follow the page if you reorder it, and touch the file only when you confirm the save. |
-| **Presentation deck** | `.eldeck.json` | ✅ Shipping (experimental, untested) | Native slide authoring over a PDF or LaTeX base: layered objects, build steps, speaker notes, and PDF export. Present in-tab or across two displays. Behind `deck_presenter`. |
-| **Images** | `.png` `.jpg` `.bmp` `.webp` … | ✅ Shipping | Zoom-to-cursor / pan; draggable out as an OS drop source. An **Annotate** overlay adds freehand pen, rectangle, arrow, and text markup with colour/width controls, undo, and clear, then flattens it into a saved copy (`…-annotated.png`, or overwrite for a `.png`). |
-| **Animated GIF** | `.gif` | ✅ Shipping | Frame-level transport on top of the image viewer's zoom/pan: play/pause, frame stepping, scrubber, playback speed, loop toggle, frame/delay readout. Decoded in-app (pure LZW decoder), so it works over SFTP too; a GIF the decoder can't handle degrades to the native animated `<img>`. |
-| **Table / CSV** | `.csv` `.tsv` | ✅ Shipping | Read-only grid (RFC 4180-style parse); large files are windowed to keep the webview responsive. |
-| **Jupyter notebook** | `.ipynb` | ✅ Shipping | Read-only render of cells top-to-bottom — markdown cells, Python-highlighted code cells, and their classified outputs. |
-| **Diff / patch** | `.diff` `.patch` | ✅ Shipping | Color-coded add/del rendering that reads in light and dark themes. |
-| **OpenDocument Text** | `.odt` | ✅ Shipping | Read-only: unzips the archive and renders `content.xml` to a safe HTML subset (headings, lists, tables, images). |
-| **Spreadsheet** | `.xlsx` `.xls` `.xlsm` | ✅ Shipping | Backend reader (calamine) into the table grid, with a sheet picker. |
-| **SQLite** | `.db` `.sqlite` `.sqlite3` | ✅ Shipping | Read-only table browser: table list + paged row grid. |
-| **HTML / SVG** | `.html` `.htm` `.svg` | ✅ Shipping | Editable source editor with a sandboxed (no-script) live preview, Preview ⇄ Source toggle. |
-| **Audio / video** | `.mp3` `.mp4` `.webm` `.wav` … | ✅ Shipping | Native in-tab `<audio>`/`<video>` player. |
+```bash
+# Install Rust (all platforms): https://rustup.rs
 
-Other office formats (`.docx`, `.pptx`, `.ods`, …) open in their external
-default app. Viewer behaviour is configured per file type under **Settings →
-Native Viewers**: the per-type autocomplete and grammar-check defaults (each tab
-can override them from its header) plus a global autosave switch. The text/LaTeX/Markdown editors carry an `A−`/`A+` text-size control
-(`Ctrl` +/−, `Ctrl`+0 to reset; scales the Markdown preview too), persisted
-per file type. Every viewer remembers where you left off — editor/PDF scroll
-position, PDF/image zoom, and image pan persist per tab, so reopening a file (or
-restarting Eldrun) restores your position instead of jumping to the top.
+# Linux: Tauri system dependencies (Debian / Ubuntu)
+sudo apt install libwebkit2gtk-4.1-dev libssl-dev libgtk-3-dev \
+    libayatana-appindicator3-dev librsvg2-dev
 
-### Agent support
+# Install JS deps
+npm install
+```
 
-Eldrun launches agents in xterm.js PTY tabs. The table below describes the
-current integration state.
+On Windows the Tauri webview uses the system WebView2 runtime (preinstalled on
+Windows 11); no GTK/WebKit packages are needed.
+On macOS, install the Xcode command-line tools; the webview uses WKWebView.
 
-#### CLI agents (xterm.js terminal tabs)
+### Running a development build
 
-| Agent                                      | Integrated | Tested  | Notes                                                                                                                                               |
-| ------------------------------------------ | ---------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Claude** (`claude`)                      | Yes        | Yes     | Default agent command. Full tab lifecycle, layout persistence, project-scoped sandbox env.                                                          |
-| **Codex** (`codex`)                        | Yes        | Yes     | Selectable as default agent command in Settings. Same tab lifecycle as Claude.                                                                      |
-| **Gemini** (`gemini`)                      | Yes        | Yes     | Selectable as default agent command in Settings. Same tab lifecycle as Claude and Codex.                                                            |
-| **Vibe** (`vibe`)                          | Yes        | No      | Listed as a selectable agent command; same tab lifecycle.                                                                                           |
-| **Ollama via Vibe** (`vibe` + local model) | Yes        | Partial | Installed Ollama models appear under Local Agents. Each local tab gets an isolated per-model `VIBE_HOME` under `~/.local/share/eldrun/vibe_local/`. |
-| **Shell**                                  | Yes        | Yes     | Plain interactive shell tab in the project directory.                                                                                               |
-| **Qwen, OpenCode, Copilot, Cursor, Grok, Antigravity** | Yes | No | In the **+** menu; each restores through its CLI's own continue-last flag (`--continue`, `--session latest`), so the tab is resumable and reachable from Eldrun Mobile. |
-| Kiro, Cline, Aider, OpenClaw, Goose, OpenHands, Pi, Plandex, SWE-agent, Mentat, GPT Engineer, Crush | Yes | No | Launched by name from the **+** menu; no resume, so the tab is recreated fresh on relaunch and is not reachable from the phone. |
+A development build with hot-reload (all platforms):
 
-The active agent command (`claude`, `codex`, `gemini`, or `vibe`) is set in
-Settings. If the configured command is not found in `$PATH`, Eldrun falls back
-to the system shell. Project-bound terminals also receive a best-effort project
-sandbox: the child process runs in the project directory with project-local XDG
-config, cache, data, state, and temp locations under
-`<project>/.eldrun/sandbox/`. The root orchestration terminal keeps the normal
-workspace environment.
+```bash
+npm run tauri:dev
+```
 
-**Session resume.** Claude and Codex tabs that carry a session id are persisted
-across restarts and respawned with their prior conversation. Eldrun installs a
-`SessionStart` hook (into `~/.claude/settings.json` and `~/.codex/config.toml`) —
-a POSIX shell script on Linux, a PowerShell `.ps1` on Windows — that records each
-tab's live session id keyed by an `ELDRUN_TAB_UID` env var, so resume follows the
-live session even across a `/clear`. (Codex hooks need a one-time `/hooks` trust
-before they fire; Gemini and Vibe tabs are still dropped.)
+Frontend edits hot-reload. This command disables Rust watching, so backend
+changes take effect only when you deliberately restart the app. Run
+`npm run backend:stale` to compare the running backend and embedded frontend/PWA
+with the checkout. `npm run tauri:dev:watch` opts into automatic backend
+rebuilds and window relaunches.
 
-**Agent modes.** Behind an experimental setting, a Claude or Gemini tab can be
-launched in **Plan** or **Auto** mode (`--permission-mode plan`/`acceptEdits`,
-`--approval-mode plan`/`auto_edit`). The mode is a launch flag, so flipping it
-respawns the PTY — non-destructive only because the tab resumes its conversation,
-which is why an agent is only listed as mode-capable if it has both an absolute
-mode flag and a working resume path.
+On Linux, `npm run package:dev` freezes the working tree for the **Eldrun (dev)**
+desktop entry. With this clone's hooks enabled, commits also queue a background
+freeze of **the committed snapshot**; `scripts/package-dev-auto.sh --status`
+reports the queue or last failure. A running window keeps its current binary
+until you relaunch it. For a separate development state directory, launch
+`./start-eldrun-dev-sandbox.sh` yourself.
 
-**Custom agents.** Any other agent CLI can be registered from "＋ Add agent…" in
-the tab menu and then appears in the Agents group like the built-ins.
+On Linux you can also use the convenience scripts in `docs/`:
+`docs/start-eldrun-tauri.sh` (packaged build) and
+`docs/start-eldrun-tauri-hotreload.sh` (hot reload). The desktop launchers
+`docs/Eldrun.desktop` and `docs/EldrunHotReload.desktop` carry a
+`/path/to/projecteldrun/...` placeholder — point them at your checkout, then
+install them:
 
-Local Ollama models are available from the tab `+` menu when Ollama is
-installed and reachable. Eldrun can start the Ollama service, list installed
-models, and create a `vibe` tab for a selected model. The per-model `VIBE_HOME`
-config pins `active_model`, registers the Ollama provider, and disables Vibe
-tool calls for local models so local tabs do not mutate global `~/.vibe`
-configuration.
+```bash
+cp docs/Eldrun*.desktop ~/.local/share/applications/
+update-desktop-database ~/.local/share/applications/
+```
 
-### Platform support
+### Stack
 
-| Platform                  | Status             | Notes                                                                                        |
-| ------------------------- | ------------------ | -------------------------------------------------------------------------------------------- |
-| **Linux — X11**           | Yes                | Two-desktop workspace parking model (EWMH/xcb). Primary development target.                  |
-| **Linux — KDE Wayland**   | Yes                | Per-project virtual desktop model via KWin DBus scripting. KDE 5 and KDE 6 supported.        |
-| **Linux — other Wayland** | Partial            | Null backend (no workspace switching, no sticky windows). Terminal and file management work. |
-| **Windows**               | Yes (alpha)        | Win32 `SW_HIDE`/`SW_SHOW` parking model (+ best-effort virtual-desktop pinning). Start-Menu app launch with `.lnk`/icon resolution, shell file associations, external-window tracking, OpenVPN, SSH/SFTP remote projects, Claude/Codex agent resume, project containers via Docker Desktop, project VMs via QEMU + WHPX, Eldrun Mobile (Run-key sidecar), in-app browser live pages (deny-all permission handler), DXGI GPU readouts, and a WebView2 renderer crash reporter. No agent fence (no unprivileged sandbox on Windows), no tmux session persistence, no ControlMaster link counters. CI-verified only. |
-| **macOS**                 | Yes (unverified)   | App-granular window parking via `NSRunningApplication` hide/unhide (no public per-window API), `.app` scanner, LaunchServices file defaults, Keychain, `caffeinate` presenter inhibitor, `sandbox-exec` agent fence, project containers (Docker Desktop), project VMs via QEMU + HVF (arm64 guests on Apple silicon), Eldrun Mobile (launchd agent), `nettop` SSH-link counters, IOKit GPU readouts. Compiles and tests on the CI macOS runner; not yet exercised on real hardware. |
+- **Frontend:** React 18, TypeScript, Vite, Tailwind CSS, Zustand
+- **Terminal UI:** xterm.js (`@xterm/xterm`, `@xterm/addon-fit`, `@xterm/addon-web-links`)
+- **Backend:** Rust, Tauri v2
+- **PTY:** `portable-pty` crate
+- **Companion PWA:** a separate Vite bundle under `mobile-web/`, served by a
+  loopback sidecar (built by the same `npm run build`)
+- **Workspace:** `zbus` (DBus) and `xcb` (X11) on Linux; the Win32 API
+  (`windows` crate — `SW_HIDE`/`SW_SHOW`, `EnumWindows`, virtual-desktop manager,
+  shell-link/icon resolution) on Windows
 
-### Platform and packaging
+### Packaging and diagnostics
 
-- **Network indicator**: probes connectivity and shows online/offline plus wired
-  or wireless state.
-- **Keyboard shortcuts**: Eldrun opens fullscreen by default; `F11` toggles
-  fullscreen; `Super` toggles all panels.
+- **Packaging**: Linux `.deb` and AppImage, Windows NSIS `.exe`, and an unsigned
+  universal macOS `.dmg`. CI builds packages on pushes and publishes successful
+  platform artifacts on `v*` tags.
 - **Crash logging**: Rust panic hook appends to `~/.local/share/eldrun/crash.log`.
-- **Packaging**: Linux `.deb` and AppImage plus a Windows NSIS `.exe` installer,
-  built and published per `v*` tag by `.github/workflows/ci-cd.yml`.
-
-## Current Limits
-
-- Live window embedding (frameless reparenting of an external app into a tab) is
-  not yet implemented; files render in built-in in-app viewers where available,
-  otherwise open in the OS default app (`xdg-open` / shell open) and are tracked
-  as external windows.
-- KDE Wayland workspace management needs live-session QA.
-- macOS parks at *application* granularity (hide/unhide the owning app): a
-  single window of a multi-window app cannot be parked on its own, and a
-  launched app cannot be placed on a chosen monitor (no public API for
-  positioning another app's window).
-- Terminal/tab layout is persisted per project; shell, file-viewer, and
-  resumable Claude/Codex agent tabs are restored on relaunch, but other agent
-  tabs (Gemini, Vibe) and live PTY scrollback are not.
-- Detached (popped-out) subwindows and project-box scopes are session-only: the
-  former re-docks and the latter's tabs are dropped on project switch / restart.
-- Non-KDE Wayland compositors fall back to the null backend.
-- Remaining office formats (`.docx`, `.pptx`, `.ods`, …) have no native viewer
-  yet and open in the external default app.
-- **Much of the newer surface is code-complete but not yet verified against the
-  real thing.** Mail is in daily use; the deck presenter, the to-do board, and
-  VM projects have never been run live (no VM has been booted), CalDAV has never
-  been pointed at a real server, and the SLURM/HPC features await real-cluster
-  QA. Features in that state carry an *untested* pill in the UI, and the pill is
-  removed per item only once it has actually been exercised.
-- Eldrun Mobile runs its host sidecar on all three desktops (systemd user
-  unit, launchd agent, Windows Run key), requires Tailscale on both ends, and
-  its real-phone security and acceptance QA is still open.
-- Containerized projects are local-only and need Docker (Docker Desktop on
-  Windows/macOS, where they have never been run); VM projects need QEMU with
-  hardware acceleration (KVM, Hypervisor.framework, or the Windows Hypervisor
-  Platform) and have never been booted on any host.
-- Windows has no agent fence (there is no unprivileged filesystem sandbox to
-  build one on), no tmux-backed local session persistence, and no SSH
-  ControlMaster to read link traffic from; each is reported in the UI rather
-  than silently skipped.
-- The Agent Skills library is Claude-only, with no manifest, versioning, or
-  cross-agent generalization — deliberately out of the MVP.
 
 ## Project Storage
 
@@ -723,6 +770,9 @@ Global Eldrun state lives in `~/.local/share/eldrun/`:
   recap. Deliberately separate from time, network bytes (`net_usage.json`), and
   git stats, each of which the recap reads at its own source so they cannot
   drift.
+- `agent_prompts.json`: collected drafts, prompt history, tags, and links,
+  keyed by project/box scope. `agent_tasks.json` holds per-tab schedules and
+  delivery receipts; their target bindings are saved with the tab layout.
 - `sessions/<project-id>/terminals.json`: **tab layout and open apps live here,
   outside the project tree**, keyed by project id. The copy inside a project
   folder is legacy/export-only and is adopted only on an explicit request — and
@@ -746,6 +796,58 @@ or agent wrote.
 
 See [DOCUMENTATION.md](DOCUMENTATION.md) for the detailed architecture, data
 schemas, behavior notes, and known limitations.
+
+## Current Limits
+
+- Live window embedding (frameless reparenting of an external app into a tab) is
+  not yet implemented; files render in built-in in-app viewers where available,
+  otherwise open in the OS default app (`xdg-open` / shell open) and are tracked
+  as external windows.
+- KDE Wayland workspace management needs live-session QA.
+- macOS parks at *application* granularity (hide/unhide the owning app): a
+  single window of a multi-window app cannot be parked on its own, and a
+  launched app cannot be placed on a chosen monitor (no public API for
+  positioning another app's window).
+- Terminal/tab layout is persisted per project and box; shell, file-viewer,
+  and supported resumable agent tabs restore on relaunch. An ordinary PTY's
+  processes and scrollback do not survive an app exit; tmux-backed sessions
+  can survive and reattach. Continue-latest agent restores have the multi-tab
+  limits described above.
+- Detached subwindows re-dock on restart. Closing a detached window closes its
+  tabs; it does not dock them back.
+- Non-KDE Wayland compositors fall back to the null backend.
+- Remaining office formats (`.docx`, `.pptx`, `.ods`, …) have no native viewer
+  yet and open in the external default app.
+- **Code-complete does not mean live-verified.** Mail and selected calendar,
+  to-do, Mobile, import, and monitor controls have recorded live use. That does
+  not validate every path in those subsystems: CalDAV server sync, mail crypto,
+  the deck presenter, VM boots, SLURM/HPC, and the newest prompt-chart workflows
+  still have open acceptance checks. Features awaiting verification carry an
+  *untested* pill; it is removed per item after user confirmation.
+- Eldrun Mobile runs its host sidecar on all three desktops (systemd user
+  unit, launchd agent, Windows Run key), requires Tailscale on both ends, and
+  its real-phone security and acceptance QA is still open.
+- Containerized projects are local-only and need Docker (Docker Desktop on
+  Windows/macOS, where they have never been run); VM projects need QEMU with
+  hardware acceleration (KVM, Hypervisor.framework, or the Windows Hypervisor
+  Platform) and have never been booted on any host.
+- Windows has no agent fence (there is no unprivileged filesystem sandbox to
+  build one on), no tmux-backed local session persistence, and no SSH
+  ControlMaster to read link traffic from; each is reported in the UI rather
+  than silently skipped.
+- The Agent Skills library is Claude-only, with no manifest, versioning, or
+  cross-agent generalization — deliberately out of the MVP.
+
+## Vision
+
+Each platform parks windows in its own idiom today (desktops, `SW_HIDE`, app
+hide/unhide), and the design is cross-platform by intent. The long-term shape
+is a stable Eldrun core behind pluggable compositor/window backends (X11,
+KDE/KWin, Hyprland, GNOME Shell, i3, Sway, and other Wayland environments; the
+Win32 backend on Windows; AppKit on macOS), and eventually an Eldrun-native
+compositor for full control of projects, windows, and layout.
+
+See [VISION.md](docs/VISION.md) for the full strategy and platform rationale.
 
 ## License
 

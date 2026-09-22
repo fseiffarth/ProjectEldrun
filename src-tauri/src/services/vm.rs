@@ -1104,7 +1104,13 @@ pub fn seed_instance_id(project_id: &str, user_data: &str) -> String {
 /// `hostfwd`/`guestfwd` rules still work — that is documented slirp behavior
 /// and the entire point: ssh in via the forward, and under Proxy exactly one
 /// way out, through the allowlisting CONNECT proxy).
-pub fn netdev_arg(egress: VmEgress, ssh_port: u16, proxy_port: Option<u16>) -> String {
+///
+/// `mcp_port` is the host's root-MCP port, given only for a `mail_reader`
+/// project under `Proxy`: a second `guestfwd` beside the proxy's, at the fixed
+/// guest-side address the reader's in-guest MCP config names
+/// (`root_mcp::READER_GUEST_HOST`). The listener's `Origin` refusal and bearer
+/// check are unchanged; the channel only makes the port reachable.
+pub fn netdev_arg(egress: VmEgress, ssh_port: u16, proxy_port: Option<u16>, mcp_port: Option<u16>) -> String {
     let base = format!("user,id=net0,hostfwd=tcp:127.0.0.1:{ssh_port}-:22");
     match egress {
         VmEgress::Open => base,
@@ -1112,7 +1118,13 @@ pub fn netdev_arg(egress: VmEgress, ssh_port: u16, proxy_port: Option<u16>) -> S
         VmEgress::Proxy => {
             let proxy = proxy_port.expect("Proxy egress requires a proxy port");
             let guest = crate::services::vm_proxy::GUEST_PROXY_ADDR;
-            format!("{base},restrict=on,guestfwd=tcp:{guest}-tcp:127.0.0.1:{proxy}")
+            let mcp = mcp_port
+                .map(|port| {
+                    use crate::services::root_mcp::{READER_GUEST_HOST, READER_GUEST_PORT};
+                    format!(",guestfwd=tcp:{READER_GUEST_HOST}:{READER_GUEST_PORT}-tcp:127.0.0.1:{port}")
+                })
+                .unwrap_or_default();
+            format!("{base},restrict=on,guestfwd=tcp:{guest}-tcp:127.0.0.1:{proxy}{mcp}")
         }
     }
 }
@@ -1373,7 +1385,13 @@ pub fn ensure_booted(project_id: &str, project_name: &str) -> Result<VmRuntime, 
         None
     };
 
-    let netdev = netdev_arg(spec.egress, ssh_port, proxy_port);
+    // Only a flagged reader gets the channel to the root MCP port, and only
+    // while the listener is up; every other VM has no route to it at all.
+    let mcp_port = spec
+        .mail_reader
+        .then(|| crate::services::root_mcp::runtime().map(|rt| rt.port))
+        .flatten();
+    let netdev = netdev_arg(spec.egress, ssh_port, proxy_port, mcp_port);
     let machine = machine_args()?;
     let daemonize = !cfg!(windows);
     let args = qemu_args(
@@ -1914,13 +1932,13 @@ mod tests {
 
     #[test]
     fn netdev_open_is_plain_nat_with_ssh_forward() {
-        let arg = netdev_arg(VmEgress::Open, 40022, None);
+        let arg = netdev_arg(VmEgress::Open, 40022, None, None);
         assert_eq!(arg, "user,id=net0,hostfwd=tcp:127.0.0.1:40022-:22");
     }
 
     #[test]
     fn netdev_off_restricts_and_keeps_the_ssh_forward() {
-        let arg = netdev_arg(VmEgress::Off, 40022, None);
+        let arg = netdev_arg(VmEgress::Off, 40022, None, None);
         assert!(arg.contains("restrict=on"), "{arg}");
         assert!(arg.contains("hostfwd=tcp:127.0.0.1:40022-:22"), "{arg}");
         assert!(!arg.contains("guestfwd"), "{arg}");
@@ -1928,12 +1946,25 @@ mod tests {
 
     #[test]
     fn netdev_proxy_restricts_and_wires_the_guestfwd() {
-        let arg = netdev_arg(VmEgress::Proxy, 40022, Some(41000));
+        let arg = netdev_arg(VmEgress::Proxy, 40022, Some(41000), None);
         assert!(arg.contains("restrict=on"), "{arg}");
         assert!(
             arg.contains("guestfwd=tcp:10.0.2.100:3128-tcp:127.0.0.1:41000"), // privacy-check: ok — QEMU slirp, not a real host
             "{arg}"
         );
+    }
+
+    /// Only a flagged reader gets the second channel, and only under Proxy.
+    #[test]
+    fn netdev_reader_adds_the_mcp_guestfwd_beside_the_proxys() {
+        let arg = netdev_arg(VmEgress::Proxy, 40022, Some(41000), Some(42000));
+        assert!(arg.contains("restrict=on"), "{arg}");
+        assert!(arg.contains(":3128-tcp:127.0.0.1:41000"), "{arg}");
+        assert!(arg.contains(":8765-tcp:127.0.0.1:42000"), "{arg}");
+        for egress in [VmEgress::Open, VmEgress::Off] {
+            let arg = netdev_arg(egress, 40022, None, Some(42000));
+            assert!(!arg.contains("42000"), "{arg}");
+        }
     }
 
     #[test]

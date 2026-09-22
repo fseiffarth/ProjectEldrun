@@ -221,7 +221,7 @@ export function MailAccountDialog({
       <div className="settings-dialog mail-account-dialog" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-title-row">
           <h2>
-            {account ? t("mail.accountDialogEdit") : t("mail.accountDialogNew")} <UntestedTag />
+            {account ? t("mail.accountDialogEdit") : t("mail.accountDialogNew")} <UntestedTag id="mail.accountDialogNew" />
           </h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>
             ×
@@ -355,7 +355,7 @@ export function MailAccountDialog({
               onChange={(e) => patch({ check_interval_min: Number(e.target.value) || 0 })}
             />
           </label>
-          {/* The VPN gate (`lib/vpnGate.ts`). Its hint names the limit — only a
+          {/* The VPN gate (`lib/remote/vpn/vpnGate.ts`). Its hint names the limit — only a
               tunnel Eldrun started counts — because the failure mode of the
               switch is silent: an account gated on a VPN Eldrun cannot see
               simply never syncs, and nothing else would say why. */}
@@ -369,6 +369,27 @@ export function MailAccountDialog({
               <span>{t("mail.requireVpn")}</span>
             </span>
             <span className="settings-help">{t("mail.requireVpnHint")}</span>
+          </label>
+
+          {/* Agent access (root MCP, `docs/mail_mcp_plan.md` §1). Here and not
+              in the Mail AI (local) section on purpose: that section promises
+              nothing leaves the machine, and this switch consents to the
+              opposite. Off by default; it governs READING only — a root tab's
+              draft-only access needs no consent. */}
+          <label className="mail-field mail-field-check">
+            <span className="mail-check-row">
+              <input
+                type="checkbox"
+                checked={form.ai?.agent_access === true}
+                onChange={(e) => {
+                  const { agent_access: _drop, ...rest } = form.ai ?? {};
+                  patch({ ai: e.target.checked ? { ...rest, agent_access: true } : rest });
+                }}
+              />
+              {/* No pill of its own: the dialog title carries one (see below). */}
+              <span>{t("mail.agentAccess")}</span>
+            </span>
+            <span className="settings-help">{t("mail.agentAccessHint")}</span>
           </label>
 
           {/* The trusted `authserv-id`. Optional, and while it is empty **no**

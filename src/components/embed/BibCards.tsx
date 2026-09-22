@@ -23,7 +23,7 @@ import {
   type BibField,
   type BibRecord,
   type BibSortKey,
-} from "../../lib/viewers/bib";
+} from "../../lib/viewers/tex/bib";
 import { useT } from "../../lib/i18n";
 
 /** How many cards are mounted at once, and how many each extension adds. Big
@@ -44,7 +44,7 @@ const BIB_PAGE = 60;
  * fold rides with the tab like the tree's collapse state.
  *
  * Like the tree and the table it renders controls but EDITS THE TEXT: every
- * action splices the draft via `lib/viewers/bib`'s ops, so a card edit is an
+ * action splices the draft via `lib/viewers/tex/bib`'s ops, so a card edit is an
  * ordinary dirty/undoable/saveable change on the same draft Source shows and
  * Ctrl+S writes — and the file's field order, brace-protected capitalization,
  * `"…"` quoting, indentation and `%` comments survive it untouched.
@@ -311,7 +311,7 @@ export function BibCards({
           {t("bibCards.addEntry")}
         </button>
         <span className="yaml-cards-bar-spacer" />
-        <UntestedTag />
+        <UntestedTag id="bibCards.1" />
       </div>
 
       {/* The `%` comments and any other text between records: the cards neither

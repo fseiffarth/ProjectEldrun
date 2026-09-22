@@ -3,17 +3,17 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { resolveProjectDirectory, type ProjectEntry } from "../../types";
 import { useProjectsStore } from "../../stores/projects";
-import { useRemoteStatusStore } from "../../stores/remoteStatus";
+import { useRemoteStatusStore } from "../../stores/remote/remoteStatus";
 import { useBigFoldersStore } from "../../stores/bigFolders";
-import { useGlobalMachinesStore } from "../../stores/globalMachines";
+import { useGlobalMachinesStore } from "../../stores/remote/globalMachines";
 import { joinRemotePath, sanitizeName } from "./scaffold";
 import { useRemoteSession, type RemoteStep } from "./useRemoteSession";
 import { RemoteProjectSection } from "./RemoteProjectSection";
 import { targetLabel } from "../header/MachinesIndicator";
 import { ConnLamp } from "../common/ConnLamp";
 import { UntestedTag } from "../common/UntestedTag";
-import { hostKeyConfirmOnce } from "../../lib/hostKeyOnce";
-import type { DroppedGlobalMachine } from "../../stores/remoteMachines";
+import { hostKeyConfirmOnce } from "../../lib/remote/hostKeyOnce";
+import type { DroppedGlobalMachine } from "../../stores/remote/remoteMachines";
 import { useT } from "../../lib/i18n";
 
 /**
@@ -244,7 +244,7 @@ export function ExtendToRemoteDialog({
               <span className="remote-machine-global-title">
                 {t("extendRemote.machinesTitle")}
               </span>
-              <UntestedTag />
+              <UntestedTag id="extendToRemoteDialog.1" />
             </div>
             <p className="settings-help">{t("extendRemote.machinesHelp")}</p>
             <div className="remote-machine-global-list">
@@ -254,7 +254,7 @@ export function ExtendToRemoteDialog({
                 return (
                   <div key={m.id} className="remote-machine-global-row">
                     {/* The machine's own status — a session this app opened,
-                        never a probe (`stores/globalMachines`). */}
+                        never a probe (`stores/remote/globalMachines`). */}
                     <ConnLamp status={globalStatuses[m.id] ?? "off"} label={target} />
                     <span className="remote-machine-name">{m.label || m.host}</span>
                     <span className="remote-machine-target">{target}</span>

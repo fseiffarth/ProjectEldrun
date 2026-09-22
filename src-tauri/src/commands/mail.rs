@@ -57,7 +57,7 @@ use tauri_plugin_dialog::DialogExt;
 
 use crate::commands::projects::uuid_v4;
 use crate::schema::mail::{
-    MailAccount, MailAccountSaved, MailAccounts, MailAddress, MailAiClassifyMatch,
+    MailAccount, MailAccountSaved, MailAttachmentMeta, MailAccounts, MailAddress, MailAiClassifyMatch,
     MailAiClassifyReport, MailAiPrefs, MailBody, MailCryptoInfo, MailDraft, MailEncryptionState,
     MailExtractedEvent, MailExtractedTask, MailFilterReport, MailFilterRule, MailFilterSample,
     MailFilters, MailFlag, MailFolder, MailFolderKind, MailHeader, MailHeaderPage,
@@ -74,6 +74,7 @@ use crate::services::mail_engine::{
 };
 use crate::services::mail_filters;
 use crate::services::mail_pgp::{self, PgpKeyInfo, PgpKeyring, SealOpts};
+use zeroize::Zeroizing;
 use crate::services::mail_sanitize::{self, SANITIZER_VERSION};
 use crate::services::mail_store::MailStore;
 use crate::services::remote_credentials::{self, KeyringState, MailProto};
@@ -342,10 +343,31 @@ fn open_store(dir: &Path) -> Result<OpenedStore, String> {
 fn open_unencrypted_or_enable(dir: &Path) -> Result<OpenedStore, String> {
     let preference = read_settings().mail_encrypt_store;
     let is_new = !dir.join("mail.db").exists();
+    // The key file is gone but sealed data is still here. Minting a new key now
+    // would make that data permanently unreadable *and* overwrite the keychain
+    // entry, so restoring `key.json` from a backup could no longer open it
+    // either. Refuse instead, in the memory-only store, and say why: the fixes
+    // are "put the key file back" or an explicit reset.
+    let sealed_leftovers = MailStore::is_marked_encrypted(dir)
+        || ["accounts.json.enc", "filters.json.enc", "pgp.json"]
+            .iter()
+            .any(|name| dir.join(name).exists());
+    if sealed_leftovers {
+        return Ok(OpenedStore {
+            store: Arc::new(MailStore::open_ephemeral()?),
+            keys: None,
+            note: Some(UnlockNote::Unavailable(
+                "the local mail store is encrypted, but its key file (key.json) is missing — \
+                 restore it from a backup, or reset encryption to start over"
+                    .into(),
+            )),
+        });
+    }
     let should_enable = match preference {
         Some(false) => false,
-        // Asked for, but the key file is gone (a half-finished reset, a restored
-        // backup). Re-enabling is right: the setting is what the user asked for.
+        // Asked for, but the key file is gone and nothing sealed is left behind
+        // (a reset that stopped half-way). Re-enabling is right: the setting is
+        // what the user asked for.
         Some(true) => true,
         None => is_new,
     };
@@ -421,6 +443,20 @@ fn apply_crypto(
     raw: Vec<u8>,
     from_address: &str,
 ) -> (Vec<u8>, Option<MailCryptoInfo>) {
+    apply_crypto_at(rt, raw, from_address, 0)
+}
+
+/// How many encryption layers are unwrapped. Real mail has one — sign inside,
+/// encrypt outside — and a message encrypted to you ten times over is an attempt
+/// to spend your CPU (and stack) on a loop the sender controls.
+const MAX_CRYPTO_LAYERS: u8 = 2;
+
+fn apply_crypto_at(
+    rt: &MailState,
+    raw: Vec<u8>,
+    from_address: &str,
+    depth: u8,
+) -> (Vec<u8>, Option<MailCryptoInfo>) {
     let parsed = match mail_parser::MessageParser::default().parse(&raw) {
         Some(m) => m,
         None => return (raw, None),
@@ -444,6 +480,11 @@ fn apply_crypto(
     };
 
     match kind {
+        CryptoKind::PgpEncrypted | CryptoKind::PgpInlineEncrypted if depth >= MAX_CRYPTO_LAYERS => {
+            let mut info = mail_crypto::info_for(kind, None, false, from_address);
+            info.notes.push("format-not-supported".into());
+            (raw, Some(info))
+        }
         CryptoKind::PgpEncrypted | CryptoKind::PgpInlineEncrypted => {
             let payload = match kind {
                 CryptoKind::PgpEncrypted => mail_pgp::encrypted_part_bytes(&raw, &parsed),
@@ -466,7 +507,7 @@ fn apply_crypto(
                     // ordering that means anything — so the inner message is
                     // re-examined rather than reported as merely "decrypted".
                     let inner = plain.to_vec();
-                    let (inner_raw, inner_info) = apply_crypto(rt, inner, from_address);
+                    let (inner_raw, inner_info) = apply_crypto_at(rt, inner, from_address, depth + 1);
                     let mut info = inner_info
                         .unwrap_or_else(|| mail_crypto::info_for(kind, None, true, from_address));
                     info.encrypted = true;
@@ -911,10 +952,10 @@ fn remember_arg(remember: Option<bool>) -> Option<bool> {
 /// the other is the in-memory map, which is where "save it for the session only"
 /// puts it. Ticking Save later has to be able to reach it, or the tick means
 /// "retype it or lose it" — see [`mail_account_upsert`].
-fn session_secret(state: &MailState, account_id: &str) -> Option<String> {
+fn session_secret(state: &MailState, account_id: &str) -> Option<Zeroizing<String>> {
     let rt = state.lock().ok()?;
     let pw = rt.passwords.get(account_id)?;
-    (!pw.is_empty()).then(|| pw.expose().to_string())
+    (!pw.is_empty()).then(|| Zeroizing::new(pw.expose().to_string()))
 }
 
 /// What to report when Save was ticked but there was **no secret to write**.
@@ -986,7 +1027,8 @@ pub async fn mail_account_upsert(
         // either the old server tuple or the new one may be the key holding a
         // live connection, and leaving one behind means the next read silently
         // uses the login the user just replaced.
-        if let Ok(previous) = account_by_id(&accounts_path(), &account.id) {
+        let previous = account_by_id(&accounts_path(), &account.id).ok();
+        if let Some(previous) = &previous {
             mail_engine::forget_pooled_sessions(&previous.imap);
         }
         let mut account = upsert_account_at(&accounts_path(), account)?;
@@ -994,12 +1036,29 @@ pub async fn mail_account_upsert(
 
         // An empty password field means "use whatever is already there", never
         // "authenticate with nothing".
-        let secret = password.filter(|p| !p.is_empty());
+        // Wrapped at once: the IPC argument is the one copy of the typed password
+        // that nothing else would wipe.
+        let secret = password.filter(|p| !p.is_empty()).map(Zeroizing::new);
+
+        // …but "whatever is already there" was typed for a *server*. The session
+        // password is held by account id, so without this a changed host — a
+        // typo, a lookalike with a valid certificate — would be handed the real
+        // password on the next connect, and a ticked "remember" would file it
+        // under the new host's keychain entry too. The keychain needs no such
+        // care: its keys already name the host.
+        let server_changed = previous.as_ref().is_some_and(|p| {
+            imap_key(p) != imap_key(&account) || smtp_key(p) != smtp_key(&account)
+        });
+        if server_changed && secret.is_none() {
+            if let Ok(mut guard) = rt.lock() {
+                guard.passwords.remove(&account.id);
+            }
+        }
         if let Some(secret) = &secret {
             if let Ok(mut guard) = rt.lock() {
                 guard
                     .passwords
-                    .insert(account.id.clone(), Password::new(secret.clone()));
+                    .insert(account.id.clone(), Password::new(secret.to_string())); // privacy-check: ok — moves a typed-in password, carries none
             }
         }
 
@@ -1200,29 +1259,110 @@ pub async fn mail_encryption_reset(
             guard.store = None;
             guard.unlock_note = None;
         }
+        if !matches!(mode.as_str(), "passphrase" | "keychain") {
+            return Err(format!("unknown unlock mode '{mode}'"));
+        }
+
+        // What is *configuration* rather than cached mail survives a reset: the
+        // account list, the filters, and above all the OpenPGP keyring, whose
+        // private keys exist nowhere else. All three are sealed under the store
+        // key this is about to destroy, so with the store unlocked they are
+        // opened now and re-sealed under the new key below. Without that, the
+        // account list was deleted and the keyring left behind unreadable — the
+        // user's private keys lost, silently, by a button labelled "start over".
+        let old_keys = session_keys();
+        let carried = match &old_keys {
+            Some(old) => Some(CarriedConfig {
+                accounts: open_sealed_file(&accounts_enc_path(), old, &mail_crypt::accounts_aad())?,
+                filters: open_sealed_file(&filters_enc_path(), old, &mail_crypt::filters_aad())?,
+                keyring: mail_pgp::keyring_plaintext(&dir, old)?,
+            }),
+            None => None,
+        };
         set_session_keys(None);
+
+        // Locked (the forgotten-passphrase case): nothing can be carried, but
+        // nothing is destroyed either. The sealed files and the key file move
+        // aside together, so a passphrase store remembered later can still be
+        // put back by hand — rather than sitting in place, unreadable under the
+        // new key and failing every read.
+        if carried.is_none() {
+            let aside = dir.join(format!(
+                "pre-reset-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or_default()
+            ));
+            for name in ["key.json", "accounts.json.enc", "filters.json.enc", "pgp.json"] {
+                let from = dir.join(name);
+                if from.exists() {
+                    std::fs::create_dir_all(&aside).map_err(|e| e.to_string())?;
+                    std::fs::rename(&from, aside.join(name)).map_err(|e| e.to_string())?;
+                }
+            }
+        }
         mail_crypt::forget(&dir)?;
-        for name in ["mail.db", "mail.db-wal", "mail.db-shm", "accounts.json.enc"] {
+        for name in [
+            "mail.db",
+            "mail.db-wal",
+            "mail.db-shm",
+            "accounts.json.enc",
+            "filters.json.enc",
+            "pgp.json",
+        ] {
             let _ = std::fs::remove_file(dir.join(name));
         }
         let _ = std::fs::remove_dir_all(dir.join("blobs"));
         let _ = std::fs::remove_dir_all(dir.join("outbox"));
-        // `accounts.json` deliberately survives: the account *list* is
-        // configuration, not cached mail, and wiping it would make "start over"
-        // mean "set up your mail from scratch".
+
         let keys = match mode.as_str() {
             "passphrase" => {
                 mail_crypt::enable_with_passphrase(&dir, &passphrase.unwrap_or_default())?
             }
-            "keychain" => mail_crypt::enable_with_keychain(&dir)?,
-            other => return Err(format!("unknown unlock mode '{other}'")),
+            _ => mail_crypt::enable_with_keychain(&dir)?,
         };
+        if let Some(carried) = carried {
+            if let Some(plain) = carried.accounts {
+                let sealed = mail_crypt::seal(&keys.field, &mail_crypt::accounts_aad(), &plain);
+                mail_crypt::write_bytes_atomic(&accounts_enc_path(), &sealed)?;
+            }
+            if let Some(plain) = carried.filters {
+                let sealed = mail_crypt::seal(&keys.field, &mail_crypt::filters_aad(), &plain);
+                mail_crypt::write_bytes_atomic(&filters_enc_path(), &sealed)?;
+            }
+            if let Some(plain) = carried.keyring {
+                mail_pgp::write_keyring_plaintext(&dir, &keys, &plain)?;
+            }
+        }
         adopt_keys(&rt, &dir, Arc::new(keys))?;
         set_encrypt_preference(Some(true));
         encryption_state(&rt)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Configuration files opened under the old store key, held across a reset.
+struct CarriedConfig {
+    accounts: Option<Zeroizing<Vec<u8>>>,
+    filters: Option<Zeroizing<Vec<u8>>>,
+    keyring: Option<Zeroizing<Vec<u8>>>,
+}
+
+/// A sealed state file's plaintext, or `None` when it does not exist.
+fn open_sealed_file(
+    path: &Path,
+    keys: &MailKeys,
+    aad: &[u8],
+) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
+    match std::fs::read(path) {
+        Ok(raw) => mail_crypt::open(&keys.field, aad, &raw)
+            .map(|plain| Some(Zeroizing::new(plain.to_vec())))
+            .map_err(|e| format!("{} could not be decrypted: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 /// Reopen the store under `keys` and publish them for the session.
@@ -1707,6 +1847,9 @@ async fn sync_inner(
                 total: f.total,
             };
             store2.upsert_folder(&folder)?;
+            // LIST carries no counts, so the upsert just wrote zeros; a folder
+            // this sync does not fetch keeps what its index and last sync say.
+            store2.refresh_counts(&folder.id)?;
             out.push(folder);
         }
         Ok::<_, String>(out)
@@ -1768,10 +1911,12 @@ async fn sync_inner(
                 error: None,
             },
         );
-        let headers = InProcessEngine
+        let fetched = InProcessEngine
             .headers(&account, &pw, &folder.path, SYNC_HEADER_LIMIT)
             .await
             .map_err(String::from)?;
+        let (server_total, server_unread) = (fetched.exists, fetched.unseen);
+        let headers = fetched.headers;
 
         let store3 = store.clone();
         let folder2 = folder.clone();
@@ -1849,7 +1994,9 @@ async fn sync_inner(
                         priority_source: None,
                         priority_reason: None,
                     };
+                    let in_reply_to = h.headers.in_reply_to;
                     let inserted = store3.upsert_header(&row)?;
+                    store3.set_reply_key(&row.id, in_reply_to.as_deref())?;
                     if inserted {
                         added += 1;
                     }
@@ -1889,6 +2036,7 @@ async fn sync_inner(
                         }
                     }
                 }
+                store3.set_server_counts(&folder2.id, server_total, server_unread)?;
                 store3.refresh_counts(&folder2.id)?;
                 Ok::<_, String>((added, filed, candidates))
             })
@@ -1962,6 +2110,7 @@ pub async fn mail_headers(
     query: Option<String>,
     sort: Option<MailSort>,
     desc: Option<bool>,
+    unread_only: Option<bool>,
     state: State<'_, MailState>,
 ) -> Result<MailHeaderPage, String> {
     let rt = state.inner().clone();
@@ -1974,9 +2123,27 @@ pub async fn mail_headers(
             query.as_deref(),
             sort.unwrap_or_default(),
             desc.unwrap_or(true),
+            unread_only.unwrap_or(false),
         )?;
         serve_auth_state(&mut page.items);
         Ok(page)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The answers the user already wrote to one message, from the local index —
+/// no network (`MailStore::replies_to`).
+#[tauri::command]
+pub async fn mail_replies(
+    message_id: String,
+    state: State<'_, MailState>,
+) -> Result<Vec<MailHeader>, String> {
+    let rt = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let mut replies = store_of(&rt)?.replies_to(&message_id)?;
+        serve_auth_state(&mut replies);
+        Ok(replies)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1997,8 +2164,13 @@ pub async fn mail_body(
     state: State<'_, MailState>,
 ) -> Result<MailBody, String> {
     let _ = allow_remote;
-    let rt = state.inner().clone();
+    body_inner(state.inner().clone(), message_id).await
+}
 
+/// `mail_body`'s whole body, shared with the root MCP's `mail_read`
+/// ([`AgentMail`]) so the two cannot drift: same cache, same `BODY.PEEK[]`
+/// (which is what keeps the message unread), same `decrypt → parse → sanitize`.
+async fn body_inner(rt: MailState, message_id: String) -> Result<MailBody, String> {
     // Cache first — sanitization is the expensive step, and the cache is keyed
     // by SANITIZER_VERSION so a sanitizer fix re-protects already-synced mail.
     let rt2 = rt.clone();
@@ -2019,9 +2191,9 @@ pub async fn mail_body(
             links,
             attachments: store.attachments(&id)?,
             truncated: truncated.then_some(true),
-            // A cached body is never an end-to-end one: `cache_body` is not
-            // called for those (see below), so a cache hit is proof this
-            // message was ordinary mail.
+            // A cached body never had a crypto verdict: `cache_body` is only
+            // called when `apply_crypto` found none (see below), so a cache hit
+            // is proof this message was ordinary mail.
             crypto: None,
         }))
     })
@@ -2083,13 +2255,6 @@ pub async fn mail_body(
             None => (None, Vec::new(), 0, false),
         };
 
-        let mut attachments = Vec::new();
-        for att in &parsed.attachments {
-            let blob = store.put_blob(&att.bytes)?;
-            store.put_attachment(&id, &att.meta, &blob)?;
-            attachments.push(att.meta.clone());
-        }
-
         // **Decrypted plaintext is never written to disk.** Not to
         // `bodies_cache`, not to a blob, not to `preview`. If it were, the store
         // key would become cryptographically equivalent to the mail private key
@@ -2098,8 +2263,29 @@ pub async fn mail_body(
         // anyone holding the store key can read. So an encrypted message is
         // re-fetched and re-decrypted on every open, which is the cost of the
         // guarantee and is measured in milliseconds.
+        //
+        // That includes its **attachments**, which are the decrypted inner
+        // message's parts: no blob, no row. Save and preview re-decrypt them
+        // through `load_attachment`. A store written before this held such
+        // attachments on disk, so an open also forgets whatever was left.
         let decrypted = crypto.as_ref().is_some_and(|c| c.decrypted);
-        if !decrypted {
+        let attachments: Vec<MailAttachmentMeta> =
+            parsed.attachments.iter().map(|a| a.meta.clone()).collect();
+        if decrypted {
+            store.forget_message_content(&id)?;
+        } else {
+            for att in &parsed.attachments {
+                let blob = store.put_blob(&att.bytes)?;
+                store.put_attachment(&id, &att.meta, &blob)?;
+            }
+        }
+
+        // The body cache holds no crypto verdict, so only mail that *has* none
+        // is cached. A signed message, or one that failed to decrypt, re-fetches
+        // on every open instead — caching it would serve the body on the second
+        // open with `crypto: None`, and an "invalid signature" or "encrypted,
+        // locked" panel would silently turn into ordinary-looking mail.
+        if crypto.is_none() {
             let raw_blob = if raw.len() > crate::services::mail_store::INLINE_BODY_LIMIT {
                 Some(store.put_blob(&raw)?)
             } else {
@@ -2214,20 +2400,29 @@ pub async fn mail_mark_folder_read(
     let id = folder_id.clone();
     // The UIDs are read *before* the local flip: afterwards there is nothing
     // unread left to find and the operation would silently become local-only.
-    let (account, folder, uids, store) = tokio::task::spawn_blocking(move || {
+    // Unread mail older than the index has no local UID to name, so a folder
+    // holding some is marked on the server by range instead — everything
+    // through the newest indexed UID, which leaves mail that arrived after the
+    // list the user was looking at unread.
+    let (account, folder, uids, through, store) = tokio::task::spawn_blocking(move || {
         let store = store_of(&rt2)?;
         let folder = store
             .folder(&id)?
             .ok_or_else(|| format!("folder '{id}' is not in the local index"))?;
         let account = account_by_id(&accounts_path(), &folder.account_id)?;
         let uids = store.unseen_uids(&id)?;
-        Ok::<_, String>((account, folder, uids, store))
+        let through = if store.unindexed_unread(&id)? > 0 {
+            store.folder_max_uid(&id)?
+        } else {
+            None
+        };
+        Ok::<_, String>((account, folder, uids, through, store))
     })
     .await
     .map_err(|e| e.to_string())??;
 
     // Nothing unread is not an error and must not cost a login.
-    if uids.is_empty() {
+    if uids.is_empty() && through.is_none() {
         return Ok(0);
     }
 
@@ -2243,6 +2438,13 @@ pub async fn mail_mark_folder_read(
     let Some(pw) = resolve_password(&rt, &account, MailProto::Imap) else {
         return Err(no_password_message());
     };
+    if let Some(max_uid) = through {
+        return InProcessEngine
+            .mark_seen_through(&account, &pw, &folder.path, max_uid)
+            .await
+            .map(|()| changed)
+            .map_err(String::from);
+    }
     InProcessEngine
         // Via the enum, never the literal: one spelling of `\Seen` in the
         // codebase, and it is the one the per-message path already uses.
@@ -2306,6 +2508,7 @@ pub async fn mail_priority_page(
     query: Option<String>,
     sort: Option<MailSort>,
     desc: Option<bool>,
+    unread_only: Option<bool>,
     state: State<'_, MailState>,
 ) -> Result<MailHeaderPage, String> {
     let rt = state.inner().clone();
@@ -2318,6 +2521,7 @@ pub async fn mail_priority_page(
             query.as_deref(),
             sort.unwrap_or_default(),
             desc.unwrap_or(true),
+            unread_only.unwrap_or(false),
         )?;
         serve_auth_state(&mut page.items);
         Ok(page)
@@ -2856,6 +3060,41 @@ pub async fn mail_ai_classify_apply(
     Ok(report)
 }
 
+/// Resolve a batch of message ids to the one account and folder they all live
+/// in, plus their UIDs.
+///
+/// Shared by `mail_move` and `mail_purge` because both address the server as one
+/// selected mailbox and one UID set, and both would otherwise act on *unrelated*
+/// mail: a UID means something only inside its own mailbox, so ids from two
+/// folders are two sets of numbers pointing at whatever happens to carry them in
+/// whichever folder got selected. `verb` only words the refusal.
+fn resolve_uid_batch(
+    store: &MailStore,
+    ids: &[String],
+    verb: &str,
+) -> Result<(MailAccount, MailFolder, Vec<u32>), String> {
+    let first = store
+        .header(&ids[0])?
+        .ok_or_else(|| "message is not in the local index".to_string())?;
+    let folder = store
+        .folder(&first.folder_id)?
+        .ok_or_else(|| "the source folder is not in the local index".to_string())?;
+    let account = account_by_id(&accounts_path(), &first.account_id)?;
+    let mut uids = Vec::new();
+    for id in ids {
+        let h = store
+            .header(id)?
+            .ok_or_else(|| "message is not in the local index".to_string())?;
+        if h.account_id != first.account_id || h.folder_id != first.folder_id {
+            return Err(format!(
+                "messages from different folders cannot be {verb} in one step"
+            ));
+        }
+        uids.push(h.uid);
+    }
+    Ok((account, folder, uids))
+}
+
 #[tauri::command]
 pub async fn mail_move(
     message_ids: Vec<String>,
@@ -2869,28 +3108,20 @@ pub async fn mail_move(
     let rt2 = rt.clone();
     let ids = message_ids.clone();
     let dest = dest_folder_id.clone();
-    let (account, source_path, dest_path, uids, store) = tokio::task::spawn_blocking(move || {
-        let store = store_of(&rt2)?;
-        let first = store
-            .header(&ids[0])?
-            .ok_or_else(|| "message is not in the local index".to_string())?;
-        let source = store
-            .folder(&first.folder_id)?
-            .ok_or_else(|| "the source folder is not in the local index".to_string())?;
-        let target = store
-            .folder(&dest)?
-            .ok_or_else(|| "the destination folder is not in the local index".to_string())?;
-        let account = account_by_id(&accounts_path(), &first.account_id)?;
-        let mut uids = Vec::new();
-        for id in &ids {
-            if let Some(h) = store.header(id)? {
-                uids.push(h.uid);
+    let (account, source_id, source_path, dest_path, uids, store) =
+        tokio::task::spawn_blocking(move || {
+            let store = store_of(&rt2)?;
+            let (account, source, uids) = resolve_uid_batch(&store, &ids, "moved")?;
+            let target = store
+                .folder(&dest)?
+                .ok_or_else(|| "the destination folder is not in the local index".to_string())?;
+            if target.account_id != account.id {
+                return Err("messages can only be moved within their own account".into());
             }
-        }
-        Ok::<_, String>((account, source.path, target.path, uids, store))
-    })
-    .await
-    .map_err(|e| e.to_string())??;
+            Ok::<_, String>((account, source.id, source.path, target.path, uids, store))
+        })
+        .await
+        .map_err(|e| e.to_string())??;
 
     let Some(pw) = resolve_password(&rt, &account, MailProto::Imap) else {
         return Err(no_password_message());
@@ -2900,9 +3131,62 @@ pub async fn mail_move(
         .await
         .map_err(String::from)?;
 
-    tokio::task::spawn_blocking(move || store.move_messages(&message_ids, &dest_folder_id))
+    tokio::task::spawn_blocking(move || {
+        store.move_messages(&message_ids, &dest_folder_id)?;
+        // Both folders' counters, because the rail's unread badge is read from
+        // them: without this a mail moved out of the inbox — which is what a
+        // delete-to-Trash is — kept being counted there until the next sync.
+        store.refresh_counts(&source_id)?;
+        store.refresh_counts(&dest_folder_id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Delete messages **off the server** — `\Deleted` + `UID EXPUNGE` — and then
+/// out of the local index.
+///
+/// The other half of deleting. A delete normally *moves* to the account's Trash
+/// (`mail_move`, recoverable, no new command needed); this is the path for the
+/// two cases where there is nowhere left to move to: emptying the Trash itself,
+/// and an account whose server offers no Trash folder at all. There is no undo,
+/// so the caller asks first — and the server is asked *before* the index, so a
+/// refused expunge leaves rows for mail that is still in the mailbox rather than
+/// the other way round.
+#[tauri::command]
+pub async fn mail_purge(
+    message_ids: Vec<String>,
+    state: State<'_, MailState>,
+) -> Result<u32, String> {
+    if message_ids.is_empty() {
+        return Ok(0);
+    }
+    let rt = state.inner().clone();
+    let rt2 = rt.clone();
+    let ids = message_ids.clone();
+    let (account, folder_id, folder_path, uids, store) = tokio::task::spawn_blocking(move || {
+        let store = store_of(&rt2)?;
+        let (account, folder, uids) = resolve_uid_batch(&store, &ids, "deleted")?;
+        Ok::<_, String>((account, folder.id, folder.path, uids, store))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    let Some(pw) = resolve_password(&rt, &account, MailProto::Imap) else {
+        return Err(no_password_message());
+    };
+    InProcessEngine
+        .purge_messages(&account, &pw, &folder_path, &uids)
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(String::from)?;
+
+    tokio::task::spawn_blocking(move || {
+        let removed = store.delete_messages(&message_ids)?;
+        store.refresh_counts(&folder_id)?;
+        Ok::<_, String>(removed)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // ── Commands: drafts and sending ────────────────────────────────────────────
@@ -2919,6 +3203,10 @@ pub async fn mail_draft_save(
         if draft.id.trim().is_empty() {
             draft.id = uuid_v4();
         }
+        // A save from the composer is the user's: it takes the draft out of the
+        // reach of the agent that wrote it (`root_mcp_mail::own_draft`).
+        draft.origin = None;
+        draft.owner_session = None;
         // The staged list is the store's, not the caller's: a draft cannot
         // invent an attachment it did not pick through `mail_attach_pick`.
         draft.staged = store.staged(&draft.id)?;
@@ -2927,6 +3215,146 @@ pub async fn mail_draft_save(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// The drafts an agent wrote through the root MCP and the user has not yet
+/// sent, discarded or edited — what the mail view lists with the agent mark.
+/// The user's own drafts are not listed anywhere yet; this does not change that.
+///
+/// **Never opens the store.** The root console asks this on mount, and opening
+/// the store is what resolves its unlock (and can migrate a database) — not a
+/// decision for a badge. A store not opened yet lists nothing; the mail pane
+/// asks again once it has opened it.
+#[tauri::command]
+pub async fn mail_agent_drafts(state: State<'_, MailState>) -> Result<Vec<MailDraft>, String> {
+    let rt = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let Ok(store) = AgentMail(rt).store() else {
+            return Ok(Vec::new());
+        };
+        let mut drafts = store.drafts()?;
+        drafts.retain(|d| d.origin.is_some());
+        Ok(drafts)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Discard one draft and whatever was staged for it.
+#[tauri::command]
+pub async fn mail_draft_discard(
+    draft_id: String,
+    state: State<'_, MailState>,
+) -> Result<(), String> {
+    let rt = state.inner().clone();
+    tokio::task::spawn_blocking(move || store_of(&rt)?.delete_draft(&draft_id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+// ── The root MCP's view of mail ─────────────────────────────────────────────
+
+/// Whether any account has `MailAiPrefs::agent_access` on — the root overlay
+/// badge's mail mark. An unreadable account list reads as "none".
+pub fn any_account_open_to_agents() -> bool {
+    read_accounts(&accounts_path()).is_ok_and(|list| {
+        list.accounts
+            .iter()
+            .any(|a| a.ai.as_ref().and_then(|ai| ai.agent_access) == Some(true))
+    })
+}
+
+/// `root_mcp_mail::MailAccess` over the live [`MailState`].
+///
+/// **Locked means refused.** This never opens the store: a store that was not
+/// opened this run, or that opened as the memory-only stand-in because its key
+/// could not be reached, answers `LOCKED`. An agent has no unlock tool and no
+/// call here raises a prompt — the silent-connect rule SSH and OpenVPN follow.
+pub struct AgentMail(pub MailState);
+
+impl AgentMail {
+    fn store(&self) -> Result<Arc<MailStore>, String> {
+        use crate::services::root_mcp_mail::LOCKED;
+        let rt = self.0.lock().map_err(|_| LOCKED.to_string())?;
+        match (&rt.store, &rt.unlock_note) {
+            (Some(store), None) => Ok(store.clone()),
+            _ => Err(LOCKED.to_string()),
+        }
+    }
+}
+
+impl crate::services::root_mcp_mail::MailAccess for AgentMail {
+    fn accounts(&self) -> Result<Vec<crate::services::root_mcp_mail::AgentAccount>, String> {
+        self.store()?;
+        Ok(read_accounts(&accounts_path())?
+            .accounts
+            .into_iter()
+            .map(|a| crate::services::root_mcp_mail::AgentAccount {
+                agent_access: a.ai.as_ref().and_then(|ai| ai.agent_access) == Some(true),
+                id: a.id,
+                name: a.label,
+                address: a.address,
+            })
+            .collect())
+    }
+
+    fn folders(&self, account_id: &str) -> Result<Vec<MailFolder>, String> {
+        self.store()?.folders(account_id)
+    }
+
+    fn headers(
+        &self,
+        folder_id: &str,
+        offset: u32,
+        limit: u32,
+        query: Option<&str>,
+        unread_only: bool,
+    ) -> Result<MailHeaderPage, String> {
+        self.store()?
+            .headers_page(folder_id, offset, limit, query, MailSort::Date, true, unread_only)
+    }
+
+    fn header(&self, message_id: &str) -> Result<Option<MailHeader>, String> {
+        self.store()?.header(message_id)
+    }
+
+    fn body(&self, message_id: &str) -> Result<MailBody, String> {
+        self.store()?;
+        // Called from the listener's `spawn_blocking` thread, where blocking on
+        // the runtime is allowed.
+        tauri::async_runtime::block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(8), body_inner(self.0.clone(), message_id.to_string()))
+                .await.map_err(|_| "MCP mail read timed out".to_string())?
+        }).map_err(
+            |e| {
+                if e == no_password_message() {
+                    "open this account in Eldrun first".to_string()
+                } else {
+                    e
+                }
+            },
+        )
+    }
+
+    fn drafts(&self) -> Result<Vec<MailDraft>, String> {
+        self.store()?.drafts()
+    }
+
+    fn save_draft(&self, draft: &MailDraft) -> Result<(), String> {
+        self.store()?.save_draft(draft)
+    }
+
+    fn delete_draft(&self, draft_id: &str) -> Result<(), String> {
+        self.store()?.delete_draft(draft_id)
+    }
+
+    fn change_draft(&self, before: Option<&MailDraft>, after: Option<&MailDraft>) -> Result<(), String> {
+        self.store()?.change_agent_draft(before, after)
+    }
+
+    fn new_id(&self) -> String {
+        uuid_v4()
+    }
 }
 
 /// Send one draft. Nothing is ever sent without this explicit call — no read
@@ -3130,6 +3558,76 @@ pub async fn mail_attach_remove(
     .map_err(|e| e.to_string())?
 }
 
+/// One attachment's metadata and decoded bytes.
+///
+/// From the store for ordinary mail. An attachment of an end-to-end encrypted
+/// message has no row by design (see `mail_body`), so a miss re-fetches the
+/// message and decrypts it again — and hands out a part only if it really came
+/// out of a decryption, so this can never become a way to read an arbitrary
+/// part of a message whose attachments were simply never opened.
+async fn load_attachment(
+    rt: &MailState,
+    message_id: &str,
+    part_id: &str,
+) -> Result<(MailAttachmentMeta, Vec<u8>), String> {
+    let rt2 = rt.clone();
+    let (mid, pid) = (message_id.to_string(), part_id.to_string());
+    let stored = tokio::task::spawn_blocking(move || {
+        let store = store_of(&rt2)?;
+        match store.attachment(&mid, &pid)? {
+            Some((meta, blob)) => Ok::<_, String>(Some((meta, store.get_blob(&blob)?))),
+            None => Ok(None),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    if let Some(found) = stored {
+        return Ok(found);
+    }
+
+    let rt3 = rt.clone();
+    let id = message_id.to_string();
+    let (account, folder, header) = tokio::task::spawn_blocking(move || {
+        let store = store_of(&rt3)?;
+        let header = store
+            .header(&id)?
+            .ok_or_else(|| "attachment not found".to_string())?;
+        let folder = store
+            .folder(&header.folder_id)?
+            .ok_or_else(|| "the message's folder is not in the local index".to_string())?;
+        let account = account_by_id(&accounts_path(), &header.account_id)?;
+        Ok::<_, String>((account, folder, header))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let Some(pw) = resolve_password(rt, &account, MailProto::Imap) else {
+        return Err(no_password_message());
+    };
+    let raw = InProcessEngine
+        .body(&account, &pw, &folder.path, header.uid)
+        .await
+        .map_err(String::from)?;
+
+    let rt4 = rt.clone();
+    let from_address = header.from.address.clone();
+    let pid = part_id.to_string();
+    tokio::task::spawn_blocking(move || {
+        let (raw, crypto) = apply_crypto(&rt4, raw, &from_address);
+        if !crypto.as_ref().is_some_and(|c| c.decrypted) {
+            return Err("attachment not found".to_string());
+        }
+        let parsed = mail_engine::parse_message(&raw).map_err(String::from)?;
+        parsed
+            .attachments
+            .into_iter()
+            .find(|a| a.meta.part_id == pid)
+            .map(|a| (a.meta, a.bytes))
+            .ok_or_else(|| "attachment not found".to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Raise the OS **save** dialog inside Rust with the sanitized filename
 /// pre-filled, and write the decoded bytes to whatever single path the user
 /// chose. Returns that path for a toast, or `None` on cancel.
@@ -3146,18 +3644,7 @@ pub async fn mail_attachment_save(
     state: State<'_, MailState>,
 ) -> Result<Option<String>, String> {
     let rt = state.inner().clone();
-    let rt2 = rt.clone();
-    let (mid, pid) = (message_id.clone(), part_id.clone());
-    let (meta, bytes) = tokio::task::spawn_blocking(move || {
-        let store = store_of(&rt2)?;
-        let (meta, blob) = store
-            .attachment(&mid, &pid)?
-            .ok_or_else(|| "attachment not found".to_string())?;
-        let bytes = store.get_blob(&blob)?;
-        Ok::<_, String>((meta, bytes))
-    })
-    .await
-    .map_err(|e| e.to_string())??;
+    let (meta, bytes) = load_attachment(&rt, &message_id, &part_id).await?;
 
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
@@ -3180,6 +3667,9 @@ pub async fn mail_attachment_save(
         // returned. We do not create directories, do not follow the name, do
         // not append.
         std::fs::write(&target, &bytes).map_err(|e| e.to_string())?;
+        // Mark-of-the-Web / quarantine, so the OS treats it as the download it
+        // is. Best-effort; never fails the save.
+        crate::services::web_safety::mark_downloaded(&target);
         Ok(Some(target.to_string_lossy().into_owned()))
     })
     .await
@@ -3211,19 +3701,19 @@ pub async fn mail_attachment_save_to_project(
     state: State<'_, MailState>,
 ) -> Result<String, String> {
     let rt = state.inner().clone();
-    let (mid, pid) = (message_id.clone(), part_id.clone());
-    let (meta, bytes) = tokio::task::spawn_blocking(move || {
-        let store = store_of(&rt)?;
-        let (meta, blob) = store
-            .attachment(&mid, &pid)?
-            .ok_or_else(|| "attachment not found".to_string())?;
-        let bytes = store.get_blob(&blob)?;
-        Ok::<_, String>((meta, bytes))
-    })
-    .await
-    .map_err(|e| e.to_string())??;
+    let (meta, bytes) = load_attachment(&rt, &message_id, &part_id).await?;
 
     tokio::task::spawn_blocking(move || {
+        // A remote project's `directory` is Eldrun's local state dir for it, not
+        // its tree — the tree is on the host — so a save "into the project"
+        // would land somewhere the user never sees. Refused rather than
+        // misfiled; the OS dialog beside it still works.
+        if crate::services::remote::remote_target_for(&project_id).is_some() {
+            return Err(
+                "saving into a remote project is not supported — use \"Save as…\" instead"
+                    .to_string(),
+            );
+        }
         let dir = crate::services::remote::project_directory(&project_id)
             .filter(|d| !d.is_empty())
             .ok_or_else(|| "no such project".to_string())?;
@@ -3237,46 +3727,109 @@ pub async fn mail_attachment_save_to_project(
             &root,
             crate::commands::projects::EMAILS_DIR,
         );
-        let emails = root.join(crate::commands::projects::EMAILS_DIR);
-        std::fs::create_dir_all(&emails).map_err(|e| e.to_string())?;
+        let emails = emails_dir_in(&root)?;
 
         // The filename is the message's, so it is sanitized (no path component,
         // no traversal, no control/bidi trickery) before being joined under the
-        // fixed `eldrun-emails/` subfolder.
-        let safe = mail_sanitize::sanitize_attachment_name(&meta.filename).value;
-        let target = unique_in_dir(&emails, &safe);
-
-        std::fs::write(&target, &bytes).map_err(|e| e.to_string())?;
+        // fixed `eldrun-emails/` subfolder — and kept from impersonating an
+        // agent's instruction file, which agents pick up from subfolders too.
+        let safe = defuse_agent_instruction_name(
+            mail_sanitize::sanitize_attachment_name(&meta.filename).value,
+        );
+        let target = write_unique_in_dir(&emails, &safe, &bytes)?;
+        crate::services::web_safety::mark_downloaded(&target);
         Ok(target.to_string_lossy().into_owned())
     })
     .await
     .map_err(|e| e.to_string())?
 }
 
-/// A path in `dir` for `name` that will not clobber an existing file: `name`
-/// itself if free, else `name (2)`, `name (3)`, … with the extension preserved.
-/// A save into a project tree must never silently overwrite a file already
-/// sitting there — two mails can carry an `invoice.pdf`.
-fn unique_in_dir(dir: &Path, name: &str) -> PathBuf {
-    let first = dir.join(name);
-    if !first.exists() {
-        return first;
+/// `<root>/eldrun-emails`, created if missing, and **refused unless it is a real
+/// directory directly inside the project**.
+///
+/// The project tree is attacker-controlled — a cloned repo, or an agent working
+/// in it — and the write happens in Eldrun's own, unfenced process. A committed
+/// `eldrun-emails -> ~/.config/autostart` would otherwise turn "save this
+/// attachment" into a file dropped wherever the link points, and for a fenced
+/// agent that is a way out of its fence.
+fn emails_dir_in(root: &Path) -> Result<PathBuf, String> {
+    let emails = root.join(crate::commands::projects::EMAILS_DIR);
+    match std::fs::symlink_metadata(&emails) {
+        Ok(meta) if meta.file_type().is_dir() => {}
+        Ok(_) => {
+            return Err(format!(
+                "{} in this project is not a plain folder, so nothing was saved into it",
+                crate::commands::projects::EMAILS_DIR
+            ))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // `create_dir`, not `create_dir_all`: the project root must already
+            // exist, and nothing above it is ours to create.
+            std::fs::create_dir(&emails).map_err(|e| e.to_string())?;
+        }
+        Err(e) => return Err(e.to_string()),
     }
+    // Belt and braces for a root that is itself reached through links: the
+    // folder's real parent must be the project's real root.
+    let real_root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
+    let real_emails = std::fs::canonicalize(&emails).map_err(|e| e.to_string())?;
+    if real_emails.parent() != Some(real_root.as_path()) {
+        return Err("the attachment folder resolves outside the project".into());
+    }
+    Ok(real_emails)
+}
+
+/// File names an agent CLI reads as instructions when it works in (or below)
+/// the folder holding them. A mailed `CLAUDE.md` saved into a project would be
+/// a stranger's prompt the next time an agent touched `eldrun-emails/`.
+const AGENT_INSTRUCTION_NAMES: &[&str] = &[
+    "agents.md",
+    "claude.md",
+    "claude.local.md",
+    "gemini.md",
+    "codex.md",
+    "qwen.md",
+    "copilot-instructions.md",
+];
+
+fn defuse_agent_instruction_name(name: String) -> String {
+    if AGENT_INSTRUCTION_NAMES.contains(&name.to_ascii_lowercase().as_str()) {
+        format!("attachment-{name}")
+    } else {
+        name
+    }
+}
+
+/// Write `bytes` into `dir` under `name`, or `name (2)`, `name (3)`, … with the
+/// extension preserved — never clobbering. A save into a project tree must never
+/// silently overwrite a file already sitting there: two mails can carry an
+/// `invoice.pdf`.
+///
+/// Each candidate is opened `create_new` (plus `O_NOFOLLOW`), so "is it free?"
+/// and "write it" are one atomic step: an existing file *or a dangling symlink*
+/// is simply taken, and a link planted between a check and the write cannot be
+/// followed because there is no separate check.
+fn write_unique_in_dir(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
     let path = Path::new(name);
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or(name);
     let ext = path.extension().and_then(|s| s.to_str());
-    for n in 2..10_000 {
-        let candidate = match ext {
-            Some(ext) => format!("{stem} ({n}).{ext}"),
-            None => format!("{stem} ({n})"),
+    for n in 1..10_000 {
+        let candidate = match (n, ext) {
+            (1, _) => name.to_string(),
+            (_, Some(ext)) => format!("{stem} ({n}).{ext}"),
+            (_, None) => format!("{stem} ({n})"),
         };
         let p = dir.join(candidate);
-        if !p.exists() {
-            return p;
+        match crate::commands::projects::write_no_follow(&p, bytes, true) {
+            Ok(()) => return Ok(p),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            // ELOOP: an `O_NOFOLLOW` open of a link that appeared since.
+            #[cfg(unix)]
+            Err(e) if e.raw_os_error() == Some(libc::ELOOP) => continue,
+            Err(e) => return Err(e.to_string()),
         }
     }
-    // 10k collisions is pathological; fall back to the base rather than loop.
-    first
+    Err("too many files with this name in the attachment folder".into())
 }
 
 /// Bounded bytes for in-pane preview. Nothing is written to disk; the pane
@@ -3288,12 +3841,8 @@ pub async fn mail_attachment_preview(
     state: State<'_, MailState>,
 ) -> Result<MailPreviewBlob, String> {
     let rt = state.inner().clone();
+    let (meta, bytes) = load_attachment(&rt, &message_id, &part_id).await?;
     tokio::task::spawn_blocking(move || {
-        let store = store_of(&rt)?;
-        let (meta, blob) = store
-            .attachment(&message_id, &part_id)?
-            .ok_or_else(|| "attachment not found".to_string())?;
-        let bytes = store.get_blob(&blob)?;
         let truncated = bytes.len() > MAX_PREVIEW_BYTES;
         let slice = &bytes[..bytes.len().min(MAX_PREVIEW_BYTES)];
         Ok(MailPreviewBlob {
@@ -3336,6 +3885,45 @@ mod tests {
             },
             ..Default::default()
         }
+    }
+
+    // ── Saving into a project ───────────────────────────────────────────────
+
+    #[cfg(unix)]
+    #[test]
+    fn the_emails_folder_must_be_a_real_folder_inside_the_project() {
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), project.path().join("eldrun-emails")).unwrap();
+        assert!(emails_dir_in(project.path()).is_err(), "a linked folder is refused");
+
+        let project = tempfile::tempdir().unwrap();
+        let made = emails_dir_in(project.path()).unwrap();
+        assert!(made.is_dir());
+        assert_eq!(made, std::fs::canonicalize(project.path()).unwrap().join("eldrun-emails"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_save_never_follows_or_clobbers_what_is_already_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let victim = elsewhere.path().join("x.desktop");
+        // A dangling link under the attachment's own name.
+        std::os::unix::fs::symlink(&victim, dir.path().join("x.desktop")).unwrap();
+        std::fs::write(dir.path().join("x (2).desktop"), "mine").unwrap();
+
+        let written = write_unique_in_dir(dir.path(), "x.desktop", b"payload").unwrap();
+        assert_eq!(written, dir.path().join("x (3).desktop"));
+        assert!(!victim.exists(), "the link was not written through");
+        assert_eq!(std::fs::read_to_string(dir.path().join("x (2).desktop")).unwrap(), "mine");
+    }
+
+    #[test]
+    fn agent_instruction_names_are_defused() {
+        assert_eq!(defuse_agent_instruction_name("CLAUDE.md".into()), "attachment-CLAUDE.md");
+        assert_eq!(defuse_agent_instruction_name("agents.MD".into()), "attachment-agents.MD");
+        assert_eq!(defuse_agent_instruction_name("invoice.pdf".into()), "invoice.pdf");
     }
 
     // ── The boundary ────────────────────────────────────────────────────────
@@ -3522,6 +4110,7 @@ mod tests {
             "mail_body",
             "mail_flag",
             "mail_move",
+            "mail_purge",
             "mail_draft_save",
             "mail_draft_send",
             "mail_attach_pick",
@@ -3535,6 +4124,20 @@ mod tests {
                 "the frozen contract names `{name}`, which is missing"
             );
         }
+    }
+
+    /// A save from the composer is the user's: it must clear the agent mark, or
+    /// an agent could keep rewriting a draft the user already reviewed. And the
+    /// agent path must never open (or unlock) the store on its own.
+    #[test]
+    fn a_composer_save_clears_the_origin_and_the_agent_path_never_opens_the_store() {
+        let src = include_str!("mail.rs");
+        let save = &src[src.find("pub async fn mail_draft_save(").unwrap()..];
+        let save = &save[..save.find("#[tauri::command]").unwrap()];
+        assert!(save.contains("draft.origin = None;"));
+        let agent = &src[src.find("impl AgentMail {").unwrap()..];
+        let agent = &agent[..agent.find("/// Send one draft.").unwrap()];
+        assert!(!agent.contains(concat!("store_", "of(")), "AgentMail must not open the store");
     }
 
     /// `blocking_pick_*` on the main thread is the freeze this whole file is
@@ -3902,7 +4505,10 @@ mod tests {
             .unwrap()
             .passwords
             .insert("acct".into(), Password::new("hunter2"));
-        assert_eq!(session_secret(&state, "acct").as_deref(), Some("hunter2"));
+        assert_eq!(
+            session_secret(&state, "acct").as_deref().map(String::as_str),
+            Some("hunter2")
+        );
         assert_eq!(session_secret(&state, "other"), None, "keyed per account");
 
         // An empty stashed password is not a password — writing it would store a

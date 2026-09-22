@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { invokeTrusted } from "../lib/execTrust";
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import {
@@ -33,20 +34,20 @@ import {
   type TabEntry,
   type ViewerState,
 } from "./tabs";
-import { useRunHostPrefStore } from "./runHostPref";
+import { useRunHostPrefStore } from "./remote/runHostPref";
 import { useTimerStore } from "./timer";
 import { useSettingsStore, whenSettingsLoaded } from "./settings";
-import { mayAutoTouch, targetOfSpec } from "../lib/hpcHost";
-import { PRIMARY_HOST, useRemoteStatusStore } from "./remoteStatus";
-import { markVpnConnected, markVpnConnecting, markVpnError, releaseVpn } from "./vpnStatus";
-import { useConnectDialogStore } from "./connectDialog";
-import { connectionStillOpen, openConnectionInRoot } from "../lib/remoteConnect";
+import { mayAutoTouch, targetOfSpec } from "../lib/remote/hpc/hpcHost";
+import { PRIMARY_HOST, useRemoteStatusStore } from "./remote/remoteStatus";
+import { markVpnConnected, markVpnConnecting, markVpnError, releaseVpn } from "./remote/vpn/vpnStatus";
+import { useConnectDialogStore } from "./remote/connectDialog";
+import { connectionStillOpen, openConnectionInRoot } from "../lib/remote/remoteConnect";
 import { describeScaffoldRepair, type ProjectScaffoldRepair } from "../components/projects/scaffold";
 import type { SavedPasswordState } from "../components/projects/useSavedCredential";
 import { IS_WINDOWS } from "../lib/platform";
-import { shouldPersistLocalTab, shouldPersistTab } from "../lib/tmuxSession";
+import { shouldPersistLocalTab, shouldPersistTab } from "../lib/terminal/tmuxSession";
 import { translate, useI18nStore } from "../lib/i18n";
-import { TRASH_PROJECT_ID } from "../lib/trashProject";
+import { TRASH_PROJECT_ID } from "../lib/projects/trashProject";
 
 function connectionsHeadless(): boolean {
   return useSettingsStore.getState().settings?.connections_headless ?? true;
@@ -138,7 +139,7 @@ function autoConnectIneligible(scope: string, sshArgs: SshArgs, state: SavedPass
   // (`lib/keyring.ts`), so `saved: false` alone would tell a user whose password is
   // sitting on the ring to go save it again — the one instruction that cannot help.
   // Same split, and deliberately the same wording, as the machine-wide VPN twin in
-  // `lib/vpnAutoConnect`: one feature, one explanation.
+  // `lib/remote/vpn/vpnAutoConnect`: one feature, one explanation.
   const lang = useI18nStore.getState().lang;
   const reason = translate(
     lang,
@@ -169,7 +170,7 @@ async function savedPasswordState(sshArgs: SshArgs): Promise<SavedPasswordState>
  * to re-check and `remote_has_saved_password` is always false — so the headless
  * eligibility gate (a saved password, or a `key_auth` host) rejected *every* project
  * and auto-connect silently did nothing at all. This is the same substitution the
- * machine-wide VPN toggle already makes (`lib/vpnAutoConnect`): "connect on launch"
+ * machine-wide VPN toggle already makes (`lib/remote/vpn/vpnAutoConnect`): "connect on launch"
  * means *the connect command is waiting in the root terminal*, where the user types
  * the password into a visible shell, rather than a connect Eldrun completes by itself.
  *
@@ -310,7 +311,7 @@ async function autoConnectPrimary(projectId: string): Promise<void> {
   const project = useProjectsStore.getState().projects.find((p) => p.id === projectId);
   const remote = project?.remote;
   if (!remote?.auto_connect) return;
-  // Never silently, on a machine tagged HPC (`lib/hpcHost.ts`). A connect is not
+  // Never silently, on a machine tagged HPC (`lib/remote/hpc/hpcHost.ts`). A connect is not
   // free on a cluster login node — it opens an SSH master, and Eldrun's own
   // session machinery may raise a tmux server behind it — and "silently, because
   // the app happened to start" is precisely the shape of unattended presence a
@@ -665,7 +666,7 @@ export async function silentReconnectDeadHost(projectId: string, hostId: string)
 
 /**
  * Re-attempt auto-connect for the **active** remote project after a VPN tunnel has
- * just come up (the machine-wide event `lib/remoteAutoReconnect` subscribes to).
+ * just come up (the machine-wide event `lib/remote/remoteAutoReconnect` subscribes to).
  *
  * A first auto-connect at launch may have run *before* the armed tunnel was up: the
  * probe found the host unreachable and left the lamp red (`autoConnectPrimary` step
@@ -844,8 +845,16 @@ interface ProjectsStore {
    * it into the archive (`~/eldrun/archive/<id>/`). Reversible from Settings; the
    * remote host tree of an SSH project is never touched. */
   archiveProject: (id: string) => Promise<void>;
+  /** Remove a project from Eldrun and leave its folder exactly where it is:
+   *  only the registry entry and Eldrun's state dirs about it go — nothing
+   *  inside the tree is touched. For a botched import that should be redone. */
+  forgetProject: (id: string) => Promise<void>;
   updateProjectDescription: (id: string, description: string) => Promise<void>;
   renameProject: (id: string, name: string) => Promise<void>;
+  /** Rename a local project's folder to `<same parent>/<leaf>`. The backend
+   * refuses an existing target and an open project, so an open one is closed
+   * first (its stop prompt may be cancelled → throws) and reopened after. */
+  renameProjectFolder: (id: string, leaf: string) => Promise<void>;
   /** Relocate a remote (SSH) project's local mirror folder into `parentDir`
    * (the folder is moved to `<parentDir>/<name>`). Returns the new mirror path. */
   moveRemoteMirror: (id: string, name: string, parentDir: string) => Promise<string>;
@@ -877,6 +886,7 @@ interface ProjectsStore {
   /** Force the local-agent filesystem fence on/off, or clear to inherit the
    * global default. Running tabs keep their current boundary until respawn. */
   setProjectAgentFence: (id: string, agentFence: boolean | null) => Promise<void>;
+  setProjectScheduleMcp: (id: string, level: "off" | "propose" | "apply") => Promise<void>;
   /** Opt a remote project in/out of auto-connect (connect it silently on launch
    *  and activation). Only offered once the connect can complete with no prompt —
    *  a saved SSH password, or a host recorded as `key_auth`; `autoConnectRemote`
@@ -1055,6 +1065,65 @@ function patchProjectRemote(id: string, patch: (remote: RemoteSpec) => RemoteSpe
         : project,
     ),
   }));
+}
+
+/**
+ * The one "take a project out of Eldrun" sequence behind `archiveProject` and
+ * `forgetProject`: tear down every Eldrun-side connection and in-memory state
+ * the project holds, run the backend verb that drops it from `projects.json`
+ * (and moves or purges its state — that is the only part the two differ in),
+ * then remove the pill and re-focus if it was the current project. The teardown
+ * runs BEFORE the backend call so a pooled SSH master or a running PTY never
+ * outlives its registry entry.
+ */
+async function removeProjectVia(id: string, unregister: () => Promise<unknown>): Promise<void> {
+  const { projects, setActive } = useProjectsStore.getState();
+  const entry = projects.find((p) => p.id === id);
+  if (!entry) return;
+
+  // ── Tear down all Eldrun-side connections/state for this project ──────────
+  // Drop the pooled SSH/SFTP ControlMaster + reset its lamps (remote only).
+  if (entry.remote) dropRemotePool(id);
+  // Close its Connect modal if it happens to be targeting this project.
+  if (useConnectDialogStore.getState().projectId === id) {
+    useConnectDialogStore.getState().close();
+  }
+  // Release its claim on the OpenVPN tunnel — which comes down only if no other
+  // project is still holding it. (This used to scan the project list for another
+  // project *configured* with the same config, which is a different question: it
+  // kept the tunnel up for projects that weren't even connected. `releaseVpn`
+  // counts actual holders.)
+  releaseVpn(id, entry.remote?.openvpn?.config);
+  // Drop its tabs/PTYs/sessions (in memory; the backend discards the file).
+  useTabsStore.getState().closeAllTabs(id);
+  backgroundRestored.delete(id);
+  // Remove it from every box holding it (membership is N:M — the boxes
+  // themselves survive; a box left with one or zero members still renders).
+  {
+    const { useBoxesStore } = await import("./boxes");
+    const boxesStore = useBoxesStore.getState();
+    const holding = boxesStore.boxes.filter((b) => b.member_ids.includes(id));
+    for (const b of holding) {
+      await boxesStore.removeFromBox(id, b.id);
+    }
+  }
+
+  // ── Drop it from projects.json (archive moves its folders; forget does not) ─
+  await unregister();
+
+  // ── Update the store: remove the pill, re-focus if it was active ──────────
+  let nextActiveId: string | null = null;
+  useProjectsStore.setState((state) => {
+    const remaining = state.projects.filter((p) => p.id !== id);
+    nextActiveId =
+      state.activeId === id
+        ? (remaining.find((p) => p.status === "active") ?? remaining[0])?.id ?? null
+        : state.activeId;
+    return { projects: remaining };
+  });
+  if (useProjectsStore.getState().activeId !== nextActiveId) {
+    await setActive(nextActiveId);
+  }
 }
 
 export const useProjectsStore = create<ProjectsStore>((set, get) => ({
@@ -1488,52 +1557,15 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
   },
 
   archiveProject: async (id) => {
-    const entry = get().projects.find((p) => p.id === id);
-    if (!entry) return;
+    // Move it into the archive + drop it from projects.json.
+    await removeProjectVia(id, () =>
+      invoke("archive_project", { projectId: id, archivedAt: new Date().toISOString() }),
+    );
+  },
 
-    // ── Tear down all Eldrun-side connections/state for this project ──────────
-    // Drop the pooled SSH/SFTP ControlMaster + reset its lamps (remote only).
-    if (entry.remote) dropRemotePool(id);
-    // Close its Connect modal if it happens to be targeting this project.
-    if (useConnectDialogStore.getState().projectId === id) {
-      useConnectDialogStore.getState().close();
-    }
-    // Release its claim on the OpenVPN tunnel — which comes down only if no other
-    // project is still holding it. (This used to scan the project list for another
-    // project *configured* with the same config, which is a different question: it
-    // kept the tunnel up for projects that weren't even connected. `releaseVpn`
-    // counts actual holders.)
-    releaseVpn(id, entry.remote?.openvpn?.config);
-    // Drop its tabs/PTYs/sessions (in memory; the folder move discards the file).
-    useTabsStore.getState().closeAllTabs(id);
-    backgroundRestored.delete(id);
-    // Remove it from every box holding it (membership is N:M — the boxes
-    // themselves survive; a box left with one or zero members still renders).
-    {
-      const { useBoxesStore } = await import("./boxes");
-      const boxesStore = useBoxesStore.getState();
-      const holding = boxesStore.boxes.filter((b) => b.member_ids.includes(id));
-      for (const b of holding) {
-        await boxesStore.removeFromBox(id, b.id);
-      }
-    }
-
-    // ── Move it into the archive + drop it from projects.json ────────────────
-    await invoke("archive_project", { projectId: id, archivedAt: new Date().toISOString() });
-
-    // ── Update the store: remove the pill, re-focus if it was active ──────────
-    let nextActiveId: string | null = null;
-    set((state) => {
-      const projects = state.projects.filter((p) => p.id !== id);
-      nextActiveId =
-        state.activeId === id
-          ? (projects.find((p) => p.status === "active") ?? projects[0])?.id ?? null
-          : state.activeId;
-      return { projects };
-    });
-    if (get().activeId !== nextActiveId) {
-      await get().setActive(nextActiveId);
-    }
+  forgetProject: async (id) => {
+    // Drop it from projects.json + Eldrun's state dirs; the folder stays put.
+    await removeProjectVia(id, () => invoke("forget_project", { projectId: id }));
   },
 
   updateProjectDescription: async (id, description) => {
@@ -1554,6 +1586,34 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       name,
     });
     patchProject(id, (project) => ({ ...project, name: cleaned }));
+  },
+
+  renameProjectFolder: async (id, leaf) => {
+    const before = get().projects.find((project) => project.id === id);
+    if (!before) return;
+    const wasOpen = before.status !== "inactive";
+    const wasCurrent = get().activeId === id;
+    // Open shells and agents hold the old path and would write back into a
+    // folder that no longer exists, so the folder only moves while closed.
+    if (wasOpen) {
+      await get().deactivateProject(id);
+      if (get().projects.find((project) => project.id === id)?.status !== "inactive") {
+        throw new Error(
+          translate(useI18nStore.getState().lang, "pill.folderRenameStillOpen"),
+        );
+      }
+    }
+    try {
+      // The backend re-points `directory`/`local_file` and the saved layout, so
+      // the reopen below restores the tabs under the new folder.
+      const updated = await invoke<ProjectEntry>("rename_project_dir", { projectId: id, leaf });
+      patchProject(id, (project) => ({ ...project, ...updated }));
+    } finally {
+      if (wasOpen) {
+        await get().activateProject(id);
+        if (wasCurrent) await get().setActive(id);
+      }
+    }
   },
 
   moveRemoteMirror: async (id, name, parentDir) => {
@@ -1632,6 +1692,11 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       agentFence,
     });
     patchProject(id, (project) => ({ ...project, agent_fence: saved ?? undefined }));
+  },
+
+  setProjectScheduleMcp: async (id, level) => {
+    await invoke("set_project_schedule_mcp", { projectId: id, level });
+    patchProject(id, (project) => ({ ...project, schedule_mcp: level }));
   },
 
   setProjectAutoConnect: async (id, enabled) => {
@@ -1746,7 +1811,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     // mirror it into local state. For a work-remote project `publishFrom`
     // chooses the side — the local mirror by default, because the provider
     // login is this machine's. Returns the CLI's stdout (repo URL).
-    const output = await invoke<string>("publish_project", {
+    const output = await invokeTrusted<string>("publish_project", {
       projectId: id,
       provider,
       visibility,
@@ -1803,7 +1868,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     // holds it) and re-publishes to the new provider, writing the new git_type +
     // git_provider. Returns the create CLI stdout (new repo URL); mirror the new
     // provider/type into state.
-    const output = await invoke<string>("switch_project_provider", {
+    const output = await invokeTrusted<string>("switch_project_provider", {
       projectId: id,
       provider,
       visibility,

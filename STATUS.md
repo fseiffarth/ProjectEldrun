@@ -1,113 +1,128 @@
-# ProjectEldrun - Status
+# ProjectEldrun — Status
 
-This file is the short current-state snapshot. It should not contain generated
-time logs or long-form design notes; those belong in Eldrun runtime state and
-`DOCUMENTATION.md`.
-
-Last reviewed: 2026-08-31
+Current implementation snapshot, reviewed **2026-09-15** against **v0.1.68**
+(`c5c0e2d`). Product overview: [README.md](README.md). Remaining direction:
+[ROADMAP.md](ROADMAP.md). Item-level implementation and verification tracking:
+[TODO.md](TODO.md) and [`todo/`](todo/).
 
 ## Current State
 
-- Version: `0.1.58` (Tauri 2 + React + TypeScript). Python/GTK4 code dropped.
-- Primary target: Linux desktop (X11 and KDE Wayland). Windows ships as an
-  alpha (CI-verified only); macOS has core parity but cannot be built on Linux.
-  As of 2026-09-03 every Linux feature has a Windows and macOS arm where the
-  OS allows one (see the README platform table); the remaining refusals
-  (Windows agent fence, tmux persistence, ControlMaster counters) are reported
-  in the UI. None of the new arms has run on real Windows/macOS hardware.
-- All 10 migration phases from TauriRust.md are complete and merged.
-- **Landed since this file was last accurate (v0.1.0 → v0.1.45):** mount-free
-  remote/SSH projects with git lockstep + multi-host workers, per-project Docker
-  session containers, embedded IMAP/SMTP mail with a sealed local store and an
-  OpenPGP track, calendar + CalDAV accounts and a Trello-style to-do board, the
-  native "Deck" presenter, a broad viewer set (table/notebook/diff/search,
-  mermaid+katex, sqlite, media, html/svg, image annotation, xlsx), popout
-  subwindows, the Agent Skills library, HPC/SLURM support, and full 5-language
-  i18n (5571 keys).
-- **Landed since (v0.1.45 → v0.1.58):** the Eldrun Mobile companion PWA
-  (`mobile-web/`) reaching agent tabs through a loopback sidecar, VM projects as
-  a third trust tier, the default-on bubblewrap fence for local agents
-  (`services::agent_fence`), boxes with N:M membership, the keyboard-steering
-  mode + shortcut sheet, the Theme Customizer with saved presets, the header
-  status cluster, the `ELDRUN_HOME` dev sandbox launcher, and the agent warm-up
-  cron.
-- **Verification status is the important caveat:** most of the above is
-  code-complete but has never been run in a live Eldrun. See `TODO.md`'s status
-  legend — Done ≠ Tested — and the `UntestedTag` pills in the UI.
-- App shell: root terminal, project terminals, agent tabs (Claude/Codex/Gemini/
-  Vibe/Shell), bottom project switcher, right file tree, global app toolbar,
-  hover-revealed panels, time tracking, and optional workspace management.
-- Local Ollama support: installed models appear as Local Agent tab choices,
-  local tabs run through Vibe with isolated per-model `VIBE_HOME` configs, and
-  the Settings Ollama panel can list, install/update, unload, and delete models.
-- Hover-revealed UI: the two side panels (global app bar, right file panel)
-  appear on pointer hover and auto-close when the pointer leaves; the project
-  switcher lives in the top header bar.
-- Project pill hover shows path, status, and today's active time.
-- Session state (tab layout, `open_apps`) is persisted per project id OUTSIDE
-  the project tree, in `<state_dir>/sessions/<id>/terminals.json`; the in-project
-  copy is legacy/export-only and `open_apps` is never adopted from it.
-  `project.json` keeps project identity, remote specs, and runtime settings.
-- External window tracking replaces X11 embedding; file opens use `xdg-open`.
-- X11 two-desktop parking model and KDE Wayland per-project virtual desktop
-  model are both implemented. KDE 5 and KDE 6 are supported.
-- Downloads symlink (`~/eldrun/downloads`) and Firefox/Chromium preference
-  editing are implemented.
-- `F11` toggles fullscreen; `Super` toggles all panels.
-- Crash logging to `~/.local/share/eldrun/crash.log`.
-- Packaging: Debian `.deb` and AppImage targets.
-- Current documentation pass updated `README.md`, `DOCUMENTATION.md`, and this
-  status snapshot for the Ollama model-management and local-agent changes.
+- **Desktop workspace:** Tauri 2 + React 18 + TypeScript. The Python/GTK migration
+  is complete. Projects and non-exclusive project boxes own terminal layouts,
+  files, apps, time tracking, and best-effort desktop context. The header scope
+  picker includes projects, boxes, Root, and Trash; the movable side panel has
+  Files, Git, Apps, and Agents views.
+- **Agents:** 27 built-in CLI entries, including Muse Code, plus custom commands
+  and local Ollama-backed tabs. Claude/Codex preserve per-tab conversations;
+  several other CLIs, including Gemini and Vibe, restore through continue-latest
+  arguments. Claude/Codex hooks report turn activity, with output heuristics as
+  the fallback. Permission modes belong to the agent CLI; the Eldrun Plan/Auto
+  toggle has been removed.
+- **Prompt workflows:** a per-scope chart tab combines a zoomable timeline,
+  Markdown drafts, a free-position draft board, tags, filters, multi-selection,
+  prompt/model history, scheduled delivery, and related/after links. After-links
+  wait for completion plus five idle minutes. One-time, daily, and weekday
+  schedules run while desktop Eldrun is open, with a one-hour catch-up window.
+  The chart permits one independent schedule rule per tab; chains add follow-ups.
+- **Remote and runtime support:** mount-free SSH/SFTP projects, Git lockstep for
+  tracked commits, opt-in byte-sync for other files, multi-host workers, tmux
+  sessions, system/GPU monitoring, OpenVPN, and HPC/SLURM tools. Local projects
+  can use Docker session containers or QEMU VMs. The local-agent fence uses
+  bubblewrap on Linux and Seatbelt on macOS; Windows reports no agent fence.
+- **Eldrun Mobile:** opt-in PWA and loopback sidecar over a private Tailscale
+  tailnet. Agent/session lists, touch terminal, chat-style Focus, model selection,
+  schedules, tab closing, project boxes, to-do/Alerts actions, gated mail writes,
+  and the file outbox are implemented. Focus reads stored Claude/Codex prompts
+  and answers when available, falling back to the terminal. `eldrun-send`
+  supports local/container file transfers up to 24 MiB. Mobile project access
+  excludes remote, VM, and ordinary container projects; Trash is the exception.
+- **Workspace apps and viewers:** embedded mail, calendar/CalDAV, to-do board,
+  reader browser with opt-in separate live-page windows, print manager, Claude
+  Skills library, daily recap, and Deck presenter. Native viewers cover
+  text/code, Markdown, YAML/JSON, BibTeX,
+  LaTeX/PDF, images/annotation, tables/spreadsheets, notebooks, diffs, SQLite,
+  HTML/SVG, ODT, and media. Recent additions include mail PDF previews,
+  dictionary spell check, TeX/Beamer editor improvements, and print previews
+  with copies and job-queue tracking. CalDAV push is opt-in with conflict review;
+  mail and CalDAV accounts can require a VPN. CSV/TSV cells and rows are editable
+  with text-preserving saves; spreadsheet workbooks remain read-only.
+- **Interface:** five languages with English fallback, Theme Customizer and
+  presets, keyboard steering, shortcut help, Fast mode, Energy Saver, and
+  Advanced options in Settings. Hidden viewers suspend background work and
+  hidden terminals buffer output. `F11` toggles fullscreen; `F9` toggles panels;
+  bare `Super` also works where the desktop does not reserve it.
 
-## Completed Migration Phases
+## Platforms and Packaging
 
-- **Phase 1**: Rust schema harness (serde models + 15 round-trip tests, backup-before-write)
-- **Phase 2**: Tauri v2 shell + React/TS frontend (4 themes, layout, settings/projects IPC)
-- **Phase 3**: xterm.js + portable-pty terminal MVP (batched output, crash-loop guard)
-- **Phase 4**: Project CRUD, scaffold writer, validated file tree, MIME detection
-- **Phase 5**: TabBar with Claude/Codex/Gemini/Shell tabs, tab layout persistence
-- **Phase 6**: External window tracking; `open_file` via xdg-open
-- **Phase 7**: X11 EWMH two-desktop backend + KDE Wayland per-project desktop + null backend
-- **Phase 8**: Downloads symlink + browser pref editing, F11/Super shortcuts, crash logging, packaging
-- **Phase 9**: Full UI overhaul — hover panels, project management dialogs (`tauri-plugin-dialog`)
-- **Phase 10**: Python GTK app dropped; time-today popup on project pill hover
+| Platform | Implemented support | Verification limits |
+| --- | --- | --- |
+| Linux X11 | EWMH window parking; reference desktop platform | Individual newer features still need live QA. |
+| KDE Wayland | KWin scripting, KDE 5/6 per-project desktops | Live-session QA and tracked-window fallback checks remain. |
+| Other Wayland | Terminal/file workspace with null window backend | No compositor-specific workspace switching or sticky windows. |
+| Windows | Win32 window parking, native app/file integration, Docker Desktop, QEMU/WHPX, Mobile Run-key host | CI builds/tests; real-hardware QA pending. No agent fence, local tmux persistence, or ControlMaster link counters. |
+| macOS | App-level window parking, LaunchServices, Keychain, Seatbelt fence, Docker Desktop, QEMU/HVF, Mobile launchd host | CI builds/tests; real-hardware QA pending. Parking is per application, not per window. |
 
-## Quality Snapshot
+CI builds Linux AppImage/`.deb`, Windows NSIS `.exe`, and unsigned universal
+Intel/Apple Silicon macOS `.dmg` packages. Tags publish the platforms whose
+package jobs succeed. `main` is the stable branch; ongoing work lands on
+`develop` and reaches `main` by PR.
 
-- Frontend tests: `npm test` — 3534 tests across 303 files, all passing.
-- Tauri/Rust tests: `cargo test` in `src-tauri/` (schema round-trip tests plus
-  service-level regression tests).
-- Frontend build: `npm run build` (TypeScript + Vite; must be clean). It is the
-  ONLY gate that type-checks — `npm test` and ESLint do not — and it builds the
-  `mobile-web/` bundle too, so a type error there fails it.
-- Lint: `npm run lint` and `cargo clippy … -D warnings`, both at zero and both
-  CI gates. Local clippy ≠ CI clippy (CI uses today's stable).
-- Privacy: `scripts/privacy-check.sh` must pass before every push (git hook +
-  a CI job); this repo is public.
-- All of the above run in CI on Linux, Windows, and macOS.
-- Runtime validation needs a human-run Eldrun session. Agents must not launch a
-  second Eldrun instance for verification.
+`npm run tauri:dev` hot-reloads the frontend but disables Rust watching. Backend
+changes and embedded PWA changes require a deliberate rebuild/relaunch to reach
+the window. `npm run backend:stale` reports those seams. On Linux,
+`npm run package:dev` freezes the working tree; the enabled post-commit hook
+queues a coalesced background freeze of the commit. Failed passes are recorded,
+newly queued commits still get a pass, and the launcher reports a stale snapshot.
+Neither a build nor a commit restarts a running window.
 
-## Known Rough Edges
+## Persistence and Restore
 
-- KDE Wayland workspace management is implemented but needs live-session QA.
-- KDE 5 Wayland: `XMLHttpRequest file://` in KWin scripting may be sandboxed;
-  window enumeration falls back to tracked-only mode if the file write fails.
-- Tab layout is persisted but PTYs do not survive app restarts; terminals
-  respawn their child processes on next activation. Shell and files tabs restore;
-  Claude/Codex agent tabs with a `sessionId` resume through the session hooks,
-  while Gemini/Vibe restore is more limited. Long-running work on a remote host
-  survives via tmux sessions instead.
-- Ollama pulls/updates depend on network access to the Ollama registry and can
-  take minutes for large models.
-- Starting the system Ollama service depends on local user permissions; Eldrun
-  falls back to a user `ollama serve` process when needed.
-- Open-app restore is best-effort relaunch; the geometry of *externally launched
-  app* windows is not restored. Eldrun's own main window does reopen on the
-  monitor, at the position/size, and in the maximized state it was last closed in.
-- Download routing browser preference edits assume the browser is not running.
+- Session layouts and open-app records live outside project trees at
+  `<state_dir>/sessions/<scope-id>/terminals.json`, including box scopes.
+  Project-local session files are legacy/export-only; adoption requires an
+  explicit request and never imports their open-app commands.
+- `project.json` keeps identity, remote/runtime configuration, and viewer
+  preferences. Global state normally lives in `~/.local/share/eldrun/`.
+  Prompt drafts/history/links use `agent_prompts.json`; per-tab schedules and
+  delivery receipts use `agent_tasks.json` with bindings in the tab layout.
+- Shell, file, and supported resumable agent tabs restore. Ordinary PTYs do not
+  survive app exit; tmux-backed sessions can reattach. Closing a project leaves
+  remote tmux work running. Detached windows re-dock on restart; closing a
+  detached window closes its tabs.
+- Download source folders are browsed in the file panel. Screenshots and saved
+  mail attachments use ignored Eldrun-prefixed folders. Eldrun does not edit
+  another browser's preferences or redirect its download directory.
 
-## Time Log
+## Quality and Verification
 
-Tracked in Eldrun runtime state (`~/.local/share/eldrun/time_log.json`), not here —
-see this file's header. The previous truncated raw table was removed 2026-07-28.
+The configured gates are:
+
+- `npm run build` — TypeScript checks plus both desktop and Mobile bundles.
+- `npm test` and `cargo test --manifest-path src-tauri/Cargo.toml` — frontend and
+  backend suites. CI runs builds and both suites on Linux, Windows, and macOS.
+- `npm run lint` and
+  `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings`
+  — the Linux CI lint job. CI uses stable Rust; an older local clippy can miss
+  newer lints. `cargo fmt` is not an enforced gate.
+- `scripts/privacy-check.sh` — pre-push and CI privacy scan; all package jobs
+  depend on it.
+
+This documentation review inspected source, history, and CI configuration; it
+is not a fresh application build/test result or a live run. Historical test
+counts have been removed because they do not establish the current verdict.
+Agents must never launch Eldrun or stop the user's instance for verification.
+
+**Implemented, automated, and live-tested are separate states.** Mail and
+selected calendar, to-do, Mobile, import, file-tree, and monitor controls have
+recorded live use; this does not close every manual check in those subsystems.
+Remaining high-value acceptance work includes:
+
+- Real Windows/macOS hardware and KDE Wayland workspace behavior.
+- CalDAV against a real server, mail crypto, and Mobile security/reconnect cases.
+- Deck presentation on a second display, VM boot/lifecycle, and real HPC/SLURM.
+- Prompt-chart drag/link/schedule flows, completion gating, and multi-tab resume.
+
+`UntestedTag` stays on individual features until the user confirms them.
+Continue-latest agent restores can mix up tabs sharing a directory; external-app
+relaunch and geometry restore remain best-effort. Further detail belongs in the
+matching [TODO group](TODO.md), not generated runtime logs in this file.

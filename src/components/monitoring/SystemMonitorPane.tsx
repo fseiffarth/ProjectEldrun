@@ -20,16 +20,17 @@ import {
   isCarefulHost,
   setCarefulPatch,
   targetOfSpec,
-} from "../../lib/carefulHost";
-import { isHpcHost } from "../../lib/hpcHost";
-import { hpcGuardRefusal } from "../../lib/hpcGuard";
-import { useGlobalMachinesStore } from "../../stores/globalMachines";
-import { sameTarget } from "../../lib/machineSync";
+} from "../../lib/remote/carefulHost";
+import { isHpcHost } from "../../lib/remote/hpc/hpcHost";
+import { hpcGuardRefusal } from "../../lib/remote/hpc/hpcGuard";
+import { useGlobalMachinesStore } from "../../stores/remote/globalMachines";
+import { sameTarget } from "../../lib/remote/machineSync";
 import { ConnLamp } from "../common/ConnLamp";
 import { UntestedTag } from "../common/UntestedTag";
-import { hostsForProject } from "../../lib/remoteHosts";
-import { PRIMARY_HOST, sshOf, useRemoteStatusStore } from "../../stores/remoteStatus";
+import { hostsForProject } from "../../lib/remote/remoteHosts";
+import { PRIMARY_HOST, sshOf, useRemoteStatusStore } from "../../stores/remote/remoteStatus";
 import { useT, type TranslationKey } from "../../lib/i18n";
+import { FeatherIcon, MicroscopeIcon } from "../common/icons/Icon";
 
 // ── Backend snapshot shape (mirrors sysstat::SystemSnapshot, snake_case) ──────
 
@@ -113,7 +114,7 @@ interface Props {
   projectId: string | null;
   visible: boolean;
   /** When set, the pane skips the project/host machinery entirely and samples
-   *  this ad-hoc global machine (`stores/globalMachines.ts` — no project, no
+   *  this ad-hoc global machine (`stores/remote/globalMachines.ts` — no project, no
    *  pooled ControlMaster) via `global_machine_monitor_snapshot`, opened by
    *  `GlobalMachineMonitorDialog` from the header's Machines menu in place of
    *  its old small inline usage bars. Always treated as a remote source (no
@@ -537,7 +538,7 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
   //
   // `status`, deliberately, and never `reachable`: the first means "a session this
   // app opened", the second only "a probe once got an answer"
-  // (`stores/globalMachines`). Sampling is a session's worth of work, so it is the
+  // (`stores/remote/globalMachines`). Sampling is a session's worth of work, so it is the
   // first that licenses it. The machine is matched by SSH target rather than by id
   // because this pane is handed a `{user, host, port}` and nothing else.
   const machines = useGlobalMachinesStore((s) => s.machines);
@@ -559,12 +560,12 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
   // The SSH target of whatever this pane is pointed at — a global machine, the
   // project's primary, or a worker. That target (not the host id) is what the
   // careful flag is keyed by, so one physical login node reads the same here, in
-  // the Machines menu and in the remote hub (`lib/carefulHost.ts`).
+  // the Machines menu and in the remote hub (`lib/remote/carefulHost.ts`).
   const carefulTarget = globalMachine ? targetOfSpec(globalMachine) : (selectedHost?.target ?? null);
   // The mode asked for: careful for every remote machine until the user says
   // this one is theirs. A local sample is never careful — Eldrun is not a guest
   // on the machine it runs on.
-  // The HPC tag (`lib/hpcHost.ts`) outranks that answer in one direction: a
+  // The HPC tag (`lib/remote/hpc/hpcHost.ts`) outranks that answer in one direction: a
   // machine the user called a cluster login node is read lightly even if its
   // careful answer says "this one is mine". The two say different things — how
   // much may Eldrun look at, and is this a shared cluster — and there is no
@@ -851,7 +852,7 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
                   })}
                 >
                   <span className="sysmon-mode-icon" aria-hidden="true">
-                    🪶
+                    <FeatherIcon />
                   </span>
                   <span className="sysmon-mode-txt">{t("sysmon.light")}</span>
                 </button>
@@ -883,7 +884,7 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
                   }
                 >
                   <span className="sysmon-mode-icon" aria-hidden="true">
-                    🔬
+                    <MicroscopeIcon />
                   </span>
                   <span className="sysmon-mode-txt">{t("sysmon.detailed")}</span>
                 </button>
@@ -1101,7 +1102,7 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
                 >
                   <span className="sysmon-proc-caret">{sessionsOpen ? "▾" : "▸"}</span>
                   <span className="sysmon-group-title">{t("usage.loggedIn")}</span>
-                  <UntestedTag />
+                  <UntestedTag id="systemMonitorPane.1" />
                 </button>
                 <span className="sysmon-count">
                   {t(
@@ -1171,7 +1172,7 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
                 >
                   <span className="sysmon-proc-caret">{usersOpen ? "▾" : "▸"}</span>
                   <span className="sysmon-group-title">{t("sysmon.byUser")}</span>
-                  <UntestedTag />
+                  <UntestedTag id="systemMonitorPane.2" />
                 </button>
                 <span className="sysmon-count">
                   {t(userRows.length === 1 ? "sysmon.userCountOne" : "sysmon.userCountMany", {

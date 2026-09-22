@@ -11,8 +11,8 @@ import {
   desktopCursor,
   type PhysPoint,
   type WindowFrame,
-} from "../../lib/coords";
-import { bindDragRelease, dragPlatform, PLATFORM } from "../../lib/dragPlatform";
+} from "../../lib/window/coords";
+import { bindDragRelease, dragPlatform, PLATFORM } from "../../lib/window/dragPlatform";
 import {
   DETACHED_DRAG_END,
   DETACHED_DRAG_MOVE,
@@ -30,7 +30,7 @@ import {
   type PaneRect,
   type TitlebarPress,
 } from "../../stores/detached";
-import { clearStrayFullscreen, windowFillsScreen } from "../../lib/strayFullscreen";
+import { clearStrayFullscreen, windowFillsScreen } from "../../lib/window/strayFullscreen";
 import { FileDropContext, type FileDropController } from "../files/fileDropContext";
 import { fileDropPayloads } from "../tabs/commitFileDrop";
 import { TabPane } from "../tabs/TabPane";
@@ -41,23 +41,29 @@ import {
 } from "../files/SubwindowFilesSidebar";
 import { useWindowFocused } from "../../hooks/useWindowFocused";
 import { TabHoverCard } from "../tabs/TabHoverCard";
-import { useFastMode } from "../../lib/fastMode";
+import { useFastMode } from "../../lib/agents/fastMode";
 import { WindowControls } from "../header/WindowControls";
 import { DragGhost, SplitPreviewOverlay } from "./CenterPanel";
-import { TRASH_PROJECT_ID } from "../../lib/trashProject";
+import { TRASH_PROJECT_ID } from "../../lib/projects/trashProject";
 import { TabDropPlaceholder } from "../tabs/TabDropPlaceholder";
 import { NewTabMenu } from "../tabs/NewTabMenu";
 import { CustomAgentDialog } from "../tabs/CustomAgentDialog";
+import { TabColorPicker } from "../tabs/TabColorPicker";
+import { tabColorCss, type TabColor } from "../../lib/theme/tabColors";
 import { pickEdge } from "../tabs/dragGeometry";
 import {
   chordMatches,
   resolveChord,
   type ShortcutAction,
   type ShortcutMap,
-} from "../../lib/shortcuts";
-import { isEditableTarget } from "../../hooks/useKeyboard";
-import { useDragStore } from "../../stores/drag";
-import { useTabLandStore } from "../../stores/tabLand";
+} from "../../lib/shortcuts/shortcuts";
+import {
+  editorMayTakeChord,
+  isEditableTarget,
+  isMacCommandChord,
+} from "../../hooks/useKeyboard";
+import { useDragStore } from "../../stores/drag/drag";
+import { useTabLandStore } from "../../stores/drag/tabLand";
 import { useSettingsStore } from "../../stores/settings";
 import {
   DEFAULT_MIN_SUBWINDOW_PX,
@@ -72,23 +78,24 @@ import {
   type TabEntry,
   type TabLocation,
 } from "../../stores/tabs";
-import { useActivityStore } from "../../stores/activity";
+import { busyStateClass, useActivityStore } from "../../stores/activity";
 import type { DetachedRemoteInfo } from "../../stores/detached";
 import {
   TabSourceBadge,
+  TabStatusMark,
   TabTexLinkBadge,
   TabLocalityBadge,
   LocalityMenu,
   tabLocation,
   type LocalityMenuState,
 } from "../tabs/TabLocalityBadges";
-import { texPdfPartner } from "../../lib/texPdfLink";
+import { texPdfPartner } from "../../lib/viewers/tex/texPdfLink";
 import { useT } from "../../lib/i18n";
 import { StarIcon } from "./StarIcon";
 import { AgentScheduleDialog } from "../agents/AgentScheduleDialog";
-import { scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agentSchedules";
+import { scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agents/agentSchedules";
 import { UntestedTag } from "../common/UntestedTag";
-import { nextScheduleOccurrence } from "../../lib/agentSchedule";
+import { nextScheduleOccurrence } from "../../lib/agents/agentSchedule";
 
 /** Pixel coordinates of a group body, relative to the detached center panel. */
 interface Rect {
@@ -276,6 +283,10 @@ interface Props {
   /** Rename a tab (right-click on the strip) — the `rename` edit, which existed
    *  from the start with nothing emitting it (#239). */
   onRename?: (key: string, label: string) => void;
+  /** Paint a tab with a palette colour, or clear it (#264) — the `setColor`
+   *  edit. Streamed like the rename above rather than applied here: the colour
+   *  lives on the tab payload the MAIN window owns and persists. */
+  onSetColor?: (key: string, color: TabColor | undefined) => void;
   /** Split `key` into a new pane at `edge` of `targetGroupId`, inside the popout
    *  (a tab dragged onto a group BODY's edge). */
   onSplit: (key: string, targetGroupId: string, edge: DropEdge) => void;
@@ -320,6 +331,7 @@ export function DetachedCenterPanel({
   onSetLocation,
   onReorder,
   onRename,
+  onSetColor,
   onSplit,
   onResize,
   onMove,
@@ -332,6 +344,29 @@ export function DetachedCenterPanel({
   const [agentDialogOpen, setAgentDialogOpen] = useState(false);
   const [scheduleDialogKey, setScheduleDialogKey] = useState<string | null>(null);
   const [tabMenu, setTabMenu] = useState<{ key: string; x: number; y: number } | null>(null);
+  const tabMenuRef = useRef<HTMLDivElement>(null);
+  // Dismiss this strip's tab context menu on an outside click or Escape, the way
+  // the main window's `TabBar` does. It used to close only when one of its rows
+  // fired, which was survivable while every row was a one-shot action; the
+  // colour picker (#264) deliberately stays open after a pick, so a menu opened
+  // and left alone needs a way out that is not "pick something".
+  useEffect(() => {
+    if (!tabMenu) return;
+    const onDown = (event: MouseEvent) => {
+      if (tabMenuRef.current?.contains(event.target as Node)) return;
+      setTabMenu(null);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setTabMenu(null);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [tabMenu]);
+
   const schedulesByTarget = useAgentSchedulesStore((state) => state.byTarget);
   // Tab hover card anchor (the hovered tab's bottom-centre), mirroring the main
   // window's TabBar — the popout has its own tab strip, so it renders its own.
@@ -430,6 +465,7 @@ export function DetachedCenterPanel({
   // Per-tab lamps (#234), mirrored from the main window's classifier — the same
   // two maps `TabBar` reads, keyed by the composed PTY id.
   const busyByTab = useActivityStore((s) => s.busyByTab);
+  const busyKindByTab = useActivityStore((s) => s.busyKindByTab);
   const attentionByTab = useActivityStore((s) => s.attentionByTab);
   const clearAttention = useActivityStore((s) => s.clearAttention);
 
@@ -486,12 +522,15 @@ export function DetachedCenterPanel({
       }
       // Never steal keys from a focused text field / xterm textarea (same rule
       // the main window applies) — otherwise typing in a terminal would trip the
-      // nav chords.
-      if (isEditableTarget(e.target)) return;
-
+      // nav chords. The one exception is the macOS ⌘W family
+      // (`editorMayTakeChord`), so ⌘W closes a tab from a focused terminal here
+      // too, while ⌃W / Ctrl+W still reach it.
+      const editable = isEditableTarget(e.target);
+      if (editable && !isMacCommandChord(e)) return;
       const overrides = useSettingsStore.getState().settings
         ?.keyboard_shortcuts as ShortcutMap | undefined;
       const is = (action: ShortcutAction) =>
+        (!editable || editorMayTakeChord(action, e)) &&
         chordMatches(resolveChord(action, overrides), e);
       const {
         tree: t,
@@ -911,7 +950,7 @@ export function DetachedCenterPanel({
   };
 
   // #42: drag-to-dock. We stream the gesture's OS-LEVEL CURSOR position (PHYSICAL
-  // desktop px — the canonical cross-window space, see lib/coords) to the main
+  // desktop px — the canonical cross-window space, see lib/window/coords) to the main
   // window, which maps it into its own client space and renders the dock preview /
   // docks on release. We do NOT rely on DOM pointer events crossing into the main
   // window: on WebKitGTK (esp. Wayland) DOM pointermove/up don't cross the OS
@@ -967,7 +1006,16 @@ export function DetachedCenterPanel({
     // our client px for the local per-tab hit-test. Snapshotted up front.
     let popoutFrame: WindowFrame | null = null;
     let pollId: number | null = null;
-    let unbindRelease: (() => void) | null = null;
+    let streamStarted = false;
+    let lastClient = { x: args.clientX ?? 0, y: args.clientY ?? 0 };
+    // Local previews and drops use DOM coordinates, even if the compositor
+    // cannot expose a desktop cursor/window origin (native Wayland).
+    const onLocalMove = (ev: PointerEvent) => {
+      lastClient = { x: ev.clientX, y: ev.clientY };
+      if (tabKey == null) return;
+      useDragStore.getState().move(lastClient.x, lastClient.y);
+      resolveLocalTarget(lastClient.x, lastClient.y);
+    };
 
     // Per-tab drags show a local ghost immediately (no frame needed): clone the
     // dragged pane and seed the popout's own drag store synchronously on press.
@@ -1003,6 +1051,8 @@ export function DetachedCenterPanel({
         previewW,
         previewH,
       });
+      resolveLocalTarget(lastClient.x, lastClient.y);
+      window.addEventListener("pointermove", onLocalMove);
     }
 
     const startPoll = () => {
@@ -1087,6 +1137,7 @@ export function DetachedCenterPanel({
             grab = null;
           }
         }
+        streamStarted = true;
         void emit(DETACHED_DRAG_START, {
           scope,
           // Cross-window protocol identifies the popout RECORD, not the inner group.
@@ -1105,7 +1156,7 @@ export function DetachedCenterPanel({
       if (done) return;
       done = true;
       if (pollId != null) window.clearInterval(pollId);
-      unbindRelease?.();
+      window.removeEventListener("pointermove", onLocalMove);
       try {
         capEl?.releasePointerCapture(pointerId);
       } catch {
@@ -1130,12 +1181,23 @@ export function DetachedCenterPanel({
           )
           .catch(() => {});
       }
-      void emit(DETACHED_DRAG_END, {
+      const end = {
         cancelled,
         cursorPhysX: last.x,
         cursorPhysY: last.y,
         shift,
-      } satisfies DetachedDragEnd);
+      } satisfies DetachedDragEnd;
+      if (streamStarted) {
+        void emit(DETACHED_DRAG_END, end);
+      } else if (!cancelled && shift && tabKey != null) {
+        // Shift is an explicit new-window request, even without desktop geometry.
+        // Send the host that request only on release; never stream fake positions
+        // during a local Wayland drag. The compositor chooses the new placement.
+        void emit(DETACHED_DRAG_START, {
+          scope, groupId: popoutId, label: dragLabel, tabKey,
+          cursorPhysX: 0, cursorPhysY: 0,
+        } satisfies DetachedDragStart).then(() => emit(DETACHED_DRAG_END, end));
+      }
     };
     const release = (shift = false) => {
       // Shift ALWAYS means "pop into its own window" (unified with the main-window
@@ -1145,8 +1207,8 @@ export function DetachedCenterPanel({
       // lone-tab popout the host refuses (it's already its own window) → a clean
       // no-op, never the previous local-split + Shift-bail hang. Without Shift, a
       // release over THIS popout is still committed locally (reorder/split).
-      if (!shift && tabKey != null && sourceGroup && popoutFrame) {
-        const c = physToClient(popoutFrame, last);
+      if (!shift && tabKey != null && sourceGroup) {
+        const c = popoutFrame ? physToClient(popoutFrame, last) : lastClient;
         const handledLocally = handleLocalTabRelease(tabKey, c.x, c.y);
         finish(handledLocally, shift);
         return;
@@ -1166,13 +1228,8 @@ export function DetachedCenterPanel({
       }
       finish(false, shift);
     };
-    // bindDragRelease applies the engine-correct policy (WebKitGTK: pointercancel
-    // commits; Win/mac: pointercancel aborts) + a blur backstop. Bound synchronously
-    // so the terminal event is captured from the start of the gesture.
-    unbindRelease = bindDragRelease({
-      onCommit: (shift) => release(shift),
-      onAbort: () => finish(true),
-    });
+    // The caller binds release at pointerdown, before WebKitGTK's implicit grab.
+    return { release, abort: () => finish(true) };
   };
 
   // Grab a group's bar grip → MOVE the whole popout window natively (option B:
@@ -1262,7 +1319,7 @@ export function DetachedCenterPanel({
     // the WM in the order they were sent, and the worst case left is a stuck
     // window that takes a second press: by then the fullscreen is gone for good.
     // `windowFillsScreen()` is free and synchronous, so a normally-sized popout
-    // does not even pay the IPC (see `lib/strayFullscreen` for why the state
+    // does not even pay the IPC (see `lib/window/strayFullscreen` for why the state
     // cannot simply be read back and tested instead).
     if (windowFillsScreen()) void clearStrayFullscreen();
     void win.startDragging().catch(() => {});
@@ -1359,18 +1416,17 @@ export function DetachedCenterPanel({
   // is poll-driven inside beginDockDrag. The press's client coords seed the gesture.
   const onTabPointerDown = (e: React.PointerEvent, group: GroupNode, tab: TabEntry) => {
     if (e.button !== 0) return;
+    e.preventDefault();
     e.stopPropagation();
     onActivate(tab.key);
     const startX = e.clientX;
     const startY = e.clientY;
-    let armed = false;
+    let gesture: ReturnType<typeof beginDockDrag> | undefined;
     const onMove = (ev: PointerEvent) => {
-      if (armed) return;
+      if (gesture) return;
       if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 5) return;
-      armed = true;
       window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      beginDockDrag({
+      gesture = beginDockDrag({
         pointerId: ev.pointerId,
         clientX: ev.clientX,
         clientY: ev.clientY,
@@ -1381,12 +1437,17 @@ export function DetachedCenterPanel({
         moveWindow: false,
       });
     };
-    const onUp = () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-    };
     window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
+    bindDragRelease({
+      onCommit: (shift) => {
+        window.removeEventListener("pointermove", onMove);
+        gesture?.release(shift);
+      },
+      onAbort: () => {
+        window.removeEventListener("pointermove", onMove);
+        gesture?.abort();
+      },
+    });
   };
 
   // Render one group: its tab bar + a pane layer holding every tab (active shown).
@@ -1473,7 +1534,7 @@ export function DetachedCenterPanel({
                 : null;
             const attn = !isActive || rawAttn === "decision" ? rawAttn : null;
             const stateClass = working
-              ? " working"
+              ? busyStateClass(busyKindByTab[ptyId], tab.kind)
               : attn === "decision"
                 ? " needs-decision"
                 : attn === "done"
@@ -1483,7 +1544,14 @@ export function DetachedCenterPanel({
               <Fragment key={tab.key}>
                 {showMarkerBefore && dropPlaceholder}
                 <div
-                  className={`tab ${isActive ? "active" : ""}${stateClass}${isDragging ? " dragging" : ""}${landing ? " landing" : ""}`}
+                  className={`tab ${isActive ? "active" : ""}${stateClass}${tabColorCss(tab.color) ? " has-tab-color" : ""}${isDragging ? " dragging" : ""}${landing ? " landing" : ""}`}
+                  // A user colour (#264) fills the same `--tab-accent` slot the
+                  // main window's strip uses, so one CSS rule colours the tab
+                  // in either window. This strip sets no kind colour of its own,
+                  // so an uncoloured tab is left on the variable's fallback.
+                  style={tabColorCss(tab.color)
+                    ? ({ "--tab-accent": tabColorCss(tab.color) } as React.CSSProperties)
+                    : undefined}
                   onPointerDown={(e) => onTabPointerDown(e, group, tab)}
                   onContextMenu={(e) => {
                     e.preventDefault();
@@ -1517,6 +1585,7 @@ export function DetachedCenterPanel({
                       : undefined
                   }
                 >
+                  <TabStatusMark stateClass={stateClass} />
                   <span className="tab-label">{tab.label}</span>
                   {(tab.kind === "agent" || tab.kind === "local_agent") && tab.scheduleTargetId && (() => {
                     const enabled = (schedulesByTarget[scheduleCacheKey(scope, tab.scheduleTargetId)] ?? [])
@@ -1921,7 +1990,7 @@ export function DetachedCenterPanel({
         <CustomAgentDialog onClose={() => setAgentDialogOpen(false)} />
       )}
       {tabMenu && createPortal(
-        <div className="tab-new-menu" style={{ position: "fixed", left: tabMenu.x, top: tabMenu.y }}>
+        <div className="tab-new-menu" ref={tabMenuRef} style={{ position: "fixed", left: tabMenu.x, top: tabMenu.y }}>
           <button className="tab-new-menu-item" onClick={() => {
             const tab = byKey.get(tabMenu.key);
             setTabMenu(null);
@@ -1929,15 +1998,21 @@ export function DetachedCenterPanel({
             const next = window.prompt(t("detachedTabs.renamePrompt"), tab.label);
             if (next != null && next.trim() && next !== tab.label) onRename?.(tab.key, next.trim());
           }}>
-            <span className="tab-new-menu-dot" style={{ color: "var(--accent)" }}>✎</span>
+            <span className="tab-new-menu-dot tab-new-menu-dot--accent">✎</span>
             {t("common.rename")}
           </button>
+          {onSetColor && (
+            <TabColorPicker
+              current={byKey.get(tabMenu.key)?.color}
+              onPick={(color) => onSetColor(tabMenu.key, color)}
+            />
+          )}
           {(() => {
             const tab = byKey.get(tabMenu.key);
             return tab && (tab.kind === "agent" || tab.kind === "local_agent") ? (
               <button className="tab-new-menu-item" onClick={() => { setScheduleDialogKey(tab.key); setTabMenu(null); }}>
-                <span className="tab-new-menu-dot" style={{ color: "var(--accent)" }}>◷</span>
-                {t("agentSchedule.menu")} <UntestedTag />
+                <span className="tab-new-menu-dot tab-new-menu-dot--accent">◷</span>
+                {t("agentSchedule.menu")} <UntestedTag id="agentSchedule.menu" />
               </button>
             ) : null;
           })()}

@@ -100,6 +100,11 @@
   --status-working: var(--success);
   --status-decision: var(--warning);
   --status-done: var(--success);
+  /* A SHELL tab producing output is working too, but it is not an agent: no
+     turn, no decision, nothing to hand back. Its own hue so a busy build and a
+     busy agent part at a glance; same dotted stroke, since it is still the
+     "not finished yet" state. */
+  --status-shell-working: var(--info);
   /* Header logo: pure black on light themes, pure white on dark. Defaulted on
      :root so the plain `dark` theme inherits #fff without redeclaring it. */
   --logo-color: #fff;
@@ -664,10 +669,12 @@
   --z-modal-elevated: 110;
   --z-menu-catcher: 999;
   --z-menu: 1000;
-  /* The custom scrollbar layer (lib/customScrollbar): above menus and dialogs,
+  /* The custom scrollbar layer (lib/theme/customScrollbar): above menus and dialogs,
      whose own scrolling lists need their thumbs, but below the project/tab
      hover cards (9999) and tooltips — a bar is chrome of the panel under a
-     popup and must not paint through it. */
+     popup and must not paint through it. A menu covering only part of a
+     panel's gutter (a header dropdown) is handled by the module itself: it
+     hit-tests along the gutter and clips the thumb to what is uncovered. */
   --z-scrollbar: 9990;
   --z-tooltip: 10000;
   /* Width of the closed side panel's edge rail — the vertical Files/Git/Apps/

@@ -50,23 +50,28 @@ export const AGENT_ITEMS: StaticMenuItem[] = [
   { label: "Google Antigravity", cmd: "agy", kind: "agent" },
   { label: "Google Gemini", cmd: "gemini", kind: "agent", sessionIdArgs: (id) => ["--session-id", id] },
   { label: "Mistral",  cmd: "vibe",         kind: "agent" },
-  { label: "Kiro",     cmd: "kiro",         kind: "agent" },
+  // Kiro installs as `kiro-cli` — it is the renamed Amazon Q Developer CLI
+  // and kept that executable name.
+  { label: "Kiro",     cmd: "kiro-cli",     kind: "agent" },
   { label: "Cline",    cmd: "cline",        kind: "agent" },
   { label: "Aider",    cmd: "aider",        kind: "agent" },
   { label: "OpenCode", cmd: "opencode",     kind: "agent" },
   { label: "Cursor",   cmd: "cursor-agent", kind: "agent" },
   { label: "Copilot",  cmd: "copilot",      kind: "agent" },
+  { label: "Droid",    cmd: "droid",        kind: "agent" },
   { label: "Grok",     cmd: "grok",         kind: "agent" },
   { label: "Qwen",     cmd: "qwen",         kind: "agent" },
   { label: "OpenClaw", cmd: "openclaw",     kind: "agent" },
+  { label: "Auggie",   cmd: "auggie",       kind: "agent" },
+  { label: "Kilo Code", cmd: "kilo",        kind: "agent" },
+  { label: "Continue.dev", cmd: "cn",       kind: "agent" },
+  { label: "JetBrains Junie", cmd: "junie", kind: "agent" },
+  { label: "CodeBuddy", cmd: "codebuddy",   kind: "agent" },
   { label: "Goose",    cmd: "goose",        kind: "agent" },
-  { label: "OpenHands", cmd: "openhands",   kind: "agent" },
   { label: "Pi",       cmd: "pi",           kind: "agent" },
   { label: "Plandex",  cmd: "plandex",      kind: "agent" },
   { label: "SWE-agent", cmd: "sweagent",    kind: "agent" },
   { label: "mini-SWE-agent", cmd: "mini",   kind: "agent" },
-  { label: "Mentat",   cmd: "mentat",       kind: "agent" },
-  { label: "GPT Engineer", cmd: "gpte",     kind: "agent" },
   { label: "Crush",    cmd: "crush",        kind: "agent" },
   { label: "Amp",      cmd: "amp",          kind: "agent" },
   { label: "Kimi Code", cmd: "kimi",        kind: "agent" },
@@ -104,9 +109,9 @@ export const TAB_ACCENT: Record<TabKind, string> = {
   shell: "var(--success)",
   files: "var(--text-muted)",
   projectfiles: "var(--text-muted)",
-  embed: "var(--info, #4aa3df)",
+  embed: "var(--info)",
   projects3d: "var(--accent-secondary)",
-  network: "var(--info, #4aa3df)",
+  network: "var(--info)",
   monitor: "var(--success)",
   diskusage: "var(--warning)",
   calendar: "var(--accent)",
@@ -204,6 +209,22 @@ export function enabledInstalledAgentBins(
     if (disabled.has(agent.id)) disabled.add(agent.bin);
   }
   return new Set([...installedAgentBins(agents)].filter((bin) => !disabled.has(bin)));
+}
+
+/** The root console's agents are opt-in: a root agent gets the root MCP tools
+ * (calendar, board, project list) no project agent has, so only the built-ins
+ * the user switched on with the 🧠 menu's "Root" chip are offered there. Unset
+ * means none. Ids and executable names both match, as for the compact list. */
+export function rootAllowedAgentBins(
+  enabled: ReadonlySet<string>,
+  agents: readonly (BuiltInAgentStatus & { id: string })[],
+  rootIds: readonly string[] | undefined,
+): Set<string> {
+  const allowed = new Set(rootIds ?? []);
+  for (const agent of agents) {
+    if (allowed.has(agent.id)) allowed.add(agent.bin);
+  }
+  return new Set([...enabled].filter((bin) => allowed.has(bin)));
 }
 
 /** Adapt a persisted {@link CustomAgent} into a menu item so it launches through

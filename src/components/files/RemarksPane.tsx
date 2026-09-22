@@ -2,9 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { fileMtime } from "../embed/fileAccess";
 import { jumpToSource } from "../embed/FileViewerPane";
 import { resolvePath } from "../../lib/paths";
-import { REMARKS_FILE, resolveRemarkAbsPath, type ProjectRemark } from "../../lib/projectRemarks";
+import { REMARKS_FILE, resolveRemarkAbsPath, type ProjectRemark } from "../../lib/projects/projectRemarks";
 import { useProjectRemarksStore } from "../../stores/projectRemarks";
-import { useCalendarStore } from "../../stores/calendar";
+import { useCalendarStore } from "../../stores/calendar/calendar";
 import { boardColumns, fallbackColumnId, taskFromRemark } from "../../lib/todoBoard";
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
@@ -66,7 +66,7 @@ export function RemarksPane({ projectId, projectDir, visible }: {
       <button title={t("projectRemarks.previous")} onClick={() => walk(-1)}>‹</button>
       <span>{remarks.length ? `${cursor + 1}/${remarks.length}` : "0/0"}</span>
       <button title={t("projectRemarks.next")} onClick={() => walk(1)}>›</button>
-      <UntestedTag />
+      <UntestedTag id="remarksPane.1" />
     </div>
     {entry?.loading ? <p>{t("common.loading")}</p> : entry?.error ? <p className="error-text">{entry.error}</p> : remarks.length === 0 ? (
       <div className="empty-state"><p>{t("projectRemarks.empty")}</p><button onClick={() => jumpToSource(resolvePath(projectDir, REMARKS_FILE), 1)}>{t("projectRemarks.openFile")}</button></div>

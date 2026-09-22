@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { useCalendarStore, visibleCalendarIds } from "../../stores/calendar";
+import {
+  useCalendarStore,
+  visibleCalendarIds,
+  type DeletedCalendar,
+} from "../../stores/calendar/calendar";
+import { useDialogs } from "../common/PromptDialogs";
+import { UntestedTag } from "../common/UntestedTag";
 import { useSettingsStore } from "../../stores/settings";
 import type {
   CalendarEvent,
@@ -20,11 +26,12 @@ import {
   startOfWeek,
   todayStr,
   weekDates,
-} from "../../lib/calendarTime";
-import { expandEvents } from "../../lib/recurrence";
-import { parseIcs, serializeIcs } from "../../lib/ics";
-import { inspectIcs, type IcsReport } from "../../lib/icsSafety";
+} from "../../lib/calendar/calendarTime";
+import { expandEvents } from "../../lib/calendar/recurrence";
+import { serializeIcs } from "../../lib/calendar/ics";
+import { inspectIcs, type IcsReport } from "../../lib/calendar/icsSafety";
 import { IcsImportReviewDialog } from "./IcsImportReviewDialog";
+import { importIcsText } from "../../stores/calendar/importIcs";
 import { MonthView } from "./MonthView";
 import { TimeGrid } from "./TimeGrid";
 import { AgendaView } from "./AgendaView";
@@ -32,7 +39,10 @@ import { TasksView } from "./TasksView";
 import { CalendarSidebar } from "./CalendarSidebar";
 import { CalDavAccountDialog } from "./CalDavAccountDialog";
 import { EventDialog, type EditScope, type EventDialogTarget } from "./EventDialog";
-import { isCalDavConflict, useCalDavStore } from "../../stores/caldav";
+import { CalendarContextMenu, type CalendarMenuTarget } from "./CalendarContextMenu";
+import { useCalendarClipboardStore } from "../../stores/calendar/clipboard";
+import { copyOfOccurrence, pastedAt, type PasteTarget } from "../../lib/calendar/calendarClipboard";
+import { isCalDavConflict, useCalDavStore } from "../../stores/calendar/caldav";
 import type { CalDavAccount } from "../../types/caldav";
 import { useI18nStore, useT, type TranslationKey } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
@@ -85,12 +95,13 @@ export function CalendarPane({ visible }: Props) {
   const createCalendar = useCalendarStore((s) => s.createCalendar);
   const updateCalendar = useCalendarStore((s) => s.updateCalendar);
   const deleteCalendar = useCalendarStore((s) => s.deleteCalendar);
+  const restoreCalendar = useCalendarStore((s) => s.restoreCalendar);
   const toggleCalendarVisible = useCalendarStore((s) => s.toggleCalendarVisible);
   const refreshCalendarFromUrl = useCalendarStore((s) => s.refreshCalendarFromUrl);
 
   const settings = useSettingsStore((s) => s.settings);
 
-  const weekStart = (settings?.calendar_week_start ?? 0) as 0 | 1;
+  const weekStart = (settings?.calendar_week_start ?? 1) as 0 | 1;
   // App-wide now, not the calendar's own switch — the grid, the header clock,
   // the to-do cards and the reminder popup are one app's idea of the time.
   const use24h = useUse24h();
@@ -108,6 +119,9 @@ export function CalendarPane({ visible }: Props) {
   const [search, setSearch] = useState("");
   const [dialog, setDialog] = useState<EventDialogTarget | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const { confirmAction, dialogs } = useDialogs();
+  /** The calendar the sidebar's × just removed, kept so the notice can put it back. */
+  const [undoDelete, setUndoDelete] = useState<DeletedCalendar | null>(null);
   /** A picked `.ics` waiting on the review dialog. The text is held here rather
    *  than re-read on confirm: re-reading would inspect one file and import
    *  whatever is at that path a moment later. */
@@ -118,6 +132,13 @@ export function CalendarPane({ visible }: Props) {
   } | null>(null);
   /** `null` = closed; `{account}` = editing (a `null` account is "add new"). */
   const [caldavDialog, setCaldavDialog] = useState<{ account: CalDavAccount | null } | null>(null);
+  /** The open right-click menu: where it is, and what it is about. */
+  const [menu, setMenu] = useState<CalendarMenuTarget | null>(null);
+
+  // The clipboard is a module store, not pane state: a copy made here pastes in
+  // another calendar tab, and survives navigating away from the source day.
+  const clipboard = useCalendarClipboardStore((s) => s.entry);
+  const copyToClipboard = useCalendarClipboardStore((s) => s.copy);
 
   useEffect(() => {
     if (!loaded) void load();
@@ -212,7 +233,8 @@ export function CalendarPane({ visible }: Props) {
   // Arrow keys and view digits, scoped to the pane (it must not steal keys from
   // a terminal in another tab, so the handler lives on the pane, not the window).
   const onKeyDown = (e: React.KeyboardEvent) => {
-    if (dialog) return;
+    // `dialogs` is portaled, but its key events still bubble through here.
+    if (dialog || dialogs) return;
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
 
     if (e.key === "ArrowLeft") {
@@ -296,7 +318,13 @@ export function CalendarPane({ visible }: Props) {
         : shiftBy(start, durationMin);
       next = { ...event, start, end };
     }
-    await updateEvent(next);
+    try {
+      await updateEvent(next);
+    } catch (err) {
+      // A synced series that cannot move to another calendar is refused before
+      // anything is written; say why rather than dropping the edit silently.
+      setNotice(err instanceof Error ? err.message : String(err));
+    }
   }
 
   async function deleteFromDialog(event: CalendarEvent, scope: EditScope) {
@@ -368,6 +396,73 @@ export function CalendarPane({ visible }: Props) {
     [events, updateEvent, updateOccurrence],
   );
 
+  // ── Copy / paste ──────────────────────────────────────────────────────────
+  //
+  // The narrow promise of the feature: a pasted entry is the copied one again on
+  // another day. Only its start — and the end its own duration puts after it —
+  // is new; see `lib/calendar/calendarClipboard` for what is deliberately left
+  // behind (the identity fields, and the repeat rule).
+
+  const copyOccurrence = useCallback(
+    (occ: Occurrence) => {
+      const event = events.find((e) => e.id === occ.eventId);
+      if (!event) return;
+      copyToClipboard(copyOfOccurrence(event, occ));
+    },
+    [events, copyToClipboard],
+  );
+
+  const pasteInto = useCallback(
+    async (slot: PasteTarget) => {
+      // Read through the store rather than close over `clipboard`: the copy may
+      // have been made in another calendar tab a moment ago.
+      const entry = useCalendarClipboardStore.getState().entry;
+      if (!entry) return;
+      let draft = pastedAt(entry, slot);
+
+      // Never into a subscribed or read-only calendar: a refresh replaces those
+      // rows wholesale (`calendar_replace_events`), so the paste would appear to
+      // work and then be gone. It goes to the first writable calendar instead —
+      // said out loud, because that IS a second thing the paste changed.
+      const target = calendars.find((c) => c.id === draft.calendar_id);
+      if (!target || target.readonly) {
+        const writable = calendars.find((c) => !c.readonly);
+        if (!writable) {
+          setNotice(t("calendarMenu.pasteNoCalendar"));
+          return;
+        }
+        draft = { ...draft, calendar_id: writable.id };
+        setNotice(t("calendarMenu.pastedElsewhere", { name: writable.name }));
+      }
+
+      try {
+        await createEvent(draft);
+      } catch (err) {
+        setNotice(t("calendarMenu.pasteFailed", { error: String(err) }));
+      }
+    },
+    [calendars, createEvent, t],
+  );
+
+  /** Delete straight from the menu, by the dialog's rule rather than a second
+   *  one: a plain event goes at once, a repeating one only with a scope. */
+  const deleteFromMenu = useCallback(
+    async (occ: Occurrence, scope: EditScope) => {
+      try {
+        if (scope === "this" && occ.recurring) {
+          await deleteOccurrence(occ.eventId, occ.occurrenceStart);
+          return;
+        }
+        await deleteEvent(occ.eventId);
+      } catch (err) {
+        // A CalDAV refusal is already being asked about in the conflict dialog;
+        // it is the one failure this does not repeat as a notice.
+        if (!isCalDavConflict(err)) setNotice(String(err));
+      }
+    },
+    [deleteEvent, deleteOccurrence],
+  );
+
   // ── ICS ───────────────────────────────────────────────────────────────────
 
   /**
@@ -404,30 +499,12 @@ export function CalendarPane({ visible }: Props) {
   /** The import itself, once it is going ahead. */
   async function commitImport(text: string, stem: string) {
     try {
-      const parsed = parseIcs(text);
-
-      // Imported items land in their own calendar, so an import is easy to undo by
-      // deleting that one calendar — and can never silently mix into "Personal".
-      const name = stem;
-      const target = await createCalendar({
-        name: name || t("calendarPane.importedCalendarName"),
-        color: "#8d8fd6",
-        visible: true,
-        readonly: false,
-      });
-
-      for (const e of parsed.events) {
-        await createEvent({ ...e, calendar_id: target.id });
-      }
-      for (const tk of parsed.tasks) {
-        await createTask({ ...tk, calendar_id: target.id });
-      }
-
+      const done = await importIcsText(text, stem || t("calendarPane.importedCalendarName"));
       setNotice(
-        t("calendarPane.importedEvents", { count: parsed.events.length }) +
-          (parsed.tasks.length ? t("calendarPane.andTasks", { count: parsed.tasks.length }) : "") +
-          t("calendarPane.intoCalendar", { name: target.name }) +
-          (parsed.skipped ? t("calendarPane.skippedSuffix", { count: parsed.skipped }) : t("calendarPane.periodSuffix")),
+        t("calendarPane.importedEvents", { count: done.events }) +
+          (done.tasks ? t("calendarPane.andTasks", { count: done.tasks }) : "") +
+          t("calendarPane.intoCalendar", { name: done.calendarName }) +
+          (done.skipped ? t("calendarPane.skippedSuffix", { count: done.skipped }) : t("calendarPane.periodSuffix")),
       );
     } catch (err) {
       setNotice(t("calendarPane.importFailed", { error: String(err) }));
@@ -499,7 +576,7 @@ export function CalendarPane({ visible }: Props) {
   //
   // Deliberately thin: everything about a sync — the ctag check, the protocol,
   // the identity-based merge that keeps a card's board column — lives in
-  // `stores/caldav` and the backend. This is the button and the sentence.
+  // `stores/calendar/caldav` and the backend. This is the button and the sentence.
 
   function openCaldavDialog() {
     // Accounts are one local file; loading them is what lets the dialog open on
@@ -527,6 +604,39 @@ export function CalendarPane({ visible }: Props) {
   // ── Render ────────────────────────────────────────────────────────────────
 
   const gridPrefs = { use24h, dayStartHour };
+
+  /** Deleting a calendar takes every event and task on it along: ask first, and
+   *  keep what was removed so the notice can undo it. */
+  const confirmDeleteCalendar = async (id: string) => {
+    const cal = calendars.find((c) => c.id === id);
+    if (!cal) return;
+    const state = useCalendarStore.getState();
+    const ok = await confirmAction({
+      title: t("calendarPane.deleteCalendarConfirmTitle", { name: cal.name }),
+      body: t("calendarPane.deleteCalendarConfirmBody", {
+        events: state.events.filter((e) => e.calendar_id === id).length,
+        tasks: state.tasks.filter((task) => task.calendar_id === id).length,
+      }),
+      confirmLabel: t("calendarPane.deleteCalendarConfirmButton"),
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      setUndoDelete(await deleteCalendar(id));
+    } catch (err) {
+      setNotice(t("calendarPane.deleteCalendarFailed", { error: String(err) }));
+    }
+  };
+
+  const undoDeleteCalendar = async () => {
+    if (!undoDelete) return;
+    try {
+      await restoreCalendar(undoDelete);
+      setUndoDelete(null);
+    } catch (err) {
+      setNotice(t("calendarPane.restoreCalendarFailed", { error: String(err) }));
+    }
+  };
 
   return (
     <div
@@ -590,6 +700,23 @@ export function CalendarPane({ visible }: Props) {
         </div>
       ) : null}
 
+      {undoDelete ? (
+        <div className="cal-notice cal-notice-undo">
+          <span>{t("calendarPane.calendarDeleted", { name: undoDelete.calendar.name })}</span>
+          <button className="cal-link-btn" onClick={() => void undoDeleteCalendar()}>
+            {t("calendarPane.undoDeleteCalendar")}
+            <UntestedTag id="calendarPane.undoDeleteCalendar" />
+          </button>
+          <button
+            className="cal-link-btn"
+            onClick={() => setUndoDelete(null)}
+            title={t("calendarPane.dismissNoticeTitle")}
+          >
+            ×
+          </button>
+        </div>
+      ) : null}
+
       <div className="cal-body">
         <CalendarSidebar
           calendars={calendars}
@@ -600,7 +727,7 @@ export function CalendarPane({ visible }: Props) {
             void createCalendar({ name, color, visible: true, readonly: false })
           }
           onUpdateCalendar={(cal) => void updateCalendar(cal)}
-          onDeleteCalendar={(id) => void deleteCalendar(id)}
+          onDeleteCalendar={(id) => void confirmDeleteCalendar(id)}
           onSubscribeCalendar={(name, url) => void subscribeCalendar(name, url)}
           onRefreshCalendar={(id) => void refreshCalendar(id)}
           onSyncCaldav={(id) => void syncCaldavCalendar(id)}
@@ -627,6 +754,7 @@ export function CalendarPane({ visible }: Props) {
               calendars={calendars}
               use24h={use24h}
               onOpen={openOccurrence}
+              onMenu={setMenu}
               emptyLabel={
                 search.trim()
                   ? t("calendar.noEventsMatch", { query: search.trim() })
@@ -644,6 +772,7 @@ export function CalendarPane({ visible }: Props) {
               onSelect={(date) => setAnchor(date)}
               onCreateOn={(date) => openCreate(date)}
               onOpen={openOccurrence}
+              onMenu={setMenu}
               weekStart={weekStart}
             />
           ) : (
@@ -652,6 +781,7 @@ export function CalendarPane({ visible }: Props) {
                 dates={windowDates}
                 occurrences={shown}
                 onOpen={openOccurrence}
+                onMenu={setMenu}
                 selected={datePart(anchor)}
                 onSelect={(date) => setAnchor(date)}
               />
@@ -664,11 +794,27 @@ export function CalendarPane({ visible }: Props) {
                 onCreate={onCreateSpan}
                 onMove={(occ, start) => void onMove(occ, start)}
                 onResize={(occ, end) => void onResize(occ, end)}
+                onMenu={setMenu}
               />
             </div>
           )}
         </div>
       </div>
+
+      {menu ? (
+        <CalendarContextMenu
+          target={menu}
+          clipboard={clipboard}
+          onClose={() => setMenu(null)}
+          onEdit={openOccurrence}
+          onCopy={copyOccurrence}
+          onDelete={(occ, scope) => void deleteFromMenu(occ, scope)}
+          onPaste={(slot) => void pasteInto(slot)}
+          onCreate={(slot) =>
+            openCreate(slot.date, slot.start, slot.start ? shiftBy(slot.start, 60) : undefined)
+          }
+        />
+      ) : null}
 
       {dialog ? (
         <EventDialog
@@ -715,6 +861,8 @@ export function CalendarPane({ visible }: Props) {
           onCancel={() => setPendingImport(null)}
         />
       ) : null}
+
+      {dialogs}
     </div>
   );
 }
@@ -727,12 +875,16 @@ function AllDayBar({
   dates,
   occurrences,
   onOpen,
+  onMenu,
   selected,
   onSelect,
 }: {
   dates: string[];
   occurrences: Occurrence[];
   onOpen: (o: Occurrence) => void;
+  /** Right-click, on a column or on an all-day chip. No minute is reported:
+   *  this strip is the part of the day view that has no clock. */
+  onMenu: (target: CalendarMenuTarget) => void;
   selected: string;
   onSelect: (date: string) => void;
 }) {
@@ -759,6 +911,10 @@ function AllDayBar({
                 (date === selected ? " cal-allday-col-selected" : "")
               }
               onClick={() => onSelect(date)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                onMenu({ x: e.clientX, y: e.clientY, occ: null, slot: { date } });
+              }}
             >
               <div className="cal-allday-head">
                 <span className="cal-allday-dow">
@@ -770,9 +926,14 @@ function AllDayBar({
                 <div
                   key={`${o.eventId}:${o.occurrenceStart}`}
                   className="cal-allday-chip"
-                  onDoubleClick={(e) => {
+                  onClick={(e) => {
                     e.stopPropagation();
                     onOpen(o);
+                  }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onMenu({ x: e.clientX, y: e.clientY, occ: o, slot: { date } });
                   }}
                   title={o.title}
                 >
