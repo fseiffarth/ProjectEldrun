@@ -400,7 +400,12 @@ export function SidePanel({
           <span className="debug-badge">DEBUG</span>
         </>
       )}
-      <span className="app-version-label">v{APP_VERSION}</span>
+      <span className="app-version-label">
+        v{APP_VERSION}
+        {import.meta.env.VITE_APP_COMMIT && (
+          <span className="app-version-commit"> · {import.meta.env.VITE_APP_COMMIT}</span>
+        )}
+      </span>
     </div>
   );
 

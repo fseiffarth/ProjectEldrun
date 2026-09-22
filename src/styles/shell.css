@@ -374,6 +374,11 @@ select option {
   line-height: 1;
 }
 
+.app-version-commit {
+  font-family: var(--font-mono, monospace);
+  color: var(--text-secondary);
+}
+
 .debug-badge {
   font-size: var(--text-xs);
   font-weight: 700;

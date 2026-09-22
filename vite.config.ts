@@ -1,9 +1,29 @@
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
+/** The commit this bundle was built from, shown beside the version in the
+ *  side panel. A dev server bakes it at start-up (hot reloads then run the
+ *  working tree on top of it, hence `-dirty`); a frozen build bakes the commit
+ *  it froze. Null outside a git checkout. */
+function buildCommit(): string | null {
+  try {
+    const git = (...args: string[]) =>
+      execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    const sha = git("rev-parse", "--short", "HEAD");
+    const dirty = git("status", "--porcelain", "--untracked-files=no") !== "";
+    return dirty ? `${sha}-dirty` : sha;
+  } catch {
+    return null;
+  }
+}
+
 export default defineConfig(async () => ({
   plugins: [react()],
+  define: {
+    "import.meta.env.VITE_APP_COMMIT": JSON.stringify(buildCommit()),
+  },
   clearScreen: false,
   resolve: {
     alias: [
