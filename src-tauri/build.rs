@@ -163,8 +163,41 @@ fn watch_frontend_dist() {
     );
 }
 
+/// Bake the commit this binary is compiled from in as `ELDRUN_BUILD_COMMIT`,
+/// for the side panel's version footer. It is the backend's commit on purpose:
+/// the dev window's frontend hot-reloads and its vite server restarts on a
+/// config edit, but the binary is what the window was launched as. Reruns when
+/// HEAD moves (a checkout, a commit on the branch); unset outside git.
+fn embed_build_commit() {
+    let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("manifest dir"));
+    let git = |args: &[&str]| -> Option<String> {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&manifest)
+            .args(args)
+            .output()
+            .ok()?;
+        let text = String::from_utf8(out.stdout).ok()?.trim().to_string();
+        (out.status.success() && !text.is_empty()).then_some(text)
+    };
+    let Some(commit) = git(&["rev-parse", "--short", "HEAD"]) else {
+        return;
+    };
+    println!("cargo:rustc-env=ELDRUN_BUILD_COMMIT={commit}");
+    let mut watched = vec!["HEAD".to_string(), "packed-refs".to_string()];
+    if let Some(branch) = git(&["symbolic-ref", "-q", "HEAD"]) {
+        watched.push(branch);
+    }
+    for name in watched {
+        if let Some(path) = git(&["rev-parse", "--path-format=absolute", "--git-path", &name]) {
+            println!("cargo:rerun-if-changed={path}");
+        }
+    }
+}
+
 fn main() {
     watch_frontend_dist();
+    embed_build_commit();
     generate_mobile_assets();
     tauri_build::build()
 }

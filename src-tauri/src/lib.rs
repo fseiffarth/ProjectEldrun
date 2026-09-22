@@ -1934,6 +1934,7 @@ pub fn run() {
             commands::crash::report_frontend_error,
             // Debug diagnostics
             commands::debug::debug_app_resource_usage,
+            commands::debug::app_build_commit,
             commands::debug::dev_build_status,
             commands::debug::dev_build_relaunch,
             commands::debug::webview_rss_kib,

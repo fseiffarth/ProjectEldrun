@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { ProjectFilesView } from "../files/ProjectFilesView";
 import { useFileSource } from "../files/ProjectFilesPane";
 import { openProjectFilesTab } from "../files/ProjectFilesTab";
@@ -170,6 +171,14 @@ export function SidePanel({
   onMouseLeave,
 }: Props) {
   const t = useT();
+  // The commit the running binary was compiled from — not the frontend's,
+  // which hot-reloads past it. Fixed for the process, so read once.
+  const [buildCommit, setBuildCommit] = useState<string | null>(null);
+  useEffect(() => {
+    Promise.resolve(invoke<string | null>("app_build_commit"))
+      .then((commit) => setBuildCommit(commit ?? null))
+      .catch(() => {});
+  }, []);
   const projects = useProjectsStore((s) => s.projects);
   const activeId = useProjectsStore((s) => s.activeId);
   const sidePanelFolderByProject = useProjectsStore((s) => s.sidePanelFolderByProject);
@@ -402,9 +411,7 @@ export function SidePanel({
       )}
       <span className="app-version-label">
         v{APP_VERSION}
-        {import.meta.env.VITE_APP_COMMIT && (
-          <span className="app-version-commit"> · {import.meta.env.VITE_APP_COMMIT}</span>
-        )}
+        {buildCommit && <span className="app-version-commit"> · {buildCommit}</span>}
       </span>
     </div>
   );

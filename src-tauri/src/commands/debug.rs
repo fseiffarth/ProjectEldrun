@@ -46,6 +46,13 @@ pub async fn debug_app_resource_usage() -> Result<AppResourceUsage, String> {
     })
 }
 
+/// The short commit this binary was compiled from (see `build.rs`), shown
+/// beside the version in the side panel; `None` outside a git checkout.
+#[tauri::command]
+pub fn app_build_commit() -> Option<&'static str> {
+    option_env!("ELDRUN_BUILD_COMMIT")
+}
+
 /// The background "Eldrun (dev)" freeze, for the header's dev-build chip; `None`
 /// when this binary was not built from a checkout (see `services::dev_build`).
 /// Blocking-pool, because it reads a log tail and runs `git rev-list`.
