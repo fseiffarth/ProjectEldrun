@@ -5864,6 +5864,90 @@ function RenderedPreview({
   );
 }
 
+/** Rendered SVG preview with Ctrl/⌘+wheel zoom toward the cursor (plain wheel
+ *  scrolls; double-click resets to 100%). A sandboxed iframe would swallow the
+ *  wheel, so the SVG is drawn as an `<img>` from an `image/svg+xml` Blob URL
+ *  instead — just as inert: an image-context SVG runs no script and loads no
+ *  external resource. Scale 1 is the SVG's intrinsic size (the viewport width
+ *  when it declares none). */
+function SvgPreview({ content, fileName }: { content: string; fileName: string }) {
+  const t = useT();
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    const u = URL.createObjectURL(new Blob([content], { type: "image/svg+xml" }));
+    setUrl(u);
+    return () => URL.revokeObjectURL(u);
+  }, [content]);
+  const [baseWidth, setBaseWidth] = useState<number | null>(null);
+  const [scale, setScale] = useState(1);
+  const scaleRef = useRef(scale);
+  scaleRef.current = scale;
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  // Scroll position to apply once the new size has laid out, keeping the point
+  // under the cursor fixed.
+  const pendingScroll = useRef<{ left: number; top: number } | null>(null);
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    const p = pendingScroll.current;
+    if (el && p) {
+      el.scrollLeft = p.left;
+      el.scrollTop = p.top;
+    }
+    pendingScroll.current = null;
+  }, [scale]);
+  const wheelRef = useZoomModifierWheel((e) => {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    e.preventDefault();
+    const el = scrollRef.current;
+    if (!el || e.deltaY === 0) return;
+    const prev = scaleRef.current;
+    const next = clampScale(prev * (e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP));
+    if (next === prev) return;
+    const rect = el.getBoundingClientRect();
+    const ax = e.clientX - rect.left;
+    const ay = e.clientY - rect.top;
+    const k = next / prev;
+    pendingScroll.current = {
+      left: (el.scrollLeft + ax) * k - ax,
+      top: (el.scrollTop + ay) * k - ay,
+    };
+    scaleRef.current = next;
+    setScale(next);
+  });
+  const setScroller = useCallback(
+    (el: HTMLDivElement | null) => {
+      scrollRef.current = el;
+      wheelRef(el);
+    },
+    [wheelRef],
+  );
+  return (
+    <div
+      ref={setScroller}
+      onDoubleClick={() => setScale(1)}
+      style={{ width: "100%", height: "100%", overflow: "auto", background: "#fff" }}
+    >
+      {url && (
+        <img
+          src={url}
+          alt={t("fileViewer.previewOf", { file: fileName })}
+          draggable={false}
+          onLoad={(e) => {
+            const w = e.currentTarget.naturalWidth || scrollRef.current?.clientWidth || 300;
+            setBaseWidth(w);
+          }}
+          style={{
+            display: "block",
+            maxWidth: "none",
+            height: "auto",
+            width: baseWidth != null ? baseWidth * scale : undefined,
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
 /** Markdown editing toolbar (#md-toolbar): inline/structural formatting plus a
  *  generated table of contents, applied through the editor's imperative API so
  *  each action is one undo step. Buttons `preventDefault` on mousedown so the
@@ -7643,7 +7727,11 @@ function TextView({
             />
           ) : (
             // Preview reflects the live draft, so it tracks unsaved edits.
-            <RenderedPreview kind={previewKind!} content={draft} fileName={fileName} />
+            previewKind === "svg" ? (
+              <SvgPreview content={draft} fileName={fileName} />
+            ) : (
+              <RenderedPreview kind={previewKind!} content={draft} fileName={fileName} />
+            )
           )
         ) : compareOpen ? (
           <CompareView
