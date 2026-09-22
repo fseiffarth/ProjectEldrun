@@ -3087,6 +3087,16 @@ pub fn scaffold_project(dir: &Path, with_git: bool) -> std::io::Result<()> {
     Ok(())
 }
 
+/// `skip_scaffold`'s half of `scaffold_project`: no template files, but a project
+/// asked to be git still gets its repo. Deliberately no initial commit — the tree
+/// is the user's own files (possibly huge), not a scaffold of ours to stage.
+/// Best-effort like `scaffold_project`; callers downgrade the label if no `.git`.
+fn init_repo_without_scaffold(dir: &Path, git_type: &str) {
+    if git_type != "none" && !dir.join(".git").exists() {
+        let _ = crate::services::git_init::init_repo(dir);
+    }
+}
+
 /// Stage everything the `.gitignore` permits and create a single scaffold commit.
 /// Best-effort: staging or the commit failing just leaves HEAD as it was. Respects
 /// the user's configured git identity, falling back to an Eldrun identity only when
@@ -3977,6 +3987,9 @@ pub fn create_project_blocking(mut req: CreateProjectRequest) -> Result<ProjectE
         scaffold_project(&dir, git_type != "none").map_err(|e| e.to_string())?;
     } else {
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        if !is_vm {
+            init_repo_without_scaffold(&dir, &git_type);
+        }
     }
 
     // The git label must reflect reality. `scaffold_project`'s `git init` is
@@ -3987,10 +4000,12 @@ pub fn create_project_blocking(mut req: CreateProjectRequest) -> Result<ProjectE
     // downgrade to `none` rather than label the project git — least of all
     // `remote-private`, whose pill shows a hosting badge — with no repo on disk.
     // `.exists()` (not `is_dir`) is deliberate: `.git` is a *file* in a linked
-    // worktree. `skip_scaffold` never runs `git init`, so it is left untouched.
+    // worktree. A local `skip_scaffold` skips the template files but still inits
+    // the repo, so it is checked the same way; a remote one leaves its mirror
+    // repo-less on purpose (lockstep below keys off that), so it is left untouched.
     // …except a VM project, which has no local tree at all to check — its repo
     // materializes inside the guest (the in-VM clone, or a `git init` there).
-    if git_type != "none" && !req.skip_scaffold && !is_vm {
+    if git_type != "none" && !is_vm && !(req.skip_scaffold && req.remote.is_some()) {
         let git_target = mirror.as_deref().map(Path::new).unwrap_or(dir.as_path());
         if !git_target.join(".git").exists() {
             eprintln!(
@@ -4115,9 +4130,10 @@ pub struct ImportProjectRequest {
     pub mode: String,
     pub scaffold_fill_modes: Option<HashMap<String, String>>,
     pub manual_validation_confirmed: Option<bool>,
-    /// Skip writing the Eldrun scaffold (and `git init`) — for importing
-    /// projects that already carry their own files. `project.json` is still
-    /// created/updated so the project registers normally.
+    /// Skip writing the Eldrun scaffold files — for importing projects that
+    /// already carry their own. A git `git_type` still gets its repo (no initial
+    /// commit), and `project.json` is still created/updated so the project
+    /// registers normally.
     #[serde(default)]
     pub skip_scaffold: bool,
     /// When present the project is remote: `source_dir` is the already-mounted
@@ -4289,8 +4305,12 @@ fn finish_import(
     // Scaffold only LOCAL imports onto their (local) tree. A remote import's
     // `target` is the local per-project state dir (project.json only); its tree
     // already exists on the host, so no local scaffold is written there.
-    if remote.is_none() && !req.skip_scaffold {
-        scaffold_project(&target, git_type != "none").map_err(|e| e.to_string())?;
+    if remote.is_none() {
+        if req.skip_scaffold {
+            init_repo_without_scaffold(&target, &git_type);
+        } else {
+            scaffold_project(&target, git_type != "none").map_err(|e| e.to_string())?;
+        }
         // Same honesty rule as the remote branch below: `scaffold_project`'s
         // `git init` is best-effort, so a failed one must downgrade the label
         // rather than leave the project tagged git (or remote-private) with no

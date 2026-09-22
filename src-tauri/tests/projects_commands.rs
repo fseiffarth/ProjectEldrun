@@ -555,7 +555,7 @@ fn import_project_keep_creates_missing_scaffolds_in_place_without_overwriting_ex
 }
 
 #[test]
-fn import_project_skip_scaffold_does_not_add_missing_scaffold_files() {
+fn import_project_skip_scaffold_adds_no_files_but_inits_git() {
     with_isolated_home("skip-home", |_| {
         let source = tempdir_in_test_projects("skip-source");
         // A bare project with only its own file — no scaffold, no .git.
@@ -578,7 +578,9 @@ fn import_project_skip_scaffold_does_not_add_missing_scaffold_files() {
 
         let entry = import_project_blocking(req).expect("import skip-scaffold");
 
-        // Only project.json is written; no scaffold files or git init.
+        // Only project.json is written; no scaffold files — but the project was
+        // asked to be git (the default), so it gets a repo rather than a git label
+        // with nothing on disk behind it.
         assert!(source.path().join("project.json").exists());
         assert!(source.path().join("notes.txt").exists());
         for name in &[
@@ -594,14 +596,53 @@ fn import_project_skip_scaffold_does_not_add_missing_scaffold_files() {
             );
         }
         assert!(
-            !source.path().join(".git").exists(),
-            "skip_scaffold must not git init"
+            source.path().join(".git").is_dir(),
+            "a git skip_scaffold import must still git init"
         );
+        // No initial commit: the tree is the user's own files, not ours to stage.
+        let head = std::process::Command::new("git")
+            .args(["rev-parse", "--verify", "-q", "HEAD"])
+            .current_dir(source.path())
+            .output()
+            .expect("git rev-parse");
+        assert!(!head.status.success(), "skip_scaffold must not commit");
         assert_project_registered(&source.path().join("project.json"), "skip-project");
         // New projects default to the local push target.
         assert_eq!(
             entry.extra.get("git_type").and_then(|v| v.as_str()),
             Some("local")
+        );
+    });
+}
+
+#[test]
+fn import_project_skip_scaffold_without_git_does_not_init() {
+    with_isolated_home("skip-nogit-home", |_| {
+        let source = tempdir_in_test_projects("skip-nogit-source");
+        fs::create_dir_all(source.path()).expect("create source dir");
+        fs::write(source.path().join("notes.txt"), "own:notes\n").expect("write notes");
+
+        let req = ImportProjectRequest {
+            source_dir: source.path().to_string_lossy().to_string(),
+            name: "skip-nogit-project".to_string(),
+            description: None,
+            git_type: Some("none".to_string()),
+            git_provider: None,
+            mode: "keep".to_string(),
+            scaffold_fill_modes: None,
+            manual_validation_confirmed: None,
+            skip_scaffold: true,
+            remote: None,
+            mirror_parent: None,
+        };
+
+        let entry = import_project_blocking(req).expect("import skip-scaffold no-git");
+
+        assert!(!source.path().join(".git").exists());
+        assert!(!source.path().join(".gitignore").exists());
+        assert_eq!(
+            entry.extra.get("git_type").and_then(|v| v.as_str()),
+            Some("none")
         );
     });
 }
