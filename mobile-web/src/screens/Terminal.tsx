@@ -419,7 +419,9 @@ function QuestionList({ prompt, question, sent, sendingLabel, onPick }: {
   </>;
 }
 
-export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
+/** `pickModel`: the tab card's model was tapped, so the session opens with its
+ * model picker already up — once, as soon as the session has drawn. */
+export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: () => void; pickModel?: boolean }) {
   const t = useT();
   const host = useRef<HTMLDivElement>(null);
   const wideHint = useRef<HTMLDivElement>(null);
@@ -1709,6 +1711,16 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     } else if (!sendAgentText("/model")) return;
     setModelSheet(true);
   };
+  /** The card's model tap, answered once the socket is up and the session has
+   * drawn its first frame: sent any earlier, `/model` lands before the agent's
+   * prompt exists, and the sheet's own wait for the picker would run out on
+   * the attach rather than on the agent. */
+  const pickModelPending = useRef(pickModel && tab.kind === "agent");
+  useEffect(() => {
+    if (!pickModelPending.current || !connected || liveScreen.length === 0) return;
+    pickModelPending.current = false;
+    selectModel();
+  });
   /** Answers the step on screen. The sheet does not close on the tap: `/model`
    * is one step in Claude Code and two in Codex, which asks for a reasoning
    * level next, and which it is, is the session's answer to give — the sheet

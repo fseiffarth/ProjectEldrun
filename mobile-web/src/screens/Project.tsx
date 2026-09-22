@@ -112,7 +112,7 @@ function withoutClosed(detail: ProjectDetail, closed: Map<string, number>): Proj
     : { ...detail, tabs: detail.tabs.filter((row) => !closed.has(row.id)) };
 }
 
-export function Project({ id, back, terminal }: { id: string; back: () => void; terminal: (tab: TabRow) => void }) {
+export function Project({ id, back, terminal }: { id: string; back: () => void; terminal: (tab: TabRow, opts?: { pickModel?: boolean }) => void }) {
   const t = useT();
   const [detail, setDetail] = useState<ProjectDetail | null>(null);
   const [creating, setCreating] = useState(false);
@@ -421,7 +421,12 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
             {tab.kind === "agent"
               ? <button className="tab-card-name" onClick={() => setRenameTab(tab)} aria-haspopup="dialog" aria-expanded={renameTab?.id === tab.id} aria-label={`Rename ${tab.label}`} title="Rename"><strong>{tab.label}</strong></button>
               : <strong>{tab.label}</strong>}
-            {tab.agent_model && <small className="tab-card-model" title="The model this session shows on its own status line.">{tab.agent_model}</small>}
+            {/* The model is its own control, like the name: a tap opens the
+                session with its model picker already up, so changing the
+                model (and, where the agent asks, the effort) is one tap from
+                here rather than open-then-find-the-chip. */}
+            {tab.agent_model && <button className="tab-card-model" disabled={!tab.available} onClick={() => terminal(tab, { pickModel: true })} aria-haspopup="dialog" aria-label={`Change the model of ${tab.label}`} title="Change the model">{tab.agent_model}</button>}
+            {tab.agent_model && isUntested("mobile.project.modelTap") && <span className="untested">Untested</span>}
           </span>
         </span>
         {/* A shell card is one row, so its › stays here; an agent card carries
