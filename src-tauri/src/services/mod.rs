@@ -105,8 +105,7 @@ pub mod root_mcp_review;
 pub mod sandbox;
 pub mod sftp;
 pub mod skills;
-// Dictionary-backed (Hunspell/spellbook) spell check for the native editors —
-// the deterministic provider beside the opt-in LLM grammar check.
+// Dictionary-backed (Hunspell/spellbook) spell check for the native editors.
 pub mod spell;
 pub mod ssh_common;
 pub mod ssh_exec;

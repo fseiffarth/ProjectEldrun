@@ -10,7 +10,7 @@ import { energySaverActive, usePowerStore } from "../power";
  * A model that is merely *installed* is not usable — the first request pays the
  * whole load, which for a 7B model is tens of seconds. Anything that wants a
  * local model to answer *promptly and unattended* (mail-importance scoring,
- * autocomplete, grammar) therefore needs one already resident, and until now the
+ * autocomplete) therefore needs one already resident, and until now the
  * only way to get there was the 🧠 menu's per-model "Load" button, by hand, every
  * launch. `settings.ollama_autoload_models` is that click made persistent.
  *

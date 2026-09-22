@@ -1,11 +1,26 @@
-//! Dictionary spell-check commands (`services::spell`) — the deterministic,
-//! model-free provider beside `commands::ollama::check_grammar`. Local only:
-//! nothing here reaches any network; the dictionaries are files on this
-//! machine. Issues reuse `GrammarIssue`, the LLM provider's wire shape, so the
-//! frontend resolver and overlay serve both providers unchanged.
+//! Dictionary spell-check commands (`services::spell`) — deterministic and
+//! model-free. Local only: nothing here reaches any network; the dictionaries
+//! are files on this machine.
 
-use crate::commands::ollama::GrammarIssue;
 use crate::services::spell;
+
+/// One proofreading issue, the wire shape the editor's overlay resolves (the
+/// frontend's `GrammarIssue`). `bad` is the exact offending substring as it
+/// appears in the source (so the frontend can locate it); `line` is its 1-based
+/// line in the submitted text, used as a resolution hint.
+#[derive(serde::Serialize, Clone, PartialEq, Debug)]
+pub struct GrammarIssue {
+    /// 1-based line number in the submitted text.
+    pub line: u32,
+    /// The exact offending text as it appears in the source.
+    pub bad: String,
+    /// Suggested replacement ("" when there is none).
+    pub suggestion: String,
+    /// Underline category; always "spelling" from this provider.
+    pub category: String,
+    /// Short explanation; empty — the backend writes no display text.
+    pub message: String,
+}
 
 /// Check `text` against the Hunspell dictionary for `language` (a code like
 /// `en_US`; empty picks the default — an English variant when installed).

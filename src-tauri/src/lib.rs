@@ -2012,8 +2012,6 @@ pub fn run() {
             commands::copilot::copilot_finish_sign_in,
             commands::copilot::copilot_sign_out,
             commands::copilot::copilot_stop,
-            // Local grammar/spelling check (opt-in, local-only)
-            commands::ollama::check_grammar,
             // Dictionary spell check (Hunspell dictionaries, local-only)
             commands::spell::spell_check,
             commands::spell::spell_languages,

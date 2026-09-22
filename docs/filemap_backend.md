@@ -68,7 +68,7 @@ only when breaking it does damage. The *why* goes in code comments or
 | `crash.rs` | Receives frontend renderer crash reports. |
 | `debug.rs` | Debug helpers + renderer memory readings for `rendererWatchdog.ts`: `webview_renderer_rss` (every renderer, tagged by the window that claimed it via `webview_renderer_claim`; label from the calling window, never the payload). |
 | `skills.rs` | Skills Library commands (`docs/skills_plan.md`), thin `spawn_blocking` wrappers over `services::skills`. Install takes a `SkillTarget`, never a path. |
-| `spell.rs` | Spell-check commands (M#248), thin `spawn_blocking` over `services::spell`; issues reuse `commands::ollama::GrammarIssue`; no display prose from the backend (`no_dictionary` token). Also `spell_dictionaries`, install/remove. |
+| `spell.rs` | Spell-check commands (M#248), thin `spawn_blocking` over `services::spell`; owns the `GrammarIssue` wire shape; no display prose from the backend (`no_dictionary` token). Also `spell_dictionaries`, install/remove. |
 
 **Services (`services/`)** — `AppHandle`-free, unit-testable.
 

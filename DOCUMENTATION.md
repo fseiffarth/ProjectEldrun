@@ -397,7 +397,7 @@ Settings dialog (`SettingsPanel.tsx` + `SettingsSubPanels.tsx`) covers the main
 page — default agent command, theme, workspace management, experimental flags,
 the daily-recap toggle, and the Eldrun Mobile opt-in (`MobileSettings`) — plus
 these sub-panels: **Global apps** (role visibility and commands), **File types**
-(per-type viewer behaviour, autocomplete and grammar defaults, autosave),
+(per-type viewer behaviour, autocomplete and spelling defaults, autosave),
 **Ollama** (model management, when the binary is installed), **Agents**,
 **Shortcuts**, **Git hosting** (provider tokens), **VPN auto-connect**, **Remote
 hosts**, **Archived projects**, **Scaffold repair**, and **Help**.
@@ -512,9 +512,9 @@ Three that carry design decisions worth recording here:
 
 Viewer state — editor/PDF scroll position, PDF/image zoom, image pan — persists
 per tab. Editable text/LaTeX/Markdown viewers carry opt-in, entirely local Ollama
-**autocomplete** (`Ctrl+Space`) and **grammar check**, both off by default with a
-per-tab header toggle; if Ollama is not running they fail silently, and nothing
-is ever sent off the machine.
+**autocomplete** (`Ctrl+Space`) and a dictionary **spell check**, both off by
+default with a per-tab header toggle; if Ollama is not running autocomplete fails
+silently, and nothing is ever sent off the machine.
 
 ### Lessons, Tour, and i18n
 

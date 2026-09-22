@@ -190,7 +190,7 @@ feature, and every one of them is optional:
 - Containerized projects: Docker. VM projects: QEMU/KVM
 - Print manager: CUPS on Linux/macOS — nothing to install on Windows
 - Eldrun Mobile: Tailscale on this machine and on the phone
-- Local model features — Vibe tabs, autocomplete, grammar check, the mail
+- Local model features — Vibe tabs, autocomplete, the mail
   assistant, the root console's agent tools (all off by default): Ollama
 
 ### Platform support
@@ -583,7 +583,7 @@ app until they land.
 
 | Viewer | Extensions | Status | Notes |
 | ------ | ---------- | ------ | ----- |
-| **Text / code** | `.txt` `.toml` `.py` `.rs` `.ts` `.ini` + many more, plus extensionless files like `Dockerfile` | ✅ Shipping | Editable editor: line-number gutter, syntax highlighting, Tab/Shift+Tab indent, undo/redo (`Ctrl+Z`/`Ctrl+Shift+Z`), find (`Ctrl+F`) and find-and-replace (`Ctrl+R`) with match nav + case toggle, save (`Ctrl+S`); unsaved lines marked; non-destructive auto-reload banner; opt-in local autocomplete and grammar check. |
+| **Text / code** | `.txt` `.toml` `.py` `.rs` `.ts` `.ini` + many more, plus extensionless files like `Dockerfile` | ✅ Shipping | Editable editor: line-number gutter, syntax highlighting, Tab/Shift+Tab indent, undo/redo (`Ctrl+Z`/`Ctrl+Shift+Z`), find (`Ctrl+F`) and find-and-replace (`Ctrl+R`) with match nav + case toggle, save (`Ctrl+S`); unsaved lines marked; non-destructive auto-reload banner; opt-in local autocomplete and dictionary spell check. |
 | **Markdown** | `.md` `.markdown` `.mdx` | ✅ Shipping | Rendered preview with an Edit/Preview toggle; links to local files are clickable. Fenced `mermaid` code blocks render as diagrams and `$…$`/`$$…$$` as math (KaTeX with `trust: false`, mermaid script-free). Remote images load only on request. |
 | **YAML / JSON** | `.yaml` `.yml` `.json` | ✅ Shipping | Editable structure tree with a Tree/Source toggle: retype a value, rename a key, add a key or list item (with a type picker), reorder, delete. Both of YAML's syntaxes are first-class — block (`key:`) and flow (`{a: 1}`, which is exactly JSON, on one line or spread over many) — and each keeps the style it is written in. The tree edits the file's own text, so comments, quoting and layout survive an edit; it withholds the affordance rather than botch a construct it can't rewrite (anchors, merge keys). Source is the full code editor. |
 | **BibTeX bibliography** | `.bib` `.bibtex` | ✅ Shipping (untested) | Card list with a Cards/Source toggle: one card per entry, its `field = {value}` pairs as editable rows. Retype a value, rename a field or the citation key, change the entry type, add or delete a field, delete an entry, add a new entry, copy a citation key. A filter box searches every key, type and field value (a real bibliography is thousands of records), and cards fold individually — both survive reopening the tab. Like the YAML tree it edits the file's own text, so field order, brace-protected `{DNA}` capitalization, `"…"` quoting, alignment and `%` comments survive an edit; a value it can't rewrite safely (a `@string` macro, a `#` concatenation) is shown read-only rather than mangled, and text outside every entry is reported rather than hidden. Duplicate citation keys are flagged. Source is the full code editor. |
@@ -603,7 +603,7 @@ app until they land.
 
 Other office formats (`.docx`, `.pptx`, `.ods`, …) open in their external
 default app. Viewer behaviour is configured per file type under **Settings →
-Native Viewers**: the per-type autocomplete and grammar-check defaults (each tab
+Native Viewers**: the per-type autocomplete and spell-check defaults (each tab
 can override them from its header) plus a global autosave switch. The text/LaTeX/Markdown editors carry an `A−`/`A+` text-size control
 (`Ctrl` +/−, `Ctrl`+0 to reset; scales the Markdown preview too), persisted
 per file type. Every viewer remembers where you left off — editor/PDF scroll
@@ -632,11 +632,6 @@ restarting Eldrun) restores your position instead of jumping to the top.
   header that overrides the per-type default, so you can enable it just for the
   tab you're in. Nothing is sent anywhere unless you enable it, and if Ollama
   isn't running it fails silently — no remote calls, ever.
-- **Local grammar check (opt-in, private)**: the same editable viewers can run a
-  **local Ollama** proofreader after a typing pause, underlining spelling (red),
-  grammar (blue), and style (green) issues; hover a mark for the explanation and a
-  one-click fix. Like autocomplete it is OFF by default with a per-tab **Grammar**
-  toggle in the header, and entirely local — no text leaves the machine.
 - **Dictionary spell check**: a model-free Hunspell provider checks prose in
   the native editors, with downloadable language dictionaries and a personal
   dictionary; code, TeX commands, and other non-prose regions are skipped.

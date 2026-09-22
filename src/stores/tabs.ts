@@ -399,12 +399,12 @@ export interface ViewerState {
   // to the per-type setting. Toggled from the in-tab AI-assist controls.
   autocomplete?: boolean;
   autocompleteMode?: AutocompleteMode;
-  grammarCheck?: boolean;
   spellCheck?: boolean;
   // The TeX editor's hover-preview and beamer switches are NOT here: they are
   // the project's, in `stores/viewers/texViewPref` (a tab of a deck is not where "this
   // is a deck" belongs). Old sessions may still carry `texHoverPreview` /
-  // `texBeamer` rows; they are ignored.
+  // `texBeamer` rows, and `grammarCheck` from the removed local-model grammar
+  // check; they are ignored.
   // Debug breakpoints (#py), as 1-based line numbers into the file. Persisted per
   // tab like the reader's scroll position, so the dots survive closing the file
   // and an Eldrun restart. Remapped as the draft is edited (see useBreakpoints);

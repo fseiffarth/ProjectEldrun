@@ -25,8 +25,8 @@ export interface GlobalAppEntry {
 export type AutocompleteMode = "sentence" | "block" | "scope";
 
 /**
- * Category of a local-model grammar/spelling issue, mirroring the Rust
- * `check_grammar` output. Drives the underline colour in the editor overlay.
+ * Category of an editor proofreading issue. Drives the underline colour in the
+ * editor overlay; the dictionary spell check only ever reports `"spelling"`.
  *  - `"spelling"` — a misspelled word / typo (red).
  *  - `"grammar"` — a grammar or punctuation mistake (blue).
  *  - `"style"` — a style/wording suggestion (green).
@@ -34,8 +34,8 @@ export type AutocompleteMode = "sentence" | "block" | "scope";
 export type GrammarCategory = "spelling" | "grammar" | "style";
 
 /**
- * One proofreading issue returned by the local-model grammar check, mirroring the
- * Rust `GrammarIssue`. `bad` is the exact offending substring (the frontend
+ * One proofreading issue returned by the dictionary spell check (`spell_check`),
+ * mirroring the Rust `GrammarIssue`. `bad` is the exact offending substring (the frontend
  * locates it in the draft to draw the underline); `line` is its 1-based line in
  * the checked text, used as a disambiguation hint when resolving the range.
  */
@@ -45,11 +45,6 @@ export interface GrammarIssue {
   suggestion: string;
   category: GrammarCategory;
   message: string;
-  /** Which provider produced the issue — set frontend-side on receipt, never on
-   *  the wire. `"dict"` (the Hunspell `spell_check` command) adds the
-   *  "Add to dictionary" action to the tooltip; absent/`"model"` is the LLM
-   *  `check_grammar` provider. */
-  source?: "model" | "dict";
 }
 
 export interface ViewerPref {
@@ -61,9 +56,6 @@ export interface ViewerPref {
   /** Default completion-length mode for this type (#45 modes). Cycled live
    *  in-editor with Shift+Tab while a suggestion is showing; absent → "sentence". */
   autocomplete_mode?: AutocompleteMode;
-  /** Whether the local-model grammar/spelling check is enabled for this type.
-   *  Local-only (Ollama) and opt-in; default OFF. */
-  grammar_check?: boolean;
   /** Whether the dictionary (Hunspell) spell check is enabled for this type.
    *  Needs no model — deterministic, milliseconds, offline. Default OFF: red
    *  underlines nobody asked for are noise in a code editor. */
@@ -444,7 +436,7 @@ export interface Settings {
    *  Settings panel's one-click drop-in (`ollama_models_dir_plan`). */
   ollama_models_path?: string | null;
   /** Per-task local-model assignments (🧠 menu role chips). Maps a task key —
-   *  `"autocomplete"`, `"autocomplete_prose"`, `"grammar"`, `"tabs"` or `"mail"` —
+   *  `"autocomplete"`, `"autocomplete_prose"`, `"tabs"` or `"mail"` —
    *  to the model name that should serve it (`autocomplete_prose` covers plain
    *  text, Markdown and TeX, and falls back to `autocomplete`), so several loaded models can run different jobs in parallel.
    *  A task absent here falls back to `ollama_model`, then to any loaded model.

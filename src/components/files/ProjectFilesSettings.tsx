@@ -467,7 +467,6 @@ export function ProjectFilesSettingsDialog({
             <span>{t("agents.enabled")}</span>
             <span>{t("localModel.role.autocomplete")}</span>
             <span>{t("projectSettings.completionLength")}</span>
-            <span>{t("localModel.role.grammar")}</span>
             <span>{t("fileViewer.spellingLabel")}</span>
           </div>
           {VIEWER_PREF_TYPES.map((vt) => {
@@ -517,15 +516,6 @@ export function ProjectFilesSettingsDialog({
                         { value: "scope", label: t("projectSettings.scope") },
                       ]}
                     />
-                    {/* Local-model grammar/spelling check — underlines typos
-                        (red), grammar (blue), style (green) in the editor. */}
-                    <Toggle
-                      size="sm"
-                      checked={pref.grammar_check === true}
-                      disabled={!enabled}
-                      onChange={(e) => patch({ grammar_check: e.target.checked })}
-                      aria-label={`${t(vt.labelKey)} — ${t("localModel.role.grammar")}`}
-                    />
                     {/* Dictionary (Hunspell) spell check — deterministic and
                         model-free, red-underlines typos in the editor. */}
                     <Toggle
@@ -537,10 +527,9 @@ export function ProjectFilesSettingsDialog({
                     />
                   </>
                 ) : (
-                  /* Four empty cells, so this row's Enabled toggle still sits
+                  /* Three empty cells, so this row's Enabled toggle still sits
                      in the same column as every other row's. */
                   <>
-                    <span className="viewer-pref-na">–</span>
                     <span className="viewer-pref-na">–</span>
                     <span className="viewer-pref-na">–</span>
                     <span className="viewer-pref-na">–</span>

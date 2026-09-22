@@ -540,7 +540,7 @@ export function DetachedApp({ param }: Props) {
       }
       // Register each seeded tab's viewerState BEFORE rendering, so a viewer pane
       // mounting this frame recovers its per-tab scroll/zoom + #45 autocomplete/
-      // grammar overrides (our tabs never enter `useTabsStore`, where the viewer
+      // spelling overrides (our tabs never enter `useTabsStore`, where the viewer
       // hooks normally read them). Must precede setGroup/setTabs.
       for (const t of ev.payload.tabs) setDetachedViewerState(t.key, t.viewerState);
       setGroup(ev.payload.subtree);

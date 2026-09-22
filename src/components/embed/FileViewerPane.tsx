@@ -293,7 +293,7 @@ const DeckView = lazy(() => import("./deck/DeckView").then((m) => ({ default: m.
  * no entry for the tab — its tabs render from a Tauri seed into local React
  * state, not the store — so fall back to the detached seed registry. Without
  * this fallback a detached editor loses per-tab scroll/zoom and the #45
- * autocomplete/grammar toggles, silently reverting to the per-type defaults.
+ * autocomplete/spelling toggles, silently reverting to the per-type defaults.
  */
 function seedViewerState(tabKey: string | undefined): ViewerState | undefined {
   if (!tabKey) return undefined;
@@ -1259,13 +1259,8 @@ const COALESCE_MS = 400;
 // every keystroke, short enough to feel responsive.
 const AUTO_AC_DEBOUNCE_MS = 600;
 
-// #45 follow-up grammar check: idle time after the last keystroke before the
-// whole draft is re-checked. Longer than the autocomplete debounce — a full-
-// document check is heavier, and grammar marks needn't track every keystroke.
-const GRAMMAR_DEBOUNCE_MS = 2500;
-
-// Dictionary spell check (the Hunspell `spell_check` command): a lookup, not a
-// model call, so it can afford a shorter idle than the LLM check above.
+// Dictionary spell check (the Hunspell `spell_check` command): idle time after
+// the last keystroke before the draft is re-checked. A lookup, not a model call.
 const SPELL_DEBOUNCE_MS = 800;
 
 // #45 completion-length modes. Cycle order for the live Shift+Tab toggle (while
@@ -2542,22 +2537,6 @@ export function resolveGrammarRanges(text: string, issues: GrammarIssue[]): Gram
 }
 
 /**
- * Merge dictionary-provider issues with model-provider ones into the one list
- * the overlay resolves: dictionary issues first (their tooltip carries the
- * add-to-dictionary action, and a dictionary hit is exact), and a model issue
- * naming the same `(line, bad)` pair is dropped — otherwise the resolver's
- * per-line cursor would walk the duplicate onto the NEXT occurrence of the word
- * and underline a spot with nothing wrong at it. Pure — exported for tests.
- */
-export function mergeSpellIssues(dict: GrammarIssue[], model: GrammarIssue[]): GrammarIssue[] {
-  if (dict.length === 0) return model;
-  return [
-    ...dict,
-    ...model.filter((m) => !dict.some((d) => d.line === m.line && d.bad === m.bad)),
-  ];
-}
-
-/**
  * Build the transparent grammar overlay: each range is wrapped in a
  * `<span class="file-viewer-grammar-mark cat-<category>" data-gi="<i>">` so it
  * paints a coloured wavy underline (colour by category) while the surrounding
@@ -2816,7 +2795,6 @@ function CodeEditor({
   undo,
   redo,
   autocomplete,
-  grammarCheck,
   spellCheck,
   texCompletions,
   hoverPreview,
@@ -2887,15 +2865,10 @@ function CodeEditor({
    *  against whichever model is *currently loaded* in Ollama memory at trigger
    *  time, preferring `preferred` when it is among the loaded set. */
   autocomplete?: { enabled: boolean; preferred?: string; preferredProse?: string; mode?: AutocompleteMode };
-  /** Opt-in local grammar/spelling check (#45 follow-up). When enabled, the whole
-   *  draft is checked against the currently-loaded local model after an idle
-   *  pause; issues are underlined (colour by category) with a hover tooltip and
-   *  one-click fix. `preferred` is the user's active local model (🧠 menu). */
-  grammarCheck?: { enabled: boolean; preferred?: string };
-  /** Opt-in dictionary (Hunspell) spell check — the model-free provider beside
-   *  `grammarCheck`. When enabled the draft is checked by the backend's loaded
-   *  dictionary after a short idle; `language` is the dictionary code (unset →
-   *  the backend's default). Issues merge into the same overlay/tooltip. */
+  /** Opt-in dictionary (Hunspell) spell check. When enabled the draft is
+   *  checked by the backend's loaded dictionary after a short idle; `language`
+   *  is the dictionary code (unset → the backend's default). Issues are
+   *  underlined with a hover tooltip and one-click fix. */
   spellCheck?: { enabled: boolean; language?: string };
   /** Opt-in `\ref`/`\cite` key completion (LaTeX viewer only). When supplied, a
    *  dropdown of `\label` keys (refs) or `.bib` entry keys (cites) appears while
@@ -3739,14 +3712,9 @@ function CodeEditor({
     [loaded, draft, changes, changeTint],
   );
 
-  // ── #45 follow-up: local-model grammar/spelling check ──────────────────────
-  // The whole draft is checked against the currently-loaded local model after an
-  // idle pause; the returned issues are resolved to ranges against the live draft
-  // (so they self-heal across small edits) and underlined, colour by category. A
-  // short status mirrors the autocomplete one. Disabled unless `grammarCheck`.
-  const [grammarIssues, setGrammarIssues] = useState<GrammarIssue[]>([]);
-  // Dictionary spell check: its own list so a model re-check never wipes
-  // dictionary marks (and vice versa); the two merge in `mergedIssues` below.
+  // ── Spell-check overlay ─────────────────────────────────────────────────────
+  // The dictionary's issues are resolved to ranges against the live draft (so
+  // they self-heal across small edits) and underlined, with a hover tooltip.
   const [spellIssues, setSpellIssues] = useState<GrammarIssue[]>([]);
   // One status report per session for a failing/missing dictionary — an error
   // on every idle pause would be noise; markless is the steady signal.
@@ -3755,10 +3723,6 @@ function CodeEditor({
   const [grammarTip, setGrammarTip] = useState<
     { left: number; top: number; range: GrammarRange } | null
   >(null);
-  const grammarAbort = useRef<AbortController | null>(null);
-  // The exact draft text last submitted, so an idle re-check is skipped when the
-  // document hasn't changed since the previous check.
-  const lastCheckedText = useRef<string | null>(null);
   // Close the hover tooltip on a short delay, so the pointer can travel from the
   // underlined mark up into the tooltip (to click Apply) without it vanishing.
   const grammarTipTimer = useRef<number | null>(null);
@@ -3774,13 +3738,9 @@ function CodeEditor({
   }, [cancelGrammarTipClose]);
   useEffect(() => () => cancelGrammarTipClose(), [cancelGrammarTipClose]);
 
-  const mergedIssues = useMemo(
-    () => mergeSpellIssues(spellIssues, grammarIssues),
-    [spellIssues, grammarIssues],
-  );
   const grammarRanges = useMemo(
-    () => (loaded && mergedIssues.length ? resolveGrammarRanges(draft, mergedIssues) : []),
-    [loaded, draft, mergedIssues],
+    () => (loaded && spellIssues.length ? resolveGrammarRanges(draft, spellIssues) : []),
+    [loaded, draft, spellIssues],
   );
   const grammarHtml = useMemo(
     () => (grammarRanges.length ? decorateGrammarRanges(draft, grammarRanges) : null),
@@ -3813,75 +3773,6 @@ function CodeEditor({
     return () => window.clearTimeout(id);
   }, [grammarStatus]);
 
-  const runGrammarCheck = useCallback(async () => {
-    if (!grammarCheck?.enabled) return;
-    const text = draftRef.current;
-    if (!text.trim()) {
-      setGrammarIssues([]);
-      return;
-    }
-    lastCheckedText.current = text;
-    grammarAbort.current?.abort();
-    const ctl = new AbortController();
-    grammarAbort.current = ctl;
-    setGrammarStatus(t("fileViewer.grammarChecking"));
-    try {
-      // Resolve the currently-loaded model the same way autocomplete does, so the
-      // check runs against whatever is resident in Ollama at trigger time.
-      const detailed = await invoke<{ name: string; running: boolean }[]>(
-        "list_ollama_models_detailed",
-      );
-      if (ctl.signal.aborted) return;
-      const running = detailed.filter((m) => m.running).map((m) => m.name);
-      const model =
-        grammarCheck.preferred && running.includes(grammarCheck.preferred)
-          ? grammarCheck.preferred
-          : running[0] ?? "";
-      if (!model) {
-        setGrammarStatus(t("fileViewer.grammarUnavailable"));
-        return;
-      }
-      const issues = await invoke<GrammarIssue[]>("check_grammar", {
-        text,
-        model,
-        language: lang === "plain" ? "" : lang,
-      });
-      if (ctl.signal.aborted) return;
-      setGrammarIssues(issues);
-      setGrammarStatus(
-        issues.length
-          ? t(issues.length === 1 ? "fileViewer.grammarIssuesOne" : "fileViewer.grammarIssuesMany", {
-              count: issues.length,
-            })
-          : t("fileViewer.grammarNoIssues"),
-      );
-    } catch (e) {
-      if (ctl.signal.aborted) return;
-      setGrammarStatus(
-        String(e).includes("not_running")
-          ? t("fileViewer.grammarUnavailable")
-          : t("fileViewer.grammarFailed"),
-      );
-    }
-    // Primitive deps (the config object's identity changes every render) so the
-    // idle-check timer isn't reset by unrelated re-renders.
-  }, [grammarCheck?.enabled, grammarCheck?.preferred, lang, t]);
-
-  // Idle re-check: when enabled, run a short while after the user stops typing,
-  // skipping when the draft is unchanged from the last check. Clears stale marks
-  // immediately when the feature is turned off.
-  useEffect(() => {
-    if (!grammarCheck?.enabled || !loaded) {
-      setGrammarIssues([]);
-      setGrammarTip(null);
-      lastCheckedText.current = null;
-      return;
-    }
-    if (draft === lastCheckedText.current) return;
-    const id = window.setTimeout(() => void runGrammarCheck(), GRAMMAR_DEBOUNCE_MS);
-    return () => window.clearTimeout(id);
-  }, [grammarCheck?.enabled, loaded, draft, runGrammarCheck]);
-
   // Dictionary spell check: re-check the draft a short while after the user
   // stops typing. A lookup rather than a model call, so it affords the shorter
   // debounce; marks clear the moment the feature is turned off. A missing
@@ -3902,7 +3793,7 @@ function CodeEditor({
           language: spellCheck.language ?? "",
           doc: lang === "plain" ? "" : lang,
         });
-        setSpellIssues(issues.map((i) => ({ ...i, source: "dict" as const })));
+        setSpellIssues(issues);
       } catch (e) {
         setSpellIssues([]);
         if (!spellReported.current) {
@@ -3916,7 +3807,8 @@ function CodeEditor({
       }
     }, SPELL_DEBOUNCE_MS);
     return () => window.clearTimeout(id);
-    // Primitive deps for the config object, mirroring the grammar effect above.
+    // Primitive deps (the config object's identity changes every render) so the
+    // idle-check timer isn't reset by unrelated re-renders.
   }, [spellCheck?.enabled, spellCheck?.language, loaded, draft, lang, t]);
 
   // A new dictionary choice gets its own failure report (the flag above only
@@ -3957,7 +3849,6 @@ function CodeEditor({
     (range: GrammarRange) => {
       const repl = range.issue.suggestion;
       edit(applyReplacements(draftRef.current, [{ start: range.start, end: range.end }], repl));
-      setGrammarIssues((prev) => prev.filter((i) => i !== range.issue));
       setSpellIssues((prev) => prev.filter((i) => i !== range.issue));
       setGrammarTip(null);
       const caret = range.start + repl.length;
@@ -5449,23 +5340,21 @@ function CodeEditor({
               {t("fileViewer.grammarFix")} <span className="file-viewer-grammar-tip-sugg">{grammarTip.range.issue.suggestion}</span>
             </button>
           )}
-          {grammarTip.range.issue.source === "dict" && (
-            <button
-              type="button"
-              className="file-viewer-grammar-tip-fix"
-              // mousedown keeps the textarea from stealing focus before the click.
-              onMouseDown={(e) => {
-                e.preventDefault();
-                const word = grammarTip.range.issue.bad;
-                void invoke("spell_add_word", { word }).catch(() => undefined);
-                // Every mark of the same word clears — the word is now known.
-                setSpellIssues((prev) => prev.filter((i) => i.bad !== word));
-                setGrammarTip(null);
-              }}
-            >
-              {t("fileViewer.addToDictionary")}
-            </button>
-          )}
+          <button
+            type="button"
+            className="file-viewer-grammar-tip-fix"
+            // mousedown keeps the textarea from stealing focus before the click.
+            onMouseDown={(e) => {
+              e.preventDefault();
+              const word = grammarTip.range.issue.bad;
+              void invoke("spell_add_word", { word }).catch(() => undefined);
+              // Every mark of the same word clears — the word is now known.
+              setSpellIssues((prev) => prev.filter((i) => i.bad !== word));
+              setGrammarTip(null);
+            }}
+          >
+            {t("fileViewer.addToDictionary")}
+          </button>
         </div>
       )}
       {/* Blame hovercard (#blame): full attribution for the hovered gutter cell. */}
@@ -6016,51 +5905,45 @@ function useViewerPref(type: InternalViewer) {
   return useSettingsStore((s) => s.settings?.viewer_prefs?.[type]);
 }
 
-/** What {@link useTabAiPrefs} returns: the effective autocomplete/grammar config
+/** What {@link useTabAiPrefs} returns: the effective autocomplete/spelling config
  *  for the editor, plus the current control state + setters for the in-tab UI. */
 export interface TabAiPrefs {
   ac: { enabled: boolean; preferred?: string; preferredProse?: string; mode: AutocompleteMode };
-  gc: { enabled: boolean; preferred?: string };
   sc: { enabled: boolean; language?: string };
   autocomplete: boolean;
-  grammar: boolean;
   spelling: boolean;
   mode: AutocompleteMode;
   toggleAutocomplete: () => void;
-  toggleGrammar: () => void;
   toggleSpelling: () => void;
   setMode: (m: AutocompleteMode) => void;
 }
 
 /**
  * Tab-local AI-assist prefs (#45). Each editor tab gets its OWN autocomplete
- * on/off, completion-length mode, and grammar on/off, overriding the per-type
+ * on/off, completion-length mode, and spelling on/off, overriding the per-type
  * `viewer_prefs` default for that tab only. The override is seeded once from the
  * tab's persisted `viewerState` and written back there (like scroll/zoom), so it
  * survives reopening the file and an Eldrun restart. Until the user touches a
  * control, the value tracks the per-type setting reactively; once toggled, that
- * tab pins its own value. The `preferred` model for each task is its 🧠-menu tag
- * (`ollama_roles.autocomplete` / `.grammar`), falling back to `ollama_model`.
+ * tab pins its own value. The `preferred` autocomplete model is its 🧠-menu tag
+ * (`ollama_roles.autocomplete`), falling back to `ollama_model`.
  */
 function useTabAiPrefs(tabKey: string | undefined, type: InternalViewer): TabAiPrefs {
   const pref = useViewerPref(type);
-  // Per-task model preference (🧠 menu role chips): autocomplete and grammar can
-  // each pin a different loaded model, falling back to the default `ollama_model`
-  // when that task has no explicit assignment. Resolved against the resident set
+  // Per-task model preference (🧠 menu role chips): autocomplete can pin a
+  // loaded model, falling back to the default `ollama_model` when it has no
+  // explicit assignment. Resolved against the resident set
   // at trigger time (see the request paths above).
   const defaultModel = useSettingsStore((s) => s.settings?.ollama_model as string | undefined);
   const acRole = useSettingsStore((s) => s.settings?.ollama_roles?.autocomplete as string | undefined);
-  const gcRole = useSettingsStore((s) => s.settings?.ollama_roles?.grammar as string | undefined);
   const acProseRole = useSettingsStore((s) => s.settings?.ollama_roles?.autocomplete_prose as string | undefined);
   const acPreferred = acRole ?? defaultModel;
-  const gcPreferred = gcRole ?? defaultModel;
   // Dictionary spell check: no model involved — its one setting is which
   // Hunspell dictionary, machine-wide (unset lets the backend pick).
   const spellLanguage = useSettingsStore(
     (s) => s.settings?.spell_language as string | undefined,
   );
   const defAutocomplete = pref?.autocomplete === true;
-  const defGrammar = pref?.grammar_check === true;
   const defSpelling = pref?.spell_check === true;
   const defMode: AutocompleteMode = AC_MODES.includes(pref?.autocomplete_mode as AutocompleteMode)
     ? (pref!.autocomplete_mode as AutocompleteMode)
@@ -6070,14 +5953,12 @@ function useTabAiPrefs(tabKey: string | undefined, type: InternalViewer): TabAiP
   // for a field means "no override yet" → fall through to the per-type default.
   const [override, setOverride] = useState<{
     autocomplete?: boolean;
-    grammar?: boolean;
     spelling?: boolean;
     mode?: AutocompleteMode;
   }>(() => {
     const vs = seedViewerState(tabKey);
     return {
       autocomplete: vs?.autocomplete,
-      grammar: vs?.grammarCheck,
       spelling: vs?.spellCheck,
       mode: vs?.autocompleteMode,
     };
@@ -6091,7 +5972,6 @@ function useTabAiPrefs(tabKey: string | undefined, type: InternalViewer): TabAiP
   );
 
   const autocomplete = override.autocomplete ?? defAutocomplete;
-  const grammar = override.grammar ?? defGrammar;
   const spelling = override.spelling ?? defSpelling;
   const mode = override.mode ?? defMode;
 
@@ -6102,13 +5982,6 @@ function useTabAiPrefs(tabKey: string | undefined, type: InternalViewer): TabAiP
       return { ...o, autocomplete: next };
     });
   }, [persist, defAutocomplete]);
-  const toggleGrammar = useCallback(() => {
-    setOverride((o) => {
-      const next = !(o.grammar ?? defGrammar);
-      persist({ grammarCheck: next });
-      return { ...o, grammar: next };
-    });
-  }, [persist, defGrammar]);
   const toggleSpelling = useCallback(() => {
     setOverride((o) => {
       const next = !(o.spelling ?? defSpelling);
@@ -6126,14 +5999,11 @@ function useTabAiPrefs(tabKey: string | undefined, type: InternalViewer): TabAiP
 
   return {
     ac: { enabled: autocomplete, preferred: acPreferred, preferredProse: acProseRole, mode },
-    gc: { enabled: grammar, preferred: gcPreferred },
     sc: { enabled: spelling, language: spellLanguage },
     autocomplete,
-    grammar,
     spelling,
     mode,
     toggleAutocomplete,
-    toggleGrammar,
     toggleSpelling,
     setMode,
   };
@@ -6144,8 +6014,8 @@ function useTabAiPrefs(tabKey: string | undefined, type: InternalViewer): TabAiP
  *  switch and a relaunch (`stores/viewers/texViewPref`). Seeded from the per-type
  *  `viewer_prefs.tex` default while no click has been made.
  *
- *  Unlike autocomplete and grammar it defaults **ON** (absent ⇒ on), and the
- *  difference is what the two cost: those call a language model, this runs the
+ *  Unlike autocomplete it defaults **ON** (absent ⇒ on), and the difference
+ *  is what the two cost: that calls a language model, this runs the
  *  TeX engine the viewer is already built around — on a fragment, once per
  *  distinct fragment, and only after the pointer has rested. */
 function useTexHoverPreview(scope: string | null): { on: boolean; toggle: () => void } {
@@ -6337,9 +6207,8 @@ function BeamerBar({
 
 /**
  * Whether at least one local (Ollama) model is currently loaded into memory.
- * Both AI-assist features the controls expose (autocomplete + grammar) run only
- * against a resident model, so the controls hide themselves entirely when none
- * is loaded. Mirrors the lamp logic in `LocalModelMenu`: `ollama_status` is
+ * Local autocomplete runs only against a resident model, so its controls hide
+ * when none is loaded. Mirrors the lamp logic in `LocalModelMenu`: `ollama_status` is
  * `"loaded"` iff `/api/ps` reports a resident model.
  *
  * Rides the app-wide shared poller (`lib/ollamaStatus`) rather than owning a
@@ -6354,11 +6223,11 @@ function useLocalModelLoaded(): boolean {
 
 /**
  * In-tab AI-assist controls for the editable viewers (#45): an Autocomplete
- * on/off toggle with a length-mode picker (Sentence/Block/Scope), and a Grammar
- * on/off toggle. Both are local-only (Ollama). The state is tab-local (see
+ * on/off toggle with a length-mode picker (Sentence/Block/Scope), beside the
+ * dictionary Spelling toggle. The state is tab-local (see
  * {@link useTabAiPrefs}) — toggling here affects only this tab. Rendered in the
- * viewer header next to the font/undo/save controls. Hidden entirely while no
- * local model is loaded into memory, since neither feature can run then.
+ * viewer header next to the font/undo/save controls. Autocomplete hides while
+ * no local model is loaded (and Copilot doesn't serve the file).
  */
 function EditorAiControls({ ai, path }: { ai: TabAiPrefs; path: string }) {
   const t = useT();
@@ -6370,7 +6239,7 @@ function EditorAiControls({ ai, path }: { ai: TabAiPrefs; path: string }) {
   return (
     <div className="file-viewer-ai-controls" role="group" aria-label={t("fileViewer.aiAssistGroup")}>
       {/* Dictionary spelling needs no model, so it is offered regardless —
-          only the two model-backed controls hide while nothing is loaded. */}
+          only the model-backed autocomplete hides while nothing is loaded. */}
       <button
         type="button"
         className={`file-viewer-ai-btn${ai.spelling ? " active" : ""}`}
@@ -6413,19 +6282,6 @@ function EditorAiControls({ ai, path }: { ai: TabAiPrefs; path: string }) {
               ]}
             />
           )}
-          {modelLoaded && <button
-            type="button"
-            className={`file-viewer-ai-btn${ai.grammar ? " active" : ""}`}
-            onClick={ai.toggleGrammar}
-            aria-pressed={ai.grammar}
-            title={
-              ai.grammar
-                ? t("fileViewer.grammarOnHint")
-                : t("fileViewer.grammarOffHint")
-            }
-          >
-            {t("fileViewer.grammarLabel")}
-          </button>}
         </>
       )}
     </div>
@@ -7310,7 +7166,6 @@ function TextView({
   } = useEditableFile(path);
   const ai = useTabAiPrefs(tabKey, type);
   const ac = ai.ac;
-  const gc = ai.gc;
   const sc = ai.sc;
   const font = useEditorFontSize(tabKey, type);
   const jump = useEditorJump(path);
@@ -7811,7 +7666,6 @@ function TextView({
             undo={undo}
             redo={redo}
             autocomplete={ac}
-            grammarCheck={gc}
             spellCheck={sc}
             fontSize={font.fontSize}
             lineHeight={font.lineHeight}
@@ -7892,7 +7746,6 @@ function MarkdownView({
   );
   const ai = useTabAiPrefs(tabKey, "markdown");
   const ac = ai.ac;
-  const gc = ai.gc;
   const sc = ai.sc;
   const fmt = useFormatter(path, draft, setDraft);
   // Imperative editor handle the formatting toolbar drives (bold/italic/TOC/…).
@@ -8308,7 +8161,6 @@ function MarkdownView({
             undo={undo}
             redo={redo}
             autocomplete={ac}
-            grammarCheck={gc}
             spellCheck={sc}
             fontSize={font.fontSize}
             lineHeight={font.lineHeight}
@@ -9224,7 +9076,6 @@ function TexView({
   const scope = useFileScope();
   const ai = useTabAiPrefs(tabKey, "tex");
   const ac = ai.ac;
-  const gc = ai.gc;
   const sc = ai.sc;
   const [compareOpen, setCompareOpen] = useState(false);
   const font = useEditorFontSize(tabKey, "tex");
@@ -9888,7 +9739,6 @@ function TexView({
               undo={undo}
               redo={redo}
               autocomplete={ac}
-              grammarCheck={gc}
               spellCheck={sc}
               texCompletions={gathered}
               fontSize={font.fontSize}
@@ -10295,7 +10145,6 @@ function TexView({
             undo={undo}
             redo={redo}
             autocomplete={ac}
-            grammarCheck={gc}
             spellCheck={sc}
             texCompletions={gathered}
             hoverPreview={hoverPreview}

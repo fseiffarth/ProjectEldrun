@@ -125,7 +125,7 @@ interface AgentInfo {
 /**
  * The tasks a loaded model can be tagged for. Each maps to a key under
  * `settings.ollama_roles`; a model wearing a tag is the one used for that task
- * (autocomplete + grammar in the editor, "Local Model" agent tabs), so several
+ * (autocomplete in the editor, "Local Model" agent tabs), so several
  * resident models can each own a different job. A task with no tag falls back to
  * the default `ollama_model`. Mirrors the consumers in `FileViewerPane`/`TabBar`.
  *
@@ -142,7 +142,6 @@ const MODEL_ROLES: Array<{ key: string; labelKey: TranslationKey; pending?: bool
   // prose; a fill-in-the-middle coder model suits code) and fall back to the
   // `autocomplete` tag, so leaving it unset keeps one model for both.
   { key: "autocomplete_prose", labelKey: "localModel.role.autocompleteProse" },
-  { key: "grammar", labelKey: "localModel.role.grammar" },
   { key: "tabs", labelKey: "localModel.role.tabs" },
   // `mail` was `pending` until Group Q; the mail assistant (#204–#208) now reads
   // this role, so the chip is live — a resident model can be pinned to it and the
@@ -337,7 +336,7 @@ function UpdateAction({
  * Hovering reveals the models currently loaded in memory (the running set from
  * `list_ollama_models_detailed`), each shown with a green "loaded" lamp. Clicking
  * a model's name makes it the default (`settings.ollama_model`); its task tags
- * (Autocomplete / Grammar / Tabs / Mail → `settings.ollama_roles`) pin individual jobs
+ * (Autocomplete / Tabs / Mail → `settings.ollama_roles`) pin individual jobs
  * to specific loaded models, so several can run different tasks in parallel. A
  * task with no tag falls back to the default model. Always shown: when Ollama
  * isn't installed (or no
@@ -869,7 +868,7 @@ export function LocalModelMenu() {
   };
 
   // When exactly one model is resident in memory, make it the model for
-  // everything — the default plus every task tag (autocomplete/grammar/tabs) —
+  // everything — the default plus every task tag (autocomplete/tabs/mail) —
   // so loading a single model "just works" without wiring each task by hand.
   // Tracked per resident model via a ref so we auto-apply once per newly-loaded
   // sole model: manual reassignments the user makes afterwards (while that model
@@ -1555,7 +1554,7 @@ export function LocalModelMenu() {
                         </span>
                       </span>
                     </button>
-                    {/* Task tags: pin this model to a job (autocomplete/grammar/
+                    {/* Task tags: pin this model to a job (autocomplete/
                         tabs/mail). Several loaded models can each own a different
                         one. A `pending` tag adds "nothing reads this yet" to its
                         tooltip — the chip must not imply a job that doesn't run. */}

@@ -1,21 +1,19 @@
-//! Dictionary-backed spell checking for the native editors — the deterministic,
-//! model-free provider beside `commands::ollama::check_grammar`'s LLM one.
+//! Dictionary-backed spell checking for the native editors — deterministic and
+//! model-free.
 //!
 //! Built on `spellbook` (helix's pure-Rust Hunspell-compatible checker), reading
 //! the system's own dictionaries (`/usr/share/hunspell` on Linux) plus any
 //! `.aff`/`.dic` pair dropped into `<state_dir>/dictionaries/`. LOCAL ONLY and
-//! opt-in per viewer type, like the model provider — but unlike it this one
-//! needs no resident model, answers in milliseconds, and is deterministic, which
-//! is what makes it the always-on-able default.
+//! opt-in per viewer type; needs no resident model, answers in milliseconds, and
+//! is deterministic.
 //!
 //! The one hard problem is that most bytes of a `.tex` or `.md` buffer are not
 //! prose: a checker fed `\includegraphics` flags the command name on every page.
 //! So the document is MASKED first — commands, math, code fences, URLs and
 //! reference keys are overwritten with spaces, character for character, so the
 //! line structure survives and every surviving token sits at its original spot.
-//! Issues are reported as `(line, bad substring)` — the same shape the LLM
-//! provider uses — so the frontend resolver (`resolveGrammarRanges`) serves both
-//! without knowing which produced an issue.
+//! Issues are reported as `(line, bad substring)`, which the frontend resolver
+//! (`resolveGrammarRanges`) maps onto the live draft.
 //!
 //! A "personal dictionary" is an append-only word list at
 //! `<state_dir>/dictionaries/personal.dic`, folded into every loaded dictionary

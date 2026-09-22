@@ -330,7 +330,7 @@ pub struct Settings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ollama_model: Option<String>,
     /// Per-task local-model assignments set from the 🧠 menu's role chips. Maps a
-    /// task key (`"autocomplete"`, `"autocomplete_prose"`, `"grammar"`, `"tabs"`,
+    /// task key (`"autocomplete"`, `"autocomplete_prose"`, `"tabs"`,
     /// `"mail"`) to the model name that serves it (`autocomplete_prose` is plain
     /// text/Markdown/TeX, falling back to `autocomplete`), so several loaded models can run different jobs in
     /// parallel. Optional + flat so older settings files round-trip cleanly; a
@@ -805,10 +805,6 @@ pub struct ViewerPref {
     /// `"sentence"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub autocomplete_mode: Option<String>,
-    /// Whether the local-model grammar/spelling check is enabled for this type.
-    /// Like `autocomplete`, defaults OFF (no model call unless explicitly on).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub grammar_check: Option<bool>,
     /// Whether the dictionary (Hunspell) spell check is enabled for this type.
     /// Defaults OFF like its siblings — not for privacy (it calls no model),
     /// but because red underlines nobody asked for are noise in a code editor.
@@ -816,8 +812,8 @@ pub struct ViewerPref {
     pub spell_check: Option<bool>,
     /// Whether the TeX editor typesets the snippet under the pointer and shows
     /// it in a hover card (#tex-hover-preview). Only the `"tex"` entry reads it.
-    /// Absent means ON — unlike `autocomplete`/`grammar_check` above, which are
-    /// opt-in because they call a model; this runs the local TeX engine the
+    /// Absent means ON — unlike `autocomplete` above, which is
+    /// opt-in because it calls a model; this runs the local TeX engine the
     /// viewer is already built around, on a fragment, only after the pointer has
     /// rested. Set `false` to stop hovering from compiling anything.
     #[serde(default, skip_serializing_if = "Option::is_none")]
