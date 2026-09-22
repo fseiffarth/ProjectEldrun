@@ -89,7 +89,7 @@ import {
   type TabLocation,
 } from "../../stores/tabs";
 import { busyStateClass, useActivityStore } from "../../stores/activity";
-import type { DetachedRemoteInfo } from "../../stores/detached";
+import { detachedNewTabCwd, type DetachedRemoteInfo } from "../../stores/detached";
 import {
   TabSourceBadge,
   TabStatusMark,
@@ -2057,16 +2057,17 @@ export function DetachedCenterPanel({
         )}
       </div>
       {dropActive && <div className="detached-drop-target" />}
-      {/* #42: the "+" add-tab menu for the group that opened it. cwd comes from a
-          tab already in that group (the popout's project directory). */}
+      {/* #42: the "+" add-tab menu for the group that opened it. cwd is the
+          main window's own new-tab folder (`detachedNewTabCwd`), not the active
+          tab's — a viewer tab's cwd is its file's folder. */}
       {addMenu &&
         (() => {
           const g = findGroup(tree, addMenu.groupId);
           if (!g) return null;
-          const cwd =
-            byKey.get(g.activeKey ?? g.tabKeys[0] ?? "")?.cwd ??
-            g.tabKeys.map((k) => byKey.get(k)?.cwd).find(Boolean) ??
-            "";
+          const cwd = detachedNewTabCwd(scope, remoteInfo, [
+            byKey.get(g.activeKey ?? g.tabKeys[0] ?? "")?.cwd,
+            ...g.tabKeys.map((k) => byKey.get(k)?.cwd),
+          ]);
           return (
             <NewTabMenu
               scope={scope}
