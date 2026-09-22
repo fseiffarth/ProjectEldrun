@@ -177,6 +177,7 @@ export const UNTESTED = {
   "projectSwitcher.addProjectsToBox": { area: "layout", what: "ProjectSwitcher · Add projects to Box" },
   "projectSwitcher.hpcPipeline": { area: "layout", what: "ProjectSwitcher · HPC pipeline…" },
   "projectSwitcher.newBox": { area: "layout", what: "ProjectSwitcher · New Box" },
+  "overlayApprovals.button": { area: "layout", what: "OverlayApprovals · ✓ Approvals in the mail / calendar / to-do title bars" },
   "rootOverlay.viewers": { area: "layout", what: "RootOverlay · viewers, Files tabs and links opened in the console stay in root" },
   "rootOverlay.1": { area: "layout", what: "RootOverlay · ⚿ Eldrun tools + ✓ Approvals" },
   "rootReview.icsImport": { area: "layout", what: "RootReviewStrip · Calendar file staged by calendar_import_ics" },

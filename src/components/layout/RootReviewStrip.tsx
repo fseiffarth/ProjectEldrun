@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useRootReviewStore, type RootProposal, type ReviewRow } from "../../stores/rootReview";
+import { useMemo, useState } from "react";
+import { useRootReviewStore, type RootProposal, type ReviewRow, type StagedIcsImport } from "../../stores/rootReview";
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
 import { useMailStore } from "../../stores/mail";
@@ -49,6 +49,27 @@ function RowDiff({ row }: { row: ReviewRow }) {
     </table>
   </div>;
 }
+/** The overlay a proposal belongs to, read off its tool's family
+ *  (`services::root_mcp_security` names them `calendar_*`, `todo_*`, `mail_*`). */
+export type ReviewDomain = "mail" | "calendar" | "todo";
+function inDomain(tool: string, domain?: ReviewDomain) {
+  return !domain || tool.startsWith(`${domain}_`);
+}
+/** What one overlay's ✓ Approvals shows: its own tools' proposals, plus the
+ *  agent mail drafts (mail) or staged `.ics` files (calendar). No domain is
+ *  the root console's view — everything. */
+export function useDomainReview(domain?: ReviewDomain) {
+  const allProposals = useRootReviewStore((s) => s.proposals);
+  const allImports = useRootReviewStore((s) => s.imports);
+  const allDrafts = useMailStore((s) => s.agentDrafts);
+  const proposals = useMemo(() => allProposals.filter((p) => inDomain(p.tool, domain)), [allProposals, domain]);
+  const imports = !domain || domain === "calendar" ? allImports : NONE_IMPORTS;
+  const drafts = !domain || domain === "mail" ? allDrafts : NONE_DRAFTS;
+  const waiting = proposals.filter((p) => p.status === "pending").length + imports.length + drafts.length;
+  return { proposals, imports, drafts, waiting };
+}
+const NONE_IMPORTS: StagedIcsImport[] = [];
+const NONE_DRAFTS: ReturnType<typeof useMailStore.getState>["agentDrafts"] = [];
 /**
  * The proposals themselves. It used to sit under the console's title bar as a
  * permanent strip, taking a slice of the terminals' height to say "(0)" most of
@@ -64,11 +85,12 @@ function RowDiff({ row }: { row: ReviewRow }) {
  * for the status. Only the proposal's own parts (the diff table, the ✓/✗
  * glyphs) are drawn here.
  */
-export function RootReviewStrip({ advisory = false }: { advisory?: boolean }) {
+export function RootReviewStrip({ advisory = false, domain }: { advisory?: boolean; domain?: ReviewDomain }) {
   const t = useT();
-  const { proposals, imports, count, error, busy, decide, applyAll, importStaged, discardStaged } = useRootReviewStore();
+  const { error, busy, decide, applyAll, importStaged, discardStaged } = useRootReviewStore();
+  const { proposals, imports, drafts } = useDomainReview(domain);
   const pending = proposals.filter((p) => p.status === "pending");
-  const drafts = useMailStore((s) => s.agentDrafts);
+  const count = pending.length;
   const isOpen = (p: RootProposal) => p.status === "pending" || p.status === "conflicted";
   const open = proposals.filter(isOpen).sort((a, b) => Number(b.status === "pending") - Number(a.status === "pending"));
   const decided = proposals.filter((p) => !isOpen(p));

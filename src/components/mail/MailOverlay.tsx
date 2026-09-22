@@ -4,6 +4,7 @@ import { useExperimental } from "../../lib/experimental";
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
 import { useFloatingFrame } from "../common/useFloatingFrame";
+import { OverlayApprovals } from "../layout/OverlayApprovals";
 import { MailPane } from "./MailPane";
 
 /**
@@ -37,7 +38,8 @@ export function MailOverlayHost() {
   useEffect(() => {
     if (!live) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      // An Escape the approvals panel (or anything else) already took is not ours.
+      if (e.key === "Escape" && !e.defaultPrevented) {
         e.stopPropagation();
         useMailStore.getState().closeOverlay();
       }
@@ -80,6 +82,7 @@ export function MailOverlayHost() {
           <h2>
             {t("mail.overlayTitle")} <UntestedTag id="mail.overlayTitle" />
           </h2>
+          <OverlayApprovals domain="mail" />
           {fillButton}
           <button
             type="button"

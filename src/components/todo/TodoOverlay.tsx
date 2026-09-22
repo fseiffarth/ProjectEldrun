@@ -5,6 +5,7 @@ import { useTodoStore } from "../../stores/todo";
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
 import { useFloatingFrame } from "../common/useFloatingFrame";
+import { OverlayApprovals } from "../layout/OverlayApprovals";
 import { TodoPane } from "./TodoPane";
 
 /**
@@ -41,7 +42,8 @@ export function TodoOverlayHost() {
   useEffect(() => {
     if (!live) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      // An Escape the approvals panel (or anything else) already took is not ours.
+      if (e.key === "Escape" && !e.defaultPrevented) {
         e.stopPropagation();
         useTodoStore.getState().closeOverlay();
       }
@@ -78,6 +80,7 @@ export function TodoOverlayHost() {
           <h2>
             {t("todo.overlayTitle")} <UntestedTag id="todo.overlayTitle" />
           </h2>
+          <OverlayApprovals domain="todo" />
           {fillButton}
           <button
             type="button"

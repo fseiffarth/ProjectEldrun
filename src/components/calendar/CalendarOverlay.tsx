@@ -4,6 +4,7 @@ import { useSettingsStore } from "../../stores/settings";
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
 import { useFloatingFrame } from "../common/useFloatingFrame";
+import { OverlayApprovals } from "../layout/OverlayApprovals";
 import { CalendarPane } from "./CalendarPane";
 
 /**
@@ -29,7 +30,8 @@ export function CalendarOverlayHost() {
   useEffect(() => {
     if (!live) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      // An Escape the approvals panel (or anything else) already took is not ours.
+      if (e.key === "Escape" && !e.defaultPrevented) {
         e.stopPropagation();
         useCalendarStore.getState().closeOverlay();
       }
@@ -70,6 +72,7 @@ export function CalendarOverlayHost() {
           <h2>
             {t("calendar.overlayTitle")} <UntestedTag id="calendar.overlayTitle" />
           </h2>
+          <OverlayApprovals domain="calendar" />
           {fillButton}
           <button
             type="button"
