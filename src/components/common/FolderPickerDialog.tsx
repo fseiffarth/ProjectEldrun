@@ -1,3 +1,4 @@
+import { useModalFocus } from "../../hooks/useModalFocus";
 import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
@@ -111,21 +112,10 @@ export function FolderPickerDialog({ initialPath, boundPath, title, confirmLabel
     setName(nameInitial ?? "");
   }, [nameInitial]);
 
-  // Escape closes, mirroring the app's other modals — an open "New folder"
-  // row first.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      if (newFolder !== null) {
-        setNewFolder(null);
-        setCreateError(null);
-      } else {
-        onClose();
-      }
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose, newFolder]);
+  const modalRef = useModalFocus(() => {
+    if (newFolder !== null) { setNewFolder(null); setCreateError(null); }
+    else onClose();
+  });
 
   const cur = listing?.path ?? initialPath ?? "";
 
@@ -148,8 +138,13 @@ export function FolderPickerDialog({ initialPath, boundPath, title, confirmLabel
   };
 
   return createPortal(
-    <div className="modal-backdrop" onMouseDown={onClose}>
+    <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div
+        ref={modalRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
         className="settings-dialog folder-picker-dialog"
         onMouseDown={(e) => e.stopPropagation()}
       >

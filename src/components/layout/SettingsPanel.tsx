@@ -1,3 +1,5 @@
+import { HOW_TO_START_STEPS, focusModeTip } from "../../lib/shortcuts/hints";
+import { useModalFocus } from "../../hooks/useModalFocus";
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -72,6 +74,7 @@ import {
   SettingsHeader,
   SettingsList,
   SettingsSection,
+  SettingsNavigation,
   ToggleCard,
   ToggleRow,
 } from "./settingsUi";
@@ -659,7 +662,7 @@ function ArchivedProjectsPanel({ onBack, onClose }: SubPanelProps) {
                       value={typed}
                       onChange={(e) => setTyped(e.target.value)}
                       onKeyDown={(e) => {
-                        if (e.key === "Escape") resetConfirm();
+                        if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); resetConfirm(); }
                       }}
                     />
                     <button type="button" className="settings-btn sm" onClick={resetConfirm} disabled={rowBusy}>{t("common.cancel")}</button>
@@ -703,7 +706,7 @@ function ArchivedProjectsPanel({ onBack, onClose }: SubPanelProps) {
               value={clearTyped}
               onChange={(e) => setClearTyped(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Escape") { setClearing(false); setClearTyped(""); }
+                if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setClearing(false); setClearTyped(""); }
               }}
             />
             <button type="button" className="settings-btn sm" onClick={() => { setClearing(false); setClearTyped(""); }}>{t("common.cancel")}</button>
@@ -794,6 +797,14 @@ function HelpPanel({ onBack, onClose }: SubPanelProps) {
       <div className="dialog-scroll">
 
       <p className="settings-help">{t("help.intro")}</p>
+      <SettingsSection title={t("settings.howToStart")} />
+      <SettingsCard>
+        <dl className="help-list">
+          {HOW_TO_START_STEPS.map((step) => <div className="help-row" key={step.titleKey}>
+            <dt>{t(step.titleKey)}</dt><dd>{t(step.bodyKey, { tip: focusModeTip(t) })}</dd>
+          </div>)}
+        </dl>
+      </SettingsCard>
 
       {HELP_SECTIONS.map((section) => (
         <div key={section.titleKey} className="help-section">
@@ -835,6 +846,8 @@ const SETTINGS_NAV: Exclude<SettingsPanelKind, "main" | "ollama">[] = [
   "help",
 ];
 
+const MAIN_SECTIONS = ["general", "mobile", "remoteFeatures", "experimental", "resourceMonitor", "clock", "calendar", "browser", "hintsOnboarding", "layout", "downloads", "usageStats", "moreSettings"] as const;
+
 export function SettingsDialog({
   onClose,
   initialPanel = "main",
@@ -848,11 +861,20 @@ export function SettingsDialog({
   initialAnchor?: string;
 }) {
   const { settings, setTheme, setLanguage, updateSettings } = useSettingsStore();
-  const [panel, setPanel] = useState<SettingsPanelKind>(initialPanel);
+  const [panel, changePanel] = useState<SettingsPanelKind>(initialPanel);
+  const mainScroll = useRef(0);
+  const pendingAnchor = useRef(initialAnchor);
+  const lastInitialAnchor = useRef(initialAnchor);
+  const [category, setCategory] = useState(initialAnchor ?? "settings-anchor-general");
+  const setPanel = (next: SettingsPanelKind) => {
+    if (panel === "main") mainScroll.current = modalRef.current?.querySelector(".dialog-scroll")?.scrollTop ?? 0;
+    changePanel(next);
+  };
   // The theme customizer is a window of its own, not a sub-panel: it is opened
   // INSTEAD of this dialog (‹ Back returns here), so the palette it edits is
   // not judged through the settings scroll sitting on top of it.
   const [showCustomizer, setShowCustomizer] = useState(false);
+  const modalRef = useModalFocus(onClose, !showCustomizer);
   const t = useT();
 
   const currentTheme = (settings?.color_scheme ?? "fancy_dark") as Theme;
@@ -880,13 +902,33 @@ export function SettingsDialog({
     return energyMode === "off" ? t("settings.energyOff") : t("settings.energyInactive");
   })();
 
-  // Deep link: jump the scroll to the requested section once it is on screen.
-  // Runs on the panel too, not just on mount, so a ‹ Back out of a sub-panel
-  // returns to the section the link asked for rather than to the top.
   useEffect(() => {
-    if (!initialAnchor || panel !== "main") return;
-    document.getElementById(initialAnchor)?.scrollIntoView({ block: "start" });
-  }, [initialAnchor, panel]);
+    if (lastInitialAnchor.current !== initialAnchor) {
+      lastInitialAnchor.current = initialAnchor;
+      pendingAnchor.current = initialAnchor;
+    }
+    if (showCustomizer || panel !== "main") return;
+    const scroll = modalRef.current?.querySelector(".dialog-scroll");
+    if (scroll) scroll.scrollTop = mainScroll.current;
+    if (pendingAnchor.current) {
+      document.getElementById(pendingAnchor.current)?.scrollIntoView({ block: "start" });
+      pendingAnchor.current = undefined;
+    }
+  }, [initialAnchor, panel, showCustomizer, modalRef]);
+
+  const navigate = (value: string) => {
+    if (value.startsWith("settings-anchor-")) {
+      setCategory(value);
+      if (panel !== "main") {
+        pendingAnchor.current = value;
+        setPanel("main");
+      } else {
+        const target = document.getElementById(value);
+        target?.scrollIntoView({ block: "start" });
+        target?.focus({ preventScroll: true });
+      }
+    } else setPanel(value as SettingsPanelKind);
+  };
 
   if (showCustomizer) {
     return (
@@ -898,12 +940,18 @@ export function SettingsDialog({
   }
 
   return (
-    <div className="modal-backdrop how-to-start-backdrop" onMouseDown={onClose}>
-      <div className="settings-dialog" onMouseDown={(e) => e.stopPropagation()}>
+    <div className="modal-backdrop how-to-start-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div ref={modalRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label={t("settings.title")} className="settings-dialog settings-with-navigation" onMouseDown={(e) => e.stopPropagation()}>
+        <SettingsNavigation value={panel === "main" ? category : panel} onChange={navigate} options={[
+          ...MAIN_SECTIONS.map((key) => ({ value: `settings-anchor-${key}`, label: t(`settings.${key}` as TranslationKey) })),
+          ...[...SETTINGS_NAV, "ollama"].map((key) => ({ value: key, label: t(`nav.${key}.title` as TranslationKey) })),
+        ]} />
+        <div className="settings-panel-content">
         {panel === "main" && (
           <>
-            <SettingsHeader title={t("settings.title")} onClose={onClose} />
+            <SettingsHeader title={<>{t("settings.title")} <UntestedTag id="desktop.settingsNavigation" /></>} onClose={onClose} />
             <div className="dialog-scroll">
+            <SettingsSection title={t("settings.general")} anchor="settings-anchor-general" />
 
             <SettingRow
               label={t("settings.theme")}
@@ -923,7 +971,10 @@ export function SettingsDialog({
                 <button
                   type="button"
                   className="settings-btn"
-                  onClick={() => setShowCustomizer(true)}
+                  onClick={() => {
+                    mainScroll.current = modalRef.current?.querySelector(".dialog-scroll")?.scrollTop ?? 0;
+                    setShowCustomizer(true);
+                  }}
                 >
                   {t("settings.themeVars.open")}
                 </button>
@@ -1027,7 +1078,7 @@ export function SettingsDialog({
               help={t("settings.mobileIndicatorHelp")}
             />
 
-            <SettingsSection title={t("settings.remoteFeatures")} />
+            <SettingsSection anchor="settings-anchor-remoteFeatures" title={t("settings.remoteFeatures")} />
             <SettingsCard>
               <ToggleRow
                 label={t("settings.vpnEnabled")}
@@ -1081,7 +1132,7 @@ export function SettingsDialog({
             />
 
             <SettingsSection
-              title={t("settings.experimental")}
+              anchor="settings-anchor-experimental" title={t("settings.experimental")}
               help={
                 <>
                   {t("settings.experimentalHelp1")}{" "}
@@ -1199,7 +1250,7 @@ export function SettingsDialog({
                 master switch and per-account quick-toggle tags), not here. There
                 are deliberately no global per-feature toggles in this panel. */}
 
-            <SettingsSection title={t("settings.resourceMonitor")} />
+            <SettingsSection anchor="settings-anchor-resourceMonitor" title={t("settings.resourceMonitor")} />
             <SettingsCard>
               <ToggleRow
                 label={t("settings.showCpu")}
@@ -1237,7 +1288,7 @@ export function SettingsDialog({
 
             {/* The clock lives in its own section, not under Resource monitor:
                 seconds and the 12/24-hour face are time, not CPU/RAM/GPU. */}
-            <SettingsSection title={t("settings.clock")} />
+            <SettingsSection anchor="settings-anchor-clock" title={t("settings.clock")} />
             <SettingsCard>
               <ToggleRow
                 label={t("settings.showClockSeconds")}
@@ -1259,7 +1310,7 @@ export function SettingsDialog({
               <p className="settings-help">{t("settings.clock24Help")}</p>
             </SettingsCard>
 
-            <SettingsSection title={t("settings.calendar")} />
+            <SettingsSection anchor="settings-anchor-calendar" title={t("settings.calendar")} />
 
             {/* The calendar's twin of "Mail in the header". Not nested under
                 anything: the calendar is shipped, not experimental. */}
@@ -1349,7 +1400,7 @@ export function SettingsDialog({
                 are the backend's and are not configurable — a "trusted sites"
                 list or an "ignore certificate errors" switch is exactly the kind
                 of relaxation that outlives the reason for it, so none exists. */}
-            <SettingsSection title={<>{t("settings.browser")} <UntestedTag id="settings.browser" /></>} />
+            <SettingsSection anchor="settings-anchor-browser" title={<>{t("settings.browser")} <UntestedTag id="settings.browser" /></>} />
             <SettingRow
               htmlFor="browser-home-url"
               label={t("settings.browserHome")}
@@ -1412,7 +1463,7 @@ export function SettingsDialog({
               help={t("settings.browserLivePagesHelp")}
             />
 
-            <SettingsSection title={t("settings.hintsOnboarding")} />
+            <SettingsSection anchor="settings-anchor-hintsOnboarding" title={t("settings.hintsOnboarding")} />
             <ToggleCard
               label={t("settings.showHints")}
               checked={settings?.hints_enabled ?? true}
@@ -1469,7 +1520,7 @@ export function SettingsDialog({
             </div>
 
             <SettingsSection
-              title={<>{t("settings.layout")} <UntestedTag id="settings.layout" /></>}
+              anchor="settings-anchor-layout" title={<>{t("settings.layout")} <UntestedTag id="settings.layout" /></>}
               help={
                 <>
                   {t("settings.zoomHelp1")} <strong>{t("settings.zoomHelpBold")}</strong>
@@ -1545,7 +1596,7 @@ export function SettingsDialog({
             </SettingsCard>
 
             <SettingsSection
-              title={t("settings.downloads")}
+              anchor="settings-anchor-downloads" title={t("settings.downloads")}
               help={t("settings.downloadsHelp")}
             />
             <SettingsList boxed>
@@ -1598,7 +1649,7 @@ export function SettingsDialog({
               </button>
             </div>
 
-            <SettingsSection title={t("settings.usageStats")} />
+            <SettingsSection anchor="settings-anchor-usageStats" title={t("settings.usageStats")} />
             <ToggleCard
               label={t("settings.dailyRecap")}
               checked={settings?.daily_stats_recap ?? true}
@@ -1618,7 +1669,7 @@ export function SettingsDialog({
               </button>
             </div>
 
-            <SettingsSection title={t("settings.moreSettings")} />
+            <SettingsSection anchor="settings-anchor-moreSettings" title={t("settings.moreSettings")} />
             <div className="settings-nav-list">
               {SETTINGS_NAV.map((panelKind) => (
                 <button
@@ -1651,6 +1702,7 @@ export function SettingsDialog({
         {panel === "scaffoldRepair" && <ScaffoldRepairPanel onBack={() => setPanel("main")} onClose={onClose} />}
         {panel === "updates" && <UpdatesPanel onBack={() => setPanel("main")} onClose={onClose} />}
         {panel === "help" && <HelpPanel onBack={() => setPanel("main")} onClose={onClose} />}
+        </div>
       </div>
     </div>
   );

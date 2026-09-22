@@ -140,6 +140,39 @@ describe("new project with git hosting", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it("explains a missing name and keeps entered values and operation errors beside the fixed actions after failure", async () => {
+    stubBackend({ create_project: new Error("Disk full") });
+    const onClose = vi.fn();
+    await act(async () => {
+      render(<ProjectDialog kind="new" onClose={onClose} onProject={() => {}} />);
+    });
+    const name = screen.getByPlaceholderText("my-project") as HTMLInputElement;
+    expect(name.getAttribute("aria-invalid")).toBe("true");
+    expect(document.getElementById(name.getAttribute("aria-describedby")!)?.textContent).toBe("Enter a project name.");
+    expect((screen.getByRole("button", { name: "Create" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(name, { target: { value: "Keep my name" } });
+    const description = screen.getByPlaceholderText("What this project is for") as HTMLTextAreaElement;
+    fireEvent.change(description, { target: { value: "Keep my description" } });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Create" })); });
+    expect(name.value).toBe("Keep my name");
+    expect(description.value).toBe("Keep my description");
+    const error = screen.getByRole("alert");
+    expect(error.textContent).toContain("Disk full");
+    expect(error.closest(".dialog-scroll")).toBeNull();
+    expect(screen.getByRole("button", { name: "Create" }).closest(".dialog-scroll")).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("associates an invalid clone URL with its guidance and leaves import disabled", async () => {
+    stubBackend();
+    await act(async () => { render(<ProjectDialog kind="import" initialImportSource="git" onClose={() => {}} onProject={() => {}} />); });
+    const url = screen.getByPlaceholderText("https://github.com/owner/repo.git");
+    fireEvent.change(url, { target: { value: "not-a-repository" } });
+    expect(url.getAttribute("aria-invalid")).toBe("true");
+    expect(document.getElementById(url.getAttribute("aria-describedby")!)?.textContent).toBe("Enter a repository URL to clone or fork.");
+    expect((screen.getByRole("button", { name: /Clone.*import/i }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it("leaves a plain local repo alone", async () => {
     stubBackend();
     await act(async () => {

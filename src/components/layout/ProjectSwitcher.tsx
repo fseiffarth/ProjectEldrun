@@ -1,3 +1,4 @@
+import { useHeaderMenu } from "../../hooks/useHeaderMenu";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -76,26 +77,12 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   // "clone" is the import dialog opened straight onto its GitHub/GitLab source —
   // the same dialog, so the source can still be switched back inside it.
   const [dialog, setDialog] = useState<"new" | "import" | "clone" | "bundle" | null>(null);
-  const addMenuRef = useRef<HTMLDivElement>(null);
-  // The + menu is the switcher's ONLY menu now (the ⚙ moved into the header's
-  // global cluster as `header/SettingsMenu`), and it rides the SHARED header
-  // hover-menu id like every other menu in this bar. It used to run on its own
-  // timer, which is what let it render *alongside* a cluster menu the pointer
-  // had already moved to: one menu's 250 ms closing grace is the other menu's
-  // opening frame. See stores/headerHoverMenu.
-  const showAddMenu = useHeaderHoverMenuStore((s) => s.openId === ADD_MENU_ID);
-  const openHeaderMenu = useHeaderHoverMenuStore((s) => s.open);
+  const addMenu = useHeaderMenu(ADD_MENU_ID);
+  const showAddMenu = addMenu.open;
   const closeHeaderMenu = useHeaderHoverMenuStore((s) => s.close);
-  const addCloseTimer = useRef<number | undefined>(undefined);
-
   const revealAddMenu = () => {
     setShowSettings(false);
-    window.clearTimeout(addCloseTimer.current);
-    openHeaderMenu(ADD_MENU_ID);
-  };
-  const scheduleCloseAddMenu = () => {
-    window.clearTimeout(addCloseTimer.current);
-    addCloseTimer.current = window.setTimeout(() => closeHeaderMenu(ADD_MENU_ID), 250);
+    addMenu.reveal();
   };
 
   useEffect(() => {
@@ -106,25 +93,6 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
     }
   }, [open, closeHeaderMenu]);
 
-  // Dismiss the + dropdown on any pointer press outside its wrap (the wrap
-  // stopPropagations, so the in-bar onClick alone never catches a click
-  // elsewhere in the app) or on Escape. Mirrors common/Dropdown.tsx.
-  useEffect(() => {
-    if (!showAddMenu) return;
-    const onDocPointer = (e: PointerEvent) => {
-      if (addMenuRef.current?.contains(e.target as Node)) return;
-      closeHeaderMenu(ADD_MENU_ID);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closeHeaderMenu(ADD_MENU_ID);
-    };
-    document.addEventListener("pointerdown", onDocPointer);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("pointerdown", onDocPointer);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [showAddMenu, closeHeaderMenu]);
   const pillsScrollRef = useRef<HTMLDivElement>(null);
   const [pillOverflow, setPillOverflow] = useState({ left: false, right: false });
 
@@ -662,13 +630,17 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
 
         <div
           className="project-switcher-add-wrap"
-          ref={addMenuRef}
+          ref={addMenu.ref}
+          onKeyDown={addMenu.onKeyDown}
+          onBlur={addMenu.onBlur}
           onClick={(e) => e.stopPropagation()}
           onMouseEnter={revealAddMenu}
-          onMouseLeave={scheduleCloseAddMenu}
+          onMouseLeave={addMenu.scheduleClose}
         >
           <button
+            type="button"
             className="project-switcher-add-btn"
+            aria-label={t(currentBox ? "projectSwitcher.addProjectsToBox" : "projectSwitcher.addOrImport")}
             data-hint-anchor="add-project"
             title={t(currentBox
               ? "projectSwitcher.addProjectsToBox"
@@ -678,7 +650,8 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
             // click also fires mouseenter, so a toggle here would open on enter and
             // immediately shut.
             onClick={revealAddMenu}
-            onFocus={revealAddMenu}
+            aria-haspopup="menu"
+            aria-expanded={showAddMenu}
           >
             +
           </button>

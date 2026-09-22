@@ -1,3 +1,4 @@
+import { useModalFocus } from "../../hooks/useModalFocus";
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Toggle } from "../common/Toggle";
@@ -174,6 +175,7 @@ export function ProjectDialog({
   // The project this one would land on top of, if any (see the pre-check effect).
   const [conflict, setConflict] = useState<ProjectConflict | null>(null);
   const [busy, setBusy] = useState(false);
+  const modalRef = useModalFocus(onClose);
   // Whether `git` is on PATH on this machine. `null` while still probing (never
   // block submit or show the install banner on that transient state); checked
   // once per dialog open since installing git mid-dialog is rare enough not to
@@ -1005,6 +1007,11 @@ export function ProjectDialog({
   // remote-basics block for a remote project (so name/description are editable
   // from the moment SSH is toggled on), and inside the details section for a local
   // project. Extracted so the markup isn't duplicated between the two placements.
+  const nameError = pendingPublish ? "" : !name.trim() ? t("projectDialog.nameRequired")
+    : !safeName && (isVmProject || kind === "new" || isCloneImport || (!isRemoteProject && mode !== "keep"))
+      ? t("projectDialog.nameInvalid") : "";
+  const urlError = !pendingPublish && isCloneImport && !isCloneUrl(repoUrl) ? t("projectDialog.urlRequired") : "";
+
   const nameField = (
     <label>
       {t("projectDialog.projectNameLabel")}
@@ -1013,13 +1020,15 @@ export function ProjectDialog({
         // focus belongs there — two autoFocus inputs would fight over it.
         autoFocus={!isCloneImport}
         value={name}
+        aria-invalid={!!nameError}
+        aria-describedby={nameError ? "project-name-error" : undefined}
         placeholder="my-project"
         onChange={(e) => setName(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter" && canSubmit && !busy) void submit();
-          if (e.key === "Escape") onClose();
         }}
       />
+      {nameError && <span id="project-name-error" className="ssh-optional-hint">{nameError}</span>}
     </label>
   );
 
@@ -1046,21 +1055,19 @@ export function ProjectDialog({
         placeholder={t("projectDialog.descriptionPlaceholder")}
         rows={3}
         onChange={(e) => setDescription(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") onClose();
-        }}
       />
     </label>
   );
 
   return (
-    <div className="modal-backdrop" onMouseDown={onClose}>
-      <div className="project-dialog dialog-framed" onMouseDown={(e) => e.stopPropagation()}>
+    <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div ref={modalRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="project-dialog-title" className="project-dialog dialog-framed" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-title-row">
-          <h2>{kind === "new" ? t("projectDialog.titleNew") : t("projectDialog.titleImport")}</h2>
-          <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
+          <h2 id="project-dialog-title">{kind === "new" ? t("projectDialog.titleNew") : t("projectDialog.titleImport")} <UntestedTag id="desktop.projectForms" /></h2>
+          <button type="button" className="dialog-close-btn" aria-label={t("common.close")} onClick={onClose}>×</button>
         </div>
         <div className="dialog-scroll">
+        <h3 className="project-form-heading">{t("projectDialog.groupLocation")}</h3>
 
         <label className={`toggle-card${isRemoteProject ? " is-on" : ""}`}>
           <span className="toggle-card-body">
@@ -1090,8 +1097,10 @@ export function ProjectDialog({
               {t("projectDialog.localLocationLabel")}
               <div className="folder-picker-row">
                 <span title={mirrorParent}>{mirrorParent || t("projectDialog.noFolderSelected")}</span>
-                <button type="button" onClick={chooseLocalMirrorLocation}>{t("projectDialog.browseBtn")}</button>
+                <button type="button" aria-describedby={!mirrorParent && !isVmProject && !pendingPublish ? "project-mirrorParent-error" : undefined} onClick={chooseLocalMirrorLocation}>{t("projectDialog.browseBtn")}</button>
               </div>
+              {!mirrorParent && !isVmProject && !pendingPublish && <span id="project-mirrorParent-error" className="ssh-optional-hint">{t("projectDialog.folderRequired")}</span>}
+
               <span className="ssh-optional-hint">
                 {t("projectDialog.localMirrorHint", { name: safeName || "<name>" })}
               </span>
@@ -1132,8 +1141,10 @@ export function ProjectDialog({
             {t("projectDialog.sourceFolderLabel")}
             <div className="folder-picker-row">
               <span title={sourceDir}>{sourceDir || t("projectDialog.noFolderSelected")}</span>
-              <button type="button" onClick={chooseFolder}>{t("projectDialog.browseBtn")}</button>
+              <button type="button" aria-describedby={!sourceDir && !isVmProject && !pendingPublish ? "project-sourceDir-error" : undefined} onClick={chooseFolder}>{t("projectDialog.browseBtn")}</button>
             </div>
+              {!sourceDir && !isVmProject && !pendingPublish && <span id="project-sourceDir-error" className="ssh-optional-hint">{t("projectDialog.folderRequired")}</span>}
+
           </label>
         )}
 
@@ -1143,13 +1154,15 @@ export function ProjectDialog({
             <input
               autoFocus
               value={repoUrl}
+              aria-invalid={!!urlError}
+              aria-describedby={urlError ? "project-url-error" : undefined}
               placeholder="https://github.com/owner/repo.git"
               onChange={(e) => setRepoUrlAndName(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && canSubmit && !busy) void submit();
-                if (e.key === "Escape") onClose();
               }}
             />
+            {urlError && <span id="project-url-error" className="ssh-optional-hint">{urlError}</span>}
             <span className="ssh-optional-hint">
               {isForkImport ? (
                 <>
@@ -1222,8 +1235,10 @@ export function ProjectDialog({
             {t("projectDialog.locationLabel")}
             <div className="folder-picker-row">
               <span title={projectsRoot}>{projectsRoot || t("projectDialog.noFolderSelected")}</span>
-              <button type="button" onClick={chooseLocation}>{t("projectDialog.browseBtn")}</button>
+              <button type="button" aria-describedby={!projectsRoot && !isVmProject && !pendingPublish ? "project-projectsRoot-error" : undefined} onClick={chooseLocation}>{t("projectDialog.browseBtn")}</button>
             </div>
+              {!projectsRoot && !isVmProject && !pendingPublish && <span id="project-projectsRoot-error" className="ssh-optional-hint">{t("projectDialog.folderRequired")}</span>}
+
             {isCloneImport && (
               <span className="ssh-optional-hint">
                 {isForkImport ? t("projectDialog.cloneDestYourFork") : t("projectDialog.cloneDestTheRepo")} {t("projectDialog.cloneDestMid")}{" "}
@@ -1238,6 +1253,7 @@ export function ProjectDialog({
         {!isRemoteProject && nameField}
         {!isRemoteProject && descriptionField}
 
+        <h3 className="project-form-heading">{t("projectDialog.gitHostingLabel")}</h3>
         <label>
           {t("projectDialog.gitHostingLabel")}
           <Dropdown
@@ -1377,37 +1393,7 @@ export function ProjectDialog({
           </div>
         )}
 
-        {kind === "import" && !isRemoteProject && importSource === "folder" && (
-          <label>
-            {t("projectDialog.importModeLabel")}
-            <Dropdown
-              className="dropdown-block"
-              value={mode}
-              onChange={setMode}
-              options={[
-                { value: "keep", label: t("projectDialog.modeKeepOpt") },
-                { value: "copy", label: t("projectDialog.modeCopyOpt") },
-                { value: "move", label: t("projectDialog.modeMoveOpt") },
-              ]}
-            />
-          </label>
-        )}
-
-        {kind === "import" && isRemoteProject && (
-          <div className="project-dialog-path">
-            {t("projectDialog.remoteImportKeepsFolder")}
-          </div>
-        )}
-
-        <label className="skip-scaffold-row">
-          <Toggle
-            size="sm"
-            checked={skipScaffold}
-            onChange={(e) => setSkipScaffold(e.target.checked)}
-          />
-          {t("projectDialog.skipScaffoldLabel")}
-        </label>
-
+        {(containerAvailable || vmSelectable || runInContainer || isVmProject || bootingVm) && <h3 className="project-form-heading">{t("projectDialog.groupExecution")}</h3>}
         {(containerAvailable || vmSelectable) && (
           <label title={t("projectDialog.trustTierTitle")}>
             {t("projectDialog.trustTierLabel")}
@@ -1487,6 +1473,50 @@ export function ProjectDialog({
           <div className="project-dialog-path">{t("projectDialog.vmBooting")}</div>
         )}
 
+        <h3 className="project-form-heading">{t("projectDialog.groupSetup")}</h3>
+        {kind === "import" && !isRemoteProject && importSource === "folder" && (
+          <label>
+            {t("projectDialog.importModeLabel")}
+            <Dropdown
+              className="dropdown-block"
+              value={mode}
+              onChange={setMode}
+              options={[
+                { value: "keep", label: t("projectDialog.modeKeepOpt") },
+                { value: "copy", label: t("projectDialog.modeCopyOpt") },
+                { value: "move", label: t("projectDialog.modeMoveOpt") },
+              ]}
+            />
+          </label>
+        )}
+
+        {kind === "import" && isRemoteProject && (
+          <div className="project-dialog-path">
+            {t("projectDialog.remoteImportKeepsFolder")}
+          </div>
+        )}
+
+        <label className="skip-scaffold-row">
+          <Toggle
+            size="sm"
+            checked={skipScaffold}
+            onChange={(e) => setSkipScaffold(e.target.checked)}
+          />
+          {t("projectDialog.skipScaffoldLabel")}
+        </label>
+
+        {kind === "import" && !isRemoteProject && importSource === "folder" && mode !== "keep" && (
+          <label className="manual-validation-row">
+            <Toggle
+              size="sm"
+              aria-describedby={!manualValidationConfirmed ? "project-validation-error" : undefined}
+              checked={manualValidationConfirmed}
+              onChange={(e) => setManualValidationConfirmed(e.target.checked)}
+            />
+            {mode === "copy" ? t("projectDialog.manualValidationCopy") : t("projectDialog.manualValidationMove")}
+            {!manualValidationConfirmed && <span id="project-validation-error" className="ssh-optional-hint">{t("projectDialog.validationRequired")}</span>}
+          </label>
+        )}
         {/* The scaffold preview reads the source folder off the disk, so it only
             applies to a folder import — a clone's tree doesn't exist yet. Missing
             scaffold files are still written after the clone (unless skipped);
@@ -1507,16 +1537,6 @@ export function ProjectDialog({
               <li>{t("projectDialog.stepWriteProjectJson")}</li>
             </ol>
 
-            {mode !== "keep" && (
-              <label className="manual-validation-row">
-                <Toggle
-                  size="sm"
-                  checked={manualValidationConfirmed}
-                  onChange={(e) => setManualValidationConfirmed(e.target.checked)}
-                />
-                {mode === "copy" ? t("projectDialog.manualValidationCopy") : t("projectDialog.manualValidationMove")}
-              </label>
-            )}
 
             <label className="scaffold-fill-all-row">
               <span>{t("projectDialog.fillAllLabel")}</span>
@@ -1613,10 +1633,13 @@ export function ProjectDialog({
             </button>
           </div>
         )}
-        {error && <div className="project-dialog-error">{error}</div>}
         </>
         )}
 
+        </div>
+        <div className="dialog-fixed-footer">
+          {error && <div className="project-dialog-error" role="alert">{error}</div>}
+          {busy && <div role="status" className="project-dialog-path">{cloning ? t("projectDialog.cloningEllipsis") : publishing ? t("projectDialog.publishingEllipsis") : bootingVm ? t("projectDialog.vmBooting") : t("projectDialog.working")}</div>}
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose}>{t("common.cancel")}</button>
           {isRemoteProject && stepIdx > 0 && (

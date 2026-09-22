@@ -563,7 +563,7 @@ export function RemoteProjectSection({
                     e.preventDefault();
                     void connectSsh();
                   }
-                  if (e.key === "Escape") onClose();
+                  if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); }
                 }}
               />
             </label>
@@ -596,7 +596,7 @@ export function RemoteProjectSection({
                           e.preventDefault();
                           void connectSsh();
                         }
-                        if (e.key === "Escape") onClose();
+                        if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); }
                       }}
                     />
                     <button
@@ -652,7 +652,7 @@ export function RemoteProjectSection({
                       placeholder={t("remoteProjectSection.remotePathPlaceholder")}
                       onChange={(e) => setRemoteChosenPath(e.target.value)}
                       onKeyDown={(e) => {
-                        if (e.key === "Escape") onClose();
+                        if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); }
                       }}
                     />
                   </label>

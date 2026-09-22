@@ -1,3 +1,4 @@
+import { hasActiveModal } from "./useModalFocus";
 import { useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PLATFORM } from "../lib/window/dragPlatform";
@@ -140,6 +141,7 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
     // settings panel's chord-capture listener (window, capture phase), so
     // rebinding the steering chord itself still captures instead of toggling.
     function onSteeringKeyDown(e: KeyboardEvent) {
+      if (hasActiveModal()) return;
       const steering = useKeyboardSteeringStore.getState();
       const overrides = useSettingsStore.getState().settings
         ?.keyboard_shortcuts as ShortcutMap | undefined;
@@ -250,6 +252,7 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
     }
 
     async function onKeyDown(e: KeyboardEvent) {
+      if (hasActiveModal()) return;
       // Super key — toggle the side panels, where that key is actually ours.
       //
       // On macOS Cmd reports as "Meta" and is the platform-primary shortcut
@@ -488,6 +491,12 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
     // Commit the previewed subwindow focus when Shift is released; cancel (no
     // focus move) if the window loses focus mid-preview.
     function onKeyUp(e: KeyboardEvent) {
+      if (hasActiveModal()) {
+        superHeld = false;
+        superChorded = false;
+        cancelSuperToggle();
+        return;
+      }
       // The lone-Super toggle (armed in `onKeyDown`) lands here, after a short
       // settle: the shell that owns this key takes focus on the same release
       // (GNOME's overview, KDE's launcher), and the blur that follows cancels
@@ -501,7 +510,7 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
           cancelSuperToggle();
           superToggleTimer = window.setTimeout(() => {
             superToggleTimer = null;
-            onTogglePanels();
+            if (!hasActiveModal()) onTogglePanels();
           }, SUPER_RELEASE_SETTLE_MS);
         }
       }

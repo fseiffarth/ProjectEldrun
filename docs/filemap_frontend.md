@@ -32,16 +32,17 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `AppShell.tsx` | Top-level layout: header, center, side-panel wiring. |
 | `HeaderBar.tsx` | Window drag handle + the top bar's three zones: centre = project strip only; right = global apps (✉ 🗓 ☑), global menus (🧠 ▦ ⚙), then `header/StatusCluster`. |
 | `GlobalAppBar.tsx` | Global toolbar / app launcher (`GLOBAL_APP_ROLES`). |
-| `GlobalAppMenu.tsx` | Context menu for a global-app toolbar button. |
+| `GlobalAppMenu.tsx` | Global-app launcher with shared hover/click/keyboard navigation (`useHeaderMenu`). |
 | `CenterPanel.tsx` | Tab/subwindow tiling host; keeps all panes mounted across scope switches. |
 | `DetachedCenterPanel.tsx` | Center-panel variant inside a detached OS window. Title-strip double-click = fit-to-this-screen (`snap_detached_window`); double-click counted from `pointerdown` because the WM grab eats `dblclick`. |
 | `DetachedApp.tsx` | Root component of a popped-out subwindow (#42). Holds the no-fullscreen guard (a fullscreen popout can't be moved): F11 maximizes here instead. |
 | `DetachedCloseChoice.tsx` | What the WM ✕ on a popout asks: dock tabs back, close them, or cancel. Portaled dialog → sets an explicit color. |
 | `ProjectSwitcher.tsx` | Thin composition root of the project bar: fixed `BoxScopeChip` segment, scrolling project strip, then + / search. Re-exports scaffold helpers. |
 | `ProjectSearch.tsx` *(in `projects/`)* | Inactive-project/box search box + results popover. |
-| `ProjectDialog.tsx` *(in `projects/`)* | New/Import project dialog: local folder, GitHub/GitLab clone or fork, SSH + OpenVPN + scaffold-fill sub-flows, and the project-container question (default on for imports, off for new). |
-| `SettingsPanel.tsx` | Settings dialog + sub-panels (theme/git/layout, global apps, file-type apps, Ollama, shortcuts, help). Built entirely out of `settingsUi.tsx` — do not hand-roll a row, a card or a header here. |
-| `settingsUi.tsx` | The settings design system (`SettingsHeader/Section/Card/SettingRow/ToggleRow/ToggleCard/SettingsList`, CSS under "Settings design system"). Every settings surface is built only from these. |
+| `ProjectDialog.tsx` *(in `projects/`)* | New/Import project dialog: local folder, GitHub/GitLab clone or fork, SSH + OpenVPN + scaffold-fill sub-flows, and the project-container question (default on for imports, off for new); grouped fields, accessible requirements, pinned actions/operation feedback. |
+| `SettingsPanel.tsx` | Settings dialog + sub-panels, persistent category navigation (compact on narrow windows), Mobile deep links and main-scroll restoration. Built entirely out of `settingsUi.tsx` — do not hand-roll a row, a card or a header here. |
+| `settingsUi.tsx` | The settings design system (`SettingsNavigation/Header/Section/Card/SettingRow/ToggleRow/ToggleCard/SettingsList`, CSS under "Settings design system"). Every settings surface is built only from these. |
+| `HowToStart.tsx` | Welcome dialog: project-first shared onboarding steps, secondary learning links, pinned primary dismissal and shared modal focus. |
 | `ThemeCustomizer.tsx` | Theme Customizer: the whole palette as one editable token list (swatch, name, example, hex, reset) + corner style and saved presets; rendered instead of the Settings dialog. |
 | `UpdatesPanel.tsx` | Settings → Updates: check GitHub releases on mount (never in background), then download → install as separate steps. No path or URL crosses IPC. |
 | `layout/AgentContinueHost.tsx` + `stores/agents/agentContinue.ts` + `shared/usageReport.ts` | Auto-continue per agent tab: reads the CLI's own usage panel (`agent_usage`), submits `continue` a minute after the soonest rollover. Not a scheduler — writes nothing to `agent_tasks.json`. |
@@ -63,7 +64,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `projects/IdeMenuItems.tsx` | "Open in <IDE>" rows for the pill menu and the file tree's root menu: one per marker `detect_project_ides` reports, "(not found)" rows pick an executable (`set_ide_launcher`), launches go by IDE id only. Renders nothing for a marker-less project. |
 | `projects/ProjectPill.tsx` | Individual project pill (click/close/drag-reorder/group); "Remote machines…" opens `RemoteMachinesWindow`; VM projects get a ▣/▢ state glyph and "VM settings…". |
 | `projects/ProjectExportDialog.tsx` | "Export project…" (pill menu): measures the tree, its `.git` and its rebuildable folders separately so each toggle shows what it costs, then writes one `.eldrunproj` via the save dialog. Names what never travels (keychain secrets, machine-bound sync state). |
-| `projects/ProjectImportBundleDialog.tsx` | "Import Project File" (+ menu): reads a bundle's manifest first (nothing unpacked), shows what is in it and what is missing, then imports into a chosen folder. Refuses a remote bundle whose host folder is already a project here. |
+| `projects/ProjectImportBundleDialog.tsx` | "Import Project File" (+ menu): reads a bundle's manifest first (nothing unpacked), shows what is in it and what is missing, then imports into a chosen folder. Refuses a remote bundle whose host folder is already a project here; shared modal focus and pinned actions/errors. |
 | `projects/VmSettingsDialog.tsx` | VM tier knobs (`docs/context/vm_projects.md`): boot/shut down/rebuild, memory/cpus/disk, egress mode, GitHub/extra-host allowlist, blocked-CONNECT log. Sibling of `ContainerSettingsWindow`. |
 | `projects/HpcPipelineWizard.tsx` | Guided HPC/SLURM pipeline wizard (+ menu → "HPC pipeline…"): Login → Project → Workspace → Load data → Run job → …; composes existing flows, never reimplements them. |
 | `projects/RemoteMachinesWindow.tsx` | Unified remote hub (`docs/multi_host_remote_plan.md` §4.4): primary host first, then workers, + Add a machine (offers global machines). Connect/Manage opens the shared `RemoteConnectDialog`; workers get sync/pull-outputs/shared-fs toggles. |
@@ -196,7 +197,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `common/DateField.tsx` | The one date-entry field. Replaces `<input type="date">` (process-locale segment order; undismissable WebKitGTK popover). |
 | `common/DateTimeField.tsx` | Wall-clock instant field: `DateField` + `TimeField` + shortcut chips. Replaces `<input type="datetime-local">`; half a value is never reported. |
 | `common/SyncConfirmDialog.tsx` | The confirmation every manual byte-sync pull/push asks, mounted once per window (`AppShell` + `DetachedApp`); says which side's bytes overwrite which. |
-| `common/PromptDialogs.tsx` | The four in-app question shapes (`TextPromptDialog`, `ConfirmDialog`, `ChoiceDialog`, `MessageDialog`) on `.file-delete-dialog`, plus awaitable `useDialogs()`. Never `window.prompt/confirm/alert`. |
+| `common/PromptDialogs.tsx` | The four in-app question shapes (`TextPromptDialog`, `ConfirmDialog`, `ChoiceDialog`, `MessageDialog`) on `.file-delete-dialog`, plus awaitable `useDialogs()`; shared modal focus and Cancel as the destructive default. Never `window.prompt/confirm/alert`. |
 | `common/ExecTrustHost.tsx` + `lib/execTrust.ts` + `stores/execTrust.ts` | The ask-once "run this project's hooks / latexmkrc / prettier?" prompt; gated commands go through `invokeTrusted`. Mounted per window (AppShell, DetachedApp). |
 | `common/LocalLossDialog.tsx` | Warns that lockstep or sync **destroyed something in the local mirror** (#28q). Mounted at the shell, like the alarm popup: a background pass can delete a file while the user is three tabs away. It reports, it does not confirm — the write has already happened; the gates that prevent one live upstream. |
 | `stats/StatsRecap.tsx` | Usage recap dialog: agents/models used, prompts asked, autocomplete accept/dismiss by mode/model, file churn, commits, time per project, Day/Week/Month. |
@@ -241,7 +242,9 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `localLoss.ts` | The active project's local-loss log (#28q). Pulled from the backend's on-disk record — not pushed as an event — so a deletion during a background pass, or while the app was closed, still surfaces. |
 | `presentation.ts` | Two counters readable outside their owners: `armed` (presentation overlay has marker/laser) and `presenting` (deck presenter on screen) — so Escape goes to the right listener. |
 | `vpnStatus.ts` | Machine-level OpenVPN state keyed by config path; holder refcount (`releaseVpn`) and `markVpn*` helpers. |
-| `hooks/useKeyboard.ts` | Global keyboard-shortcut hook. |
+| `hooks/useKeyboard.ts` | Global keyboard-shortcut hook; workspace navigation pauses while a shared modal owns focus. |
+| `hooks/useModalFocus.ts` | Modal stack: focus containment/restoration, topmost Escape, visibility filtering and workspace shortcut guard. |
+| `hooks/useHeaderMenu.ts` | Shared single-open header menu behavior: hover grace, click/keyboard opening, arrow/Home/End navigation, Escape and natural Tab exit. |
 | `hooks/useListReorder.ts` + `lib/listReorder.ts` | The shared drag-a-row-into-place gesture for `{ id }[]` lists. Pointer events (not HTML5 DnD); the grip takes pointer capture. |
 | `lib/shortcuts/shortcuts.ts` | Shortcut definitions, chord parsing/resolution. |
 | `lib/agents/codexHooks.ts` | Codex hook-trust state + the one-click "open Codex on `/hooks`" fix. |

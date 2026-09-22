@@ -27,8 +27,8 @@ export interface HowToStep {
 }
 
 export const HOW_TO_START_STEPS: HowToStep[] = [
-  { titleKey: "howToStart.step1Title", bodyKey: "howToStart.step1Body" },
   { titleKey: "howToStart.step2Title", bodyKey: "howToStart.step2Body" },
+  { titleKey: "howToStart.step1Title", bodyKey: "howToStart.step1Body" },
   { titleKey: "howToStart.step3Title", bodyKey: "howToStart.step3Body" },
   { titleKey: "howToStart.step4Title", bodyKey: "howToStart.step4Body" },
 ];

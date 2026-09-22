@@ -1,3 +1,4 @@
+import { useModalFocus } from "../../hooks/useModalFocus";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   applyAccent,
@@ -397,6 +398,7 @@ export function ThemeCustomizerDialog({
   onBack?: () => void;
 }) {
   const t = useT();
+  const modalRef = useModalFocus(onClose);
   const { settings, updateSettings } = useSettingsStore();
 
   const stored = useMemo(
@@ -564,8 +566,13 @@ export function ThemeCustomizerDialog({
   };
 
   return (
-    <div className="modal-backdrop how-to-start-backdrop" onMouseDown={onClose}>
+    <div className="modal-backdrop how-to-start-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div
+        ref={modalRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("theme.title")}
         className="settings-dialog theme-customizer"
         onMouseDown={(e) => e.stopPropagation()}
       >

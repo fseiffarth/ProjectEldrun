@@ -1,3 +1,4 @@
+import { ConfirmDialog } from "../../components/common/PromptDialogs";
 /**
  * #62 — keyboard navigation DOM wiring.
  *
@@ -65,6 +66,21 @@ describe("#62 keyboard nav wiring", () => {
     useSubwindowNavStore.getState().end();
     useSettingsStore.setState({ settings: null });
     cleanup();
+  });
+
+  it("does not navigate workspace tabs behind a modal, including from a focused button", () => {
+    const store = useTabsStore.getState();
+    store.addTab({ label: "t1", cmd: "bash", cwd: "/p", kind: "shell" });
+    store.addTab({ label: "t2", cmd: "bash", cwd: "/p", kind: "shell" });
+    render(<Harness />);
+    const dialog = render(<ConfirmDialog title="Question" body="Confirm" onCancel={() => {}} onConfirm={() => {}} />);
+    const start = useTabsStore.getState().activeKey;
+    key({ key: "Tab", shiftKey: true });
+    key({ key: "ArrowRight", shiftKey: true });
+    expect(useTabsStore.getState().activeKey).toBe(start);
+    dialog.unmount();
+    key({ key: "Tab", shiftKey: true });
+    expect(useTabsStore.getState().activeKey).not.toBe(start);
   });
 
   it("Shift+Tab cycles tabs within the focused subwindow and wraps", () => {

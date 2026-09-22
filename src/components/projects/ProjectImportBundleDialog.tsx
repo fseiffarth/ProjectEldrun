@@ -1,3 +1,4 @@
+import { useModalFocus } from "../../hooks/useModalFocus";
 import { useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
@@ -40,6 +41,7 @@ export function ProjectImportBundleDialog({
   const [restoreTime, setRestoreTime] = useState(true);
   const [joinBoxes, setJoinBoxes] = useState(true);
   const [busy, setBusy] = useState(false);
+  const modalRef = useModalFocus(() => { if (!busy) onClose(); });
   const [error, setError] = useState("");
   const [result, setResult] = useState<ImportBundleResult | null>(null);
 
@@ -101,8 +103,8 @@ export function ProjectImportBundleDialog({
   };
 
   return createPortal(
-    <div className="modal-backdrop" onMouseDown={onClose}>
-      <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
+    <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div ref={modalRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label={t("transfer.importTitle")} className="project-dialog dialog-framed" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-title-row">
           <h2>
             {t("transfer.importTitle")} <UntestedTag id="transfer.import" />
@@ -112,6 +114,7 @@ export function ProjectImportBundleDialog({
           </button>
         </div>
 
+        <div className="dialog-scroll">
         {!result && (
           <>
             <p className="settings-help">{t("transfer.importIntro")}</p>
@@ -271,7 +274,9 @@ export function ProjectImportBundleDialog({
           </>
         )}
 
-        {error && <div className="project-dialog-error">{error}</div>}
+        </div>
+        <div className="dialog-fixed-footer">
+        {error && <div className="project-dialog-error" role="alert">{error}</div>}
 
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose} disabled={busy}>
@@ -286,6 +291,7 @@ export function ProjectImportBundleDialog({
               {busy ? t("transfer.importing") : t("transfer.importProject")}
             </button>
           )}
+        </div>
         </div>
       </div>
 

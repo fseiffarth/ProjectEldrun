@@ -107,14 +107,9 @@ export function GlobalAppBar() {
     const close = (event: MouseEvent) => {
       if (!popoverRef.current?.contains(event.target as Node)) setEdit(null);
     };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setEdit(null);
-    };
     document.addEventListener("mousedown", close);
-    document.addEventListener("keydown", onKey);
     return () => {
       document.removeEventListener("mousedown", close);
-      document.removeEventListener("keydown", onKey);
     };
   }, [edit]);
 
@@ -186,13 +181,14 @@ export function GlobalAppBar() {
   };
 
   return (
-    <div className="tab-new-menu" onClick={(e) => e.stopPropagation()}>
+    <div className="tab-new-menu" role="menu" onClick={(e) => e.stopPropagation()}>
       {apps.map(([role, app]) => {
         const meta = ROLE_BY_KEY[role];
         const label = meta ? t(meta.labelKey) : role;
         const iconDataUrl = app.exec ? iconDataUrls[app.exec] : null;
         return (
           <button
+            role="menuitem"
             key={role}
             className="tab-new-menu-item global-app-menu-row"
             title={`${label}${app.exec ? `: ${app.exec}` : ""} · ${t("globalApp.rightClickConfigure")}${
@@ -221,6 +217,14 @@ export function GlobalAppBar() {
         <div
           ref={popoverRef}
           className="global-app-edit-popover"
+          data-header-menu-interactive
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              setEdit(null);
+            }
+          }}
           style={{ left: edit.x, top: edit.y }}
           onClick={(event) => event.stopPropagation()}
         >
