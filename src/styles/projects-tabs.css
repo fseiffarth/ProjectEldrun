@@ -449,9 +449,8 @@
   max-width: 140px;
 }
 
-.box-scope-pill .box-chip-icon {
-  font-size: 13px;
-  color: var(--box-color, var(--accent));
+.box-scope-pill .project-pill-box-swatch {
+  background: var(--box-color, var(--accent));
 }
 
 /* The box's slice is what the strip shows (its members), whether or not the
@@ -531,12 +530,6 @@
   box-shadow: inset 0 0 0 1px var(--accent);
 }
 
-.box-chip-menu-icon {
-  color: var(--accent);
-  font-size: 11px;
-  line-height: 1;
-}
-
 .box-chip-menu-name {
   flex: 1;
   overflow: hidden;
@@ -605,6 +598,7 @@
 .project-pill-box-swatch {
   width: 8px;
   height: 8px;
+  flex-shrink: 0;
   border-radius: 2px;
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-main) 50%, transparent);
 }

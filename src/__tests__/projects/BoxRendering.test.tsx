@@ -115,11 +115,12 @@ function boxPillNames(container: HTMLElement): string[] {
   );
 }
 
-/** Open the chip's dropdown and hand back its portaled menu. */
+/** Open the chip's dropdown (it opens on hover — a click is "All projects")
+ *  and hand back its portaled menu. */
 async function openChipMenu(container: HTMLElement): Promise<HTMLElement> {
-  const main = container.querySelector(".box-chip-main") as HTMLElement;
+  const chip = container.querySelector(".box-chip") as HTMLElement;
   await act(async () => {
-    fireEvent.click(main);
+    fireEvent.mouseEnter(chip);
   });
   return document.querySelector(".box-chip-menu") as HTMLElement;
 }
@@ -200,7 +201,7 @@ describe("box chip rendering (slice model)", () => {
     const container = await renderSwitcher();
     const menu = await openChipMenu(container);
     const rows = [...menu.querySelectorAll("button")].map((b) => b.textContent ?? "");
-    expect(rows[0]).toContain("Root terminal");
+    expect(rows[0]).toContain("Root project");
     expect(rows.findIndex((r) => r.includes("boxA"))).toBeGreaterThan(0);
     // Root is not a box, so it is no drop target for a pill drag.
     expect(menu.querySelectorAll("[data-box-id]").length).toBe(1);
@@ -265,6 +266,31 @@ describe("box chip rendering (slice model)", () => {
       fireEvent.click(menuRow(menu, "All projects"));
     });
     expect(pillNames(container).sort()).toEqual(["p1", "p2"]);
+  });
+
+  it("clicking the chip itself is “All projects”", async () => {
+    useBoxesStore.setState({
+      boxes: [box("boxA", ["p1"])],
+      openBox: vi.fn(openBoxScope),
+    });
+    useProjectsStore.setState({
+      projects: [proj("p1", 10), proj("p2", 20)],
+      activeId: null,
+      loaded: true,
+    });
+
+    const container = await renderSwitcher();
+    const menu = await openChipMenu(container);
+    await act(async () => {
+      fireEvent.click(menuRow(menu, "boxA"));
+    });
+    expect(pillNames(container)).toEqual(["p1"]);
+
+    await act(async () => {
+      fireEvent.click(container.querySelector(".box-chip-main") as HTMLElement);
+    });
+    expect(pillNames(container).sort()).toEqual(["p1", "p2"]);
+    expect(document.querySelector(".box-chip-menu")).toBeNull();
   });
 
   it("“All projects” hands the scope back to the project the strip was on", async () => {

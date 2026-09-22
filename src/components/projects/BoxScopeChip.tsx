@@ -86,8 +86,8 @@ export function BoxScopeChip({
   // Hover-opened through the SHARED header menu id, like the + menu and the
   // cluster menus beside it: one id means opening another header menu closes
   // this one in the same frame instead of both riding out their own 250 ms
-  // closing grace. Click still reveals (a click also fires mouseenter, so a
-  // toggle here would open on enter and shut again on the click).
+  // closing grace. A click on the chip itself is "All projects" (the menu's
+  // own row), so hover and focus are what reveal the list.
   const menuOpen = useHeaderHoverMenuStore((s) => s.openId === SCOPE_MENU_ID);
   const openMenu = useHeaderHoverMenuStore((s) => s.open);
   const closeMenu = useHeaderHoverMenuStore((s) => s.close);
@@ -273,9 +273,10 @@ export function BoxScopeChip({
           type="button"
           className="box-chip-main"
           title={chipTitle()}
+          // Same as the menu's "All projects" row: drop the box slice.
           onClick={(e) => {
             e.stopPropagation();
-            reveal();
+            pick(null);
           }}
           onFocus={reveal}
         >
@@ -367,9 +368,9 @@ export function BoxScopeChip({
                       onSelect(b.id);
                     }}
                   >
-                    <span className="box-chip-icon" aria-hidden>
-                      ▣
-                    </span>
+                    {/* The members' swatch, not the ▣ glyph: the pill and
+                        its members' project pills wear the same mark. */}
+                    <span className="project-pill-box-swatch" aria-hidden />
                     <span className="box-chip-label">{b.name}</span>
                   </button>
                 )}
@@ -438,12 +439,10 @@ export function BoxScopeChip({
                 title={memberCountTitle(b)}
               >
                 <span
-                  className="box-chip-menu-icon"
-                  style={{ color: boxColor(b.id) }}
+                  className="project-pill-box-swatch"
+                  style={{ background: boxColor(b.id) }}
                   aria-hidden
-                >
-                  ▣
-                </span>
+                />
                 <span className="box-chip-menu-name">{b.name}</span>
                 {/* Inert bars: the row is already a button, and picking the
                     box is the way in from here. */}
