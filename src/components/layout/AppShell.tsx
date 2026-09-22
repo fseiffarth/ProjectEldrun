@@ -46,6 +46,7 @@ import { BrowserDownloadHost } from "../browser/BrowserDownloadHost";
 import { ExecTrustHost } from "../common/ExecTrustHost";
 import { CalendarOverlayHost } from "../calendar/CalendarOverlay";
 import { CalDavSyncHost } from "../calendar/CalDavSyncHost";
+import { PrinterNetworkDefaultsHost } from "../printing/PrinterNetworkDefaultsHost";
 import { AgentContinueHost } from "./AgentContinueHost";
 import { AgentCronHost } from "./AgentCronHost";
 import { AgentScheduleHost } from "./AgentScheduleHost";
@@ -1365,6 +1366,10 @@ export function AppShell() {
           calendar pane, so refreshing only while that pane is open would leave
           the calendar stale exactly where it is looked at. */}
       <CalDavSyncHost />
+      {/* The per-network default printer, applied on arriving at a network —
+          at the shell because the Print Manager that saves it is closed by then.
+          Starts no timer until a default is saved. */}
+      <PrinterNetworkDefaultsHost />
       {/* The agent warm-up cron (Manage CLIs → Scheduled warm-up). Renders
           nothing and starts no timer until an agent is scheduled — at the shell
           for `CalDavSyncHost`'s reason turned around: the panel that configures

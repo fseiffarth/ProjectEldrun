@@ -158,6 +158,10 @@ export interface Settings {
    * Machines, CPU/RAM/GPU) expanded into the bar? Unset means collapsed to a
    * single summary lamp; anything non-nominal shows itself regardless. */
   header_status_expanded?: boolean;
+  /** Default printer per network, keyed by `networkKey()` in
+   *  `lib/window/printerNetworkDefaults`. Joining a keyed network makes that
+   *  printer the user's default. Unset/empty → nothing is ever switched. */
+  printer_network_defaults?: Record<string, { printer: string; label: string }>;
   git_profile_url?: string;
   git_token?: string;
   color_scheme?: string;

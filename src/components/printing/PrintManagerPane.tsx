@@ -17,6 +17,14 @@ import {
   printerStateLabelKey,
   printerTone,
 } from "../../lib/window/printing";
+import {
+  networkIdentity,
+  networkKey,
+  networkLabel,
+  type NetworkIdentity,
+  type PrinterNetworkDefaults,
+} from "../../lib/window/printerNetworkDefaults";
+import { useSettingsStore } from "../../stores/settings";
 import type { PrintJob, PrintSnapshot, PrinterInfo } from "../../types/printing";
 
 /**
@@ -62,6 +70,9 @@ export function PrintManagerPane({ visible = true }: PrintManagerPaneProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [network, setNetwork] = useState<NetworkIdentity | null>(null);
+  const netDefaults = useSettingsStore((s) => s.settings?.printer_network_defaults);
+  const updateSettings = useSettingsStore((s) => s.updateSettings);
   // Guards the poll against overlapping reads: a probe that outlives its
   // interval (an unreachable CUPS server waits out the backend's cap) must not
   // stack a second one behind it.
@@ -71,7 +82,11 @@ export function PrintManagerPane({ visible = true }: PrintManagerPaneProps) {
     if (readingRef.current) return;
     readingRef.current = true;
     try {
-      setSnapshot(await printSnapshot());
+      // The network is read with the queues so the per-network controls follow
+      // a laptop that changes networks while this pane is open.
+      const [snap, net] = await Promise.all([printSnapshot(), networkIdentity()]);
+      setSnapshot(snap);
+      setNetwork(net);
     } finally {
       readingRef.current = false;
     }
@@ -107,6 +122,28 @@ export function PrintManagerPane({ visible = true }: PrintManagerPaneProps) {
   );
 
   const refreshing = snapshot === null;
+  const netKey = networkKey(network);
+  const netLabel = network && netKey ? networkLabel(network, t) : "";
+
+  // Saving a per-network default also makes it the default now: the user is on
+  // that network, and a choice that only took effect after the next network
+  // change would read as a button that did nothing.
+  const setNetworkDefault = (printer: string | null) => {
+    if (!netKey) return;
+    const next: PrinterNetworkDefaults = { ...netDefaults };
+    if (printer) next[netKey] = { printer, label: netLabel };
+    else delete next[netKey];
+    void act(async () => {
+      await updateSettings({ printer_network_defaults: next });
+      if (printer) await printSetDefault(printer);
+    });
+  };
+  const forgetNetwork = (key: string) => {
+    const next: PrinterNetworkDefaults = { ...netDefaults };
+    delete next[key];
+    void act(() => updateSettings({ printer_network_defaults: next }));
+  };
+  const savedNetworks = Object.entries(netDefaults ?? {});
   const orphans = snapshot ? orphanJobs(snapshot) : [];
 
   return (
@@ -117,6 +154,11 @@ export function PrintManagerPane({ visible = true }: PrintManagerPaneProps) {
           {t("printing.title")} <UntestedTag id="printing.title" />
         </span>
         <span className="print-toolbar-spacer" />
+        {netLabel && (
+          <span className="print-default-note" title={netLabel}>
+            {t("printing.networkIs", { network: netLabel })}
+          </span>
+        )}
         {snapshot?.default_printer && (
           <span className="print-default-note" title={snapshot.default_printer}>
             {t("printing.defaultIs", { printer: snapshot.default_printer })}
@@ -156,6 +198,9 @@ export function PrintManagerPane({ visible = true }: PrintManagerPaneProps) {
             jobs={jobsFor(snapshot.jobs, printer.name)}
             busy={busy}
             onAct={act}
+            networkLabel={netLabel}
+            networkDefault={netKey ? netDefaults?.[netKey]?.printer === printer.name : false}
+            onNetworkDefault={netKey ? setNetworkDefault : undefined}
           />
         ))}
 
@@ -165,6 +210,46 @@ export function PrintManagerPane({ visible = true }: PrintManagerPaneProps) {
               <span className="print-printer-name">{t("printing.otherJobs")}</span>
             </div>
             <JobTable jobs={orphans} busy={busy} onAct={act} />
+          </section>
+        )}
+
+        {savedNetworks.length > 0 && (
+          <section className="print-card">
+            <div className="print-card-head">
+              <span className="print-printer-name">{t("printing.networkDefaults")}</span>
+              <UntestedTag id="printing.networkDefaults" />
+            </div>
+            <table className="print-jobs">
+              <thead>
+                <tr>
+                  <th>{t("printing.colNetwork")}</th>
+                  <th>{t("printing.colPrinter")}</th>
+                  <th aria-label={t("printing.colActions")} />
+                </tr>
+              </thead>
+              <tbody>
+                {savedNetworks.map(([key, entry]) => (
+                  <tr key={key}>
+                    <td className="print-job-title" title={entry.label || key}>
+                      {entry.label || key}
+                      {key === netKey && ` ${t("printing.networkCurrent")}`}
+                    </td>
+                    <td>{entry.printer}</td>
+                    <td>
+                      <button
+                        type="button"
+                        className="print-btn small danger"
+                        disabled={busy}
+                        title={t("printing.networkForget")}
+                        onClick={() => forgetNetwork(key)}
+                      >
+                        ✕
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </section>
         )}
       </div>
@@ -181,11 +266,20 @@ function PrinterCard({
   jobs,
   busy,
   onAct,
+  networkLabel,
+  networkDefault,
+  onNetworkDefault,
 }: {
   printer: PrinterInfo;
   jobs: PrintJob[];
   busy: boolean;
   onAct: ActRunner;
+  networkLabel: string;
+  /** This printer is the saved default for the network the machine is on. */
+  networkDefault: boolean;
+  /** Save (a name) or clear (null) the current network's default; absent when
+   *  the network cannot be told apart, so the button is not offered. */
+  onNetworkDefault?: (printer: string | null) => void;
 }) {
   const t = useT();
   const tone = printerTone(printer);
@@ -198,6 +292,11 @@ function PrinterCard({
         <span className={`print-lamp ${tone}`} aria-hidden />
         <span className="print-printer-name">{printer.name}</span>
         {printer.is_default && <span className="print-badge">{t("printing.defaultBadge")}</span>}
+        {networkDefault && (
+          <span className="print-badge" title={t("printing.networkBadgeHint")}>
+            {t("printing.networkBadge", { network: networkLabel })}
+          </span>
+        )}
         <span className="print-state">{t(printerStateLabelKey(printer))}</span>
         {/* Stopped and "not accepting" are different failures and are reported
             as two, because a queue that takes jobs it will never print is the
@@ -221,6 +320,18 @@ function PrinterCard({
             onClick={() => void onAct(() => printSetDefault(printer.name))}
           >
             {t("printing.setDefault")}
+          </button>
+        )}
+        {onNetworkDefault && (
+          <button
+            type="button"
+            className="print-btn"
+            disabled={busy}
+            title={t("printing.networkDefaultHint", { network: networkLabel })}
+            onClick={() => onNetworkDefault(networkDefault ? null : printer.name)}
+          >
+            {networkDefault ? t("printing.networkUnset") : t("printing.networkSet")}
+            <UntestedTag id="printing.networkSet" />
           </button>
         )}
         <button

@@ -296,6 +296,8 @@ export const UNTESTED = {
 
   // --- printing — Print manager -------------------------------------
   "printing.title": { area: "printing", what: "PrintManagerPane · Print Manager" },
+  "printing.networkSet": { area: "printing", what: "PrintManagerPane · Default on this network (per-network default printer)" },
+  "printing.networkDefaults": { area: "printing", what: "PrintManagerPane · Default printer per network list + auto-apply on network change" },
 
   // --- projects — Projects, remotes, boxes, VMs ---------------------
   "bigFolder.thisProject": { area: "projects", what: "BigFolderExcludeDialog · this project" },

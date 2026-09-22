@@ -116,6 +116,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `browser/BrowserDownloadHost.tsx` | The one download-consent dialog mount per window (`AppShell` + `DetachedApp`); owns the event listeners. |
 | `skills/SkillsLibraryTab.tsx` / `skills/SkillsLibraryView.tsx` / `skills/SkillsOverlay.tsx` | Skills Library (`docs/skills_plan.md`): browse git-hosted skills, preview, copy into `.claude/skills/` or `~/.claude/skills/`. Install only from the preview panel. |
 | `printing/PrintManagerPane.tsx` | Native print manager tab: printers, queues, make default / pause / test page / cancel. Machine-scoped (no project props), singleton per scope; `visible` gates polling. |
+| `printing/PrinterNetworkDefaultsHost.tsx` | Shell-mounted, renders nothing: applies the saved per-network default printer on each network change (launch included). No timer until a default is saved. |
 | `header/Clock.tsx` | Header clock. |
 | `header/DevBuildIndicator.tsx` | Dev-build chip in the cluster: the background frozen-dev build's step/clock/estimate bar; hover menu opens a `tail -F` of its log, and in the frozen window offers "Relaunch now" onto a newer snapshot. Renders nothing in release builds. |
 | `header/StatusCluster.tsx` | Machine-state readouts (connection, battery, Mobile, OpenVPN, Machines, CPU/RAM/GPU) as one collapsible cluster: collapsed = one worst-state `ConnLamp`; persists `Settings.header_status_expanded`. |
@@ -277,6 +278,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `lib/agents/skills.ts` | Typed invoke surface for the Skills Library (`skills_*`); no manifest, installed list is a disk read; install addressed by `SkillTarget`, never a path. |
 | `lib/agents/localDrivers.ts` | Typed invoke surface for local-model coding agents + model-update check. `listLocalDrivers(model)` hides agents a completion-only model (no tool calls) can't serve. |
 | `lib/window/printing.ts` | Typed invoke surface for the print manager (`print_*`): queues only, no wrapper takes a path; `printSnapshot` resolves rather than rejects. `printPdfNative` takes PDF bytes for the system dialog. |
+| `lib/window/printerNetworkDefaults.ts` | Per-network default printer: `network_identity` wrapper and the one "same network" rule (`wlan:<ssid>`, `lan:<hashed gateway MAC>`, `lan`). |
 | `lib/terminal/pythonRun.ts` | Run/Debug a Python file by opening a terminal tab (inherits remote/container locality); debug = pdb with gutter breakpoints. Interpreter asked of backend (`python_interpreter_for`). |
 | `lib/agents/fastMode.ts` | Fast mode (`Settings.fast_mode`): the list of withdrawn costly display aids lives in this module's header (folder sizes, pill git dots, …). |
 | `lib/theme/themeTokens.ts` | Theme Customizer allow-list of overridable CSS color tokens (grouped; ids are i18n keys). `normalizeThemeVars` is the gate; `THEME_COLOR_RE` accepts `#rrggbb` and `#rrggbbaa`. |

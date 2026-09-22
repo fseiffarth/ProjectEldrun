@@ -737,6 +737,12 @@ pub struct Settings {
     /// itself either way (see `stores/headerStatus`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub header_status_expanded: Option<bool>,
+    /// Default printer per network, keyed by the network key the frontend
+    /// derives (`wlan:<ssid>`, `lan:<hashed gateway mac>`, `lan`). When the machine
+    /// joins a keyed network, the print manager's host makes that printer the
+    /// user's default. Unset/empty → nothing is ever switched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub printer_network_defaults: Option<HashMap<String, PrinterNetworkDefault>>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }
@@ -786,6 +792,19 @@ pub struct ChordDescriptor {
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_false(b: &bool) -> bool {
     !*b
+}
+
+/// One entry in `settings["printer_network_defaults"]`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PrinterNetworkDefault {
+    #[serde(default)]
+    pub printer: String,
+    /// The network's name as it was shown when the default was saved (an SSID,
+    /// a gateway address), so the list stays readable while off that network.
+    #[serde(default)]
+    pub label: String,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
 }
 
 /// One per-type entry in `settings["viewer_prefs"]` (#48).
