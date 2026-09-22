@@ -17,6 +17,7 @@ import {
   overrideOccurrence,
   sortOccurrences,
 } from "../../lib/calendar/recurrence";
+import { mutedCalendarIds } from "../../lib/calendar/alarms";
 import { addDays, toStamp, todayStr } from "../../lib/calendar/calendarTime";
 import { parseIcs } from "../../lib/calendar/ics";
 import { notifyCalendarWrite } from "../../lib/calendar/calendarWriteHook";
@@ -440,12 +441,19 @@ export function occurrenceStale(
  * Only *visible* calendars are counted: a calendar unchecked in the sidebar is
  * hidden from every view, and a badge that counted what no view will show would
  * send the user looking for events they cannot find.
+ *
+ * A calendar with its alerts switched off (`alerts_off`) is not counted either:
+ * the badge is the quietest alert the calendar has, and "don't interrupt me
+ * about this one" that left a number on the header would not be off. Its events
+ * stay on the hover list, marked with the struck bell, so the list still explains the number.
  */
 export function eventsLeftToday(
   events: CalendarEvent[],
   calendars: Calendar[],
   now: Date = new Date(),
 ): number {
-  return occurrencesToday(events, calendars, now).filter((occ) => !occurrenceEnded(occ, now))
-    .length;
+  const muted = mutedCalendarIds(calendars);
+  return occurrencesToday(events, calendars, now).filter(
+    (occ) => !occurrenceEnded(occ, now) && !muted.has(occ.calendarId),
+  ).length;
 }

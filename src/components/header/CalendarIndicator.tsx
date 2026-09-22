@@ -15,6 +15,8 @@ import { joinConference } from "../../lib/linkTarget";
 import { useT } from "../../lib/i18n";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { CalendarGlyph } from "./HeaderGlyphs";
+import { mutedCalendarIds } from "../../lib/calendar/alarms";
+import { BellIcon } from "../common/BellIcon";
 import { VideoIcon } from "../common/icons/Icon";
 
 const MENU_ID = "calendar";
@@ -150,6 +152,8 @@ export function CalendarIndicator() {
     [enabled, events, calendars, now],
   );
 
+  const muted = useMemo(() => mutedCalendarIds(calendars), [calendars]);
+
   if (!enabled) return null;
 
   const count = eventsLeftToday(events, calendars, now);
@@ -275,6 +279,13 @@ export function CalendarIndicator() {
                           <span className="cal-menu-title">
                             {occ.title || t("calendar.untitled")}
                           </span>
+                          {/* Not in the badge's number (`eventsLeftToday`): the
+                              mark is what lets the list still explain the count. */}
+                          {muted.has(occ.calendarId) ? (
+                            <span className="cal-menu-muted" title={t("calendar.indicatorMutedTitle")}>
+                              <BellIcon off />
+                            </span>
+                          ) : null}
                         </button>
                         {/* Direct connection: this is the whole reason to read
                             the day from the header rather than opening the

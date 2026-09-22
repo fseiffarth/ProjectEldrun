@@ -74,6 +74,13 @@ describe("eventsLeftToday", () => {
     expect(eventsLeftToday([ev({ calendar_id: "hidden" })], CALENDARS, at("08:00"))).toBe(0);
   });
 
+  it("ignores a calendar whose alerts are off, and counts it again once on", () => {
+    // The badge is an alert too: "off" that left a number on the header is not off.
+    const muted = CALENDARS.map((c) => (c.id === "work" ? { ...c, alerts_off: true } : c));
+    expect(eventsLeftToday([ev()], muted, at("08:00"))).toBe(0);
+    expect(eventsLeftToday([ev()], CALENDARS, at("08:00"))).toBe(1);
+  });
+
   it("counts each occurrence of a recurring event once", () => {
     const daily = ev({ rrule: { freq: "daily", interval: 1 } });
     expect(eventsLeftToday([daily], CALENDARS, at("08:00"))).toBe(1);

@@ -49,6 +49,7 @@ export const UNTESTED = {
   "calDavAccountDialog.1": { area: "calendar", what: "CalDavAccountDialog · Send my changes to this server" },
   "caldavConflict.title": { area: "calendar", what: "CalDavConflictDialog · Changed somewhere else too" },
   "calendar.overlayTitle": { area: "calendar", what: "CalendarOverlay · Calendar" },
+  "calendarSidebar.alerts": { area: "calendar", what: "CalendarSidebar · Alerts on/off per calendar (reminders + header badge)" },
   "calendarContextMenu.1": { area: "calendar", what: "CalendarContextMenu · Edit" },
   "calendarContextMenu.2": { area: "calendar", what: "CalendarContextMenu · Copy" },
   "calendarContextMenu.3": { area: "calendar", what: "CalendarContextMenu · Delete" },

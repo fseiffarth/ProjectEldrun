@@ -3,6 +3,8 @@ import type { Calendar } from "../../types";
 import { calendarSyncStatus, useCalDavStore } from "../../stores/calendar/caldav";
 import { addMonths, datePart, monthGrid, monthName, todayStr, weekdayLabel } from "../../lib/calendar/calendarTime";
 import { useI18nStore, useT } from "../../lib/i18n";
+import { BellIcon } from "../common/BellIcon";
+import { UntestedTag } from "../common/UntestedTag";
 import { LinkIcon, LockIcon } from "../common/icons/Icon";
 
 /** The palette a new calendar picks from. */
@@ -367,6 +369,18 @@ export function CalendarSidebar({
                 {cal.name}
               </span>
             )}
+
+            {/* Reminders on/off for this calendar. Shown on hover while on, and
+                always while off; the header's own bell, struck through when off — a mute nobody can see is a missed meeting. */}
+            <button
+              className={`cal-link-btn cal-list-refresh cal-list-alerts${cal.alerts_off ? " cal-list-alerts-off" : ""}`}
+              aria-pressed={!cal.alerts_off}
+              title={cal.alerts_off ? t("calendarSidebar.alertsOffTitle") : t("calendarSidebar.alertsOnTitle")}
+              onClick={() => onUpdateCalendar({ ...cal, alerts_off: !cal.alerts_off })}
+            >
+              <BellIcon className="cal-list-alerts-icon" off={cal.alerts_off} />
+              <UntestedTag id="calendarSidebar.alerts" />
+            </button>
 
             {cal.source_url ? (
               <button

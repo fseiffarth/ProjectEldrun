@@ -485,8 +485,26 @@
   padding: 3px 0;
 }
 
-.cal-list-row:hover .cal-list-del {
+.cal-list-row:hover .cal-list-del,
+.cal-list-row:hover .cal-list-alerts,
+.cal-list-alerts:focus-visible,
+.cal-list-alerts-off {
   visibility: visible;
+}
+
+.cal-list-alerts {
+  visibility: hidden;
+  display: inline-flex;
+  align-items: center;
+}
+
+.cal-list-alerts-icon {
+  width: 13px;
+  height: 13px;
+}
+
+.cal-list-alerts-off {
+  color: var(--text-muted);
 }
 
 .cal-list-del {

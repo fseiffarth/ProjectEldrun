@@ -1342,6 +1342,12 @@ export interface Calendar {
    * text as external. Absent on calendars imported before the mark existed.
    */
   imported?: boolean;
+  /**
+   * Reminders for this calendar's events are switched off — no popup, no OS
+   * notification (`stores/calendar/alarms`). Rides `extra` like the keys above;
+   * absent means on. Independent of `visible`.
+   */
+  alerts_off?: boolean;
 }
 
 /** How often a recurring event repeats. */

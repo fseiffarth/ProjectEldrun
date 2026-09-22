@@ -9,6 +9,7 @@ import {
   alarmWindow,
   describeLead,
   dueAlarms,
+  mutedCalendarIds,
   snooze as makeSnooze,
   wokenSnoozes,
 } from "../../lib/calendar/alarms";
@@ -134,10 +135,17 @@ export const useAlarmStore = create<AlarmStore>((set, get) => ({
   },
 
   tick: async (now = new Date()) => {
-    const { events, loaded } = useCalendarStore.getState();
+    const { events, calendars, loaded } = useCalendarStore.getState();
     if (!loaded) return;
 
-    const { active, snoozed, fired } = get();
+    const muted = mutedCalendarIds(calendars);
+    const state = get();
+    const { fired } = state;
+    // Muting a calendar also takes down what it already has on screen or
+    // snoozed — "off" that left a popup standing would not read as off.
+    const active = state.active.filter((a) => !muted.has(a.calendarId));
+    const snoozed = state.snoozed.filter((s) => !muted.has(s.alarm.calendarId));
+    const dropped = active.length !== state.active.length || snoozed.length !== state.snoozed.length;
 
     // Snoozed reminders that have come back around.
     const woken = wokenSnoozes(snoozed, now);
@@ -146,10 +154,11 @@ export const useAlarmStore = create<AlarmStore>((set, get) => ({
     // Expand only far enough to see every reminder that could be due.
     const window = alarmWindow(events, now);
     const occurrences = expandEvents(events, window.start, window.end);
-    const due = dueAlarms(occurrences, fired, now);
+    const allDue = dueAlarms(occurrences, fired, now);
+    const due = allDue.filter((a) => !muted.has(a.calendarId));
 
-    if (due.length === 0 && woken.length === 0) {
-      if (stillSnoozed.length !== snoozed.length) set({ snoozed: stillSnoozed });
+    if (allDue.length === 0 && woken.length === 0) {
+      if (dropped) set({ active, snoozed: stillSnoozed });
       return;
     }
 
@@ -157,8 +166,10 @@ export const useAlarmStore = create<AlarmStore>((set, get) => ({
     // user, so it only comes back to the popup.
     for (const alarm of due) void notifyOs(alarm);
 
+    // A muted calendar's reminders are recorded as fired without being shown:
+    // switching alerts back on should not replay up to a day of stale ones.
     const nextFired = new Set(fired);
-    for (const alarm of due) nextFired.add(alarm.key);
+    for (const alarm of allDue) nextFired.add(alarm.key);
     saveFired(nextFired);
 
     const showing = [...active];

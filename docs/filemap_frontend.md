@@ -80,7 +80,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `calendar/MonthView.tsx` | Month + multiweek grid, with multi-day spanning bars. |
 | `calendar/AgendaView.tsx` / `calendar/TasksView.tsx` | Flat upcoming list; to-do (VTODO) list. |
 | `calendar/EventDialog.tsx` | Event editor (repeat, reminders, category, this-vs-all occurrences) + video-call field (`lib/calendar/conference.ts`). A link derived from location/notes is only hinted, never written into the field. |
-| `calendar/CalendarSidebar.tsx` | Mini-month + calendar list (color, visibility); CalDAV calendars carry their own sync affordance (⇅ / … / amber ! with the backend's error as tooltip). |
+| `calendar/CalendarSidebar.tsx` | Mini-month + calendar list (color, visibility, bell = alerts on/off → `Calendar.alerts_off`: reminders and the header badge); CalDAV calendars carry their own sync affordance (⇅ / … / amber ! with the backend's error as tooltip). |
 | `calendar/CalendarContextMenu.tsx` | The calendar's one right-click menu, in every view: Edit/Copy, New here/Paste, and the delete scopes. A click on a block is both an event and a slot, so a full day can still be pasted into. |
 | `calendar/CalDavAccountDialog.tsx` | CalDAV account editor (`docs/caldav_plan.md`), `MailAccountDialog`'s twin (`SavePasswordRow`, `true \| null` never `false`) plus server discovery → pick collections. No server presets. |
 | `calendar/CalDavSyncHost.tsx` | Scheduled CalDAV sync (renders nothing), mounted once at the shell. Mail's rules: free with no account, first tick one interval away, `0` = never. |
@@ -225,7 +225,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `browser.ts` | In-app browser store (#61). Nothing reaches the network on its own (`load`/`openLive` only, both clicks), actions tolerate a rejected invoke, downloads refused by default. |
 | `mail.ts` | Global mail store. Every action tolerates a rejected invoke (lands in `error`); only `checkMail` reaches a server. Owns list order (`setSort` → `mail_headers`). |
 | `skills.ts` | One boolean: is the Skills Library overlay shown. Holds no catalog copy on purpose. |
-| `alarms.ts` | Reminder ticker: fires an OS notification + the in-app popup, exactly once each. |
+| `alarms.ts` | Reminder ticker: fires an OS notification + the in-app popup, exactly once each; a calendar with `alerts_off` is recorded as fired but never shown. |
 | `linkRouting.ts` | Routing of clicked links/URIs to viewers or external apps. |
 | `pdfSync.ts` | Bidirectional PDF/SyncTeX sync state. |
 | `pdfDrag.ts` | PDF page drag between strips, incl. across windows (`PDF_DRAG_*`/`PDF_DROP_ACK`; bytes via backend `pdf_clip`). Also the drag-active signal behind the spring-loaded rail. |

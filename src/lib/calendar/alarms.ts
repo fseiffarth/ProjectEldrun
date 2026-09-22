@@ -11,7 +11,7 @@
  * *rule-generated* start, so moving one does not resurrect its alarm.
  */
 
-import type { Alarm, Occurrence } from "../../types";
+import type { Alarm, Calendar, Occurrence } from "../../types";
 import { addDays, addMinutes, minutesBetween, toStamp } from "./calendarTime";
 import type { TranslationKey } from "../i18n";
 
@@ -20,6 +20,8 @@ export interface DueAlarm {
   /** Stable identity — the dedup key and the React key. */
   key: string;
   eventId: string;
+  /** The calendar it belongs to — what a per-calendar mute is matched against. */
+  calendarId: string;
   occurrenceStart: string;
   minutesBefore: number;
   title: string;
@@ -85,6 +87,7 @@ export function dueAlarms(
       out.push({
         key,
         eventId: occ.eventId,
+        calendarId: occ.calendarId,
         occurrenceStart: occ.occurrenceStart,
         minutesBefore: alarm.minutes_before,
         title: occ.title,
@@ -97,6 +100,17 @@ export function dueAlarms(
 
   // Soonest-starting first, so the most imminent reminder is at the top of the stack.
   return out.sort((a, b) => a.start.localeCompare(b.start));
+}
+
+/**
+ * The calendars whose reminders are switched off (`Calendar.alerts_off`).
+ *
+ * A mute, not a filter on visibility: a hidden calendar still reminds, and a
+ * muted one still shows its events — the two switches answer different
+ * questions ("do I want to see this" / "do I want to be interrupted by it").
+ */
+export function mutedCalendarIds(calendars: Calendar[]): Set<string> {
+  return new Set(calendars.filter((c) => c.alerts_off).map((c) => c.id));
 }
 
 /**
