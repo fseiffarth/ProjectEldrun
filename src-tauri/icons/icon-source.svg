@@ -1,17 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none" role="img" aria-label="Eldrun">
   <title>Eldrun</title>
-  <defs>
-    <!-- Brand ramp, same colors as the bg-header ramp in themes.css. -->
-    <linearGradient id="eldrun-coaster" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#101624" />
-      <stop offset="0.5" stop-color="#16213a" />
-      <stop offset="1" stop-color="#241735" />
-    </linearGradient>
-  </defs>
-  <!-- Opaque coaster so the white glyph reads on any OS taskbar/switcher. -->
-  <rect x="0" y="0" width="512" height="512" rx="96" fill="url(#eldrun-coaster)" />
-  <!-- Glyph inset ~46px inside the coaster (0.82 * 512 = 420, centered). -->
-  <g transform="translate(46,46) scale(0.82)">
+  <!-- Opaque black coaster so the white glyph reads on any OS taskbar/switcher. -->
+  <rect x="0" y="0" width="512" height="512" rx="96" fill="#000000" />
+  <!-- Glyph scaled so the ring nearly fills the coaster (0.97 * 512, centered). -->
+  <g transform="translate(7.68,7.68) scale(0.97)">
     <g stroke="#FFFFFF" stroke-linecap="round" stroke-linejoin="round" fill="none">
       <!-- Ring + both outer legs as one stroke: each leg bends through an
            r=20 fillet that meets the ring tangentially, so no seam or gap. -->
@@ -19,17 +11,17 @@
       <!-- Central trunk -->
       <path d="M 256 161 L 256 499" stroke-width="13" />
       <!-- Left branches (authored) -->
-      <path d="M 98 249 L 98 289 L 124.2 315.2 M 166.01 352.31 L 233 405" stroke-width="13" />
-      <circle cx="165" cy="162" r="26" fill="#E7B369" stroke-width="10" />
-      <circle cx="98"  cy="221" r="26" fill="#ED946C" stroke-width="10" />
-      <circle cx="144" cy="335" r="26" fill="#EB8182" stroke-width="10" />
+      <path d="M 98 249 L 98 289 L 135.2 326.2 M 174.8 365.8 L 233 424" stroke-width="13" />
+      <path d="M 195 162 L 180 187.98 L 150 187.98 L 135 162 L 150 136.02 L 180 136.02 Z" fill="#E7B369" stroke-width="10" />
+      <path d="M 128 221 L 113 246.98 L 83 246.98 L 68 221 L 83 195.02 L 113 195.02 Z" fill="#ED946C" stroke-width="10" />
+      <path d="M 183.98 353.76 L 162.76 374.98 L 133.79 367.21 L 126.02 338.24 L 147.24 317.02 L 176.21 324.79 Z" fill="#EB8182" stroke-width="10" />
       <!-- Right branches (explicit mirror across x=256) -->
-      <path d="M 414 249 L 414 289 L 387.8 315.2 M 345.99 352.31 L 279 405" stroke-width="13" />
-      <circle cx="347" cy="162" r="26" fill="#72D0D0" stroke-width="10" />
-      <circle cx="414" cy="221" r="26" fill="#5ABBE6" stroke-width="10" />
-      <circle cx="368" cy="335" r="26" fill="#80A3F0" stroke-width="10" />
+      <path d="M 414 249 L 414 289 L 376.8 326.2 M 337.2 365.8 L 279 424" stroke-width="13" />
+      <path d="M 377 162 L 362 187.98 L 332 187.98 L 317 162 L 332 136.02 L 362 136.02 Z" fill="#72D0D0" stroke-width="10" />
+      <path d="M 444 221 L 429 246.98 L 399 246.98 L 384 221 L 399 195.02 L 429 195.02 Z" fill="#5ABBE6" stroke-width="10" />
+      <path d="M 385.98 338.24 L 378.21 367.21 L 349.24 374.98 L 328.02 353.76 L 335.79 324.79 L 364.76 317.02 Z" fill="#80A3F0" stroke-width="10" />
     </g>
-    <!-- Gold four-point spark (unchanged) -->
-    <path d="M 256 61 C 261 92 268 96 292 101 C 268 106 261 110 256 142 C 251 110 244 106 220 101 C 244 96 251 92 256 61 Z" fill="#C79A45" />
+    <!-- Gold eight-point compass star -->
+    <path d="M 256 52 L 265 87 L 284 73 L 270 92 L 305 101 L 270 110 L 284 129 L 265 115 L 256 150 L 247 115 L 228 129 L 242 110 L 207 101 L 242 92 L 228 73 L 247 87 Z" fill="#C79A45" />
   </g>
 </svg>

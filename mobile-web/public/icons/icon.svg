@@ -1,26 +1,19 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none" role="img" aria-label="Eldrun">
   <title>Eldrun</title>
-  <defs>
-    <linearGradient id="eldrun-coaster" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#101624" />
-      <stop offset="0.5" stop-color="#16213a" />
-      <stop offset="1" stop-color="#241735" />
-    </linearGradient>
-  </defs>
-  <rect width="512" height="512" rx="96" fill="url(#eldrun-coaster)" />
-  <g transform="translate(46 46) scale(.82)">
+  <rect width="512" height="512" rx="96" fill="#000000" />
+  <g transform="translate(7.68 7.68) scale(.97)">
     <g stroke="#fff" stroke-linecap="round" stroke-linejoin="round" fill="none">
       <path d="M165 190V238L233 306V470.74A20 20 0 0 1 209.07 490.35A239 239 0 1 1 302.93 490.35A20 20 0 0 1 279 470.74V306L347 238V190" stroke-width="13" />
       <path d="M256 161V499" stroke-width="13" />
-      <path d="M98 249V289L124.2 315.2M166.01 352.31L233 405" stroke-width="13" />
-      <circle cx="165" cy="162" r="26" fill="#E7B369" stroke-width="10" />
-      <circle cx="98" cy="221" r="26" fill="#ED946C" stroke-width="10" />
-      <circle cx="144" cy="335" r="26" fill="#EB8182" stroke-width="10" />
-      <path d="M414 249V289L387.8 315.2M345.99 352.31L279 405" stroke-width="13" />
-      <circle cx="347" cy="162" r="26" fill="#72D0D0" stroke-width="10" />
-      <circle cx="414" cy="221" r="26" fill="#5ABBE6" stroke-width="10" />
-      <circle cx="368" cy="335" r="26" fill="#80A3F0" stroke-width="10" />
+      <path d="M98 249V289L135.2 326.2M174.8 365.8L233 424" stroke-width="13" />
+      <path d="M 195 162 L 180 187.98 L 150 187.98 L 135 162 L 150 136.02 L 180 136.02 Z" fill="#E7B369" stroke-width="10" />
+      <path d="M 128 221 L 113 246.98 L 83 246.98 L 68 221 L 83 195.02 L 113 195.02 Z" fill="#ED946C" stroke-width="10" />
+      <path d="M 183.98 353.76 L 162.76 374.98 L 133.79 367.21 L 126.02 338.24 L 147.24 317.02 L 176.21 324.79 Z" fill="#EB8182" stroke-width="10" />
+      <path d="M414 249V289L376.8 326.2M337.2 365.8L279 424" stroke-width="13" />
+      <path d="M 377 162 L 362 187.98 L 332 187.98 L 317 162 L 332 136.02 L 362 136.02 Z" fill="#72D0D0" stroke-width="10" />
+      <path d="M 444 221 L 429 246.98 L 399 246.98 L 384 221 L 399 195.02 L 429 195.02 Z" fill="#5ABBE6" stroke-width="10" />
+      <path d="M 385.98 338.24 L 378.21 367.21 L 349.24 374.98 L 328.02 353.76 L 335.79 324.79 L 364.76 317.02 Z" fill="#80A3F0" stroke-width="10" />
     </g>
-    <path d="M256 61C261 92 268 96 292 101C268 106 261 110 256 142C251 110 244 106 220 101C244 96 251 92 256 61Z" fill="#c79a45" />
+    <path d="M 256 52 L 265 87 L 284 73 L 270 92 L 305 101 L 270 110 L 284 129 L 265 115 L 256 150 L 247 115 L 228 129 L 242 110 L 207 101 L 242 92 L 228 73 L 247 87 Z" fill="#C79A45" />
   </g>
 </svg>
