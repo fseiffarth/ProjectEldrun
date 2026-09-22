@@ -6643,7 +6643,7 @@ export const en = {
   "lessons.deckPresenter.buildsTitle": "Builds and transitions",
   "lessons.deckPresenter.buildsBody": "The Animate panel gives an object a build step, so it appears part-way through the slide rather than with it — with a fade, push, or wipe. Stagger hands each selected object its own step, in paint order. The same panel holds \"Animation after this slide\": a GIF that plays between this slide and the next as its own step — looping until you advance, or playing a set number of times and continuing. A PDF cannot hold animation, so that is where it lives.",
   "lessons.deckPresenter.presentTitle": "Present",
-  "lessons.deckPresenter.presentBody": "▶ Present takes over the screen. Space or → moves on (through the builds, then to the next slide), ← goes back, N shows your speaker notes, G opens an overview to jump anywhere, Esc leaves. A timer runs with a target duration you set — it goes amber as you near it and red past it.",
+  "lessons.deckPresenter.presentBody": "Present takes over the screen. Space or → moves on (through the builds, then to the next slide), ← goes back, N shows your speaker notes, G opens an overview to jump anywhere, Esc leaves. A timer runs with a target duration you set — it goes amber as you near it and red past it.",
   "lessons.deckPresenter.audienceTitle": "A second display for the room",
   "lessons.deckPresenter.audienceBody": "D opens the audience view in its own window for the projector: the slides and nothing else. Your notes, the timer, and the next-slide preview stay on your screen. Closing that window drops you back to a single-screen talk without ending the presentation.",
   "lessons.deckPresenter.exportFlagTitle": "Export — and one honest caveat",

@@ -154,7 +154,7 @@ import {
   type CaretPhrase,
 } from "../../../lib/viewers/tex/tex";
 import { useT, type TranslationKey } from "../../../lib/i18n";
-import { CommentIcon, SearchIcon, TagIcon } from "../../common/icons/Icon";
+import { CommentIcon, PlayIcon, SearchIcon, TagIcon } from "../../common/icons/Icon";
 
 /** How often the open PDF re-checks its file's mtime for an on-disk change (a
  *  LaTeX recompile rewrites the very bytes this tab is showing). Mirrors the
@@ -4264,7 +4264,7 @@ function PdfCanvas({
           }
           aria-label={t("pdfViewer.fullscreenPresentLabel")}
         >
-          ▶ {t("pdfViewer.fullscreenPresentBtn")}
+          <PlayIcon /> {t("pdfViewer.fullscreenPresentBtn")}
         </button>
         <UntestedTag id="pdfViewer.7" />
         {deckEnabled && (
@@ -4274,7 +4274,7 @@ function PdfCanvas({
             disabled={!doc || makingDeck}
             title={t("pdfViewer.presentTitle")}
           >
-            {makingDeck ? "…" : `▶ ${t("pdfViewer.presentButton")}`}
+            {makingDeck ? "…" : <><PlayIcon /> {t("pdfViewer.presentButton")}</>}
           </button>
         )}
         {onOpenExternally && (
