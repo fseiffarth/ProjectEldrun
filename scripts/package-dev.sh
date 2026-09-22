@@ -200,6 +200,12 @@ else
   fi
 fi
 
+# The compile is done; what follows writes the stamp and installs, and is
+# seconds long. package-dev-auto.sh cancels a build for a newer commit only
+# before this point — killing an `install` halfway leaves a truncated binary
+# behind the desktop icon.
+[ -n "${PACKAGE_DEV_INSTALLING_MARK:-}" ] && : >"$PACKAGE_DEV_INSTALLING_MARK"
+
 RAW_BIN="$ROOT/target/release/eldrun"
 if [[ ! -f "$RAW_BIN" ]]; then
   echo "package-dev: release binary not found at $RAW_BIN after build" >&2

@@ -69,9 +69,15 @@ change was not run live.
   hook queues `scripts/package-dev-auto.sh`, which builds detached (the commit
   never waits), nice'd/`SCHED_IDLE` so it does not fight the window it serves,
   and coalescing — each pass first waits until no commit has landed for 30 s
-  (`ELDRUN_DEV_BUILD_SETTLE`), and a commit landing mid-build queues one more
-  pass instead of a second build, so a commit series or a rebase costs one
-  build and ends on the *last* commit.
+  (`ELDRUN_DEV_BUILD_SETTLE`), and a commit landing mid-build **cancels** it
+  (user, 2026-09-22) and the loop starts over on the new commit, so a commit
+  series or a rebase costs one build and ends on the *last* commit. Only the
+  compile is cancellable: `package-dev.sh` touches
+  `package-dev-auto.installing` once cargo finishes, and past it the pass runs
+  to the end — a killed `install` would leave a truncated binary installed.
+  The build runs in its own process group so the cancel reaches every rustc;
+  a cancelled pass is not a failure (no `.failed` record), and the freeze
+  tree's stale `index.lock` is cleared after it.
   **It freezes the commit, not the tree** (user, 2026-09-14): `package-dev.sh
   --head` checks `HEAD` out into the detached worktree `target/freeze-tree`
   (node_modules symlinked, cargo target dir shared) and builds there, so the

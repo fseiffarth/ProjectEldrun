@@ -16,9 +16,14 @@
 # * **It never delays the commit.** `--queue` returns at once and the build
 #   runs detached, surviving the terminal that committed.
 # * **It never stacks.** A second commit while a build is running leaves a
-#   pending marker instead of a second build; the running one loops once more
-#   when it finishes, so ten commits (or a rebase) cost one or two builds and
-#   the binary ends up matching the LAST tree, not an intermediate one.
+#   pending marker instead of a second build, and the running build is
+#   CANCELLED for it (user, 2026-09-22): finishing a snapshot that is already
+#   superseded only delays the one that matters by the 3-4 minutes it takes.
+#   The loop then starts over on the newest commit, so ten commits (or a
+#   rebase) cost one build and the binary ends up matching the LAST tree, not
+#   an intermediate one. Only the compile is cancellable: once cargo is done
+#   (package-dev.sh touches the INSTALLING mark) the pass runs to the end,
+#   because killing an `install` halfway leaves a truncated binary installed.
 #   Each pass also waits until no commit has landed for SETTLE_SECONDS, so a
 #   burst of commits made seconds apart (a split commit series, a rebase) is
 #   one build of the last one — without it the first commit started a build
@@ -66,6 +71,12 @@ STAMP="$APP_DIR/package-dev-auto.stamp"
 FAILED="$APP_DIR/package-dev-auto.failed"
 LOG="$APP_DIR/package-dev-auto.log"
 LOG_MAX_BYTES=$((4 * 1024 * 1024))
+# Touched by package-dev.sh once the compile is finished: past it, a pass is
+# no longer cancelled for a newer commit.
+INSTALLING="$APP_DIR/package-dev-auto.installing"
+FREEZE_TREE="$ROOT/target/freeze-tree"
+# The status build_once returns for a pass it cancelled (128 + SIGTERM).
+CANCELLED=143
 SETTLE_SECONDS="${ELDRUN_DEV_BUILD_SETTLE:-30}"
 
 note() { printf '%s %s\n' "$(date -Is)" "$*"; }
@@ -129,14 +140,50 @@ build_once() {
   low+=(nice -n 19)
   # A hook inherits whatever environment the committing shell had, and a GUI
   # git client's has no ~/.cargo/bin at all.
-  PATH="$HOME/.cargo/bin:$PATH" "${low[@]}" npm --prefix "$ROOT" run package:dev -- --head
+  rm -f "$INSTALLING"
+  # Its own process group (setsid in a non-leader child sets it up in place,
+  # so the pid is the group id), so a cancel reaches npm, cargo and every
+  # rustc under them rather than just the npm at the top.
+  PACKAGE_DEV_INSTALLING_MARK="$INSTALLING" PATH="$HOME/.cargo/bin:$PATH" \
+    setsid "${low[@]}" npm --prefix "$ROOT" run package:dev -- --head &
+  local build=$!
+  while kill -0 "$build" 2>/dev/null; do
+    if [ -f "$PENDING" ] && [ ! -f "$INSTALLING" ]; then
+      note "a newer commit landed — cancelling this build"
+      cancel_build "$build"
+      return "$CANCELLED"
+    fi
+    sleep 2
+  done
+  wait "$build"
   local status=$?
+  rm -f "$INSTALLING"
   if [ "$status" -eq 0 ]; then
     # Stamped from HEAD as it was BEFORE the build, so a commit made while the
     # build ran is not mistaken for something already frozen.
     printf '%s\n' "$signature" >"$STAMP"
   fi
   return "$status"
+}
+
+# Stop a build_once build and clear what a kill can leave half-done.
+cancel_build() { # pid (= process group id)
+  local pid="$1" waited=0
+  kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
+  while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 20 ]; do
+    sleep 0.5
+    waited=$((waited + 1))
+  done
+  kill -KILL -- "-$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null
+  # A checkout killed mid-way leaves the freeze tree's index.lock, and every
+  # later `git checkout` there refuses to start. The tree is this build's own.
+  local git_dir
+  if git_dir="$(git -C "$FREEZE_TREE" rev-parse --absolute-git-dir 2>/dev/null)"; then
+    rm -f "$git_dir/index.lock"
+  fi
+  # A phone-bundle publish killed before its swap leaves its staging copy.
+  rm -rf "$ROOT/target/mobile-pwa.tmp."*
 }
 
 run() {
@@ -178,6 +225,12 @@ run() {
     built="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo '?')"
     build_once
     status=$?
+    if [ "$status" -eq "$CANCELLED" ] && [ -f "$PENDING" ]; then
+      # Not a failure: nothing was wrong with the commit, it was just no
+      # longer the newest. The FAILED record keeps whatever it said.
+      note "pass $passes ($built) cancelled for a newer commit, finished with status $status"
+      continue
+    fi
     note "pass $passes ($built) finished with status $status"
     if [ "$status" -eq 0 ]; then
       rm -f "$FAILED"
