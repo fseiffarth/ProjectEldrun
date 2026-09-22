@@ -60,6 +60,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 
 | File | Purpose |
 |------|---------|
+| `projects/IdeMenuItems.tsx` | "Open in <IDE>" rows for the pill menu and the file tree's root menu: one per marker `detect_project_ides` reports, "(not found)" rows pick an executable (`set_ide_launcher`), launches go by IDE id only. Renders nothing for a marker-less project. |
 | `projects/ProjectPill.tsx` | Individual project pill (click/close/drag-reorder/group); "Remote machines…" opens `RemoteMachinesWindow`; VM projects get a ▣/▢ state glyph and "VM settings…". |
 | `projects/ProjectExportDialog.tsx` | "Export project…" (pill menu): measures the tree, its `.git` and its rebuildable folders separately so each toggle shows what it costs, then writes one `.eldrunproj` via the save dialog. Names what never travels (keychain secrets, machine-bound sync state). |
 | `projects/ProjectImportBundleDialog.tsx` | "Import Project File" (+ menu): reads a bundle's manifest first (nothing unpacked), shows what is in it and what is missing, then imports into a chosen folder. Refuses a remote bundle whose host folder is already a project here. |

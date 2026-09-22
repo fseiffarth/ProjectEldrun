@@ -63,6 +63,9 @@ pub mod git_guard;
 pub mod git_init;
 pub mod git_peer;
 pub mod hpc_mode;
+// Which IDE a project tree belongs to (`.idea/`, `.vs/` + `*.sln`, `.vscode/`)
+// and which installed program opens it — never one named inside the tree.
+pub mod ide_detect;
 pub mod local_loss;
 // Local-model mail assistant (Group Q, #203–#208): the loopback-only /api/chat
 // helper, prompt builders and defensive JSON parsers. AI never touches the net.

@@ -677,6 +677,11 @@ pub struct Settings {
     pub show_gpu_usage: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub global_apps: Option<HashMap<String, GlobalAppEntry>>,
+    /// User-chosen program per IDE id (`services::ide_detect::IdeId::id`),
+    /// consulted before any auto-detection by "Open in <IDE>". Absent or
+    /// blank entries mean "detect".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ide_launchers: Option<HashMap<String, String>>,
     /// Minimum subwindow (split pane) width in px a divider drag may shrink a
     /// pane to. Unset falls back to the frontend's DEFAULT_MIN_SUBWINDOW_PX.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1244,5 +1249,19 @@ mod default_rule_tests {
         let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back.extra["some_future_setting"]["a"][1], 2);
         assert_eq!(back.global_apps.unwrap()["code"].extra["icon"], "vscode");
+    }
+
+    /// `ide_launchers` is optional on the way in and absent on the way out
+    /// when unset, so a settings file from before it existed is untouched.
+    #[test]
+    fn ide_launchers_round_trip_and_stay_absent_when_unset() {
+        let s: Settings = serde_json::from_str("{}").unwrap();
+        assert!(s.ide_launchers.is_none());
+        assert!(!serde_json::to_string(&s).unwrap().contains("ide_launchers"));
+
+        let raw = r#"{"ide_launchers":{"pycharm":"/opt/pycharm/bin/pycharm.sh"}}"#;
+        let s: Settings = serde_json::from_str(raw).unwrap();
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.ide_launchers.unwrap()["pycharm"], "/opt/pycharm/bin/pycharm.sh");
     }
 }

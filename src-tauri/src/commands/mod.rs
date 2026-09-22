@@ -26,6 +26,7 @@ pub mod git_publish;
 pub mod git_pull;
 pub mod global_machines;
 pub mod hpc_ws;
+pub mod ide;
 pub mod local_loss;
 pub mod mail;
 pub mod markdown;

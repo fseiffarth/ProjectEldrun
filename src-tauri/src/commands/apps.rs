@@ -128,6 +128,11 @@ pub const ORIGIN_BLOB_FILE_VIEWER: &str = "blob_file_viewer";
 /// (#42). Project-owned: it follows the same project-switch hide/show parking
 /// path as the other project-owned window origins.
 pub const ORIGIN_DETACHED_SUBWINDOW: &str = "detached_subwindow";
+/// The project opened in the IDE its tree carries markers for ("Open in
+/// <IDE>" on the pill / file-tree root menu — `commands::ide`). Project-owned:
+/// listed in the Apps view and parked on project switch like a file opened
+/// from the tree.
+pub const ORIGIN_PROJECT_IDE: &str = "project_ide";
 
 fn default_window_origin() -> String {
     ORIGIN_MANUAL_LAUNCH.to_string()
@@ -145,6 +150,7 @@ pub fn is_project_opened_origin(origin: &str) -> bool {
             | ORIGIN_RESTORED
             | ORIGIN_DOWNLOADS
             | ORIGIN_BLOB_FILE_VIEWER
+            | ORIGIN_PROJECT_IDE
     )
 }
 
@@ -363,7 +369,7 @@ fn launch_command(exec: &str, args: &[String], file: Option<&str>) -> Command {
 // ever mapping a window, hit the full budget every time.
 
 /// Offload a blocking launch body to a worker thread.
-async fn run_off_thread<T: Send + 'static>(
+pub(crate) async fn run_off_thread<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
     tokio::task::spawn_blocking(f)
@@ -2612,6 +2618,7 @@ mod tests {
             ORIGIN_RESTORED,
             ORIGIN_DOWNLOADS,
             ORIGIN_BLOB_FILE_VIEWER,
+            ORIGIN_PROJECT_IDE,
         ] {
             assert!(is_project_opened_origin(origin), "{origin} must be listed");
         }

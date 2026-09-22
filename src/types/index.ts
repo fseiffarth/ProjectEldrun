@@ -681,6 +681,9 @@ export interface Settings {
   /** Per-type native-viewer prefs (#48): opt-in local autocomplete (#45). */
   viewer_prefs?: Record<string, ViewerPref>;
   global_apps?: Record<string, GlobalAppEntry>;
+  /** User-chosen program per IDE id for "Open in <IDE>" (`IdeMenuItems`);
+   *  an absent id means auto-detect. Written by `set_ide_launcher`. */
+  ide_launchers?: Record<string, string>;
   /**
    * User overrides for the rebindable navigation chords (Group L / #62), keyed
    * by `ShortcutAction` id (see `src/lib/shortcuts/shortcuts.ts`). Any action absent here

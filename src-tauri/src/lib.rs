@@ -1829,6 +1829,9 @@ pub fn run() {
             commands::projects::set_project_panel_prefs,
             commands::projects::get_project_panel_prefs,
             commands::apps::list_installed_apps,
+            commands::ide::detect_project_ides,
+            commands::ide::open_project_in_ide,
+            commands::ide::set_ide_launcher,
             // Workspace / network
             commands::workspace::workspace_info,
             commands::workspace::workspace_capabilities,

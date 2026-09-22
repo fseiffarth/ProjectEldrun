@@ -326,6 +326,7 @@ export const UNTESTED = {
   "projectPill.7": { area: "projects", what: "ProjectPill · Enable git (git init)" },
   "projectPill.8": { area: "projects", what: "ProjectPill · Make private…" },
   "projectPill.9": { area: "projects", what: "ProjectPill · Move to GitHub…" },
+  "projectPill.openInIde": { area: "projects", what: "ProjectPill / FileTree · Open in <IDE>" },
   "remoteConnectDialog.1": { area: "projects", what: "RemoteConnectDialog · Name" },
   "remoteConnectDialog.2": { area: "projects", what: "RemoteConnectDialog · Machine name" },
   "remoteConnectDialog.3": { area: "projects", what: "RemoteConnectDialog · Username" },

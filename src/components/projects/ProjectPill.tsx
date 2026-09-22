@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Toggle } from "../common/Toggle";
 import { UntestedTag } from "../common/UntestedTag";
+import { IdeMenuItems } from "./IdeMenuItems";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import {
@@ -1957,6 +1958,10 @@ export function ProjectPill({
             >
               {t("pill.showOnDisk")}
             </button>
+            {/* One "Open in <IDE>" row per marker the tree carries; nothing
+                for a project without one. A remote project's markers are read
+                off its local mirror, the folder "Show on disk" reveals. */}
+            <IdeMenuItems projectId={project.id} onClose={() => setContextMenu(null)} />
           </div>
 
           {/* Edit metadata */}

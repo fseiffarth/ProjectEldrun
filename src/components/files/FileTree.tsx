@@ -75,6 +75,7 @@ import { normalizeScanPath } from "./ProjectFilesSettings";
 import { FileTreeSearch } from "./FileTreeSearch";
 import { useClampToViewport } from "../../hooks/useClampToViewport";
 import { UntestedTag } from "../common/UntestedTag";
+import { IdeMenuItems } from "../projects/IdeMenuItems";
 import { RenameDialog, containingFolderLabel } from "./RenameDialog";
 import { useDialogs } from "../common/PromptDialogs";
 import { Dropdown } from "../common/Dropdown";
@@ -4325,6 +4326,14 @@ export function FileTree({
                   >
                     {t("fileTree.openViewInNewTab")}
                   </button>
+                  {/* The project in its IDE, from the tree's root menu as well
+                      as the pill's — the same rows, same backend detection.
+                      Offered where "Open in a new tab" is (the side panel
+                      host); a tree browsing a subfolder still opens the
+                      project, since the markers sit at its root. */}
+                  {projectId && (
+                    <IdeMenuItems projectId={projectId} onClose={() => setContextMenu(null)} />
+                  )}
                   <hr />
                 </>
               )}
