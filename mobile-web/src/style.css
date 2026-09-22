@@ -509,12 +509,23 @@ body.terminal-open { min-height:0; overflow:hidden; }
    that press, so it is off over a bubble. */
 .readable-turn.user,.readable-turn.agent.answer { position:relative; -webkit-touch-callout:none; }
 .readable-turn.agent.answer .readable-line { padding-left:0; text-indent:0; }
+/* A slash command (`CommandDivider`) steers the CLI rather than talking to
+   the agent, so it is no bubble: a hairline across the chat with the command
+   centred on it, in the prompt's violet. */
+.readable-command { display:flex; align-items:center; gap:10px; width:100%; margin:6px 0; color:#a99cf0; font:500 .8rem/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; -webkit-touch-callout:none; }
+.readable-command::before,.readable-command::after { content:""; flex:1 1 0; min-width:16px; border-top:1px solid #3a3466; }
+.readable-command-text { flex:0 1 auto; min-width:0; max-width:80%; text-align:center; overflow-wrap:anywhere; }
 .readable-lines.transcript { font:400 .9rem/1.5 Inter,ui-sans-serif,system-ui,sans-serif; }
 /* The stored session holds one bubble per message the agent wrote, so the
    "let me check…" notes of a turn stand apart from its answer; a new prompt
    opens an exchange with more air above it than the bubbles inside one. */
 .readable-lines.chat.transcript { gap:12px; }
 .readable-lines.transcript > .readable-turn.user:not(:first-child) { margin-top:16px; }
+/* The text of a `/goal` sits right under its rule: one exchange, not two. */
+.readable-lines.transcript > .readable-command + .readable-turn.user { margin-top:0; }
+/* …and is outlined in the rule's violet, so it reads as that command's
+   text rather than a prompt of its own. */
+.readable-turn.user.command-args { border:1px solid #7a6ad8; }
 .readable-lines.transcript .readable-turn.agent.answer { border:1px solid #2a2e42; }
 .transcript-text { margin:0; min-width:0; white-space:pre-wrap; overflow-wrap:break-word; }
 /* An answer's Markdown (`answerHtml`): formatting only, in the chat's own

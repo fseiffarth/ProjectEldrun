@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TranscriptEntry } from "../../../mobile-web/src/api";
-import { transcriptTurns } from "../../../mobile-web/src/terminal/transcriptTurns";
+import { commandArgsInline, slashCommand, transcriptTurns } from "../../../mobile-web/src/terminal/transcriptTurns";
 
 const prompt = (text: string, at?: string): TranscriptEntry => ({ kind: "prompt", text, at });
 const answer = (text: string, at?: string): TranscriptEntry => ({ kind: "answer", text, at });
@@ -41,5 +41,38 @@ describe("Eldrun Mobile stored-session turns", () => {
   it("gives every bubble a distinct key, times missing or shared", () => {
     const turns = transcriptTurns([prompt("x"), answer("y"), prompt("z", "t"), answer("w", "t"), prompt("again", "t")]);
     expect(new Set(turns.map((turn) => turn.key)).size).toBe(turns.length);
+  });
+});
+
+describe("slashCommand", () => {
+  it("splits a slash command into its name and text", () => {
+    expect(slashCommand("/clear")).toEqual({ name: "/clear", args: "" });
+    expect(slashCommand("  /model opus\n")).toEqual({ name: "/model", args: "opus" });
+    expect(slashCommand("/plugin:skill-name go")).toEqual({ name: "/plugin:skill-name", args: "go" });
+    expect(slashCommand("/plan")).toEqual({ name: "/plan", args: "" });
+    expect(slashCommand("/goal make the chat look like a chat\nleft the model")).toEqual({
+      name: "/goal",
+      args: "make the chat look like a chat\nleft the model",
+    });
+  });
+  it("leaves a prompt that is not one a bubble", () => {
+    expect(slashCommand("/home/me/x is broken")).toBeNull();
+    expect(slashCommand("please run /clear")).toBeNull();
+    expect(slashCommand("/")).toBeNull();
+    expect(slashCommand("//comment")).toBeNull();
+  });
+  it("keeps a one-word setting on the rule and makes real text a message", () => {
+    expect(commandArgsInline("")).toBe(true);
+    expect(commandArgsInline("opus")).toBe(true);
+    expect(commandArgsInline("fix tests")).toBe(false);
+    expect(commandArgsInline("make the chat look like a chat")).toBe(false);
+  });
+  it("marks only prompts as commands", () => {
+    const turns = transcriptTurns([
+      { kind: "prompt", text: "/goal ship it", at: "1" },
+      { kind: "answer", text: "/goal ship it", at: "2" },
+      { kind: "prompt", text: "hello", at: "3" },
+    ] as TranscriptEntry[]);
+    expect(turns.map((turn) => turn.command)).toEqual([{ name: "/goal", args: "ship it" }, null, null]);
   });
 });

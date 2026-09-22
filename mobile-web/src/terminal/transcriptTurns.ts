@@ -18,6 +18,32 @@ export interface TranscriptTurn {
   cut: boolean;
   /** The record's index in `entries`, which is where the files sent after it are placed. */
   index: number;
+  /** A prompt that is a slash command, drawn as a divider (`slashCommand`). */
+  command: SlashCommand | null;
+}
+
+/** A slash command split into its name and what follows it. */
+export interface SlashCommand {
+  name: string;
+  args: string;
+}
+
+/** A prompt that is a slash command (`/clear`, `/model opus`, `/goal …`,
+ * `/plugin:skill x`) — steering the CLI, not words to the agent — so the
+ * Reader draws it as a divider across the chat rather than a bubble. The name
+ * must end at a space or the end, so a prompt opening with a path
+ * (`/home/me/x is broken`) stays a bubble. */
+export function slashCommand(text: string): SlashCommand | null {
+  const match = /^(\/[A-Za-z][\w-]*(?::[\w-]+)*)(?:\s+([\s\S]*))?$/.exec(text.trim());
+  return match ? { name: match[1], args: match[2] ?? "" } : null;
+}
+
+/** Whether a command's arguments ride on the divider beside its name: a
+ * one-word setting does (`/model opus`, `/effort high`); anything with words
+ * — the text of a `/goal` or `/plan` — is the reader's own message and reads
+ * as a prompt bubble under it. */
+export function commandArgsInline(args: string): boolean {
+  return args.length <= 24 && !/\s/.test(args);
 }
 
 export function transcriptTurns(entries: readonly TranscriptEntry[]): TranscriptTurn[] {
@@ -34,6 +60,7 @@ export function transcriptTurns(entries: readonly TranscriptEntry[]): Transcript
       text: entry.text,
       cut: entry.cut === true,
       index,
+      command: entry.kind === "prompt" ? slashCommand(entry.text) : null,
     };
   });
 }

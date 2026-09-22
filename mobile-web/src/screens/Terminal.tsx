@@ -1,5 +1,5 @@
 import { useT, type TranslationKey } from "../../../src/lib/i18n";
-import { useMessageMenu } from "../components/MessageMenu";
+import { useMessageMenu, type HoldHandlers } from "../components/MessageMenu";
 import { OptionSheet, type SheetOption } from "../components/OptionSheet";
 import { SpeechLangSheet, speechLangSummary } from "../components/SpeechLangPicker";
 import { OutboxGallery } from "../components/OutboxGallery";
@@ -75,7 +75,7 @@ import { agentInputWrites, bracketsAgentMessage } from "../terminal/composer";
 import { agentWork } from "../terminal/agentBusy";
 import { chatTurns, isPromptEcho } from "../terminal/chatTurns";
 import { answerHtml } from "../terminal/answerMarkdown";
-import { transcriptTurns } from "../terminal/transcriptTurns";
+import { commandArgsInline, slashCommand, transcriptTurns, type SlashCommand } from "../terminal/transcriptTurns";
 import { MAX_PENDING, pendingPrompt, withPending, type PendingPrompt } from "../terminal/pendingPrompts";
 import { ageLabel, sizeLabel } from "../terminal/fileLabels";
 import { resetText, StatusSheet } from "./StatusSheet";
@@ -303,11 +303,34 @@ const ReadableTurns = memo(function ReadableTurns({ lines, chat, agent, promptLa
     // A message is a bubble — a prompt or an answer; tool output and raw
     // screen rows are not one, and a hold on them opens nothing.
     const press = turn.role === "user" || turn.answer ? hold(`screen:${turn.key}`, () => readableText(shown)) : undefined;
+    const command = turn.role === "user" ? slashCommand(readableText(shown)) : null;
+    if (command) return <Fragment key={turn.key}><CommandDivider command={command} label={promptLabel} press={press} /></Fragment>;
     return turn.role === "user"
       ? <div key={turn.key} className="readable-turn user" role="group" aria-label={promptLabel} {...press}>{rows}</div>
       : <div key={turn.key} className={turn.answer ? "readable-turn agent answer" : "readable-turn agent"} {...press}>{rows}</div>;
   })}{menu}</>;
 });
+
+/** A slash command the reader sent (`slashCommand`): the command itself is
+ * a turn of the CLI's own dial, so its name reads as a rule across the chat.
+ * A one-word setting rides on the rule (`/model opus`); the text of a `/goal`
+ * or `/plan` is the reader's own words, so it follows as an ordinary prompt
+ * bubble. Both keep the prompt's hold menu. */
+function CommandDivider({ command, label, press }: {
+  command: SlashCommand;
+  label: string;
+  press?: HoldHandlers;
+}) {
+  const inline = commandArgsInline(command.args);
+  return <>
+    <div className="readable-command" role="separator" aria-label={label} {...press}>
+      <span className="readable-command-text">{inline && command.args ? `${command.name} ${command.args}` : command.name}</span>
+    </div>
+    {!inline && <div className="readable-turn user command-args" role="group" aria-label={label} {...press}>
+      <p className="transcript-text">{command.args}</p>
+    </div>}
+  </>;
+}
 
 /** One answer of the stored session as formatted text (`answerHtml`: the
  * formatting only — nothing in it opens or loads). Memoized on the text, so a
@@ -331,7 +354,9 @@ const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promp
   const turns = useMemo(() => transcriptTurns(entries), [entries]);
   const { hold, menu } = useMessageMenu();
   return <>{turns.map((turn) => <Fragment key={turn.key}>
-    {turn.kind === "prompt"
+    {turn.command
+      ? <CommandDivider command={turn.command} label={promptLabel} press={hold(turn.key, () => turn.text)} />
+      : turn.kind === "prompt"
       ? <div className="readable-turn user" role="group" aria-label={promptLabel} {...hold(turn.key, () => turn.text)}>
           <p className="transcript-text">{turn.text}</p>
           {turn.cut && <small className="transcript-cut">{cutLabel}</small>}
