@@ -1,7 +1,7 @@
 /**
  * Eldrun's shared line-icon set — the replacement for colour emoji in the
  * chrome. Same rounded `currentColor` outline as {@link SaveIcon} /
- * {@link PrinterIcon} / the edge-rail icons (24-grid, 1.7 stroke), so every
+ * {@link PrinterIcon} / the edge-rail icons (24-grid, 1.4 stroke), so every
  * icon follows the theme, dims with its row, and reads as one family.
  *
  * Sized in `em` by default, so an icon drops into the spot a glyph held and
@@ -29,7 +29,7 @@ function Frame({ className, size = "1.2em", children }: IconProps & { children: 
       aria-hidden="true"
       focusable="false"
     >
-      <g stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <g stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
         {children}
       </g>
     </svg>

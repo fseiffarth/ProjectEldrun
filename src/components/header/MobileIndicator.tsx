@@ -61,8 +61,8 @@ function MobileIcon({ tone }: { tone: StatusTone }) {
       xmlns="http://www.w3.org/2000/svg"
       aria-hidden="true"
     >
-      <rect x="4.1" y="1.5" width="7.8" height="13" rx="1.6" stroke="currentColor" strokeWidth="1.4" />
-      <path d="M6.7 3.6H9.3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+      <rect x="4.1" y="1.5" width="7.8" height="13" rx="1.6" stroke="currentColor" strokeWidth="1.15" />
+      <path d="M6.7 3.6H9.3" stroke="currentColor" strokeWidth="1" strokeLinecap="round" />
       <circle cx="8" cy="12.3" r="0.7" fill="currentColor" />
       <circle className="mobile-indicator-icon-dot" cx="12.6" cy="3.4" r="2.25" fill="currentColor" />
     </svg>

@@ -20,7 +20,7 @@ export function SaveIcon({ className }: SaveIconProps) {
     >
       <g
         stroke="currentColor"
-        strokeWidth="1.7"
+        strokeWidth="1.4"
         strokeLinecap="round"
         strokeLinejoin="round"
       >

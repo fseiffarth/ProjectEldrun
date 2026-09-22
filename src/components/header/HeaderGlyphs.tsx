@@ -3,8 +3,8 @@
  * replace came from whichever fallback font had the code point, so each had
  * its own stroke weight (most of them heavy) and its own ink box. These share
  * one hand with the status cluster's phone (`MobileIndicator`): a 16-unit grid,
- * outlines only, rounded corners and caps. Stroke is 1.15 units because they
- * render at 20px, which lands them on the phone's ~1.4px line. Every glyph's
+ * outlines only, rounded corners and caps. Stroke is 0.95 units because they
+ * render at 20px, which lands them on the phone's ~1.2px line. Every glyph's
  * outline runs from y=2 to y=14, so they all stand the same height in the bar
  * — keep that when redrawing one.
  */
@@ -13,7 +13,7 @@ import type { ReactNode } from "react";
 
 const STROKE = {
   stroke: "currentColor",
-  strokeWidth: 1.15,
+  strokeWidth: 0.95,
   strokeLinecap: "round",
   strokeLinejoin: "round",
 } as const;

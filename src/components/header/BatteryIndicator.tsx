@@ -45,7 +45,7 @@ export function BatteryIndicator({ percentage, plugged }: Props) {
     >
       <title>{label}</title>
       {/* body */}
-      <rect x="4" y="3.2" width="8" height="11.3" rx="1.6" stroke="currentColor" strokeWidth="1.3" fill="none" />
+      <rect x="4" y="3.2" width="8" height="11.3" rx="1.6" stroke="currentColor" strokeWidth="1.1" fill="none" />
       {/* terminal nub */}
       <rect x="6.6" y="1.5" width="2.8" height="1.9" rx="0.6" fill="currentColor" />
       {/* charge level */}
