@@ -330,6 +330,14 @@
   flex: 0 0 auto;
 }
 
+/* The "calendar deleted" notice carries buttons, so the row itself is not one. */
+.cal-notice-undo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: var(--cur-default, default);
+}
+
 /* ── Body: sidebar + view ────────────────────────────────────────────────── */
 
 .cal-body {

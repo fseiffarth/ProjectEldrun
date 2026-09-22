@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { useCalendarStore, visibleCalendarIds } from "../../stores/calendar/calendar";
+import {
+  useCalendarStore,
+  visibleCalendarIds,
+  type DeletedCalendar,
+} from "../../stores/calendar/calendar";
+import { useDialogs } from "../common/PromptDialogs";
+import { UntestedTag } from "../common/UntestedTag";
 import { useSettingsStore } from "../../stores/settings";
 import type {
   CalendarEvent,
@@ -89,6 +95,7 @@ export function CalendarPane({ visible }: Props) {
   const createCalendar = useCalendarStore((s) => s.createCalendar);
   const updateCalendar = useCalendarStore((s) => s.updateCalendar);
   const deleteCalendar = useCalendarStore((s) => s.deleteCalendar);
+  const restoreCalendar = useCalendarStore((s) => s.restoreCalendar);
   const toggleCalendarVisible = useCalendarStore((s) => s.toggleCalendarVisible);
   const refreshCalendarFromUrl = useCalendarStore((s) => s.refreshCalendarFromUrl);
 
@@ -112,6 +119,9 @@ export function CalendarPane({ visible }: Props) {
   const [search, setSearch] = useState("");
   const [dialog, setDialog] = useState<EventDialogTarget | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const { confirmAction, dialogs } = useDialogs();
+  /** The calendar the sidebar's × just removed, kept so the notice can put it back. */
+  const [undoDelete, setUndoDelete] = useState<DeletedCalendar | null>(null);
   /** A picked `.ics` waiting on the review dialog. The text is held here rather
    *  than re-read on confirm: re-reading would inspect one file and import
    *  whatever is at that path a moment later. */
@@ -223,7 +233,8 @@ export function CalendarPane({ visible }: Props) {
   // Arrow keys and view digits, scoped to the pane (it must not steal keys from
   // a terminal in another tab, so the handler lives on the pane, not the window).
   const onKeyDown = (e: React.KeyboardEvent) => {
-    if (dialog) return;
+    // `dialogs` is portaled, but its key events still bubble through here.
+    if (dialog || dialogs) return;
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
 
     if (e.key === "ArrowLeft") {
@@ -594,6 +605,39 @@ export function CalendarPane({ visible }: Props) {
 
   const gridPrefs = { use24h, dayStartHour };
 
+  /** Deleting a calendar takes every event and task on it along: ask first, and
+   *  keep what was removed so the notice can undo it. */
+  const confirmDeleteCalendar = async (id: string) => {
+    const cal = calendars.find((c) => c.id === id);
+    if (!cal) return;
+    const state = useCalendarStore.getState();
+    const ok = await confirmAction({
+      title: t("calendarPane.deleteCalendarConfirmTitle", { name: cal.name }),
+      body: t("calendarPane.deleteCalendarConfirmBody", {
+        events: state.events.filter((e) => e.calendar_id === id).length,
+        tasks: state.tasks.filter((task) => task.calendar_id === id).length,
+      }),
+      confirmLabel: t("calendarPane.deleteCalendarConfirmButton"),
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      setUndoDelete(await deleteCalendar(id));
+    } catch (err) {
+      setNotice(t("calendarPane.deleteCalendarFailed", { error: String(err) }));
+    }
+  };
+
+  const undoDeleteCalendar = async () => {
+    if (!undoDelete) return;
+    try {
+      await restoreCalendar(undoDelete);
+      setUndoDelete(null);
+    } catch (err) {
+      setNotice(t("calendarPane.restoreCalendarFailed", { error: String(err) }));
+    }
+  };
+
   return (
     <div
       className="cal-pane"
@@ -656,6 +700,23 @@ export function CalendarPane({ visible }: Props) {
         </div>
       ) : null}
 
+      {undoDelete ? (
+        <div className="cal-notice cal-notice-undo">
+          <span>{t("calendarPane.calendarDeleted", { name: undoDelete.calendar.name })}</span>
+          <button className="cal-link-btn" onClick={() => void undoDeleteCalendar()}>
+            {t("calendarPane.undoDeleteCalendar")}
+            <UntestedTag id="calendarPane.undoDeleteCalendar" />
+          </button>
+          <button
+            className="cal-link-btn"
+            onClick={() => setUndoDelete(null)}
+            title={t("calendarPane.dismissNoticeTitle")}
+          >
+            ×
+          </button>
+        </div>
+      ) : null}
+
       <div className="cal-body">
         <CalendarSidebar
           calendars={calendars}
@@ -666,7 +727,7 @@ export function CalendarPane({ visible }: Props) {
             void createCalendar({ name, color, visible: true, readonly: false })
           }
           onUpdateCalendar={(cal) => void updateCalendar(cal)}
-          onDeleteCalendar={(id) => void deleteCalendar(id)}
+          onDeleteCalendar={(id) => void confirmDeleteCalendar(id)}
           onSubscribeCalendar={(name, url) => void subscribeCalendar(name, url)}
           onRefreshCalendar={(id) => void refreshCalendar(id)}
           onSyncCaldav={(id) => void syncCaldavCalendar(id)}
@@ -800,6 +861,8 @@ export function CalendarPane({ visible }: Props) {
           onCancel={() => setPendingImport(null)}
         />
       ) : null}
+
+      {dialogs}
     </div>
   );
 }

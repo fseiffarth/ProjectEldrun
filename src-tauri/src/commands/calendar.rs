@@ -576,6 +576,41 @@ fn delete_calendar_at(path: &Path, id: &str) -> Result<(), String> {
     write_data(path, &data)
 }
 
+/// Put a just-deleted calendar back, with the events and tasks the caller kept
+/// from before the delete — the sidebar's "Undo". The calendar keeps its id, so
+/// its CalDAV link and anything else keyed on it still line up. An event or task
+/// whose id was reused in the meantime gets a fresh one rather than clobbering
+/// the newcomer; everything restored is re-filed under the restored calendar.
+fn restore_calendar_at(
+    path: &Path,
+    calendar: Calendar,
+    events: Vec<CalendarEvent>,
+    tasks: Vec<CalendarTask>,
+) -> Result<CalendarData, String> {
+    let _guard = lock_calendar();
+    let mut data = read_data(path)?;
+    if data.calendars.iter().any(|c| c.id == calendar.id) {
+        return Err(format!("calendar '{}' already exists", calendar.id));
+    }
+    for mut event in events {
+        if event_ids(&data).contains(event.id.as_str()) {
+            event.id = fresh_id(&event_ids(&data));
+        }
+        event.calendar_id = calendar.id.clone();
+        data.events.push(event);
+    }
+    for mut task in tasks {
+        if task_ids(&data).contains(task.id.as_str()) {
+            task.id = fresh_id(&task_ids(&data));
+        }
+        task.calendar_id = calendar.id.clone();
+        data.tasks.push(task);
+    }
+    data.calendars.push(calendar);
+    write_data(path, &data)?;
+    Ok(data)
+}
+
 /// Replace every event/task filed under `calendar_id` with a fresh set —
 /// what "Refresh from URL" needs so a re-fetched subscription (TimeTree or any
 /// other read-only ICS feed) updates the calendar it was imported into rather
@@ -1081,6 +1116,16 @@ pub async fn delete_calendar(id: String) -> Result<(), String> {
     run_off_thread(move || delete_calendar_at(&calendar_path(), &id)).await
 }
 
+/// Undo of [`delete_calendar`]. See [`restore_calendar_at`].
+#[tauri::command]
+pub async fn restore_calendar(
+    calendar: Calendar,
+    events: Vec<CalendarEvent>,
+    tasks: Vec<CalendarTask>,
+) -> Result<CalendarData, String> {
+    run_off_thread(move || restore_calendar_at(&calendar_path(), calendar, events, tasks)).await
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1307,6 +1352,36 @@ mod tests {
         assert_eq!(data.calendars.len(), 1);
         assert_eq!(data.events.len(), 1, "only the Work event is gone");
         assert_eq!(data.events[0].title, "personal");
+    }
+
+    #[test]
+    fn restoring_a_deleted_calendar_brings_its_events_back() {
+        let (_dir, path) = tmp_path();
+        let mut cal = read_data(&path).unwrap().calendars[0].clone();
+        cal.name = "Work".to_string();
+        let cal = create_calendar_at(&path, cal).unwrap();
+        let mut in_work = event("meeting", "2026-07-08T09:00", "2026-07-08T10:00");
+        in_work.calendar_id = cal.id.clone();
+        let in_work = create_event_at(&path, in_work).unwrap();
+
+        delete_calendar_at(&path, &cal.id).unwrap();
+        // An id reused while the calendar was gone must not be clobbered.
+        let mut data = read_data(&path).unwrap();
+        let mut squatter = event("squatter", "2026-07-09T09:00", "2026-07-09T10:00");
+        squatter.id = in_work.id.clone();
+        squatter.calendar_id = data.calendars[0].id.clone();
+        data.events.push(squatter);
+        write_data(&path, &data).unwrap();
+
+        let data = restore_calendar_at(&path, cal.clone(), vec![in_work.clone()], vec![]).unwrap();
+        assert!(data.calendars.iter().any(|c| c.id == cal.id));
+        let restored: Vec<_> = data.events.iter().filter(|e| e.calendar_id == cal.id).collect();
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].title, "meeting");
+        assert_ne!(restored[0].id, in_work.id, "the squatter keeps the id");
+        assert_eq!(data.events.len(), 2);
+
+        assert!(restore_calendar_at(&path, cal, vec![], vec![]).is_err(), "no double restore");
     }
 
     #[test]

@@ -38,6 +38,13 @@ import { translate, useI18nStore } from "../../lib/i18n";
  * Every mutation writes through to the backend and then patches local state with
  * what the backend returned, so the store never drifts from disk.
  */
+/** A calendar as it was the moment before `deleteCalendar` removed it. */
+export interface DeletedCalendar {
+  calendar: Calendar;
+  events: CalendarEvent[];
+  tasks: CalendarTask[];
+}
+
 interface CalendarStore {
   /** The header button's calendar overlay is on screen (`calendar_global_app`). */
   overlayOpen: boolean;
@@ -94,7 +101,13 @@ interface CalendarStore {
 
   createCalendar: (calendar: Omit<Calendar, "id">) => Promise<Calendar>;
   updateCalendar: (calendar: Calendar) => Promise<void>;
-  deleteCalendar: (id: string) => Promise<void>;
+  /**
+   * Delete a calendar with everything on it. Resolves to what was removed, so
+   * the caller can offer an undo (`restoreCalendar`); `null` if the id is unknown.
+   */
+  deleteCalendar: (id: string) => Promise<DeletedCalendar | null>;
+  /** Undo a `deleteCalendar`: the calendar comes back under its old id. */
+  restoreCalendar: (deleted: DeletedCalendar) => Promise<void>;
   /** Toggle a calendar's checkbox in the sidebar. */
   toggleCalendarVisible: (id: string) => Promise<void>;
 
@@ -289,6 +302,15 @@ export const useCalendarStore = create<CalendarStore>((set, get) => ({
   },
 
   deleteCalendar: async (id) => {
+    const before = get();
+    const calendar = before.calendars.find((c) => c.id === id);
+    const deleted: DeletedCalendar | null = calendar
+      ? {
+          calendar,
+          events: before.events.filter((e) => e.calendar_id === id),
+          tasks: before.tasks.filter((t) => t.calendar_id === id),
+        }
+      : null;
     await invoke<void>("delete_calendar", { id });
     // The backend deletes the calendar's events and tasks with it; mirror that
     // locally rather than re-reading the whole file.
@@ -297,6 +319,12 @@ export const useCalendarStore = create<CalendarStore>((set, get) => ({
       events: s.events.filter((e) => e.calendar_id !== id),
       tasks: s.tasks.filter((t) => t.calendar_id !== id),
     }));
+    return deleted;
+  },
+
+  restoreCalendar: async ({ calendar, events, tasks }) => {
+    const data = await invoke<CalendarData>("restore_calendar", { calendar, events, tasks });
+    set({ calendars: data.calendars, events: data.events, tasks: data.tasks });
   },
 
   toggleCalendarVisible: async (id) => {

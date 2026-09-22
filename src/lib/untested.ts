@@ -58,6 +58,7 @@ export const UNTESTED = {
   "calendarContextMenu.6": { area: "calendar", what: "CalendarContextMenu · Paste" },
   "calendarMenu.newHere": { area: "calendar", what: "CalendarContextMenu · New event here" },
   "eventDialog.repeatOnField": { area: "calendar", what: "EventDialog · Repeats on" },
+  "calendarPane.undoDeleteCalendar": { area: "calendar", what: "CalendarPane · Undo a deleted calendar" },
   "icsReview.title": { area: "calendar", what: "IcsImportReviewDialog · Before importing this calendar file" },
 
   // --- common — Shared dialogs and hosts ----------------------------

@@ -1487,6 +1487,7 @@ pub fn run() {
             commands::calendar::create_calendar,
             commands::calendar::update_calendar,
             commands::calendar::delete_calendar,
+            commands::calendar::restore_calendar,
             commands::calendar::calendar_read_ics,
             commands::calendar::calendar_write_ics,
             commands::calendar::calendar_fetch_ics,
