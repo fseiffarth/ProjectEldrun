@@ -22,6 +22,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `src/main.tsx` | React entry point. |
 | `src/crashReporter.ts` | Captures/forwards WebKitGTK renderer crashes to the backend. |
 | `src/lib/window/rendererWatchdog.ts` | Renderer memory watchdog: reloads a window whose webview renderer passes 4 GB. Per window (AppShell + DetachedApp); own renderer pid is probed, not asked; 10-min reload cooldown. Tests: `RendererWatchdog.test.ts`. |
+| `src/lib/window/dropClaim.ts` | Cross-window tab drops without desktop coordinates (native Wayland): the source broadcasts `DETACHED_DROP_PROBE` at release, the window that receives the pointer next answers `DETACHED_DROP_CLAIM` with the pane under it; main hosts popout-sourced probes in `CenterPanel`, `TabBar` consumes claims for its own. No claim → the tab stays. Tests: `DropClaim.test.ts`, `DetachedDropClaimHost.test.tsx`. |
 | `src/lib/window/strayFullscreen.ts` | Clears a stray OS fullscreen (it silently makes a popout unmovable). `isFullscreen()` can't be trusted, so it clears unconditionally; judgement in pure `mayClearStrayFullscreen`. |
 | `src/types/index.ts` | Shared TypeScript types. |
 

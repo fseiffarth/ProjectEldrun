@@ -54,7 +54,14 @@ import {
   type LocalityMenuState,
 } from "./TabLocalityBadges";
 import { texPdfPartner, useTexPdfCandidates } from "../../lib/viewers/tex/texPdfLink";
-import { startCursorPoll, desktopCursor, type PhysPoint } from "../../lib/window/coords";
+import {
+  startCursorPoll,
+  desktopCursor,
+  desktopCoordinatesSupported,
+  type PhysPoint,
+} from "../../lib/window/coords";
+import { newDropToken, probeDropTarget } from "../../lib/window/dropClaim";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { bindDragRelease, dragPlatform } from "../../lib/window/dragPlatform";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
@@ -881,6 +888,9 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
       // WebKitGTK only this handler ever fires, so clearing early is a harmless
       // no-op there. The later `end()` calls become redundant no-ops.)
       useDragStore.getState().end();
+      // The release instant, for the coordinate-free claim below (a claimant
+      // compares it with the pointer events it has seen).
+      const releasedAt = Date.now();
       // Final physical cursor at release (a fresh read; falls back to the last poll
       // reading if the IPC fails). Mirrors FileTree: the last poll tick can be up to
       // ~16 ms stale — or `null` if released before the first tick — which would
@@ -964,6 +974,32 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
         lastClient.x >= window.innerWidth ||
         lastClient.y >= window.innerHeight;
       if (outside) {
+        // No desktop geometry (native Wayland): `phys` is null, so the popout
+        // hit-test above could not run — but a popout may well be under the
+        // cursor. Ask the windows of this scope to claim the release
+        // (`lib/window/dropClaim`); the one that receives the pointer answers
+        // with the pane under it, and the tab docks there. No answer keeps the
+        // free-space rule: a new window.
+        if (!phys && !(await desktopCoordinatesSupported())) {
+          const claim = await probeDropTarget({
+            token: newDropToken(getCurrentWindow().label),
+            scope: useTabsStore.getState().scope,
+            sourceLabel: getCurrentWindow().label,
+            tabKey: tab.key,
+            label: tab.label,
+            releasedAt,
+          });
+          if (claim?.groupId) {
+            const claimScope = useTabsStore.getState().scope;
+            useTabsStore
+              .getState()
+              .dockTabIntoDetached(claimScope, claim.groupId, tab.key, claim.target ?? undefined);
+            reseedDetached(claimScope, claim.groupId, tab.key);
+            playDetachFlyOut(lastClient.x, lastClient.y, tab.label, d.previewW, d.previewH);
+            useDragStore.getState().end();
+            return;
+          }
+        }
         popToNewWindow();
         return;
       }

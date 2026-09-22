@@ -14,6 +14,15 @@ import {
 } from "../../lib/window/coords";
 import { bindDragRelease, dragPlatform, PLATFORM } from "../../lib/window/dragPlatform";
 import {
+  DETACHED_DROP_CLAIM,
+  DETACHED_DROP_PROBE,
+  awaitPointerClaim,
+  installPointerTracker,
+  newDropToken,
+  type DetachedDropClaim,
+  type DetachedDropProbe,
+} from "../../lib/window/dropClaim";
+import {
   DETACHED_DRAG_END,
   DETACHED_DRAG_MOVE,
   DETACHED_DRAG_START,
@@ -71,6 +80,7 @@ import {
   dividerFraction,
   findGroup,
   isPtyTabKind,
+  type DetachedDockTarget,
   type DropEdge,
   type GroupNode,
   type LayoutNode,
@@ -814,41 +824,109 @@ export function DetachedCenterPanel({
   // it to this popout's drag store: a tab BAR → within-bar reorder slot; a group
   // BODY → edge split of that group. Mirrors CenterPanel.resolveTarget, but scans
   // this popout's own per-group bar/body refs (it may have several once split).
-  const resolveLocalTarget = useCallback((clientX: number, clientY: number) => {
-    const setTarget = useDragStore.getState().setTarget;
-    const clear = () =>
-      setTarget({ overGroup: null, edge: null, reorderGroup: null, reorderIndex: null });
-    const inside = (r: DOMRect) =>
-      clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom;
-
-    for (const [gid, bar] of barRefs.current) {
-      const br = bar.getBoundingClientRect();
-      if (!inside(br)) continue;
-      const tabEls = Array.from(bar.querySelectorAll<HTMLElement>(".tab"));
-      let slot = tabEls.length;
-      for (let i = 0; i < tabEls.length; i++) {
-        const r = tabEls[i].getBoundingClientRect();
-        if (clientX < r.left + r.width / 2) {
-          slot = i;
-          break;
+  //
+  // The pure hit-test (`hitTestLocal`) is split from the store write so the
+  // Wayland drop claim below can answer "which pane is under this point" without
+  // an in-flight drag in this popout's store.
+  const hitTestLocal = useCallback(
+    (
+      clientX: number,
+      clientY: number,
+    ):
+      | { kind: "bar"; groupId: string; slot: number }
+      | { kind: "body"; groupId: string; edge: DropEdge }
+      | null => {
+      const inside = (r: DOMRect) =>
+        clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom;
+      for (const [gid, bar] of barRefs.current) {
+        const br = bar.getBoundingClientRect();
+        if (!inside(br)) continue;
+        const tabEls = Array.from(bar.querySelectorAll<HTMLElement>(".tab"));
+        let slot = tabEls.length;
+        for (let i = 0; i < tabEls.length; i++) {
+          const r = tabEls[i].getBoundingClientRect();
+          if (clientX < r.left + r.width / 2) {
+            slot = i;
+            break;
+          }
         }
+        return { kind: "bar", groupId: gid, slot };
       }
-      setTarget({ overGroup: null, edge: null, reorderGroup: gid, reorderIndex: slot });
-      return;
-    }
-    for (const [gid, body] of bodyRefs.current) {
-      const r = body.getBoundingClientRect();
-      if (!inside(r)) continue;
-      const edge = pickEdge(
-        { left: r.left, top: r.top, width: r.width, height: r.height },
-        clientX,
-        clientY,
+      for (const [gid, body] of bodyRefs.current) {
+        const r = body.getBoundingClientRect();
+        if (!inside(r)) continue;
+        const edge = pickEdge(
+          { left: r.left, top: r.top, width: r.width, height: r.height },
+          clientX,
+          clientY,
+        );
+        return { kind: "body", groupId: gid, edge };
+      }
+      return null;
+    },
+    [],
+  );
+  const resolveLocalTarget = useCallback(
+    (clientX: number, clientY: number) => {
+      const setTarget = useDragStore.getState().setTarget;
+      const hit = hitTestLocal(clientX, clientY);
+      if (hit?.kind === "bar") {
+        setTarget({ overGroup: null, edge: null, reorderGroup: hit.groupId, reorderIndex: hit.slot });
+      } else if (hit?.kind === "body") {
+        setTarget({ overGroup: hit.groupId, edge: hit.edge, reorderGroup: null, reorderIndex: null });
+      } else {
+        setTarget({ overGroup: null, edge: null, reorderGroup: null, reorderIndex: null });
+      }
+    },
+    [hitTestLocal],
+  );
+
+  // #42 on native Wayland: CLAIM a tab that another window let go over us. With
+  // no desktop coordinates the source cannot tell which window it released over
+  // (see `lib/window/dropClaim`), so it broadcasts a probe and the window that
+  // receives the pointer next answers with the pane under it. Only a sibling of
+  // the SAME scope may answer — the host's dock moves the tab within one scope's
+  // records — and never the source itself (it committed a self-drop locally).
+  useEffect(() => {
+    installPointerTracker();
+    const label = getCurrentWindow().label;
+    let cancelClaim: (() => void) | null = null;
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void listen<DetachedDropProbe>(DETACHED_DROP_PROBE, (ev) => {
+      const probe = ev.payload;
+      if (probe.sourceLabel === label || probe.scope !== scope) return;
+      cancelClaim?.();
+      cancelClaim = awaitPointerClaim(
+        (clientX, clientY) => {
+          const hit = hitTestLocal(clientX, clientY);
+          const target: DetachedDockTarget | null =
+            hit?.kind === "bar"
+              ? { groupId: hit.groupId, index: hit.slot }
+              : hit?.kind === "body"
+                ? { groupId: hit.groupId, edge: hit.edge }
+                : null;
+          void emit(DETACHED_DROP_CLAIM, {
+            token: probe.token,
+            windowLabel: label,
+            groupId: popoutId,
+            clientX,
+            clientY,
+            target,
+          } satisfies DetachedDropClaim);
+        },
+        () => {},
+        { since: probe.releasedAt },
       );
-      setTarget({ overGroup: gid, edge, reorderGroup: null, reorderIndex: null });
-      return;
-    }
-    clear();
-  }, []);
+    })
+      .then((fn) => (disposed ? fn() : (unlisten = fn)))
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      cancelClaim?.();
+      unlisten?.();
+    };
+  }, [scope, popoutId, hitTestLocal]);
 
   // #42: a FILE dragged out of the file tree (a Files (Project) tab) onto a pane
   // inside THIS popout. The main window's `commitFileDrop` can't run here (the
@@ -1189,6 +1267,20 @@ export function DetachedCenterPanel({
       } satisfies DetachedDragEnd;
       if (streamStarted) {
         void emit(DETACHED_DRAG_END, end);
+      } else if (!cancelled && !shift && tabKey != null) {
+        // No desktop geometry (native Wayland — or a release that beat the frame
+        // snapshot) and the release was NOT over this popout: ask the window under
+        // the cursor to claim the tab (`lib/window/dropClaim`). The main window
+        // hosts the answer; none within the timeout leaves the tab where it is.
+        void emit(DETACHED_DROP_PROBE, {
+          token: newDropToken(win.label),
+          scope,
+          sourceLabel: win.label,
+          groupId: popoutId,
+          tabKey,
+          label: dragLabel,
+          releasedAt: Date.now(),
+        } satisfies DetachedDropProbe);
       } else if (!cancelled && shift && tabKey != null) {
         // Shift is an explicit new-window request, even without desktop geometry.
         // Send the host that request only on release; never stream fake positions
