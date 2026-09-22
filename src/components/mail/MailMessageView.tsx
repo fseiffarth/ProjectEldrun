@@ -13,6 +13,8 @@ import {
   mailAttachmentPreview,
   mailAttachmentSave,
   mailAttachmentSaveToProject,
+  mailBody,
+  mailReplies,
   ELDRUN_EMAILS_DIR,
   mailAuthDmarcCarried,
   mailAuthPanelTone,
@@ -26,6 +28,7 @@ import {
   stripFormatControls,
 } from "../../lib/mail";
 import { useI18nStore, useT } from "../../lib/i18n";
+import { useMailStore } from "../../stores/mail";
 import { useProjectsStore } from "../../stores/projects";
 import { useUse24h } from "../../lib/timeFormat";
 import { UntestedTag } from "../common/UntestedTag";
@@ -147,6 +150,7 @@ export function MailMessageView({
             fail the other, and folding them into one badge would hide exactly
             that case. */}
         {body?.crypto && <MailCryptoPanel info={body.crypto} />}
+        <MailRepliesPanel header={header} />
         <div className="mail-message-actions">
           <button type="button" className="settings-btn" onClick={() => onReply("reply")}>
             {t("mail.composeReply")}
@@ -225,6 +229,86 @@ export function MailMessageView({
           }}
         />
       )}
+    </div>
+  );
+}
+
+/**
+ * The answers the user already wrote to this message — Sent mail whose
+ * `In-Reply-To` names it, from the local index (`mail_replies`). Absent when
+ * there are none. A row unfolds the reply's plain text in place, as a text
+ * node: the reply lives in another folder, and leaving the open message to read
+ * it would lose the place the question was asked from.
+ *
+ * Re-read when the message's `\Answered` flag moves or the account finishes a
+ * check, which is when a reply just sent has reached the Sent folder's index.
+ */
+function MailRepliesPanel({ header }: { header: MailHeader }) {
+  const t = useT();
+  const lang = useI18nStore((s) => s.lang);
+  const use24h = useUse24h();
+  const syncPhase = useMailStore((s) => s.sync[header.account_id]?.phase);
+  const synced = syncPhase === "done";
+  const [replies, setReplies] = useState<MailHeader[]>([]);
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [text, setText] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    mailReplies(header.id)
+      .then((found) => live && setReplies(found))
+      .catch(() => live && setReplies([]));
+    return () => {
+      live = false;
+    };
+  }, [header.id, header.answered, synced]);
+
+  useEffect(() => {
+    setOpenId(null);
+  }, [header.id]);
+
+  useEffect(() => {
+    setText(null);
+    if (!openId) return;
+    let live = true;
+    // Remote content stays blocked, as for every body; only `text` is shown.
+    mailBody(openId, false)
+      .then((b) => live && setText(b.text?.trim() || t("mail.replyNoText")))
+      .catch(() => live && setText(t("mail.replyNoText")));
+    return () => {
+      live = false;
+    };
+  }, [openId, t]);
+
+  if (replies.length === 0) return null;
+  return (
+    <div className="mail-auth mail-replies">
+      <div className="mail-auth-head">
+        <span className="mail-meta-label">↩ {t("mail.replies", { count: replies.length })}</span>
+        <UntestedTag id="mailMessageView.4" />
+      </div>
+      <div className="mail-links-rows">
+        {replies.map((reply) => (
+          <button
+            key={reply.id}
+            type="button"
+            className="mail-link-row"
+            aria-expanded={openId === reply.id}
+            onClick={() => setOpenId((id) => (id === reply.id ? null : reply.id))}
+          >
+            <span className="mail-reply-when">
+              {openId === reply.id ? "▾" : "▸"} {formatMailDate(reply.date, lang, use24h)}
+              {reply.to.length > 0 &&
+                ` · ${t("mail.repliesTo", { to: reply.to.map((a) => a.address).join(", ") })}`}
+            </span>
+            {openId === reply.id ? (
+              <span className="mail-reply-text">{text ?? t("mail.loading")}</span>
+            ) : (
+              <span className="mail-reply-preview">{stripFormatControls(reply.preview)}</span>
+            )}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

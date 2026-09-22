@@ -47,6 +47,7 @@ import type {
   MailFilterRule,
   MailFlag,
   MailFolder,
+  MailHeader,
   MailHeaderPage,
   MailNewEvent,
   MailPasswordState,
@@ -186,6 +187,14 @@ export function mailHeaders(
     desc,
     unreadOnly,
   });
+}
+
+/**
+ * The answers the user already wrote to a message: mail in a Sent folder whose
+ * `In-Reply-To` names it, oldest first. Local index only — no network.
+ */
+export function mailReplies(messageId: string): Promise<MailHeader[]> {
+  return invoke<MailHeader[]>("mail_replies", { messageId });
 }
 
 /**

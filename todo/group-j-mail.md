@@ -825,6 +825,33 @@ no-MDC OpenPGP refused — is deliberately not re-listed here.*
       confirm, then gone from the server; Ctrl/Shift-click a few rows → one
       delete moves all of them; right-click an unread row → it stays unread.
 
+860. **Show the answers already written to a message** (user, 2026-09-21).
+    - **Built:** `messages.reply_key` (keyed digest of `In-Reply-To`, written by
+      the sync via `MailStore::set_reply_key`), `mail_replies` →
+      `MailStore::replies_to` (Sent folders of any account, oldest first, local
+      index only), and the "You replied (n)" strip in `MailMessageView`; a row
+      unfolds the reply's plain text in place. Converting a plain store drops
+      the cleartext keys; the next check writes keyed ones.
+    - **Limits:** direct replies only (`In-Reply-To`, not `References`); a reply
+      shows once its Sent folder has been checked; mail synced before this
+      build gets its key on the next check.
+    - [x] 🤖 Automated test — `replies_to_lists_the_users_own_answers_oldest_first`,
+      `a_message_without_a_message_id_has_no_replies`,
+      `converting_a_plain_store_drops_cleartext_reply_keys`, `MailReplies.test.tsx`.
+    - **Needs a rebuild + restart** (backend).
+    - [ ] 🖐️ Manual test — after a check, open an inbox message you answered →
+      the strip lists the reply with date and recipient; click → its text
+      unfolds. Reply to another message, check mail → its strip appears. A
+      message never answered shows no strip.
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
+
 ### Mail tools for agents — root MCP (#859)
 
 - [x] **#859 Mail tools for the root agent and the contained reader** —

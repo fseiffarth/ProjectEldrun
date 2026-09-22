@@ -252,6 +252,7 @@ export const UNTESTED = {
   "mailMessageView.1": { area: "mail", what: "MailMessageView · SPF/DKIM headline on a message" },
   "mailMessageView.2": { area: "mail", what: "MailMessageView · Sender checks" },
   "mailMessageView.3": { area: "mail", what: "MailMessageView · Save attachment" },
+  "mailMessageView.4": { area: "mail", what: "MailMessageView · Your replies to this message" },
   "mailPane.1": { area: "mail", what: "MailPane · Empty this list ({count})" },
   "mailPdfPreview.1": { area: "mail", what: "MailPdfPreview · PDF, {count} pages" },
 

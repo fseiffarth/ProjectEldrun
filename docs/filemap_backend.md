@@ -46,6 +46,7 @@ only when breaking it does damage. The *why* goes in code comments or
 | `caldav.rs` | CalDAV account commands (`docs/context/caldav.md`), mirroring mail's. Sync = `caldav_fetch` (raw iCal) → frontend parses with `lib/calendar/ics.ts` → `caldav_apply` merges atomically. |
 | `calendar.rs` | Calendar/event/task CRUD over `calendar.json` + guarded ICS read/write; `apply_change_at` checks and atomically applies reviewed proposal rows under the same RMW lock. `merge_caldav_calendar_at` merges CalDAV rows by `caldav_href` field by field (never re-mints ids). |
 | `mail.rs` (priority marks) | `mail_priority_{set,page,counts,clear}`: Important/Urgent marks, local-only (`schema::mail::MailPriority`), no network. |
+| `mail.rs` (replies) | `mail_replies`: the user's own answers to a message — Sent mail whose `reply_key` (keyed digest of `In-Reply-To`, written by the sync) names it. Local index, no network. |
 | `mail.rs` (deleting) | `mail_move` (delete = move to Trash) and `mail_purge` (`\Deleted` + `UID EXPUNGE`). Requires UIDPLUS or refuses (`NO_UIDPLUS`) — never plain `EXPUNGE`. |
 | `mail.rs` (filters) | `mail_filters_{list,set,apply}`: local keyword rules; list saved wholesale (order = first match wins); one command for preview and apply (`dry_run`). |
 | `printing.rs` | Native print manager: `print_system_snapshot` + cancel / set-default / pause / test page. CUPS (under `LC_ALL=C`) or Windows PowerShell, mapped to a closed state set (unknown ≠ healthy). |

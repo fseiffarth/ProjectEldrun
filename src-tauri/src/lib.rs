@@ -1536,6 +1536,7 @@ pub fn run() {
             commands::mail::mail_sync,
             commands::mail::mail_sync_cancel,
             commands::mail::mail_headers,
+            commands::mail::mail_replies,
             commands::mail::mail_body,
             commands::mail::mail_flag,
             commands::mail::mail_mark_folder_read,

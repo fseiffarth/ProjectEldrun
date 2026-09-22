@@ -102,6 +102,10 @@ const MAX_SEARCH_SCAN: usize = 50_000;
 /// The `meta` key set once the store's existing plaintext has been sealed.
 const META_ENCRYPTED: &str = "encrypted";
 
+/// How many of the user's own replies one message lists. A thread answered more
+/// often than this is read in the Sent folder, not in a strip above a body.
+const MAX_REPLIES: usize = 20;
+
 /// Bodies larger than this are content-addressed into `blobs/` instead of
 /// living in the row.
 pub const INLINE_BODY_LIMIT: usize = 256 * 1024;
@@ -428,6 +432,9 @@ impl MailStore {
                 priority      TEXT NOT NULL DEFAULT '',
                 priority_source TEXT NOT NULL DEFAULT '',
                 priority_reason TEXT NOT NULL DEFAULT '',
+                -- Which message this one answers: `digest_of("reply", …)` of
+                -- its `In-Reply-To`. A lookup key, never read back as a value.
+                reply_key     TEXT NOT NULL DEFAULT '',
                 UNIQUE (folder_id, uid)
             );
             CREATE INDEX IF NOT EXISTS messages_by_folder ON messages (folder_id, date DESC);
@@ -512,6 +519,18 @@ impl MailStore {
         // that no longer opens. Every existing install takes exactly that path.
         conn.execute(
             "CREATE INDEX IF NOT EXISTS messages_by_priority ON messages (priority, date DESC)",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+        // "Your replies to this message" looks a message's answers up by this
+        // key. Additive and indexed after its ALTER, for the reasons above.
+        let _ = conn.execute(
+            "ALTER TABLE messages ADD COLUMN reply_key TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS messages_by_reply_key ON messages (reply_key)
+             WHERE reply_key != ''",
             [],
         )
         .map_err(|e| e.to_string())?;
@@ -1238,6 +1257,55 @@ impl MailStore {
         )
         .optional()
         .map_err(|e| e.to_string())
+    }
+
+    /// Record which message this one answers (its `In-Reply-To`), as the keyed
+    /// digest `replies_to` looks up. Its own statement rather than a column of
+    /// `upsert_header`, so `MailHeader` — the wire contract — does not grow a
+    /// field nothing displays. A no-op once the key is in place, which on a
+    /// re-sync is every row.
+    pub fn set_reply_key(&self, message_id: &str, in_reply_to: Option<&str>) -> Result<(), String> {
+        let key = in_reply_to
+            .map(normalize_rfc_id)
+            .filter(|id| !id.is_empty())
+            .map(|id| self.digest_of("reply", id))
+            .unwrap_or_default();
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        conn.execute(
+            "UPDATE messages SET reply_key = ?1 WHERE id = ?2 AND reply_key != ?1",
+            params![key, message_id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// The answers the user already wrote to a message: mail in any account's
+    /// Sent folder whose `In-Reply-To` names it, oldest first. Only what the
+    /// local index holds — a reply sent from another client shows up once its
+    /// Sent folder has synced. A message that carried no `Message-ID` has none.
+    pub fn replies_to(&self, message_id: &str) -> Result<Vec<MailHeader>, String> {
+        let Some(rfc_id) = self.header(message_id)?.and_then(|h| h.rfc_message_id) else {
+            return Ok(Vec::new());
+        };
+        let rfc_id = normalize_rfc_id(&rfc_id);
+        if rfc_id.is_empty() {
+            return Ok(Vec::new());
+        }
+        let key = self.digest_of("reply", rfc_id);
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {} FROM messages
+                 WHERE reply_key = ?1 AND deleted = 0 AND id != ?2
+                   AND folder_id IN (SELECT id FROM folders WHERE kind = 'sent')
+                 ORDER BY date ASC, uid ASC LIMIT {MAX_REPLIES}",
+                Self::HEADER_COLUMNS
+            ))
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![key, message_id], |r| self.row_to_header(r))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
     }
 
     pub fn set_flag(&self, message_id: &str, flag: MailFlag, value: bool) -> Result<(), String> {
@@ -2194,6 +2262,15 @@ impl MailStore {
                 "priority_reason",
             ],
         )?;
+        // `reply_key` is a digest of a `Message-ID`, and in a store that ran
+        // plain it *is* that id. There is no sealed copy to re-digest it from,
+        // so it is dropped; the next sync writes every row's keyed one back.
+        {
+            let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+            changed += conn
+                .execute("UPDATE messages SET reply_key = '' WHERE reply_key != ''", [])
+                .map_err(|e| e.to_string())?;
+        }
         changed += self.seal_table(
             "bodies_cache",
             &["message_id"],
@@ -2767,6 +2844,12 @@ fn staged_row(draft_id: &str, staged_id: &str) -> String {
 /// Reduce an identifier to something that cannot name anything but a leaf
 /// inside the store. Ids are minted by the backend, so this is a belt: the
 /// braces are that nothing outside `mail_dir()` is ever joined onto.
+/// A `Message-ID` as both sides of the reply lookup spell it: `mail-parser`
+/// hands ids back bare, a composed `In-Reply-To` may carry its angle brackets.
+fn normalize_rfc_id(id: &str) -> &str {
+    id.trim().trim_start_matches('<').trim_end_matches('>').trim()
+}
+
 fn sanitize_id(id: &str) -> String {
     let cleaned: String = id
         .chars()
@@ -3984,6 +4067,70 @@ mod tests {
         );
     }
 
+    // ── Replies ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn replies_to_lists_the_users_own_answers_oldest_first() {
+        let (_d, store) = store();
+        let inbox = folder("a1", "INBOX");
+        let mut sent = folder("a1", "Sent");
+        sent.kind = MailFolderKind::Sent;
+        store.upsert_folder(&inbox).unwrap();
+        store.upsert_folder(&sent).unwrap();
+
+        let asked = header(&inbox, 1, "question", "2026-09-01T09:00:00Z");
+        store.upsert_header(&asked).unwrap();
+        // Someone else's answer in the inbox names the same message; it is not
+        // one the user wrote.
+        let theirs = header(&inbox, 2, "Re: question", "2026-09-01T10:00:00Z");
+        store.upsert_header(&theirs).unwrap();
+        store.set_reply_key(&theirs.id, Some("<1@example.com>")).unwrap();
+        let second = header(&sent, 8, "Re: question (2)", "2026-09-03T09:00:00Z");
+        let first = header(&sent, 7, "Re: question", "2026-09-02T09:00:00Z");
+        let unrelated = header(&sent, 9, "Re: other", "2026-09-02T09:00:00Z");
+        for h in [&second, &first, &unrelated] {
+            store.upsert_header(h).unwrap();
+        }
+        // Bare and bracketed spellings of one id meet.
+        store.set_reply_key(&second.id, Some("1@example.com")).unwrap();
+        store.set_reply_key(&first.id, Some(" <1@example.com> ")).unwrap();
+        store.set_reply_key(&unrelated.id, Some("<77@example.com>")).unwrap();
+
+        let ids: Vec<String> = store
+            .replies_to(&asked.id)
+            .unwrap()
+            .into_iter()
+            .map(|h| h.id)
+            .collect();
+        assert_eq!(ids, vec![first.id.clone(), second.id.clone()]);
+
+        // A re-sync rewrites the header and must leave the key alone; a reply
+        // whose `In-Reply-To` went away stops being one.
+        store.upsert_header(&first).unwrap();
+        assert_eq!(store.replies_to(&asked.id).unwrap().len(), 2);
+        store.set_reply_key(&first.id, None).unwrap();
+        assert_eq!(store.replies_to(&asked.id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_message_without_a_message_id_has_no_replies() {
+        let (_d, store) = store();
+        let inbox = folder("a1", "INBOX");
+        let mut sent = folder("a1", "Sent");
+        sent.kind = MailFolderKind::Sent;
+        store.upsert_folder(&inbox).unwrap();
+        store.upsert_folder(&sent).unwrap();
+        let mut asked = header(&inbox, 1, "question", "2026-09-01T09:00:00Z");
+        asked.rfc_message_id = None;
+        store.upsert_header(&asked).unwrap();
+        // An empty `In-Reply-To` must not turn into a key every id-less message matches.
+        let stray = header(&sent, 2, "Re:", "2026-09-02T09:00:00Z");
+        store.upsert_header(&stray).unwrap();
+        store.set_reply_key(&stray.id, Some("<>")).unwrap();
+        assert!(store.replies_to(&asked.id).unwrap().is_empty());
+        assert!(store.replies_to("no-such-message").unwrap().is_empty());
+    }
+
     // ── Encryption at rest ──────────────────────────────────────────────────
 
     mod encrypted {
@@ -4632,6 +4779,49 @@ mod tests {
                     );
                 }
             }
+        }
+
+        /// `reply_key` is the same class of column: in a plain store it is the
+        /// `Message-ID` itself. Conversion drops it rather than leave it in the
+        /// clear, and the next sync's `set_reply_key` finds the replies again.
+        #[test]
+        fn converting_a_plain_store_drops_cleartext_reply_keys() {
+            let dir = tempfile::tempdir().unwrap();
+            let inbox = realistic_folder("a1", "INBOX");
+            let mut sent = realistic_folder("a1", "Sent");
+            sent.kind = MailFolderKind::Sent;
+            let asked = header(&inbox, 1, "question", "2026-09-01T09:00:00Z");
+            let answer = header(&sent, 1, "Re: question", "2026-09-02T09:00:00Z");
+            {
+                let store = MailStore::open(dir.path()).unwrap();
+                store.upsert_folder(&inbox).unwrap();
+                store.upsert_folder(&sent).unwrap();
+                store.upsert_header(&asked).unwrap();
+                store.upsert_header(&answer).unwrap();
+                store.set_reply_key(&answer.id, Some("1@example.com")).unwrap();
+                assert_eq!(store.replies_to(&asked.id).unwrap().len(), 1);
+            }
+
+            let store = MailStore::open_with_keys(dir.path(), Some(keys(1))).unwrap();
+            let key: String = store
+                .conn
+                .lock()
+                .unwrap()
+                .query_row("SELECT reply_key FROM messages WHERE id = ?1", params![answer.id], |r| r.get(0))
+                .unwrap();
+            assert_eq!(key, "", "the cleartext id is gone");
+            // The next sync.
+            store.set_reply_key(&answer.id, Some("1@example.com")).unwrap();
+            let found = store.replies_to(&asked.id).unwrap();
+            assert_eq!(found.len(), 1);
+            assert_eq!(found[0].id, answer.id);
+            let key: String = store
+                .conn
+                .lock()
+                .unwrap()
+                .query_row("SELECT reply_key FROM messages WHERE id = ?1", params![answer.id], |r| r.get(0))
+                .unwrap();
+            assert!(!key.contains("example.com"), "the key is a keyed digest now");
         }
 
         /// The same fault in a store an *earlier build* already converted: its

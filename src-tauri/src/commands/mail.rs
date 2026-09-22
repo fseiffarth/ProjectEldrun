@@ -1994,7 +1994,9 @@ async fn sync_inner(
                         priority_source: None,
                         priority_reason: None,
                     };
+                    let in_reply_to = h.headers.in_reply_to;
                     let inserted = store3.upsert_header(&row)?;
+                    store3.set_reply_key(&row.id, in_reply_to.as_deref())?;
                     if inserted {
                         added += 1;
                     }
@@ -2125,6 +2127,23 @@ pub async fn mail_headers(
         )?;
         serve_auth_state(&mut page.items);
         Ok(page)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The answers the user already wrote to one message, from the local index —
+/// no network (`MailStore::replies_to`).
+#[tauri::command]
+pub async fn mail_replies(
+    message_id: String,
+    state: State<'_, MailState>,
+) -> Result<Vec<MailHeader>, String> {
+    let rt = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let mut replies = store_of(&rt)?.replies_to(&message_id)?;
+        serve_auth_state(&mut replies);
+        Ok(replies)
     })
     .await
     .map_err(|e| e.to_string())?

@@ -2542,6 +2542,24 @@ handle — it swallows the pointer before the card ever sees it. */
   text-align: left;
   cursor: var(--cur-pointer, pointer);
 }
+.mail-reply-when {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.mail-reply-preview {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mail-reply-text {
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 220px;
+  overflow-y: auto;
+  user-select: text;
+}
 .mail-link-row.warn {
   border-left: 3px solid var(--warning);
 }
