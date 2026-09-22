@@ -31,7 +31,7 @@ export type UntestedEntry = {
 
 /** Every tagged feature. One row per pill; `tested` retires it. */
 export const UNTESTED = {
-  "desktop.settingsNavigation": { area: "shell", what: "Persistent settings categories and scroll restoration" },
+  "desktop.settingsNavigation": { area: "shell", what: "Grouped settings pages, the left-hand search box and per-page scroll restoration" },
   "desktop.modalFocus": { area: "common", what: "Modal focus containment, restoration and nested Escape" },
   "desktop.projectForms": { area: "projects", what: "Project form sections, field guidance and pinned actions" },
   "desktop.headerMenus": { area: "shell", what: "Header menu keyboard navigation" },

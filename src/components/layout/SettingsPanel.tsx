@@ -829,24 +829,81 @@ function HelpPanel({ onBack, onClose }: SubPanelProps) {
 
 export type SettingsPanelKind = "main" | "global" | "filetypes" | "ollama" | "agents" | "shortcuts" | "git" | "vpn" | "remoteHosts" | "archive" | "scaffoldRepair" | "updates" | "help";
 
-/** Sub-panel navigation shown as a card menu at the foot of the main settings
- *  panel (styled like the Lessons / How-to-start menus). Titles/blurbs are
- *  resolved at render via i18n (`nav.<panel>.title` / `.blurb`). */
-const SETTINGS_NAV: Exclude<SettingsPanelKind, "main" | "ollama">[] = [
-  "git",
-  "vpn",
-  "remoteHosts",
-  "global",
-  "filetypes",
-  "agents",
-  "shortcuts",
-  "archive",
-  "scaffoldRepair",
-  "updates",
-  "help",
+type SubPanel = Exclude<SettingsPanelKind, "main">;
+
+/** The pages of the main panel, one per left-hand entry. Each page's header
+ *  carries `settings-anchor-<key>` as its id (`SETTINGS_ANCHORS`), which is
+ *  what a deep link names. */
+const MAIN_SECTIONS = [
+  "general",
+  "layout",
+  "clock",
+  "hintsOnboarding",
+  "downloads",
+  "browser",
+  "calendar",
+  "usageStats",
+  "rootConsole",
+  "remoteFeatures",
+  "mobile",
+  "performance",
+  "resourceMonitor",
+  "experimental",
+] as const;
+type MainSection = (typeof MAIN_SECTIONS)[number];
+type NavEntry = MainSection | SubPanel;
+
+const anchorOf = (section: MainSection) => `settings-anchor-${section}`;
+const isMainSection = (entry: NavEntry): entry is MainSection =>
+  (MAIN_SECTIONS as readonly string[]).includes(entry);
+function sectionOfAnchor(anchor: string | undefined): MainSection {
+  const key = anchor?.replace(/^settings-anchor-/, "") ?? "";
+  return isMainSection(key as NavEntry) ? (key as MainSection) : "general";
+}
+
+/** The left-hand navigation: five topic groups, every entry one page on the
+ *  right — a main-panel page (`MainSection`) or a sub-panel. Group labels are
+ *  `settings.group.<key>`; entry labels `settings.<section>` / `nav.<panel>.title`. */
+const SETTINGS_GROUPS: { key: "general" | "workspace" | "agents" | "remote" | "system"; entries: NavEntry[] }[] = [
+  { key: "general", entries: ["general", "layout", "clock", "hintsOnboarding", "shortcuts", "updates", "help"] },
+  { key: "workspace", entries: ["global", "filetypes", "downloads", "browser", "calendar", "usageStats", "archive", "scaffoldRepair"] },
+  { key: "agents", entries: ["agents", "ollama", "rootConsole"] },
+  { key: "remote", entries: ["remoteFeatures", "git", "remoteHosts", "vpn", "mobile"] },
+  { key: "system", entries: ["performance", "resourceMonitor", "experimental"] },
 ];
 
-const MAIN_SECTIONS = ["general", "mobile", "remoteFeatures", "experimental", "resourceMonitor", "clock", "calendar", "browser", "hintsOnboarding", "layout", "downloads", "usageStats", "moreSettings"] as const;
+/** What the search box matches beyond an entry's own label: the labels of the
+ *  settings on that page (a sub-panel contributes its blurb). Kept as i18n keys
+ *  so the search works in the UI language; a new control on a page adds its
+ *  label key here, or the search will not find it. */
+const SEARCH_KEYS: Record<NavEntry, TranslationKey[]> = {
+  general: ["settings.theme", "settings.themeVars", "settings.language", "settings.runScriptsBg", "settings.persistLocal"],
+  layout: ["settings.windowZoom", "settings.minSubWidth", "settings.minSubHeight"],
+  clock: ["settings.showClockSeconds", "settings.clock24"],
+  hintsOnboarding: ["settings.showHints", "settings.howToStart", "settings.takeTour", "settings.takeAdvancedTour", "settings.lessons", "settings.resetHints"],
+  downloads: ["settings.addDownloadFolder"],
+  browser: ["settings.browserHome", "settings.browserSearch", "settings.browserLinkTarget", "settings.browserRestoreNavigate", "settings.browserLivePages"],
+  calendar: ["settings.calendarGlobalApp", "settings.todoBoard", "settings.weekStartsOn", "settings.defaultView", "settings.dayGridStart", "settings.defaultReminder"],
+  usageStats: ["settings.dailyRecap", "settings.openUsageStats"],
+  rootConsole: ["settings.rootMcp", "settings.rootMcpLocalOnly", "settings.rootMcpMail", "rootReview.setting", "mcpSecurity.title"],
+  remoteFeatures: ["settings.vpnEnabled", "settings.machinesEnabled", "settings.headlessRemote"],
+  mobile: ["settings.mobileIndicator"],
+  performance: ["settings.energySaver", "settings.fastMode"],
+  resourceMonitor: ["settings.showCpu", "settings.showRam", "settings.showGpu", "statusCluster.settingLabel"],
+  experimental: ["settings.debug", "settings.terminalWebgl", "settings.mdGraph", "settings.projectRemarks", "settings.copilotCompletion", "settings.mailClient", "settings.webBrowser", "settings.pythonRunDebug"],
+  git: ["nav.git.blurb"],
+  vpn: ["nav.vpn.blurb"],
+  remoteHosts: ["nav.remoteHosts.blurb"],
+  global: ["nav.global.blurb"],
+  filetypes: ["nav.filetypes.blurb"],
+  agents: ["nav.agents.blurb"],
+  ollama: ["ollama.modelsTitle"],
+  shortcuts: ["nav.shortcuts.blurb"],
+  archive: ["nav.archive.blurb"],
+  scaffoldRepair: ["nav.scaffoldRepair.blurb"],
+  updates: ["nav.updates.blurb"],
+  help: ["nav.help.blurb"],
+};
 
 export function SettingsDialog({
   onClose,
@@ -855,20 +912,31 @@ export function SettingsDialog({
 }: {
   onClose: () => void;
   initialPanel?: SettingsPanelKind;
-  /** A `SETTINGS_ANCHORS` id to open scrolled to, for a deep link from another
-   *  surface (the Mobile setup guide's "Open Mobile settings"). The main panel
-   *  is a very long scroll; landing at its top is landing nowhere. */
+  /** A `SETTINGS_ANCHORS` id naming the main-panel page to open, for a deep
+   *  link from another surface (the Mobile setup guide's "Open Mobile
+   *  settings"). */
   initialAnchor?: string;
 }) {
   const { settings, setTheme, setLanguage, updateSettings } = useSettingsStore();
   const [panel, changePanel] = useState<SettingsPanelKind>(initialPanel);
-  const mainScroll = useRef(0);
-  const pendingAnchor = useRef(initialAnchor);
+  const [section, changeSection] = useState<MainSection>(sectionOfAnchor(initialAnchor));
+  const [query, setQuery] = useState("");
+  // Scroll position per page, so ‹ Back from a sub-panel — or a round trip
+  // through another page — lands where the user left that page.
+  const scrollBySection = useRef<Partial<Record<MainSection, number>>>({});
   const lastInitialAnchor = useRef(initialAnchor);
-  const [category, setCategory] = useState(initialAnchor ?? "settings-anchor-general");
+  const saveScroll = () => {
+    if (panel !== "main") return;
+    scrollBySection.current[section] = modalRef.current?.querySelector(".dialog-scroll")?.scrollTop ?? 0;
+  };
   const setPanel = (next: SettingsPanelKind) => {
-    if (panel === "main") mainScroll.current = modalRef.current?.querySelector(".dialog-scroll")?.scrollTop ?? 0;
+    saveScroll();
     changePanel(next);
+  };
+  const setSection = (next: MainSection) => {
+    saveScroll();
+    changeSection(next);
+    changePanel("main");
   };
   // The theme customizer is a window of its own, not a sub-panel: it is opened
   // INSTEAD of this dialog (‹ Back returns here), so the palette it edits is
@@ -902,33 +970,48 @@ export function SettingsDialog({
     return energyMode === "off" ? t("settings.energyOff") : t("settings.energyInactive");
   })();
 
+  // A deep link that arrives while the dialog is already open (the event
+  // re-fires with a new anchor) opens that page too.
   useEffect(() => {
-    if (lastInitialAnchor.current !== initialAnchor) {
-      lastInitialAnchor.current = initialAnchor;
-      pendingAnchor.current = initialAnchor;
+    if (lastInitialAnchor.current === initialAnchor) return;
+    lastInitialAnchor.current = initialAnchor;
+    if (initialAnchor) {
+      changeSection(sectionOfAnchor(initialAnchor));
+      changePanel("main");
     }
+  }, [initialAnchor]);
+
+  useEffect(() => {
     if (showCustomizer || panel !== "main") return;
     const scroll = modalRef.current?.querySelector(".dialog-scroll");
-    if (scroll) scroll.scrollTop = mainScroll.current;
-    if (pendingAnchor.current) {
-      document.getElementById(pendingAnchor.current)?.scrollIntoView({ block: "start" });
-      pendingAnchor.current = undefined;
-    }
-  }, [initialAnchor, panel, showCustomizer, modalRef]);
+    if (scroll) scroll.scrollTop = scrollBySection.current[section] ?? 0;
+  }, [panel, section, showCustomizer, modalRef]);
 
   const navigate = (value: string) => {
-    if (value.startsWith("settings-anchor-")) {
-      setCategory(value);
-      if (panel !== "main") {
-        pendingAnchor.current = value;
-        setPanel("main");
-      } else {
-        const target = document.getElementById(value);
-        target?.scrollIntoView({ block: "start" });
-        target?.focus({ preventScroll: true });
-      }
-    } else setPanel(value as SettingsPanelKind);
+    if (value.startsWith("settings-anchor-")) setSection(sectionOfAnchor(value));
+    else setPanel(value as SettingsPanelKind);
   };
+
+  // The search box narrows the left-hand list to the entries whose label, or
+  // the label of a setting on their page, contains every word typed.
+  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const navGroups = SETTINGS_GROUPS.map((group) => ({
+    label: t(`settings.group.${group.key}` as TranslationKey),
+    entries: group.entries.flatMap((entry) => {
+      const label = isMainSection(entry)
+        ? t(`settings.${entry}` as TranslationKey)
+        : t(`nav.${entry}.title` as TranslationKey);
+      const value = isMainSection(entry) ? anchorOf(entry) : entry;
+      if (terms.length === 0) return [{ value, label }];
+      const keywords = SEARCH_KEYS[entry].map((key) => t(key));
+      const haystack = [label, ...keywords].join("\n").toLowerCase();
+      if (!terms.every((term) => haystack.includes(term))) return [];
+      const hits = keywords
+        .filter((keyword) => terms.some((term) => keyword.toLowerCase().includes(term)))
+        .slice(0, 3);
+      return [{ value, label, hits }];
+    }),
+  })).filter((group) => group.entries.length > 0);
 
   if (showCustomizer) {
     return (
@@ -942,15 +1025,19 @@ export function SettingsDialog({
   return (
     <div className="modal-backdrop how-to-start-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div ref={modalRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label={t("settings.title")} className="settings-dialog settings-with-navigation" onMouseDown={(e) => e.stopPropagation()}>
-        <SettingsNavigation value={panel === "main" ? category : panel} onChange={navigate} options={[
-          ...MAIN_SECTIONS.map((key) => ({ value: `settings-anchor-${key}`, label: t(`settings.${key}` as TranslationKey) })),
-          ...[...SETTINGS_NAV, "ollama"].map((key) => ({ value: key, label: t(`nav.${key}.title` as TranslationKey) })),
-        ]} />
+        <SettingsNavigation
+          value={panel === "main" ? anchorOf(section) : panel}
+          groups={navGroups}
+          onChange={navigate}
+          query={query}
+          onQuery={setQuery}
+        />
         <div className="settings-panel-content">
         {panel === "main" && (
           <>
             <SettingsHeader title={<>{t("settings.title")} <UntestedTag id="desktop.settingsNavigation" /></>} onClose={onClose} />
             <div className="dialog-scroll">
+            {section === "general" && (<>
             <SettingsSection title={t("settings.general")} anchor="settings-anchor-general" />
 
             <SettingRow
@@ -972,7 +1059,7 @@ export function SettingsDialog({
                   type="button"
                   className="settings-btn"
                   onClick={() => {
-                    mainScroll.current = modalRef.current?.querySelector(".dialog-scroll")?.scrollTop ?? 0;
+                    saveScroll();
                     setShowCustomizer(true);
                   }}
                 >
@@ -999,13 +1086,6 @@ export function SettingsDialog({
               onChange={(e) => void updateSettings({ run_scripts_in_background: e.target.checked })}
             />
 
-            <ToggleCard
-              label={t("settings.headlessRemote")}
-              checked={settings?.connections_headless ?? true}
-              onChange={(e) => void updateSettings({ connections_headless: e.target.checked })}
-              help={t("settings.headlessRemoteHelp")}
-            />
-
             {!IS_WINDOWS && (
               <ToggleCard
                 label={t("settings.persistLocal")}
@@ -1019,7 +1099,410 @@ export function SettingsDialog({
                 }
               />
             )}
+            </>)}
 
+            {section === "layout" && (<>
+            <SettingsSection
+              anchor="settings-anchor-layout" title={<>{t("settings.layout")} <UntestedTag id="settings.layout" /></>}
+              help={
+                <>
+                  {t("settings.zoomHelp1")} <strong>{t("settings.zoomHelpBold")}</strong>
+                  {t("settings.zoomHelp2")}
+                </>
+              }
+            />
+            <WorkspaceParkingNote />
+            <SettingRow
+              label={t("settings.windowZoom")}
+              control={
+                <Dropdown
+                  value={String(clampZoom(settings?.ui_zoom))}
+                  onChange={(v) => {
+                    const z = parseFloat(v);
+                    void updateSettings({
+                      ui_zoom: z === 1 ? undefined : clampZoom(z),
+                    });
+                  }}
+                  options={ZOOM_STEPS.filter(
+                    (z) => z >= MIN_UI_ZOOM && z <= MAX_UI_ZOOM,
+                  ).map((z) => ({
+                    value: String(z),
+                    label: `${Math.round(z * 100)}%${z === 1 ? ` (${t("common.default")})` : ""}`,
+                  }))}
+                />
+              }
+            />
+            {/* Both minimums answer one question, so one card holds them and
+                the help line that explains the pair sits at its foot. */}
+            <SettingsCard>
+              <div className="settings-card-row">
+                <label className="settings-card-label" htmlFor="min-subwindow-width">
+                  {t("settings.minSubWidth")}
+                </label>
+                <input
+                  id="min-subwindow-width"
+                  type="number"
+                  min={20}
+                  step={10}
+                  placeholder={String(DEFAULT_MIN_SUBWINDOW_PX)}
+                  value={settings?.min_subwindow_width ?? ""}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value, 10);
+                    void updateSettings({
+                      min_subwindow_width: Number.isFinite(v) && v >= 20 ? v : undefined,
+                    });
+                  }}
+                />
+              </div>
+              <div className="settings-card-row">
+                <label className="settings-card-label" htmlFor="min-subwindow-height">
+                  {t("settings.minSubHeight")}
+                </label>
+                <input
+                  id="min-subwindow-height"
+                  type="number"
+                  min={20}
+                  step={10}
+                  placeholder={String(DEFAULT_MIN_SUBWINDOW_PX)}
+                  value={settings?.min_subwindow_height ?? ""}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value, 10);
+                    void updateSettings({
+                      min_subwindow_height: Number.isFinite(v) && v >= 20 ? v : undefined,
+                    });
+                  }}
+                />
+              </div>
+              <p className="settings-help">
+                {t("settings.minSubwindowHelp", { px: DEFAULT_MIN_SUBWINDOW_PX })}
+              </p>
+            </SettingsCard>
+            </>)}
+
+            {section === "clock" && (<>
+            {/* The clock lives in its own section, not under Resource monitor:
+                seconds and the 12/24-hour face are time, not CPU/RAM/GPU. */}
+            <SettingsSection anchor="settings-anchor-clock" title={t("settings.clock")} />
+            <SettingsCard>
+              <ToggleRow
+                label={t("settings.showClockSeconds")}
+                checked={settings?.show_clock_seconds ?? false}
+                onChange={(e) => void updateSettings({ show_clock_seconds: e.target.checked })}
+              />
+              {/* App-wide, and here rather than under Calendar (where it used to
+                  live as a calendar-only switch): a clock is not a property of
+                  one feature, and reading 17:00 in the calendar beside 5:00 PM
+                  on a to-do card is one app disagreeing with itself. Unset
+                  follows the UI language, which is why the help line says what
+                  the default is rather than leaving the off position to imply
+                  it — see `lib/timeFormat.ts`. */}
+              <ToggleRow
+                label={t("settings.clock24")}
+                checked={use24h}
+                onChange={(e) => void updateSettings({ time_format_24h: e.target.checked })}
+              />
+              <p className="settings-help">{t("settings.clock24Help")}</p>
+            </SettingsCard>
+            </>)}
+
+            {section === "hintsOnboarding" && (<>
+            <SettingsSection anchor="settings-anchor-hintsOnboarding" title={t("settings.hintsOnboarding")} />
+            <ToggleCard
+              label={t("settings.showHints")}
+              checked={settings?.hints_enabled ?? true}
+              onChange={(e) => void updateSettings({ hints_enabled: e.target.checked })}
+            />
+            <div className="settings-link-row">
+              <button
+                type="button"
+                className="settings-btn"
+                onClick={() => {
+                  onClose();
+                  window.dispatchEvent(new Event("eldrun:open-how-to-start"));
+                }}
+              >
+                {t("settings.howToStart")}
+              </button>
+              <button
+                type="button"
+                className="settings-btn"
+                onClick={() => {
+                  onClose();
+                  window.dispatchEvent(new Event("eldrun:start-tour"));
+                }}
+              >
+                {t("settings.takeTour")}
+              </button>
+              <button
+                type="button"
+                className="settings-btn"
+                onClick={() => {
+                  onClose();
+                  window.dispatchEvent(new Event("eldrun:start-advanced-tour"));
+                }}
+              >
+                {t("settings.takeAdvancedTour")} <UntestedTag id="settings.takeAdvancedTour" />
+              </button>
+              <button
+                type="button"
+                className="settings-btn"
+                onClick={() => {
+                  onClose();
+                  window.dispatchEvent(new Event("eldrun:open-lessons"));
+                }}
+              >
+                {t("settings.lessons")}
+              </button>
+              <button
+                type="button"
+                className="settings-btn"
+                onClick={() => useHintsStore.getState().reset()}
+              >
+                {t("settings.resetHints")}
+              </button>
+            </div>
+            </>)}
+
+            {section === "downloads" && (<>
+            <SettingsSection
+              anchor="settings-anchor-downloads" title={t("settings.downloads")}
+              help={t("settings.downloadsHelp")}
+            />
+            <SettingsList boxed>
+              {(settings?.download_sources ?? []).length === 0 ? (
+                <div className="settings-empty">
+                  {t("settings.noDownloadFolders")}
+                </div>
+              ) : (
+                (settings?.download_sources ?? []).map((dir) => (
+                  <div key={dir} className="settings-row">
+                    <span className="settings-list-label" title={dir}>
+                      {dir}
+                    </span>
+                    <button
+                      type="button"
+                      className="settings-btn sm"
+                      onClick={() =>
+                        void updateSettings({
+                          download_sources: (settings?.download_sources ?? []).filter(
+                            (d) => d !== dir,
+                          ),
+                        })
+                      }
+                      title={t("settings.removeFolderTitle")}
+                    >
+                      {t("common.remove")}
+                    </button>
+                  </div>
+                ))
+              )}
+            </SettingsList>
+            <div className="settings-link-row">
+              <button
+                type="button"
+                className="settings-btn"
+                onClick={() => {
+                  void (async () => {
+                    const picked = await openDialog({
+                      directory: true,
+                      multiple: false,
+                    }).catch(() => null);
+                    if (!picked || Array.isArray(picked)) return;
+                    const current = settings?.download_sources ?? [];
+                    if (current.includes(picked)) return;
+                    void updateSettings({ download_sources: [...current, picked] });
+                  })();
+                }}
+              >
+                {t("settings.addDownloadFolder")}
+              </button>
+            </div>
+            </>)}
+
+            {section === "browser" && (<>
+            {/* The in-app browser (#61). Everything here is a *preference*; the
+                navigation policy, the permission defaults and the download rule
+                are the backend's and are not configurable — a "trusted sites"
+                list or an "ignore certificate errors" switch is exactly the kind
+                of relaxation that outlives the reason for it, so none exists. */}
+            <SettingsSection anchor="settings-anchor-browser" title={<>{t("settings.browser")} <UntestedTag id="settings.browser" /></>} />
+            <SettingRow
+              htmlFor="browser-home-url"
+              label={t("settings.browserHome")}
+              help={t("settings.browserHomeHelp")}
+              control={
+                <input
+                  id="browser-home-url"
+                  type="text"
+                  value={settings?.browser_home_url ?? ""}
+                  placeholder={t("settings.browserHomePlaceholder")}
+                  onChange={(e) => void updateSettings({ browser_home_url: e.target.value })}
+                />
+              }
+            />
+            <SettingRow
+              htmlFor="browser-search-template"
+              label={t("settings.browserSearch")}
+              help={t("settings.browserSearchHelp")}
+              control={
+                <input
+                  id="browser-search-template"
+                  type="text"
+                  value={settings?.browser_search_template ?? ""}
+                  placeholder="https://duckduckgo.com/?q=%s"
+                  onChange={(e) => void updateSettings({ browser_search_template: e.target.value })}
+                />
+              }
+            />
+            <SettingRow
+              label={t("settings.browserLinkTarget")}
+              help={t("settings.browserLinkTargetHelp")}
+              control={
+                <Dropdown
+                  value={settings?.browser_link_target ?? "external"}
+                  onChange={(v) =>
+                    void updateSettings({ browser_link_target: v as LinkOpenTarget })
+                  }
+                  options={[
+                    { value: "external", label: t("settings.browserLinkTargetExternal") },
+                    { value: "in_app", label: t("settings.browserLinkTargetInApp") },
+                    { value: "ask", label: t("settings.browserLinkTargetAsk") },
+                  ]}
+                />
+              }
+            />
+            <ToggleCard
+              label={t("settings.browserRestoreNavigate")}
+              checked={settings?.browser_restore_navigate ?? false}
+              onChange={(e) =>
+                void updateSettings({ browser_restore_navigate: e.target.checked })
+              }
+              help={t("settings.browserRestoreNavigateHelp")}
+            />
+            {/* Deliberately `?? false` and NOT `useExperimental` — this is the one
+                browser switch that must stay off in a debug build too. */}
+            <ToggleCard
+              label={t("settings.browserLivePages")}
+              checked={settings?.browser_live_pages ?? false}
+              onChange={(e) => void updateSettings({ browser_live_pages: e.target.checked })}
+              help={t("settings.browserLivePagesHelp")}
+            />
+            </>)}
+
+            {section === "calendar" && (<>
+            <SettingsSection anchor="settings-anchor-calendar" title={t("settings.calendar")} />
+
+            {/* The calendar's twin of "Mail in the header". Not nested under
+                anything: the calendar is shipped, not experimental. */}
+            <ToggleCard
+              label={<>{t("settings.calendarGlobalApp")} <UntestedTag id="settings.calendarGlobalApp" /></>}
+              checked={settings?.calendar_global_app ?? false}
+              onChange={(e) => void updateSettings({ calendar_global_app: e.target.checked })}
+              help={t("settings.calendarGlobalAppHelp")}
+            />
+
+            {/* The to-do board sits under Calendar because that is literally
+                where its cards live: they ARE this calendar's tasks, so the
+                board is a second view of the store above, not a second store. */}
+            <ToggleCard
+              label={<>{t("settings.todoBoard")} <UntestedTag id="settings.todoBoard" /></>}
+              checked={settings?.todo_board ?? false}
+              onChange={(e) => void updateSettings({ todo_board: e.target.checked })}
+              help={t("settings.todoBoardHelp")}
+            />
+
+            {/* The four calendar defaults are one question ("how should the
+                calendar open?"), so they share a card and read as a group. */}
+            <SettingsCard>
+              <div className="settings-card-row">
+                <span>{t("settings.weekStartsOn")}</span>
+                <Dropdown
+                  value={String(settings?.calendar_week_start ?? 1)}
+                  onChange={(v) =>
+                    void updateSettings({ calendar_week_start: Number(v) === 0 ? 0 : 1 })
+                  }
+                  options={[
+                    { value: "0", label: t("day.sunday") },
+                    { value: "1", label: t("day.monday") },
+                  ]}
+                />
+              </div>
+              <div className="settings-card-row">
+                <span>{t("settings.defaultView")}</span>
+                <Dropdown
+                  value={settings?.calendar_default_view ?? "month"}
+                  onChange={(v) =>
+                    void updateSettings({ calendar_default_view: v as CalendarViewKind })
+                  }
+                  options={[
+                    { value: "day", label: t("view.day") },
+                    { value: "week", label: t("view.week") },
+                    { value: "multiweek", label: t("view.multiweek") },
+                    { value: "month", label: t("view.month") },
+                    { value: "agenda", label: t("view.agenda") },
+                    { value: "tasks", label: t("view.tasks") },
+                  ]}
+                />
+              </div>
+              <div className="settings-card-row">
+                <span>{t("settings.dayGridStart")}</span>
+                <Dropdown
+                  value={String(settings?.calendar_day_start_hour ?? 8)}
+                  onChange={(v) => void updateSettings({ calendar_day_start_hour: Number(v) })}
+                  options={Array.from({ length: 24 }, (_, h) => ({
+                    value: String(h),
+                    label: `${String(h).padStart(2, "0")}:00`,
+                  }))}
+                />
+              </div>
+              <div className="settings-card-row">
+                <span>{t("settings.defaultReminder")}</span>
+                <Dropdown
+                  value={String(settings?.calendar_default_reminder_minutes ?? 0)}
+                  onChange={(v) =>
+                    void updateSettings({ calendar_default_reminder_minutes: Number(v) })
+                  }
+                  options={[
+                    { value: "0", label: t("reminder.none") },
+                    { value: "5", label: t("reminder.5") },
+                    { value: "15", label: t("reminder.15") },
+                    { value: "30", label: t("reminder.30") },
+                    { value: "60", label: t("reminder.60") },
+                    { value: "1440", label: t("reminder.1440") },
+                  ]}
+                />
+              </div>
+              <p className="settings-help">{t("settings.reminderHelp")}</p>
+            </SettingsCard>
+            </>)}
+
+            {section === "usageStats" && (<>
+            <SettingsSection anchor="settings-anchor-usageStats" title={t("settings.usageStats")} />
+            <ToggleCard
+              label={t("settings.dailyRecap")}
+              checked={settings?.daily_stats_recap ?? true}
+              onChange={(e) => void updateSettings({ daily_stats_recap: e.target.checked })}
+              help={t("settings.dailyRecapHelp")}
+            />
+            <div className="settings-link-row">
+              <button
+                type="button"
+                className="settings-btn primary"
+                onClick={() => {
+                  onClose();
+                  window.dispatchEvent(new CustomEvent(OPEN_STATS_EVENT));
+                }}
+              >
+                {t("settings.openUsageStats")}
+              </button>
+            </div>
+            </>)}
+
+            {section === "rootConsole" && (<>
+            {/* Root console: the MCP endpoint every agent session may reach.
+                Its own page under Agents rather than a tail of General — it
+                is the app's most consequential switch group. */}
+            <SettingsSection anchor="settings-anchor-rootConsole" title={t("settings.rootConsole")} />
             {/* Absent means on. The backend reads the key per spawn and per
                 request, so the switch needs no restart in either direction. */}
             <ToggleCard
@@ -1065,19 +1548,9 @@ export function SettingsDialog({
             <SettingsAdvanced title={t("mcpSecurity.title")}>
               <RootMcpSecurity />
             </SettingsAdvanced>
+            </>)}
 
-            {/* Eldrun Mobile runs its host sidecar on every desktop (systemd
-                user unit, launchd agent, or the Windows Run key), so the
-                section is not platform-gated. */}
-            <SettingsSection title={t("settings.mobile")} anchor={SETTINGS_ANCHORS.mobile} />
-            <MobileSettings />
-            <ToggleCard
-              label={t("settings.mobileIndicator")}
-              checked={settings?.mobile_indicator ?? true}
-              onChange={(e) => void updateSettings({ mobile_indicator: e.target.checked })}
-              help={t("settings.mobileIndicatorHelp")}
-            />
-
+            {section === "remoteFeatures" && (<>
             <SettingsSection anchor="settings-anchor-remoteFeatures" title={t("settings.remoteFeatures")} />
             <SettingsCard>
               <ToggleRow
@@ -1093,6 +1566,30 @@ export function SettingsDialog({
               <p className="settings-help">{t("settings.remoteFeaturesHelp")}</p>
             </SettingsCard>
 
+            <ToggleCard
+              label={t("settings.headlessRemote")}
+              checked={settings?.connections_headless ?? true}
+              onChange={(e) => void updateSettings({ connections_headless: e.target.checked })}
+              help={t("settings.headlessRemoteHelp")}
+            />
+            </>)}
+
+            {section === "mobile" && (<>
+            {/* Eldrun Mobile runs its host sidecar on every desktop (systemd
+                user unit, launchd agent, or the Windows Run key), so the
+                section is not platform-gated. */}
+            <SettingsSection title={t("settings.mobile")} anchor={SETTINGS_ANCHORS.mobile} />
+            <MobileSettings />
+            <ToggleCard
+              label={t("settings.mobileIndicator")}
+              checked={settings?.mobile_indicator ?? true}
+              onChange={(e) => void updateSettings({ mobile_indicator: e.target.checked })}
+              help={t("settings.mobileIndicatorHelp")}
+            />
+            </>)}
+
+            {section === "performance" && (<>
+            <SettingsSection anchor="settings-anchor-performance" title={t("settings.performance")} />
             <SettingRow
               label={t("settings.energySaver")}
               help={<>{t("settings.energyHelp")} {energyStatus}</>}
@@ -1124,13 +1621,47 @@ export function SettingsDialog({
               onChange={(e) => void updateSettings({ fast_mode: e.target.checked })}
               help={t("settings.fastModeHelp")}
             />
+            </>)}
 
-            <ToggleCard
-              label={t("settings.debug")}
-              checked={settings?.debug ?? false}
-              onChange={(e) => void updateSettings({ debug: e.target.checked })}
-            />
+            {section === "resourceMonitor" && (<>
+            <SettingsSection anchor="settings-anchor-resourceMonitor" title={t("settings.resourceMonitor")} />
+            <SettingsCard>
+              <ToggleRow
+                label={t("settings.showCpu")}
+                checked={settings?.show_cpu_usage ?? true}
+                onChange={(e) => void updateSettings({ show_cpu_usage: e.target.checked })}
+              />
+              <ToggleRow
+                label={t("settings.showRam")}
+                checked={settings?.show_ram_usage ?? true}
+                onChange={(e) => void updateSettings({ show_ram_usage: e.target.checked })}
+              />
+              <ToggleRow
+                label={t("settings.showGpu")}
+                checked={settings?.show_gpu_usage ?? true}
+                onChange={(e) => void updateSettings({ show_gpu_usage: e.target.checked })}
+              />
+              <p className="settings-help">{t("settings.resourceMonitorHelp")}</p>
+              {/* The fold is normally driven by the ‹/› in the header itself;
+                  this row is here so it is findable, and so the default can be
+                  turned off by someone who wants every lamp out permanently. */}
+              <ToggleRow
+                label={
+                  <>
+                    {t("statusCluster.settingLabel")} <UntestedTag id="statusCluster.settingLabel" />
+                  </>
+                }
+                title={t("statusCluster.settingHelp")}
+                checked={!(settings?.header_status_expanded ?? false)}
+                onChange={(e) =>
+                  void updateSettings({ header_status_expanded: !e.target.checked })
+                }
+              />
+              <p className="settings-help">{t("statusCluster.settingHelp")}</p>
+            </SettingsCard>
+            </>)}
 
+            {section === "experimental" && (<>
             <SettingsSection
               anchor="settings-anchor-experimental" title={t("settings.experimental")}
               help={
@@ -1141,6 +1672,15 @@ export function SettingsDialog({
                 </>
               }
             />
+
+            {/* Debug mode sits with the experiments because it is their fallback
+                gate: an unset experiment flag follows it (`lib/experimental`). */}
+            <ToggleCard
+              label={t("settings.debug")}
+              checked={settings?.debug ?? false}
+              onChange={(e) => void updateSettings({ debug: e.target.checked })}
+            />
+
 
             {/* An experiment rather than the default because WebGL rides the
                 GPU/driver path the DMABUF re-test failed on (flicker, missing
@@ -1249,444 +1789,7 @@ export function SettingsDialog({
                 now, from the mail toolbar (a bordered group with the global
                 master switch and per-account quick-toggle tags), not here. There
                 are deliberately no global per-feature toggles in this panel. */}
-
-            <SettingsSection anchor="settings-anchor-resourceMonitor" title={t("settings.resourceMonitor")} />
-            <SettingsCard>
-              <ToggleRow
-                label={t("settings.showCpu")}
-                checked={settings?.show_cpu_usage ?? true}
-                onChange={(e) => void updateSettings({ show_cpu_usage: e.target.checked })}
-              />
-              <ToggleRow
-                label={t("settings.showRam")}
-                checked={settings?.show_ram_usage ?? true}
-                onChange={(e) => void updateSettings({ show_ram_usage: e.target.checked })}
-              />
-              <ToggleRow
-                label={t("settings.showGpu")}
-                checked={settings?.show_gpu_usage ?? true}
-                onChange={(e) => void updateSettings({ show_gpu_usage: e.target.checked })}
-              />
-              <p className="settings-help">{t("settings.resourceMonitorHelp")}</p>
-              {/* The fold is normally driven by the ‹/› in the header itself;
-                  this row is here so it is findable, and so the default can be
-                  turned off by someone who wants every lamp out permanently. */}
-              <ToggleRow
-                label={
-                  <>
-                    {t("statusCluster.settingLabel")} <UntestedTag id="statusCluster.settingLabel" />
-                  </>
-                }
-                title={t("statusCluster.settingHelp")}
-                checked={!(settings?.header_status_expanded ?? false)}
-                onChange={(e) =>
-                  void updateSettings({ header_status_expanded: !e.target.checked })
-                }
-              />
-              <p className="settings-help">{t("statusCluster.settingHelp")}</p>
-            </SettingsCard>
-
-            {/* The clock lives in its own section, not under Resource monitor:
-                seconds and the 12/24-hour face are time, not CPU/RAM/GPU. */}
-            <SettingsSection anchor="settings-anchor-clock" title={t("settings.clock")} />
-            <SettingsCard>
-              <ToggleRow
-                label={t("settings.showClockSeconds")}
-                checked={settings?.show_clock_seconds ?? false}
-                onChange={(e) => void updateSettings({ show_clock_seconds: e.target.checked })}
-              />
-              {/* App-wide, and here rather than under Calendar (where it used to
-                  live as a calendar-only switch): a clock is not a property of
-                  one feature, and reading 17:00 in the calendar beside 5:00 PM
-                  on a to-do card is one app disagreeing with itself. Unset
-                  follows the UI language, which is why the help line says what
-                  the default is rather than leaving the off position to imply
-                  it — see `lib/timeFormat.ts`. */}
-              <ToggleRow
-                label={t("settings.clock24")}
-                checked={use24h}
-                onChange={(e) => void updateSettings({ time_format_24h: e.target.checked })}
-              />
-              <p className="settings-help">{t("settings.clock24Help")}</p>
-            </SettingsCard>
-
-            <SettingsSection anchor="settings-anchor-calendar" title={t("settings.calendar")} />
-
-            {/* The calendar's twin of "Mail in the header". Not nested under
-                anything: the calendar is shipped, not experimental. */}
-            <ToggleCard
-              label={<>{t("settings.calendarGlobalApp")} <UntestedTag id="settings.calendarGlobalApp" /></>}
-              checked={settings?.calendar_global_app ?? false}
-              onChange={(e) => void updateSettings({ calendar_global_app: e.target.checked })}
-              help={t("settings.calendarGlobalAppHelp")}
-            />
-
-            {/* The to-do board sits under Calendar because that is literally
-                where its cards live: they ARE this calendar's tasks, so the
-                board is a second view of the store above, not a second store. */}
-            <ToggleCard
-              label={<>{t("settings.todoBoard")} <UntestedTag id="settings.todoBoard" /></>}
-              checked={settings?.todo_board ?? false}
-              onChange={(e) => void updateSettings({ todo_board: e.target.checked })}
-              help={t("settings.todoBoardHelp")}
-            />
-
-            {/* The four calendar defaults are one question ("how should the
-                calendar open?"), so they share a card and read as a group. */}
-            <SettingsCard>
-              <div className="settings-card-row">
-                <span>{t("settings.weekStartsOn")}</span>
-                <Dropdown
-                  value={String(settings?.calendar_week_start ?? 1)}
-                  onChange={(v) =>
-                    void updateSettings({ calendar_week_start: Number(v) === 0 ? 0 : 1 })
-                  }
-                  options={[
-                    { value: "0", label: t("day.sunday") },
-                    { value: "1", label: t("day.monday") },
-                  ]}
-                />
-              </div>
-              <div className="settings-card-row">
-                <span>{t("settings.defaultView")}</span>
-                <Dropdown
-                  value={settings?.calendar_default_view ?? "month"}
-                  onChange={(v) =>
-                    void updateSettings({ calendar_default_view: v as CalendarViewKind })
-                  }
-                  options={[
-                    { value: "day", label: t("view.day") },
-                    { value: "week", label: t("view.week") },
-                    { value: "multiweek", label: t("view.multiweek") },
-                    { value: "month", label: t("view.month") },
-                    { value: "agenda", label: t("view.agenda") },
-                    { value: "tasks", label: t("view.tasks") },
-                  ]}
-                />
-              </div>
-              <div className="settings-card-row">
-                <span>{t("settings.dayGridStart")}</span>
-                <Dropdown
-                  value={String(settings?.calendar_day_start_hour ?? 8)}
-                  onChange={(v) => void updateSettings({ calendar_day_start_hour: Number(v) })}
-                  options={Array.from({ length: 24 }, (_, h) => ({
-                    value: String(h),
-                    label: `${String(h).padStart(2, "0")}:00`,
-                  }))}
-                />
-              </div>
-              <div className="settings-card-row">
-                <span>{t("settings.defaultReminder")}</span>
-                <Dropdown
-                  value={String(settings?.calendar_default_reminder_minutes ?? 0)}
-                  onChange={(v) =>
-                    void updateSettings({ calendar_default_reminder_minutes: Number(v) })
-                  }
-                  options={[
-                    { value: "0", label: t("reminder.none") },
-                    { value: "5", label: t("reminder.5") },
-                    { value: "15", label: t("reminder.15") },
-                    { value: "30", label: t("reminder.30") },
-                    { value: "60", label: t("reminder.60") },
-                    { value: "1440", label: t("reminder.1440") },
-                  ]}
-                />
-              </div>
-              <p className="settings-help">{t("settings.reminderHelp")}</p>
-            </SettingsCard>
-
-            {/* The in-app browser (#61). Everything here is a *preference*; the
-                navigation policy, the permission defaults and the download rule
-                are the backend's and are not configurable — a "trusted sites"
-                list or an "ignore certificate errors" switch is exactly the kind
-                of relaxation that outlives the reason for it, so none exists. */}
-            <SettingsSection anchor="settings-anchor-browser" title={<>{t("settings.browser")} <UntestedTag id="settings.browser" /></>} />
-            <SettingRow
-              htmlFor="browser-home-url"
-              label={t("settings.browserHome")}
-              help={t("settings.browserHomeHelp")}
-              control={
-                <input
-                  id="browser-home-url"
-                  type="text"
-                  value={settings?.browser_home_url ?? ""}
-                  placeholder={t("settings.browserHomePlaceholder")}
-                  onChange={(e) => void updateSettings({ browser_home_url: e.target.value })}
-                />
-              }
-            />
-            <SettingRow
-              htmlFor="browser-search-template"
-              label={t("settings.browserSearch")}
-              help={t("settings.browserSearchHelp")}
-              control={
-                <input
-                  id="browser-search-template"
-                  type="text"
-                  value={settings?.browser_search_template ?? ""}
-                  placeholder="https://duckduckgo.com/?q=%s"
-                  onChange={(e) => void updateSettings({ browser_search_template: e.target.value })}
-                />
-              }
-            />
-            <SettingRow
-              label={t("settings.browserLinkTarget")}
-              help={t("settings.browserLinkTargetHelp")}
-              control={
-                <Dropdown
-                  value={settings?.browser_link_target ?? "external"}
-                  onChange={(v) =>
-                    void updateSettings({ browser_link_target: v as LinkOpenTarget })
-                  }
-                  options={[
-                    { value: "external", label: t("settings.browserLinkTargetExternal") },
-                    { value: "in_app", label: t("settings.browserLinkTargetInApp") },
-                    { value: "ask", label: t("settings.browserLinkTargetAsk") },
-                  ]}
-                />
-              }
-            />
-            <ToggleCard
-              label={t("settings.browserRestoreNavigate")}
-              checked={settings?.browser_restore_navigate ?? false}
-              onChange={(e) =>
-                void updateSettings({ browser_restore_navigate: e.target.checked })
-              }
-              help={t("settings.browserRestoreNavigateHelp")}
-            />
-            {/* Deliberately `?? false` and NOT `useExperimental` — this is the one
-                browser switch that must stay off in a debug build too. */}
-            <ToggleCard
-              label={t("settings.browserLivePages")}
-              checked={settings?.browser_live_pages ?? false}
-              onChange={(e) => void updateSettings({ browser_live_pages: e.target.checked })}
-              help={t("settings.browserLivePagesHelp")}
-            />
-
-            <SettingsSection anchor="settings-anchor-hintsOnboarding" title={t("settings.hintsOnboarding")} />
-            <ToggleCard
-              label={t("settings.showHints")}
-              checked={settings?.hints_enabled ?? true}
-              onChange={(e) => void updateSettings({ hints_enabled: e.target.checked })}
-            />
-            <div className="settings-link-row">
-              <button
-                type="button"
-                className="settings-btn"
-                onClick={() => {
-                  onClose();
-                  window.dispatchEvent(new Event("eldrun:open-how-to-start"));
-                }}
-              >
-                {t("settings.howToStart")}
-              </button>
-              <button
-                type="button"
-                className="settings-btn"
-                onClick={() => {
-                  onClose();
-                  window.dispatchEvent(new Event("eldrun:start-tour"));
-                }}
-              >
-                {t("settings.takeTour")}
-              </button>
-              <button
-                type="button"
-                className="settings-btn"
-                onClick={() => {
-                  onClose();
-                  window.dispatchEvent(new Event("eldrun:start-advanced-tour"));
-                }}
-              >
-                {t("settings.takeAdvancedTour")} <UntestedTag id="settings.takeAdvancedTour" />
-              </button>
-              <button
-                type="button"
-                className="settings-btn"
-                onClick={() => {
-                  onClose();
-                  window.dispatchEvent(new Event("eldrun:open-lessons"));
-                }}
-              >
-                {t("settings.lessons")}
-              </button>
-              <button
-                type="button"
-                className="settings-btn"
-                onClick={() => useHintsStore.getState().reset()}
-              >
-                {t("settings.resetHints")}
-              </button>
-            </div>
-
-            <SettingsSection
-              anchor="settings-anchor-layout" title={<>{t("settings.layout")} <UntestedTag id="settings.layout" /></>}
-              help={
-                <>
-                  {t("settings.zoomHelp1")} <strong>{t("settings.zoomHelpBold")}</strong>
-                  {t("settings.zoomHelp2")}
-                </>
-              }
-            />
-            <WorkspaceParkingNote />
-            <SettingRow
-              label={t("settings.windowZoom")}
-              control={
-                <Dropdown
-                  value={String(clampZoom(settings?.ui_zoom))}
-                  onChange={(v) => {
-                    const z = parseFloat(v);
-                    void updateSettings({
-                      ui_zoom: z === 1 ? undefined : clampZoom(z),
-                    });
-                  }}
-                  options={ZOOM_STEPS.filter(
-                    (z) => z >= MIN_UI_ZOOM && z <= MAX_UI_ZOOM,
-                  ).map((z) => ({
-                    value: String(z),
-                    label: `${Math.round(z * 100)}%${z === 1 ? ` (${t("common.default")})` : ""}`,
-                  }))}
-                />
-              }
-            />
-            {/* Both minimums answer one question, so one card holds them and
-                the help line that explains the pair sits at its foot. */}
-            <SettingsCard>
-              <div className="settings-card-row">
-                <label className="settings-card-label" htmlFor="min-subwindow-width">
-                  {t("settings.minSubWidth")}
-                </label>
-                <input
-                  id="min-subwindow-width"
-                  type="number"
-                  min={20}
-                  step={10}
-                  placeholder={String(DEFAULT_MIN_SUBWINDOW_PX)}
-                  value={settings?.min_subwindow_width ?? ""}
-                  onChange={(e) => {
-                    const v = parseInt(e.target.value, 10);
-                    void updateSettings({
-                      min_subwindow_width: Number.isFinite(v) && v >= 20 ? v : undefined,
-                    });
-                  }}
-                />
-              </div>
-              <div className="settings-card-row">
-                <label className="settings-card-label" htmlFor="min-subwindow-height">
-                  {t("settings.minSubHeight")}
-                </label>
-                <input
-                  id="min-subwindow-height"
-                  type="number"
-                  min={20}
-                  step={10}
-                  placeholder={String(DEFAULT_MIN_SUBWINDOW_PX)}
-                  value={settings?.min_subwindow_height ?? ""}
-                  onChange={(e) => {
-                    const v = parseInt(e.target.value, 10);
-                    void updateSettings({
-                      min_subwindow_height: Number.isFinite(v) && v >= 20 ? v : undefined,
-                    });
-                  }}
-                />
-              </div>
-              <p className="settings-help">
-                {t("settings.minSubwindowHelp", { px: DEFAULT_MIN_SUBWINDOW_PX })}
-              </p>
-            </SettingsCard>
-
-            <SettingsSection
-              anchor="settings-anchor-downloads" title={t("settings.downloads")}
-              help={t("settings.downloadsHelp")}
-            />
-            <SettingsList boxed>
-              {(settings?.download_sources ?? []).length === 0 ? (
-                <div className="settings-empty">
-                  {t("settings.noDownloadFolders")}
-                </div>
-              ) : (
-                (settings?.download_sources ?? []).map((dir) => (
-                  <div key={dir} className="settings-row">
-                    <span className="settings-list-label" title={dir}>
-                      {dir}
-                    </span>
-                    <button
-                      type="button"
-                      className="settings-btn sm"
-                      onClick={() =>
-                        void updateSettings({
-                          download_sources: (settings?.download_sources ?? []).filter(
-                            (d) => d !== dir,
-                          ),
-                        })
-                      }
-                      title={t("settings.removeFolderTitle")}
-                    >
-                      {t("common.remove")}
-                    </button>
-                  </div>
-                ))
-              )}
-            </SettingsList>
-            <div className="settings-link-row">
-              <button
-                type="button"
-                className="settings-btn"
-                onClick={() => {
-                  void (async () => {
-                    const picked = await openDialog({
-                      directory: true,
-                      multiple: false,
-                    }).catch(() => null);
-                    if (!picked || Array.isArray(picked)) return;
-                    const current = settings?.download_sources ?? [];
-                    if (current.includes(picked)) return;
-                    void updateSettings({ download_sources: [...current, picked] });
-                  })();
-                }}
-              >
-                {t("settings.addDownloadFolder")}
-              </button>
-            </div>
-
-            <SettingsSection anchor="settings-anchor-usageStats" title={t("settings.usageStats")} />
-            <ToggleCard
-              label={t("settings.dailyRecap")}
-              checked={settings?.daily_stats_recap ?? true}
-              onChange={(e) => void updateSettings({ daily_stats_recap: e.target.checked })}
-              help={t("settings.dailyRecapHelp")}
-            />
-            <div className="settings-link-row">
-              <button
-                type="button"
-                className="settings-btn primary"
-                onClick={() => {
-                  onClose();
-                  window.dispatchEvent(new CustomEvent(OPEN_STATS_EVENT));
-                }}
-              >
-                {t("settings.openUsageStats")}
-              </button>
-            </div>
-
-            <SettingsSection anchor="settings-anchor-moreSettings" title={t("settings.moreSettings")} />
-            <div className="settings-nav-list">
-              {SETTINGS_NAV.map((panelKind) => (
-                <button
-                  key={panelKind}
-                  type="button"
-                  className="settings-nav-item"
-                  onClick={() => setPanel(panelKind)}
-                >
-                  <span className="settings-nav-item-title">
-                    {t(`nav.${panelKind}.title` as TranslationKey)}
-                  </span>
-                  <span className="settings-nav-item-blurb">
-                    {t(`nav.${panelKind}.blurb` as TranslationKey)}
-                  </span>
-                </button>
-              ))}
-            </div>
+            </>)}
             </div>
           </>
         )}
