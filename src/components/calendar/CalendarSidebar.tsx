@@ -226,7 +226,11 @@ export function CalendarSidebar({
 
       <div className="cal-list">
         <div className="cal-list-head">
-          <span className="cal-list-title">{t("calendarSidebar.calendarsTitle")}</span>
+          {/* The per-calendar bell's pill sits on the title, once: inside every
+              row's bell it took the width the calendar's name needed. */}
+          <span className="cal-list-title">
+            {t("calendarSidebar.calendarsTitle")} <UntestedTag id="calendarSidebar.alerts" />
+          </span>
           {/* Title and actions sit on separate rows: three actions beside the
               title overflowed the 190px sidebar and clipped the last one. */}
           <div className="cal-list-actions">
@@ -379,7 +383,6 @@ export function CalendarSidebar({
               onClick={() => onUpdateCalendar({ ...cal, alerts_off: !cal.alerts_off })}
             >
               <BellIcon className="cal-list-alerts-icon" off={cal.alerts_off} />
-              <UntestedTag id="calendarSidebar.alerts" />
             </button>
 
             {cal.source_url ? (

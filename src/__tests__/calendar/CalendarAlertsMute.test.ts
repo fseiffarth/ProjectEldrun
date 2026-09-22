@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Calendar, CalendarEvent } from "../../types";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { renderHook } from "@testing-library/react";
+import type { Calendar, CalendarEvent, CalendarTask } from "../../types";
 
 const sendNotification = vi.fn();
 vi.mock("@tauri-apps/plugin-notification", () => ({
@@ -11,6 +12,7 @@ vi.mock("@tauri-apps/plugin-notification", () => ({
 import { mutedCalendarIds } from "../../lib/calendar/alarms";
 import { useAlarmStore } from "../../stores/calendar/alarms";
 import { useCalendarStore } from "../../stores/calendar/calendar";
+import { useAlertsFeed } from "../../components/files/useAlertsFeed";
 
 const cal = (id: string, over: Partial<Calendar> = {}): Calendar => ({
   id,
@@ -92,5 +94,34 @@ describe("per-calendar alerts switch", () => {
 
     expect(useAlarmStore.getState().active).toHaveLength(0);
     expect(useAlarmStore.getState().snoozed).toHaveLength(0);
+  });
+});
+
+describe("side panel alerts honour the per-calendar switch", () => {
+  const task = (id: string, calendarId: string): CalendarTask => ({
+    id,
+    calendar_id: calendarId,
+    title: id,
+    due: "2026-07-08T12:00",
+    priority: 1,
+    percent: 0,
+  });
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("drops the events and cards of a calendar whose alerts are off", () => {
+    seed([cal("work", { alerts_off: true }), cal("home")]);
+    useCalendarStore.setState({ tasks: [task("work-card", "work"), task("home-card", "home")] });
+
+    const { result } = renderHook(() => useAlertsFeed({ ignoreVisibility: true }));
+    const ids = result.current.items.map((item) => item.id).sort();
+
+    expect(ids).toEqual(["event:home-dentist", "task:home-card"]);
   });
 });

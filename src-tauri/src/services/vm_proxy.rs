@@ -507,6 +507,12 @@ mod tests {
 
     // ── end-to-end over a real socket ──────────────────────────────────────
 
+    /// The status code of a proxy reply. Compared as a number, so a failing
+    /// assert never echoes raw socket bytes into the test log.
+    fn status(response: &str) -> Option<u16> {
+        response.strip_prefix("HTTP/1.1 ")?.get(..3)?.parse().ok()
+    }
+
     #[test]
     fn denies_disallowed_connect_and_reports_it() {
         let port = ensure_proxy("test-proxy-deny", allow(&["allowed.example"])).unwrap();
@@ -515,7 +521,7 @@ mod tests {
             .unwrap();
         let mut response = String::new();
         conn.read_to_string(&mut response).unwrap();
-        assert!(response.starts_with("HTTP/1.1 403"), "{response}");
+        assert_eq!(status(&response), Some(403));
         let report = blocked_report("test-proxy-deny");
         assert_eq!(report.total, 1);
         assert_eq!(report.recent[0].target, "evil.example:443");
@@ -534,7 +540,7 @@ mod tests {
             .unwrap();
         let mut response = String::new();
         conn.read_to_string(&mut response).unwrap();
-        assert!(response.starts_with("HTTP/1.1 502"), "{response}");
+        assert_eq!(status(&response), Some(502));
         assert_eq!(blocked_report("test-proxy-temp").total, 0);
         stop_proxy("test-proxy-temp");
     }
@@ -547,7 +553,7 @@ mod tests {
             .unwrap();
         let mut response = String::new();
         conn.read_to_string(&mut response).unwrap();
-        assert!(response.starts_with("HTTP/1.1 403"), "{response}");
+        assert_eq!(status(&response), Some(403));
         assert_eq!(
             blocked_report("test-proxy-port").recent[0].target,
             "allowed.example:22"
@@ -563,7 +569,7 @@ mod tests {
             .unwrap();
         let mut response = String::new();
         conn.read_to_string(&mut response).unwrap();
-        assert!(response.starts_with("HTTP/1.1 405"), "{response}");
+        assert_eq!(status(&response), Some(405));
         stop_proxy("test-proxy-http");
     }
 }
