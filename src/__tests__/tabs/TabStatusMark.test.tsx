@@ -9,6 +9,10 @@ import { describe, expect, it } from "vitest";
 import { render } from "@testing-library/react";
 import { TabStatusMark } from "../../components/tabs/TabLocalityBadges";
 
+// ▶ pinned to text presentation: without U+FE0E a window whose font fallback
+// reaches the emoji font draws a colour emoji that ignores the ring's colour.
+const PLAY = "▶\uFE0E";
+
 function marks(stateClass: string) {
   const { container } = render(<TabStatusMark stateClass={stateClass} />);
   return [...container.querySelectorAll(".tab-status-mark")].map((el) => ({
@@ -19,17 +23,17 @@ function marks(stateClass: string) {
 
 describe("TabStatusMark", () => {
   it("marks an agent's own turn once, in the agent's colour", () => {
-    expect(marks(" working")).toEqual([{ glyph: "▶", shell: false }]);
+    expect(marks(" working")).toEqual([{ glyph: PLAY, shell: false }]);
   });
 
   it("marks a tab that is only running a command in the shell colour", () => {
-    expect(marks(" working shell")).toEqual([{ glyph: "▶", shell: true }]);
+    expect(marks(" working shell")).toEqual([{ glyph: PLAY, shell: true }]);
   });
 
   it("marks an agent working with a command of its own with two play marks", () => {
     expect(marks(" working job")).toEqual([
-      { glyph: "▶", shell: false },
-      { glyph: "▶", shell: true },
+      { glyph: PLAY, shell: false },
+      { glyph: PLAY, shell: true },
     ]);
   });
 

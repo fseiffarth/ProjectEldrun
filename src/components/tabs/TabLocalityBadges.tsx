@@ -369,7 +369,9 @@ export function TabStatusMark({ stateClass }: { stateClass: string }) {
         ? "done"
         : null;
   if (!state) return null;
-  const glyph = state === "working" ? "▶" : state === "decision" ? "?" : "✓";
+  // ▶ is emoji-capable: pinned to text presentation (U+FE0E) so no window's
+  // font fallback swaps it for a colour emoji that ignores the ring's colour.
+  const glyph = state === "working" ? "▶\uFE0E" : state === "decision" ? "?" : "✓";
   const label = t(
     state === "working"
       ? "tabBar.statusWorking"
@@ -388,7 +390,7 @@ export function TabStatusMark({ stateClass }: { stateClass: string }) {
       title={shellLabel}
       aria-label={shellLabel}
     >
-      ▶
+      {"▶\uFE0E"}
     </span>
   );
   if (commandOnly) return shellMark;
