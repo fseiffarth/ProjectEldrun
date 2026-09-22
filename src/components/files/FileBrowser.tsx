@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTabScope } from "../tabs/tabScopeContext";
 import { invoke } from "@tauri-apps/api/core";
 import { Toggle } from "../common/Toggle";
 import { useWindowsStore } from "../../stores/windows";
@@ -60,6 +61,8 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
   const projects = useProjectsStore((s) => s.projects);
   const viewerPrefs = useSettingsStore((s) => s.settings?.viewer_prefs);
   const disabledViewerSet = useMemo(() => disabledViewers(viewerPrefs), [viewerPrefs]);
+  // Root console: opened viewers are root's tabs (see tabScopeContext).
+  const tabScope = useTabScope();
   const [relPath, setRelPath] = useState("");
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -200,6 +203,7 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
       origin: "middle_file_browser",
       external: ev?.shiftKey ?? false,
       disabled: disabledViewerSet,
+      scope: tabScope,
     });
   }
 
@@ -289,6 +293,7 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
           origin: "middle_file_browser",
           external: false,
           disabled: disabledViewerSet,
+          scope: tabScope,
         });
       },
     );

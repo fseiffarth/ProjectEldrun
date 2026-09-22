@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
+  BLOB_TAB_CMD,
   BROWSER_TAB_CMD,
   PRINTING_TAB_CMD,
   DISKUSAGE_TAB_CMD,
@@ -10,6 +11,7 @@ import {
   type TabEntry,
 } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
+import { useProjectsStore } from "../../stores/projects";
 import { PROJECT_FILES_TAB_CMD } from "../../stores/tabs";
 import {
   SHELL_ITEMS,
@@ -32,8 +34,8 @@ import { registerHostBoundTab } from "../../lib/remote/hostBound";
 interface Props {
   /** Scope (project id or "root") the new tab belongs to. Feeds the shared
    *  entry data (`useAddTabMenuData`) and the host-bound registration; no
-   *  section is gated on it — the monitoring trio answers for the machine, so
-   *  the root console offers all three. */
+   *  section but the root-only 3D project cloud is gated on it — the monitoring
+   *  trio answers for the machine, so the root console offers all three. */
   scope: string;
   /** cwd for the new tab (the popout group's project directory). */
   projectCwd: string;
@@ -68,6 +70,11 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
   // exists in the main window and is silently missing from every popout.
   const webBrowser = useExperimental("web_browser");
   const browserHome = useSettingsStore((s) => s.settings?.browser_home_url);
+  // The 3D project cloud is the root scope's own view (TabBar offers it there
+  // only), so the root console's "+" carries it too. A popout's projects store
+  // is inert and empty, which keeps it out of every popout's copy.
+  const hasProjects = useProjectsStore((s) => s.projects.length > 0);
+  const showProjects3d = scope === "root" && hasProjects;
 
   // All the probe/registry/settings plumbing behind the entries is the shared
   // hook — one implementation with TabBar's "+" menu, so the two cannot drift.
@@ -328,6 +335,25 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
               },
             ],
           },
+          ...(showProjects3d
+            ? [{
+                label: t("newTabMenu.groupWorkspace"),
+                entries: [{
+                  key: "blob",
+                  label: t("newTabMenu.itemProjects3d"),
+                  dot: "◍",
+                  color: TAB_ACCENT.projects3d,
+                  untested: "newTabMenu.itemProjects3d#root",
+                  onPick: () =>
+                    pickFixed({
+                      label: t("newTabMenu.tabLabelProjects"),
+                      cmd: BLOB_TAB_CMD,
+                      cwd: projectCwd,
+                      kind: "projects3d",
+                    }),
+                }],
+              }]
+            : []),
           {
             label: t("printing.title"),
             entries: [{

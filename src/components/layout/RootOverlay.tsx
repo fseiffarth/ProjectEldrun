@@ -40,6 +40,7 @@ import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
 import { CustomAgentDialog } from "../tabs/CustomAgentDialog";
 import { NewTabMenu } from "../tabs/NewTabMenu";
+import { TabScopeContext } from "../tabs/tabScopeContext";
 import { TabPane } from "../tabs/TabPane";
 import { TabStatusMark } from "../tabs/TabLocalityBadges";
 import { pickEdge, previewInset } from "../tabs/dragGeometry";
@@ -727,7 +728,12 @@ function RootOverlay() {
     ? { position: "fixed", left: frame.x, top: frame.y, width: frame.width, height: frame.height, margin: 0 }
     : undefined;
 
+  // Everything inside opens its tabs in ROOT: the file column's double-clicks,
+  // a Files tab's "Open in a new tab", a viewer's links and compiled PDFs. Root
+  // is not the active scope while the console floats, and the plain `addTab`
+  // those paths default to would file them onto the project underneath.
   return (
+    <TabScopeContext.Provider value={ROOT_SCOPE}>
     <div
       className="modal-backdrop root-overlay-backdrop"
       onMouseDown={(e) => {
@@ -804,6 +810,7 @@ function RootOverlay() {
               {t("rootReview.badge")}{reviewCount > 0 ? ` ${reviewCount}` : ""} ▾
             </button>
             <UntestedTag id="rootOverlay.1" />
+            <UntestedTag id="rootOverlay.viewers" />
             {!split && soleGroupId && soleGroupId !== EMPTY_GROUP_ID && (
               filesToggle(soleGroupId, !!sole?.filesOpen)
             )}
@@ -931,6 +938,7 @@ function RootOverlay() {
       )}
       {manageAgents && <CustomAgentDialog onClose={() => setManageAgents(false)} />}
     </div>
+    </TabScopeContext.Provider>
   );
 }
 

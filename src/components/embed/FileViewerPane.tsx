@@ -14,11 +14,16 @@ import { METRIC } from "../../lib/usageMetrics";
 import { emit, listen } from "@tauri-apps/api/event";
 import { useWindowsStore } from "../../stores/windows";
 import {
+  ROOT_SCOPE,
   findGroupOfTab,
+  findTabByKey,
   getDetachedViewerState,
   useTabsStore,
+  type TabEntry,
   type ViewerState,
 } from "../../stores/tabs";
+import { useRootOverlayStore } from "../../stores/rootOverlay";
+import { openTabInScope } from "../tabs/tabScopeContext";
 import { useSettingsStore } from "../../stores/settings";
 import { saverInterval, useQuiesce } from "../../stores/power";
 import { useTexViewPrefStore, texViewScopeKey } from "../../stores/viewers/texViewPref";
@@ -293,7 +298,7 @@ const DeckView = lazy(() => import("./deck/DeckView").then((m) => ({ default: m.
 function seedViewerState(tabKey: string | undefined): ViewerState | undefined {
   if (!tabKey) return undefined;
   return (
-    useTabsStore.getState().tabs.find((t) => t.key === tabKey)?.viewerState ??
+    findTabByKey(useTabsStore.getState(), tabKey)?.viewerState ??
     getDetachedViewerState(tabKey)
   );
 }
@@ -573,7 +578,7 @@ export function FileViewerPane({ viewer, path, projectId, tabKey, visible = true
   // rendering some other path never rewrites the tab it sits in.
   useEffect(() => {
     if (viewer !== "tex" || !tabKey) return;
-    const tab = useTabsStore.getState().tabs.find((t) => t.key === tabKey);
+    const tab = findTabByKey(useTabsStore.getState(), tabKey);
     if (!tab || tab.kind !== "embed" || tab.viewer !== "tex" || tab.embedPath !== path) return;
     let cancelled = false;
     void (async () => {
@@ -851,13 +856,8 @@ export function openLinkedFile(
   resolved: { path: string; viewer: InternalViewer; label: string },
 ) {
   const store = useTabsStore.getState();
-  const prior = store.tabs.find(
-    (t) => t.kind === "embed" && t.viewer === resolved.viewer && t.embedPath === resolved.path,
-  );
-  if (prior) {
-    store.setActive(prior.key);
-    return;
-  }
+  const sameFile = (t: TabEntry) =>
+    t.kind === "embed" && t.viewer === resolved.viewer && t.embedPath === resolved.path;
   const tab = {
     label: resolved.label,
     cmd: "",
@@ -866,6 +866,19 @@ export function openLinkedFile(
     embedPath: resolved.path,
     viewer: resolved.viewer,
   };
+  // A linking tab of ANOTHER scope — a viewer in the root console, floating over
+  // a project — opens its link beside itself, in its own scope's focused
+  // subwindow (the one it was clicked in), not in the project underneath.
+  const owner = linkingTabKey ? findTabByKey(store, linkingTabKey)?.scope : undefined;
+  if (owner && owner !== store.scope) {
+    openTabInScope(owner, tab, sameFile);
+    return;
+  }
+  const prior = store.tabs.find(sameFile);
+  if (prior) {
+    store.setActive(prior.key);
+    return;
+  }
 
   // 1. A session-only override set by dragging this link to another subwindow.
   const override =
@@ -966,9 +979,16 @@ interface SourceJumpEnvelope {
  *  reverse-search source route into the subwindow that already holds the
  *  producing main `.tex`, via {@link openLinkedFile}'s same-group rule. */
 function tabKeyForPath(path: string): string | undefined {
-  return useTabsStore
-    .getState()
-    .tabs.find((t) => t.kind === "embed" && t.embedPath === path)?.key;
+  const store = useTabsStore.getState();
+  const holds = (t: TabEntry) => t.kind === "embed" && t.embedPath === path;
+  // The root console's tabs are on screen too while it floats; a PDF there
+  // anchors its source into the console, not into the project underneath.
+  return (
+    store.tabs.find(holds)?.key ??
+    (useRootOverlayStore.getState().open
+      ? store.tabsByScope[ROOT_SCOPE]?.find(holds)?.key
+      : undefined)
+  );
 }
 
 /** True when this webview is the MAIN window (no `?detached=` param) — the one
@@ -8565,7 +8585,7 @@ function TexWorkspaceView({
   // to BOTH (the store write round-trips through the main window's layout save;
   // in a popout it is a harmless no-op and the local mirror drives the UI).
   const storeVs = useTabsStore((s) =>
-    tabKey ? s.tabs.find((tb) => tb.key === tabKey)?.viewerState : undefined,
+    tabKey ? findTabByKey(s, tabKey)?.viewerState : undefined,
   );
   const [localVs, setLocalVs] = useState<ViewerState>(() => seedViewerState(tabKey) ?? {});
   const patchViewerState = useCallback(

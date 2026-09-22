@@ -84,6 +84,29 @@ console opens its own rather than leaving the button doing nothing. A popout's
 copy of the menu gets none of this: the tab it would focus may live in another
 window entirely, where focusing it is not an answer.
 
+The console hosts **every viewer a project has** — PDF, Markdown, TeX
+workspace, tables, notebooks, diffs, Files tabs — because they are the same
+`TabPane`s. What kept them from working was scope, twice over:
+
+- **Opening.** The open-a-file paths (`openFileEntry`, `openTexWorkspace`, the
+  tree's diff and compiled-PDF openers, `openProjectFilesTab`) called `addTab`,
+  which writes the *active* scope: a PDF double-clicked in the console's file
+  column appeared in the project underneath. The console now provides
+  `TabScopeContext` = root and those paths open through `openTabInScope`,
+  deduping against root's own tabs. A link followed from a viewer
+  (`openLinkedFile`) needs no context: it opens in its linking tab's scope.
+  This is deliberately not `FileDropContext`, the popout seam — providing that
+  would take file *drags* away from `CenterPanel`'s drop authority.
+- **Writing back.** `setViewerState`, `setTabViewer`, `setTabFolder`,
+  `setTabUrl`, `setTabLocation`, `updateTabEnv`, `renameTab`, `setTabColor`,
+  `setActive` and `removeTab` are addressed by key but only searched the active
+  scope, so a console viewer's zoom or a Files tab's folder was a silent no-op.
+  They now resolve the scope that owns the key (`scopeOfTab`; keys are unique
+  store-wide), and viewers read their tab through `findTabByKey`.
+
+The console's "+" also offers the 3D project cloud, the one root-only view
+`TabBar` had and `NewTabMenu` lacked.
+
 Two jobs moved into the overlay's always-mounted host because root no longer
 becomes the active scope:
 

@@ -135,6 +135,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `tabs/Subwindow.tsx` | A single tiled subwindow (tab group). Its body is a row: the measured pane region + (when the group's `filesOpen` is set) the docked per-subwindow file viewer. |
 | `tabs/commitDrop.ts` / `tabs/commitFileDrop.ts` | Apply a tab/file drag-drop into the layout tree. |
 | `tabs/dragGeometry.ts` | Drop-zone/split geometry math for tab drags. |
+| `tabs/tabScopeContext.ts` | `TabScopeContext` (the root console provides `ROOT_SCOPE`) + `openTabInScope`: tabs a view opens land in that scope, not the active one — file-tree opens, diffs, compiled PDFs, Files-tab "Open in a new tab", TeX workspace. Null elsewhere = old `addTab` path. |
 | `terminal/TerminalView.tsx` | xterm.js wrapper + PTY I/O. Attach-only views reconcile scrollback snapshot with live events by backend UTF-8 byte offsets. Registers the scheduled-input capability (`lib/agents/scheduledAgentInput`); hidden panes get only `terminal-activity` digests. |
 | `files/FileTreeSearch.tsx` | Flat search results replacing the tree listing while the box holds a query: name (literal substring, not fuzzy) and content (`project_search`, its only frontend). Each hit can jump-to-path and open. |
 | `files/FileTree.tsx` | Project file tree: git markers, fs-watch refresh, in-tree search, `revealPath`, file drag-and-drop (tab bar / folder / ctrl+drag to OS). "Open in a new tab" is a host callback (`onOpenFolderTab`). |

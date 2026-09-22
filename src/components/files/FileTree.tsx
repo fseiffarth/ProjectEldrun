@@ -5,11 +5,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { invokeTrusted } from "../../lib/execTrust";
 import { listen } from "@tauri-apps/api/event";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
-import { useTabsStore } from "../../stores/tabs";
+import { useTabsStore, type TabEntry } from "../../stores/tabs";
 import { useDragStore, type EmbedCap, type FileDragItem } from "../../stores/drag/drag";
 import { commitFileDrop, fileDropGoesToNewWindow } from "../tabs/commitFileDrop";
 import { startDetachedDropSession } from "../tabs/detachedDropTargets";
 import { FileDropContext } from "./fileDropContext";
+import { openTabInScope, useTabScope } from "../tabs/tabScopeContext";
 import { openFileEntry } from "./openFileEntry";
 import { closeTabsForDeletedPath, retargetTabsForRenamedPath } from "./fileTabSync";
 import {
@@ -355,6 +356,9 @@ export function FileTree({
   // drop authority (which this window can't reach) for a file dragged onto a
   // pane. See fileDropContext.
   const fileDrop = useContext(FileDropContext);
+  // Set inside the root console: the tabs this tree opens are root's, not the
+  // active project's (see tabScopeContext).
+  const tabScope = useTabScope();
   // The tree is unmounted, not hidden, whenever the side panel closes
   // (`mountTree={open}`) or the panels are toggled away — so a reveal used to
   // start from an empty tree and fill itself in over a listing, a git-status
@@ -1708,6 +1712,7 @@ export function FileTree({
       // In a detached popout, stream the viewer tab into that window rather than
       // writing the popout's non-authoritative local tab store.
       placeTab: fileDrop ? fileDrop.openTab : undefined,
+      scope: tabScope,
     });
   }
 
@@ -2482,19 +2487,24 @@ export function FileTree({
    *  same path (mirrors openPdfTab) so the diff refreshes. */
   function showDiff(entry: FileEntry) {
     setContextMenu(null);
-    const store = useTabsStore.getState();
-    const prior = store.tabs.find(
-      (t) => t.kind === "embed" && t.viewer === "diff" && t.embedPath === entry.path,
-    );
-    if (prior) store.removeTab(prior.key);
-    store.addTab({
+    const tab = {
       label: entry.name,
       cmd: "",
       cwd: projectDir,
-      kind: "embed",
+      kind: "embed" as const,
       embedPath: entry.path,
-      viewer: "diff",
-    });
+      viewer: "diff" as const,
+    };
+    const sameDiff = (t: TabEntry) =>
+      t.kind === "embed" && t.viewer === "diff" && t.embedPath === entry.path;
+    if (tabScope) {
+      openTabInScope(tabScope, tab, sameDiff, { replace: true });
+      return;
+    }
+    const store = useTabsStore.getState();
+    const prior = store.tabs.find(sameDiff);
+    if (prior) store.removeTab(prior.key);
+    store.addTab(tab);
   }
 
   /** SSH-sync: open a diverged (amber) file in the three-way merge viewer — the
@@ -2526,10 +2536,14 @@ export function FileTree({
       fileDrop.openTab(tab);
       return;
     }
+    const sameMerge = (t: TabEntry) =>
+      t.kind === "embed" && t.viewer === "syncmerge" && t.embedPath === abs;
+    if (tabScope) {
+      openTabInScope(tabScope, tab, sameMerge);
+      return;
+    }
     const store = useTabsStore.getState();
-    const prior = store.tabs.find(
-      (t) => t.kind === "embed" && t.viewer === "syncmerge" && t.embedPath === abs,
-    );
+    const prior = store.tabs.find(sameMerge);
     if (prior) store.setActive(prior.key);
     else store.setActive(store.addTab(tab).key);
   }
@@ -3105,7 +3119,7 @@ export function FileTree({
     }).then((ok) => {
       if (!ok) return;
       if (fileDrop) fileDrop.openTab(tab);
-      else useTabsStore.getState().addTabToScope(projectId ?? "root", tab);
+      else useTabsStore.getState().addTabToScope(tabScope ?? projectId ?? "root", tab);
     });
   }
 
@@ -3159,19 +3173,24 @@ export function FileTree({
    *  The viewer reads the bytes once on mount, so on a recompile we drop any
    *  existing tab for this path and add a fresh one to pick up the new output. */
   function openPdfTab(pdfPath: string) {
-    const store = useTabsStore.getState();
-    const prior = store.tabs.find(
-      (t) => t.kind === "embed" && t.viewer === "pdf" && t.embedPath === pdfPath,
-    );
-    if (prior) store.removeTab(prior.key);
-    store.addTab({
+    const tab = {
       label: basename(pdfPath) || pdfPath,
       cmd: "",
       cwd: projectDir,
-      kind: "embed",
+      kind: "embed" as const,
       embedPath: pdfPath,
-      viewer: "pdf",
-    });
+      viewer: "pdf" as const,
+    };
+    const samePdf = (t: TabEntry) =>
+      t.kind === "embed" && t.viewer === "pdf" && t.embedPath === pdfPath;
+    if (tabScope) {
+      openTabInScope(tabScope, tab, samePdf, { replace: true });
+      return;
+    }
+    const store = useTabsStore.getState();
+    const prior = store.tabs.find(samePdf);
+    if (prior) store.removeTab(prior.key);
+    store.addTab(tab);
   }
 
   /** Compile a .tex file to PDF, then refresh the tree (the PDF appears) and

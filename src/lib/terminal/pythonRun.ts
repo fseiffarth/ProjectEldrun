@@ -302,7 +302,9 @@ export function openPythonTab(opts: {
   const { mode, file, plan, scope, command, place } = opts;
   const store = useTabsStore.getState();
 
-  const prior = store.tabs.find(
+  // The owning scope's list, not the active one's: a run from the root console
+  // replaces the console's previous run tab, not a same-named one in a project.
+  const prior = (store.tabsByScope?.[scope] ?? store.tabs).find(
     (t) =>
       t.kind === "shell" &&
       t.env?.[PY_TARGET_ENV] === file &&

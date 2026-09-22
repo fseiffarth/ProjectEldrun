@@ -17,6 +17,7 @@
  * content hit opens at its line — and the other is a trailing button.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTabScope } from "../tabs/tabScopeContext";
 import { invoke } from "@tauri-apps/api/core";
 import { useEditorJumpStore } from "../../stores/viewers/editorJump";
 import { useSettingsStore } from "../../stores/settings";
@@ -79,6 +80,8 @@ export function FileTreeSearch({
   const t = useT();
   const viewerPrefs = useSettingsStore((s) => s.settings?.viewer_prefs);
   const disabledViewerSet = useMemo(() => disabledViewers(viewerPrefs), [viewerPrefs]);
+  // Root console: opened viewers are root's tabs (see tabScopeContext).
+  const tabScope = useTabScope();
 
   // The absolute directory the search is confined to (content search walks it;
   // name results are filtered to it). Rel-path bookkeeping stays project-rooted:
@@ -203,6 +206,7 @@ export function FileTreeSearch({
       origin: "side_file_tree",
       external: false,
       disabled: disabledViewerSet,
+      scope: tabScope,
     });
     if (line != null) useEditorJumpStore.getState().requestJump(abs, line, col ?? 0);
   }

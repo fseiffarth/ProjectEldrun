@@ -2098,6 +2098,36 @@ function currentScopeState(s: TabsStore) {
   return scopeState(s, s.scope);
 }
 
+/**
+ * The scope holding tab `key`: the active one when it is there, else whichever
+ * scope's list carries it. The root console's tabs are the case that needs it —
+ * root is not the active scope while the console floats over a project, so a
+ * viewer there writing its scroll/zoom or a Files tab its folder through a
+ * current-scope action wrote nothing. Keys are minted store-wide, so at most one
+ * scope matches; an unknown key answers the active scope (the old no-op).
+ */
+function scopeOfTab(s: Pick<TabsStore, "scope" | "tabs" | "tabsByScope">, key: string): string {
+  if ((s.tabs ?? []).some((t) => t.key === key)) return s.scope;
+  for (const [scope, tabs] of Object.entries(s.tabsByScope ?? {})) {
+    if (tabs.some((t) => t.key === key)) return scope;
+  }
+  return s.scope;
+}
+
+/** Tab `key` wherever it lives — the read side of {@link scopeOfTab}, for the
+ *  viewers that look their own tab up by key (a root-console viewer is not in
+ *  `tabs`, the active scope's list). */
+export function findTabByKey(
+  s: Pick<TabsStore, "scope" | "tabs" | "tabsByScope">,
+  key: string,
+): TabEntry | undefined {
+  const byKey = (t: TabEntry) => t.key === key;
+  return (
+    (s.tabs ?? []).find(byKey) ??
+    Object.values(s.tabsByScope ?? {}).flatMap((tabs) => tabs.filter(byKey))[0]
+  );
+}
+
 // ── Tree (de)serialization ──────────────────────────────────────────────────
 
 export function serializeTree(node: LayoutNode | null): SavedLayoutTree | null {
@@ -2300,6 +2330,13 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       ctx.pushEdit({ kind: "activate", key });
       return;
     }
+    // A tab of another scope (the root console's, while a project is on screen)
+    // is revealed in its own layout; the active scope's focus stays put.
+    const owner = scopeOfTab(get(), key);
+    if (owner !== get().scope) {
+      get().revealTabInScope(owner, key);
+      return;
+    }
     set((s) => {
       const { tabs, layout } = currentScopeState(s);
       const found = findGroupOfTab(layout, key);
@@ -2456,6 +2493,11 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       ctx.pushEdit({ kind: "rename", key, label: nextLabel });
       return;
     }
+    const owner = scopeOfTab(get(), key);
+    if (owner !== get().scope) {
+      get().renameTabInScope(owner, key, nextLabel);
+      return;
+    }
     set((s) => {
       const { tabs, layout, focusedGroupId } = currentScopeState(s);
       const nextTabs = tabs.map((t) =>
@@ -2490,6 +2532,11 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     const ctx = getDetachedWindowContext();
     if (ctx) {
       ctx.pushEdit({ kind: "setColor", key, color: next });
+      return;
+    }
+    const owner = scopeOfTab(get(), key);
+    if (owner !== get().scope) {
+      get().setTabColorInScope(owner, key, color);
       return;
     }
     set((s) => {
@@ -2646,6 +2693,12 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     const ctx = getDetachedWindowContext();
     if (ctx) {
       ctx.closeTab(key);
+      return;
+    }
+    // Another scope's tab (a root-console viewer closing itself) closes there.
+    const owner = scopeOfTab(get(), key);
+    if (owner !== get().scope) {
+      get().removeTabInScope(owner, key);
       return;
     }
     // Discard any session-only link routes that pointed FROM this tab (#50).
@@ -2863,9 +2916,10 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
 
   updateTabEnv: (key, env) => {
     set((s) => {
-      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      const owner = scopeOfTab(s, key);
+      const { tabs, layout, focusedGroupId } = scopeState(s, owner);
       const nextTabs = tabs.map((t) => (t.key === key ? { ...t, env } : t));
-      return writeScope(s, s.scope, nextTabs, layout, focusedGroupId);
+      return writeScope(s, owner, nextTabs, layout, focusedGroupId);
     });
   },
 
@@ -2896,7 +2950,8 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
 
   setTabLocation: (key, location) => {
     set((s) => {
-      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      const owner = scopeOfTab(s, key);
+      const { tabs, layout, focusedGroupId } = scopeState(s, owner);
       let changed = false;
       const nextTabs = tabs.map((t) => {
         if (t.key !== key || t.location === location) return t;
@@ -2906,13 +2961,14 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       // No-op (stable array) when the value is unchanged, so an idle re-toggle
       // doesn't churn the tabs array / wake the saveLayout debounce.
       if (!changed) return {};
-      return writeScope(s, s.scope, nextTabs, layout, focusedGroupId);
+      return writeScope(s, owner, nextTabs, layout, focusedGroupId);
     });
   },
 
   setTabViewer: (key, viewer) => {
     set((s) => {
-      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      const owner = scopeOfTab(s, key);
+      const { tabs, layout, focusedGroupId } = scopeState(s, owner);
       let changed = false;
       const nextTabs = tabs.map((t) => {
         if (t.key !== key || t.kind !== "embed" || t.viewer === viewer) return t;
@@ -2922,7 +2978,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       // Stable array when nothing moved, so a repeated heal attempt does not
       // churn the tabs array / wake the saveLayout debounce.
       if (!changed) return {};
-      return writeScope(s, s.scope, nextTabs, layout, focusedGroupId);
+      return writeScope(s, owner, nextTabs, layout, focusedGroupId);
     });
   },
 
@@ -2938,7 +2994,8 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       return;
     }
     set((s) => {
-      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      const owner = scopeOfTab(s, key);
+      const { tabs, layout, focusedGroupId } = scopeState(s, owner);
       const tab = tabs.find((t) => t.key === key);
       if (!tab) return {};
       const merged = { ...tab.viewerState, ...patch };
@@ -2963,7 +3020,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       const nextTabs = tabs.map((t) =>
         t.key === key ? { ...t, viewerState: merged } : t,
       );
-      return writeScope(s, s.scope, nextTabs, layout, focusedGroupId);
+      return writeScope(s, owner, nextTabs, layout, focusedGroupId);
     });
   },
 
@@ -2976,13 +3033,14 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       return;
     }
     set((s) => {
-      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      const owner = scopeOfTab(s, key);
+      const { tabs, layout, focusedGroupId } = scopeState(s, owner);
       const tab = tabs.find((t) => t.key === key);
       // No-op when unchanged, so re-listing the same folder doesn't churn the
       // tabs array and wake the saveLayout debounce for nothing.
       if (!tab || (tab.folder ?? "") === folder) return {};
       const nextTabs = tabs.map((t) => (t.key === key ? { ...t, folder } : t));
-      return writeScope(s, s.scope, nextTabs, layout, focusedGroupId);
+      return writeScope(s, owner, nextTabs, layout, focusedGroupId);
     });
   },
 
@@ -2995,13 +3053,14 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       return;
     }
     set((s) => {
-      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      const owner = scopeOfTab(s, key);
+      const { tabs, layout, focusedGroupId } = scopeState(s, owner);
       const tab = tabs.find((t) => t.key === key);
       // Same no-op rule setTabFolder follows: reloading the same page must not
       // churn the tabs array and wake the saveLayout debounce for nothing.
       if (!tab || (tab.url ?? "") === url) return {};
       const nextTabs = tabs.map((t) => (t.key === key ? { ...t, url } : t));
-      return writeScope(s, s.scope, nextTabs, layout, focusedGroupId);
+      return writeScope(s, owner, nextTabs, layout, focusedGroupId);
     });
   },
 
