@@ -386,9 +386,12 @@ export function DetachedCenterPanel({
   const fastMode = useFastMode();
   const [hoverTab, setHoverTab] = useState<{ key: string; x: number; y: number } | null>(null);
   // Multi-host locality menu (shared with TabBar). Machine names + the primary
-  // host come from the streamed `remoteInfo`; undefined ⇒ local project, no badge.
+  // host come from the streamed `remoteInfo`. Remoteness is the project's own
+  // `remote` config, as the main window's `isRemoteScope` reads it — NOT the
+  // seed's presence: since #232 every project scope (and a box) ships one, so
+  // `!!remoteInfo` put the Local/Remote badge on every local project's tabs.
   const [localityMenu, setLocalityMenu] = useState<LocalityMenuState | null>(null);
-  const isRemote = !!remoteInfo;
+  const isRemote = !!remoteInfo?.project?.remote;
   const primaryHost = remoteInfo?.primaryHost;
   const computeHosts = remoteInfo?.computeHosts;
   // One bar element per group, so a per-tab drag can hit-test the bar it's over.
