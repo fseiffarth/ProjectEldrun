@@ -1227,10 +1227,6 @@ pub fn run() {
             // idempotent, so a race with the frontend's first load is benign.
             std::thread::spawn(|| {
                 commands::projects::migrate_legacy_projects();
-                let mut projects = commands::projects::get_projects().unwrap_or_default();
-                if let Err(e) = commands::projects::ensure_trash_project(&mut projects) {
-                    eprintln!("Trash project setup: {e}");
-                }
             });
             // One-shot: adopt every existing project's tab layout / `open_apps`
             // out of its project tree and into `<state_dir>/sessions/<id>/`.

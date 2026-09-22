@@ -48,8 +48,6 @@ import { useBoxEditorStore } from "../../stores/boxEditor";
 import { useBoxesStore } from "../../stores/boxes";
 import { bindDragRelease, dragPlatform } from "../../lib/window/dragPlatform";
 import { useT } from "../../lib/i18n";
-import { isTrashProject } from "../../lib/projects/trashProject";
-import { TrashProjectIcon } from "./TrashProjectIcon";
 import { PauseIcon } from "../common/icons/Icon";
 import {
   agentFenceInstallCommand,
@@ -1475,7 +1473,6 @@ export function ProjectPill({
   const [movePickerInitial, setMovePickerInitial] = useState<string | null>(null);
   const pillRef = useRef<HTMLDivElement>(null);
   const dir = resolveProjectDirectory(project);
-  const trashProject = isTrashProject(project);
   const categories = projectCategories(project);
   const catColor = primaryCategoryColor(categories);
 
@@ -1741,13 +1738,9 @@ export function ProjectPill({
 
   const handleMouseEnter = () => {
     if (contextMenu) return;
-    // The Trash pill has no project to report on — no path, no git, no tracked
-    // time — so it gets the plain descriptive tooltip below instead of the
-    // project hover card, which could only show a card full of blanks.
-    if (trashProject) return;
-    // Fast mode takes the same exit for a different reason: the card polls
-    // `project_cpu_percent` every 1.5 s for as long as the pointer rests, plus
-    // a scaffold probe per open. It falls back to the same plain tooltip.
+    // Fast mode skips the hover card: it polls `project_cpu_percent` every
+    // 1.5 s for as long as the pointer rests, plus a scaffold probe per open.
+    // It falls back to the pill's plain name tooltip.
     if (fastMode) return;
     if (!pillRef.current) return;
     void hover.open(pillRef.current.getBoundingClientRect());
@@ -1818,13 +1811,6 @@ export function ProjectPill({
    */
   const startPillDrag = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
-    // The Trash workspace is PINNED (ProjectSwitcher renders it outside the
-    // scrolling strip, in the row's fixed leading segment): there is no slot
-    // for it to be dragged into, its position is rewritten by the backend
-    // before every save, and boxing or multi-selecting a workspace that cannot
-    // be closed buys nothing. Returning before `preventDefault` leaves the
-    // native click intact, so `pill-main`'s own onClick still activates it.
-    if (trashProject) return;
     const pressed = e.target as HTMLElement;
     if (pressed.closest(".pill-close-btn, .header-conn-lamps")) return;
     // Ctrl/Cmd-click toggles the multi-selection (3b): no drag, no activation —
@@ -1985,7 +1971,7 @@ export function ProjectPill({
   return (
     <>
       {/* Hover popup — hidden while context menu is open (which calls hover.close). */}
-      {!contextMenu && !trashProject && !fastMode && <ProjectHoverCard project={project} state={hover} />}
+      {!contextMenu && !fastMode && <ProjectHoverCard project={project} state={hover} />}
 
       {/* Right-click context menu */}
       {contextMenu && createPortal(
@@ -2771,7 +2757,7 @@ export function ProjectPill({
       <div
         ref={pillRef}
         data-pill-id={project.id}
-        className={`project-pill${trashProject ? " trash-project-pill" : ""}${active ? " active" : ""}${isSelected ? " is-selected" : ""}${timerPaused ? " timer-paused" : ""}${groupHintActive ? " drag-group" : ""}${isDragged ? " dragging" : ""}${!isDragged && shiftPx ? " reorder-parting" : ""}${catColor ? " has-category" : ""}`}
+        className={`project-pill${active ? " active" : ""}${isSelected ? " is-selected" : ""}${timerPaused ? " timer-paused" : ""}${groupHintActive ? " drag-group" : ""}${isDragged ? " dragging" : ""}${!isDragged && shiftPx ? " reorder-parting" : ""}${catColor ? " has-category" : ""}`}
         style={{
           ...(catColor ? { "--cat-color": catColor } : {}),
           ...(isDragged
@@ -2795,38 +2781,31 @@ export function ProjectPill({
         <button
           className="pill-main"
           onClick={onClick}
-          title={trashProject ? t("pill.trashProjectTitle") : fastMode ? project.name : undefined}
-          aria-label={trashProject ? t("pill.trashProjectTitle") : undefined}
+          title={fastMode ? project.name : undefined}
         >
-          {trashProject ? (
-            <TrashProjectIcon className="trash-project-icon" />
-          ) : (
-            <>
-              <span
-                className={`pill-folder-icon git-${gitDirty ?? "clean"}`}
-                aria-hidden
-              >
-                {/* The folder + its git color are shown ALWAYS — the git dirty state
-                    must never be hidden by an unrelated concern. A paused time-tracking
-                    timer is signalled non-destructively: a small ⏸ overlay badge (plus
-                    the pill's own `.timer-paused` dimming), never by swapping the icon
-                    out, which used to erase every pill's git colour the moment you
-                    paused the timer. */}
-                <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
-                  <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z" />
-                </svg>
-                {timerPaused && <span className="pill-folder-pause"><PauseIcon /></span>}
-              </span>
-              <span className="project-pill-label">{project.name}</span>
-              {boxNames && boxNames.length > 0 && (
-                <span
-                  className="project-pill-boxdot"
-                  title={t("pill.inBoxes", { list: boxNames.join(", ") })}
-                >
-                  ▣
-                </span>
-              )}
-            </>
+          <span
+            className={`pill-folder-icon git-${gitDirty ?? "clean"}`}
+            aria-hidden
+          >
+            {/* The folder + its git color are shown ALWAYS — the git dirty state
+                must never be hidden by an unrelated concern. A paused time-tracking
+                timer is signalled non-destructively: a small ⏸ overlay badge (plus
+                the pill's own `.timer-paused` dimming), never by swapping the icon
+                out, which used to erase every pill's git colour the moment you
+                paused the timer. */}
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
+              <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z" />
+            </svg>
+            {timerPaused && <span className="pill-folder-pause"><PauseIcon /></span>}
+          </span>
+          <span className="project-pill-label">{project.name}</span>
+          {boxNames && boxNames.length > 0 && (
+            <span
+              className="project-pill-boxdot"
+              title={t("pill.inBoxes", { list: boxNames.join(", ") })}
+            >
+              ▣
+            </span>
           )}
         </button>
         {categories.length > 0 && (
@@ -2856,7 +2835,7 @@ export function ProjectPill({
           </button>
         )}
         {project.remote && <RemoteConnMenu project={project} compact />}
-        {!trashProject && onClose && (
+        {onClose && (
           <button
             className="pill-close-btn"
             title={closeTitle ?? t("pill.closeProject")}

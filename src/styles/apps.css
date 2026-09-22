@@ -523,40 +523,6 @@
   gap: 6px;
 }
 
-/* Trash is Eldrun's fixed disposable-agent workspace, not a user-named
-   project. Give it the same compact, icon-only reading as the fixed root
-   terminal pill while preserving its hover title, accessible name and status
-   strip. */
-/* 38px, not 42: the icon inside is 18px and centred, so this width IS the pill's
-   inset — 10px each side, the same inset the root pill and the box chip beside
-   it carry, which is what makes ★ → 🗑 and 🗑 → ▣ the same gap. */
-.project-pill.trash-project-pill {
-  width: 38px;
-  max-width: 38px;
-}
-
-.trash-project-pill .pill-main {
-  justify-content: center;
-  padding: 0;
-}
-
-.trash-project-icon {
-  width: 18px;
-  height: 18px;
-  color: var(--text-muted);
-  flex-shrink: 0;
-}
-
-.trash-project-pill:hover .trash-project-icon,
-.trash-project-pill.active .trash-project-icon {
-  color: var(--text-primary);
-}
-
-.trash-project-pill .pill-status-bars {
-  left: 3px;
-  right: 3px;
-}
-
 .project-pill-label {
   overflow: hidden;
   text-overflow: ellipsis;

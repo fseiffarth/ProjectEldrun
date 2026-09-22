@@ -10,7 +10,7 @@ use tauri::State;
 use crate::paths;
 use crate::schema::project::{
     ComputeHost, DetectedSpecKind, DetectedSpecSource, OpenVpnSpec, Project, RemoteSpec,
-    SandboxScope, SandboxSourceDecision, SandboxSpec, SandboxToggleOutcome,
+    SandboxSourceDecision, SandboxSpec, SandboxToggleOutcome,
 };
 use crate::schema::projects::{ProjectEntry, ProjectsList};
 use crate::services::remote_sync::SyncManifestState;
@@ -369,13 +369,10 @@ pub(crate) fn patch_projects_list<R>(
 ) -> Result<R, String> {
     let path = storage::state_dir().join("projects.json");
     storage::patch_json(&path, ProjectsList::new(), |list| {
-        // Call before the patch so return values derived from `list` include
-        // Trash even on a brand-new install, then again so a whole-list-style
-        // mutation cannot remove or weaken it.
-        ensure_trash_project(list)?;
-        let result = patch(list)?;
-        ensure_trash_project(list)?;
-        Ok(result)
+        // The built-in Trash workspace was removed; every registry read or
+        // write drops its leftover entry (its folder stays on disk).
+        drop_legacy_trash_project(list);
+        patch(list)
     })
 }
 
@@ -526,95 +523,11 @@ pub(crate) fn patch_project_entry_mirrored<R>(
     Ok(result)
 }
 
-/// The built-in Trash workspace is deliberately a project rather than a second
-/// root scope: it gives disposable agents a trusted, always-on containment
-/// record. Its state-dir entry is authoritative; its in-folder `project.json`
-/// is display/export data only and is writable by the contained process.
-fn trash_sandbox_spec() -> SandboxSpec {
-    SandboxSpec {
-        enabled: true,
-        // Contain every PTY as defence in depth. The UI and spawn gate offer
-        // only recognised agent CLIs, but an all-tabs container means a stale
-        // shell tab can never become a host escape.
-        scope: SandboxScope::All,
-        ..Default::default()
-    }
-}
-
-fn trash_project_entry(position: i64) -> ProjectEntry {
-    let dir = paths::trash_work_dir().to_string_lossy().to_string();
-    let file = paths::trash_work_dir()
-        .join("project.json")
-        .to_string_lossy()
-        .to_string();
-    let mut extra = HashMap::new();
-    extra.insert("directory".into(), Value::String(dir));
-    extra.insert("git_type".into(), Value::String("none".into()));
-    extra.insert(
-        "sandbox".into(),
-        serde_json::to_value(trash_sandbox_spec()).expect("trash sandbox is serializable"),
-    );
-    // The mobile sidecar reads this state-dir record directly. Keeping it on
-    // means the project stays discoverable even when the desktop is closed.
-    extra.insert("eldrun_mobile_access".into(), Value::Bool(true));
-    extra.insert("eldrun_trash".into(), Value::Bool(true));
-    ProjectEntry {
-        id: paths::TRASH_PROJECT_ID.to_string(),
-        name: "Trash".to_string(),
-        status: "active".to_string(),
-        position,
-        local_file: file,
-        extra,
-    }
-}
-
-/// Create (or repair) the permanent Trash project. This is intentionally
-/// idempotent and is called before every project-list save as well as during
-/// startup, so ordinary project operations cannot deactivate, archive, or
-/// weaken it by accident.
-pub fn ensure_trash_project(list: &mut ProjectsList) -> Result<bool, String> {
-    let dir = paths::trash_work_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("create Trash directory: {e}"))?;
-    let position = list
-        .iter()
-        .map(|p| p.position)
-        .min()
-        .unwrap_or(0)
-        .saturating_sub(1);
-    let canonical = trash_project_entry(position);
-    let changed = match list.iter_mut().find(|p| p.id == paths::TRASH_PROJECT_ID) {
-        Some(entry) => {
-            let current = entry.status == "current";
-            let wanted_status = if current { "current" } else { "active" };
-            let differs = entry.name != canonical.name
-                || entry.status != wanted_status
-                || entry.local_file != canonical.local_file
-                || entry.extra != canonical.extra;
-            entry.name = canonical.name;
-            entry.status = wanted_status.to_string();
-            entry.local_file = canonical.local_file;
-            entry.extra = canonical.extra;
-            differs
-        }
-        None => {
-            list.push(canonical);
-            true
-        }
-    };
-
-    let project_file = dir.join("project.json");
-    if !project_file.exists() {
-        let project = Project {
-            id: paths::TRASH_PROJECT_ID.to_string(),
-            name: "Trash".to_string(),
-            directory: dir.to_string_lossy().to_string(),
-            git_type: Some("none".to_string()),
-            sandbox: Some(trash_sandbox_spec()),
-            ..Default::default()
-        };
-        storage::write_json(&project_file, &project).map_err(|e| e.to_string())?;
-    }
-    Ok(changed)
+/// Remove the entry of the retired built-in Trash workspace (`eldrun-trash`),
+/// which older Eldrun versions created and kept pinned. Its `~/eldrun/trash`
+/// folder is left untouched.
+fn drop_legacy_trash_project(list: &mut ProjectsList) {
+    list.retain(|p| p.id != paths::LEGACY_TRASH_PROJECT_ID);
 }
 
 #[derive(Debug, Deserialize)]
@@ -989,11 +902,6 @@ pub async fn archive_project(project_id: String, archived_at: String) -> Result<
 
 pub fn archive_project_blocking(project_id: String, archived_at: String) -> Result<(), String> {
     validate_project_id(&project_id)?;
-    if paths::is_trash_project_id(&project_id) {
-        return Err(
-            "The built-in Trash project is always available and cannot be archived.".into(),
-        );
-    }
 
     let list = read_projects_list()?;
     let idx = list
@@ -1083,11 +991,6 @@ pub async fn forget_project(project_id: String) -> Result<(), String> {
 
 pub fn forget_project_blocking(project_id: String) -> Result<(), String> {
     validate_project_id(&project_id)?;
-    if paths::is_trash_project_id(&project_id) {
-        return Err(
-            "The built-in Trash project is always available and cannot be removed.".into(),
-        );
-    }
     let list = read_projects_list()?;
     let entry = list
         .iter()
@@ -1439,9 +1342,6 @@ pub fn set_project_description(
 /// changes. A blank name is rejected. Returns the cleaned (trimmed) name.
 #[tauri::command]
 pub fn set_project_name(project_id: String, name: String) -> Result<String, String> {
-    if paths::is_trash_project_id(&project_id) {
-        return Err("The built-in Trash project's name is fixed.".into());
-    }
     let cleaned = name.trim().to_string();
     if cleaned.is_empty() {
         return Err("project name cannot be empty".to_string());
@@ -1476,7 +1376,7 @@ pub struct ProjectDirRenamePlan {
     /// `registered` (another project claims that path), `nested` (another
     /// project lives inside this folder and would lose its path), `invalid`
     /// (not a usable folder name), `missing` (the folder is not on disk, or is a
-    /// link), `unsupported` (remote, VM or the Trash — no local folder to own).
+    /// link), `unsupported` (remote or VM — no local folder to own).
     pub status: String,
 }
 
@@ -1543,7 +1443,7 @@ fn plan_dir_rename(
         .and_then(|v| v.get("enabled"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    if paths::is_trash_project_id(project_id) || is_remote || is_vm || current.is_empty() {
+    if is_remote || is_vm || current.is_empty() {
         return Ok(plan(String::new(), "unsupported"));
     }
     let old = PathBuf::from(&current);
@@ -1795,14 +1695,6 @@ pub fn set_project_sandbox(
     enabled: bool,
     source_decision: Option<SandboxSourceDecision>,
 ) -> Result<SandboxToggleOutcome, String> {
-    if paths::is_trash_project_id(&project_id) {
-        if enabled {
-            return Ok(SandboxToggleOutcome::Applied {
-                spec: trash_sandbox_spec(),
-            });
-        }
-        return Err("The built-in Trash project's sandbox is always on.".into());
-    }
     let list = read_projects_list()?;
     let entry = list
         .iter()
@@ -1908,9 +1800,6 @@ pub fn set_project_sandbox_spec(
     project_id: String,
     mut spec: SandboxSpec,
 ) -> Result<SandboxSpec, String> {
-    if paths::is_trash_project_id(&project_id) {
-        return Err("The built-in Trash project's sandbox is fixed and always on.".into());
-    }
     let clean = |v: &mut Option<String>| {
         if v.as_deref().map(str::trim).is_none_or(str::is_empty) {
             *v = None;
@@ -2127,12 +2016,6 @@ pub fn set_project_persist_sessions(project_id: String, enabled: bool) -> Result
 /// state-dir `projects.json`, never only in project-writable `project.json`.
 #[tauri::command]
 pub fn set_project_mobile_access(project_id: String, enabled: bool) -> Result<bool, String> {
-    if paths::is_trash_project_id(&project_id) {
-        if enabled {
-            return Ok(true);
-        }
-        return Err("The built-in Trash project is always available to Eldrun Mobile.".into());
-    }
     let projects = get_projects()?;
     let project = projects
         .iter()
@@ -4453,9 +4336,6 @@ pub async fn extend_project_to_remote(
     req: ExtendProjectRemoteRequest,
     manifest: State<'_, SyncManifestState>,
 ) -> Result<ProjectEntry, String> {
-    if paths::is_trash_project_id(&req.project_id) {
-        return Err("The built-in Trash project is permanently local and isolated.".into());
-    }
     let list = read_projects_list()?;
 
     let idx = list
@@ -5069,6 +4949,17 @@ mod tests {
             local_file: format!("/p/{id}/project.json"),
             extra: extra.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
         }
+    }
+
+    #[test]
+    fn the_retired_trash_workspace_entry_is_dropped_and_nothing_else() {
+        let mut list = vec![
+            entry("eldrun-trash", "Trash", vec![("eldrun_trash", Value::Bool(true))]),
+            entry("p1", "Trash", vec![]),
+        ];
+        drop_legacy_trash_project(&mut list);
+        let ids: Vec<&str> = list.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["p1"]);
     }
 
     fn local_entry(id: &str, name: &str, dir: &str) -> ProjectEntry {

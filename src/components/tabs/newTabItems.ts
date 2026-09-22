@@ -257,8 +257,6 @@ export function agentMenuEntries(opts: {
   installedBuiltins: Set<string> | null;
   installedCmds: Set<string> | null;
   customAgents: CustomAgent[];
-  /** Strict built-in-only surfaces (Trash) must not offer arbitrary commands. */
-  allowCustom?: boolean;
   pick: (item: StaticMenuItem) => void;
   onAddCustom: () => void;
   t: (key: TranslationKey) => string;
@@ -271,7 +269,7 @@ export function agentMenuEntries(opts: {
     color: TAB_ACCENT[item.kind],
     onPick: () => opts.pick(item),
   }));
-  const custom = (opts.allowCustom !== false ? opts.customAgents : []).map((ca) => {
+  const custom = opts.customAgents.map((ca) => {
     const missing = opts.installedCmds != null && !opts.installedCmds.has(ca.cmd);
     return {
       key: `custom:${ca.id}`,
@@ -284,14 +282,12 @@ export function agentMenuEntries(opts: {
   return [
     ...builtins,
     ...custom,
-    ...(opts.allowCustom !== false
-      ? [{
-          key: "__add_custom_agent__",
-          label: opts.t("newTabMenu.addAgent"),
-          dot: "＋",
-          color: "var(--text-muted)",
-          onPick: opts.onAddCustom,
-        }]
-      : []),
+    {
+      key: "__add_custom_agent__",
+      label: opts.t("newTabMenu.addAgent"),
+      dot: "＋",
+      color: "var(--text-muted)",
+      onPick: opts.onAddCustom,
+    },
   ];
 }

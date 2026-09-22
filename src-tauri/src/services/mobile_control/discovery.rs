@@ -31,8 +31,6 @@ struct ProjectRecord {
     vm: Option<Value>,
     #[serde(default)]
     eldrun_mobile_access: bool,
-    #[serde(default)]
-    eldrun_trash: bool,
 }
 
 /// The slice of `boxes.json` the catalog reads (#31aa). A box is listed as a
@@ -445,11 +443,11 @@ fn canonical_below_any(path: &Path, roots: &[PathBuf]) -> bool {
 }
 
 /// The trust-tier gate every mobile scope passes: a local project that is
-/// neither a container (Trash excepted, as on the desktop) nor a VM. A box
+/// neither a container nor a VM. A box
 /// applies it to each member before that member's root may host a box tab.
 fn mobile_local(project: &ProjectRecord) -> bool {
     project.remote.is_none()
-        && !(enabled(&project.sandbox) && !project.eldrun_trash)
+        && !enabled(&project.sandbox)
         && !enabled(&project.vm)
 }
 

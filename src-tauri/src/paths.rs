@@ -487,10 +487,10 @@ where
 }
 
 /// The `~/eldrun` tree: managed projects ([`projects_root`]), the root
-/// workspace, trash, boxes, and the project archive.
+/// workspace, boxes, and the project archive.
 ///
 /// `ELDRUN_HOME` overrides it so a sandboxed dev instance
-/// (`start-eldrun-dev-sandbox.sh`) keeps its projects, trash, and boxes
+/// (`start-eldrun-dev-sandbox.sh`) keeps its projects and boxes
 /// symlink farm out of the daily-driver instance's real tree — an instance
 /// reconciling those folders against its own (empty) state must not be looking
 /// at another instance's folders. Set it together with `ELDRUN_STATE_DIR`:
@@ -526,18 +526,9 @@ pub fn root_work_dir() -> PathBuf {
     eldrun_home().join("root")
 }
 
-/// The permanent, isolated workspace for disposable agent work. Unlike the
-/// root workspace this is a real project, so its terminal authority is always
-/// resolved through the project sandbox rather than falling back to the host.
-pub const TRASH_PROJECT_ID: &str = "eldrun-trash";
-
-pub fn trash_work_dir() -> PathBuf {
-    eldrun_home().join("trash")
-}
-
-pub fn is_trash_project_id(project_id: &str) -> bool {
-    project_id == TRASH_PROJECT_ID
-}
+/// Id of the retired built-in Trash workspace. Kept only so its leftover
+/// `projects.json` entry is dropped.
+pub const LEGACY_TRASH_PROJECT_ID: &str = "eldrun-trash";
 
 pub fn boxes_root() -> PathBuf {
     eldrun_home().join("boxes")

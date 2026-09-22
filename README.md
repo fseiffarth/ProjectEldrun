@@ -329,8 +329,7 @@ does not have to ship a phone app for the agent you are running.
   composer, voice input), a to-do board, Alerts with Done actions, opt-in mail
   flag/reply actions, last-tab restore, an offline app shell, and a local lock.
   Project boxes are selectable scopes too. Access is granted **per project**;
-  remote and VM projects are excluded, as are containerized ones — with the Trash workspace as the single
-  deliberate exception.
+  remote, VM and containerized projects are excluded.
 - A desktop header control shows host status; Settings carries the opt-in, the
   security-health readout, and one-click terminal setup.
 
@@ -442,8 +441,8 @@ with availability and model capability checks.
 
 - **Project creation and import**: the `+` button creates a new git-backed
   project or imports an existing directory (keep in place, copy, or move).
-- **Project switcher**: the header's scope picker selects projects, boxes, Root,
-  and Trash. Project pills show activity and pending decisions; hover to inspect
+- **Project switcher**: the header's scope picker selects projects, boxes, and
+  Root. Project pills show activity and pending decisions; hover to inspect
   the path, Git state, today's active time, and live CPU%.
 - **Project boxes (meta-project grouping)**: temporarily join two or more
   projects into a *box* — its own pill in the switcher — for side-by-side file
@@ -470,7 +469,7 @@ with availability and model capability checks.
   the chosen provider's CLI — `gh` or `glab` — installed, with authentication
   from the CLI or a saved token under Settings → Git hosting.
 
-### Isolation tiers: container, VM, and the Trash workspace
+### Isolation tiers: container and VM
 
 A project's tabs run in one of four trust tiers, and the tier is a property of
 the project rather than a different way of working.
@@ -490,11 +489,6 @@ the project rather than a different way of working.
   port, and from there is an ordinary remote project — with **no shared
   filesystem**, an inverted sync posture, and an egress switch. *(Implemented;
   never live-booted.)*
-- **Trash** — a permanent, built-in workspace pill for disposable agents you
-  don't want anywhere near a real project. It is created and repaired on every
-  project-list save, so ordinary project operations cannot archive or weaken it,
-  and it is containerized for **all** tabs (not just agents), so a stale shell
-  in it can never become a host escape.
 
 Local agent tabs also have a default-on **agent fence**: bubblewrap on Linux
 and `sandbox-exec` on macOS, with writable access limited to allowed project

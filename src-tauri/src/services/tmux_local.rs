@@ -57,13 +57,6 @@ pub fn argv_bytes(args: &[String]) -> usize {
 /// Which of a `tmux ls` listing's sessions a clean quit ends: every session
 /// Eldrun minted, and nothing else. Pure, so the ownership rule is tested
 /// without a tmux server.
-///
-/// There used to be one exemption — the Trash workspace's sessions, kept so a
-/// phone attached through the Mobile sidecar could keep working after the
-/// desktop quit. That only made sense while the sidecar outlived the app; it
-/// no longer does (`commands::mobile_control::stop_host_for_exit`), so a Trash
-/// session left behind is an agent nobody can reach, i.e. exactly the leftover
-/// the quit path exists to remove.
 pub fn sessions_to_reap<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<String> {
     names
         .into_iter()
@@ -806,21 +799,19 @@ mod tests {
     }
 
     #[test]
-    fn quit_reaps_every_eldrun_session_including_trash_and_no_foreign_one() {
+    fn quit_reaps_every_eldrun_session_and_no_foreign_one() {
         // A user's own `train`/`work` sessions are never touched; every Eldrun-
-        // minted one goes, the Trash workspace's included — the sidecar that
-        // once justified keeping those stops with the app now.
-        let trash = format!("eldrun-{}--agent-abc", crate::paths::TRASH_PROJECT_ID);
+        // minted one goes.
         let listed = [
             "train",
             "eldrun-p1--shell-1",
-            trash.as_str(),
+            "eldrun-p2--agent-abc",
             "work",
             "my-eldrun-run",
         ];
         assert_eq!(
             sessions_to_reap(listed),
-            vec!["eldrun-p1--shell-1".to_string(), trash.clone()]
+            vec!["eldrun-p1--shell-1".to_string(), "eldrun-p2--agent-abc".to_string()]
         );
         assert!(sessions_to_reap(["train"]).is_empty());
     }

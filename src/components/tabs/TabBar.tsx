@@ -74,7 +74,6 @@ import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import { MenuShortcut } from "../common/MenuShortcut";
 import { useT } from "../../lib/i18n";
 import { useChordHint } from "../../lib/shortcuts/shortcutHint";
-import { TRASH_PROJECT_ID } from "../../lib/projects/trashProject";
 import { AgentScheduleDialog } from "../agents/AgentScheduleDialog";
 import { scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agents/agentSchedules";
 import { nextScheduleOccurrence } from "../../lib/agents/agentSchedule";
@@ -171,7 +170,6 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // The 3D project-blob tab is a root-scope feature, offered only once at least
   // one project exists (it has nothing to show otherwise).
   const scope = useTabsStore((s) => s.scope);
-  const trashScope = scope === TRASH_PROJECT_ID;
   const hasProjects = useProjectsStore((s) => s.projects.length > 0);
   const showBlobItem = scope === "root" && hasProjects;
   const focusGroup = useTabsStore((s) => s.focusGroup);
@@ -1486,7 +1484,6 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   installedBuiltins: enabledAgents,
                   installedCmds: installedCustom,
                   customAgents,
-                  allowCustom: !trashScope,
                   pick: handleAdd,
                   onAddCustom: () => {
                     setMenuPos(null);
@@ -1499,7 +1496,6 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                     installedBuiltins: enabledAgents,
                     installedCmds: installedCustom,
                     customAgents,
-                    allowCustom: !trashScope,
                     pick: handleAdd,
                     onAddCustom: () => {
                       setMenuPos(null);
@@ -1547,7 +1543,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
               // Only offer agents whose binary is actually installed: Mistral/vibe
               // (checked against `vibeForLocalModel`) and the drivers the backend
               // already marks `available` — and only once the model is on the GPU.
-              ...(!trashScope ? [localModelMenuGroup({
+              localModelMenuGroup({
                 localModel,
                 localModelOffInRoot,
                 localDrivers,
@@ -1556,8 +1552,8 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                 onVibe: (model) => void handleOllamaModel(model),
                 onLaunch: (id, label, model) => void handleLocalLaunch(id, label, model),
                 t,
-              })] : []),
-              ...(!trashScope ? [{
+              }),
+              {
                 label: t("newTabMenu.groupShell"),
                 entries: SHELL_ITEMS.filter((i) => i.kind === "shell").map((item) => ({
                   key: item.cmd || "shell",
@@ -1565,8 +1561,8 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   color: TAB_ACCENT[item.kind],
                   onPick: () => handleAdd(item),
                 })),
-              }] : []),
-              ...(!trashScope ? [{
+              },
+              {
                 label: t("newTabMenu.groupFiles"),
                 entries: SHELL_ITEMS.filter((i) => isFileTabKind(i.kind)).map((item) => ({
                   key: item.cmd,
@@ -1575,14 +1571,14 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   disabled: !projectCwd,
                   onPick: () => handleAdd(item),
                 })),
-              }] : []),
+              },
               // All three are offered in every scope. System Monitor is
               // whole-machine and Disk Usage picks its own scan root; Network
               // Traffic used to be withheld from root as "per-project", but its
               // project half is only the remote one — a root tab renders exactly
               // what a LOCAL project's does, this machine's interfaces and
               // sockets, which is the one place a machine-wide question belongs.
-              ...(!trashScope ? [{
+              {
                 label: t("newTabMenu.groupMonitoring"),
                 entries: [
                   {
@@ -1610,8 +1606,8 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                     onPick: handleAddNetwork,
                   },
                 ],
-              }] : []),
-              ...(!trashScope && showBlobItem
+              },
+              ...(showBlobItem
                 ? [{
                     label: t("newTabMenu.groupWorkspace"),
                     entries: [{
@@ -1623,7 +1619,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                     }],
                   }]
                 : []),
-              ...(!trashScope ? [{
+              {
                 label: t("printing.title"),
                 entries: [{
                   key: "printing",
@@ -1633,12 +1629,12 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   untested: "printing.title#3",
                   onPick: handleAddPrinting,
                 }],
-              }] : []),
+              },
               // Offered at the root scope too since the personal install scope
               // exists: the catalog is machine state and a skill can be
               // installed for every project here without one being open. See
               // `NewTabMenu`, which carries the same entry.
-              ...(!trashScope ? [{
+              {
                 label: t("skillsLibrary.title"),
                 entries: [{
                   key: "skillslibrary",
@@ -1648,10 +1644,10 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   untested: "skillsLibrary.title#2",
                   onPick: handleAddSkills,
                 }],
-              }] : []),
+              },
               // The prompt chart's columns are this scope's agent tabs, and the
               // root scope has those too. See `NewTabMenu` for the same entry.
-              ...(!trashScope ? [{
+              {
                 label: t("promptChart.heading"),
                 entries: [{
                   key: "promptchart",
@@ -1661,8 +1657,8 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   untested: "promptChart.heading#3",
                   onPick: handleAddPromptChart,
                 }],
-              }] : []),
-              ...(!trashScope && webBrowser
+              },
+              ...(webBrowser
                 ? [{
                     label: t("newTabMenu.browser"),
                     entries: [{

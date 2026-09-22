@@ -47,7 +47,6 @@ import type { SavedPasswordState } from "../components/projects/useSavedCredenti
 import { IS_WINDOWS } from "../lib/platform";
 import { shouldPersistLocalTab, shouldPersistTab } from "../lib/terminal/tmuxSession";
 import { translate, useI18nStore } from "../lib/i18n";
-import { TRASH_PROJECT_ID } from "../lib/projects/trashProject";
 
 function connectionsHeadless(): boolean {
   return useSettingsStore.getState().settings?.connections_headless ?? true;
@@ -696,15 +695,6 @@ export function retryAutoConnectAfterVpn(): void {
 function dropRemotePool(projectId: string): void {
   useRemoteStatusStore.getState().clear(projectId);
   void invoke("remote_disconnect_all_hosts", { projectId }).catch(() => {});
-}
-
-/** First project matching `pick` that is not the Trash — `deactivateProject`'s
- *  successor choice, where the Trash may only ever be the last resort. */
-function successorAmong(
-  projects: ProjectEntry[],
-  pick: (entry: ProjectEntry) => boolean,
-): ProjectEntry | undefined {
-  return projects.find((entry) => entry.id !== TRASH_PROJECT_ID && pick(entry));
 }
 
 interface ProjectTmuxTarget {
@@ -1440,7 +1430,6 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
   },
 
   deactivateProject: async (id) => {
-    if (id === TRASH_PROJECT_ID) return;
     if (deactivatingProjects.has(id)) return;
     deactivatingProjects.add(id);
     try {
@@ -1513,18 +1502,11 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       const nextProjects = currentProjects.map((entry) =>
         entry.id === id ? { ...entry, status: "inactive" } : entry,
       );
-      // The successor is the first remaining open project — never the Trash. It
-      // sits first in the list with status "active" (it is always open), so the
-      // plain first-active pick used to hand the window to the Trash whenever the
-      // user closed the project they were working in. The Trash is a fallback only
-      // when nothing else is open.
+      // The successor is the first remaining open project.
       const nextActiveId =
         currentActiveId === id
-          ? (successorAmong(nextProjects, (entry) => entry.status === "active") ??
-              successorAmong(nextProjects, (entry) => entry.status !== "inactive") ??
-              nextProjects.find(
-                (entry) => entry.id === TRASH_PROJECT_ID && entry.status !== "inactive",
-              ))?.id ?? null
+          ? (nextProjects.find((entry) => entry.status === "active") ??
+              nextProjects.find((entry) => entry.status !== "inactive"))?.id ?? null
           : currentActiveId;
 
       // Persist status before exposing it in the UI. If this fails, the project

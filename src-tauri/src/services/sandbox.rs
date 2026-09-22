@@ -547,14 +547,6 @@ pub fn is_agent_cmd(cmd: &str) -> bool {
     crate::commands::agents::agent_bins().contains(&base)
 }
 
-/// The permanent Trash workspace is the strict isolation profile: its
-/// container receives its project directory and no host-backed agent state.
-/// API-key environment variables may still be forwarded at exec time, but a
-/// contained process cannot inspect or alter any host file outside Trash.
-pub fn is_strict_trash_project(project_id: &str) -> bool {
-    paths::is_trash_project_id(project_id)
-}
-
 /// Re-derive a spawn's authority flags from the trustworthy project record.
 ///
 /// - **No owning project** (root/global scope, connection terminals): pass through
@@ -732,16 +724,7 @@ pub fn wrap_pty_options_docker(opts: &mut PtyOptions) -> Result<(), String> {
     // Auth env is read at exec (not create) so rotated tokens are picked up
     // per tab spawn.
     let auth_env = host_auth_env();
-    // Trash agent tabs can live in a host tmux session for Eldrun Mobile. Their
-    // PTY is only tmux's client, so registering it for normal tab-close cleanup
-    // would kill the contained agent as soon as the desktop detaches. The
-    // persistent container is itself the lifetime boundary instead.
-    let persistent_trash = is_strict_trash_project(&project_id) && opts.tmux_session.is_some();
-    let pidfile = if persistent_trash {
-        format!("/tmp/eldrun-persist-{}.pid", sanitize_key(&opts.id))
-    } else {
-        register_exec_tab(&opts.id, &name)
-    };
+    let pidfile = register_exec_tab(&opts.id, &name);
 
     opts.args = docker_exec_args(&name, &opts.cwd, &env, &auth_env, &pidfile, &cmd, &cmd_args);
     opts.cmd = "docker".to_string();
@@ -856,16 +839,6 @@ pub fn up(
     let home = paths::home_dir_string();
     let (uid, gid) = host_uid_gid();
     let state_dir = storage::state_dir();
-    let strict_trash = is_strict_trash_project(project_id);
-    // A strict Trash container deliberately does not mount the host home. Give
-    // its agents a writable container-only home instead of a dangling host path
-    // so browser/device-flow logins and CLI caches remain usable without
-    // exposing host-backed credentials or session files.
-    let container_home = if strict_trash {
-        "/tmp/eldrun-home".to_string()
-    } else {
-        home.clone()
-    };
     let live_sessions = state_dir.join("live_sessions");
     // This project's own slice of the live-session records — the only one the
     // container gets to see (see `rw_mounts`).
@@ -874,56 +847,45 @@ pub fn up(
     // Ensure the hook's write target and the staging dir exist so their bind
     // mounts map real host paths rather than docker-auto-created (root-owned)
     // ones. Best effort.
-    if !strict_trash {
-        let _ = std::fs::create_dir_all(&live_sessions_own);
-    }
+    let _ = std::fs::create_dir_all(&live_sessions_own);
     let stage = stage_dir(project_id);
-    if !strict_trash {
-        let _ = std::fs::create_dir_all(&stage);
-    }
+    let _ = std::fs::create_dir_all(&stage);
 
     // Refresh the staged config copies from the host originals at every up.
     // `fs::copy` overwrites in place (same inode), so a running container's
     // bind mounts see the refreshed content too.
-    let (mut rw_mounts, mut ro_mounts) = if strict_trash {
-        (Vec::new(), Vec::new())
-    } else {
-        let codex_state = prepare_codex_state(&home, project_id);
-        let (mut rw, ro) = agent_home_mounts(
-            &home,
-            &live_sessions_own.to_string_lossy(),
-            &live_sessions.to_string_lossy(),
-            true,
-        );
-        // Parent first; Docker also sorts nested bind mounts by destination,
-        // but preserving the relationship here keeps the pure argv obvious.
-        rw.insert(
-            0,
-            format!("{}:{home}/.codex", codex_state.to_string_lossy()),
-        );
-        (rw, ro)
-    };
-    if !strict_trash {
-        rw_mounts.extend(
-            staged_config_mounts(&home, &stage)
-                .into_iter()
-                .map(|(src, dst)| format!("{src}:{dst}")),
-        );
-        rw_mounts.extend(
-            staged_claude_json_mounts(&home, &stage, &[project_dir.to_string()])
-                .into_iter()
-                .map(|(src, dst)| format!("{src}:{dst}")),
-        );
-        // The credential file is a mirror with a stable inode, not the host
-        // original a rename would orphan under the container — see
-        // `claude_credential_mounts`.
-        rw_mounts.extend(
-            claude_credential_mounts(&home)
-                .into_iter()
-                .map(|(src, dst)| format!("{src}:{dst}")),
-        );
-        ro_mounts.extend(ro_mounts_for_hooks(&hooks_dir));
-    }
+    let codex_state = prepare_codex_state(&home, project_id);
+    let (mut rw_mounts, mut ro_mounts) = agent_home_mounts(
+        &home,
+        &live_sessions_own.to_string_lossy(),
+        &live_sessions.to_string_lossy(),
+        true,
+    );
+    // Parent first; Docker also sorts nested bind mounts by destination,
+    // but preserving the relationship here keeps the pure argv obvious.
+    rw_mounts.insert(
+        0,
+        format!("{}:{home}/.codex", codex_state.to_string_lossy()),
+    );
+    rw_mounts.extend(
+        staged_config_mounts(&home, &stage)
+            .into_iter()
+            .map(|(src, dst)| format!("{src}:{dst}")),
+    );
+    rw_mounts.extend(
+        staged_claude_json_mounts(&home, &stage, &[project_dir.to_string()])
+            .into_iter()
+            .map(|(src, dst)| format!("{src}:{dst}")),
+    );
+    // The credential file is a mirror with a stable inode, not the host
+    // original a rename would orphan under the container — see
+    // `claude_credential_mounts`.
+    rw_mounts.extend(
+        claude_credential_mounts(&home)
+            .into_iter()
+            .map(|(src, dst)| format!("{src}:{dst}")),
+    );
+    ro_mounts.extend(ro_mounts_for_hooks(&hooks_dir));
     let bin = crate::services::agent_bin::bin_dir();
     std::fs::create_dir_all(&bin).map_err(|e| e.to_string())?;
     ro_mounts.push(format!("{0}:{0}", bin.to_string_lossy()));
@@ -940,7 +902,7 @@ pub fn up(
         &name,
         project_id,
         &image,
-        &container_home,
+        &home,
         uid,
         gid,
         project_dir,
@@ -951,15 +913,11 @@ pub fn up(
     );
     let fingerprint = spec_fingerprint(&base);
 
-    let (tx_rw, tx_ro) = if strict_trash {
-        (Vec::new(), Vec::new())
-    } else {
-        claude_transcript_mounts(
-            &home,
-            &[project_dir.to_string()],
-            &claude_projects_stage(project_id),
-        )
-    };
+    let (tx_rw, tx_ro) = claude_transcript_mounts(
+        &home,
+        &[project_dir.to_string()],
+        &claude_projects_stage(project_id),
+    );
     // The repo's git control files, re-mounted over the rw project (#158): a
     // contained agent can commit, but cannot plant a hook or `core.fsmonitor`
     // for the host's next git, nor swap `.git` for a `gitdir:` pointer. Kept out
@@ -999,7 +957,7 @@ pub fn up(
         &name,
         project_id,
         &image,
-        &container_home,
+        &home,
         uid,
         gid,
         project_dir,
@@ -1042,9 +1000,6 @@ pub fn up_for_project(project_id: &str) -> Result<Option<String>, String> {
 /// best-effort. Only spawns docker when this run actually created the container
 /// or the toggle is currently on — a never-containerized project costs nothing.
 pub fn down_for_project(project_id: &str) {
-    if is_strict_trash_project(project_id) {
-        return;
-    }
     let name = container_name_for(project_id);
     let created = created_set().lock().unwrap().contains(&name);
     if !created && !sandbox_spec_for(project_id).is_some_and(|s| s.enabled) {
@@ -1069,7 +1024,7 @@ pub fn down_all() {
     if created_set().lock().unwrap().is_empty() {
         return;
     }
-    remove_all_owned_except_trash();
+    remove_all_owned();
     harvest_all_transcripts();
     created_set().lock().unwrap().clear();
     exec_tabs().lock().unwrap().clear();
@@ -1106,7 +1061,7 @@ pub fn sweep_orphans() {
     if !sweep_should_probe(crate::paths::binary_on_path("docker")) || preflight_docker().is_err() {
         return;
     }
-    remove_all_owned_except_trash();
+    remove_all_owned();
 }
 
 /// Whether the startup sweep may spend a `docker` spawn at all: only when a
@@ -1116,31 +1071,14 @@ fn sweep_should_probe(docker_on_path: bool) -> bool {
 }
 
 /// `docker rm -f` every container carrying our owner label. Best-effort.
-/// Preserve the strict Trash container across Eldrun restarts: host tmux owns
-/// mobile-reachable agents there, while Docker remains the filesystem boundary.
-fn remove_all_owned_except_trash() {
+fn remove_all_owned() {
     let _guard = lifecycle_lock().lock().unwrap();
-    let Ok(out) = docker(&[
-        "ps",
-        "-aq",
-        "--filter",
-        &format!("label={OWNER_LABEL}"),
-        "--filter",
-        &format!("label=eldrun.project={}", paths::TRASH_PROJECT_ID),
-    ]) else {
-        return;
-    };
-    let preserve: HashSet<&str> = std::str::from_utf8(&out.stdout)
-        .unwrap_or("")
-        .split_whitespace()
-        .collect();
     let Ok(out) = docker(&["ps", "-aq", "--filter", &format!("label={OWNER_LABEL}")]) else {
         return;
     };
     let ids: Vec<&str> = std::str::from_utf8(&out.stdout)
         .unwrap_or("")
         .split_whitespace()
-        .filter(|id| !preserve.contains(*id))
         .collect();
     if ids.is_empty() {
         return;

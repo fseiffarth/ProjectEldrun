@@ -15,7 +15,6 @@ import { RunHostPicker } from "../tabs/TabLocalityBadges";
 import { ProjectFilesSettingsDialog, useProjectFileFilters } from "./ProjectFilesSettings";
 import { useImportDrop } from "./importDrop";
 import { logoutRemote, useProjectsStore } from "../../stores/projects";
-import { isTrashProject } from "../../lib/projects/trashProject";
 import { GIT_STATE_COLOR } from "../../lib/theme/gitColors";
 import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import { useSyncStore, amberPaths, localNewPaths } from "../../stores/remote/sync";
@@ -452,8 +451,7 @@ export function ProjectFilesView({
     && !!project
     && !project.remote
     && !project.sandbox?.enabled
-    && !project.vm?.enabled
-    && !isTrashProject(project);
+    && !project.vm?.enabled;
   const [mobileHostConnected, setMobileHostConnected] = useState(false);
   const [mobileAccessBusy, setMobileAccessBusy] = useState(false);
   const [mobileAccessError, setMobileAccessError] = useState<string | null>(null);

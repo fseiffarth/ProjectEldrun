@@ -8,7 +8,6 @@ import { usePillDragStore } from "../../stores/drag/pillDrag";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { useT } from "../../lib/i18n";
 import { StarIcon } from "../layout/StarIcon";
-import { TrashProjectIcon } from "./TrashProjectIcon";
 import { ScopeSetStatusBars } from "./PillStatusBars";
 import { MenuShortcut } from "../common/MenuShortcut";
 
@@ -31,23 +30,17 @@ interface Props {
    *  ProjectPill's `startPillDrag`, which hit-tests `data-box-id` across the
    *  whole pills region — the pill sits outside the scrolling strip). */
   forcedDragOver?: boolean;
-  /** The built-in Trash workspace, when it exists (it always should). */
-  trash?: { id: string; name: string } | null;
   /** The root terminal's scope is the current one. */
   rootActive?: boolean;
-  /** The Trash workspace's scope is the current one. */
-  trashActive?: boolean;
   onSelectRoot: () => void;
-  onSelectTrash: () => void;
   /** Keyboard-steering station digits, while steering mode is active. */
   rootStation?: number;
-  trashStation?: number;
 }
 
 /**
  * The scope chip: ONE control at the head of the pill row standing for every
- * scope that is *not* a project pill — the root terminal, the Trash workspace,
- * and the boxes — left of the scrolling project strip.
+ * scope that is *not* a project pill — the root terminal and the boxes —
+ * left of the scrolling project strip.
  *
  * It started as the boxes control (#13/#41), replacing the per-box pills that
  * used to sit *among* the projects: boxes and projects were two different kinds
@@ -67,20 +60,20 @@ interface Props {
  * back: only the ONE selected box is ever on the row, in the fixed leading
  * segment, so boxes still cost the scrolling strip no width.
  *
- * Root and Trash then joined it, for the same reason and by the same argument:
- * they are built-in scopes, not projects, and each was spending a permanent
- * pill's worth of header on a destination visited by name rather than by
- * pointing. Folding them in leaves the leading segment as a single control that
- * answers "where am I" — Root · Trash · a box · or nothing, meaning an ordinary
- * project — and gives the whole row back to the projects.
+ * Root then joined it, for the same reason and by the same argument: it is a
+ * built-in scope, not a project, and it was spending a permanent pill's worth
+ * of header on a destination visited by name rather than by pointing. Folding
+ * it in leaves the leading segment as a single control that answers "where am
+ * I" — Root · a box · or nothing, meaning an ordinary project — and gives the
+ * whole row back to the projects.
  *
  * The slice is a *view*, not the scope: clicking a member switches to that
  * project (dropping the chip's `active` accent) while the strip stays put, so
  * hopping between a box's projects never reshuffles the row under the pointer.
  * "All projects" is always in the menu, so a slice can never trap anyone away
- * from a project it doesn't list — and picking Root or Trash lifts the slice
- * outright, since neither is inside any box and a strip left filtered by a box
- * nobody is in reads as a strip that has lost projects.
+ * from a project it doesn't list — and picking Root lifts the slice outright,
+ * since it is inside no box and a strip left filtered by a box nobody is in
+ * reads as a strip that has lost projects.
  */
 export function BoxScopeChip({
   boxes,
@@ -90,13 +83,9 @@ export function BoxScopeChip({
   onDelete,
   active,
   forcedDragOver,
-  trash,
   rootActive,
-  trashActive,
   onSelectRoot,
-  onSelectTrash,
   rootStation,
-  trashStation,
 }: Props) {
   const t = useT();
   // Hover-opened through the SHARED header menu id, like the + menu and the
@@ -132,14 +121,10 @@ export function BoxScopeChip({
 
   const selected = selectedId ? (boxes.find((b) => b.id === selectedId) ?? null) : null;
 
-  // What the chip NAMES right now — only the built-in scopes. A selected box
-  // no longer folds into the chip's face: it gets a pill of its own beside it
-  // (below), so the chip is the picker and the pill is the box.
-  const naming: "root" | "trash" | null = rootActive
-    ? "root"
-    : trashActive && trash
-      ? "trash"
-      : null;
+  // What the chip NAMES right now — only the built-in root scope. A selected
+  // box no longer folds into the chip's face: it gets a pill of its own beside
+  // it (below), so the chip is the picker and the pill is the box.
+  const naming: "root" | null = rootActive ? "root" : null;
 
   // The chip itself carries NO status strip (user, 2026-09-07): it is the
   // shortest control on the row — an icon, a word and a caret — and a band of
@@ -234,23 +219,21 @@ export function BoxScopeChip({
 
   const chipTitle = () => {
     if (naming === "root") return t("header.rootProject");
-    if (naming === "trash") return t("pill.trashProjectTitle");
     return t("boxChip.pickerTitle");
   };
 
   const chipLabel = () => {
     if (naming === "root") return t("boxChip.rootLabel");
-    if (naming === "trash") return trash?.name ?? "";
     return null;
   };
 
-  const station = naming === "root" ? rootStation : naming === "trash" ? trashStation : undefined;
+  const station = naming === "root" ? rootStation : undefined;
 
   return (
     <>
       <div
         ref={chipRef}
-        className={`box-chip${rootActive || trashActive ? " active" : ""}${
+        className={`box-chip${rootActive ? " active" : ""}${
           naming || selected ? " filtering" : ""
         }`}
         onMouseEnter={reveal}
@@ -268,8 +251,6 @@ export function BoxScopeChip({
         >
           {naming === "root" ? (
             <StarIcon className="box-chip-star" />
-          ) : naming === "trash" ? (
-            <TrashProjectIcon className="box-chip-trash-icon" />
           ) : (
             <span className="box-chip-icon" aria-hidden>
               ▣
@@ -372,9 +353,8 @@ export function BoxScopeChip({
             onMouseEnter={reveal}
             onMouseLeave={scheduleClose}
           >
-            {/* The built-in scopes, ahead of the boxes and of "All projects":
-                they are destinations, not slices, and picking either lifts the
-                slice (neither is in any box). */}
+            {/* The built-in root scope, ahead of the boxes and of "All
+                projects": it is a destination, not a slice. */}
             <button
               className={rootActive ? "is-current" : undefined}
               title={t("header.rootProject")}
@@ -395,27 +375,6 @@ export function BoxScopeChip({
               )}
               <MenuShortcut chord="rootConsole" />
             </button>
-            {trash && (
-              <button
-                className={trashActive ? "is-current" : undefined}
-                title={t("pill.trashProjectTitle")}
-                onClick={() => {
-                  dismiss();
-                  onSelectTrash();
-                }}
-              >
-                <TrashProjectIcon className="box-chip-menu-trash-icon" />
-                <span className="box-chip-menu-name">{trash.name}</span>
-                <ScopeSetStatusBars
-                  scopes={[trash.id]}
-                  interactive={false}
-                  className="inline"
-                />
-                {trashStation != null && (
-                  <span className="box-chip-menu-count">{trashStation}</span>
-                )}
-              </button>
-            )}
             <div className="box-chip-menu-sep" />
             <button
               className={selectedId === null ? "is-current" : undefined}

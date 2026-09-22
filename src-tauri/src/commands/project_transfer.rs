@@ -217,8 +217,8 @@ pub struct ExportPreview {
     pub tabs: usize,
     pub box_names: Vec<String>,
     pub suggested_file_name: String,
-    /// A machine token when this project cannot be exported at all (`"vm"`,
-    /// `"trash"`); the frontend words it. `None` means go ahead.
+    /// A machine token when this project cannot be exported at all (`"vm"`);
+    /// the frontend words it. `None` means go ahead.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocked: Option<String>,
 }
@@ -607,11 +607,6 @@ pub fn preview_project_export(project_id: String) -> Result<ExportPreview, Strin
 
 /// Why this project cannot be exported, as a machine token — or `None`.
 fn export_blocker(entry: &ProjectEntry) -> Option<String> {
-    if paths::is_trash_project_id(&entry.id) {
-        // The Trash workspace is created on demand on every installation; there
-        // is no second copy of it to move anywhere.
-        return Some("trash".to_string());
-    }
     if entry.extra.get("vm").is_some_and(|v| !v.is_null()) {
         // A VM project's working tree *is* its overlay disk under
         // `<state_dir>/vm/<id>` — typically tens of gigabytes, and useless
@@ -639,14 +634,10 @@ pub fn export_project_blocking(
         .clone();
 
     if let Some(reason) = export_blocker(&entry) {
-        return Err(match reason.as_str() {
-            "trash" => "The built-in Trash workspace exists on every installation and \
-                        cannot be exported."
-                .to_string(),
-            _ => "A project VM cannot be exported: its working tree is the VM's own disk \
-                  image. Copy files out of the VM into a plain project first."
-                .to_string(),
-        });
+        debug_assert_eq!(reason, "vm");
+        return Err("A project VM cannot be exported: its working tree is the VM's own disk \
+                    image. Copy files out of the VM into a plain project first."
+            .to_string());
     }
 
     let dest = PathBuf::from(&req.dest_path);
@@ -1288,8 +1279,6 @@ pub fn import_project_export_blocking(
             entry.extra.remove("mirror");
         }
     }
-    // A bundle must never mint the Trash workspace, whatever it claims to be.
-    entry.extra.remove("eldrun_trash");
     entry.extra.remove("vm");
 
     let project_file = directory.join("project.json");
@@ -1590,12 +1579,10 @@ mod tests {
         }
     }
 
-    /// Two projects cannot be moved by copying files: the Trash workspace,
-    /// which every installation makes for itself, and a VM project, whose tree
-    /// is a disk image that is not in the bundle.
+    /// A VM project cannot be moved by copying files: its tree is a disk image
+    /// that is not in the bundle.
     #[test]
-    fn the_two_unmovable_project_kinds_are_blocked_up_front() {
-        assert_eq!(export_blocker(&entry_with("eldrun-trash", &[])).as_deref(), Some("trash"));
+    fn a_vm_project_is_blocked_up_front() {
         assert_eq!(
             export_blocker(&entry_with("p1", &[("vm", serde_json::json!({ "cpus": 2 }))])).as_deref(),
             Some("vm")

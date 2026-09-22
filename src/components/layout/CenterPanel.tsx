@@ -69,7 +69,6 @@ import {
 } from "../../lib/window/coords";
 import { bindDragRelease, dragPlatform } from "../../lib/window/dragPlatform";
 import { shouldPersistTab, shouldPersistLocalTab } from "../../lib/terminal/tmuxSession";
-import { isTrashProject } from "../../lib/projects/trashProject";
 import { IS_WINDOWS } from "../../lib/platform";
 import { restoreProjectScope, useProjectsStore } from "../../stores/projects";
 import { BOX_SCOPE_PREFIX, boxFolderOfScope, restoreBoxScope, useBoxesStore } from "../../stores/boxes";
@@ -1317,7 +1316,7 @@ function CenterPanelImpl() {
               tab.kind,
               scopeKey,
               localRunning,
-              localPersistEnabled || isTrashProject(paneProject),
+              localPersistEnabled,
               mobileAgentTmuxReady.current.get(mobileReadyKey) === true,
               isResumableAgentTab(tab),
             )

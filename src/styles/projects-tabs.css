@@ -312,7 +312,7 @@
      .project-pill and .root-pill do. */
   position: relative;
   /* 10px, the leading run's shared inset (see `.header-left`): the chip IS the
-     leading run now (root, Trash and the boxes all fold into it), so it keeps
+     leading run now (root and the boxes fold into it), so it keeps
      the inset the run had. */
   padding: 0 10px;
   border: none;
@@ -349,22 +349,19 @@
   color: var(--accent);
 }
 
-/* The marks the chip wears instead of ▣ when it names a built-in scope: the
-   app's own spark for the root terminal, the bin for Trash — the two glyphs
-   their pinned pills carried before both folded in here, at the same 18px the
-   Trash pill drew and without the pill's one-per-launch intro flourish (the
-   chip re-mounts its star on every trip back to root, and a logo that replays
-   its entrance on each visit is a tic, not a flourish). */
-.box-chip-star,
-.box-chip-trash-icon {
+/* The mark the chip wears instead of ▣ when it names the root scope: the
+   app's own spark, the glyph its pinned pill carried before it folded in here,
+   at 18px and without the pill's one-per-launch intro flourish (the chip
+   re-mounts its star on every trip back to root, and a logo that replays its
+   entrance on each visit is a tic, not a flourish). */
+.box-chip-star {
   width: 18px;
   height: 18px;
   flex-shrink: 0;
   color: inherit;
 }
 
-.box-chip-menu-star,
-.box-chip-menu-trash-icon {
+.box-chip-menu-star {
   width: 14px;
   height: 14px;
   flex-shrink: 0;

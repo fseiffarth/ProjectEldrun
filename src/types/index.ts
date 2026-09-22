@@ -404,9 +404,9 @@ export interface Settings {
    *  catch-all — no Rust field needed. Unset/empty = nothing hidden. */
   disabled_agents?: string[];
   /** The scheduled agent warm-up (Manage CLIs → Scheduled warm-up): at each
-   *  configured local time, one short message is sent to that agent in the Trash
-   *  project, so its usage window starts *then* rather than whenever the first
-   *  real prompt happens to be typed. A global time list with per-agent
+   *  configured local time, one short message is sent to that agent (in its
+   *  one-shot print mode), so its usage window starts *then* rather than
+   *  whenever the first real prompt happens to be typed. A global time list with per-agent
    *  participation and per-agent overrides; read through `lib/agents/agentCron.ts`,
    *  which is also where the semantics of every field live. Round-trips through
    *  the backend settings `extra` catch-all — no Rust field needed, since
@@ -1099,8 +1099,6 @@ export interface ProjectEntry {
   categories?: string[];
   /** Explicit trusted-state opt-in for phone/tablet terminal access. */
   eldrun_mobile_access?: boolean;
-  /** Built-in permanent workspace for disposable, strictly-contained agents. */
-  eldrun_trash?: boolean;
   [key: string]: unknown;
 }
 
@@ -1166,7 +1164,7 @@ export interface ExportPreview {
   tabs: number;
   boxNames: string[];
   suggestedFileName: string;
-  /** Machine token (`"vm"` / `"trash"`) when this project cannot be exported. */
+  /** Machine token (`"vm"`) when this project cannot be exported. */
   blocked?: string;
 }
 

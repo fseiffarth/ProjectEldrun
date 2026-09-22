@@ -23,7 +23,6 @@ import { useProjectsStore } from "../../stores/projects";
 import { BOX_SCOPE_PREFIX, useBoxesStore } from "../../stores/boxes";
 import { usePillDragStore } from "../../stores/drag/pillDrag";
 import { useTabsStore } from "../../stores/tabs";
-import { TRASH_PROJECT_ID } from "../../lib/projects/trashProject";
 import { useActivityStore } from "../../stores/activity";
 
 function proj(id: string, position: number): ProjectEntry {
@@ -38,11 +37,6 @@ function proj(id: string, position: number): ProjectEntry {
 
 function box(id: string, members: string[], position = 5): ProjectBox {
   return { id, name: id, member_ids: members, position };
-}
-
-/** The built-in Trash workspace, as the store holds it. */
-function trashProj(): ProjectEntry {
-  return { ...proj(TRASH_PROJECT_ID, 0), name: "Trash" };
 }
 
 /** What the real `openBox` does that these tests depend on: it moves the tab
@@ -170,25 +164,24 @@ describe("box chip rendering (slice model)", () => {
     expect(findPill(container, "p2").querySelector(".project-pill-boxdot")).toBeNull();
   });
 
-  it("is the row's whole leading segment: no root or Trash pill beside it", async () => {
-    // The chip used to render nothing at all until a box existed, when root and
-    // Trash each had a pinned pill of their own. Both fold into it now, so it is
+  it("is the row's whole leading segment: no root pill beside it", async () => {
+    // The chip used to render nothing at all until a box existed, when root
+    // had a pinned pill of its own. It folds into it now, so it is
     // always there — and it is the ONLY thing between the header's edge and the
     // scrolling projects.
     useProjectsStore.setState({ projects: [proj("p1", 10)], activeId: null, loaded: true });
     const container = await renderSwitcher();
     expect(chip(container)).toBeTruthy();
     expect(container.querySelector(".root-pill")).toBeNull();
-    expect(container.querySelector(".trash-project-pill")).toBeNull();
     // Naming the scope it is in: root, with the app's own mark.
     expect(chip(container)!.querySelector(".box-chip-star")).toBeTruthy();
     expect(chip(container)!.textContent).toContain("Root");
   });
 
-  it("lists root and Trash in the dropdown, ahead of the boxes", async () => {
+  it("lists root in the dropdown, ahead of the boxes", async () => {
     useBoxesStore.setState({ boxes: [box("boxA", ["p1"])] });
     useProjectsStore.setState({
-      projects: [proj("p1", 10), trashProj()],
+      projects: [proj("p1", 10)],
       activeId: null,
       loaded: true,
     });
@@ -197,9 +190,8 @@ describe("box chip rendering (slice model)", () => {
     const menu = await openChipMenu(container);
     const rows = [...menu.querySelectorAll("button")].map((b) => b.textContent ?? "");
     expect(rows[0]).toContain("Root terminal");
-    expect(rows[1]).toContain("Trash");
-    expect(rows.findIndex((r) => r.includes("boxA"))).toBeGreaterThan(1);
-    // Neither is a box, so neither is a drop target for a pill drag.
+    expect(rows.findIndex((r) => r.includes("boxA"))).toBeGreaterThan(0);
+    // Root is not a box, so it is no drop target for a pill drag.
     expect(menu.querySelectorAll("[data-box-id]").length).toBe(1);
   });
 
@@ -499,7 +491,7 @@ describe("box chip rendering (slice model)", () => {
     });
     expect(pillNames(container)).toEqual(["p1"]);
     // The box's scope is the current one, so ITS pill wears the active
-    // treatment — the chip only lights up for root and Trash now.
+    // treatment — the chip only lights up for root now.
     expect(boxPill(container)!.className).toContain("active");
     expect(chip(container)!.className).not.toContain("active");
   });
@@ -526,7 +518,7 @@ describe("box chip rendering (slice model)", () => {
       useBoxesStore.setState({ boxes: [] });
     });
     expect(pillNames(container).sort()).toEqual(["p1", "p2"]);
-    // The chip itself stays — it is root's and Trash's home too — it just names
+    // The chip itself stays — it is root's home too — it just names
     // no box any more.
     expect(chip(container)).toBeTruthy();
     expect(chip(container)!.textContent).not.toContain("boxA");

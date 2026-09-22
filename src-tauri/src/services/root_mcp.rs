@@ -1056,7 +1056,7 @@ fn resolve_project(stores: &Stores, wanted: &str) -> Result<String, String> {
 fn projects_list(stores: &Stores) -> Result<Value, String> {
     let rows: Vec<Value> = read_projects(stores.projects)
         .iter()
-        .filter(|p| !crate::paths::is_trash_project_id(&p.id) && stores.access.projects.contains(&p.id))
+        .filter(|p| stores.access.projects.contains(&p.id))
         .map(|p| {
             json!({
                 "id": p.id,
@@ -2418,7 +2418,7 @@ fn projects_git_status(stores: &Stores, args: &Value) -> Result<Value, String> {
     let (mut rows, mut skipped) = (Vec::new(), Vec::new());
     let mut out_of_time = false;
     for entry in read_projects(stores.projects) {
-        if !stores.access.projects.contains(&entry.id) || crate::paths::is_trash_project_id(&entry.id) || only.as_deref().is_some_and(|o| o != entry.id) {
+        if !stores.access.projects.contains(&entry.id) || only.as_deref().is_some_and(|o| o != entry.id) {
             continue;
         }
         let skip = |reason: String| json!({ "id": entry.id, "name": entry.name, "reason": reason });
@@ -2537,7 +2537,7 @@ fn sync_status(stores: &Stores, args: &Value) -> Result<Value, String> {
     let (mut rows, mut local) = (Vec::new(), 0usize);
     for entry in read_projects(stores.projects) {
         stores.check()?;
-        if !stores.access.projects.contains(&entry.id) || crate::paths::is_trash_project_id(&entry.id) || only.as_deref().is_some_and(|o| o != entry.id) {
+        if !stores.access.projects.contains(&entry.id) || only.as_deref().is_some_and(|o| o != entry.id) {
             continue;
         }
         let Some(remote) = entry.extra.get("remote").filter(|r| !r.is_null()) else {

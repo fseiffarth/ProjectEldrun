@@ -53,7 +53,6 @@ import { TabHoverCard } from "../tabs/TabHoverCard";
 import { useFastMode } from "../../lib/agents/fastMode";
 import { WindowControls } from "../header/WindowControls";
 import { DragGhost, SplitPreviewOverlay } from "./CenterPanel";
-import { TRASH_PROJECT_ID } from "../../lib/projects/trashProject";
 import { TabDropPlaceholder } from "../tabs/TabDropPlaceholder";
 import { NewTabMenu } from "../tabs/NewTabMenu";
 import { CustomAgentDialog } from "../tabs/CustomAgentDialog";
@@ -1751,7 +1750,7 @@ export function DetachedCenterPanel({
               `DetachedTabStrip` (i.e. outside the scrolling `.tab-strip`) for
               the main window's reason: the one control that adds a tab must not
               scroll away with the tabs when the bar overflows. */}
-          {scope !== TRASH_PROJECT_ID && <div className="tab-new-wrap">
+          <div className="tab-new-wrap">
             <button
               className="tab-new-btn"
               title={t("detachedTabs.newTab")}
@@ -1770,7 +1769,7 @@ export function DetachedCenterPanel({
             >
               +
             </button>
-          </div>}
+          </div>
           {/* Per-subwindow right file viewer, same ◫ toggle as the main window's
               TabBar. Applied optimistically + streamed to the main window. When
               the viewer is docked below, the control reserves its width (like

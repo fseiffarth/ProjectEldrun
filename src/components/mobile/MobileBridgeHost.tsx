@@ -17,7 +17,6 @@ import { lastTabReadAt, noteUserInput, useActivityStore } from "../../stores/act
 import { agentTabModelTag, useAgentModelsStore } from "../../stores/agents/agentModels";
 import { persistScopeLayout } from "../../stores/agents/agentSchedules";
 import { sendCollectedPrompt, useAgentPromptsStore, type ProjectAgentPrompt, type SentAgentPrompt } from "../../stores/agents/agentPrompts";
-import { isTrashProject } from "../../lib/projects/trashProject";
 import { isSessionCommand } from "../../lib/agents/prompt/chart";
 import { isTabColor } from "../../lib/theme/tabColors";
 import type { AgentUsageReport } from "../../lib/agents/agentUsage";
@@ -290,15 +289,14 @@ async function agentChoices(): Promise<CatalogChoice[]> {
 
 /** The one gate every bridge handler applies before it touches a project: the
  * per-project Mobile switch is on, and the project is none of the trust tiers
- * the sidecar deliberately never reaches (remote, sandboxed, VM). Trash is the
- * one sandboxed project that stays reachable, exactly as it is on the desktop. */
+ * the sidecar deliberately never reaches (remote, sandboxed, VM). */
 function mobileProject(projectId: string | undefined) {
   if (!projectId) return undefined;
   const project = useProjectsStore.getState().projects.find((entry) => entry.id === projectId);
   if (
     !project
     || project.remote
-    || (project.sandbox?.enabled && !isTrashProject(project))
+    || project.sandbox?.enabled
     || project.vm?.enabled
     || !project.eldrun_mobile_access
   ) {
@@ -325,7 +323,7 @@ interface MobileScope {
   /** The project.json a persist exports to; "" for a box, whose layout lives
    *  in the state dir only (the tab store's own rule for box scopes). */
   localFile: string;
-  /** The project behind a project scope, for the rules only Trash has. */
+  /** The project behind a project scope. */
   project?: ProjectEntry;
 }
 
@@ -624,7 +622,6 @@ async function create(request: CreateRequest, t: ReturnType<typeof useT>): Promi
   // The new tab must be in the *shown* scope to get a terminal at all, so the
   // desktop goes there first — the project's activation, or the box's open.
   await enterScope(scope);
-  const project = scope.project;
   const requestHash = await invoke<string>("mobile_opaque_id", {
     domain: "request",
     value: request.idempotency_key,
@@ -632,9 +629,6 @@ async function create(request: CreateRequest, t: ReturnType<typeof useT>): Promi
 
   let spec: Omit<TabEntry, "key">;
   if (request.kind === "shell") {
-    if (project && isTrashProject(project)) {
-      return { status: "error", code: "invalid_request", message: "Trash accepts agent tabs only" };
-    }
     if (request.agent_id || request.mode) {
       return { status: "error", code: "invalid_request", message: "Shell requests cannot name an agent or mode" };
     }
@@ -643,9 +637,6 @@ async function create(request: CreateRequest, t: ReturnType<typeof useT>): Promi
     const choices = await agentChoices();
     const choice = choices.find((entry) => entry.public.id === request.agent_id);
     if (!choice) return { status: "error", code: "unknown_agent", message: "Agent is unavailable" };
-    if (project && isTrashProject(project) && !AGENT_ITEMS.some((item) => item.cmd === choice.item.cmd)) {
-      return { status: "error", code: "unknown_agent", message: "Trash accepts built-in agent CLIs only" };
-    }
     if (request.mode && !choice.public.modes.includes(request.mode)) {
       return { status: "error", code: "unsupported_mode", message: "Agent mode is unavailable" };
     }

@@ -279,18 +279,6 @@ pub async fn pty_spawn(
     // every step below sees the enforced values.
     crate::services::sandbox::enforce_spawn_authority(&mut opts);
 
-    // Trash is an agent-only workspace. The project record cannot be weakened
-    // from its writable folder, and this spawn gate also refuses stale UI tabs
-    // or renderer-crafted shell commands before anything reaches the host.
-    if opts
-        .project_id
-        .as_deref()
-        .is_some_and(crate::paths::is_trash_project_id)
-        && !crate::services::sandbox::is_agent_cmd(&opts.cmd)
-    {
-        return Err("The Trash project accepts recognised agent CLIs only.".to_string());
-    }
-
     // VM-tier hard refusals (`docs/vm_projects_plan.md`): for a VM project the
     // remote→local fallback that exists elsewhere is not a perf surprise but
     // the untrusted agent stepping outside the boundary — so a local spawn is
@@ -692,14 +680,7 @@ pub async fn pty_spawn(
     // now `cmd == "ssh"` (its tmux is inside the remote command) and a container tab
     // is `cmd == "docker"`, so both are skipped. No-op on Windows / without tmux.
     #[cfg(unix)]
-    if opts.tmux_session.is_some()
-        && opts.cmd != "ssh"
-        && (opts.cmd != "docker"
-            || opts
-                .project_id
-                .as_deref()
-                .is_some_and(crate::paths::is_trash_project_id))
-    {
+    if opts.tmux_session.is_some() && opts.cmd != "ssh" && opts.cmd != "docker" {
         crate::services::tmux_local::wrap_pty_options_local(&mut opts);
     }
 
