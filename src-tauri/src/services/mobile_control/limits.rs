@@ -184,7 +184,11 @@ mod tests {
         client.abort();
     }
 
-    #[tokio::test(start_paused = true)]
+    // The first exchange runs on the real clock: a paused clock auto-advances
+    // whenever the runtime waits on socket I/O, so the handshake deadline could
+    // fire before `hello` arrives (it did, on macOS CI). The clock is paused
+    // only once the server has answered, for the long idle.
+    #[tokio::test]
     async fn answering_the_client_lifts_the_deadline() {
         use axum::serve::Listener;
         let (mut guarded, address) = listener().await;
@@ -201,6 +205,7 @@ mod tests {
         let mut buffer = [0u8; 5];
         stream.read_exact(&mut buffer).await.expect("read request");
         stream.write_all(b"ok").await.expect("respond");
+        tokio::time::pause();
         let mut rest = [0u8; 4];
         stream.read_exact(&mut rest).await.expect("still open");
         assert_eq!(&rest, b"more");
