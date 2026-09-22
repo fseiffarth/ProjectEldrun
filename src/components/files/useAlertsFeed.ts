@@ -221,8 +221,12 @@ export function useAlertsFeed(options?: AlertsFeedOptions): AlertsFeed {
   const calendarLoaded = useCalendarStore((s) => (enabled ? s.loaded : true));
 
   // ── The shaping ───────────────────────────────────────────────────────────
-  const visibleCalendars = useMemo(
-    () => new Set(calendars.filter((c) => c.visible).map((c) => c.id)),
+  // A calendar whose alerts are switched off (`Calendar.alerts_off`) is left out
+  // here exactly as a hidden one is: the switch silences its reminders and its
+  // badge count, and a strip that kept listing its rows would be the one
+  // surface still alerting for it.
+  const alertingCalendars = useMemo(
+    () => new Set(calendars.filter((c) => c.visible && !c.alerts_off).map((c) => c.id)),
     [calendars],
   );
 
@@ -247,21 +251,21 @@ export function useAlertsFeed(options?: AlertsFeedOptions): AlertsFeed {
     const until = addDays(from, lookaheadDays + 1);
     const seen = new Set<string>();
     const out: CalendarEvent[] = [];
-    for (const occ of expandEvents(events, from, until, visibleCalendars)) {
+    for (const occ of expandEvents(events, from, until, alertingCalendars)) {
       if (seen.has(occ.eventId)) continue;
       if (occurrenceEnded(occ, now)) continue;
       seen.add(occ.eventId);
       out.push(eventFromOccurrence(occ));
     }
     return out;
-  }, [wantEvents, events, visibleCalendars, now, lookaheadDays]);
+  }, [wantEvents, events, alertingCalendars, now, lookaheadDays]);
 
   // Filtered to visible calendars for the header to-do badge's reason: unchecking
   // a calendar in the sidebar takes its rows out of every view, and a strip that
   // kept showing them would disagree with the board and with the badge.
   const tasks = useMemo(
-    () => (wantTasks ? rawTasks.filter((task) => visibleCalendars.has(task.calendar_id)) : NO_TASKS),
-    [wantTasks, rawTasks, visibleCalendars],
+    () => (wantTasks ? rawTasks.filter((task) => alertingCalendars.has(task.calendar_id)) : NO_TASKS),
+    [wantTasks, rawTasks, alertingCalendars],
   );
 
   const muted = useMemo(() => mutedIds ?? NO_MUTED, [mutedIds]);

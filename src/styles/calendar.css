@@ -502,6 +502,7 @@
 
 .cal-list-alerts {
   visibility: hidden;
+  flex: none;
   display: inline-flex;
   align-items: center;
 }
@@ -550,6 +551,8 @@
 }
 
 .cal-list-name {
+  flex: 0 1 auto;
+  min-width: 0;
   font-size: 11px;
   color: var(--text-primary);
   overflow: hidden;
