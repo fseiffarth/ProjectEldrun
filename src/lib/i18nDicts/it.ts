@@ -4525,6 +4525,7 @@ export const dict: Dict = {
   "print.progressPage": "pagina {page} di {total}",
   "print.progressPageOnly": "pagina {page}",
   "print.progressEta": "ancora ~{time}",
+  "print.failed": "Impossibile stampare: {msg}",
   "print.progressBehind": "altri {count} in coda",
   "print.progressPagesNote": "Le pagine contano ciò che il sistema di stampa ha passato alla stampante: la carta può essere in ritardo.",
   "print.durationSecs": "{count} s",

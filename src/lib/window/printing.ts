@@ -58,6 +58,14 @@ export async function printSnapshot(): Promise<PrintSnapshot> {
  *  through its own preview instead. */
 export type NativePdfPrint = "sent" | "cancelled" | "opened" | "unsupported";
 
+/** What the system print dialog opens preset to (Linux; ignored elsewhere): the
+ *  paper the document was laid out on, and colour off for a grayscale job — the
+ *  one print-preview option a vector PDF cannot carry in itself. */
+export interface NativePrintSetup {
+  paper: string;
+  grayscale: boolean;
+}
+
 /**
  * Print a PDF the way a PDF app does: the system print dialog, then the PDF
  * itself goes to the printer — vector text, not the raster the in-app preview
@@ -65,9 +73,17 @@ export type NativePdfPrint = "sent" | "cancelled" | "opened" | "unsupported";
  * engine on Windows, PDFKit on macOS). Takes the document's BYTES, never a
  * path (rule 1 above). Rejects only on a real print failure.
  */
-export async function printPdfNative(bytes: Uint8Array, title: string): Promise<NativePdfPrint> {
+export async function printPdfNative(
+  bytes: Uint8Array,
+  title: string,
+  setup?: NativePrintSetup,
+): Promise<NativePdfPrint> {
   try {
-    const outcome = await invoke<string>("print_pdf_native", { bytes: Array.from(bytes), title });
+    const outcome = await invoke<string>("print_pdf_native", {
+      bytes: Array.from(bytes),
+      title,
+      setup: setup ?? null,
+    });
     return outcome === "sent" || outcome === "opened" ? outcome : "cancelled";
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

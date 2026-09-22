@@ -35,6 +35,7 @@ import {
   renderPdfPagesToImages,
   printHtmlBody,
   PDF_PRINT_CSS,
+  type NativePrint,
 } from "../../../lib/viewers/print";
 import {
   SELF,
@@ -125,6 +126,7 @@ import {
   type ScreenshotCaptureDetail,
 } from "../../../lib/window/screenshot";
 import { printPdfNative } from "../../../lib/window/printing";
+import { layoutPrintPdf } from "../../../lib/viewers/pdfPrintLayout";
 import { useSettingsStore } from "../../../stores/settings";
 import { PageStrip } from "../../common/PageStrip";
 import { PrinterIcon } from "../../common/PrinterIcon";
@@ -2631,11 +2633,13 @@ function PdfCanvas({
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [current, setCurrent] = useState(0);
   const findInputRef = useRef<HTMLInputElement>(null);
-  // Print: like a PDF app — the system print UI, then the PDF itself goes to the
-  // printer, so text stays vector (`printPdfNative`; GTK / WebView2 / PDFKit). The
-  // webview can't print a PDF, so where there is no native path the already-open
-  // pages are rasterised and printed through the shared preview instead. `printing` disables the button
-  // while the (async) build runs.
+  // Print: the shared preview arranges the job (paper, margins, sheet order, turns,
+  // selection) from page images — the webview can't show a PDF — but what goes to
+  // the printer is the real PDF: `native` rebuilds the preview's sheets as vector
+  // pages (`layoutPrintPdf`) and hands them to the system print UI
+  // (`printPdfNative`; GTK / WebView2 / PDFKit). Only where there is no native
+  // path does the preview print its images. `printing` disables the button while
+  // the (async) render runs.
   const [printing, setPrinting] = useState(false);
   const handlePrint = useCallback(async () => {
     if (!doc || printing || pages.length === 0) return;
@@ -2643,20 +2647,26 @@ function PdfCanvas({
     setEditError(null);
     try {
       // The ARRANGEMENT, not the file: printing an edited PDF prints what is on
-      // screen, without having to save it first. `buildPdf` is the bytes Save and a
-      // page drag-out write — blackouts burned in, pending metadata deletion applied.
-      const outcome = await buildPdf(pages, sources, {
-        emptyMsg: t("pdfViewer.pdfBuildEmpty"),
-        sourceClosedMsg: t("pdfViewer.pdfSourceClosed"),
-        redactDpi,
-        stripMetadata: stripMeta,
-      }).then((bytes) => printPdfNative(bytes, basename(path)));
-      if (outcome !== "unsupported") return;
-      const images = await renderPdfPagesToImages(pages, (id) => sources.get(id)?.doc);
+      // screen, without having to save it first. Preview sheet n is `sheets[n-1]`.
+      const sheets = pages;
+      const title = basename(path);
+      const images = await renderPdfPagesToImages(sheets, (id) => sources.get(id)?.doc);
       const body = images
         .map((src) => `<div class="print-page"><img src="${src}" alt=""></div>`)
         .join("");
-      await printHtmlBody(body, PDF_PRINT_CSS);
+      const native: NativePrint = async (sequence, opts) => {
+        // The bytes Save and a page drag-out write — blackouts burned in, pending
+        // metadata deletion applied — one page per viewer sheet, in its order.
+        const bytes = await buildPdf(sheets, sources, {
+          emptyMsg: t("pdfViewer.pdfBuildEmpty"),
+          sourceClosedMsg: t("pdfViewer.pdfSourceClosed"),
+          redactDpi,
+          stripMetadata: stripMeta,
+        });
+        const laidOut = await layoutPrintPdf(bytes, sequence, opts);
+        return printPdfNative(laidOut, title, { paper: opts.paper, grayscale: opts.grayscale });
+      };
+      await printHtmlBody(body, PDF_PRINT_CSS, title, native);
     } catch (e) {
       setEditError(
         t("pdfViewer.printFailed", { msg: e instanceof Error ? e.message : String(e) }),

@@ -296,6 +296,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `lib/viewers/table.ts` | CSV/TSV model + edit ops (pure): separator sniffed by parse rectangularity (`sniffDelimiter`); table is a view on the text (cells carry source spans). |
 | `lib/viewers/gif.ts` | Pure GIF decoder (LZW, interlace, disposal): full-canvas RGBA per frame (bounded by `maxPixelBytes`), delays stored as authored, <20 ms played as 100 ms. |
 | `lib/viewers/pageModel.ts` | Page-arrangement model (`PageRef{id,src,page,rot,marks?,notes?}`) for print preview and PDF rail: move/delete/rotate/duplicate/insert, pure. Marks/notes ride on the entry. |
+| `lib/viewers/pdfPrintLayout.ts` | `layoutPrintPdf`: the print preview's sheets (order, turns, selection, copies, paper, margins, scale, page numbers) rebuilt as a vector PDF from pdf-lib form XObjects, for `printPdfNative`. Geometry mirrors `buildOptionsCss`. |
 | `lib/viewers/pdfNotes.ts` | PDF remarks, pure half (sticky notes and highlights; `isHighlight` = has `quads`); `quadsAnchor` places a highlight's card. |
 | `lib/viewers/redact.ts` | PDF blackout marks, pure half: a mark is geometry in rotated big points, never the covered text; `snapToText` only grows a box. Burn-in is in `pdfDoc.ts`. |
 | `lib/usageRollup.ts` | Folds UTC day/hour buckets into today/week/month windows. Generic over the payload — shared by `NetworkTrafficPane` (bytes) and the recap (counters). |

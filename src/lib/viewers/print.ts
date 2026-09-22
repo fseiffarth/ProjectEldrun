@@ -27,6 +27,7 @@ import {
   followPrintJob,
   printSnapshot,
   JOB_APPEAR_TIMEOUT_MS,
+  type NativePdfPrint,
   type PrintProgress,
 } from "../window/printing";
 import type { PrintSnapshot } from "../../types/printing";
@@ -436,7 +437,7 @@ function tr(
   return translate(useI18nStore.getState().lang, key, params);
 }
 
-function clampScale(n: number): number {
+export function clampScale(n: number): number {
   if (!Number.isFinite(n)) return 100;
   return Math.min(400, Math.max(10, Math.round(n)));
 }
@@ -489,7 +490,16 @@ export function buildPrintDoc(bodyHtml: string, css: string, title = "Print"): s
  * (markdown, text, HTML) have no such elements; there the page controls are
  * disabled and the system dialog's own range field does the job.
  */
-export function printDocument(fullHtml: string): Promise<void> {
+/**
+ * A viewer that can print its document as ITSELF — the PDF viewer, whose sheets
+ * the preview can only show as images — passes this to {@link printDocument}.
+ * Print then hands it the preview's final sheets (print order, turns, selection)
+ * and options instead of printing the preview, so the arranging stays here and
+ * the printer gets the real document. `unsupported` → the preview prints itself.
+ */
+export type NativePrint = (sheets: PageList, opts: PrintOptions) => Promise<NativePdfPrint>;
+
+export function printDocument(fullHtml: string, native?: NativePrint): Promise<void> {
   return new Promise<void>((resolve) => {
     // ── Overlay chrome (reuses the app's shared modal classes) ──────────────
     const backdrop = document.createElement("div");
@@ -1005,8 +1015,8 @@ export function printDocument(fullHtml: string): Promise<void> {
     });
     document.addEventListener("keydown", onKeyDown);
 
-    printBtn.addEventListener("click", () => {
-      if (printBtn.disabled || !frameWin) return;
+    const printFrame = () => {
+      if (!frameWin) return;
       try {
         frameWin.focus();
         frameWin.print();
@@ -1015,6 +1025,38 @@ export function printDocument(fullHtml: string): Promise<void> {
         return;
       }
       void followJob();
+    };
+
+    /** A native print that failed says so where the user is looking. */
+    const showFailure = (e: unknown) => {
+      progressEl.hidden = false;
+      progressEl.dataset.phase = "failed";
+      const text = document.createElement("span");
+      text.className = "print-progress-text";
+      text.textContent = tr("print.failed", { msg: e instanceof Error ? e.message : String(e) });
+      progressEl.title = text.textContent;
+      progressEl.replaceChildren(text);
+    };
+
+    printBtn.addEventListener("click", () => {
+      if (printBtn.disabled || !frameWin) return;
+      if (!native || pageEls.length === 0) {
+        printFrame();
+        return;
+      }
+      printBtn.disabled = true;
+      native(printSequence(arrangement, opts), opts)
+        .then((outcome) => {
+          if (done) return;
+          if (outcome === "unsupported") printFrame();
+          else if (outcome === "sent") void followJob();
+        })
+        .catch((e) => {
+          if (!done) showFailure(e);
+        })
+        .finally(() => {
+          if (!done) printBtn.disabled = printSequence(arrangement, opts).length === 0;
+        });
     });
 
     iframe.onload = () => {
@@ -1228,8 +1270,13 @@ function checkField(
 }
 
 /** Convenience: build the document from a body + css and print it. */
-export function printHtmlBody(bodyHtml: string, css: string, title?: string): Promise<void> {
-  return printDocument(buildPrintDoc(bodyHtml, css, title));
+export function printHtmlBody(
+  bodyHtml: string,
+  css: string,
+  title?: string,
+  native?: NativePrint,
+): Promise<void> {
+  return printDocument(buildPrintDoc(bodyHtml, css, title), native);
 }
 
 /**

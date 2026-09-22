@@ -12,7 +12,7 @@
 //!  - **Linux** — `GtkPrintUnixDialog`, then a `GtkPrintJob` whose source file
 //!    is the PDF (Evince/Firefox's path; CUPS accepts PDF natively, and the
 //!    dialog's page range / copies / pages-per-sheet travel as job options).
-//!    gtk-rs 0.18 has no bindings for GTK 3's unix-print half, so the eight
+//!    gtk-rs 0.18 has no bindings for GTK 3's unix-print half, so the ten
 //!    functions used are declared here; they live in the `libgtk-3` the window
 //!    already links.
 //!  - **Windows** — WebView2 *is* Edge's engine, PDF viewer (PDFium) included:
@@ -31,6 +31,29 @@
 /// falls back to its own print preview on seeing it.
 pub const UNSUPPORTED: &str = "eldrun-native-print-unsupported";
 
+/// What the system print dialog opens preset to: the paper the frontend laid
+/// the document out on (`A4`, `Letter`, …) and colour off for a grayscale job.
+/// Linux only; the other paths ignore it.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrintSetup {
+    pub paper: String,
+    pub grayscale: bool,
+}
+
+/// GTK's PWG name for a preview paper size; `None` leaves the dialog's default.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn gtk_paper_name(paper: &str) -> Option<&'static str> {
+    match paper {
+        "A3" => Some("iso_a3"),
+        "A4" => Some("iso_a4"),
+        "A5" => Some("iso_a5"),
+        "Letter" => Some("na_letter"),
+        "Legal" => Some("na_legal"),
+        _ => None,
+    }
+}
+
 /// Outcome of a native print: `"sent"` once the job reached the print system,
 /// `"cancelled"` when the user closed the dialog, `"opened"` where the system
 /// print UI owns the rest and reports nothing back (Windows).
@@ -39,11 +62,12 @@ pub async fn print_pdf_native(
     window: tauri::WebviewWindow,
     bytes: Vec<u8>,
     title: String,
+    setup: Option<PrintSetup>,
 ) -> Result<String, String> {
     if bytes.is_empty() {
         return Err("nothing to print".into());
     }
-    imp::print(window, bytes, title).await
+    imp::print(window, bytes, title, setup).await
 }
 
 /// A private (0600, unique) spool file holding the PDF, for the print paths
@@ -71,6 +95,7 @@ mod imp {
         _window: tauri::WebviewWindow,
         _bytes: Vec<u8>,
         _title: String,
+        _setup: Option<super::PrintSetup>,
     ) -> Result<String, String> {
         Err(super::UNSUPPORTED.into())
     }
@@ -87,6 +112,7 @@ mod imp {
         window: tauri::WebviewWindow,
         bytes: Vec<u8>,
         title: String,
+        _setup: Option<super::PrintSetup>,
     ) -> Result<String, String> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         window
@@ -143,6 +169,7 @@ mod imp {
         window: tauri::WebviewWindow,
         bytes: Vec<u8>,
         title: String,
+        _setup: Option<super::PrintSetup>,
     ) -> Result<String, String> {
         let spool = super::write_spool(bytes).await?;
         let url = tauri::Url::from_file_path(spool.path())
@@ -221,6 +248,8 @@ mod imp {
         fn gtk_print_unix_dialog_new(title: *const c_char, parent: Gp) -> Gp;
         fn gtk_print_unix_dialog_set_manual_capabilities(dialog: Gp, caps: c_uint);
         fn gtk_print_unix_dialog_set_embed_page_setup(dialog: Gp, embed: c_int);
+        fn gtk_print_unix_dialog_set_settings(dialog: Gp, settings: Gp);
+        fn gtk_print_unix_dialog_set_page_setup(dialog: Gp, setup: Gp);
         /// transfer none
         fn gtk_print_unix_dialog_get_selected_printer(dialog: Gp) -> Gp;
         /// transfer full
@@ -247,6 +276,7 @@ mod imp {
         window: tauri::WebviewWindow,
         bytes: Vec<u8>,
         title: String,
+        setup: Option<super::PrintSetup>,
     ) -> Result<String, String> {
         // GTK opens the spool when the job is given it, so it is deleted as
         // soon as that has happened.
@@ -255,7 +285,7 @@ mod imp {
         let (tx, rx) = oneshot::channel::<Result<String, String>>();
         let on_main = window.clone();
         window
-            .run_on_main_thread(move || open_dialog(&on_main, spool, title, tx))
+            .run_on_main_thread(move || open_dialog(&on_main, spool, title, setup, tx))
             .map_err(|e| e.to_string())?;
         rx.await
             .unwrap_or_else(|_| Err("the print dialog closed without an answer".into()))
@@ -267,6 +297,7 @@ mod imp {
         window: &tauri::WebviewWindow,
         spool: tempfile::NamedTempFile,
         title: String,
+        setup: Option<super::PrintSetup>,
         tx: Done,
     ) {
         let c_title = CString::new(title.replace('\0', "")).unwrap_or_default();
@@ -276,6 +307,9 @@ mod imp {
             let raw = gtk_print_unix_dialog_new(c_title.as_ptr(), std::ptr::null_mut());
             gtk_print_unix_dialog_set_manual_capabilities(raw, CAPABILITY_GENERATE_PDF);
             gtk_print_unix_dialog_set_embed_page_setup(raw, 1);
+            if let Some(setup) = &setup {
+                preset(raw, setup);
+            }
             gtk::Dialog::from_glib_none(raw as *mut gtk::ffi::GtkDialog)
         };
         if let Ok(parent) = window.gtk_window() {
@@ -303,6 +337,29 @@ mod imp {
             unsafe { dialog.destroy() };
         });
         dialog.show();
+    }
+
+    /// Opens the dialog on the paper the pages were laid out on — so CUPS does
+    /// not fit them onto another — and, for a grayscale job, with colour off.
+    /// Orientation is left alone: a landscape sheet is already landscape-shaped
+    /// in the PDF, and CUPS turns it onto the paper itself; asking for landscape
+    /// as well would turn it a second time.
+    ///
+    /// SAFETY: `dialog` must be a live `GtkPrintUnixDialog`.
+    unsafe fn preset(dialog: Gp, setup: &super::PrintSetup) {
+        let settings = gtk::PrintSettings::new();
+        settings.set_use_color(!setup.grayscale);
+        if let Some(name) = super::gtk_paper_name(&setup.paper) {
+            let paper = gtk::PaperSize::new(Some(name));
+            settings.set_paper_size(&paper);
+            let page_setup = gtk::PageSetup::new();
+            page_setup.set_paper_size(&paper);
+            // The dialog takes its own reference to both.
+            let page_setup_ptr: *mut gtk::ffi::GtkPageSetup = page_setup.to_glib_none().0;
+            gtk_print_unix_dialog_set_page_setup(dialog, page_setup_ptr as Gp);
+        }
+        let settings_ptr: *mut gtk::ffi::GtkPrintSettings = settings.to_glib_none().0;
+        gtk_print_unix_dialog_set_settings(dialog, settings_ptr as Gp);
     }
 
     /// Builds the job from the dialog's choices and sends it. On failure the

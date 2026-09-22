@@ -224,7 +224,11 @@ describe("printPdfNative", () => {
   it("sends the bytes and a title, never a path", async () => {
     mocked.mockResolvedValue("sent");
     await expect(printPdfNative(new Uint8Array([37, 80]), "a.pdf")).resolves.toBe("sent");
-    expect(mocked).toHaveBeenCalledWith("print_pdf_native", { bytes: [37, 80], title: "a.pdf" });
+    expect(mocked).toHaveBeenCalledWith("print_pdf_native", {
+      bytes: [37, 80],
+      title: "a.pdf",
+      setup: null,
+    });
   });
 
   it("passes Windows' fire-and-forget print window through as opened", async () => {

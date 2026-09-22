@@ -4824,6 +4824,7 @@ export const en = {
   "print.progressPage": "page {page} of {total}",
   "print.progressPageOnly": "page {page}",
   "print.progressEta": "~{time} left",
+  "print.failed": "Could not print: {msg}",
   "print.progressBehind": "{count} more queued",
   "print.progressPagesNote": "Pages count what the print system has passed to the printer — the paper can lag behind.",
   "print.durationSecs": "{count} s",
