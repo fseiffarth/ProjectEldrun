@@ -13,22 +13,21 @@
   <!-- Glyph inset ~46px inside the coaster (0.82 * 512 = 420, centered). -->
   <g transform="translate(46,46) scale(0.82)">
     <g stroke="#FFFFFF" stroke-linecap="round" stroke-linejoin="round" fill="none">
-      <!-- Ring -->
-      <path d="M 214 491 A 239 239 0 1 1 298 491" stroke-width="10" />
+      <!-- Ring + both outer legs as one stroke: each leg bends through an
+           r=20 fillet that meets the ring tangentially, so no seam or gap. -->
+      <path d="M 165 190 L 165 238 L 233 306 L 233 470.74 A 20 20 0 0 1 209.07 490.35 A 239 239 0 1 1 302.93 490.35 A 20 20 0 0 1 279 470.74 L 279 306 L 347 238 L 347 190" stroke-width="13" />
       <!-- Central trunk -->
-      <path d="M 256 161 L 256 499" stroke-width="10" />
+      <path d="M 256 161 L 256 499" stroke-width="13" />
       <!-- Left branches (authored) -->
-      <path d="M 165 176 L 165 238 L 233 306 L 233 440 L 222 483" stroke-width="10" />
-      <path d="M 98 235 L 98 289 L 134.1 325.1 M 155 343.7 L 233 405" stroke-width="10" />
-      <circle cx="165" cy="162" r="14" stroke-width="8" />
-      <circle cx="98"  cy="221" r="14" stroke-width="8" />
-      <circle cx="144" cy="335" r="14" stroke-width="8" />
+      <path d="M 98 249 L 98 289 L 124.2 315.2 M 166.01 352.31 L 233 405" stroke-width="13" />
+      <circle cx="165" cy="162" r="26" fill="#E7B369" stroke-width="10" />
+      <circle cx="98"  cy="221" r="26" fill="#ED946C" stroke-width="10" />
+      <circle cx="144" cy="335" r="26" fill="#EB8182" stroke-width="10" />
       <!-- Right branches (explicit mirror across x=256) -->
-      <path d="M 347 176 L 347 238 L 279 306 L 279 440 L 290 483" stroke-width="10" />
-      <path d="M 414 235 L 414 289 L 377.9 325.1 M 357 343.7 L 279 405" stroke-width="10" />
-      <circle cx="347" cy="162" r="14" stroke-width="8" />
-      <circle cx="414" cy="221" r="14" stroke-width="8" />
-      <circle cx="368" cy="335" r="14" stroke-width="8" />
+      <path d="M 414 249 L 414 289 L 387.8 315.2 M 345.99 352.31 L 279 405" stroke-width="13" />
+      <circle cx="347" cy="162" r="26" fill="#72D0D0" stroke-width="10" />
+      <circle cx="414" cy="221" r="26" fill="#5ABBE6" stroke-width="10" />
+      <circle cx="368" cy="335" r="26" fill="#80A3F0" stroke-width="10" />
     </g>
     <!-- Gold four-point spark (unchanged) -->
     <path d="M 256 61 C 261 92 268 96 292 101 C 268 106 261 110 256 142 C 251 110 244 106 220 101 C 244 96 251 92 256 61 Z" fill="#C79A45" />

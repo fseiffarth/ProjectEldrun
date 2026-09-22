@@ -9,25 +9,29 @@
   -->
   <circle cx="256" cy="256" r="256" fill="#000000" />
   <g stroke="#FFFFFF" stroke-linecap="round" stroke-linejoin="round" fill="none">
-    <!-- Ring: a full circle. The trunk and the two splayed feet stop short
-         of it, leaving a visible gap rather than touching or crossing it. -->
-    <circle cx="256" cy="256" r="239" stroke-width="10" />
+    <!-- Ring + both outer legs as one stroke: each leg bends through an
+         r=20 fillet that meets the ring tangentially, so no seam or gap.
+         The ring stays open at the bottom, where the trunk passes through. -->
+    <path d="M 165 190 L 165 238 L 233 306 L 233 470.74 A 20 20 0 0 1 209.07 490.35 A 239 239 0 1 1 302.93 490.35 A 20 20 0 0 1 279 470.74 L 279 306 L 347 238 L 347 190" stroke-width="13" />
 
-    <!-- Central trunk stem, stopping short of the ring. -->
-    <path d="M 256 161 L 256 475" stroke-width="10" />
+    <!-- Central trunk stem, running out through the ring's opening. -->
+    <path d="M 256 161 L 256 499" stroke-width="13" />
 
-    <!-- Left-side branches + descending leg (authored), then mirrored. -->
+    <!-- Left-side branches (authored), then mirrored. -->
     <g id="eldrun-branches">
-      <!-- L1: node → vertical → 45° diagonal → leg → splayed foot, stopping short of the ring. -->
-      <path d="M 165 176 L 165 238 L 233 306 L 233 440 L 225 473" stroke-width="10" />
-      <!-- L2 → vertical → diagonal → L3 (trace stops short of the pad on both sides) → 45° diagonal down into the leg. -->
-      <path d="M 98 235 L 98 289 L 129.9 320.9 M 159.7 347.4 L 233 405" stroke-width="10" />
-      <!-- Node terminals (thinner stroke than the traces). -->
-      <circle cx="165" cy="162" r="14" stroke-width="8" />
-      <circle cx="98"  cy="221" r="14" stroke-width="8" />
-      <circle cx="144" cy="335" r="14" stroke-width="8" />
+      <!-- L2 → vertical → diagonal → L3 (trace stops at the pad on both sides) → 45° diagonal down into the leg. -->
+      <path d="M 98 249 L 98 289 L 124.2 315.2 M 166.01 352.31 L 233 405" stroke-width="13" />
     </g>
     <use href="#eldrun-branches" transform="translate(512,0) scale(-1,1)" />
+
+    <!-- Node terminals (thinner stroke than the traces), each filled with its
+         own colour, stepping around the arc from bottom-left to bottom-right. -->
+    <circle cx="144" cy="335" r="26" fill="#EB8182" stroke-width="10" />
+    <circle cx="98" cy="221" r="26" fill="#ED946C" stroke-width="10" />
+    <circle cx="165" cy="162" r="26" fill="#E7B369" stroke-width="10" />
+    <circle cx="347" cy="162" r="26" fill="#72D0D0" stroke-width="10" />
+    <circle cx="414" cy="221" r="26" fill="#5ABBE6" stroke-width="10" />
+    <circle cx="368" cy="335" r="26" fill="#80A3F0" stroke-width="10" />
   </g>
 
   <!-- Gold four-point spark above the trunk. -->

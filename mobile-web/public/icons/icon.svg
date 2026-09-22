@@ -10,16 +10,16 @@
   <rect width="512" height="512" rx="96" fill="url(#eldrun-coaster)" />
   <g transform="translate(46 46) scale(.82)">
     <g stroke="#fff" stroke-linecap="round" stroke-linejoin="round" fill="none">
-      <path d="M214 491A239 239 0 1 1 298 491" stroke-width="10" />
-      <path d="M256 161V499" stroke-width="10" />
-      <path d="M165 176V238L233 306V440L222 483M98 235V289L134.1 325.1M155 343.7L233 405" stroke-width="10" />
-      <circle cx="165" cy="162" r="14" stroke-width="8" />
-      <circle cx="98" cy="221" r="14" stroke-width="8" />
-      <circle cx="144" cy="335" r="14" stroke-width="8" />
-      <path d="M347 176V238L279 306V440L290 483M414 235V289L377.9 325.1M357 343.7L279 405" stroke-width="10" />
-      <circle cx="347" cy="162" r="14" stroke-width="8" />
-      <circle cx="414" cy="221" r="14" stroke-width="8" />
-      <circle cx="368" cy="335" r="14" stroke-width="8" />
+      <path d="M165 190V238L233 306V470.74A20 20 0 0 1 209.07 490.35A239 239 0 1 1 302.93 490.35A20 20 0 0 1 279 470.74V306L347 238V190" stroke-width="13" />
+      <path d="M256 161V499" stroke-width="13" />
+      <path d="M98 249V289L124.2 315.2M166.01 352.31L233 405" stroke-width="13" />
+      <circle cx="165" cy="162" r="26" fill="#E7B369" stroke-width="10" />
+      <circle cx="98" cy="221" r="26" fill="#ED946C" stroke-width="10" />
+      <circle cx="144" cy="335" r="26" fill="#EB8182" stroke-width="10" />
+      <path d="M414 249V289L387.8 315.2M345.99 352.31L279 405" stroke-width="13" />
+      <circle cx="347" cy="162" r="26" fill="#72D0D0" stroke-width="10" />
+      <circle cx="414" cy="221" r="26" fill="#5ABBE6" stroke-width="10" />
+      <circle cx="368" cy="335" r="26" fill="#80A3F0" stroke-width="10" />
     </g>
     <path d="M256 61C261 92 268 96 292 101C268 106 261 110 256 142C251 110 244 106 220 101C244 96 251 92 256 61Z" fill="#c79a45" />
   </g>
