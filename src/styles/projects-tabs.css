@@ -374,6 +374,14 @@
   opacity: 0.75;
 }
 
+/* "+N": the boxes past MAX_BOX_PILLS, which only the chip's list reaches. */
+.box-chip-overflow {
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--text-secondary);
+}
+
 .box-chip:hover {
   color: var(--text-primary);
 }
@@ -415,22 +423,54 @@
   box-shadow: inset 0 0 0 1px var(--accent);
 }
 
-/* ── The selected box's own pill ────────────────────────────────────── */
-/* The box the chip's dropdown selected stands beside it as a control of its
-   own (BoxScopeChip.tsx): the chip picks, the pill IS the box — click it to
-   enter the box scope, drop a project on it to add a member, right-click it to
-   rename/edit/delete. Deliberately the SAME `.box-chip` box as its neighbour,
-   so the leading segment (★/🗑/▣ chip · box · hairline · projects) still reads
-   as one run; it only drops the caret it has no menu for and tightens the
-   inset, since the chip beside it already carries the run's 10px lead. */
-.box-scope-pill {
-  padding-left: 4px;
+/* ── The box pills ──────────────────────────────────────────────────── */
+/* Every box stands beside the chip as a pill of its own (BoxScopeChip.tsx):
+   click it to enter the box scope, drop a project on it to add a member,
+   right-click it for rename / members / edit / delete. Deliberately the SAME
+   `.box-chip` box as the chip, so the leading segment (chip · boxes ·
+   hairline · projects) reads as one run; the pill only drops the caret it has
+   no menu for. Each pill carries its box's colour in `--box-color` (set
+   inline from `lib/theme/boxColor`) — the mark, the active line and the drop
+   tint all take it, and the members' swatches on the project pills match. */
+.box-pill-row {
+  display: flex;
+  align-items: stretch;
+  flex-shrink: 0;
 }
 
-/* Long box names get a little more room than the chip's own label: the pill
-   has nothing else to fit but the name and its member count. */
+.box-scope-pill {
+  /* The project pill's own inset (`.pill-main`: 12px lead, 8px trail), so a
+     box pill and a project pill sit on the same rhythm. */
+  padding: 0 8px 0 12px;
+}
+
 .box-scope-pill .box-chip-main {
-  max-width: 180px;
+  gap: 6px;
+  max-width: 140px;
+}
+
+.box-scope-pill .box-chip-icon {
+  font-size: 13px;
+  color: var(--box-color, var(--accent));
+}
+
+/* The box's slice is what the strip shows (its members), whether or not the
+   box's own tabs are on screen: named in full, like a project's pill while
+   one of its tabs is being visited. */
+.box-scope-pill.is-selected {
+  color: var(--text-primary);
+}
+
+/* The box's scope IS the current one: the accent line is the box's colour,
+   so the lit pill and its members' swatches say the same thing. */
+.box-scope-pill.active {
+  border-top-color: var(--box-color, var(--accent));
+}
+
+/* A project pill is being dragged over this box: dropping adds it. */
+.box-scope-pill.drag-over {
+  background-color: color-mix(in srgb, var(--box-color, var(--accent)) 22%, transparent);
+  box-shadow: inset 0 0 0 1px var(--box-color, var(--accent));
 }
 
 /* The hairline after the leading segment (★ · 🗑 · ▣ chip), before the scrolling
@@ -549,28 +589,41 @@
   padding: 1px 4px;
 }
 
-.project-box-member-count {
+/* The box swatches on a MEMBER pill (overlay model: member pills always
+   render individually; the swatches + their tooltip are what say "also in a
+   box"). One square per box, in the box's colour — the colour of the box's
+   own pill in the leading segment — so which box a member belongs to is read
+   by eye across the row. Squares, where the category marks are round dots. */
+.project-pill-boxdot {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 22%, transparent);
-  border-radius: var(--radius);
+  gap: 3px;
+  margin-left: 5px;
+  flex-shrink: 0;
 }
 
-/* The small box badge on a MEMBER pill (overlay model: member pills always
-   render individually; the badge + its tooltip are what say "also in a box"). */
-.project-pill-boxdot {
-  margin-left: 4px;
-  font-size: var(--text-xs);
-  line-height: 1;
-  color: var(--accent);
-  opacity: 0.85;
+.project-pill-box-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-main) 50%, transparent);
+}
+
+/* The same swatch in a menu row (a pill's Boxes group), before the box's name. */
+.context-menu-box-swatch {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 6px;
+  border-radius: 2px;
+  vertical-align: middle;
+}
+
+/* A box pill's context menu carries the members checklist, so it can run
+   long: capped to the viewport and scrolling inside. */
+.box-pill-menu {
+  max-height: min(70vh, 520px);
+  overflow-y: auto;
 }
 
 /* Multi-select ring (Ctrl/Cmd-click, 3b): the selection the "Box these…" menu

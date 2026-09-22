@@ -23,7 +23,8 @@ import { useGitDirtyStore } from "../../stores/gitDirty";
 import { projectStations, useKeyboardSteeringStore } from "../../stores/keyboardSteering";
 import { useQuiesce, saverInterval } from "../../stores/power";
 import { useFastMode } from "../../lib/agents/fastMode";
-import { resolveProjectDirectory, type ProjectEntry } from "../../types";
+import { resolveProjectDirectory, type ProjectBox, type ProjectEntry } from "../../types";
+import { boxColor } from "../../lib/theme/boxColor";
 import { useT } from "../../lib/i18n";
 
 // Re-exported for tests and any external callers that imported these scaffold
@@ -496,9 +497,16 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
             selectedId={boxFilter}
             onSelect={selectBox}
             onRename={(boxId, name) => void renameBox(boxId, name)}
-            onDelete={(boxId) => void deleteBox(boxId)}
+            // The pill's Delete is one right-click away on every box now, so it
+            // asks the same question the editor's Dissolve does — and says the
+            // same thing about what survives (folder, agent docs, members).
+            onDelete={(boxId) => {
+              const target = boxes.find((b) => b.id === boxId);
+              if (!target) return;
+              if (!window.confirm(t("boxEditor.dissolveConfirm", { name: target.name }))) return;
+              void deleteBox(boxId);
+            }}
             active={!!boxFilter && scope === `${BOX_SCOPE_PREFIX}${boxFilter}`}
-            forcedDragOver={!!boxFilter && pillDrag?.overBoxId === boxFilter}
             rootActive={scope === ROOT_SCOPE}
             onSelectRoot={selectRoot}
             // Steering station 1 is the ring's root (`null`) head, which
@@ -536,13 +544,17 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
           >
             {visibleProjects.map((project) => {
               const isCurrentBoxMember = currentBoxMemberIds.has(project.id);
-              const boxNames = currentBox
+              // The swatches a member pill wears: one per box it is in, in the
+              // box's own colour. Inside a slice every pill is a member of the
+              // box being looked at, so only that box is worth a swatch there.
+              const boxTags = (currentBox
                 ? isCurrentBoxMember
-                  ? [currentBox.name]
+                  ? [currentBox]
                   : []
                 : (membership.get(project.id) ?? [])
-                    .map((boxId) => boxes.find((b) => b.id === boxId)?.name)
-                    .filter((n): n is string => !!n);
+                    .map((boxId) => boxes.find((b) => b.id === boxId))
+                    .filter((b): b is ProjectBox => !!b)
+              ).map((b) => ({ id: b.id, name: b.name, color: boxColor(b.id) }));
               return (
                 <ProjectPill
                   key={project.id}
@@ -567,7 +579,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
                   onReorder={(fromId, toId) => void reorderProjects(fromId, toId)}
                   onGroup={(fromId, toId) => void groupProjects(fromId, toId)}
                   onAssignToBox={(boxId) => void addToBox(project.id, boxId)}
-                  boxNames={boxNames}
+                  boxTags={boxTags}
                   isDragged={pillDrag?.id === project.id}
                   dragDx={pillDrag?.id === project.id ? pillDrag.dx : undefined}
                   shiftPx={pillShifts.get(project.id)}

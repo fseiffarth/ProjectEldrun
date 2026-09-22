@@ -708,22 +708,27 @@ merges across members, and box-rooted agent tabs (`BoxScopeChip.tsx`,
   retired; a stale persisted key is stripped in-memory on load and dropped from
   disk by the next ordinary `save_projects`. `get_boxes` reconciles away member
   ids that no longer reference a known project.
-- **Switcher (overlay model).** Member pills always render individually (with a
-  small ▣ badge naming their boxes); no box takes width in the scrolling strip.
-  Boxes are listed in the scope chip's dropdown, and the box picked there gets a
-  pill of its own in the fixed leading segment beside the chip. Empty and
-  one-member boxes survive and are still listed — the ONLY way a box disappears
-  is the box editor's explicit, confirmed **Dissolve** (the folder and agent
-  docs stay on disk).
-- **Box/unbox gestures.** Four ways in/out: the pill context menu's *Boxes*
-  group (checkbox row per box, additive toggle), Ctrl/Cmd-click multi-select →
-  "Box these (N)…", the box editor dialog (rename, full member list, dissolve;
-  opened from the box pill's menu, the pill menu, multi-select, or the switcher
-  "+"), and drag-and-drop (plain or Alt drop on the box pill — or on a row of
-  the chip's list, which springs open under a drag — = additive add; Alt-drop
-  one pill on another = new box of the two). While a box slice is selected the
-  switcher's "+" lists non-members to add, and each member pill's ✕ removes only
-  that membership.
+- **Switcher (overlay model).** Member pills always render individually, with
+  one colour swatch per box they are in (`lib/theme/boxColor`, a stable hue per
+  box id); no box takes width in the scrolling strip. Every box stands as a
+  small pill of its own in the fixed leading segment beside the scope chip —
+  its mark in the box's colour, one click into the box, a standing drop
+  target, right-click for rename / a Members checklist / edit / delete — up to
+  `MAX_BOX_PILLS`; the rest stay in the chip's dropdown (which always lists
+  every box) and the chip shows "+N". `Ctrl+Shift+PageDown/PageUp` cycle the
+  boxes. Empty and one-member boxes survive and are still listed — the ONLY way
+  a box disappears is an explicit, confirmed **Dissolve** / **Delete box** (the
+  folder and agent docs stay on disk).
+- **Box/unbox gestures.** Five ways in/out: the pill context menu's *Boxes*
+  group (checkbox row per box, additive toggle), the box pill's context menu's
+  *Members* checklist (toggles on the spot, stays open), Ctrl/Cmd-click
+  multi-select → "Box these (N)…", the box editor dialog (rename, full member
+  list, dissolve; opened from the box pill's menu, the pill menu, multi-select,
+  or the switcher "+"), and drag-and-drop (plain or Alt drop on any box pill —
+  or, when boxes overflow the row, on a row of the chip's list, which springs
+  open under a drag — = additive add; Alt-drop one pill on another = new box of
+  the two). While a box slice is selected the switcher's "+" lists non-members
+  to add, and each member pill's ✕ removes only that membership.
 - **Box folder, agent docs + member symlinks.** Opening a box (`openBox` →
   `ensure_box_folder`) lazily creates a folder under `~/eldrun/boxes/<name>/`
   (unique name resolved against other boxes and existing dirs) and

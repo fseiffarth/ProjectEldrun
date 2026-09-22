@@ -230,6 +230,8 @@ export const UNTESTED = {
   "print.copiesField": { area: "lib", what: "print · Copies field in the print dialog" },
   "print.queueProgress": { area: "lib", what: "print · Print queue progress strip" },
   "shortcut.cycleProjectBack": { area: "lib", what: "shortcuts · Cycle to previous project" },
+  "shortcut.cycleBox": { area: "lib", what: "shortcuts · Cycle to next box" },
+  "shortcut.cycleBoxBack": { area: "lib", what: "shortcuts · Cycle to previous box" },
   "shortcut.rootConsole": { area: "lib", what: "shortcuts · Open / close the root console" },
   "shortcut.shortcutHelp": { area: "lib", what: "shortcuts · Open shortcut help" },
   "shortcut.steeringMode": { area: "lib", what: "shortcuts · Enter keyboard steering mode" },
@@ -303,6 +305,7 @@ export const UNTESTED = {
   // --- projects — Projects, remotes, boxes, VMs ---------------------
   "bigFolder.thisProject": { area: "projects", what: "BigFolderExcludeDialog · this project" },
   "boxEditor.title": { area: "projects", what: "BoxEditorDialog · Box editor" },
+  "boxPill.membersGroup": { area: "projects", what: "BoxScopeChip · Per-box pills beside the chip (coloured, drop targets) + the box pill menu's Members checklist + member swatches on project pills" },
   "carefulHost.label": { area: "projects", what: "CarefulHostToggle · Go easy on this machine" },
   "credentialPasteBar.1": { area: "projects", what: "CredentialPasteBar · ))}" },
   "extendToRemoteDialog.1": { area: "projects", what: "ExtendToRemoteDialog · Your machines" },

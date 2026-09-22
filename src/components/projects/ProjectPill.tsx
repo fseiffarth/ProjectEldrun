@@ -46,6 +46,7 @@ import { usePillDragStore } from "../../stores/drag/pillDrag";
 import { usePillSelectionStore } from "../../stores/drag/pillSelection";
 import { useBoxEditorStore } from "../../stores/boxEditor";
 import { useBoxesStore } from "../../stores/boxes";
+import { boxColor } from "../../lib/theme/boxColor";
 import { bindDragRelease, dragPlatform } from "../../lib/window/dragPlatform";
 import { useT } from "../../lib/i18n";
 import { PauseIcon } from "../common/icons/Icon";
@@ -80,9 +81,10 @@ interface Props {
   shiftPx?: number;
   /** An Alt-drag is hovering THIS pill as a group (new-box) target. */
   groupHintActive?: boolean;
-  /** Names of the boxes this project is in (N:M overlay model): renders the
-   *  small box badge on the pill, tooltip naming them. Empty/absent = no badge. */
-  boxNames?: string[];
+  /** The boxes this project is in (N:M overlay model): one colour swatch per
+   *  box on the pill, in the box's own colour (`lib/theme/boxColor`), with a
+   *  tooltip naming them. Empty/absent = no badge. */
+  boxTags?: { id: string; name: string; color: string }[];
   /** Keyboard-steering station number (the digit that jumps here while the
    *  mode is active). Renders a small overlay chip — absolutely positioned so
    *  showing it never shifts the strip. Absent outside steering mode. */
@@ -1419,7 +1421,7 @@ export function ProjectPill({
   onReorder,
   onGroup,
   onAssignToBox,
-  boxNames,
+  boxTags,
   isDragged,
   dragDx,
   shiftPx,
@@ -2133,6 +2135,11 @@ export function ProjectPill({
                   <span className="context-menu-checkmark" aria-hidden>
                     {member ? "☑" : "☐"}
                   </span>
+                  <span
+                    className="context-menu-box-swatch"
+                    style={{ background: boxColor(b.id) }}
+                    aria-hidden
+                  />
                   {b.name}
                 </button>
               );
@@ -2799,12 +2806,22 @@ export function ProjectPill({
             {timerPaused && <span className="pill-folder-pause"><PauseIcon /></span>}
           </span>
           <span className="project-pill-label">{project.name}</span>
-          {boxNames && boxNames.length > 0 && (
+          {boxTags && boxTags.length > 0 && (
             <span
               className="project-pill-boxdot"
-              title={t("pill.inBoxes", { list: boxNames.join(", ") })}
+              title={t("pill.inBoxes", { list: boxTags.map((b) => b.name).join(", ") })}
             >
-              ▣
+              {/* One swatch per box, in the box's colour — the same colour
+                  the box's own pill wears in the leading segment, so a
+                  member is matched to its box by eye, not by tooltip. */}
+              {boxTags.map((b) => (
+                <span
+                  key={b.id}
+                  className="project-pill-box-swatch"
+                  style={{ background: b.color }}
+                  data-box-name={b.name}
+                />
+              ))}
             </span>
           )}
         </button>

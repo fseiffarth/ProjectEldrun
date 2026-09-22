@@ -1,10 +1,11 @@
 /**
  * Component tests for box rendering in the switcher under the CHIP model
- * (#13/#41, N:M membership): boxes are no longer pills among the projects —
- * one chip beside the root pill names the box being looked at, its dropdown is
- * the only list of boxes, and picking one SLICES the strip to that box's
- * members. Member pills still render individually (with a small box badge), the
- * chip is the assign-to-box drop target, and Alt-drop on a pill boxes the two.
+ * (#13/#41, N:M membership): boxes are not pills among the projects — one
+ * chip heads the row (root, the full boxes list, "All projects"), and
+ * every box stands beside it as a small coloured pill of its own; picking one
+ * SLICES the strip to that box's members. Member pills still render
+ * individually (with a swatch per box in the box's colour), each box pill is
+ * an assign-to-box drop target, and Alt-drop on a pill boxes the two.
  *
  * The pill drag is pointer-driven (see ProjectPill's `startPillDrag`), not
  * native HTML5 DnD — jsdom gives every element a zero-sized rect, so the drag's
@@ -24,6 +25,8 @@ import { BOX_SCOPE_PREFIX, useBoxesStore } from "../../stores/boxes";
 import { usePillDragStore } from "../../stores/drag/pillDrag";
 import { useTabsStore } from "../../stores/tabs";
 import { useActivityStore } from "../../stores/activity";
+import { MAX_BOX_PILLS } from "../../components/projects/BoxScopeChip";
+import { boxColor } from "../../lib/theme/boxColor";
 
 function proj(id: string, position: number): ProjectEntry {
   return {
@@ -38,6 +41,7 @@ function proj(id: string, position: number): ProjectEntry {
 function box(id: string, members: string[], position = 5): ProjectBox {
   return { id, name: id, member_ids: members, position };
 }
+
 
 /** What the real `openBox` does that these tests depend on: it moves the tab
  *  scope into the box. The chip names the scope it is in, so a mock that only
@@ -99,9 +103,16 @@ function chip(container: HTMLElement): HTMLElement | null {
   return container.querySelector(".box-chip:not(.box-scope-pill)");
 }
 
-/** The selected box's own pill, right of the chip (null when no box is selected). */
+/** The first box pill right of the chip (null when there is no box). */
 function boxPill(container: HTMLElement): HTMLElement | null {
   return container.querySelector(".box-scope-pill");
+}
+
+/** The box pills' names, in row order. */
+function boxPillNames(container: HTMLElement): string[] {
+  return [...container.querySelectorAll(".box-scope-pill .box-chip-label")].map(
+    (el) => el.textContent ?? "",
+  );
 }
 
 /** Open the chip's dropdown and hand back its portaled menu. */
@@ -364,10 +375,14 @@ describe("box chip rendering (slice model)", () => {
     expect(useTabsStore.getState().scope).toBe("root");
   });
 
-  it("gives the selected box a pill of its own, and none before one is picked", async () => {
-    // The dropdown is kept as the list; the pill is the destination (user,
-    // 2026-09-04). Nothing on the row stands for a box until one is selected.
-    useBoxesStore.setState({ boxes: [box("boxA", ["p1"])], openBox: vi.fn(openBoxScope) });
+  it("gives every box a pill of its own beside the chip, in row order", async () => {
+    // Boxes are switched by pointing, not by opening a list (user, 2026-09-22):
+    // each stands on the row from the start, in its own colour, and picking
+    // one only marks it as the slice being looked at.
+    useBoxesStore.setState({
+      boxes: [box("boxB", ["p2"], 6), box("boxA", ["p1"], 5)],
+      openBox: vi.fn(openBoxScope),
+    });
     useProjectsStore.setState({
       projects: [proj("p1", 10), proj("p2", 20)],
       activeId: null,
@@ -375,20 +390,105 @@ describe("box chip rendering (slice model)", () => {
     });
 
     const container = await renderSwitcher();
-    expect(boxPill(container)).toBeNull();
+    expect(boxPillNames(container)).toEqual(["boxA", "boxB"]);
+    // Nothing is selected yet, and the dropdown is not what lit anything.
+    expect(container.querySelector(".box-scope-pill.is-selected")).toBeNull();
+    // The colour is the box's own (hashed from its id) and travels inline, so
+    // the CSS can tint the mark, the active line and the drop wash from it.
+    const pillA = boxPill(container)!;
+    expect(pillA.style.getPropertyValue("--box-color")).toBe(boxColor("boxA"));
+    // No member-count badge on the pill: the count is in the tooltip, and the
+    // members themselves are one click away.
+    expect(pillA.querySelector(".project-box-member-count")).toBeNull();
+    expect(pillA.querySelector(".box-chip-main")?.getAttribute("title")).toContain("1 member");
 
     const menu = await openChipMenu(container);
     await act(async () => {
       fireEvent.click(menuRow(menu, "boxA"));
     });
+    expect(pillA.className).toContain("is-selected");
+    expect(pillA.className).toContain("active");
+    expect(boxPillNames(container)).toEqual(["boxA", "boxB"]);
+  });
 
-    const pill = boxPill(container)!;
-    expect(pill).toBeTruthy();
-    expect(pill.textContent).toContain("boxA");
-    // Its member count, as the chip used to carry it.
-    expect(pill.querySelector(".project-box-member-count")?.textContent).toBe("1");
-    // Still ONE box on the row: the per-box pills are not back.
-    expect(container.querySelectorAll(".box-scope-pill")).toHaveLength(1);
+  it("caps the row at MAX_BOX_PILLS, counts the rest on the chip, and always seats the selected box", async () => {
+    const many = Array.from({ length: MAX_BOX_PILLS + 2 }, (_, i) =>
+      box(`box${i}`, [], i + 1),
+    );
+    useBoxesStore.setState({ boxes: many, openBox: vi.fn(openBoxScope) });
+    useProjectsStore.setState({ projects: [proj("p1", 10)], activeId: null, loaded: true });
+
+    const container = await renderSwitcher();
+    expect(boxPillNames(container)).toEqual(many.slice(0, MAX_BOX_PILLS).map((b) => b.name));
+    expect(chip(container)!.textContent).toContain("+2");
+
+    // Picking an overflow box from the dropdown seats it in the last slot —
+    // the box being looked at is never the one without a pill.
+    const menu = await openChipMenu(container);
+    const last = many[many.length - 1];
+    await act(async () => {
+      fireEvent.click(menuRow(menu, last.name));
+    });
+    const names = boxPillNames(container);
+    expect(names).toHaveLength(MAX_BOX_PILLS);
+    expect(names.slice(0, MAX_BOX_PILLS - 1)).toEqual(
+      many.slice(0, MAX_BOX_PILLS - 1).map((b) => b.name),
+    );
+    expect(names[MAX_BOX_PILLS - 1]).toBe(last.name);
+    expect(container.querySelector(".box-scope-pill.is-selected")?.textContent).toContain(
+      last.name,
+    );
+  });
+
+  it("member pills wear one swatch per box, named after the box", async () => {
+    useBoxesStore.setState({ boxes: [box("boxA", ["p1"], 5), box("boxB", ["p1"], 6)] });
+    useProjectsStore.setState({
+      projects: [proj("p1", 10), proj("p2", 20)],
+      activeId: null,
+      loaded: true,
+    });
+
+    const container = await renderSwitcher();
+    const badge = findPill(container, "p1").querySelector(".project-pill-boxdot")!;
+    const swatches = [...badge.querySelectorAll(".project-pill-box-swatch")];
+    expect(swatches.map((s) => s.getAttribute("data-box-name"))).toEqual(["boxA", "boxB"]);
+    expect(badge.getAttribute("title")).toContain("boxA, boxB");
+    expect(findPill(container, "p2").querySelector(".project-pill-box-swatch")).toBeNull();
+  });
+
+  it("the box pill's menu is a members checklist that toggles on the spot and stays open", async () => {
+    const addToBox = vi.fn().mockResolvedValue(undefined);
+    const removeFromBox = vi.fn().mockResolvedValue(undefined);
+    useBoxesStore.setState({ boxes: [box("boxA", ["p2"])], addToBox, removeFromBox });
+    useProjectsStore.setState({
+      projects: [proj("p1", 10), proj("p2", 20)],
+      activeId: null,
+      loaded: true,
+    });
+
+    const container = await renderSwitcher();
+    await act(async () => {
+      fireEvent.contextMenu(boxPill(container)!);
+    });
+    const ctx = document.querySelector(".box-pill-menu") as HTMLElement;
+    expect(ctx).toBeTruthy();
+    // Members first, then the rest.
+    const rows = [...ctx.querySelectorAll("[data-member-id]")] as HTMLElement[];
+    expect(rows.map((r) => r.getAttribute("data-member-id"))).toEqual(["p2", "p1"]);
+    expect(rows[0].textContent).toContain("☑");
+    expect(rows[1].textContent).toContain("☐");
+
+    await act(async () => {
+      fireEvent.click(rows[1]);
+    });
+    expect(addToBox).toHaveBeenCalledWith("p1", "boxA");
+    // Adding three projects is three clicks, not three right-clicks.
+    expect(document.querySelector(".box-pill-menu")).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(rows[0]);
+    });
+    expect(removeFromBox).toHaveBeenCalledWith("p2", "boxA");
   });
 
   it("clicking the box pill re-enters the box scope without a menu", async () => {
@@ -545,12 +645,47 @@ describe("box chip rendering (slice model)", () => {
     const container = await renderSwitcher();
     const p2Pill = findPill(container, "p2");
     layOut(p2Pill, { left: 0, right: 50, top: 0, bottom: 40 });
+    // boxA's own pill is the target — no list has to open first, since every
+    // box already stands on the row.
+    const target = container.querySelector('.box-scope-pill[data-box-id="boxA"]') as HTMLElement;
+    expect(target).toBeTruthy();
+    layOut(target, { left: 100, right: 160, top: 0, bottom: 40 });
 
-    // First move crosses the threshold: the drag begins and the list springs.
+    pointer("pointerdown", 10, 10, p2Pill);
+    pointer("pointermove", 60, 10, window);
+    // With every box on the row, a drag springs no list.
+    expect(document.querySelector(".box-chip-menu")).toBeNull();
+
+    pointer("pointermove", 130, 20, window);
+    expect(target.className).toContain("drag-over");
+    pointer("pointerup", 130, 20, window);
+
+    expect(addToBox).toHaveBeenCalledWith("p2", "boxA");
+    expect(reorderProjects).not.toHaveBeenCalled();
+  });
+
+  it("springs the list open under a drag only for the boxes that have no pill", async () => {
+    const addToBox = vi.fn().mockResolvedValue(undefined);
+    const many = Array.from({ length: MAX_BOX_PILLS + 1 }, (_, i) =>
+      box(`box${i}`, [], i + 1),
+    );
+    useBoxesStore.setState({ boxes: many, addToBox });
+    useProjectsStore.setState({
+      projects: [proj("p1", 10), proj("p2", 20)],
+      activeId: null,
+      loaded: true,
+      reorderProjects: vi.fn().mockResolvedValue(undefined),
+    });
+
+    const container = await renderSwitcher();
+    const p2Pill = findPill(container, "p2");
+    layOut(p2Pill, { left: 0, right: 50, top: 0, bottom: 40 });
+    const overflowBox = many[many.length - 1];
+
     pointer("pointerdown", 10, 10, p2Pill);
     pointer("pointermove", 60, 10, window);
     const row = document.querySelector(
-      '.box-chip-menu [data-box-id="boxA"]',
+      `.box-chip-menu [data-box-id="${overflowBox.id}"]`,
     ) as HTMLElement;
     expect(row).toBeTruthy();
     layOut(row, { left: 100, right: 260, top: 40, bottom: 68 });
@@ -558,8 +693,7 @@ describe("box chip rendering (slice model)", () => {
     pointer("pointermove", 180, 50, window);
     pointer("pointerup", 180, 50, window);
 
-    expect(addToBox).toHaveBeenCalledWith("p2", "boxA");
-    expect(reorderProjects).not.toHaveBeenCalled();
+    expect(addToBox).toHaveBeenCalledWith("p2", overflowBox.id);
     // …and the sprung list folds back once the drag is over.
     expect(document.querySelector(".box-chip-menu")).toBeNull();
   });
@@ -736,9 +870,9 @@ describe("box chip status bars", () => {
     expect(openBox).toHaveBeenCalledWith("boxA");
   });
 
-  it("the selected box reports on its own pill, and nowhere twice", async () => {
+  it("each box reports on its own pill, and nowhere twice", async () => {
     useBoxesStore.setState({
-      boxes: [box("boxA", ["p1"]), box("boxB", [])],
+      boxes: [box("boxA", ["p1"], 5), box("boxB", [], 6)],
       openBox: vi.fn(openBoxScope),
     });
     useProjectsStore.setState({ projects: [proj("p1", 10)], activeId: null, loaded: true });
@@ -746,15 +880,15 @@ describe("box chip status bars", () => {
     seedBoxTab("boxB", "agent-2", "working");
 
     const container = await renderSwitcher();
-    const menu = await openChipMenu(container);
-    await act(async () => {
-      fireEvent.click(menuRow(menu, "boxA"));
-    });
 
-    // boxA has a pill of its own, so its strip is there — unprefixed, because
-    // the pill names the box — while the chip beside it stays bare.
+    // Every box has a pill, so every box's strip is on its own pill —
+    // unprefixed, because the pill names the box — while the chip beside
+    // them stays bare.
+    const perPill = [...container.querySelectorAll(".box-scope-pill")].map((p) =>
+      [...p.querySelectorAll(".pill-status-bar")].map((b) => b.className),
+    );
+    expect(perPill).toEqual([["pill-status-bar needs-decision"], ["pill-status-bar working"]]);
     const drawn = pillBars(container);
-    expect(drawn.map((b) => b.className)).toEqual(["pill-status-bar needs-decision"]);
     expect(drawn[0].getAttribute("aria-label")).toContain("agent-1");
     expect(drawn[0].getAttribute("aria-label")).not.toContain("boxA ·");
     expect(bars(container)).toHaveLength(0);
