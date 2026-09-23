@@ -343,7 +343,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
       void load();
     } catch (reason) { setError(String(reason)); void load(); } finally { setActivating(false); }
   };
-  return <main className="screen">
+  return <main className="screen project-screen">
     {/* Two rows: the chevron and the name on the first, so a long name keeps the
         whole width; this list's own controls on the second. On one line the
         gallery, the sort and ＋ squeezed the name down to a letter or two.

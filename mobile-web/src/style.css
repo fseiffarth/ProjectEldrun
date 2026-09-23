@@ -48,6 +48,21 @@ nav button,.keys button { flex:1; }
 .project-header-tools .activity-sort.in-header > span { display:inline; }
 .project-header-tools .activity-sort.in-header select { flex:1 1 auto; max-width:none; }
 .project-header-tools .new-tab { margin-left:auto; }
+/* It stays put while the cards scroll under it: a project holds more cards
+   than a phone shows, and ＋, the sort and the gallery were gone after the
+   first two. The screen's top padding moves into the bar, so the status-bar
+   inset is painted over rather than showing cards through it. The row is one
+   40px line — the pill, the select and ＋ at the same height — and the title
+   row is only as tall as a thumb needs, which is most of the band that sat
+   empty above the name. */
+.project-screen { padding-top:0; }
+.project-header { position:sticky; top:0; z-index:5; margin:0 -18px 12px; padding:max(6px,env(safe-area-inset-top)) 18px 10px; background:#000; box-shadow:0 1px 0 #1c1f2b; }
+.project-header > .back { min-height:44px; margin-left:-12px; padding:0 8px 0 12px; }
+.project-header > .terminal-title { min-height:44px; align-content:center; }
+.project-header-tools > * { height:40px; }
+.project-header-tools .terminal-gallery { padding:0 12px; }
+.project-header-tools .activity-sort.in-header select { height:40px; padding-block:0; }
+.project-header-tools .new-tab { display:grid; place-items:center; width:44px; padding:0; }
 .cards { display:grid; gap:10px; }
 .card { width:100%; text-align:left; justify-content:space-between; padding:16px; background:rgba(28,31,43,.92); }
 .card span:first-child { display:grid; gap:4px; }
