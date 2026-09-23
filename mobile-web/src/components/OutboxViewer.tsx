@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type TouchEvent } from "react";
+import { useEffect, useRef, useState, type PointerEvent } from "react";
 import { useT } from "../../../src/lib/i18n";
 import { outboxFileUrl, type OutboxFile, type OutboxScope } from "../api";
 import { sizeLabel } from "../terminal/fileLabels";
@@ -28,6 +28,48 @@ export async function readTextPreview(response: Response): Promise<string> {
 /** How far a finger has to travel sideways, in CSS pixels, before a swipe on
  * the picture steps to the next one rather than reading as a wobbly tap. */
 const SWIPE = 48;
+/** How far in a pinch may go, and where a double tap lands. */
+const MAX_SCALE = 8;
+const TAP_SCALE = 2.5;
+/** Two taps this close in time and place are one double tap. */
+const DOUBLE_TAP_MS = 300;
+const DOUBLE_TAP_PX = 30;
+
+/** The picture's zoom and pan: `scale` about the stage's centre, then shifted
+ * by `x`, `y` CSS pixels. `scale` 1 is the whole picture letterboxed. */
+export type PictureView = { scale: number; x: number; y: number };
+export const FIT: PictureView = { scale: 1, x: 0, y: 0 };
+type Size = { width: number; height: number };
+
+/** Keeps the zoom in range and the picture over the stage: a picture smaller
+ * than the stage on an axis stays centred on it, a larger one can be dragged
+ * until its edge meets the stage's, never past. `shown` is the picture's
+ * letterboxed size at scale 1. */
+export function clampView(view: PictureView, stage: Size, shown: Size): PictureView {
+  const scale = Math.min(MAX_SCALE, Math.max(1, view.scale));
+  const spanX = Math.max(0, (shown.width * scale - stage.width) / 2);
+  const spanY = Math.max(0, (shown.height * scale - stage.height) / 2);
+  return {
+    scale,
+    x: Math.min(spanX, Math.max(-spanX, view.x)),
+    y: Math.min(spanY, Math.max(-spanY, view.y)),
+  };
+}
+
+/** Zooms `from` to `scale` about `point` (stage coordinates, origin at the
+ * stage's centre), so what was under `point` stays under it — and, for a
+ * pinch whose fingers moved, under `to`. */
+export function zoomAbout(from: PictureView, scale: number, point: { x: number; y: number }, to = point): PictureView {
+  const ratio = scale / from.scale;
+  return { scale, x: to.x - ratio * (point.x - from.x), y: to.y - ratio * (point.y - from.y) };
+}
+
+/** The picture's size letterboxed into the stage (`object-fit: contain`). */
+function shownSize(img: HTMLImageElement | null, stage: Size): Size {
+  if (!img || !img.naturalWidth || !img.naturalHeight) return stage;
+  const fit = Math.min(stage.width / img.naturalWidth, stage.height / img.naturalHeight);
+  return { width: img.naturalWidth * fit, height: img.naturalHeight * fit };
+}
 
 /**
  * One file the desktop sent, full screen. A picture opened from the gallery
@@ -35,6 +77,11 @@ const SWIPE = 48;
  * or the arrow keys — rather than making the reader close it, find the next
  * tile and open that: a run of plots is looked at one after another. Only the
  * pictures are stepped through; a text or a PDF is a different kind of look.
+ *
+ * The picture itself zooms and pans in the stage — a pinch, a double tap, a
+ * drag once zoomed — rather than leaving the pinch to the browser, which
+ * zooms the whole page and then cannot pan it. A swipe steps only while the
+ * picture is at its fitted size; zoomed in, a drag moves the picture.
  */
 export function OutboxViewer({ scope, file, pictures, onStep, onClose }: {
   scope: OutboxScope;
@@ -54,7 +101,22 @@ export function OutboxViewer({ scope, file, pictures, onStep, onClose }: {
   // Newest first, so "next" is the older picture — the way the grid reads.
   const previous = index > 0 ? steps[index - 1] : null;
   const next = index >= 0 && index < steps.length - 1 ? steps[index + 1] : null;
-  const touch = useRef<{ x: number; y: number } | null>(null);
+  const stage = useRef<HTMLDivElement>(null);
+  const image = useRef<HTMLImageElement>(null);
+  const [view, setView] = useState<PictureView>(FIT);
+  // Pointer events can outrun a render; the handlers read the view from here.
+  const live = useRef<PictureView>(FIT);
+  const show = (next: PictureView) => { live.current = next; setView(next); };
+  const gesture = useRef<{
+    pointers: Map<number, { x: number; y: number }>;
+    /** The view and finger(s) when the current gesture last changed shape. */
+    startView: PictureView;
+    start: { x: number; y: number };
+    distance: number;
+    /** Whether this gesture ever had two fingers — a pinch is never a swipe. */
+    pinched: boolean;
+    lastTap: { at: number; x: number; y: number } | null;
+  }>({ pointers: new Map(), startView: FIT, start: { x: 0, y: 0 }, distance: 0, pinched: false, lastTap: null });
   const [text, setText] = useState<string | null>(null);
   const [shareFile, setShareFile] = useState<File | null>(null);
   const [failure, setFailure] = useState("");
@@ -103,29 +165,102 @@ export function OutboxViewer({ scope, file, pictures, onStep, onClose }: {
       if (!(error instanceof DOMException && error.name === "AbortError")) setFailure(t("mobile.outbox.shareError"));
     });
   };
-  /** A sideways swipe steps; one mostly up or down, or a second finger (a
-   * pinch), is left alone. */
-  const onTouchStart = (event: TouchEvent) => {
-    touch.current = event.touches.length === 1 ? { x: event.touches[0].clientX, y: event.touches[0].clientY } : null;
+  useEffect(() => {
+    // A turned phone reshapes the stage; start the picture over, fitted.
+    const onResize = () => { live.current = FIT; setView(FIT); };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  /** The stage's size, and a pointer's position relative to its centre. */
+  const measure = () => {
+    const rect = stage.current?.getBoundingClientRect();
+    const size = { width: rect?.width ?? 0, height: rect?.height ?? 0 };
+    const at = (pointer: { x: number; y: number }) => ({
+      x: pointer.x - (rect?.left ?? 0) - size.width / 2,
+      y: pointer.y - (rect?.top ?? 0) - size.height / 2,
+    });
+    return { size, at, clamp: (next: PictureView) => clampView(next, size, shownSize(image.current, size)) };
   };
-  const onTouchEnd = (event: TouchEvent) => {
-    const start = touch.current;
-    touch.current = null;
-    const end = event.changedTouches[0];
-    if (!start || !end || !onStep) return;
-    const dx = end.clientX - start.x;
-    const dy = end.clientY - start.y;
+  /** Restarts the gesture from the fingers now down, so adding or lifting a
+   * finger mid-gesture carries on from where the picture is. */
+  const rebase = (current: PictureView) => {
+    const g = gesture.current;
+    const points = [...g.pointers.values()];
+    g.startView = current;
+    g.start = points.length === 2
+      ? { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 }
+      : points[0] ?? { x: 0, y: 0 };
+    g.distance = points.length === 2 ? Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y) : 0;
+  };
+  const onPointerDown = (event: PointerEvent) => {
+    // ‹ › are buttons on the stage; their taps are theirs.
+    if ((event.target as Element).closest("button")) return;
+    const g = gesture.current;
+    if (g.pointers.size >= 2) return;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    if (g.pointers.size === 0) g.pinched = false;
+    g.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (g.pointers.size === 2) g.pinched = true;
+    rebase(live.current);
+  };
+  const onPointerMove = (event: PointerEvent) => {
+    const g = gesture.current;
+    if (!g.pointers.has(event.pointerId)) return;
+    g.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    const { at, clamp } = measure();
+    const points = [...g.pointers.values()];
+    if (points.length === 2) {
+      const middle = { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 };
+      const distance = Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
+      const scale = Math.min(MAX_SCALE, Math.max(1, g.startView.scale * (g.distance ? distance / g.distance : 1)));
+      show(clamp(zoomAbout(g.startView, scale, at(g.start), at(middle))));
+    } else if (g.startView.scale > 1) {
+      show(clamp({ ...g.startView, x: g.startView.x + event.clientX - g.start.x, y: g.startView.y + event.clientY - g.start.y }));
+    }
+  };
+  const onPointerUp = (event: PointerEvent) => {
+    const g = gesture.current;
+    if (!g.pointers.has(event.pointerId)) return;
+    g.pointers.delete(event.pointerId);
+    if (g.pointers.size > 0) { rebase(live.current); return; }
+    if (g.pinched || event.type === "pointercancel") return;
+    const dx = event.clientX - g.start.x;
+    const dy = event.clientY - g.start.y;
+    if (Math.abs(dx) < DOUBLE_TAP_PX && Math.abs(dy) < DOUBLE_TAP_PX) {
+      // A double tap zooms in on where it landed, or back out to the fit.
+      const last = g.lastTap;
+      if (last && event.timeStamp - last.at < DOUBLE_TAP_MS
+        && Math.abs(event.clientX - last.x) < DOUBLE_TAP_PX && Math.abs(event.clientY - last.y) < DOUBLE_TAP_PX) {
+        g.lastTap = null;
+        const { at, clamp } = measure();
+        const current = live.current;
+        show(current.scale > 1 ? FIT : clamp(zoomAbout(current, TAP_SCALE, at({ x: event.clientX, y: event.clientY }))));
+      } else {
+        g.lastTap = { at: event.timeStamp, x: event.clientX, y: event.clientY };
+      }
+      return;
+    }
+    // A sideways swipe steps; one mostly up or down is left alone, and a
+    // zoomed picture's drag was a pan.
+    if (live.current.scale > 1 || !onStep) return;
     if (Math.abs(dx) < SWIPE || Math.abs(dx) < Math.abs(dy) * 1.5) return;
     const target = dx < 0 ? next : previous;
     if (target) onStep(target);
   };
+  const zoomed = view.scale > 1;
+  const stepping = index >= 0 && steps.length > 1;
   return <div className={`outbox-viewer${isText ? " outbox-text-sheet" : ""}`} role="dialog" aria-modal="true" aria-label={file.name}>
     <div className="outbox-viewer-head">
       <button className="sheet-close" onClick={onClose} aria-label={t("mobile.outbox.close")}>✕</button>
-      <h2>{file.name}</h2>
-      {index >= 0 && steps.length > 1
-        ? <small>{t("mobile.outbox.position", { index: index + 1, count: steps.length })} · {sizeLabel(file.size)}{isUntested("mobile.outbox.step") && <span className="untested">{t("mobile.outbox.untested")}</span>}</small>
-        : <small>{sizeLabel(file.size)}</small>}
+      <div className="outbox-viewer-title">
+        <h2>{file.name}</h2>
+        <small>
+          {stepping && `${t("mobile.outbox.position", { index: index + 1, count: steps.length })} · `}{sizeLabel(file.size)}
+          {((stepping && isUntested("mobile.outbox.step")) || (isImage && isUntested("mobile.outbox.zoom")))
+            && <span className="untested">{t("mobile.outbox.untested")}</span>}
+        </small>
+      </div>
       <a href={outboxFileUrl(scope, file.name, true)} download={file.name}>{t("mobile.outbox.save")}</a>
       {shareFile && <button onClick={share}>{t("mobile.outbox.share")}</button>}
     </div>
@@ -133,8 +268,10 @@ export function OutboxViewer({ scope, file, pictures, onStep, onClose }: {
     {isText ? <div className="outbox-text-body">
       <pre>{text ?? (failure ? "" : t("mobile.outbox.loading"))}</pre>
       {file.size > INLINE_LIMIT && <a href={url} target="_blank" rel="noopener noreferrer">{t("mobile.outbox.whole")}</a>}
-    </div> : isImage ? <div className="outbox-viewer-stage" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd} onTouchCancel={() => { touch.current = null; }}>
-      <img src={url} alt={file.name} />
+    </div> : isImage ? <div ref={stage} className={`outbox-viewer-stage${zoomed ? " zoomed" : ""}`}
+      onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}>
+      <img ref={image} src={url} alt={file.name} draggable={false}
+        style={zoomed ? { transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` } : undefined} />
       {previous && <button className="outbox-step outbox-step-previous" onClick={() => onStep?.(previous)} aria-label={t("mobile.outbox.previous")}><span aria-hidden="true">‹</span></button>}
       {next && <button className="outbox-step outbox-step-next" onClick={() => onStep?.(next)} aria-label={t("mobile.outbox.next")}><span aria-hidden="true">›</span></button>}
     </div>

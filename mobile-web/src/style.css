@@ -833,15 +833,23 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .outbox-thumb img { display:block; width:100%; aspect-ratio:4 / 3; object-fit:cover; border:1px solid #34384a; border-radius:7px; background:#0f131c; }
 .outbox-thumb span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .outbox-gallery-grid .outbox-thumb strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#d8e2f5; font-size:.72rem; font-weight:600; }
-.outbox-viewer { position:fixed; inset:0; z-index:13; display:grid; grid-template-rows:auto minmax(0,1fr); background:rgba(4,5,9,.94); color:#e6e9f2; }
-.outbox-viewer-head { display:flex; align-items:center; gap:8px; min-height:0; padding:calc(8px + env(safe-area-inset-top)) 10px 8px; }
-.outbox-viewer-head h2 { flex:1; margin:0; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.95rem; }
-.outbox-viewer-head small { flex:0 0 auto; color:#95a6c8; font-size:.72rem; }
+/* One column pinned to the screen's width: an auto column grew to the head's
+   widest line and letterboxed the picture into a box wider than the phone. */
+.outbox-viewer { position:fixed; inset:0; z-index:13; display:grid; grid-template-columns:minmax(0,1fr); grid-template-rows:auto minmax(0,1fr); background:rgba(4,5,9,.97); color:#e6e9f2; }
+.outbox-viewer-head { display:flex; align-items:center; gap:8px; min-width:0; min-height:0; padding:calc(8px + env(safe-area-inset-top)) 10px 8px; }
+.outbox-viewer-head > a, .outbox-viewer-head > button { flex:0 0 auto; }
+/* The name over its position and size, so neither squeezes the other. */
+.outbox-viewer-title { display:grid; flex:1; min-width:0; }
+.outbox-viewer-head h2 { margin:0; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.95rem; }
+.outbox-viewer-head small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#95a6c8; font-size:.72rem; }
 /* The picture fills the stage and is letterboxed in it; ‹ › sit on its edges
-   as tall strips a thumb finds without aiming. A sideways swipe is the
-   stage's, so the browser keeps only the pinch. */
-.outbox-viewer-stage { position:relative; min-height:0; overflow:hidden; touch-action:pinch-zoom; }
-.outbox-viewer-stage img { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; }
+   as tall strips a thumb finds without aiming. Every gesture is the stage's
+   (pinch, drag, double tap, swipe) — the browser's own pinch zooms the whole
+   page and then cannot pan it. */
+.outbox-viewer-stage { position:relative; min-height:0; overflow:hidden; touch-action:none; user-select:none; -webkit-user-select:none; }
+.outbox-viewer-stage img { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; transform-origin:center; -webkit-user-drag:none; }
+.outbox-viewer-stage.zoomed { cursor:grab; }
+.outbox-viewer-stage.zoomed img { will-change:transform; }
 .outbox-step { position:absolute; top:50%; display:grid; place-items:center; width:44px; height:72px; margin-top:-36px; padding:0; border:0; border-radius:10px; background:rgba(15,19,28,.55); color:#e6e9f2; font-size:1.9rem; line-height:1; }
 .outbox-step-previous { left:6px; }
 .outbox-step-next { right:6px; }
