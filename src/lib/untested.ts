@@ -284,6 +284,7 @@ export const UNTESTED = {
 
   // --- mobile — The phone PWA ---------------------------------------
   "mobile.boxAccess": { area: "mobile", what: "MobileSettings · Box access" },
+  "mobile.composer.slash": { area: "mobile", what: "Terminal · Composer `/` menu: slash commands per CLI, the ones sent before first" },
   "mobile.focus.messageMenu": { area: "mobile", what: "Terminal · Reader click-hold menu on a chat message (copy, read aloud)" },
   "mobile.focus.onScreen": { area: "mobile", what: "Terminal · Reader on-screen transcript note" },
   "mobile.focus.readAloud": { area: "mobile", what: "Terminal · Reader auto-read toggle" },

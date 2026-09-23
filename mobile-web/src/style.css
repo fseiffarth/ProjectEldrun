@@ -652,6 +652,20 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .composer-field textarea { flex:1 1 auto; min-width:0; }
 .composer-clear { display:grid; place-items:center; flex:0 0 auto; width:32px; height:32px; margin-top:5px; padding:0; border:0; border-radius:50%; background:#2a2e3e; color:#c8cdda; }
 .composer-clear svg { width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; }
+/* The `/` menu: the slash commands that continue a draft, drawn inside the
+   composer above the field because the CLI's own menu only ever opens in the
+   session's input line, which a phone draft does not reach until Send. Capped
+   so a long list scrolls rather than pushing the field off the screen. */
+.slash-menu { display:flex; flex-direction:column; max-height:min(40vh,260px); overflow-y:auto; overscroll-behavior:contain; margin:0 -4px 4px -8px; padding-bottom:4px; border-bottom:1px solid #2b2f3f; }
+.slash-menu-head { padding:2px 8px 4px; color:#767a8b; font-size:.7rem; letter-spacing:.06em; text-transform:uppercase; }
+.slash-menu-head em { font-style:normal; color:#ffd36b; letter-spacing:0; text-transform:none; }
+.slash-row { display:flex; align-items:center; gap:4px; }
+.slash-pick { flex:1 1 auto; min-width:0; display:flex; align-items:baseline; gap:8px; padding:8px; border:0; border-radius:9px; background:transparent; color:#e7e9f2; text-align:left; }
+.slash-pick:active { background:#262a3a; }
+.slash-pick strong { flex:0 0 auto; max-width:60%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.86rem; font-weight:600; color:#dcd6ff; }
+.slash-pick small { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#9498aa; font-size:.76rem; }
+.slash-row.used .slash-pick small { color:#b3a9f5; }
+.slash-forget { flex:0 0 auto; width:32px; height:32px; padding:0; border:0; border-radius:50%; background:transparent; color:#767a8b; }
 .composer-dictate { color:#dcd6ff; background:transparent; }
 .composer-dictate.listening { color:#fff; background:#7a3151; box-shadow:0 0 0 2px rgba(227,107,154,.22); }
 .composer-dictate.listening svg rect { fill:currentColor; stroke:none; }

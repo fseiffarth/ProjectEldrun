@@ -81,6 +81,7 @@ import { ageLabel, sizeLabel } from "../terminal/fileLabels";
 import { resetText, StatusSheet } from "./StatusSheet";
 import { limitMeters, parseUsageReport, type LimitMeters } from "../../../shared/usageReport";
 import { isUntested } from "../../../src/lib/untested";
+import { forgetSlashCommand, readSlashCommands, rememberSlashCommand, slashCli, slashSuggestions, type SlashSuggestion } from "../slashCommands";
 import {
   prepareOnDeviceSpeech,
   speechRecognitionConstructor,
@@ -538,6 +539,10 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
    * scrolled up ever after. */
   const atNewest = useRef(true);
   const [lastSent, setLastSent] = useState("");
+  /** The CLI this tab runs, as the composer's `/` menu keys its store, and the
+   * slash commands this phone has sent that CLI before (`slashCommands.ts`). */
+  const slashCliKey = slashCli(tab.agent_label ?? tab.label);
+  const [usedSlash, setUsedSlash] = useState(() => readSlashCommands(slashCliKey));
   const [copied, setCopied] = useState(false);
   const [voiceAvailable] = useState(() => speechRecognitionSupported());
   const [speechAvailable] = useState(() => speechOutputSupported());
@@ -1546,6 +1551,8 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
     // earlier bubbles were waiting in.
     if (/^\s*\//u.test(draft)) {
       if (/^\s*\/clear\b/u.test(draft)) setPending([]);
+      rememberSlashCommand(slashCliKey, draft);
+      setUsedSlash(readSlashCommands(slashCliKey));
     } else {
       const sent = pendingPrompt(++pendingId.current, draft, transcript?.entries ?? []);
       setPending((current) => [...current, sent].slice(-MAX_PENDING));
@@ -1561,6 +1568,22 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
    * once — no confirm dialog. The draft is left alone. */
   const clearConversation = () => {
     if (sendAgentText(newConversationCommand(agentLabel))) setPending([]);
+  };
+  /** The composer's `/` menu: the commands that continue the draft, the
+   * reader's own first. Picking one only fills the field — the reader still
+   * sends it, so a stray tap never runs `/clear` on a session. */
+  const slashMenu = useMemo(
+    () => (tab.kind === "agent" && connected ? slashSuggestions(draft, slashCliKey, usedSlash) : []),
+    [tab.kind, connected, draft, slashCliKey, usedSlash],
+  );
+  const pickSlash = (suggestion: SlashSuggestion) => {
+    setDraft(suggestion.args ? `${suggestion.line} ` : suggestion.line);
+    composerInput.current?.focus();
+  };
+  const forgetSlash = (line: string) => {
+    forgetSlashCommand(slashCliKey, line);
+    setUsedSlash(readSlashCommands(slashCliKey));
+    composerInput.current?.focus();
   };
   /** The composer's ✕: an empty draft, and the dictation transcript with it. */
   const clearDraft = () => {
@@ -2396,6 +2419,18 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
         {shownLimits.week && <span className={`fact-limit${shownLimits.week.percent >= 90 ? " high" : ""}`} title={shownLimits.week.resets ? resetText(shownLimits.week.resets, new Date()) : undefined}>{t("mobile.facts.week", { percent: Math.round(100 - shownLimits.week.percent) })}</span>}
       </div>}
       <div className="prompt-composer">
+        {slashMenu.length > 0 && <div className="slash-menu" role="group" aria-label={t("mobile.slash.title")}>
+          <div className="slash-menu-head">{t("mobile.slash.title")} {isUntested("mobile.composer.slash") && <em>{t("mobile.focus.untested")}</em>}</div>
+          {/* Pointer-down is held back so a tap does not take the focus off
+              the field: the keyboard stays up for the argument. */}
+          {slashMenu.map((suggestion) => <div key={suggestion.line} className={`slash-row${suggestion.used ? " used" : ""}`}>
+            <button className="slash-pick" onPointerDown={(event) => event.preventDefault()} onClick={() => pickSlash(suggestion)}>
+              <strong>{suggestion.line}</strong>
+              {suggestion.used ? <small>{t("mobile.slash.recent")}{suggestion.description ? ` · ${suggestion.description}` : ""}</small> : suggestion.description && <small>{suggestion.description}</small>}
+            </button>
+            {suggestion.used && <button className="slash-forget" onPointerDown={(event) => event.preventDefault()} onClick={() => forgetSlash(suggestion.line)} aria-label={t("mobile.slash.forget", { command: suggestion.line })} title={t("mobile.slash.forget", { command: suggestion.line })}>✕</button>}
+          </div>)}
+        </div>}
         <div className="composer-field">
           <textarea ref={composerInput} value={draft} disabled={!connected} rows={1} aria-label={tab.kind === "agent" ? "Message agent" : "Shell command"} placeholder={connected ? (tab.kind === "agent" ? "Message the agent…" : "Type a command…") : "Reconnecting…"} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => {
             if (event.key !== "Enter" || event.shiftKey) return;
