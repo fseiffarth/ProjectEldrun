@@ -612,6 +612,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
         { model },
       );
       focusGroup(groupId);
+      const sessionId = crypto.randomUUID();
       addTab({
         label: model,
         cmd: "vibe",
@@ -623,9 +624,10 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
         // display-only change here can no longer hand out a container escape.
         // `VIBE_ACTIVE_MODEL` carries the resolved alias, not necessarily the
         // name the user picked.
-        env: { VIBE_HOME: vibe_home, VIBE_ACTIVE_MODEL: alias, ELDRUN_LOCAL_MODEL: model },
+        env: { VIBE_HOME: vibe_home, VIBE_ACTIVE_MODEL: alias, ELDRUN_LOCAL_MODEL: model, ELDRUN_TAB_UID: sessionId },
         cwd: projectCwd,
         kind: "local_agent",
+        sessionId,
         hostBoundUid: await registerHostBoundTab(scope),
       });
     } catch {

@@ -866,7 +866,7 @@ export const dict: Dict = {
     "Abre un agente (claude, codex, gemini, agy, vibe, aider, opencode, cursor, copilot, grok, qwen, openclaw) o una shell simple desde el menú + de la barra de pestañas. Los comandos que falten recurren a una shell; los agentes cerrados se reinician.",
   "help.aiTerminals.item2.term": "Sesiones que se reanudan",
   "help.aiTerminals.item2.desc":
-    "Las pestañas de Claude y Codex conservan su conversación tras un reinicio; Eldrun instala los hooks de sesión que hacen exacta la reanudación. Otros agentes se restauran hasta donde permite su CLI.",
+    "Las pestañas de Claude, Codex y Mistral conservan su conversación tras un reinicio; Eldrun registra la sesión actual de cada pestaña para reanudarla con precisión. Otros agentes se restauran hasta donde permite su CLI.",
   "help.aiTerminals.item3.term": "Modelos locales (menú «Modelos y agentes»)",
   "help.aiTerminals.item3.desc":
     "Con Ollama instalado, el menú «Modelos y agentes» lista tus modelos locales —cargar, descargar o bajar uno— junto a los agentes instalados y la carga de CPU, RAM y GPU de esta máquina.",
@@ -6490,7 +6490,7 @@ export const dict: Dict = {
   "lessons.installAgent.manageAgentsTitle": "Instala un agente que falte",
   "lessons.installAgent.manageAgentsBody": "Abre Ajustes → Gestionar CLIs para instalar una CLI de agente con un clic (la salida del instalador se muestra ahí mismo), o ejecuta su comando del fabricante en una pestaña de terminal. La mayoría de las CLIs necesitan npm: el panel ofrece instalar Node.js primero si falta. En un proyecto remoto puede instalar en la máquina que elijas en lugar de en esta. El agente aparece luego en el menú +.",
   "lessons.installAgent.setDefaultTitle": "Los agentes vuelven tras reiniciar",
-  "lessons.installAgent.setDefaultBody": "Las pestañas de Terminal y Archivos se restauran siempre al reiniciar Eldrun, y también cualquier pestaña de agente cuya CLI pueda reanudar. Claude y Codex vuelven a su conversación anterior exacta; Gemini, Qwen, Grok, Cursor, Copilot, OpenCode, Antigravity y Mistral continúan la más reciente del proyecto. Un agente sin vía de reanudación —Aider entre ellos— arranca de cero desde el menú +.",
+  "lessons.installAgent.setDefaultBody": "Las pestañas de Terminal y Archivos se restauran siempre al reiniciar Eldrun, y también cualquier pestaña de agente cuya CLI pueda reanudar. Claude, Codex y Mistral vuelven a su conversación anterior exacta después de registrar una respuesta; Gemini, Qwen, Grok, Cursor, Copilot, OpenCode y Antigravity continúan la más reciente del proyecto. Un agente sin vía de reanudación —Aider entre ellos— arranca de cero desde el menú +.",
   "lessons.localModel.title": "Modelos y agentes",
   "lessons.localModel.blurb": "El menú «Modelos y agentes» centraliza tus modelos Ollama en el dispositivo y tus agentes de IA instalados.",
   "lessons.localModel.brainButtonTitle": "El menú de modelos y agentes",

@@ -267,6 +267,7 @@ export function agentMenuEntries(opts: {
     key: item.cmd,
     label: item.label,
     color: TAB_ACCENT[item.kind],
+    ...(item.cmd === "vibe" ? { untested: "agent.vibeResume" as const } : {}),
     onPick: () => opts.pick(item),
   }));
   const custom = opts.customAgents.map((ca) => {

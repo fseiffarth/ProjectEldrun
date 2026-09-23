@@ -127,6 +127,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
         "prepare_local_agent",
         { model },
       );
+      const sessionId = crypto.randomUUID();
       onPick({
         label: model,
         cmd: "vibe",
@@ -135,9 +136,10 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
         // per-model breakdown (VIBE_ACTIVE_MODEL is the resolved alias). A label,
         // never an authority — the right to run outside the project's container
         // is `hostBoundUid`, a marker the backend records in the state dir (#150).
-        env: { VIBE_HOME: vibe_home, VIBE_ACTIVE_MODEL: alias, ELDRUN_LOCAL_MODEL: model },
+        env: { VIBE_HOME: vibe_home, VIBE_ACTIVE_MODEL: alias, ELDRUN_LOCAL_MODEL: model, ELDRUN_TAB_UID: sessionId },
         cwd: projectCwd,
         kind: "local_agent",
+        sessionId,
         hostBoundUid: await registerHostBoundTab(scope),
       });
     } catch {

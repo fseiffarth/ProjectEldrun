@@ -212,7 +212,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | File | Purpose |
 |------|---------|
 | `projects.ts` | Project list, active project, CRUD, `setActive`. Also owns scope restore: `restoreProjectScope` (one project's saved tabs into its own scope, no switch) and `restoreActiveProjectScopes` (every **active** pill at launch — active means its terminals were never stopped, so they resume without waiting for a click). |
-| `tabs.ts` | Tab/subwindow layout tree per scope; tab persistence policy. `setScope` syncs popouts, then `respawnDetachedForScope` rebuilds the scope's (Wayland retire). |
+| `tabs.ts` | Tab/subwindow layout tree per scope; tab persistence policy, including stable Vibe tab keys for exact backend resume. `setScope` syncs popouts, then `respawnDetachedForScope` rebuilds the scope's (Wayland retire). |
 | `boxes.ts` | Project boxes: N:M membership (`boxMembership`/`useBoxMembership`; `addToBox`/`removeFromBox`/`boxProjects` — no silent dissolve), the persisted `box:<id>` scope's restore + seed (`restoreBoxScope`), and the box-scope helpers (`boxFolderOfScope`, `boxMembersOfScope`). |
 | `settings.ts` | App settings (theme, default agent, git profile, shortcuts, etc.). |
 | `ollamaAutoload.ts` | Loads chosen Ollama models at start (`settings.ollama_autoload_models`). Suppressed by Energy Saver. |

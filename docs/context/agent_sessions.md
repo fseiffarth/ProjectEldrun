@@ -74,6 +74,17 @@ one-time trust (`/hooks` in Codex) before they run; until then
 record. Gemini and the other "continue last" agents restore on their CLI's
 continue flag, not a captured id.
 
+Vibe 2.25 has `--resume <session-id>`. Eldrun registers a `post_agent` hook in
+the user's `~/.vibe/hooks.toml` and in each prepared local-model `VIBE_HOME`;
+after a completed turn it records Vibe's current ID under the tab's
+`ELDRUN_TAB_UID`. A local tab with a recorded, still-present session resumes
+that exact ID (including after Vibe's in-app `/resume` or `/branch`). Existing
+tabs without a record retain the prior `--continue` fallback. Remote Vibe tabs
+also retain `--continue`, since no Eldrun hook is installed on the host. Vibe's
+session logging must be enabled for either flag. Fenced/container tabs receive
+a per-project shadow of `hooks.toml`, like Claude/Codex hook config, so they can
+record their live ID without editing the host hook registration.
+
 ### The phone send hint
 
 An accepted Claude `SessionStart` prints a one-line `eldrun-send <file>` hint

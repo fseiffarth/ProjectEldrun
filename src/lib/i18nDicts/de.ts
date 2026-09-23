@@ -870,7 +870,7 @@ export const dict: Dict = {
     "Einen Agenten (claude, codex, gemini, agy, vibe, aider, opencode, cursor, copilot, grok, qwen, openclaw) oder eine einfache Shell über das +-Menü der Tab-Leiste öffnen. Fehlende Befehle fallen auf eine Shell zurück; geschlossene Agenten starten neu.",
   "help.aiTerminals.item2.term": "Sessions, die fortsetzen",
   "help.aiTerminals.item2.desc":
-    "Claude- und Codex-Tabs nehmen ihr Gespräch über einen Neustart mit; Eldrun installiert die Session-Hooks, die das exakt machen. Andere Agenten stellen so viel wieder her, wie ihre CLI erlaubt.",
+    "Claude-, Codex- und Mistral-Tabs behalten ihre Unterhaltung nach einem Neustart; Eldrun erfasst die aktuelle Sitzung jedes Tabs für eine genaue Wiederaufnahme. Andere Agenten stellen so viel wieder her, wie ihre CLI erlaubt.",
   "help.aiTerminals.item3.term": "Lokale Modelle (Menü „Modelle & Agenten“)",
   "help.aiTerminals.item3.desc":
     "Ist Ollama installiert, listet das Menü „Modelle & Agenten“ deine lokalen Modelle – laden, entladen oder neu holen – neben den installierten Agenten und der CPU-, RAM- und GPU-Last dieses Rechners.",
@@ -6495,7 +6495,7 @@ export const dict: Dict = {
   "lessons.installAgent.manageAgentsTitle": "Einen fehlenden Agenten installieren",
   "lessons.installAgent.manageAgentsBody": "Öffne Einstellungen → CLIs verwalten, um eine Agenten-CLI mit einem Klick zu installieren (die Ausgabe des Installers läuft direkt dort), oder führe den Hersteller-Befehl in einem Terminal-Tab aus. Die meisten CLIs brauchen npm — das Panel bietet an, zuerst Node.js zu installieren, falls es fehlt. Bei einem Remote-Projekt kann es statt auf diesem Rechner auf einer gewählten Maschine installieren. Der Agent erscheint danach im +-Menü.",
   "lessons.installAgent.setDefaultTitle": "Agenten kommen nach einem Neustart zurück",
-  "lessons.installAgent.setDefaultBody": "Shell- und Datei-Tabs werden bei einem Neustart von Eldrun immer wiederhergestellt, ebenso jeder Agenten-Tab, dessen CLI fortsetzen kann. Claude und Codex kommen mit genau ihrer vorherigen Unterhaltung zurück; Gemini, Qwen, Grok, Cursor, Copilot, OpenCode, Antigravity und Mistral setzen die jüngste Sitzung des Projekts fort. Ein Agent ohne Fortsetzungspfad — darunter Aider — startet frisch über das +-Menü.",
+  "lessons.installAgent.setDefaultBody": "Shell- und Datei-Tabs werden bei einem Neustart von Eldrun immer wiederhergestellt, ebenso jeder Agenten-Tab, dessen CLI fortsetzen kann. Claude, Codex und Mistral kehren nach einer erfassten Antwort zu genau ihrer vorherigen Unterhaltung zurück; Gemini, Qwen, Grok, Cursor, Copilot, OpenCode und Antigravity setzen die jüngste Sitzung des Projekts fort. Ein Agent ohne Fortsetzungspfad — darunter Aider — startet frisch über das +-Menü.",
   "lessons.localModel.title": "Modelle & Agenten",
   "lessons.localModel.blurb": "Das Menü „Modelle & Agenten“ bündelt deine On-Device-Ollama-Modelle und deine installierten KI-Agenten.",
   "lessons.localModel.brainButtonTitle": "Das Modell- und Agenten-Menü",

@@ -879,7 +879,7 @@ export const en = {
     "Open an agent (claude, codex, gemini, agy, vibe, aider, opencode, cursor, copilot, grok, qwen, openclaw) or a plain shell from the + menu on the tab bar. Missing commands fall back to a shell; closed agents respawn.",
   "help.aiTerminals.item2.term": "Sessions that resume",
   "help.aiTerminals.item2.desc":
-    "Claude and Codex tabs carry their conversation across a restart; Eldrun installs the session hooks that make the resume exact. Other agents restore as far as their CLI allows.",
+    "Claude, Codex and Mistral tabs carry their conversation across a restart; Eldrun records each tab's current session for an exact resume. Other agents restore as far as their CLI allows.",
   "help.aiTerminals.item3.term": "Local models (Models & agents menu)",
   "help.aiTerminals.item3.desc":
     "When Ollama is installed, the Models & agents menu lists your on-device models — load, unload, or pull one — beside your installed agents and this machine's CPU, RAM, and GPU load.",
@@ -6795,7 +6795,7 @@ export const en = {
   "lessons.installAgent.manageAgentsTitle": "Install a missing agent",
   "lessons.installAgent.manageAgentsBody": "Open Settings → Manage CLIs to install an agent CLI with one click (the installer's output streams right there), or run its vendor command in a terminal tab. Most CLIs need npm — the panel offers to install Node.js first if it's missing. On a remote project it can install onto a chosen machine instead of this one. The agent then appears in the + menu.",
   "lessons.installAgent.setDefaultTitle": "Agents come back after a relaunch",
-  "lessons.installAgent.setDefaultBody": "Shell and Files tabs are always restored when Eldrun relaunches, and so is any agent tab whose CLI can resume. Claude and Codex come back on their exact prior conversation; Gemini, Qwen, Grok, Cursor, Copilot, OpenCode, Antigravity and Mistral continue the project's most recent one. An agent with no resume path — Aider among them — starts fresh from the + menu.",
+  "lessons.installAgent.setDefaultBody": "Shell and Files tabs are always restored when Eldrun relaunches, and so is any agent tab whose CLI can resume. Claude, Codex and Mistral come back on their exact prior conversation after a recorded turn; Gemini, Qwen, Grok, Cursor, Copilot, OpenCode and Antigravity continue the project's most recent one. An agent with no resume path — Aider among them — starts fresh from the + menu.",
   "lessons.localModel.title": "Models & agents",
   "lessons.localModel.blurb": "The Models & agents menu hubs your on-device Ollama models and your installed AI agents.",
   "lessons.localModel.brainButtonTitle": "The model & agent menu",

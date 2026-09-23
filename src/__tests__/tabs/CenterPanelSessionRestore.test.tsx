@@ -357,7 +357,7 @@ describe("loadFromLayout — resume args", () => {
     expect(tab.sessionId).toBe("abc");
   });
 
-  it("continue-last agent (Mistral/vibe) restores with --continue and carries sessionId", () => {
+  it("Vibe restores its stable tab key for exact backend resume, with --continue as fallback", () => {
     const layout = [
       { key: "agent-1", label: "vibe", cmd: "vibe", cwd: "/stale", kind: "agent" as const, sessionId: "vibe-key-1" },
     ];
@@ -367,6 +367,7 @@ describe("loadFromLayout — resume args", () => {
     const tab = useTabsStore.getState().tabsByScope["project-r"]![0];
     expect(tab.args).toEqual(["--continue"]);
     expect(tab.sessionId).toBe("vibe-key-1");
+    expect(tab.env?.ELDRUN_TAB_UID).toBe("vibe-key-1");
   });
 
   it("agent with no wired resume (aider) with a sessionId gets no resume args", () => {

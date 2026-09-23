@@ -868,7 +868,7 @@ export const dict: Dict = {
     "Ouvrez un agent (claude, codex, gemini, agy, vibe, aider, opencode, cursor, copilot, grok, qwen, openclaw) ou un shell simple depuis le menu + de la barre d'onglets. Les commandes manquantes retombent sur un shell ; les agents fermés redémarrent.",
   "help.aiTerminals.item2.term": "Sessions qui reprennent",
   "help.aiTerminals.item2.desc":
-    "Les onglets Claude et Codex conservent leur conversation à travers un redémarrage ; Eldrun installe les hooks de session qui rendent la reprise exacte. Les autres agents se restaurent autant que leur CLI le permet.",
+    "Les onglets Claude, Codex et Mistral conservent leur conversation après un redémarrage ; Eldrun enregistre la session actuelle de chaque onglet pour la reprendre précisément. Les autres agents se restaurent autant que leur CLI le permet.",
   "help.aiTerminals.item3.term": "Modèles locaux (menu « Modèles et agents »)",
   "help.aiTerminals.item3.desc":
     "Quand Ollama est installé, le menu « Modèles et agents » liste tes modèles locaux — charger, décharger ou en télécharger un — à côté de tes agents installés et de la charge CPU, RAM et GPU de cette machine.",
@@ -6492,7 +6492,7 @@ export const dict: Dict = {
   "lessons.installAgent.manageAgentsTitle": "Installer un agent manquant",
   "lessons.installAgent.manageAgentsBody": "Ouvrez Paramètres → Gérer les CLI pour installer une CLI d'agent en un clic (la sortie de l'installeur défile sur place), ou lancez sa commande éditeur dans un onglet terminal. La plupart des CLI ont besoin de npm — le panneau propose d'installer Node.js d'abord s'il manque. Sur un projet distant, il peut installer sur une machine de votre choix plutôt que sur celle-ci. L'agent apparaît ensuite dans le menu +.",
   "lessons.installAgent.setDefaultTitle": "Les agents reviennent après un relancement",
-  "lessons.installAgent.setDefaultBody": "Les onglets Terminal et Fichiers sont toujours restaurés au relancement d'Eldrun, ainsi que tout onglet d'agent dont la CLI sait reprendre. Claude et Codex reviennent sur leur conversation précédente exacte ; Gemini, Qwen, Grok, Cursor, Copilot, OpenCode, Antigravity et Mistral poursuivent la plus récente du projet. Un agent sans reprise — Aider notamment — repart à zéro depuis le menu +.",
+  "lessons.installAgent.setDefaultBody": "Les onglets Terminal et Fichiers sont toujours restaurés au relancement d'Eldrun, ainsi que tout onglet d'agent dont la CLI sait reprendre. Claude, Codex et Mistral reviennent sur leur conversation précédente exacte après l'enregistrement d'une réponse ; Gemini, Qwen, Grok, Cursor, Copilot, OpenCode et Antigravity poursuivent la plus récente du projet. Un agent sans reprise — Aider notamment — repart à zéro depuis le menu +.",
   "lessons.localModel.title": "Modèles et agents",
   "lessons.localModel.blurb": "Le menu « Modèles et agents » centralise vos modèles Ollama embarqués et vos agents IA installés.",
   "lessons.localModel.brainButtonTitle": "Le menu modèles et agents",

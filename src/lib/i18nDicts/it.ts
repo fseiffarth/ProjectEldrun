@@ -866,7 +866,7 @@ export const dict: Dict = {
     "Apri un agente (claude, codex, gemini, agy, vibe, aider, opencode, cursor, copilot, grok, qwen, openclaw) o una shell semplice dal menu + della barra delle schede. I comandi mancanti ricadono su una shell; gli agenti chiusi si riavviano.",
   "help.aiTerminals.item2.term": "Sessioni che riprendono",
   "help.aiTerminals.item2.desc":
-    "Le schede Claude e Codex portano la loro conversazione oltre un riavvio; Eldrun installa gli hook di sessione che rendono esatta la ripresa. Gli altri agenti si ripristinano per quanto la loro CLI consente.",
+    "Le schede Claude, Codex e Mistral conservano la conversazione dopo un riavvio; Eldrun registra la sessione corrente di ogni scheda per riprenderla esattamente. Gli altri agenti si ripristinano per quanto la loro CLI consente.",
   "help.aiTerminals.item3.term": "Modelli locali (menu «Modelli e agenti»)",
   "help.aiTerminals.item3.desc":
     "Con Ollama installato, il menu «Modelli e agenti» elenca i tuoi modelli locali – caricarne, scaricarne o prelevarne uno – accanto agli agenti installati e al carico di CPU, RAM e GPU di questa macchina.",
@@ -6490,7 +6490,7 @@ export const dict: Dict = {
   "lessons.installAgent.manageAgentsTitle": "Installa un agente mancante",
   "lessons.installAgent.manageAgentsBody": "Apri Impostazioni → Gestisci CLI per installare una CLI di agente con un clic (l'output dell'installer scorre lì stesso), o esegui il comando del fornitore in una scheda di terminale. La maggior parte delle CLI richiede npm: il pannello propone di installare prima Node.js se manca. In un progetto remoto può installare su una macchina a scelta invece che su questa. L'agente compare poi nel menu +.",
   "lessons.installAgent.setDefaultTitle": "Gli agenti tornano dopo un riavvio",
-  "lessons.installAgent.setDefaultBody": "Le schede Shell e File vengono sempre ripristinate al riavvio di Eldrun, e così ogni scheda di agente la cui CLI sa riprendere. Claude e Codex tornano esattamente sulla conversazione precedente; Gemini, Qwen, Grok, Cursor, Copilot, OpenCode, Antigravity e Mistral continuano la più recente del progetto. Un agente senza via di ripresa — Aider fra questi — riparte da zero dal menu +.",
+  "lessons.installAgent.setDefaultBody": "Le schede Shell e File vengono sempre ripristinate al riavvio di Eldrun, e così ogni scheda di agente la cui CLI sa riprendere. Claude, Codex e Mistral tornano esattamente sulla conversazione precedente dopo la registrazione di una risposta; Gemini, Qwen, Grok, Cursor, Copilot, OpenCode e Antigravity continuano la più recente del progetto. Un agente senza via di ripresa — Aider fra questi — riparte da zero dal menu +.",
   "lessons.localModel.title": "Modelli e agenti",
   "lessons.localModel.blurb": "Il menu «Modelli e agenti» centralizza i tuoi modelli Ollama on-device e i tuoi agenti IA installati.",
   "lessons.localModel.brainButtonTitle": "Il menu modelli e agenti",

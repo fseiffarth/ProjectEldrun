@@ -2235,12 +2235,13 @@ pub(crate) fn staged_config_mounts(home: &str, stage: &Path) -> Vec<(String, Str
         ".claude/settings.json",
         ".claude/settings.local.json",
         ".codex/config.toml",
+        ".vibe/hooks.toml",
     ] {
         // Native separators: the container path is the host original's own path.
         let src_path = rel
             .split('/')
             .fold(home.to_path_buf(), |p, seg| p.join(seg));
-        // Flatten the host path to a unique leaf so the three files never collide.
+        // Flatten the host path to a unique leaf so the files never collide.
         let src = src_path.to_string_lossy().into_owned();
         let leaf = src
             .trim_start_matches(['/', '\\'])
@@ -2358,8 +2359,8 @@ fn toml_tables<'a>(text: &'a str, prefix: &str) -> Vec<&'a str> {
 /// would simply never be written. `agent_session` also writes the POSIX body
 /// beside it (with the *container-side* live-sessions path baked in), and this
 /// swaps the command in the copy — never the host original — so the same
-/// hook contract holds inside the container. Both serializations are covered:
-/// Claude's JSON (serde-escaped string) and Codex's TOML (literal string).
+/// hook contract holds inside the container. All serializations are covered:
+/// Claude's JSON, Codex's literal TOML and Vibe's double-quoted TOML.
 #[cfg(windows)]
 fn rewrite_hook_for_container(staged: &Path) {
     let Ok(text) = std::fs::read_to_string(staged) else {
@@ -2376,7 +2377,11 @@ fn rewrite_hook_for_container(staged: &Path) {
         };
         text.replace(&from, &to)
     } else {
-        text.replace(&format!("'{host_cmd}'"), &format!("'{container_cmd}'"))
+        let literal = text.replace(&format!("'{host_cmd}'"), &format!("'{container_cmd}'"));
+        match (serde_json::to_string(&host_cmd), serde_json::to_string(&container_cmd)) {
+            (Ok(from), Ok(to)) => literal.replace(&from, &to),
+            _ => literal,
+        }
     };
     if rewritten != text {
         let _ = std::fs::write(staged, rewritten);
@@ -3303,10 +3308,10 @@ mod tests {
         let home_str = home.to_string_lossy().into_owned();
         let mounts = staged_config_mounts(&home_str, &stage);
 
-        // All THREE registration files are shadowed — the two that don't exist on
+        // All FOUR registration files are shadowed — the three that don't exist on
         // this fake host included. That is the point: a missing shadow used to let
         // the container write through and create the real host file.
-        assert_eq!(mounts.len(), 3, "got: {mounts:?}");
+        assert_eq!(mounts.len(), 4, "got: {mounts:?}");
         let (src, dst) = (mounts[0].0.clone(), mounts[0].1.clone());
         assert_eq!(dst, settings.to_string_lossy());
         // Source is a real copy living under the stage dir, not the host file.
@@ -3327,6 +3332,7 @@ mod tests {
         }
         assert_eq!(std::fs::read(&mounts[1].0).unwrap(), b"{}\n");
         assert_eq!(std::fs::read(&mounts[2].0).unwrap(), b"");
+        assert_eq!(std::fs::read(&mounts[3].0).unwrap(), b"");
 
         // Refresh-at-up: a second pass overwrites the same copies in place (same
         // paths, new content) — never a second set of files.
@@ -3336,7 +3342,7 @@ mod tests {
         assert_eq!(std::fs::read(src).unwrap(), b"{\"hooks\":{\"v\":2}}");
         assert_eq!(
             std::fs::read_dir(&stage).unwrap().count(),
-            3,
+            4,
             "one staged copy per file, refreshed in place"
         );
 

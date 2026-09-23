@@ -4681,7 +4681,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       // from the durable sessionId, just as `buildStaticTabSpec` does for a new
       // tab; it is not a user-configurable environment override.
       const env = { ...(t.env ?? {}) };
-      if (t.cmd === "codex" && t.sessionId) {
+      if ((t.cmd === "codex" || t.cmd === "vibe") && t.sessionId) {
         env.ELDRUN_TAB_UID = t.sessionId;
       }
       return {
@@ -5164,10 +5164,11 @@ export function isPtyTabKind(kind: TabKind): boolean {
  * Agents whose prior session can be resumed, mapping `cmd` → the launch args to
  * relaunch with that session. Two resume styles are wired:
  *
- *  - id-based: Claude (`--resume <id>`) and Codex (`codex resume`, args injected
- *    by the backend) resume a *specific* captured session.
+ *  - id-based: Claude (`--resume <id>`), Codex (`codex resume`) and Vibe
+ *    (`--resume <id>`) resume a captured session; the backend injects the
+ *    latter two from their per-tab hook records.
  *  - cwd "continue last": Qwen, OpenCode, Copilot, Cursor, Gemini, Grok,
- *    Google Antigravity and Mistral/vibe have no caller-supplied launch id, so
+ *    Google Antigravity have no caller-supplied launch id, so
  *    Eldrun re-launches with their "continue the most recent session" flag.
  *    Because each agent tab
  *    launches in the project directory, that most-recent session IS the tab's
@@ -5205,9 +5206,8 @@ export const RESUMABLE_AGENTS: Record<string, (id: string) => string[]> = {
   gemini: () => ["--resume", "latest"],
   // Antigravity CLI: `-c`/`--continue` resumes the most recent conversation.
   agy: () => ["--continue"],
-  // Mistral/vibe: `-c/--continue` resumes the most recent saved session. (Its
-  // `--resume [id]` with no id would open an interactive picker, which hangs a
-  // restore — so `--continue` is the non-interactive path.)
+  // Vibe mints its own ID. The backend replaces this legacy fallback with
+  // `--resume <live-id>` once its post-agent hook has recorded a turn.
   vibe: () => ["--continue"],
 };
 

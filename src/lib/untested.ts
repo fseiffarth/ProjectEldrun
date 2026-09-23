@@ -40,6 +40,8 @@ export const UNTESTED = {
   // --- agents — Agent sessions, schedules and the prompt chart ------
   "agentSchedule.title": { area: "agents", what: "AgentScheduleDialog · Scheduled prompts · {tab}" },
   "promptChart.heading": { area: "agents", what: "PromptChart · Prompt chart" },
+  "agent.vibeResume": { area: "agents", what: "Mistral tab · exact conversation resume" },
+  "agent.vibeLocalResume": { area: "agents", what: "Local Mistral model tab · exact conversation resume" },
 
   // --- browser — The built-in browser -------------------------------
   "browser.downloadTitle": { area: "browser", what: "BrowserDownloadDialog · Download this file?" },
