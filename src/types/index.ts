@@ -258,6 +258,10 @@ export interface Settings {
    *  switched on separately from `root_mcp`, and above every per-account
    *  `agent_access`. */
   root_mcp_mail?: boolean;
+  /** Root console: keep the mail tools to local-model tabs. Absent means off.
+   *  On, cloud agent CLIs are neither listed nor served a mail tool and a
+   *  contained reader is refused; the rest of the tools are untouched. */
+  root_mcp_mail_local_only?: boolean;
   /** Side panel: the **Alerts** group in the file viewer — urgent mail, the
    *  calendar entries about to start, and the to-do cards whose due date is here
    *  or past, merged into one time-ordered strip. **Default true.**

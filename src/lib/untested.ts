@@ -210,6 +210,7 @@ export const UNTESTED = {
   "scheduleMcp": { area: "agents", what: "Schedule MCP · local agent proposals, approval, quotas and delivery" },
   "settings.rootMcpLocalOnly": { area: "layout", what: "SettingsPanel · Only local models get these tools" },
   "settings.rootMcpMail": { area: "layout", what: "SettingsPanel · Agents get Eldrun's mail tools" },
+  "settings.rootMcpMailLocalOnly": { area: "layout", what: "SettingsPanel · Only local models get the mail tools" },
   "settings.takeAdvancedTour": { area: "layout", what: "SettingsPanel · Advanced tour" },
   "settings.terminalWebgl": { area: "layout", what: "SettingsPanel · WebGL terminal renderer" },
   "settings.themeVars": { area: "layout", what: "SettingsPanel · Theme colors" },

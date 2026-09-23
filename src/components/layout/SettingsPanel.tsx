@@ -885,7 +885,7 @@ const SEARCH_KEYS: Record<NavEntry, TranslationKey[]> = {
   browser: ["settings.browserHome", "settings.browserSearch", "settings.browserLinkTarget", "settings.browserRestoreNavigate", "settings.browserLivePages"],
   calendar: ["settings.calendarGlobalApp", "settings.todoBoard", "settings.weekStartsOn", "settings.defaultView", "settings.dayGridStart", "settings.defaultReminder"],
   usageStats: ["settings.dailyRecap", "settings.openUsageStats"],
-  rootConsole: ["settings.rootMcp", "settings.rootMcpLocalOnly", "settings.rootMcpMail", "rootReview.setting", "mcpSecurity.title"],
+  rootConsole: ["settings.rootMcp", "settings.rootMcpLocalOnly", "settings.rootMcpMail", "settings.rootMcpMailLocalOnly", "rootReview.setting", "mcpSecurity.title"],
   remoteFeatures: ["settings.vpnEnabled", "settings.machinesEnabled", "settings.headlessRemote"],
   mobile: ["settings.mobileIndicator"],
   performance: ["settings.energySaver", "settings.fastMode"],
@@ -1528,6 +1528,16 @@ export function SettingsDialog({
               disabled={!(settings?.root_mcp ?? true)}
               onChange={(e) => void updateSettings({ root_mcp_mail: e.target.checked })}
               help={t("settings.rootMcpMailHelp")}
+            />
+            {/* Subordinate to the mail switch: narrows mail alone, where the
+                local-only switch above narrows every tool. Absent means off;
+                read per request, so running cloud agents lose mail at once. */}
+            <ToggleCard
+              label={<>{t("settings.rootMcpMailLocalOnly")} <UntestedTag id="settings.rootMcpMailLocalOnly" /></>}
+              checked={settings?.root_mcp_mail_local_only ?? false}
+              disabled={!(settings?.root_mcp ?? true) || !(settings?.root_mcp_mail ?? false)}
+              onChange={(e) => void updateSettings({ root_mcp_mail_local_only: e.target.checked })}
+              help={t("settings.rootMcpMailLocalOnlyHelp")}
             />
 
             <SettingRow

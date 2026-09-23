@@ -73,6 +73,8 @@ pub struct Policy {
     pub enabled: bool,
     pub local_only: bool,
     pub mail: bool,
+    /// `Settings::root_mcp_mail_local_only`: mail for local-model tabs only.
+    pub mail_local_only: bool,
     pub review: String,
 }
 impl Policy {
@@ -88,6 +90,7 @@ impl Policy {
             enabled: s.root_mcp(),
             local_only: s.root_mcp_local_only(),
             mail: s.root_mcp_mail(),
+            mail_local_only: s.root_mcp_mail_local_only(),
             review: s
                 .root_mcp_review
                 .as_deref()
@@ -100,7 +103,14 @@ impl Policy {
         if caller == Caller::Scheduler { return false; }
         self.enabled
             && (!self.local_only || caller == Caller::LocalModel)
-            && (caller != Caller::Reader || self.mail)
+            && (caller != Caller::Reader || self.serves_mail(caller))
+    }
+    /// Whether `caller` is listed and served the mail tools. Only the mail
+    /// switch and its local-only companion decide it; [`Self::serves`] still
+    /// gates the endpoint as a whole. A reader is never a local model, so
+    /// local-only mail serves it nothing.
+    pub fn serves_mail(&self, caller: Caller) -> bool {
+        self.mail && (!self.mail_local_only || caller == Caller::LocalModel)
     }
 }
 
@@ -340,6 +350,52 @@ mod tests {
         std::fs::write(&path, "{}").unwrap();
         assert!(Policy::load(&path).unwrap().serves(Caller::Agent));
     }
+    /// Every mail switch × local-only × class. The companion narrows mail
+    /// only: it never widens it, never touches the other tools, and a reader
+    /// (always a cloud CLI) loses the endpoint with it.
+    #[test]
+    fn mail_local_only_keeps_mail_to_local_models() {
+        let classes = [Caller::Agent, Caller::LocalModel, Caller::Reader, Caller::Scheduler];
+        for mail in [false, true] {
+            for mail_local_only in [false, true] {
+                let policy = Policy { enabled: true, local_only: false, mail, mail_local_only, review: "all".into() };
+                for caller in classes {
+                    let expected = mail && (!mail_local_only || caller == Caller::LocalModel);
+                    assert_eq!(policy.serves_mail(caller), expected, "mail={mail} local={mail_local_only} {caller:?}");
+                }
+                assert_eq!(policy.serves(Caller::Reader), mail && !mail_local_only, "reader: mail={mail} local={mail_local_only}");
+                assert!(policy.serves(Caller::Agent), "the other tools stay on: mail={mail} local={mail_local_only}");
+                assert!(policy.serves(Caller::LocalModel));
+                assert!(!policy.serves(Caller::Scheduler));
+            }
+        }
+    }
+
+    #[test]
+    fn mail_local_only_is_read_from_settings_and_absent_means_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let load = |body: &str| {
+            std::fs::write(&path, body).unwrap();
+            Policy::load(&path).unwrap()
+        };
+        let off = load(r#"{"root_mcp_mail":true}"#);
+        assert!(!off.mail_local_only);
+        assert!(off.serves_mail(Caller::Agent) && off.serves_mail(Caller::Reader));
+        let on = load(r#"{"root_mcp_mail":true,"root_mcp_mail_local_only":true}"#);
+        assert!(on.mail_local_only);
+        assert!(!on.serves_mail(Caller::Agent) && !on.serves_mail(Caller::Reader));
+        assert!(on.serves_mail(Caller::LocalModel));
+        // Alone it opens nothing: mail stays off until its own switch is on.
+        let alone = load(r#"{"root_mcp_mail_local_only":true}"#);
+        assert!(!alone.serves_mail(Caller::LocalModel));
+        let explicit_off = load(r#"{"root_mcp_mail":true,"root_mcp_mail_local_only":false}"#);
+        assert!(explicit_off.serves_mail(Caller::Agent));
+        // A wrongly typed value is unreadable settings, which refuse everything.
+        std::fs::write(&path, r#"{"root_mcp_mail":true,"root_mcp_mail_local_only":"yes"}"#).unwrap();
+        assert!(Policy::load(&path).is_err());
+    }
+
     #[test]
     fn new_tools_and_reader_data_are_denied() {
         assert!(tool("calendar_new_tool").is_none());

@@ -31,7 +31,7 @@ describe("settings category navigation", () => {
     await act(async () => { render(<SettingsDialog onClose={() => {}} />); });
     const agents = within(nav()).getByRole("group", { name: "Agents" });
     expect(within(agents).getByRole("button", { name: "Manage CLIs" })).toBeTruthy();
-    expect(within(agents).getByRole("button", { name: "Root console" })).toBeTruthy();
+    expect(within(agents).getByRole("button", { name: "Root console and MCPs" })).toBeTruthy();
     const general = within(nav()).getByRole("group", { name: "General" });
     expect(within(general).getByRole("button", { name: "General" }).getAttribute("aria-current")).toBe("location");
     // General's page holds the theme picker and nothing from other pages.

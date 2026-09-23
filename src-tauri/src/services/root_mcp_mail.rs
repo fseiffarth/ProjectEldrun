@@ -1020,7 +1020,7 @@ mod tests {
             caller,
             mail,
             reader_refusal: None,
-            policy: super::super::root_mcp_security::Policy { enabled: true, local_only: false, mail: true, review: "all".into() },
+            policy: super::super::root_mcp_security::Policy { enabled: true, local_only: false, mail: true, mail_local_only: false, review: "all".into() },
             access: super::super::root_mcp_security::Access::initial(Caller::Agent), session: None, deadline: None,
         }
     }

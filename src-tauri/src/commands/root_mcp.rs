@@ -278,9 +278,9 @@ pub struct RootMcpStatus {
     /// Agent CLIs that can call the tools (`root_mcp::WIRED_CLIS`); the rest
     /// get the endpoint's env pair and nothing that uses it.
     pub wired_clis: &'static [&'static str],
-    /// The mail tools are switched on (`Settings::root_mcp_mail`, default off)
-    /// and at least one mail account is open to a contained reader
-    /// (`MailAiPrefs::agent_access`) — the badge's mail mark.
+    /// The endpoint would serve a contained reader now (`Settings::root_mcp_mail`
+    /// on, neither local-only switch on) and at least one mail account is open
+    /// to one (`MailAiPrefs::agent_access`) — the badge's mail mark.
     pub mail_open: bool,
     /// A root agent started now would run inside the fence, so the staged-write
     /// review is a gate it cannot walk around. False (fence switched off, or a
@@ -299,7 +299,7 @@ pub fn root_mcp_status() -> RootMcpStatus {
         enabled: root_mcp::enabled(),
         tools: root_mcp::tool_names(),
         wired_clis: root_mcp::WIRED_CLIS,
-        mail_open: root_mcp::mail_enabled_in(&storage::state_dir().join("settings.json"))
+        mail_open: root_mcp::serves(&storage::state_dir().join("settings.json"), root_mcp::Caller::Reader)
             && crate::commands::mail::any_account_open_to_agents(),
         review_enforced: crate::services::agent_fence::policy_enabled(None)
             && crate::services::agent_fence::platform_fenceable()

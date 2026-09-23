@@ -415,10 +415,9 @@ pub fn revoke_token(token: &str) -> Option<Identity> {
 pub fn enabled_in(settings: &Path) -> bool {
     Policy::load(settings).is_ok_and(|p| p.enabled)
 }
-pub fn mail_enabled_in(settings: &Path) -> bool {
-    Policy::load(settings).is_ok_and(|p| p.enabled && p.mail)
-}
 pub const MAIL_OFF: &str = "mail tools are switched off in Eldrun's Settings";
+/// A cloud agent's answer while `Settings::root_mcp_mail_local_only` is on.
+pub const MAIL_LOCAL_ONLY: &str = "mail tools are kept to local models in Eldrun's Settings";
 pub fn serves(settings: &Path, caller: Caller) -> bool {
     Policy::load(settings).is_ok_and(|p| p.serves(caller))
 }
@@ -500,7 +499,8 @@ pub fn reader_endpoint_url() -> String {
 /// The token is visible to everything inside that VM — the VM is the unit of
 /// containment, the token is scoped to the `Reader` tool set, and it dies with
 /// the tab. `None` when the tools are off, local-only, mail is not switched on
-/// (`Settings::root_mcp_mail`), or the CLI is not wired.
+/// (`Settings::root_mcp_mail`) or kept to local models (a reader is always a
+/// cloud CLI), or the CLI is not wired.
 pub fn apply_reader_to_spawn(
     tab: &str,
     project: &str,
@@ -512,11 +512,9 @@ pub fn apply_reader_to_spawn(
         &crate::storage::state_dir().join("settings.json"),
     )
     .ok();
-    if settings.as_ref().is_some_and(|s| !s.root_mcp() || s.root_mcp_local_only()) {
-        return None;
-    }
+    // The endpoint's own per-request verdict, so spawn and request agree.
     // Mail is off unless switched on, a missing settings file included.
-    if !settings.as_ref().is_some_and(|s| s.root_mcp_mail()) {
+    if !settings.as_ref().is_some_and(|s| Policy::from_settings(s).serves(Caller::Reader)) {
         return None;
     }
     let token = mint_token()?;
@@ -2711,7 +2709,7 @@ pub fn handle_message(stores: &Stores, tab: &str, message: &Value) -> (Option<Va
         ),
         "ping" => (ok(json!({})), Effects::default()),
         "tools/list" => (
-            ok(json!({ "tools": tool_definitions(stores.caller, stores.policy.mail).as_array().unwrap().iter()
+            ok(json!({ "tools": tool_definitions(stores.caller, stores.policy.serves_mail(stores.caller)).as_array().unwrap().iter()
                 .filter(|t| stores.access.allows(stores.caller, t["name"].as_str().unwrap_or(""))).collect::<Vec<_>>() })),
             Effects::default(),
         ),
@@ -2730,10 +2728,10 @@ pub fn handle_message(stores: &Stores, tab: &str, message: &Value) -> (Option<Va
                 .unwrap_or_else(|| Err("unknown tool".into()));
             let result = if !stores.access.allows(stores.caller, name) {
                 Err(format!("unknown tool '{name}'"))
-            } else if super::root_mcp_mail::is_mail_tool(name) && !stores.policy.mail {
+            } else if super::root_mcp_mail::is_mail_tool(name) && !stores.policy.serves_mail(stores.caller) {
                 // Its own switch, off by default: unlisted, and named when
                 // called anyway so the agent can tell the user what to flip.
-                Err(MAIL_OFF.to_string())
+                Err(if stores.policy.mail { MAIL_LOCAL_ONLY } else { MAIL_OFF }.to_string())
             } else if let Err(error) = validation {
                 Err(error)
             } else if name == super::root_mcp_import::TOOL {
@@ -3132,7 +3130,6 @@ mod tests {
                 Some(body) => fx.write_state("settings.json", body.clone()),
                 None => std::fs::remove_file(&fx.settings).unwrap(),
             }
-            assert!(!mail_enabled_in(&fx.settings), "{off:?}");
             assert_eq!(listed_mail(&fx), 0, "{off:?}");
             let (reply, _) = handle_message(&fx.stores(), "t", &draft);
             let result = reply.unwrap()["result"].clone();
@@ -3202,6 +3199,82 @@ mod tests {
         assert!(reply.is_none());
         let (reply, _) = handle_message(&f.stores(), "root:test", &json!({ "jsonrpc": "2.0", "id": 7, "method": "nope" }));
         assert_eq!(reply.unwrap()["error"]["code"], -32601);
+    }
+
+    /// `root_mcp_mail_local_only`, end to end through `handle_message`: a
+    /// cloud agent loses exactly the mail tools (unlisted, refused by name with
+    /// a message that says which switch), a local model keeps them, a reader
+    /// is refused outright, and a flip applies to the next request.
+    #[test]
+    fn mail_local_only_withholds_mail_from_cloud_agents_only() {
+        use crate::services::root_mcp_mail::is_mail_tool;
+        let fx = Fixture::new();
+        let list = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
+        let call = |name: &str| json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                        "params": { "name": name, "arguments": {} } });
+        // Fresh stores per request, as the HTTP layer loads policy per request.
+        let stores = |caller| Stores { caller, access: Access::initial(caller), ..fx.stores() };
+        let listed = |caller| -> Vec<String> {
+            let (reply, _) = handle_message(&stores(caller), "t", &list);
+            reply.unwrap()["result"]["tools"].as_array().unwrap().iter()
+                .map(|t| t["name"].as_str().unwrap().to_string()).collect()
+        };
+        let text = |caller, name: &str| -> String {
+            let (reply, _) = handle_message(&stores(caller), "t", &call(name));
+            reply.unwrap()["result"]["content"][0]["text"].as_str().unwrap_or_default().to_string()
+        };
+        let mail_of = |names: &[String]| names.iter().filter(|n| is_mail_tool(n)).cloned().collect::<Vec<_>>();
+
+        // Baseline, companion off: both root classes list their draft tools.
+        let agent_before = listed(Caller::Agent);
+        let local_before = listed(Caller::LocalModel);
+        assert!(!mail_of(&agent_before).is_empty() && !mail_of(&local_before).is_empty());
+
+        fx.write_state("settings.json", json!({ "root_mcp_mail": true, "root_mcp_mail_local_only": true }));
+        // Cloud agent: every non-mail tool still listed, no mail tool.
+        let agent = listed(Caller::Agent);
+        let expected: Vec<String> = agent_before.iter().filter(|n| !is_mail_tool(n)).cloned().collect();
+        assert_eq!(agent, expected);
+        for name in mail_of(&agent_before) {
+            assert_eq!(text(Caller::Agent, &name), MAIL_LOCAL_ONLY, "{name}");
+        }
+        // Its calendar tools keep working.
+        assert!(!text(Caller::Agent, "calendar_list").starts_with("mail tools"));
+        // Local model: its list is unchanged, and a mail call reaches the mail
+        // layer (the fixture has no store, so it is refused as locked instead).
+        assert_eq!(listed(Caller::LocalModel), local_before);
+        for name in mail_of(&local_before) {
+            let t = text(Caller::LocalModel, &name);
+            assert!(t != MAIL_LOCAL_ONLY && t != MAIL_OFF && !t.starts_with("unknown tool"), "{name}: {t}");
+        }
+        // Reader: the endpoint refuses it before any method.
+        assert!(!serves(&fx.settings, Caller::Reader));
+        let (reply, _) = handle_message(&stores(Caller::Reader), "t", &list);
+        assert_eq!(reply.unwrap()["error"]["code"], -32000);
+
+        // With mail itself off the answer names that switch, for every class.
+        fx.write_state("settings.json", json!({ "root_mcp_mail": false, "root_mcp_mail_local_only": true }));
+        for caller in [Caller::Agent, Caller::LocalModel] {
+            assert!(mail_of(&listed(caller)).is_empty(), "{caller:?}");
+            assert_eq!(text(caller, "mail_drafts_list"), MAIL_OFF, "{caller:?}");
+        }
+
+        // Stacked with the endpoint-wide local-only: agents get nothing at all,
+        // a local model still gets mail.
+        fx.write_state("settings.json", json!({ "root_mcp_mail": true, "root_mcp_mail_local_only": true, "root_mcp_local_only": true }));
+        let (reply, _) = handle_message(&stores(Caller::Agent), "t", &list);
+        assert_eq!(reply.unwrap()["error"]["code"], -32000);
+        assert_eq!(listed(Caller::LocalModel), local_before);
+
+        // The global switch outranks both.
+        fx.write_state("settings.json", json!({ "root_mcp": false, "root_mcp_mail": true, "root_mcp_mail_local_only": true }));
+        let (reply, _) = handle_message(&stores(Caller::LocalModel), "t", &list);
+        assert_eq!(reply.unwrap()["error"]["code"], -32000);
+
+        // Flipped back off: the running agent gets mail again on its next request.
+        fx.write_state("settings.json", json!({ "root_mcp_mail": true, "root_mcp_mail_local_only": false }));
+        assert_eq!(listed(Caller::Agent), agent_before);
+        assert!(serves(&fx.settings, Caller::Reader));
     }
 
     #[test]

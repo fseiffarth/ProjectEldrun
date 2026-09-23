@@ -196,6 +196,14 @@ pub struct Settings {
     /// Subordinate to `root_mcp`, and above every per-account `agent_access`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_mcp_mail: Option<bool>,
+    /// Root console: keep the **mail** tools to local-model tabs. Absent means
+    /// off. On, a cloud agent CLI (Claude, Codex, …) is neither listed nor
+    /// served a mail tool, and a contained reader — always a cloud CLI — is
+    /// served nothing; a local-model tab keeps its draft tools. The rest of the
+    /// tools are untouched: that is `root_mcp_local_only`'s job. Read per
+    /// request, like the switches above. Subordinate to `root_mcp_mail`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_mcp_mail_local_only: Option<bool>,
     /// Side panel: the opt-in **Alerts** group in the file viewer — urgent
     /// mail, the calendar entries about to start, and the to-do cards whose due
     /// date is here or past, in one time-ordered strip.
@@ -940,6 +948,11 @@ impl Settings {
         self.root_mcp_mail.unwrap_or(false)
     }
 
+    /// Whether the root MCP mail tools are kept to local-model tabs. Off unless set.
+    pub fn root_mcp_mail_local_only(&self) -> bool {
+        self.root_mcp_mail_local_only.unwrap_or(false)
+    }
+
     /// Whether the root MCP tools are kept to local-model tabs. Off unless set.
     pub fn root_mcp_local_only(&self) -> bool {
         self.root_mcp_local_only.unwrap_or(false)
@@ -1086,6 +1099,27 @@ mod tests {
         let back: Settings =
             serde_json::from_str(&serde_json::to_string(&s).unwrap()).expect("round trip");
         assert_eq!(back.fast_mode, Some(true));
+    }
+
+    /// The mail tools' local-only companion is absent by default (reads off),
+    /// a real field rather than an `extra` passenger — so the MCP policy can
+    /// read it — and an explicit `false` survives a round trip as `false`.
+    #[test]
+    fn root_mcp_mail_local_only_defaults_absent_and_is_a_real_field() {
+        let raw = serde_json::to_string(&Settings::default()).unwrap();
+        assert!(!raw.contains("root_mcp_mail_local_only"), "{raw}");
+        assert!(!Settings::default().root_mcp_mail_local_only());
+
+        for (body, want) in [(r#"{"root_mcp_mail_local_only":true}"#, true), (r#"{"root_mcp_mail_local_only":false}"#, false)] {
+            let s: Settings = serde_json::from_str(body).expect("parse");
+            assert!(s.extra.is_empty(), "fell through to `extra`: {:?}", s.extra.keys().collect::<Vec<_>>());
+            assert_eq!(s.root_mcp_mail_local_only(), want);
+            let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).expect("round trip");
+            assert_eq!(back.root_mcp_mail_local_only, Some(want));
+        }
+        // Independent of the endpoint-wide switch and of mail itself.
+        let s: Settings = serde_json::from_str(r#"{"root_mcp_mail_local_only":true}"#).unwrap();
+        assert!(!s.root_mcp_local_only() && !s.root_mcp_mail());
     }
 
     /// The global Mail AI master switch (Group Q) is **absent by default** — a

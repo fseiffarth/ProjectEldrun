@@ -194,6 +194,11 @@ cloud API request — containment narrows where else it can go, not this. That i
   `Settings.root_mcp_mail` (unset = off), separate from `root_mcp`. Off, no mail
   tool is listed or served to any caller class, drafts included, and a reader
   gets no endpoint.
+- Beneath it, `Settings.root_mcp_mail_local_only` (unset = off) keeps mail to
+  `Caller::LocalModel`: `Policy::serves_mail` lists and serves no mail tool to a
+  cloud `Agent` (a call is refused with `MAIL_LOCAL_ONLY`), and a `Reader` —
+  always a cloud CLI — gets no endpoint. Unlike `root_mcp_local_only` it leaves
+  the calendar, board and project tools alone. Read per request.
 - A new per-account switch, **off by default**, beside the existing per-account
   AI switches: `MailAiPrefs.agent_access` (`Option<bool>`, unset = off). The
   existing `mail_account_set_ai` command already writes that struct.
