@@ -69,7 +69,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use rusqlite::types::Value as SqlValue;
-use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row, ToSql};
 use sha2::{Digest, Sha256};
 
 use crate::schema::mail::{
@@ -98,6 +98,14 @@ const SCHEMA_VERSION: i64 = 2;
 /// `scanned`, and the UI says *"searched the most recent N messages"* — the one
 /// thing a search must never do is silently truncate and look complete.
 const MAX_SEARCH_SCAN: usize = 50_000;
+
+/// A folder search uses the same fields as IMAP `SUBJECT`/`FROM`; the existing
+/// local list and priority searches keep their broader preview matching.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SearchFields {
+    SubjectSenderPreview,
+    SubjectSender,
+}
 
 /// The `meta` key set once the store's existing plaintext has been sealed.
 const META_ENCRYPTED: &str = "encrypted";
@@ -476,6 +484,13 @@ impl MailStore {
                 addr_key TEXT PRIMARY KEY,
                 address  TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS agent_marks (
+                message_id TEXT PRIMARY KEY,
+                account_id TEXT NOT NULL,
+                mid_key    TEXT NOT NULL DEFAULT '',
+                marked_at  TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS agent_marks_mid ON agent_marks(account_id, mid_key);
             "#,
         )
         .map_err(|e| e.to_string())?;
@@ -1005,6 +1020,42 @@ impl MailStore {
             ],
         )
         .map_err(|e| e.to_string())?;
+        // A mark for agents follows the RFC `Message-ID`, not the store row: a
+        // message re-indexed under a new `{folder}-{uid}` (a move, a
+        // UIDVALIDITY change) arrives marked when a row of the same account with
+        // the same id was. Only for a row that is new here, so a re-sync — every
+        // message in a folder, every check — costs one indexed probe per *new*
+        // message and nothing per known one.
+        if !existed {
+            // A mark left under this store id by an earlier message (the id
+            // was reused after a delete) is that message's consent, not this
+            // one's.
+            conn.execute(
+                "DELETE FROM agent_marks WHERE message_id = ?1",
+                params![header.id],
+            )
+            .map_err(|e| e.to_string())?;
+            let key = self.agent_mark_key(header);
+            if !key.is_empty() {
+                // Only a copy whose original has left the index is adopted. A
+                // Message-ID is sender-chosen and known to every participant
+                // of the thread, so a duplicate arriving while the original is
+                // still indexed is not a move — it is someone else's message
+                // wearing the marked one's id.
+                conn.execute(
+                    "INSERT OR IGNORE INTO agent_marks (message_id, account_id, mid_key, marked_at)
+                     SELECT ?1, ?2, ?3, marked_at FROM agent_marks
+                     WHERE account_id = ?2 AND mid_key = ?3
+                       AND NOT EXISTS (SELECT 1 FROM agent_marks a2
+                                       JOIN messages m ON m.id = a2.message_id
+                                       WHERE a2.account_id = ?2 AND a2.mid_key = ?3
+                                         AND m.deleted = 0)
+                     LIMIT 1",
+                    params![header.id, header.account_id, key],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
         Ok(!existed)
     }
 
@@ -1050,6 +1101,69 @@ impl MailStore {
             sort,
             desc,
             unread_only,
+            SearchFields::SubjectSenderPreview,
+        )
+    }
+
+    /// [`headers_page`](Self::headers_page) over the messages marked for agents
+    /// only — what a contained reader in `Marked` scope is served, and the
+    /// mail view's "shared with agents" filter. The restriction is a fixed
+    /// literal on the same query, so it pages, searches and sorts exactly like
+    /// the folder does.
+    #[allow(clippy::too_many_arguments)]
+    pub fn headers_page_marked(
+        &self,
+        folder_id: &str,
+        offset: u32,
+        limit: u32,
+        query: Option<&str>,
+        sort: MailSort,
+        desc: bool,
+        unread_only: bool,
+    ) -> Result<MailHeaderPage, String> {
+        self.page(
+            "folder_id = ?1 AND deleted = 0 AND id IN (SELECT message_id FROM agent_marks)",
+            folder_id,
+            offset,
+            limit,
+            query,
+            sort,
+            desc,
+            unread_only,
+            SearchFields::SubjectSenderPreview,
+        )
+    }
+
+    /// The local half of `mail_search`, including its offline fallback. Match
+    /// subject and sender only, just as IMAP `SUBJECT`/`FROM` does, so a cached
+    /// preview cannot make the same query yield a different result offline.
+    #[allow(clippy::too_many_arguments)]
+    pub fn folder_search_page(
+        &self,
+        folder_id: &str,
+        offset: u32,
+        limit: u32,
+        query: &str,
+        sort: MailSort,
+        desc: bool,
+        unread_only: bool,
+        agent_only: bool,
+    ) -> Result<MailHeaderPage, String> {
+        let scope = if agent_only {
+            "folder_id = ?1 AND deleted = 0 AND id IN (SELECT message_id FROM agent_marks)"
+        } else {
+            "folder_id = ?1 AND deleted = 0"
+        };
+        self.page(
+            scope,
+            folder_id,
+            offset,
+            limit,
+            Some(query),
+            sort,
+            desc,
+            unread_only,
+            SearchFields::SubjectSender,
         )
     }
 
@@ -1087,6 +1201,7 @@ impl MailStore {
         sort: MailSort,
         desc: bool,
         unread_only: bool,
+        fields: SearchFields,
     ) -> Result<MailHeaderPage, String> {
         let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
         let limit = limit.clamp(1, 500);
@@ -1122,14 +1237,25 @@ impl MailStore {
                     }
                     looked_at += 1;
                     let header = self.row_to_header(row).map_err(|e| e.to_string())?;
-                    // The same three columns the `LIKE` covered, so the two
-                    // paths answer the same question.
-                    let hit = header.subject.to_lowercase().contains(&needle)
-                        || header.preview.to_lowercase().contains(&needle)
-                        || serde_json::to_string(&header.from)
+                    let sender_hit = if fields == SearchFields::SubjectSender {
+                        header
+                            .from
+                            .name
+                            .as_deref()
                             .unwrap_or_default()
                             .to_lowercase()
-                            .contains(&needle);
+                            .contains(&needle)
+                            || header.from.address.to_lowercase().contains(&needle)
+                    } else {
+                        serde_json::to_string(&header.from)
+                            .unwrap_or_default()
+                            .to_lowercase()
+                            .contains(&needle)
+                    };
+                    let hit = header.subject.to_lowercase().contains(&needle)
+                        || sender_hit
+                        || (fields == SearchFields::SubjectSenderPreview
+                            && header.preview.to_lowercase().contains(&needle));
                     if !hit {
                         continue;
                     }
@@ -1182,8 +1308,17 @@ impl MailStore {
         let pattern = needle
             .map(|q| format!("%{}%", q.replace('%', "\\%").replace('_', "\\_")))
             .unwrap_or_else(|| "%".to_string());
-        let filter = "AND (subject LIKE ?2 ESCAPE '\\' OR from_json LIKE ?2 ESCAPE '\\' \
-                      OR preview LIKE ?2 ESCAPE '\\')";
+        let filter = match fields {
+            SearchFields::SubjectSenderPreview => {
+                "AND (subject LIKE ?2 ESCAPE '\\' OR from_json LIKE ?2 ESCAPE '\\' \
+                 OR preview LIKE ?2 ESCAPE '\\')"
+            }
+            SearchFields::SubjectSender => {
+                "AND (subject LIKE ?2 ESCAPE '\\' \
+                 OR (CASE WHEN json_valid(from_json) THEN json_extract(from_json, '$.name') END) LIKE ?2 ESCAPE '\\' \
+                 OR (CASE WHEN json_valid(from_json) THEN json_extract(from_json, '$.address') END) LIKE ?2 ESCAPE '\\')"
+            }
+        };
 
         let total: u32 = conn
             .query_row(
@@ -1308,6 +1443,172 @@ impl MailStore {
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
     }
 
+    // ── Marks for agents (`docs/mail_mcp_plan.md` §1, "Marked mails only") ──
+    //
+    // A mark is the user's consent for a contained reader to see ONE message.
+    // It is local: a row here and never an IMAP keyword, so "shared with an
+    // agent" never reaches the provider or another client. The row carries the
+    // store id (what the reader's queries join on) and a keyed digest of the
+    // RFC `Message-ID` **and the sender address** (what lets `upsert_header`
+    // carry the mark onto a re-indexed copy — and only onto one from the same
+    // sender, since the id alone is a value every thread participant knows).
+    // Like `reply_key`, the digest leaks equality and only equality, and
+    // `rekey_digest_columns` maintains it across a sealing.
+
+    /// The keyed digest that identifies `header`'s message across re-indexing,
+    /// or `""` for a message that carried no `Message-ID`.
+    fn agent_mark_key(&self, header: &MailHeader) -> String {
+        let from = header.from.address.trim().to_lowercase();
+        header
+            .rfc_message_id
+            .as_deref()
+            .map(normalize_rfc_id)
+            .filter(|id| !id.is_empty())
+            .map(|id| self.digest_of("agent_mark", &format!("{id}\n{from}")))
+            .unwrap_or_default()
+    }
+
+    /// Mark or unmark messages for agents. Returns how many rows changed.
+    ///
+    /// Unmarking removes every row of the same account with the same
+    /// `Message-ID`, not only the id handed in: the mark is per message, and a
+    /// copy left marked in another folder would be exactly the surprise the
+    /// unmark was meant to end. A message no longer in the index changes
+    /// nothing, and the count says so.
+    pub fn agent_mark(&self, message_ids: &[String], marked: bool) -> Result<usize, String> {
+        let mut changed = 0usize;
+        for id in message_ids {
+            let Some(header) = self.header(id)? else { continue };
+            let key = self.agent_mark_key(&header);
+            let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+            if marked {
+                changed += conn
+                    .execute(
+                        "INSERT OR IGNORE INTO agent_marks (message_id, account_id, mid_key, marked_at)
+                         VALUES (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))",
+                        params![header.id, header.account_id, key],
+                    )
+                    .map_err(|e| e.to_string())?;
+            } else {
+                changed += conn
+                    .execute("DELETE FROM agent_marks WHERE message_id = ?1", params![header.id])
+                    .map_err(|e| e.to_string())?;
+                if !key.is_empty() {
+                    changed += conn
+                        .execute(
+                            "DELETE FROM agent_marks WHERE account_id = ?1 AND mid_key = ?2",
+                            params![header.account_id, key],
+                        )
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+        }
+        Ok(changed)
+    }
+
+    /// Mark every message of a folder. Returns how many were newly marked.
+    pub fn agent_mark_folder(&self, folder_id: &str) -> Result<usize, String> {
+        let ids: Vec<String> = {
+            let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+            let mut stmt = conn
+                .prepare("SELECT id FROM messages WHERE folder_id = ?1 AND deleted = 0")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![folder_id], |r| r.get::<_, String>(0))
+                .map_err(|e| e.to_string())?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+        };
+        self.agent_mark(&ids, true)
+    }
+
+    /// Mark every message of an account whose `From` address is `address`
+    /// (case-insensitive), in any folder. Returns how many were newly marked.
+    ///
+    /// `From` is a sealed column, so this is a decrypt-on-scan over the account
+    /// like a search is, bounded by [`MAX_SEARCH_SCAN`] newest-first for the
+    /// same reason.
+    pub fn agent_mark_sender(&self, account_id: &str, address: &str) -> Result<usize, String> {
+        let wanted = address.trim().to_lowercase();
+        if wanted.is_empty() {
+            return Ok(0);
+        }
+        let ids: Vec<String> = {
+            let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT {} FROM messages WHERE account_id = ?1 AND deleted = 0 ORDER BY date DESC",
+                    Self::HEADER_COLUMNS
+                ))
+                .map_err(|e| e.to_string())?;
+            let mut rows = stmt.query(params![account_id]).map_err(|e| e.to_string())?;
+            let mut ids = Vec::new();
+            let mut looked_at = 0usize;
+            while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+                if looked_at >= MAX_SEARCH_SCAN {
+                    break;
+                }
+                looked_at += 1;
+                let header = self.row_to_header(row).map_err(|e| e.to_string())?;
+                if header.from.address.trim().to_lowercase() == wanted {
+                    ids.push(header.id);
+                }
+            }
+            ids
+        };
+        self.agent_mark(&ids, true)
+    }
+
+    /// Whether one message is marked for agents. A mark whose message left the
+    /// index (a purge, a re-index not yet re-adopted) does not count.
+    pub fn agent_marked(&self, message_id: &str) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        conn.query_row(
+            "SELECT 1 FROM agent_marks a JOIN messages m ON m.id = a.message_id
+             WHERE a.message_id = ?1 AND m.deleted = 0",
+            params![message_id],
+            |_| Ok(true),
+        )
+        .optional()
+        .map(|found| found.unwrap_or(false))
+        .map_err(|e| e.to_string())
+    }
+
+    /// The ids of an account's marked messages that are in the index — what the
+    /// mail view draws its mark from.
+    pub fn agent_marks(&self, account_id: &str) -> Result<Vec<String>, String> {
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT a.message_id FROM agent_marks a JOIN messages m ON m.id = a.message_id
+                 WHERE a.account_id = ?1 AND m.deleted = 0",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![account_id], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    /// Per folder of an account: `(folder_id, unread, total)` over the marked
+    /// messages only — the counts a reader in `Marked` scope is shown. Folders
+    /// with no marked message are absent (they count as zero).
+    pub fn agent_marked_counts(&self, account_id: &str) -> Result<Vec<(String, u32, u32)>, String> {
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT m.folder_id, SUM(CASE WHEN m.seen = 0 THEN 1 ELSE 0 END), COUNT(*)
+                 FROM agent_marks a JOIN messages m ON m.id = a.message_id
+                 WHERE a.account_id = ?1 AND m.deleted = 0 GROUP BY m.folder_id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![account_id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u32, r.get::<_, i64>(2)? as u32))
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
     pub fn set_flag(&self, message_id: &str, flag: MailFlag, value: bool) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
         // `flag.column()` is a fixed `&'static str` per enum variant, so this
@@ -1365,6 +1666,68 @@ impl MailStore {
             .map_err(|e| e.to_string())?
             .flatten();
         Ok(max.map(|m| m as u32))
+    }
+
+    /// Of these UIDs, the ones this folder's index holds no row for — what a
+    /// server search still has to download before the local page can answer.
+    ///
+    /// A search keystroke re-runs the server query from scratch, so without
+    /// this every keystroke would re-fetch every match: usually the longer
+    /// query's matches are a subset of the shorter one's, and the ones already
+    /// here cost nothing. Chunked to stay under SQLite's variable limit.
+    pub fn missing_uids(&self, folder_id: &str, uids: &[u32]) -> Result<Vec<u32>, String> {
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        let mut missing = Vec::new();
+        for chunk in uids.chunks(500) {
+            if chunk.is_empty() {
+                continue;
+            }
+            let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "SELECT uid FROM messages WHERE folder_id = ?1 AND uid IN ({placeholders})"
+            );
+            let mut params: Vec<&dyn ToSql> = Vec::with_capacity(chunk.len() + 1);
+            params.push(&folder_id);
+            for uid in chunk {
+                params.push(uid);
+            }
+            let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+            let have: std::collections::HashSet<i64> = stmt
+                .query_map(params.as_slice(), |r| r.get(0))
+                .map_err(|e| e.to_string())?
+                .collect::<Result<_, _>>()
+                .map_err(|e| e.to_string())?;
+            missing.extend(chunk.iter().filter(|u| !have.contains(&(**u as i64))));
+        }
+        Ok(missing)
+    }
+
+    /// Account rows a server search backfilled into the index, so the folder's
+    /// badges do not count them twice.
+    ///
+    /// `total`/`unread` are the indexed rows *plus* the server remainder
+    /// (`refresh_counts`), and that remainder was measured when these rows
+    /// were still beyond the index — every row now stored has to leave it, or
+    /// the folder's total grows by each searched mail. Floored at zero: rows
+    /// the server has since expunged can make the index overshoot, and an
+    /// overshoot is not a negative remainder (the same rule as
+    /// `set_server_counts`).
+    pub fn note_indexed(
+        &self,
+        folder_id: &str,
+        inserted: u32,
+        inserted_unseen: u32,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        conn.execute(
+            "UPDATE folders SET
+               total_unindexed  = MAX(0, total_unindexed - ?2),
+               unread_unindexed = MAX(0, unread_unindexed - ?3)
+             WHERE id = ?1",
+            params![folder_id, inserted, inserted_unseen],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     /// Mark every unread message in a folder read, locally. Returns how many
@@ -1550,6 +1913,7 @@ impl MailStore {
             sort,
             desc,
             unread_only,
+            SearchFields::SubjectSenderPreview,
         )
     }
 
@@ -1653,6 +2017,13 @@ impl MailStore {
             .map_err(|e| e.to_string())?;
             tx.execute(
                 "DELETE FROM bodies_cache WHERE message_id = ?1",
+                params![id],
+            )
+            .map_err(|e| e.to_string())?;
+            // The consent went with the message; a later row under a reused
+            // id must not inherit it.
+            tx.execute(
+                "DELETE FROM agent_marks WHERE message_id = ?1",
                 params![id],
             )
             .map_err(|e| e.to_string())?;
@@ -2509,8 +2880,58 @@ impl MailStore {
                 .map_err(|e| e.to_string())?
         };
 
+        // (message_id, stored mid_key, the opened header). The header is
+        // opened row by row under the lock already held — `header()` would take
+        // it a second time. The whole header, not only its `Message-ID`: the
+        // key folds in the sender too (`agent_mark_key`).
+        let marks: Vec<(String, String, Option<MailHeader>)> = {
+            let mut stmt = conn
+                .prepare("SELECT message_id, mid_key FROM agent_marks")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+                .map_err(|e| e.to_string())?;
+            let keys = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+            let mut out = Vec::with_capacity(keys.len());
+            for (message_id, mid_key) in keys {
+                let header: Option<MailHeader> = conn
+                    .query_row(
+                        &format!("SELECT {} FROM messages WHERE id = ?1", Self::HEADER_COLUMNS),
+                        params![message_id],
+                        |r| self.row_to_header(r),
+                    )
+                    .optional()
+                    .map_err(|e| e.to_string())?;
+                out.push((message_id, mid_key, header));
+            }
+            out
+        };
+
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         let mut changed = 0usize;
+        for (message_id, mid_key, header) in &marks {
+            // A mark whose message is not in the index, or whose row will not
+            // open, gets an empty key rather than keeping the old one: in a
+            // plain store that key IS the cleartext `Message-ID`, and nothing
+            // in the clear may survive a sealing. The primary key still finds
+            // the row; only the follow-on onto a re-indexed copy is lost.
+            let expected = header
+                .as_ref()
+                .map(|h| self.agent_mark_key(h))
+                .unwrap_or_default();
+            if &expected == mid_key {
+                continue;
+            }
+            if tx
+                .execute(
+                    "UPDATE agent_marks SET mid_key = ?1 WHERE message_id = ?2",
+                    params![expected, message_id],
+                )
+                .is_ok()
+            {
+                changed += 1;
+            }
+        }
         for (id, account_id, path_key, path) in &folders {
             let Some(path) = path else { continue };
             let expected = self.digest_of(account_id, path);
@@ -2703,6 +3124,11 @@ impl MailStore {
         conn.execute(
             "DELETE FROM attachments WHERE message_id IN
                 (SELECT id FROM messages WHERE account_id = ?1)",
+            params![account_id],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM agent_marks WHERE account_id = ?1",
             params![account_id],
         )
         .map_err(|e| e.to_string())?;
@@ -2988,6 +3414,115 @@ mod tests {
         let other = folder("acct", "Archive");
         store.upsert_folder(&other).unwrap();
         assert_eq!(store.folder_max_uid(&other.id).unwrap(), None);
+    }
+
+    /// A server search can be repeated as a query changes, so the fetch that
+    /// follows must skip what is already here.
+    #[test]
+    fn missing_uids_names_only_rows_not_stored() {
+        let (_dir, store) = store();
+        let f = folder("acct", "INBOX");
+        store.upsert_folder(&f).unwrap();
+        for uid in [1, 2, 3] {
+            store
+                .upsert_header(&header(&f, uid, "a", "2026-07-30T00:00:00Z"))
+                .unwrap();
+        }
+        assert_eq!(store.missing_uids(&f.id, &[]).unwrap(), Vec::<u32>::new());
+        assert_eq!(
+            store.missing_uids(&f.id, &[1, 2, 3, 4, 5]).unwrap(),
+            vec![4, 5]
+        );
+        // Scoped to the folder: another folder's rows do not count.
+        let other = folder("acct", "Archive");
+        store.upsert_folder(&other).unwrap();
+        assert_eq!(store.missing_uids(&other.id, &[1, 2]).unwrap(), vec![1, 2]);
+    }
+
+    #[test]
+    fn folder_search_matches_subject_and_sender_without_preview_or_json_keys() {
+        let (_dir, store) = store();
+        let f = folder("acct", "INBOX");
+        store.upsert_folder(&f).unwrap();
+        let mut preview = header(&f, 1, "hello", "2026-07-01T00:00:00Z");
+        preview.preview = "invoice in cached body".into();
+        store.upsert_header(&preview).unwrap();
+        let mut sender = header(&f, 2, "hello", "2026-07-02T00:00:00Z");
+        sender.from.name = Some("Invoice Team".into());
+        store.upsert_header(&sender).unwrap();
+        let mut address = header(&f, 3, "hello", "2026-07-03T00:00:00Z");
+        address.from.address = "invoice@example.com".into();
+        store.upsert_header(&address).unwrap();
+
+        let folder = store
+            .folder_search_page(&f.id, 0, 10, "invoice", MailSort::Date, true, false, false)
+            .unwrap();
+        assert_eq!(
+            folder.items.iter().map(|h| h.uid).collect::<Vec<_>>(),
+            vec![3, 2]
+        );
+        assert_eq!(folder.total, 2);
+        assert_eq!(
+            store
+                .folder_search_page(&f.id, 0, 10, "address", MailSort::Date, true, false, false)
+                .unwrap()
+                .total,
+            0
+        );
+        assert_eq!(
+            store
+                .headers_page(&f.id, 0, 10, Some("invoice"), MailSort::Date, true, false)
+                .unwrap()
+                .total,
+            3
+        );
+    }
+
+    /// Backfilling search matches into the index must not inflate the folder's
+    /// badges: every stored row leaves the server remainder it was counted in.
+    #[test]
+    fn note_indexed_keeps_folder_totals_stable() {
+        let (_dir, store) = store();
+        let f = folder("acct", "INBOX");
+        store.upsert_folder(&f).unwrap();
+        // Two rows indexed, the server holding ten (four of them unread).
+        let mut first = header(&f, 1, "a", "2026-07-30T00:00:00Z");
+        first.seen = true;
+        store.upsert_header(&first).unwrap();
+        store
+            .upsert_header(&header(&f, 2, "b", "2026-07-30T00:00:00Z"))
+            .unwrap();
+        store.set_server_counts(&f.id, 10, 4).unwrap();
+        store.refresh_counts(&f.id).unwrap();
+        let folder = store.folder(&f.id).unwrap().unwrap();
+        assert_eq!((folder.total, folder.unread), (10, 4));
+
+        // Three search matches land in the index, one of them already read.
+        let mut backfilled = header(&f, 7, "old invoice", "2024-01-01T00:00:00Z");
+        backfilled.seen = true;
+        store.upsert_header(&backfilled).unwrap();
+        for uid in [8, 9] {
+            store
+                .upsert_header(&header(&f, uid, "old invoice", "2024-01-02T00:00:00Z"))
+                .unwrap();
+        }
+        store.note_indexed(&f.id, 3, 2).unwrap();
+        store.refresh_counts(&f.id).unwrap();
+        let folder = store.folder(&f.id).unwrap().unwrap();
+        assert_eq!((folder.total, folder.unread), (10, 4));
+
+        // And the backfilled rows answer a local query — the page a server
+        // search serves after backfilling is this one.
+        let page = store
+            .headers_page(&f.id, 0, 100, Some("invoice"), MailSort::Date, true, false)
+            .unwrap();
+        assert_eq!(page.total, 3);
+        assert!(page.scanned.is_none());
+
+        // Floored at zero, never negative: expunges can strand a remainder the
+        // index already overshoots.
+        store.note_indexed(&f.id, 100, 100).unwrap();
+        assert_eq!(store.unindexed_unread(&f.id).unwrap(), 0);
     }
 
     /// #205 provenance round-trips: who set the mark and why, and clearing the
@@ -4067,6 +4602,180 @@ mod tests {
         );
     }
 
+    // ── Marks for agents ────────────────────────────────────────────────────
+
+    #[test]
+    fn an_agent_mark_is_local_follows_the_message_id_and_scopes_every_read() {
+        let (_d, store) = store();
+        let inbox = folder("a1", "INBOX");
+        let archive = folder("a1", "Archive");
+        store.upsert_folder(&inbox).unwrap();
+        store.upsert_folder(&archive).unwrap();
+        let shared = header(&inbox, 1, "shared", "2026-09-01T09:00:00Z");
+        let mut private = header(&inbox, 2, "private", "2026-09-02T09:00:00Z");
+        private.seen = true;
+        let mut anonymous = header(&inbox, 3, "no id", "2026-09-03T09:00:00Z");
+        anonymous.rfc_message_id = None;
+        for h in [&shared, &private, &anonymous] {
+            store.upsert_header(h).unwrap();
+        }
+
+        // Nothing marked: the marked page and counts are empty, the flags untouched.
+        assert!(store.headers_page_marked(&inbox.id, 0, 50, None, MailSort::Date, true, false).unwrap().items.is_empty());
+        assert!(store.agent_marked_counts("a1").unwrap().is_empty());
+
+        assert_eq!(store.agent_mark(&[shared.id.clone(), anonymous.id.clone(), "gone".into()], true).unwrap(), 2);
+        assert!(store.agent_marked(&shared.id).unwrap());
+        assert!(store.agent_marked(&anonymous.id).unwrap());
+        assert!(!store.agent_marked(&private.id).unwrap());
+        let page = store.headers_page_marked(&inbox.id, 0, 50, None, MailSort::Date, true, false).unwrap();
+        let ids: Vec<&str> = page.items.iter().map(|h| h.id.as_str()).collect();
+        assert_eq!(ids, vec![anonymous.id.as_str(), shared.id.as_str()]);
+        assert_eq!(page.total, 2);
+        assert_eq!(store.agent_marked_counts("a1").unwrap(), vec![(inbox.id.clone(), 2, 2)]);
+        let mut listed = store.agent_marks("a1").unwrap();
+        listed.sort();
+        let mut expected = vec![shared.id.clone(), anonymous.id.clone()];
+        expected.sort();
+        assert_eq!(listed, expected);
+        // No IMAP flag moved: the row's flags are what they were.
+        let row = store.header(&shared.id).unwrap().unwrap();
+        assert!(!row.seen && !row.flagged);
+
+        // The same message indexed again under another row (a move to Archive,
+        // a UIDVALIDITY change) arrives marked once the original has left the
+        // index — the server flags the source \Deleted on a move; a re-sync of
+        // the known row does not double it.
+        store.set_flag(&shared.id, MailFlag::Deleted, true).unwrap();
+        let mut moved = header(&archive, 40, "shared", "2026-09-01T09:00:00Z");
+        moved.rfc_message_id = shared.rfc_message_id.clone();
+        store.upsert_header(&moved).unwrap();
+        assert!(store.agent_marked(&moved.id).unwrap());
+        store.set_flag(&shared.id, MailFlag::Deleted, false).unwrap();
+        store.upsert_header(&shared).unwrap();
+        assert_eq!(store.agent_marks("a1").unwrap().len(), 3);
+        assert_eq!(store.agent_marked_counts("a1").unwrap().len(), 2);
+        // A different message with no id is not adopted by anything.
+        let mut other = header(&archive, 41, "no id either", "2026-09-04T09:00:00Z");
+        other.rfc_message_id = None;
+        store.upsert_header(&other).unwrap();
+        assert!(!store.agent_marked(&other.id).unwrap());
+
+        // Unmarking one copy unmarks the message: every row with that id.
+        assert_eq!(store.agent_mark(&[moved.id.clone()], false).unwrap(), 2);
+        assert!(!store.agent_marked(&shared.id).unwrap());
+        assert!(!store.agent_marked(&moved.id).unwrap());
+        assert!(store.agent_marked(&anonymous.id).unwrap());
+
+        // Bulk: by sender (every row of the account) and by folder.
+        assert_eq!(store.agent_mark_sender("a1", "SENDER@example.com").unwrap(), 4);
+        assert_eq!(store.agent_mark_sender("a1", "nobody@example.com").unwrap(), 0);
+        assert!(store.agent_mark(&store.agent_marks("a1").unwrap(), false).unwrap() > 0);
+        assert_eq!(store.agent_mark_folder(&archive.id).unwrap(), 2);
+        assert_eq!(store.agent_marked_counts("a1").unwrap(), vec![(archive.id.clone(), 2, 2)]);
+    }
+
+    /// The consent goes with the message: a store id reused after a delete
+    /// starts unmarked, whether the old mark was purged with the row or left
+    /// behind, and removing an account removes its marks.
+    #[test]
+    fn an_agent_mark_does_not_outlive_its_row() {
+        let (_d, store) = store();
+        let inbox = folder("a1", "INBOX");
+        store.upsert_folder(&inbox).unwrap();
+        let first = header(&inbox, 1, "first", "2026-09-01T09:00:00Z");
+        store.upsert_header(&first).unwrap();
+        assert_eq!(store.agent_mark(std::slice::from_ref(&first.id), true).unwrap(), 1);
+        assert_eq!(store.delete_messages(std::slice::from_ref(&first.id)).unwrap(), 1);
+        let left: i64 = store
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM agent_marks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 0, "the mark went with the row");
+
+        // Another message under the same store id (a UIDVALIDITY reset handed
+        // the uid out again) — and a stale mark row left under that id by
+        // whatever means — is not marked.
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO agent_marks (message_id, account_id, mid_key, marked_at)
+                 VALUES (?1, 'a1', 'stale', '2026-09-01T00:00:00Z')",
+                params![first.id],
+            )
+            .unwrap();
+        let mut reused = header(&inbox, 1, "reused", "2026-09-05T09:00:00Z");
+        reused.rfc_message_id = Some("<other@example.com>".into());
+        assert!(store.upsert_header(&reused).unwrap());
+        assert!(!store.agent_marked(&reused.id).unwrap());
+        assert!(store.agent_marks("a1").unwrap().is_empty());
+
+        let second = header(&inbox, 2, "second", "2026-09-06T09:00:00Z");
+        store.upsert_header(&second).unwrap();
+        assert_eq!(store.agent_mark(std::slice::from_ref(&second.id), true).unwrap(), 1);
+        store.delete_account_mail("a1").unwrap();
+        let left: i64 = store
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM agent_marks WHERE account_id = 'a1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 0);
+    }
+
+    /// A `Message-ID` is sender-chosen and known to every thread participant,
+    /// so it alone must not carry a mark: a duplicate arriving while the
+    /// original is still indexed is not a move, and a copy from another sender
+    /// is not the same message even once the original is gone.
+    #[test]
+    fn a_duplicate_message_id_is_adopted_only_as_a_move_from_the_same_sender() {
+        let (_d, store) = store();
+        let inbox = folder("a1", "INBOX");
+        let archive = folder("a1", "Archive");
+        store.upsert_folder(&inbox).unwrap();
+        store.upsert_folder(&archive).unwrap();
+        let original = header(&inbox, 1, "shared", "2026-09-01T09:00:00Z");
+        store.upsert_header(&original).unwrap();
+        assert_eq!(store.agent_mark(std::slice::from_ref(&original.id), true).unwrap(), 1);
+
+        // Same Message-ID, same sender, while the original is live: forged.
+        let mut forged = header(&archive, 10, "shared", "2026-09-02T09:00:00Z");
+        forged.rfc_message_id = original.rfc_message_id.clone();
+        store.upsert_header(&forged).unwrap();
+        assert!(!store.agent_marked(&forged.id).unwrap());
+        assert_eq!(store.agent_marks("a1").unwrap(), vec![original.id.clone()]);
+
+        // The original leaves the index (the server flagged it \Deleted on
+        // the move): the next copy is the move.
+        store.set_flag(&original.id, MailFlag::Deleted, true).unwrap();
+        let mut moved = header(&archive, 11, "shared", "2026-09-01T09:00:00Z");
+        moved.rfc_message_id = original.rfc_message_id.clone();
+        store.upsert_header(&moved).unwrap();
+        assert!(store.agent_marked(&moved.id).unwrap());
+
+        // Gone for good: the mark is purged with the row, and the copy that
+        // was refused earlier is not marked retroactively.
+        assert!(!store.agent_marked(&forged.id).unwrap());
+
+        // Same Message-ID from another sender, the original gone: not it.
+        let mut other_sender = header(&inbox, 3, "shared", "2026-09-03T09:00:00Z");
+        other_sender.rfc_message_id = original.rfc_message_id.clone();
+        other_sender.from.address = "someone-else@example.com".into();
+        store.set_flag(&moved.id, MailFlag::Deleted, true).unwrap();
+        store.upsert_header(&other_sender).unwrap();
+        assert!(!store.agent_marked(&other_sender.id).unwrap());
+        // ... whereas the same sender's copy is.
+        let mut same_sender = header(&inbox, 4, "shared", "2026-09-03T09:00:00Z");
+        same_sender.rfc_message_id = original.rfc_message_id.clone();
+        same_sender.from.address = " SENDER@example.com ".into();
+        store.upsert_header(&same_sender).unwrap();
+        assert!(store.agent_marked(&same_sender.id).unwrap());
+    }
+
     // ── Replies ─────────────────────────────────────────────────────────────
 
     #[test]
@@ -4485,6 +5194,32 @@ mod tests {
             assert_eq!(page.items[0].uid, 1, "the second match, newest-first");
         }
 
+        #[test]
+        fn sealed_folder_search_uses_the_same_subject_sender_fields() {
+            let (_d, store) = sealed_store();
+            let f = folder("a1", "INBOX");
+            store.upsert_folder(&f).unwrap();
+            let mut preview = header(&f, 1, "hello", "2026-07-01T09:00:00Z");
+            preview.preview = "invoice in cached body".into();
+            store.upsert_header(&preview).unwrap();
+            let mut sender = header(&f, 2, "hello", "2026-07-02T09:00:00Z");
+            sender.from.name = Some("Invoice Team".into());
+            store.upsert_header(&sender).unwrap();
+
+            let folder = store
+                .folder_search_page(&f.id, 0, 10, "invoice", MailSort::Date, true, false, false)
+                .unwrap();
+            assert_eq!(folder.total, 1);
+            assert_eq!(folder.items[0].uid, 2);
+            assert_eq!(
+                store
+                    .folder_search_page(&f.id, 0, 10, "address", MailSort::Date, true, false, false)
+                    .unwrap()
+                    .total,
+                0
+            );
+        }
+
         /// The scan bound, checked at a size a test can afford. The constant is
         /// 50 000 in production; what matters is that hitting it *reports*
         /// itself rather than silently returning a short answer.
@@ -4822,6 +5557,76 @@ mod tests {
                 .query_row("SELECT reply_key FROM messages WHERE id = ?1", params![answer.id], |r| r.get(0))
                 .unwrap();
             assert!(!key.contains("example.com"), "the key is a keyed digest now");
+        }
+
+        /// `agent_marks.mid_key` is the third column of that class: in a plain
+        /// store it spells the `Message-ID`. Conversion rekeys it, the mark
+        /// still follows a re-indexed copy afterwards, and a mark whose message
+        /// is gone is blanked rather than left in the clear.
+        #[test]
+        fn converting_a_plain_store_rekeys_agent_marks() {
+            let dir = tempfile::tempdir().unwrap();
+            let inbox = realistic_folder("a1", "INBOX");
+            let archive = realistic_folder("a1", "Archive");
+            let shared = header(&inbox, 1, "shared", "2026-09-01T09:00:00Z");
+            let gone = header(&inbox, 2, "gone", "2026-09-02T09:00:00Z");
+            {
+                let store = MailStore::open(dir.path()).unwrap();
+                store.upsert_folder(&inbox).unwrap();
+                store.upsert_folder(&archive).unwrap();
+                store.upsert_header(&shared).unwrap();
+                store.upsert_header(&gone).unwrap();
+                assert_eq!(store.agent_mark(&[shared.id.clone(), gone.id.clone()], true).unwrap(), 2);
+                // An orphan: the row is gone but its mark row stayed behind.
+                store
+                    .conn
+                    .lock()
+                    .unwrap()
+                    .execute("DELETE FROM messages WHERE id = ?1", params![gone.id])
+                    .unwrap();
+            }
+
+            let store = MailStore::open_with_keys(dir.path(), Some(keys(1))).unwrap();
+            let keys_on_disk: Vec<(String, String)> = {
+                let conn = store.conn.lock().unwrap();
+                let mut stmt = conn.prepare("SELECT message_id, mid_key FROM agent_marks").unwrap();
+                let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+                rows.collect::<Result<Vec<_>, _>>().unwrap()
+            };
+            assert_eq!(keys_on_disk.len(), 2);
+            for (_, k) in &keys_on_disk {
+                assert!(!k.contains("example.com"), "cleartext Message-ID survived: {k}");
+            }
+            let orphan = keys_on_disk.iter().find(|(id, _)| id == &gone.id).unwrap();
+            assert_eq!(orphan.1, "", "the orphan's key is blanked, not kept");
+            assert!(store.agent_marked(&shared.id).unwrap());
+
+            // The mark still follows the message once the original is gone.
+            store.set_flag(&shared.id, MailFlag::Deleted, true).unwrap();
+            let mut moved = header(&archive, 7, "shared", "2026-09-01T09:00:00Z");
+            moved.rfc_message_id = shared.rfc_message_id.clone();
+            store.upsert_header(&moved).unwrap();
+            assert!(store.agent_marked(&moved.id).unwrap());
+        }
+
+        /// The marked page in a sealed store, with a query: the filter runs
+        /// over opened text and still intersects with the marks.
+        #[test]
+        fn the_marked_page_filters_by_query_in_a_sealed_store() {
+            let (_d, store) = sealed_store();
+            let inbox = realistic_folder("a1", "INBOX");
+            store.upsert_folder(&inbox).unwrap();
+            let marked = header(&inbox, 1, "budget review", "2026-09-01T09:00:00Z");
+            let unmarked = header(&inbox, 2, "budget draft", "2026-09-02T09:00:00Z");
+            store.upsert_header(&marked).unwrap();
+            store.upsert_header(&unmarked).unwrap();
+            assert_eq!(store.agent_mark(std::slice::from_ref(&marked.id), true).unwrap(), 1);
+            let page = store
+                .headers_page_marked(&inbox.id, 0, 50, Some("budget"), MailSort::Date, true, false)
+                .unwrap();
+            let ids: Vec<&str> = page.items.iter().map(|h| h.id.as_str()).collect();
+            assert_eq!(ids, vec![marked.id.as_str()]);
+            assert_eq!(page.total, 1);
         }
 
         /// The same fault in a store an *earlier build* already converted: its

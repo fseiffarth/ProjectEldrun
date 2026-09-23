@@ -136,9 +136,13 @@ const TodoOverlayHost = lazy(() =>
   import("../todo/TodoOverlay").then((m) => ({ default: m.TodoOverlayHost })),
 );
 
+// Mail also stays mounted while a composer tab is open, window closed or not:
+// an unfinished mail's text lives in its mounted composer, and unmounting the
+// host here would throw it away behind the host's own keep-alive.
 function LazyMailOverlayHost() {
   const open = useMailStore((s) => s.overlayOpen);
-  if (!open) return null;
+  const composing = useMailStore((s) => s.mailTabs.some((tab) => tab.kind === "compose"));
+  if (!open && !composing) return null;
   return (
     <Suspense fallback={null}>
       <MailOverlayHost />

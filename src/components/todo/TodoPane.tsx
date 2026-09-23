@@ -123,7 +123,7 @@ export function TodoPane() {
     const mail = useMailStore.getState();
     if (task.mail.folder_id) await mail.openFolder(task.mail.folder_id).catch(() => {});
     await mail.selectMessage(task.mail.message_id).catch(() => {});
-    mail.openOverlay();
+    mail.openInbox();
   };
 
   return (

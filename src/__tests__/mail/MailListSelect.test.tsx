@@ -58,7 +58,7 @@ interface Calls {
   deleted: string[][];
 }
 
-function renderList(over: { checkedIds?: string[]; purged?: number } = {}) {
+function renderList(over: { checkedIds?: string[]; purged?: number; query?: string; searchRemote?: boolean; searchPartial?: boolean } = {}) {
   const calls: Calls = { selected: [], checks: [], deleted: [] };
   render(
     <MailList
@@ -83,8 +83,10 @@ function renderList(over: { checkedIds?: string[]; purged?: number } = {}) {
       offset={0}
       pageSize={100}
       total={HEADERS.length}
+      searchRemote={over.searchRemote}
+      searchPartial={over.searchPartial}
       onPage={() => {}}
-      query=""
+      query={over.query ?? ""}
       unreadOnly={false}
       onQuery={() => {}}
       onUnreadOnly={() => {}}
@@ -98,6 +100,14 @@ function renderList(over: { checkedIds?: string[]; purged?: number } = {}) {
 const row = (id: string) => screen.getByText(`subject ${id}`).closest(".mail-row") as HTMLElement;
 
 beforeEach(() => vi.clearAllMocks());
+
+describe("search coverage note", () => {
+  it("says when older server matches may be missing", () => {
+    renderList({ query: "invoice", searchRemote: true, searchPartial: true });
+    expect(screen.getByText(t("mail.searchPartial"))).toBeTruthy();
+    expect(screen.queryByText(t("mail.searchRemote"))).toBeNull();
+  });
+});
 
 describe("clicking a row", () => {
   it("opens the message and makes it the whole selection", async () => {

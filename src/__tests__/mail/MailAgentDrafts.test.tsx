@@ -22,7 +22,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   invoke.mockResolvedValue([]);
   useRootReviewStore.setState({ proposals: [], count: 0, busy: false, error: null });
-  useMailStore.setState({ agentDrafts: [], pendingDraft: null });
+  useMailStore.setState({ agentDrafts: [], mailTabs: [], activeMailTab: "inbox" });
 });
 afterEach(cleanup);
 

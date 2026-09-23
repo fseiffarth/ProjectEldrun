@@ -11,7 +11,16 @@ import {
 import { mailAccountTest, mailAccountUpsert, mailForgetPassword, mailPasswordState } from "../../lib/mail";
 import type { KeyringState } from "../../lib/keyring";
 import { useT } from "../../lib/i18n";
-import type { MailAccount, MailKeyringState, MailSecurity } from "../../types/mail";
+import type { MailAccount, MailAgentScope, MailKeyringState, MailSecurity } from "../../types/mail";
+
+/** The account dialog's agent-access states, in the order they are shown. */
+const AGENT_SCOPES = ["off", "marked", "all"] as const;
+type AgentScopeChoice = (typeof AGENT_SCOPES)[number];
+const AGENT_SCOPE_LABEL = {
+  off: "mail.agentScopeOff",
+  marked: "mail.agentScopeMarked",
+  all: "mail.agentScopeAll",
+} as const;
 
 /**
  * The account editor.
@@ -146,6 +155,21 @@ export function MailAccountDialog({
   const preset = useMemo(() => PRESETS.find((p) => p.id === presetId), [presetId]);
 
   const patch = (p: Partial<MailAccount>) => setForm((f) => ({ ...f, ...p }));
+
+  // Off / marked / all, from the two prefs fields. `agent_access` on with no
+  // scope is "marked": the two-state build wrote no scope, and narrowing is
+  // the safe reading.
+  const agentScope: AgentScopeChoice =
+    form.ai?.agent_access === true ? (form.ai?.agent_scope ?? "marked") : "off";
+  const setAgentScope = (value: AgentScopeChoice) => {
+    const { agent_access: _access, agent_scope: _scope, ...rest } = form.ai ?? {};
+    patch({
+      ai:
+        value === "off"
+          ? rest
+          : { ...rest, agent_access: true, agent_scope: value satisfies MailAgentScope },
+    });
+  };
 
   function applyPreset(id: string) {
     setPresetId(id);
@@ -376,21 +400,29 @@ export function MailAccountDialog({
               nothing leaves the machine, and this switch consents to the
               opposite. Off by default; it governs READING only — a root tab's
               draft-only access needs no consent. */}
-          <label className="mail-field mail-field-check">
-            <span className="mail-check-row">
-              <input
-                type="checkbox"
-                checked={form.ai?.agent_access === true}
-                onChange={(e) => {
-                  const { agent_access: _drop, ...rest } = form.ai ?? {};
-                  patch({ ai: e.target.checked ? { ...rest, agent_access: true } : rest });
-                }}
-              />
-              {/* No pill of its own: the dialog title carries one (see below). */}
-              <span>{t("mail.agentAccess")}</span>
-            </span>
+          {/* Three states, not a checkbox: Off, the messages the user marked,
+              the whole account. Turning it on lands on "marked" — the narrower
+              consent — and "all" is one deliberate step further. Two prefs
+              fields: `agent_access` stays the gate, `agent_scope` the width. */}
+          <fieldset className="mail-field mail-field-check mail-radio-group">
+            <legend className="mail-field-label">
+              {t("mail.agentAccess")} <UntestedTag id="mail.agentScope" />
+            </legend>
+            {AGENT_SCOPES.map((value) => (
+              <label key={value} className="mail-check-row">
+                <input
+                  type="radio"
+                  name="mail-agent-scope"
+                  value={value}
+                  checked={agentScope === value}
+                  onChange={() => setAgentScope(value)}
+                />
+                <span>{t(AGENT_SCOPE_LABEL[value])}</span>
+              </label>
+            ))}
             <span className="settings-help">{t("mail.agentAccessHint")}</span>
-          </label>
+            <span className="settings-help">{t("mail.agentScopeHint")}</span>
+          </fieldset>
 
           {/* The trusted `authserv-id`. Optional, and while it is empty **no**
               SPF/DKIM/DMARC verdict is shown anywhere — the hint says so rather

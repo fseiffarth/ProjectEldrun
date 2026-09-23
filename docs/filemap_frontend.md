@@ -101,14 +101,14 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `todo/TodoCardDialog.tsx` | Full card editor on an elevated backdrop, for adding (empty `task.id`) and editing. Checklist never drives `percent` (100% moves a card to Done). |
 | `todo/TodoMailRail.tsx` / `todo/TodoAgendaRail.tsx` | Urgent-mail rail (calls `mailPriorityPage` directly, never `openPriority`; `mail_client` gate checked before invoke) and today/tomorrow agenda rail. Both convert into a card through one builder. |
 | `mail/MailPane.tsx` | Embedded mail client (`mail_client` flag): folder rail (account-independent Important/Urgent + rules above, accounts/folders below) / header list / message view. |
-| `mail/MailOverlay.tsx` | The mail surface: header ✉ overlay (`MailOverlayHost`) rendering `MailPane`. One gate, `mail_client` (the mail tab and `mail_global_app` are retired). |
+| `mail/MailOverlay.tsx` | The mail surface: header ✉ overlay (`MailOverlayHost`) in the root console's subwindow chrome — fixed Inbox tab (`MailPane`) plus message and composer tabs (`stores/mail` `mailTabs`); stays mounted hidden while a composer is open so unsent text survives closing. One gate, `mail_client`. |
 | `mail/MailList.tsx` | Header list. Threat-model rules: addr-spec always shown beside display name; mail strings are plain text nodes. Column grid via shared `--mail-cols`, fixed widths except sender. |
 | `mail/MailMessageView.tsx` | Message pane: body in `<iframe sandbox="">` (never `allow-scripts`/`allow-same-origin`) with inline `<meta>` CSP; links are `data-lid` markers opened after a confirm naming the host; remote content blocked with no unblock control. |
 | `mail/MailEncryptionDialog.tsx` | Local mail-store encryption dialog (`docs/context/mail_encryption.md`): unlock / offer / status faces chosen by `MailEncryptionState`. Copy must not overstate what it protects. |
 | `mail/MailKeysDialog.tsx` | OpenPGP keyring. Fingerprint shown in full, grouped in fours, never truncated; "checked with owner" is reversible; export is public-only. |
 | `mail/MailAccountDialog.tsx` | Account editor. Save-password opt-in, default off, sends `true \| null` (never `false`, which clears). Uses shared `SavePasswordRow`; generic presets only. |
 | `mail/MailFiltersDialog.tsx` | Keyword filters filing arriving mail into Important/Urgent. States its limits on its face (local mark, snippet not body, arriving mail + explicit re-run, Sent/Drafts/Trash/Junk out of scope). |
-| `mail/MailComposeDialog.tsx` | Composer. Sign/Encrypt per message, default off, never remembered; missing-key check while writing. Attaching is backend-side (`mail_attach_pick`) — no filesystem path in the frontend. |
+| `mail/MailComposeDialog.tsx` | Composer (modal, or `embedded` as a mail-window tab body). Sign/Encrypt per message, default off, never remembered; missing-key check while writing. Attaching is backend-side (`mail_attach_pick`) — no filesystem path in the frontend. |
 | `browser/BrowserPane.tsx` | In-app browser tab (`web_browser` flag): a DOM pane rendering sanitized reader mode (no in-pane native webview under WebKitGTK); real engine = separate hardened window. Mounting never touches the network. |
 | `browser/BrowserReaderView.tsx` | Reader body: `MailMessageView`'s containment (`<iframe sandbox="">`, imported mail CSP, `readerLooksUnsafe` tripwire). No `dangerouslySetInnerHTML` in this dir (`BrowserTripwire.test.ts`). |
 | `browser/BrowserAddressBar.tsx` | Address field as a security control: host at full weight and never truncated, userinfo flagged, punycode shown; `parseAddressInput` refuses non-http(s). |
@@ -230,7 +230,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `calendar/clipboard.ts` | The calendar clipboard (one copied entry, a snapshot). Module-level, so a copy pastes in another calendar tab and outlives the navigation. |
 | `todo.ts` | To-do board session state only (overlay flag, filters — never persisted, drag, optimistic overlay, mail cache, `collapsedSteps`, `focusTaskId`). |
 | `browser.ts` | In-app browser store (#61). Nothing reaches the network on its own (`load`/`openLive` only, both clicks), actions tolerate a rejected invoke, downloads refused by default. |
-| `mail.ts` | Global mail store. Every action tolerates a rejected invoke (lands in `error`); only `checkMail` reaches a server. Owns list order (`setSort` → `mail_headers`). |
+| `mail.ts` | Global mail store. Every action tolerates a rejected invoke (lands in `error`); `checkMail` and a debounced typed folder search can reach a server. Owns list order and the search coverage flags (`searchRemote`, `searchPartial`). |
 | `skills.ts` | One boolean: is the Skills Library overlay shown. Holds no catalog copy on purpose. |
 | `alarms.ts` | Reminder ticker: fires an OS notification + the in-app popup, exactly once each; a calendar with `alerts_off` is recorded as fired but never shown. |
 | `linkRouting.ts` | Routing of clicked links/URIs to viewers or external apps. |

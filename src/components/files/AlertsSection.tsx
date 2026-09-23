@@ -196,7 +196,7 @@ export function AlertsSection({ onClose }: AlertsSectionProps) {
       const mail = useMailStore.getState();
       await mail.openPriority(item.source.mailPriority ?? "urgent").catch(() => {});
       if (item.source.mailId) await mail.selectMessage(item.source.mailId).catch(() => {});
-      mail.openOverlay();
+      mail.openInbox();
       return;
     }
     if (item.kind === "event") {

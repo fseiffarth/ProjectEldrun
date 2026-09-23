@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { UntestedTag } from "../common/UntestedTag";
 import {
@@ -20,6 +20,8 @@ import {
 import { useI18nStore, useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
 import type { MailAccount, MailBody, MailDraft, MailHeader, StagedAttachment } from "../../types/mail";
+import type { MailComposeMode } from "../../stores/mail";
+import { WarningIcon } from "../common/icons/Icon";
 
 /**
  * The composer.
@@ -33,11 +35,15 @@ import type { MailAccount, MailBody, MailDraft, MailHeader, StagedAttachment } f
  * the pick is keyed by draft id, the draft is saved first when it has no id yet;
  * that is the only reason `ensureDraft` exists.
  *
- * Chrome is the canonical `.modal-backdrop` > `.settings-dialog`, and the portal
- * sets its text color explicitly (`body` carries none, so black would be
- * inherited).
+ * Two hosts. As a dialog its chrome is the canonical `.modal-backdrop` >
+ * `.settings-dialog`, and the portal sets its text color explicitly (`body`
+ * carries none, so black would be inherited). `embedded`, it is the body of one
+ * of the mail window's tabs (`MailOverlay`): no portal, no backdrop, no title
+ * row — the tab strip names it and its × closes it — and it stays mounted while
+ * another tab is on screen, which is what keeps an unfinished mail unfinished
+ * rather than lost.
  */
-export type ComposeMode = "new" | "reply" | "replyAll" | "forward";
+export type ComposeMode = MailComposeMode;
 
 export interface MailComposeDialogProps {
   accounts: MailAccount[];
@@ -51,7 +57,21 @@ export interface MailComposeDialogProps {
   /** A stored draft an **agent** wrote (`origin` set), opened for review. The
    *  composer is the only way it leaves: Send is bound to what is on screen. */
   draft?: MailDraft;
+  /** The mail is finished with — sent, or its draft discarded. Nothing is left
+   *  to lose, so the host closes without asking. The dialog's × and backdrop
+   *  use it too. */
   onClose: () => void;
+  /** The Cancel button. Defaults to `onClose`; a tab host routes it through the
+   *  same "throw this away?" question as its tab ×. */
+  onCancel?: () => void;
+  /** Render as a mail-window tab body instead of a modal dialog. */
+  embedded?: boolean;
+  /** Called while what is on screen differs from what the composer opened with
+   *  (or last saved), with the current subject — the tab host's cue that
+   *  closing now throws text away. */
+  onDirty?: (subject: string) => void;
+  /** The draft was saved and nothing on screen is unsaved any more. */
+  onSaved?: (subject: string) => void;
 }
 
 /** Recipients are typed one per line or comma-separated, and parsed into a list —
@@ -87,6 +107,10 @@ export function MailComposeDialog({
   toAddress,
   draft,
   onClose,
+  onCancel,
+  embedded,
+  onDirty,
+  onSaved,
 }: MailComposeDialogProps) {
   const t = useT();
   const lang = useI18nStore((s) => s.lang);
@@ -103,15 +127,7 @@ export function MailComposeDialog({
           .filter((a) => a && a !== header.from.address)
           .join("\n")
       : "";
-  const subjectBase = stripFormatControls(header?.subject ?? "");
-  const initialSubject =
-    mode === "reply" || mode === "replyAll"
-      ? subjectBase.toLowerCase().startsWith("re:")
-        ? subjectBase
-        : `${t("mail.replyPrefix")}${subjectBase}`
-      : mode === "forward"
-        ? `${t("mail.forwardPrefix")}${subjectBase}`
-        : "";
+  const initialSubject = composeSubject(t, mode, header);
 
   const [from, setFrom] = useState(draft?.account_id ?? accountId);
   const [to, setTo] = useState(draft ? draft.to.join("\n") : initialTo);
@@ -220,6 +236,23 @@ export function MailComposeDialog({
     };
   }, [encrypt, recipientKey, from]);
 
+  // Dirty is "differs from the opening values", compared, not counted: a
+  // reply's quoted text is not the user's work yet, and an effect that skipped
+  // its first run would fire anyway under StrictMode's double mount. Staged
+  // attachments count by id, not by array (a save hands back a new array of the
+  // same files). A save moves the baseline to what was saved.
+  const snapshot = [from, to, cc, bcc, subject, text, staged.map((a) => a.staged_id).join(",")].join(
+    "\u0000",
+  );
+  const baseline = useRef(snapshot);
+  const latest = useRef(snapshot);
+  latest.current = snapshot;
+  const onDirtyRef = useRef(onDirty);
+  onDirtyRef.current = onDirty;
+  useEffect(() => {
+    if (snapshot !== baseline.current) onDirtyRef.current?.(subject);
+  }, [snapshot, subject]);
+
   function buildDraft(): MailDraft {
     return {
       id: draftId,
@@ -287,9 +320,16 @@ export function MailComposeDialog({
   async function doSaveDraft() {
     setBusy("save");
     setError("");
+    const saving = latest.current;
+    const savedSubject = subject;
     const id = await ensureDraft();
     setBusy("");
-    if (id) setStatus(t("mail.draftSaved"));
+    if (!id) return;
+    setStatus(t("mail.draftSaved"));
+    baseline.current = saving;
+    // Typed on while the save was in flight: that text is not saved, so the
+    // tab stays dirty.
+    if (latest.current === saving) onSaved?.(savedSubject);
   }
 
   async function doDiscard() {
@@ -335,24 +375,7 @@ export function MailComposeDialog({
     onClose();
   }
 
-  return createPortal(
-    <div className="modal-backdrop" onMouseDown={onClose}>
-      <div className="settings-dialog mail-compose-dialog" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="settings-title-row">
-          <h2>
-            {mode === "reply"
-              ? t("mail.composeReply")
-              : mode === "replyAll"
-                ? t("mail.composeReplyAll")
-                : mode === "forward"
-                  ? t("mail.composeForward")
-                  : t("mail.composeNew")}{" "}
-            <UntestedTag id="mailComposeDialog.1" />
-          </h2>
-          <button type="button" className="dialog-close-btn" onClick={onClose}>
-            ×
-          </button>
-        </div>
+  const form = (
         <div className="dialog-scroll">
           {draft?.origin && (
             <div className="mail-agent-banner" role="note">
@@ -365,7 +388,7 @@ export function MailComposeDialog({
                   the sender of a hostile message among them. The one thing Send
                   cannot check is whose text the body carries. */}
               {draft.origin === "reader" && parseRecipients(to).length > 0 && (
-                <div>{t("mail.agentDraftReaderRecipients")}</div>
+                <div><WarningIcon /> {t("mail.agentDraftReaderRecipients")}</div>
               )}
             </div>
           )}
@@ -384,7 +407,7 @@ export function MailComposeDialog({
           <label className="mail-field">
             <span className="mail-field-label">{t("mail.to")}</span>
             <textarea
-              className="mail-input mail-textarea"
+              className="mail-input mail-textarea mail-compose-to"
               rows={2}
               autoFocus
               spellCheck={false}
@@ -537,7 +560,8 @@ export function MailComposeDialog({
           {error && <div className="project-dialog-error">{error}</div>}
 
           <div className="mail-dialog-actions">
-            <button type="button" className="settings-btn" onClick={onClose}>
+            {embedded && <UntestedTag id="mailComposeDialog.1" />}
+            <button type="button" className="settings-btn" onClick={onCancel ?? onClose}>
               {t("common.cancel")}
             </button>
             {draft && (
@@ -568,8 +592,60 @@ export function MailComposeDialog({
             </button>
           </div>
         </div>
+  );
+
+  if (embedded) {
+    return (
+      <div className="mail-compose-tab">
+        <div className="mail-compose-tab-form">{form}</div>
+      </div>
+    );
+  }
+
+  return createPortal(
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <div className="settings-dialog mail-compose-dialog" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="settings-title-row">
+          <h2>
+            {composeTitle(t, mode)} <UntestedTag id="mailComposeDialog.1" />
+          </h2>
+          <button type="button" className="dialog-close-btn" onClick={onClose}>
+            ×
+          </button>
+        </div>
+        {form}
       </div>
     </div>,
     document.body,
   );
+}
+
+/** The subject a composer opens with — "Re: …" / "Fwd: …" off the source
+ *  message, empty for a new mail. Also a reply or forward tab's label before
+ *  anything is typed. */
+export function composeSubject(
+  t: ReturnType<typeof useT>,
+  mode: ComposeMode,
+  header: MailHeader | undefined,
+): string {
+  const base = stripFormatControls(header?.subject ?? "");
+  return mode === "reply" || mode === "replyAll"
+    ? base.toLowerCase().startsWith("re:")
+      ? base
+      : `${t("mail.replyPrefix")}${base}`
+    : mode === "forward"
+      ? `${t("mail.forwardPrefix")}${base}`
+      : "";
+}
+
+/** The composer's name for what it is writing — the dialog's title and the
+ *  label of a composer tab that has no subject yet. */
+export function composeTitle(t: ReturnType<typeof useT>, mode: ComposeMode): string {
+  return mode === "reply"
+    ? t("mail.composeReply")
+    : mode === "replyAll"
+      ? t("mail.composeReplyAll")
+      : mode === "forward"
+        ? t("mail.composeForward")
+        : t("mail.composeNew");
 }

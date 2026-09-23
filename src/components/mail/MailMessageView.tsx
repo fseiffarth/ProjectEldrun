@@ -75,6 +75,9 @@ export interface MailMessageViewProps {
   onReply: (mode: "reply" | "replyAll" | "forward") => void;
   /** Open the composer pre-addressed to a `mailto:` link's recipient. */
   onComposeTo: (address: string) => void;
+  /** Give this message a mail-window tab of its own. Only the Inbox preview
+   *  passes it — a message already in its own tab has nowhere further to go. */
+  onOpenInTab?: () => void;
 }
 
 export function MailMessageView({
@@ -83,12 +86,19 @@ export function MailMessageView({
   loading,
   onReply,
   onComposeTo,
+  onOpenInTab,
 }: MailMessageViewProps) {
   const t = useT();
   const lang = useI18nStore((s) => s.lang);
   const use24h = useUse24h();
   const frameRef = useRef<HTMLIFrameElement>(null);
   const [confirmLink, setConfirmLink] = useState<MailLink | null>(null);
+  // Sharing with a contained reader agent (`docs/mail_mcp_plan.md` §1): the
+  // same mark the list's right-click sets, reachable from the open message.
+  const agentShareable = useMailStore(
+    (s) => !!header && s.accounts.find((a) => a.id === header.account_id)?.ai?.agent_access === true,
+  );
+  const agentShared = useMailStore((s) => !!header && s.agentMarks.includes(header.id));
 
   const unsafe = !!body?.html && bodyLooksUnsafe(body.html);
   // Memoized: a multi-MB srcdoc must not be re-assembled on every render.
@@ -162,6 +172,28 @@ export function MailMessageView({
           <button type="button" className="settings-btn" onClick={() => onReply("forward")}>
             {t("mail.composeForward")}
           </button>
+          {onOpenInTab && (
+            <button
+              type="button"
+              className="settings-btn"
+              title={t("mail.openInTabHint")}
+              onClick={onOpenInTab}
+            >
+              {t("mail.openInTab")}
+            </button>
+          )}
+          {agentShareable && (
+            <button
+              type="button"
+              className="settings-btn untested"
+              title={t("mail.shareWithAgentsNote")}
+              aria-pressed={agentShared}
+              onClick={() => void useMailStore.getState().setAgentMark([header], !agentShared)}
+            >
+              {agentShared ? t("mail.stopSharingWithAgents") : t("mail.shareWithAgents")}
+              <UntestedTag id="mailMessageView.5" />
+            </button>
+          )}
         </div>
         {/* Local-model actions (#204/#207/#208): summarize, extract an event,
             extract a to-do — each gated by its own toggle and a loopback model. */}

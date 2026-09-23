@@ -22,8 +22,9 @@ import { useT } from "../../lib/i18n";
 /** Pixels a press on the title bar must travel before it is a move, not a click. */
 const DRAG_THRESHOLD_PX = 5;
 
-/** Presses on the title bar that keep their own meaning. */
-const BAR_NO_DRAG = "button, input, a, .untested-tag";
+/** Presses on the title bar that keep their own meaning — a tab in a tabbed
+ *  overlay's strip (mail) included. */
+const BAR_NO_DRAG = "button, input, a, .untested-tag, .tab";
 
 const FRAME_GRIPS: RootOverlayDragMode[] = ["n", "s", "e", "w", "ne", "nw", "se", "sw"];
 

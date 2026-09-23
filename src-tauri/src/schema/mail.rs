@@ -100,8 +100,31 @@ pub struct MailAiPrefs {
     /// root tab does not consult it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_access: Option<bool>,
+    /// How much of the account `agent_access` opens: the messages the user
+    /// marked (`agent_marks` in the store) or the whole account. Unset =
+    /// [`MailAgentScope::Marked`], so a switch turned on by the two-state build
+    /// reads as the narrower consent (`docs/mail_mcp_plan.md` §1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_scope: Option<MailAgentScope>,
     #[serde(flatten, default)]
     pub extra: HashMap<String, Value>,
+}
+
+/// What a contained reader may see of an account whose `agent_access` is on.
+///
+/// An unknown value deserializes as `Marked`: a newer build's wider mode must
+/// not turn into "whole account" on an older one, and the accounts file must
+/// keep loading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum MailAgentScope {
+    /// Every message of the account.
+    All,
+    /// Only the messages the user marked for agents. Last, because serde's
+    /// `other` has to be.
+    #[default]
+    #[serde(other)]
+    Marked,
 }
 
 impl MailAiPrefs {
@@ -115,6 +138,7 @@ impl MailAiPrefs {
             && self.todo.is_none()
             && self.auto_create.is_none()
             && self.agent_access.is_none()
+            && self.agent_scope.is_none()
             && self.extra.is_empty()
     }
 }
@@ -934,6 +958,23 @@ pub struct MailHeaderPage {
     /// was for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scanned: Option<u32>,
+}
+
+/// One page of a server-backed folder search: the [`MailHeaderPage`] answer
+/// plus whether the server was reached and whether its matches were capped.
+///
+/// A sync indexes only a folder's newest headers, so a local query can only
+/// match the downloaded tail. `mail_search` asks the server first and
+/// backfills what it finds — `remote` says whether that happened. `false`
+/// means local-only (offline, no saved password, the server refused).
+/// `partial` says the server found more matches than the bounded backfill can
+/// index, so older matches may be missing from this page even when online.
+#[derive(Debug, Clone, Serialize)]
+pub struct MailSearchPage {
+    #[serde(flatten)]
+    pub page: MailHeaderPage,
+    pub remote: bool,
+    pub partial: bool,
 }
 
 /// What the header list is ordered by.

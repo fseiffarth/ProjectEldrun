@@ -62,7 +62,7 @@ use crate::schema::mail::{
     MailExtractedEvent, MailExtractedTask, MailFilterReport, MailFilterRule, MailFilterSample,
     MailFilters, MailFlag, MailFolder, MailFolderKind, MailHeader, MailHeaderPage,
     MailKeyringState, MailLink, MailPasswordState, MailPreviewBlob, MailPriority,
-    MailPriorityCounts, MailPrioritySource, MailProbe, MailSendResult, MailSort, MailSyncEvent,
+    MailPriorityCounts, MailPrioritySource, MailProbe, MailSearchPage, MailSendResult, MailSort, MailSyncEvent,
     MailSyncSummary, StagedAttachment, ACCOUNTS_VERSION, FILTERS_VERSION,
 };
 use crate::services::mail_ai;
@@ -70,7 +70,7 @@ use crate::services::mail_authres;
 use crate::services::mail_crypt::{self, MailKeys};
 use crate::services::mail_crypto::{self, CryptoKind, DecryptError};
 use crate::services::mail_engine::{
-    self, InProcessEngine, MailEngine, OutboundAttachment, Password,
+    self, FetchedHeader, InProcessEngine, MailEngine, OutboundAttachment, Password,
 };
 use crate::services::mail_filters;
 use crate::services::mail_pgp::{self, PgpKeyInfo, PgpKeyring, SealOpts};
@@ -121,6 +121,24 @@ fn sealed_twin(path: &Path) -> PathBuf {
 /// How many headers one sync pulls per folder. Bounded because "sync" on a
 /// 200 000-message archive folder is otherwise an unbounded fetch.
 const SYNC_HEADER_LIMIT: u32 = 200;
+
+/// How many server search matches one search backfills into the index, newest
+/// first. A common word in a big mailbox can match tens of thousands of mails;
+/// fetching them all per keystroke would stall the list behind megabytes of
+/// headers the user will never page to. Past the cap the answer is still the
+/// local page over what is indexed — and the next sync's tail plus the next
+/// search's backfill keep growing it.
+const SERVER_SEARCH_MATCH_CAP: usize = 1000;
+
+/// Keep the newest bounded set of server matches and tell the caller when
+/// older matches were omitted. The UI must never describe that page as a
+/// complete search of the folder.
+fn cap_server_search_matches(mut uids: Vec<u32>) -> (Vec<u32>, bool) {
+    uids.sort_unstable_by(|a, b| b.cmp(a));
+    let partial = uids.len() > SERVER_SEARCH_MATCH_CAP;
+    uids.truncate(SERVER_SEARCH_MATCH_CAP);
+    (uids, partial)
+}
 
 /// Largest attachment handed to the in-pane previewer over IPC.
 const MAX_PREVIEW_BYTES: usize = 4 * 1024 * 1024;
@@ -831,6 +849,54 @@ fn folder_id_for(account_id: &str, folder_path: &str) -> String {
 
 fn message_id_for(folder_id: &str, uid: u32) -> String {
     format!("{folder_id}-{uid}")
+}
+
+/// A fetched header row, given its store identity — plus the `In-Reply-To` the
+/// caller threads with (`set_reply_key`).
+///
+/// The one place the engine's shape becomes the index's, shared by the sync
+/// loop and the server search's backfill so the two cannot disagree about what
+/// a stored header holds.
+fn header_row(folder: &MailFolder, h: FetchedHeader) -> (MailHeader, Option<String>) {
+    let row = MailHeader {
+        id: message_id_for(&folder.id, h.uid),
+        account_id: folder.account_id.clone(),
+        folder_id: folder.id.clone(),
+        uid: h.uid,
+        rfc_message_id: h.headers.message_id.clone(),
+        subject: h.headers.subject,
+        from: h.headers.from,
+        to: h.headers.to,
+        cc: h.headers.cc,
+        date: h.headers.date,
+        seen: h.seen,
+        flagged: h.flagged,
+        answered: h.answered,
+        has_attachments: h.headers.has_attachments,
+        size: h.headers.size,
+        preview: h.headers.preview,
+        malformed_headers: if h.headers.malformed_headers.is_empty() {
+            None
+        } else {
+            Some(h.headers.malformed_headers)
+        },
+        // Stored as parsed, i.e. `Unconfigured`. `serve_auth_state` applies
+        // the account's trusted `authserv-id` on the way out, so the setting
+        // governs already-synced mail too.
+        auth: h.headers.auth,
+        // Always `None` here, and it never reaches the column: `upsert_header`
+        // writes `priority` in neither half of its statement precisely so a
+        // loop over a folder's messages cannot wipe a mark the user made. The
+        // mark is the user's, not the server's.
+        priority: None,
+        // Provenance is never written by a sync — it is set only when
+        // something *marks* the message (a rule, the user, or the model), so a
+        // re-sync cannot overwrite it.
+        priority_source: None,
+        priority_reason: None,
+    };
+    let in_reply_to = h.headers.in_reply_to;
+    (row, in_reply_to)
 }
 
 fn short_hash(s: &str) -> String {
@@ -1956,45 +2022,7 @@ async fn sync_inner(
                 let prev_max_uid = store3.folder_max_uid(&folder2.id)?;
                 let is_arrival = |uid: u32| matches!(prev_max_uid, Some(m) if uid > m);
                 for h in headers {
-                    let row = crate::schema::mail::MailHeader {
-                        id: message_id_for(&folder2.id, h.uid),
-                        account_id: folder2.account_id.clone(),
-                        folder_id: folder2.id.clone(),
-                        uid: h.uid,
-                        rfc_message_id: h.headers.message_id.clone(),
-                        subject: h.headers.subject,
-                        from: h.headers.from,
-                        to: h.headers.to,
-                        cc: h.headers.cc,
-                        date: h.headers.date,
-                        seen: h.seen,
-                        flagged: h.flagged,
-                        answered: h.answered,
-                        has_attachments: h.headers.has_attachments,
-                        size: h.headers.size,
-                        preview: h.headers.preview,
-                        malformed_headers: if h.headers.malformed_headers.is_empty() {
-                            None
-                        } else {
-                            Some(h.headers.malformed_headers)
-                        },
-                        // Stored as parsed, i.e. `Unconfigured`. `serve_auth_state`
-                        // applies the account's trusted `authserv-id` on the way
-                        // out, so the setting governs already-synced mail too.
-                        auth: h.headers.auth,
-                        // Always `None` here, and it never reaches the column:
-                        // `upsert_header` writes `priority` in neither half of its
-                        // statement precisely so this loop — which runs over every
-                        // message in the folder on every check — cannot wipe a mark
-                        // the user made. The mark is the user's, not the server's.
-                        priority: None,
-                        // Provenance is never written by a sync — it is set only
-                        // when something *marks* the message (a rule below, the user,
-                        // or the model), so a re-sync cannot overwrite it.
-                        priority_source: None,
-                        priority_reason: None,
-                    };
-                    let in_reply_to = h.headers.in_reply_to;
+                    let (row, in_reply_to) = header_row(&folder2, h);
                     let inserted = store3.upsert_header(&row)?;
                     store3.set_reply_key(&row.id, in_reply_to.as_deref())?;
                     if inserted {
@@ -2111,12 +2139,22 @@ pub async fn mail_headers(
     sort: Option<MailSort>,
     desc: Option<bool>,
     unread_only: Option<bool>,
+    agent_only: Option<bool>,
     state: State<'_, MailState>,
 ) -> Result<MailHeaderPage, String> {
     let rt = state.inner().clone();
     tokio::task::spawn_blocking(move || {
         let store = store_of(&rt)?;
-        let mut page = store.headers_page(
+        // `agent_only`: the "shared with agents" filter — the same page a reader
+        // in `Marked` scope is served, so what the user sees under the chip is
+        // exactly what such a reader can reach.
+        let page_of = if agent_only.unwrap_or(false) {
+            MailStore::headers_page_marked
+        } else {
+            MailStore::headers_page
+        };
+        let mut page = page_of(
+            &store,
             &folder_id,
             offset,
             limit,
@@ -2130,6 +2168,205 @@ pub async fn mail_headers(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Search one folder's whole mailbox, then serve the page from the local index.
+///
+/// A sync indexes only a folder's newest headers, so `mail_headers` with a
+/// query can only ever match the downloaded tail — in a folder with thousands
+/// of mails, an old mail is unfindable. This command asks the server first
+/// (`UID SEARCH` over subject/sender), pulls up to
+/// [`SERVER_SEARCH_MATCH_CAP`] matching headers it was missing into the index,
+/// and then answers the page exactly the way
+/// `mail_headers` does — same sort, same paging, same query — so the two
+/// cannot disagree about what a query means. `partial` flags a capped result
+/// so the UI does not present it as a complete folder search.
+///
+/// Anything that keeps it from reaching the server is NOT an error here: with
+/// no saved password, offline, behind a down VPN, or refused by the server, it
+/// answers from the local index with `remote: false`, and the UI says the
+/// answer covers downloaded mail only. A search-as-you-type that errored on
+/// every keystroke offline would be unusable — and a truncated answer that
+/// looks complete would be worse, so the flag is the whole point.
+///
+/// At most one login and one search per call, and usually no fetch at all:
+/// only the matched UIDs the index is missing are pulled (`missing_uids`), so
+/// typing a longer query over the shorter one's matches reuses what is already
+/// here. Never prompts: the password comes from the session or the keychain,
+/// silently.
+#[tauri::command]
+pub async fn mail_search(
+    folder_id: String,
+    query: String,
+    offset: u32,
+    limit: u32,
+    sort: Option<MailSort>,
+    desc: Option<bool>,
+    unread_only: Option<bool>,
+    agent_only: Option<bool>,
+    state: State<'_, MailState>,
+) -> Result<MailSearchPage, String> {
+    let rt = state.inner().clone();
+    let sort = sort.unwrap_or_default();
+    let desc = desc.unwrap_or(true);
+    let unread_only = unread_only.unwrap_or(false);
+    let agent_only = agent_only.unwrap_or(false);
+    // An empty query is a plain page; reaching the server for it would fetch
+    // nothing and claim a scope it did not earn.
+    if query.trim().is_empty() {
+        return mail_headers(
+            folder_id,
+            offset,
+            limit,
+            None,
+            Some(sort),
+            Some(desc),
+            Some(unread_only),
+            Some(agent_only),
+            state,
+        )
+        .await
+        .map(|page| MailSearchPage { page, remote: false, partial: false });
+    }
+    let local = |remote: bool, partial: bool| {
+        let rt = rt.clone();
+        let folder_id = folder_id.clone();
+        let query = query.clone();
+        // Owned copies: the blocking closure below must be `'static`.
+        let (offset, limit, sort, desc, unread_only, agent_only) =
+            (offset, limit, sort, desc, unread_only, agent_only);
+        async move {
+            tokio::task::spawn_blocking(move || {
+                local_search_page(
+                    &rt,
+                    &folder_id,
+                    &query,
+                    offset,
+                    limit,
+                    sort,
+                    desc,
+                    unread_only,
+                    agent_only,
+                )
+            })
+            .await
+            .map_err(|e| e.to_string())?
+            .map(|page| MailSearchPage { page, remote, partial })
+        }
+    };
+    // The folder first: its path is what the server is asked about, and an
+    // unknown folder answers locally rather than failing the keystroke.
+    let folder = {
+        let rt = rt.clone();
+        let folder_id = folder_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let store = store_of(&rt)?;
+            store.folder(&folder_id)
+        })
+        .await
+        .map_err(|e| e.to_string())??
+    };
+    let Some(folder) = folder else {
+        return local(false, false).await;
+    };
+    let account = account_by_id(&accounts_path(), &folder.account_id);
+    let login = account
+        .as_ref()
+        .ok()
+        .and_then(|account| resolve_password(&rt, account, MailProto::Imap));
+    let (Ok(account), Some(login)) = (account, login) else {
+        return local(false, false).await;
+    };
+    // Newest matches first, bounded: a common word in a big mailbox can match
+    // tens of thousands of mails, and the backfill runs per keystroke.
+    let matches = InProcessEngine
+        .search_uids(&account, &login, &folder.path, &query)
+        .await
+        .map(cap_server_search_matches);
+    let Ok((uids, mut partial)) = matches else {
+        return local(false, false).await;
+    };
+    let missing = {
+        let rt = rt.clone();
+        let folder_id = folder_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let store = store_of(&rt)?;
+            store.missing_uids(&folder_id, &uids)
+        })
+        .await
+        .map_err(|e| e.to_string())??
+    };
+    // The server answered. `true` unless pulling what it named fails — then
+    // the page still serves from what is indexed, flagged local-only.
+    let mut remote = true;
+    if !missing.is_empty() {
+        match InProcessEngine
+            .headers_for_uids(&account, &login, &folder.path, &missing)
+            .await
+        {
+            Ok(headers) => {
+                // A message can disappear between SEARCH and FETCH, or its
+                // headers can be unusable. Neither case earned a complete
+                // result, even when the UID count was below the cap.
+                partial |= headers.len() != missing.len();
+                let rt = rt.clone();
+                let folder_id = folder_id.clone();
+                let backfilled = tokio::task::spawn_blocking(move || {
+                    let store = store_of(&rt)?;
+                    let mut inserted = 0u32;
+                    let mut inserted_unseen = 0u32;
+                    for h in headers {
+                        let unseen = !h.seen;
+                        let (row, in_reply_to) = header_row(&folder, h);
+                        if store.upsert_header(&row)? {
+                            inserted += 1;
+                            if unseen {
+                                inserted_unseen += 1;
+                            }
+                        }
+                        store.set_reply_key(&row.id, in_reply_to.as_deref())?;
+                    }
+                    store.note_indexed(&folder_id, inserted, inserted_unseen)?;
+                    Ok::<_, String>(())
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+                if backfilled.is_err() {
+                    remote = false;
+                }
+            }
+            Err(_) => remote = false,
+        }
+    }
+    local(remote, remote && partial).await
+}
+
+/// One page from the local index, using the same subject and sender fields as
+/// IMAP for both an online backfill and an offline fallback.
+fn local_search_page(
+    rt: &MailState,
+    folder_id: &str,
+    query: &str,
+    offset: u32,
+    limit: u32,
+    sort: MailSort,
+    desc: bool,
+    unread_only: bool,
+    agent_only: bool,
+) -> Result<MailHeaderPage, String> {
+    let store = store_of(rt)?;
+    let mut page = store.folder_search_page(
+        folder_id,
+        offset,
+        limit,
+        query,
+        sort,
+        desc,
+        unread_only,
+        agent_only,
+    )?;
+    serve_auth_state(&mut page.items);
+    Ok(page)
 }
 
 /// The answers the user already wrote to one message, from the local index —
@@ -3257,11 +3494,76 @@ pub async fn mail_draft_discard(
 /// Whether any account has `MailAiPrefs::agent_access` on — the root overlay
 /// badge's mail mark. An unreadable account list reads as "none".
 pub fn any_account_open_to_agents() -> bool {
-    read_accounts(&accounts_path()).is_ok_and(|list| {
-        list.accounts
-            .iter()
-            .any(|a| a.ai.as_ref().and_then(|ai| ai.agent_access) == Some(true))
-    })
+    widest_agent_scope().is_some()
+}
+
+/// The widest `agent_scope` among the accounts open to agents, or `None` when
+/// none is: what the badge distinguishes, since "a few marked messages" and
+/// "the whole account" are very different exposures.
+pub fn widest_agent_scope() -> Option<crate::schema::mail::MailAgentScope> {
+    use crate::schema::mail::MailAgentScope;
+    let list = read_accounts(&accounts_path()).ok()?;
+    list.accounts
+        .iter()
+        .filter(|a| a.ai.as_ref().and_then(|ai| ai.agent_access) == Some(true))
+        .map(|a| a.ai.as_ref().and_then(|ai| ai.agent_scope).unwrap_or_default())
+        .max_by_key(|scope| matches!(scope, MailAgentScope::All))
+}
+
+// ── Marks for agents (`docs/mail_mcp_plan.md` §1, "Marked mails only") ─────
+//
+// Local only, like a priority mark: a row in the store, no login, no STORE.
+// Each returns how many rows changed, so the mail view can tell "marked" from
+// "that message is no longer in the index".
+
+/// Mark or unmark messages for a contained reader.
+#[tauri::command]
+pub async fn mail_agent_mark(
+    message_ids: Vec<String>,
+    marked: bool,
+    state: State<'_, MailState>,
+) -> Result<usize, String> {
+    let rt = state.inner().clone();
+    tokio::task::spawn_blocking(move || store_of(&rt)?.agent_mark(&message_ids, marked))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Mark every message of a folder.
+#[tauri::command]
+pub async fn mail_agent_mark_folder(
+    folder_id: String,
+    state: State<'_, MailState>,
+) -> Result<usize, String> {
+    let rt = state.inner().clone();
+    tokio::task::spawn_blocking(move || store_of(&rt)?.agent_mark_folder(&folder_id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Mark every message of an account from one sender address.
+#[tauri::command]
+pub async fn mail_agent_mark_sender(
+    account_id: String,
+    address: String,
+    state: State<'_, MailState>,
+) -> Result<usize, String> {
+    let rt = state.inner().clone();
+    tokio::task::spawn_blocking(move || store_of(&rt)?.agent_mark_sender(&account_id, &address))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// The ids of an account's marked messages, for the mail view's mark.
+#[tauri::command]
+pub async fn mail_agent_marks(
+    account_id: String,
+    state: State<'_, MailState>,
+) -> Result<Vec<String>, String> {
+    let rt = state.inner().clone();
+    tokio::task::spawn_blocking(move || store_of(&rt)?.agent_marks(&account_id))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// `root_mcp_mail::MailAccess` over the live [`MailState`].
@@ -3860,6 +4162,19 @@ mod tests {
     use super::*;
     use crate::schema::mail::{MailSecurity, MailServer};
 
+    #[test]
+    fn server_search_cap_reports_omitted_matches() {
+        let (uids, partial) = cap_server_search_matches((1..=1001).collect());
+        assert!(partial);
+        assert_eq!(uids.len(), SERVER_SEARCH_MATCH_CAP);
+        assert_eq!(uids.first(), Some(&1001));
+        assert_eq!(uids.last(), Some(&2));
+
+        let (uids, partial) = cap_server_search_matches((1..=1000).collect());
+        assert!(!partial);
+        assert_eq!(uids.last(), Some(&1));
+    }
+
     fn tmp() -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("accounts.json");
@@ -4107,6 +4422,7 @@ mod tests {
             "mail_sync",
             "mail_sync_cancel",
             "mail_headers",
+            "mail_search",
             "mail_body",
             "mail_flag",
             "mail_move",

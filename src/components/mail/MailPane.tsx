@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { MAIL_PAGE_SIZE, unreadTotal, useMailStore } from "../../stores/mail";
 import { useSettingsStore } from "../../stores/settings";
 import { onMailSync, mailAiAllowed, planMailDelete } from "../../lib/mail";
@@ -11,7 +11,6 @@ import type { MailAccount, MailHeader, MailPriority, MailSort } from "../../type
 import { MailList, type MailCheckMode } from "./MailList";
 import { MailMessageView } from "./MailMessageView";
 import { MailAccountDialog } from "./MailAccountDialog";
-import { MailComposeDialog, type ComposeMode } from "./MailComposeDialog";
 import { MailEncryptionDialog } from "./MailEncryptionDialog";
 import { MailFiltersDialog } from "./MailFiltersDialog";
 import { MailKeysDialog } from "./MailKeysDialog";
@@ -69,11 +68,15 @@ export function MailPane({ visible }: MailPaneProps) {
   const headers = useMailStore((s) => s.headers);
   const headerTotal = useMailStore((s) => s.headerTotal);
   const headerScanned = useMailStore((s) => s.headerScanned);
+  const searchRemote = useMailStore((s) => s.searchRemote);
+  const searchPartial = useMailStore((s) => s.searchPartial);
   const headerOffset = useMailStore((s) => s.headerOffset);
   const query = useMailStore((s) => s.query);
   const sort = useMailStore((s) => s.sort);
   const sortDesc = useMailStore((s) => s.sortDesc);
   const unreadOnly = useMailStore((s) => s.unreadOnly);
+  const agentOnly = useMailStore((s) => s.agentOnly);
+  const agentMarks = useMailStore((s) => s.agentMarks);
   const body = useMailStore((s) => s.body);
   const loadingHeaders = useMailStore((s) => s.loadingHeaders);
   const loadingBody = useMailStore((s) => s.loadingBody);
@@ -81,9 +84,7 @@ export function MailPane({ visible }: MailPaneProps) {
   const error = useMailStore((s) => s.error);
 
   const [accountDialog, setAccountDialog] = useState<{ account: MailAccount | null } | null>(null);
-  const [compose, setCompose] = useState<{ mode: ComposeMode; toAddress?: string } | null>(null);
   const agentDrafts = useMailStore((s) => s.agentDrafts);
-  const pendingDraft = useMailStore((s) => s.pendingDraft);
   // The local store's encryption. Read once when the pane first becomes visible
   // rather than on mount: the read *opens the store* (that is what resolves the
   // unlock), and a pane that is mounted-but-hidden must not be the thing that
@@ -180,6 +181,29 @@ export function MailPane({ visible }: MailPaneProps) {
     (h: MailHeader) => void useMailStore.getState().setFlag(h.id, "flagged", !h.flagged),
     [],
   );
+  // Marks for agents (`docs/mail_mcp_plan.md` §1). Offered on a row only when
+  // its account is open to a contained reader — a mark on a closed account does
+  // nothing, and a control that does nothing is a control that lies.
+  const agentMarkSet = useMemo(() => new Set(agentMarks), [agentMarks]);
+  const agentShareable = useCallback(
+    (h: MailHeader) => accounts.find((a) => a.id === h.account_id)?.ai?.agent_access === true,
+    [accounts],
+  );
+  const selectedAccountShareable =
+    accounts.find((a) => a.id === selectedAccountId)?.ai?.agent_access === true;
+  const setAgentMark = useCallback(
+    (hs: MailHeader[], marked: boolean) => void useMailStore.getState().setAgentMark(hs, marked),
+    [],
+  );
+  const markAgentSender = useCallback(
+    (h: MailHeader) => void useMailStore.getState().markAgentSender(h),
+    [],
+  );
+  const markAgentFolder = useCallback(() => void useMailStore.getState().markAgentFolder(), []);
+  const setAgentOnly = useCallback(
+    (on: boolean) => void useMailStore.getState().setAgentOnly(on),
+    [],
+  );
   const setPriority = useCallback(
     (h: MailHeader, priority: MailPriority | null) =>
       void useMailStore.getState().setPriority(h.id, priority),
@@ -204,6 +228,12 @@ export function MailPane({ visible }: MailPaneProps) {
     (id: string) => void useMailStore.getState().selectMessage(id),
     [],
   );
+  // A double-click (or the preview's "Open in tab") gives the message a tab of
+  // its own in the mail window, beside this Inbox tab.
+  const openMessageTab = useCallback((id: string) => {
+    const header = useMailStore.getState().headers.find((h) => h.id === id);
+    if (header) useMailStore.getState().openMessageTab(header);
+  }, []);
   const checkRow = useCallback((h: MailHeader, mode: MailCheckMode, order: string[]) => {
     const store = useMailStore.getState();
     if (mode === "toggle") store.toggleChecked(h.id);
@@ -282,7 +312,7 @@ export function MailPane({ visible }: MailPaneProps) {
     [],
   );
   const setQuery = useCallback(
-    (next: string) => void useMailStore.getState().setQuery(next),
+    (next: string) => useMailStore.getState().queueQuery(next),
     [],
   );
   const setUnreadOnly = useCallback(
@@ -512,7 +542,10 @@ export function MailPane({ visible }: MailPaneProps) {
           type="button"
           className="settings-btn"
           disabled={!selectedAccountId}
-          onClick={() => setCompose({ mode: "new" })}
+          onClick={() =>
+            selectedAccountId &&
+            useMailStore.getState().openComposeTab({ mode: "new", accountId: selectedAccountId })
+          }
         >
           {t("mail.composeNew")}
         </button>
@@ -728,6 +761,7 @@ export function MailPane({ visible }: MailPaneProps) {
               checkedIds={checkedIds}
               loading={loadingHeaders}
               onSelect={selectMessage}
+              onOpen={openMessageTab}
               onCheck={checkRow}
               onClearChecks={clearChecks}
               onDelete={deleteRows}
@@ -745,19 +779,46 @@ export function MailPane({ visible }: MailPaneProps) {
               pageSize={MAIL_PAGE_SIZE}
               total={headerTotal}
               scanned={headerScanned}
+              searchRemote={searchRemote}
+              searchPartial={searchPartial}
               onPage={loadPage}
               query={query}
               unreadOnly={unreadOnly}
               onQuery={setQuery}
               onUnreadOnly={setUnreadOnly}
               onClearFilters={clearFilters}
+              agentMarks={agentMarkSet}
+              agentShareable={agentShareable}
+              onAgentMark={setAgentMark}
+              onAgentMarkSender={markAgentSender}
+              // The folder-wide share needs a folder: not in a priority list.
+              {...(selectedFolderId ? { onAgentMarkFolder: markAgentFolder } : {})}
+              agentOnly={agentOnly}
+              {...(selectedAccountShareable && selectedFolderId ? { onAgentOnly: setAgentOnly } : {})}
             />
             <MailMessageView
               header={selectedHeader}
               body={body}
               loading={loadingBody}
-              onReply={(mode) => setCompose({ mode })}
-              onComposeTo={(address) => setCompose({ mode: "new", toAddress: address })}
+              onReply={(mode) =>
+                selectedHeader &&
+                useMailStore.getState().openComposeTab({
+                  mode,
+                  accountId: selectedHeader.account_id,
+                  source: { header: selectedHeader, body },
+                })
+              }
+              onComposeTo={(address) =>
+                selectedAccountId &&
+                useMailStore
+                  .getState()
+                  .openComposeTab({ mode: "new", accountId: selectedAccountId, toAddress: address })
+              }
+              onOpenInTab={
+                selectedHeader
+                  ? () => useMailStore.getState().openMessageTab(selectedHeader)
+                  : undefined
+              }
             />
           </>
         )}
@@ -816,29 +877,6 @@ export function MailPane({ visible }: MailPaneProps) {
             setAccountDialog(null);
             void useMailStore.getState().removeAccount(id);
           }}
-        />
-      )}
-      {pendingDraft && (
-        <MailComposeDialog
-          key={pendingDraft.id}
-          accounts={accounts}
-          accountId={pendingDraft.account_id}
-          mode="new"
-          draft={pendingDraft}
-          onClose={() => {
-            void useMailStore.getState().openAgentDraft(null);
-            void useMailStore.getState().loadAgentDrafts();
-          }}
-        />
-      )}
-      {compose && selectedAccountId && (
-        <MailComposeDialog
-          accounts={accounts}
-          accountId={selectedAccountId}
-          mode={compose.mode}
-          toAddress={compose.toAddress}
-          {...(selectedHeader ? { source: { header: selectedHeader, body } } : {})}
-          onClose={() => setCompose(null)}
         />
       )}
       {dialogs}

@@ -75,7 +75,7 @@ export function TodoMailRail({ tasks, defaultCalendarId, intakeColumnId }: Props
     // no envelope.
     await mail.openPriority(header.priority ?? "urgent").catch(() => {});
     await mail.selectMessage(header.id).catch(() => {});
-    mail.openOverlay();
+    mail.openInbox();
   };
 
   // The card's shape is `lib/todoBoard`'s, shared with the agenda rail's own

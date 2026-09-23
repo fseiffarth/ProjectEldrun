@@ -103,7 +103,14 @@ export interface MailAiPrefs {
    *  MCP tools. Unset = off. The opposite consent to every switch above: what
    *  such an agent reads is sent to its cloud provider. */
   agent_access?: boolean;
+  /** How much `agent_access` opens: the messages the user marked for agents
+   *  (the store's `agent_marks`) or the whole account. Unset = `"marked"`, so
+   *  a switch turned on before this field existed reads as the narrower
+   *  consent (`docs/mail_mcp_plan.md` §1). */
+  agent_scope?: MailAgentScope;
 }
+
+export type MailAgentScope = "marked" | "all";
 
 /**
  * What the keychain actually did. Never collapse this to a bare account —
@@ -489,6 +496,21 @@ export interface MailHeaderPage {
    * than presenting a truncated answer as a complete one.
    */
   scanned?: number;
+}
+
+/**
+ * One page of a server-backed folder search (`mailSearch`): the header page
+ * plus whether the server was reached and whether matches were capped.
+ *
+ * `remote` is false when the answer came from downloaded mail only — offline,
+ * no saved password, or the server refused — and the list says so, because a
+ * truncated answer that looks complete is the one thing a search must never
+ * produce.
+ */
+export interface MailSearchPage extends MailHeaderPage {
+  remote: boolean;
+  /** The server found more matches than this bounded search could backfill. */
+  partial: boolean;
 }
 
 export interface MailAttachmentMeta {
