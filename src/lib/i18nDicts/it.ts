@@ -3362,7 +3362,6 @@ export const dict: Dict = {
   "calendar.today": "Oggi",
   "calendar.tomorrow": "Domani",
   "calendar.indicator": "Calendario",
-  "calendar.indicatorMutedTitle": "Gli avvisi di questo calendario sono disattivati: non conteggiato nel badge",
   "calendar.indicatorLeft": "Calendario — {count} rimasti oggi",
   "calendar.overlayTitle": "Calendario",
   "calendar.menuAgenda": "Oggi e domani",

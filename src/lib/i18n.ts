@@ -3518,7 +3518,6 @@ export const en = {
   "calendar.today": "Today",
   "calendar.tomorrow": "Tomorrow",
   "calendar.indicator": "Calendar",
-  "calendar.indicatorMutedTitle": "Alerts are off for this calendar — not counted in the badge",
   "calendar.indicatorLeft": "Calendar — {count} left today",
   "calendar.overlayTitle": "Calendar",
   "calendar.menuAgenda": "Today & tomorrow",

@@ -493,15 +493,13 @@
   padding: 3px 0;
 }
 
-.cal-list-row:hover .cal-list-del,
-.cal-list-row:hover .cal-list-alerts,
-.cal-list-alerts:focus-visible,
-.cal-list-alerts-off {
+.cal-list-row:hover .cal-list-del {
   visibility: visible;
 }
 
+/* Always shown, on and off: a bell that appears only on hover leaves the
+   calendar's alert state unreadable at a glance. */
 .cal-list-alerts {
-  visibility: hidden;
   flex: none;
   display: inline-flex;
   align-items: center;
