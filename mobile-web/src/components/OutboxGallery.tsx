@@ -11,9 +11,8 @@ import { isUntested } from "../../../src/lib/untested";
  * The files stay out of the chat — a picture pushed between the turns buries
  * the answer that mentions it, and a chat that rewrites itself as files arrive
  * is not a chat. The gallery is reached from the button beside the tab name,
- * which is there whenever the outbox holds anything, in both views; the
- * project screen shows the same files on a shelf under its tab cards and opens
- * this sheet for the rest of them.
+ * which is there whenever the outbox holds anything, on the Focus screen and
+ * in the project screen's header alike.
  */
 export function OutboxGallery({ scope, files, onOpen, onDetails, onDelete, onClose }: {
   scope: OutboxScope;
@@ -33,7 +32,7 @@ export function OutboxGallery({ scope, files, onOpen, onDetails, onDelete, onClo
       <span className="sheet-grip" aria-hidden="true" />
       <header>
         <button className="sheet-close" onClick={onClose} aria-label={t("mobile.outbox.close")}>✕</button>
-        <h2>{t("mobile.outbox.from")} {isUntested("mobile.outbox.gallery") && <small>{t("mobile.outbox.untested")}</small>}</h2>
+        <h2>{t("mobile.outbox.from")} {isUntested("mobile.outbox.gallery") && <small>{t("mobile.outbox.untested")}</small>} {isUntested("mobile.outbox.share") && <small>{t("mobile.outbox.shareUntested")}</small>}</h2>
         <span className="sheet-close" aria-hidden="true" />
       </header>
       {files.length === 0

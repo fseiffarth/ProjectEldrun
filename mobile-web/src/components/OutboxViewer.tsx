@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type PointerEvent } from "react";
 import { useT } from "../../../src/lib/i18n";
 import { outboxFileUrl, type OutboxFile, type OutboxScope } from "../api";
+import { shareAs, useOutboxShare } from "../outboxShare";
 import { sizeLabel } from "../terminal/fileLabels";
 import { isUntested } from "../../../src/lib/untested";
 
@@ -118,28 +119,24 @@ export function OutboxViewer({ scope, file, pictures, onStep, onClose }: {
     lastTap: { at: number; x: number; y: number } | null;
   }>({ pointers: new Map(), startView: FIT, start: { x: 0, y: 0 }, distance: 0, pinched: false, lastTap: null });
   const [text, setText] = useState<string | null>(null);
-  const [shareFile, setShareFile] = useState<File | null>(null);
   const [failure, setFailure] = useState("");
   const isText = file.kind.startsWith("text/");
-  const canShare = typeof navigator.share === "function" && typeof navigator.canShare === "function";
+  const sharing = useOutboxShare(scope);
+  const { prepare } = sharing;
+  const shareable = shareAs(file) !== null;
   useEffect(() => {
     const controller = new AbortController();
     setText(null);
-    setShareFile(null);
     setFailure("");
     if (isText) void fetch(url, { signal: controller.signal }).then(readTextPreview).then(
       (body) => { if (!controller.signal.aborted) setText(body); },
       () => { if (!controller.signal.aborted) setFailure(t("mobile.outbox.error")); },
     );
-    // Prepare on opening, so the share call itself retains the tap's activation.
-    if (canShare) void fetch(url, { signal: controller.signal }).then(async (response) => {
-      if (!response.ok) throw new Error("read_failed");
-      const blob = await response.blob();
-      const prepared = new File([blob], file.name, { type: file.kind });
-      if (!controller.signal.aborted && navigator.canShare({ files: [prepared] })) setShareFile(prepared);
-    }).catch(() => { /* Saving remains available when sharing is unsupported. */ });
     return () => controller.abort();
-  }, [url, file.name, file.kind, isText, canShare, t]);
+  }, [url, isText, t]);
+  // Fetch the bytes on opening, so a tap on Share shares at once rather than
+  // after the radio — the button itself does not wait for them.
+  useEffect(() => { prepare(file); }, [prepare, file]);
   useEffect(() => {
     if (!onStep || (!previous && !next)) return;
     const onKey = (event: KeyboardEvent) => {
@@ -159,12 +156,6 @@ export function OutboxViewer({ scope, file, pictures, onStep, onClose }: {
     }
   }, [scope, previous, next]);
 
-  const share = () => {
-    if (!shareFile) return;
-    void navigator.share({ files: [shareFile] }).catch((error: unknown) => {
-      if (!(error instanceof DOMException && error.name === "AbortError")) setFailure(t("mobile.outbox.shareError"));
-    });
-  };
   useEffect(() => {
     // A turned phone reshapes the stage; start the picture over, fitted.
     const onResize = () => { live.current = FIT; setView(FIT); };
@@ -262,9 +253,12 @@ export function OutboxViewer({ scope, file, pictures, onStep, onClose }: {
         </small>
       </div>
       <a href={outboxFileUrl(scope, file.name, true)} download={file.name}>{t("mobile.outbox.save")}</a>
-      {shareFile && <button onClick={share}>{t("mobile.outbox.share")}</button>}
+      {shareable && <button disabled={sharing.busy === file.name} onClick={() => void sharing.share(file)}>
+        {t(sharing.ready === file.name ? "mobile.outbox.shareReady" : "mobile.outbox.share")}
+      </button>}
+      {shareable && isUntested("mobile.outbox.share") && <span className="untested">{t("mobile.outbox.untested")}</span>}
     </div>
-    {failure && <p role="alert">{failure}</p>}
+    {(failure || sharing.failed === file.name) && <p role="alert">{failure || t("mobile.outbox.shareError")}</p>}
     {isText ? <div className="outbox-text-body">
       <pre>{text ?? (failure ? "" : t("mobile.outbox.loading"))}</pre>
       {file.size > INLINE_LIMIT && <a href={url} target="_blank" rel="noopener noreferrer">{t("mobile.outbox.whole")}</a>}
