@@ -3,11 +3,9 @@
   <!--
     Eldrun logo (white variant for dark backgrounds) — a circuit "tree of life"
     inside a ring, crowned by a gold compass star. Same geometry as logo.svg; the
-    dark-green traces are recolored to white so the mark reads on dark chrome.
-    A black circle backdrop keeps it visible on light surfaces (e.g. GitHub's
-    white README background).
+    dark-green traces are recolored to white for dark chrome. The background
+    stays transparent so the mark composes with its host surface.
   -->
-  <circle cx="256" cy="256" r="256" fill="#000000" />
   <g stroke="#FFFFFF" stroke-linecap="round" stroke-linejoin="round" fill="none">
     <!-- Ring + both outer legs as one stroke: each leg bends through an
          r=20 fillet that meets the ring tangentially, so no seam or gap.

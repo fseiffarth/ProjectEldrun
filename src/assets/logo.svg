@@ -5,10 +5,9 @@
     Clean vector recreation of the original raster logo (Group K / idea #25),
     traced from measured geometry. Symmetric: the left-side branches are
     authored once and mirrored across the vertical centre line (x = 256).
-    Light variant: black lines on a white circle backdrop, the inverse of
-    logo-white.svg, so it reads on dark surfaces too.
+    Light variant: black lines on a transparent backdrop, the inverse of
+    logo-white.svg.
   -->
-  <circle cx="256" cy="256" r="256" fill="#FFFFFF" />
   <g stroke="#000000" stroke-linecap="round" stroke-linejoin="round" fill="none">
     <!-- Ring + both outer legs as one stroke: each leg bends through an
          r=20 fillet that meets the ring tangentially, so no seam or gap.

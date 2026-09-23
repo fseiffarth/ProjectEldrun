@@ -1,23 +1,24 @@
-![Eldrun logo](src/assets/logo-white.svg)
+![Eldrun logo](src/assets/logo-wordmark.svg)
 
-# Eldrun
-
-See [STATUS.md](STATUS.md) for what has been live-verified and
-[ROADMAP.md](ROADMAP.md) for remaining work.
-
-**A project-centric desktop layer that swaps your entire working context — windows, files, apps, Git state, layout, and AI agent terminals — as a single unit when you switch projects, and runs any of those projects on a remote machine or HPC cluster as if it were sitting on your laptop.**
+# You open projects not applications
 
 [![CI](https://github.com/fseiffarth/ProjectEldrun/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/fseiffarth/ProjectEldrun/actions/workflows/ci-cd.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-yellow.svg)](#license)
 [![Release](https://img.shields.io/github/v/release/fseiffarth/ProjectEldrun)](https://github.com/fseiffarth/ProjectEldrun/releases)
+![Status: Alpha](https://img.shields.io/badge/status-alpha-orange)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri)
 
+## Introduction
 
-> **You don't open applications — you open projects.**
-> **And you don't move to the machine your work runs on — the project takes it
-> with you.**
-> **And whichever agent you run, you answer it from your phone.**
+Eldrun is a project-centric desktop layer that swaps your entire working context — windows, files, apps, Git state, layout, and especially AI agent terminals — as a single unit when you switch projects.
+
+| **Who should try Eldrun** | **Who should look elsewhere** |
+| --- | --- |
+| You work across several projects and want each one to bring back its own desktop, files, apps, and agent sessions. | Your main need is an autonomous agent platform that dispatches, supervises, and recovers multi-day work without your involvement. |
+| You work on multiple remote machines or an HPC cluster over SSH and want easy reconnection and simple distribution of tasks across machines. | You want Eldrun to manage the agent workflow. Eldrun is a project workspace and control cockpit, not an autonomous agent scheduler. |
+| You want to monitor or answer your agents from your phone independently of developer apps. | |
+| You need structure and control and are tired of switching between your agent tabs. You use many different models (claude, openai, meta, google, ...) in parallel. | |
 
 Eldrun stands on **three pillars**.
 
@@ -73,6 +74,9 @@ and Windows/macOS are CI-built with real-hardware checks still pending
 [Current limits](#current-limits) ·
 [Vision](#vision) ·
 [License](#license)
+
+See [STATUS.md](STATUS.md) for what has been live-verified and
+[ROADMAP.md](ROADMAP.md) for remaining work.
 
 ## At a glance
 
