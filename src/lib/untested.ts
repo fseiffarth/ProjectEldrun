@@ -284,15 +284,15 @@ export const UNTESTED = {
 
   // --- mobile — The phone PWA ---------------------------------------
   "mobile.boxAccess": { area: "mobile", what: "MobileSettings · Box access" },
-  "mobile.composer.slash": { area: "mobile", what: "Terminal · Composer `/` menu: slash commands per CLI, the ones sent before first" },
-  "mobile.focus.messageMenu": { area: "mobile", what: "Terminal · Reader click-hold menu on a chat message (copy, read aloud)" },
-  "mobile.focus.onScreen": { area: "mobile", what: "Terminal · Reader on-screen transcript note" },
+  "mobile.composer.slash": { area: "mobile", what: "Terminal · Composer `/` menu: slash commands per CLI, the ones sent before first", tested: "2026-09-23" },
+  "mobile.focus.messageMenu": { area: "mobile", what: "Terminal · Reader click-hold menu on a chat message (copy, read aloud)", tested: "2026-09-23" },
+  "mobile.focus.onScreen": { area: "mobile", what: "Terminal · Reader on-screen transcript note", tested: "2026-09-23" },
   "mobile.focus.readAloud": { area: "mobile", what: "Terminal · Reader auto-read toggle", tested: "2026-09-23" },
   "mobile.focus.session": { area: "mobile", what: "Terminal · Reader session card", tested: "2026-09-23" },
-  "mobile.focus.statusLine": { area: "mobile", what: "Terminal · Reader status-line strip" },
+  "mobile.focus.statusLine": { area: "mobile", what: "Terminal · Reader status-line strip", tested: "2026-09-23" },
   "mobile.focus.pinnedPrompt": { area: "mobile", what: "Terminal · Reader pins the newest prompt at the top once its bubble scrolls away; tap scrolls back to it", tested: "2026-09-23" },
   "mobile.focus.workingFacts": { area: "mobile", what: "Terminal · Reader elapsed time and tokens while the agent works", tested: "2026-09-23" },
-  "mobile.model.effort": { area: "mobile", what: "Terminal · Antigravity effort step in the model sheet" },
+  "mobile.model.effort": { area: "mobile", what: "Terminal · Antigravity effort step in the model sheet", tested: "2026-09-23" },
   "mobile.home.reorder": { area: "mobile", what: "Home · Drag to reorder the project list" },
   "mobile.mailActions": { area: "mobile", what: "MobileSettings · Mark read and star from the phone" },
   "mobile.mailRead": { area: "mobile", what: "MobileSettings · Read mail on the phone" },
@@ -308,8 +308,8 @@ export const UNTESTED = {
   "mobile.home.sendToDesktop": { area: "mobile", what: "Home · Send a file to the desktop (global inbox)" },
   "mobile.setupTitle": { area: "mobile", what: "MobileSetupGuide · Set up Eldrun Mobile" },
   "mobile.speech.language": { area: "mobile", what: "Terminal · Reader voice-language picker", tested: "2026-09-23" },
-  "mobile.voice.keepListening": { area: "mobile", what: "Terminal · Dictation keeps listening through pauses, holds the screen awake, shows the mic level" },
-  "mobile.voice.remote": { area: "mobile", what: "Terminal · Reader toggle: dictate with the phone's speech service instead of on-device" },
+  "mobile.voice.keepListening": { area: "mobile", what: "Terminal · Dictation keeps listening through pauses, holds the screen awake, shows the mic level", tested: "2026-09-23" },
+  "mobile.voice.remote": { area: "mobile", what: "Terminal · Reader toggle: dictate with the phone's speech service instead of on-device", tested: "2026-09-23" },
   "mobile.windowsTerminalsNote": { area: "mobile", what: "MobileSettings · On Windows the phone cannot open this computer's terminals or agent tabs: they attach thr…" },
 
   // --- monitoring — System monitor ----------------------------------

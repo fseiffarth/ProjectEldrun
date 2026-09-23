@@ -127,8 +127,8 @@ nav button,.keys button { flex:1; }
    changes look like one more thing to read. It says what the session's own
    status line says (`agentModel.screenModelTag`), so the tag and the chip over
    the keyboard are one reading in two places. The name keeps the row's spare
-   width; it is the tag that gets cut. */
-.tab-card-main .tab-card-model { position:relative; z-index:1; display:inline-block; flex:0 1 auto; max-width:45%; margin:-4px -6px -4px 0; padding:4px 6px 4px 0; border:0; border-radius:6px; background:transparent; color:#9498aa; font-size:.72rem; font-weight:600; text-align:left; text-transform:none; text-decoration:underline dotted #6f7488; text-underline-offset:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+   width and wraps; the tag keeps its own and is only cut past 60% of the row. */
+.tab-card-main .tab-card-model { position:relative; z-index:1; display:inline-block; flex:0 0 auto; max-width:60%; margin:-4px -6px -4px 0; padding:4px 6px 4px 0; border:0; border-radius:6px; background:transparent; color:#9498aa; font-size:.72rem; font-weight:600; text-align:left; text-transform:none; text-decoration:underline dotted #6f7488; text-underline-offset:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .tab-card-main .tab-card-model:disabled { opacity:1; text-decoration:none; }
 .tab-card-grip { position:relative; z-index:1; flex:0 0 auto; width:44px; padding:0; border:0; border-left:1px solid #2d3040; border-radius:0 11px 0 0; background:transparent; color:#6f7488; font-size:1.05rem; touch-action:none; cursor:grab; }
 .tab-card-grip:active { cursor:grabbing; color:#d3d6e4; }
