@@ -349,6 +349,42 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     await settle();
     screen.getByTestId("session-transcript");
     expect(screen.getByRole("group", { name: "Your prompt" }).textContent).toBe("keep this visible");
+
+    stored = { available: true, version: "answer:codex", entries: [
+      { kind: "answer", text: "Here is the answer." },
+    ], truncated: false };
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    await settle();
+    expect([...screen.getByTestId("session-transcript").querySelectorAll(".readable-turn")]
+      .map((bubble) => bubble.textContent)).toEqual(["keep this visible", "Here is the answer."]);
+  });
+
+  it("shows Codex's next unstamped answer below the prompt sent from this phone", async () => {
+    const codex = { ...TAB, id: "tab-codex", label: "Codex", agent_label: "Codex" };
+    localStorage.setItem("eldrun.mobile.view.codex", "focus");
+    let stored: unknown = { available: true, version: "one", truncated: false, entries: [
+      { kind: "prompt", text: "first", at: "2026-09-18T10:00:00Z" },
+      { kind: "answer", text: "First reply" },
+    ] };
+    vi.stubGlobal("fetch", sidecarFetch(() => stored));
+    render(<Terminal tab={codex} back={() => {}} />);
+    await settle();
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Message agent" }), { target: { value: "follow up" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await settle();
+    stored = { available: true, version: "two", truncated: false, entries: [
+      { kind: "prompt", text: "first", at: "2026-09-18T10:00:00Z" },
+      { kind: "answer", text: "First reply" },
+      { kind: "answer", text: "Reply to follow up" },
+    ] };
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    await settle();
+
+    const bubbles = screen.getByTestId("session-transcript").querySelectorAll(".readable-turn");
+    expect([...bubbles].map((bubble) => bubble.textContent)).toEqual([
+      "first", "First reply", "follow up", "Reply to follow up",
+    ]);
   });
 
   it("clears the draft with the composer's ✕", async () => {

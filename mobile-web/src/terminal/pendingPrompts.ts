@@ -22,6 +22,11 @@ export interface PendingPrompt {
    * copy of the same words after older turns left the window the phone
    * reads. */
   after?: string;
+  /** The last record visible when sent. Codex rollouts can contain records
+   * without timestamps, so the clock alone cannot hold this insertion point. */
+  anchor?: TranscriptEntry;
+  /** Which copy of that record was the anchor, if its text repeated. */
+  anchorSeen: number;
 }
 
 /** At most this many are held; the oldest goes first. */
@@ -40,11 +45,15 @@ function isCopy(entry: TranscriptEntry, text: string): boolean {
 /** The pending prompt for `text`, sent against `entries`. */
 export function pendingPrompt(id: number, text: string, entries: readonly TranscriptEntry[]): PendingPrompt {
   const stamps = entries.map((entry) => entry.at).filter((at): at is string => !!at);
+  const anchor = entries[entries.length - 1];
   return {
     id,
     text: text.trim(),
     seen: entries.filter((entry) => isCopy(entry, text)).length,
     after: stamps.length ? stamps.reduce((a, b) => (b > a ? b : a)) : undefined,
+    anchor,
+    anchorSeen: anchor ? entries.filter((entry) => entry.kind === anchor.kind
+      && entry.text === anchor.text && entry.at === anchor.at).length : 0,
   };
 }
 
@@ -68,6 +77,7 @@ function recordOf(prompt: PendingPrompt, entries: readonly TranscriptEntry[]): n
 export function withPending(entries: readonly TranscriptEntry[], pending: readonly PendingPrompt[]): TranscriptEntry[] {
   if (pending.length === 0) return entries as TranscriptEntry[];
   const shown = [...entries];
+  let lastSlot = -1;
   for (const prompt of pending) {
     const record = recordOf(prompt, shown);
     if (record >= 0) shown.splice(record, 1);
@@ -87,7 +97,24 @@ export function withPending(entries: readonly TranscriptEntry[], pending: readon
         if (time !== undefined && time <= after) slot = index + 1;
       });
     }
+    // An unstamped answer written after the send inherits an older record's
+    // timestamp in the scan above. Use the actual last visible record when it
+    // is still present; the timestamp path remains useful if the bounded
+    // transcript has since dropped that record. With no anchor or timestamp,
+    // the session was empty when sent: every later record belongs below it.
+    if (!prompt.anchor && after === undefined) slot = 0;
+    if (prompt.anchor) {
+      let anchor = -1;
+      let seen = 0;
+      shown.forEach((entry, index) => {
+        if (entry.kind === prompt.anchor?.kind && entry.text === prompt.anchor?.text
+          && entry.at === prompt.anchor?.at && ++seen === prompt.anchorSeen) anchor = index;
+      });
+      if (anchor >= 0) slot = anchor + 1;
+    }
+    slot = Math.max(slot, lastSlot + 1);
     shown.splice(slot, 0, { kind: "prompt", text: prompt.text, at: after });
+    lastSlot = slot;
   }
   return shown;
 }

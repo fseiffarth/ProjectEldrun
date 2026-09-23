@@ -54,6 +54,12 @@ export function normalizeLang(value: string | null | undefined): Language {
 // solely for the test aggregator (`i18nDicts/all.ts`) — components go through
 // `useT()`/`translate`, never this object.
 export const en = {
+  "mobile.newTab.title": "New tab",
+  "mobile.newTab.close": "Close",
+  "mobile.newTab.untested": "Untested",
+  "mobile.newTab.note": "Opens in Eldrun on your desktop; this phone connects to the tab.",
+  "mobile.newTab.shell": "New shell",
+  "mobile.newTab.noAgents": "No agents are configured on the desktop, so this project can open only a shell.",
   "mobile.outbox.countOne": "1 file in the project's outbox",
   "mobile.outbox.actions": "File actions for {name}",
   "mobile.outbox.region": "Files from the agent",
