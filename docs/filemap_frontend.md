@@ -168,7 +168,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `files/SetDefaultAppDialog.tsx` | Pick the default app for a file type. |
 | `embed/EmbedPane.tsx` | Hosts an embedded external app window. |
 | `embed/FileViewerPane.tsx` | In-app viewers (image, markdown, code, TeX/SyncTeX) + shared plumbing. Markdown follows local links and `#fragment`s (`stores/viewers/mdAnchor`); autocomplete ghost/visibility/acceptance UI delegates streaming/model/cache work to `lib/viewers/completion/ollamaCompletionProvider.ts`; code-editor key helpers (`applyIndent`, `applyLineComment`, `applyAutoIndent`, `detectIndentUnit`). |
-| `embed/MdGraphView.tsx` | Markdown relationship graph (`md_graph` flag): BFS rings of links from `lib/viewers/mdGraph.ts`; one bounded scope-confined read per look, never polled. |
+| `embed/MdGraphView.tsx` | Markdown relationship graph (`md_graph` flag): BFS rings from `lib/viewers/mdGraph.ts`, fitted zoom/pan canvas and markdown hover previews; one bounded scope-confined read per look, never polled. |
 | `embed/YamlTree.tsx` | YAML/JSON tree: renders rows but edits text (every action splices the draft), so edits are ordinary undoable changes. Pointer-drag reorder (HTML5 DnD is broken on WebKitGTK). |
 | `embed/BibCards.tsx` | BibTeX card view: one card per entry, filter over all fields, per-card fold (`ViewerState.bibCollapsed`); Source is the other half. |
 | `embed/YamlGrid.tsx` | Optional YAML/JSON card view ("Cards"): drill navigation — one main card, its level, its children; cards show scalar fields only. |

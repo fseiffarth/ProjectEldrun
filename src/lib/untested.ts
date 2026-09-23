@@ -95,6 +95,8 @@ export const UNTESTED = {
   "fileViewerPane.6": { area: "embed", what: "FileViewerPane · Browse…" },
   "fileViewerPane.7": { area: "embed", what: "FileViewerPane · Copy this error" },
   "fileViewerPane.8": { area: "embed", what: "FileViewerPane · Copy the whole compilation log" },
+  "mdGraph.back": { area: "embed", what: "MarkdownView · Back to graph" },
+  "mdGraph.zoom": { area: "embed", what: "MdGraphView · Zoom, pan, and markdown hover previews" },
   "pdfLinkDialog.1": { area: "embed", what: "PdfLinkDialog · Open this link?" },
   "pdfNoteLayer.1": { area: "embed", what: "PdfNoteLayer · Add remark here" },
   "pdfNotesPane.1": { area: "embed", what: "PdfNotesPane · Remarks" },

@@ -613,6 +613,8 @@ export interface TabEntry {
   // of any external default app. These embeds re-render from `embedPath` on
   // relaunch (see isRestorableEmbedTab). See FileViewerPane.
   viewer?: InternalViewer;
+  /** Session-only return path for a new markdown tab opened from a link graph. */
+  mdGraphOriginKey?: string;
   // For in-app `viewer` embeds: the reader's last scroll/zoom/pan, so reopening
   // the file (or restarting) restores the position instead of jumping to the top
   // (see ViewerState). Written by the viewer panes, persisted in project.json.

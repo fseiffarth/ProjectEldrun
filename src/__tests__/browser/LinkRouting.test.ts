@@ -101,6 +101,18 @@ describe("openLinkedFile", () => {
     expect(countAfterSecond).toBe(1);
   });
 
+  it("marks only a newly opened markdown tab with its graph return target", () => {
+    const store = useTabsStore.getState();
+    const linker = store.addTab({ label: "map.md", cmd: "", cwd: "/p", kind: "embed", embedPath: "/p/map.md", viewer: "markdown" });
+    const existing = store.addTab({ label: "existing.md", cmd: "", cwd: "/p", kind: "embed", embedPath: "/p/existing.md", viewer: "markdown" });
+
+    openLinkedFile(linker.key, "/p", { path: "/p/new.md", viewer: "markdown", label: "new.md", mdGraphOriginKey: linker.key });
+    openLinkedFile(linker.key, "/p", { path: "/p/existing.md", viewer: "markdown", label: "existing.md", mdGraphOriginKey: linker.key });
+
+    expect(useTabsStore.getState().tabs.find((t) => t.embedPath === "/p/new.md")?.mdGraphOriginKey).toBe(linker.key);
+    expect(useTabsStore.getState().tabs.find((t) => t.key === existing.key)?.mdGraphOriginKey).toBeUndefined();
+  });
+
   it("removeTab purges the closed tab's link routes", () => {
     const store = useTabsStore.getState();
     const linker = store.addTab({ label: "main.tex", cmd: "", cwd: "/p", kind: "embed", embedPath: "/p/main.tex", viewer: "tex" });

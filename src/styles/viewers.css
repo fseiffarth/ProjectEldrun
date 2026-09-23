@@ -5948,7 +5948,7 @@
    The "Graph" mode of the markdown viewer (MdGraphView): local-file links
    crawled from the viewed document, drawn as SVG on concentric BFS rings.
    The SVG is laid out at fixed pixel coordinates by lib/viewers/mdGraph.ts;
-   this only paints it. Hover affordance is opacity/stroke only — never a
+   the viewport fits and transforms it. Hover affordance is opacity/stroke only — never a
    blurred box-shadow animation (WebKitGTK software-renders those). */
 .md-graph {
   display: flex;
@@ -5979,14 +5979,87 @@
   color: var(--text-primary);
   border-color: var(--accent);
 }
-.md-graph-hint {
+.md-graph-zoom {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
   color: var(--text-muted);
   font-size: var(--text-md);
 }
-.md-graph-scroll {
+.md-graph-zoom button,
+.md-graph-back {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-primary);
+  cursor: var(--cur-pointer, pointer);
+  padding: 3px 7px;
+}
+.md-graph-zoom button:hover,
+.md-graph-back:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.md-graph-back:disabled {
+  opacity: .5;
+  cursor: var(--cur-default, default);
+}
+.md-graph-zoom span {
+  min-width: 38px;
+  text-align: center;
+}
+.md-graph-hint {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--text-md);
+}
+.md-graph-viewport {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  position: relative;
+  overflow: hidden;
+  cursor: var(--cur-grab, grab);
+  touch-action: none;
+}
+.md-graph-viewport.dragging {
+  cursor: var(--cur-grabbing, grabbing);
+}
+.md-graph-viewport svg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+}
+.md-graph-tooltip {
+  position: absolute;
+  z-index: 1;
+  width: min(300px, calc(100% - 16px));
+  max-height: 140px;
+  overflow: hidden;
+  pointer-events: none;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, .18);
+  font-size: var(--text-md);
+}
+.md-graph-tooltip strong,
+.md-graph-tooltip span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.md-graph-tooltip span {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+.md-graph-tooltip p {
+  margin: 5px 0 0;
+  overflow-wrap: anywhere;
 }
 .md-graph-edge {
   stroke: var(--border-color);

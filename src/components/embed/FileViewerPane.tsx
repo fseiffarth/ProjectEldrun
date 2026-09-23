@@ -854,7 +854,7 @@ function SyncResolveHeaderButton({ path, projectId }: { path: string; projectId:
 export function openLinkedFile(
   linkingTabKey: string | undefined,
   linkingFileDir: string,
-  resolved: { path: string; viewer: InternalViewer; label: string },
+  resolved: { path: string; viewer: InternalViewer; label: string; mdGraphOriginKey?: string },
 ) {
   const store = useTabsStore.getState();
   const sameFile = (t: TabEntry) =>
@@ -866,6 +866,7 @@ export function openLinkedFile(
     kind: "embed" as const,
     embedPath: resolved.path,
     viewer: resolved.viewer,
+    ...(resolved.mdGraphOriginKey ? { mdGraphOriginKey: resolved.mdGraphOriginKey } : {}),
   };
   // A linking tab of ANOTHER scope — a viewer in the root console, floating over
   // a project — opens its link beside itself, in its own scope's focused
@@ -5890,33 +5891,43 @@ function SvgPreview({ content, fileName }: { content: string; fileName: string }
   const scaleRef = useRef(scale);
   scaleRef.current = scale;
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  // Scroll position to apply once the new size has laid out, keeping the point
-  // under the cursor fixed.
-  const pendingScroll = useRef<{ left: number; top: number } | null>(null);
+  const imgRef = useRef<HTMLImageElement | null>(null);
+  // The point under the cursor, as a fraction of the image, plus where the
+  // cursor sits in the viewport. Applied once the new size has laid out so that
+  // point stays put. A fraction (not a scroll offset) survives several wheel
+  // ticks landing before one render: each reads the still-displayed layout.
+  const pendingAnchor = useRef<{ fx: number; fy: number; ax: number; ay: number } | null>(null);
   useLayoutEffect(() => {
     const el = scrollRef.current;
-    const p = pendingScroll.current;
-    if (el && p) {
-      el.scrollLeft = p.left;
-      el.scrollTop = p.top;
-    }
-    pendingScroll.current = null;
+    const img = imgRef.current;
+    const a = pendingAnchor.current;
+    pendingAnchor.current = null;
+    if (!el || !img || !a) return;
+    const r = el.getBoundingClientRect();
+    const ir = img.getBoundingClientRect();
+    const left = ir.left - r.left + el.scrollLeft;
+    const top = ir.top - r.top + el.scrollTop;
+    el.scrollLeft = left + a.fx * ir.width - a.ax;
+    el.scrollTop = top + a.fy * ir.height - a.ay;
   }, [scale]);
   const wheelRef = useZoomModifierWheel((e) => {
     if (!(e.ctrlKey || e.metaKey)) return;
     e.preventDefault();
     const el = scrollRef.current;
-    if (!el || e.deltaY === 0) return;
+    const img = imgRef.current;
+    if (!el || !img || e.deltaY === 0) return;
     const prev = scaleRef.current;
     const next = clampScale(prev * (e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP));
     if (next === prev) return;
-    const rect = el.getBoundingClientRect();
-    const ax = e.clientX - rect.left;
-    const ay = e.clientY - rect.top;
-    const k = next / prev;
-    pendingScroll.current = {
-      left: (el.scrollLeft + ax) * k - ax,
-      top: (el.scrollTop + ay) * k - ay,
+    const r = el.getBoundingClientRect();
+    const ir = img.getBoundingClientRect();
+    if (ir.width <= 0 || ir.height <= 0) return;
+    const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
+    pendingAnchor.current = {
+      fx: clamp01((e.clientX - ir.left) / ir.width),
+      fy: clamp01((e.clientY - ir.top) / ir.height),
+      ax: e.clientX - r.left,
+      ay: e.clientY - r.top,
     };
     scaleRef.current = next;
     setScale(next);
@@ -5934,8 +5945,13 @@ function SvgPreview({ content, fileName }: { content: string; fileName: string }
       onDoubleClick={() => setScale(1)}
       style={{ width: "100%", height: "100%", overflow: "auto", background: "#fff" }}
     >
+      {/* Centred while smaller than the pane; grows to scroll once larger. Auto
+          margins (not align/justify) so an oversized image never overflows
+          past the unreachable top/left edge. */}
+      <div style={{ display: "flex", width: "max-content", minWidth: "100%", minHeight: "100%" }}>
       {url && (
         <img
+          ref={imgRef}
           src={url}
           alt={t("fileViewer.previewOf", { file: fileName })}
           draggable={false}
@@ -5945,12 +5961,14 @@ function SvgPreview({ content, fileName }: { content: string; fileName: string }
           }}
           style={{
             display: "block",
+            margin: "auto",
             maxWidth: "none",
             height: "auto",
             width: baseWidth != null ? baseWidth * scale : undefined,
           }}
         />
       )}
+      </div>
     </div>
   );
 }
@@ -7800,6 +7818,9 @@ function TextView({
  *  contents at one moment, and the file can change. */
 const remoteImagesAllowed = new Set<string>();
 
+// A graph source can restore its mode when a linked markdown tab returns to it.
+const mdGraphShow = new Map<string, () => void>();
+
 function MarkdownView({
   path,
   onOpenExternally,
@@ -7823,6 +7844,11 @@ function MarkdownView({
   // withdrew falls back to the preview rather than stranding a blank pane.
   const graphEnabled = useExperimental("md_graph");
   const [mode, setMode] = useState<"preview" | "edit" | "graph">("preview");
+  useEffect(() => {
+    if (!tabKey) return;
+    mdGraphShow.set(tabKey, () => setMode("graph"));
+    return () => { mdGraphShow.delete(tabKey); };
+  }, [tabKey]);
   useEffect(() => {
     if (!graphEnabled && mode === "graph") setMode("preview");
   }, [graphEnabled, mode]);
@@ -7860,6 +7886,8 @@ function MarkdownView({
   // Register the preview scroller only while in preview mode, so it never fights
   // CodeEditor for the same group id (edit mode links via the textarea instead).
   const reportPreviewSync = useScrollSync(mode === "preview" ? groupId : null, bodyScrollRef);
+  const graphOrigin = tabKey ? findTabByKey(useTabsStore.getState(), tabKey)?.mdGraphOriginKey : undefined;
+  const canReturnToGraph = graphEnabled && graphOrigin && findTabByKey(useTabsStore.getState(), graphOrigin);
 
   // After the preview HTML is committed to the DOM, run the mermaid/KaTeX
   // enrichment pass (Dev A): it finds the mermaid code blocks and math
@@ -8150,6 +8178,23 @@ function MarkdownView({
   return (
     <div className="file-viewer">
       <ViewerHeader onOpenExternally={onOpenExternally}>
+        {canReturnToGraph && (
+          <button
+            className="md-graph-back"
+            disabled={isDirty || saving}
+            title={t(isDirty || saving ? "mdGraph.backSaveFirst" : "mdGraph.back")}
+            onClick={() => {
+              if (!tabKey || !graphOrigin) return;
+              mdGraphShow.get(graphOrigin)?.();
+              const store = useTabsStore.getState();
+              store.setActive(graphOrigin);
+              store.removeTab(tabKey);
+            }}
+          >
+            ← {t("mdGraph.back")}
+            <UntestedTag id="mdGraph.back" />
+          </button>
+        )}
         <div className="file-viewer-modes">
           <button
             className={`file-viewer-mode${mode === "preview" ? " active" : ""}`}
@@ -8224,13 +8269,15 @@ function MarkdownView({
         {mode === "graph" ? (
           <MdGraphView
             path={path}
-            onOpen={(target) =>
+            onOpen={(target) => {
+              const viewer = viewerForPath(target);
               openLinkedFile(tabKey, dirname(path), {
                 path: target,
-                viewer: viewerForPath(target),
+                viewer,
                 label: basename(target),
-              })
-            }
+                mdGraphOriginKey: viewer === "markdown" ? tabKey : undefined,
+              });
+            }}
           />
         ) : mode === "edit" && compareOpen ? (
           <CompareView
