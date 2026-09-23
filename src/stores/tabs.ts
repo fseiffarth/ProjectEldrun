@@ -596,6 +596,11 @@ export interface TabEntry {
   // the static RESUMABLE_AGENTS map (see isResumableAgentTab / loadFromLayout).
   // Persisted, since args are rebuilt from scratch on restore.
   resumeArgs?: string[];
+  // Epoch ms this tab was opened in this run (addTab / duplicate). Never
+  // persisted: a restored tab relaunches on its continue flag instead, and it
+  // is only missing there. Tells a fresh OpenCode tab's own session from the
+  // folder's older ones (`services::opencode_store`).
+  launchedAt?: number;
   // Absolute path of the script this terminal tab was launched to run (Python
   // Run/Debug, or a foreground shell-script run). Lets the activity store pulse
   // the file's run button while the tab is producing output. Busy-gated on read,
@@ -2429,6 +2434,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       ...withTmuxSession(withRunHostDefault(scope, tab), scope),
       key,
       scope,
+      launchedAt: Date.now(),
     };
     if (!opts?.seeded) countTabOpen(scope, entry);
     set((s) => {
@@ -2475,6 +2481,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         get().scope,
       ),
       key: nextKeyValue,
+      launchedAt: Date.now(),
     };
     countTabOpen(get().scope, entry);
     set((s) => {

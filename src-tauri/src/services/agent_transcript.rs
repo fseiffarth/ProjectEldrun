@@ -134,19 +134,22 @@ impl AgentTranscript {
 
 /// The stored conversation of the tab launched as `cmd` with launch id
 /// `launch_id` in `tab_dir`: the last `limit` turns of its transcript, or
-/// `unchanged` when `version` still names the file as it is. See
+/// `unchanged` when `version` still names the file as it is. `since` is the
+/// launch moment (epoch ms) of a tab opened fresh rather than restored with
+/// its continue flag — only OpenCode, found by folder, needs it. See
 /// [`AgentTranscript::reason`] for the ways this answers without turns.
 pub fn agent_session_transcript(
     cmd: &str,
     project_id: Option<&str>,
     tab_dir: Option<&str>,
+    since: Option<i64>,
     launch_id: &str,
     version: Option<&str>,
     limit: usize,
 ) -> AgentTranscript {
     let limit = limit.clamp(1, MAX_LIMIT);
     if cmd == "opencode" {
-        return opencode_transcript(project_id, tab_dir, version, limit);
+        return opencode_transcript(project_id, tab_dir, since, version, limit);
     }
     agent_session::read_agent_transcript_from(
         cmd,
@@ -208,12 +211,14 @@ fn fresh_codex_session(project_id: Option<&str>, launch_id: &str) -> Option<Agen
 }
 
 /// An OpenCode tab's conversation, from OpenCode's session store
-/// (`services::opencode_store`): the newest session of the tab's folder. A
-/// remote tab's OpenCode writes a store on the remote host, so it has none
-/// here to read.
+/// (`services::opencode_store`): the newest session of the tab's folder —
+/// created since `since` for a tab opened fresh, so it never shows the
+/// folder's previous conversation. A remote tab's OpenCode writes a store on
+/// the remote host, so it has none here to read.
 fn opencode_transcript(
     project_id: Option<&str>,
     tab_dir: Option<&str>,
+    since: Option<i64>,
     version: Option<&str>,
     limit: usize,
 ) -> AgentTranscript {
@@ -227,7 +232,7 @@ fn opencode_transcript(
     if !db.is_file() {
         return AgentTranscript::unavailable("no_transcript");
     }
-    crate::services::opencode_store::session_transcript(&db, dir, version, limit)
+    crate::services::opencode_store::session_transcript(&db, dir, since, version, limit)
         .unwrap_or_else(|| AgentTranscript::unavailable("read_failed"))
 }
 
@@ -685,14 +690,14 @@ mod tests {
         assert!(read.entries[0].cut && !read.entries[1].cut);
         assert_eq!(read.entries[0].text.chars().count(), MAX_ANSWER_CHARS);
 
-        let gemini = agent_session_transcript("gemini", None, None, "0f5f9b7e-1c2d-4e3f-8a9b-0c1d2e3f4a5b", None, 5);
+        let gemini = agent_session_transcript("gemini", None, None, None, "0f5f9b7e-1c2d-4e3f-8a9b-0c1d2e3f4a5b", None, 5);
         assert!(!gemini.available);
         assert_eq!(gemini.reason.as_deref(), Some("unsupported"));
         // Not even a uuid: refused before any file is looked for.
-        assert_eq!(agent_session_transcript("claude", None, None, "../x", None, 5).reason.as_deref(), Some("no_transcript"));
-        assert_eq!(agent_session_transcript("codex", None, None, "../x", None, 5).reason.as_deref(), Some("no_transcript"));
+        assert_eq!(agent_session_transcript("claude", None, None, None, "../x", None, 5).reason.as_deref(), Some("no_transcript"));
+        assert_eq!(agent_session_transcript("codex", None, None, None, "../x", None, 5).reason.as_deref(), Some("no_transcript"));
         // OpenCode is found by the tab's folder; without one there is nothing to look up.
-        assert_eq!(agent_session_transcript("opencode", None, None, "0f5f9b7e-1c2d-4e3f-8a9b-0c1d2e3f4a5b", None, 5).reason.as_deref(), Some("no_session"));
-        assert_eq!(agent_session_transcript("opencode", None, Some("relative/dir"), "0f5f9b7e-1c2d-4e3f-8a9b-0c1d2e3f4a5b", None, 5).reason.as_deref(), Some("no_session"));
+        assert_eq!(agent_session_transcript("opencode", None, None, None, "0f5f9b7e-1c2d-4e3f-8a9b-0c1d2e3f4a5b", None, 5).reason.as_deref(), Some("no_session"));
+        assert_eq!(agent_session_transcript("opencode", None, Some("relative/dir"), None, "0f5f9b7e-1c2d-4e3f-8a9b-0c1d2e3f4a5b", None, 5).reason.as_deref(), Some("no_session"));
     }
 }

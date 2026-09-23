@@ -11,7 +11,10 @@
 //! restored with `--continue`, "the most recent session of this directory",
 //! so the newest top-level session in the tab's folder *is* the tab's
 //! conversation — with the same caveat the restore has: two OpenCode tabs in
-//! one folder read the same (newest) session.
+//! one folder read the same (newest) session. A tab opened fresh (no
+//! `--continue`) starts a new session, so only sessions created since its
+//! launch are its own: before its first prompt it has none, and the folder's
+//! older conversation is somebody else's.
 //!
 //! What is read is the conversation only: the user's typed text parts (not
 //! the `synthetic` ones OpenCode writes for itself, such as a file's content
@@ -49,13 +52,14 @@ pub fn db_path() -> PathBuf {
 }
 
 /// The conversation of the newest top-level, unarchived session OpenCode ran
-/// in `directory`: the last `limit` turns, or `unchanged` when `version` still
-/// names it as it is. A folder with no session yet is an available, empty
-/// transcript — a tab before its first prompt. `None` when the store cannot be
-/// read at all.
+/// in `directory` — created at or after `since` (epoch ms) when given: the
+/// last `limit` turns, or `unchanged` when `version` still names it as it is.
+/// A folder with no such session yet is an available, empty transcript — a
+/// tab before its first prompt. `None` when the store cannot be read at all.
 pub fn session_transcript(
     db: &Path,
     directory: &str,
+    since: Option<i64>,
     version: Option<&str>,
     limit: usize,
 ) -> Option<AgentTranscript> {
@@ -71,8 +75,9 @@ pub fn session_transcript(
         .query_row(
             "SELECT id FROM session
               WHERE directory IN (?1, ?2) AND parent_id IS NULL AND time_archived IS NULL
+                AND time_created >= ?3
               ORDER BY time_updated DESC LIMIT 1",
-            [&dirs[0], dirs.last().unwrap_or(&dirs[0])],
+            rusqlite::params![&dirs[0], dirs.last().unwrap_or(&dirs[0]), since.unwrap_or(i64::MIN)],
             |row| row.get(0),
         )
         .optional()
@@ -261,7 +266,7 @@ mod tests {
             "CREATE TABLE account (id TEXT PRIMARY KEY, access_token TEXT NOT NULL);
              INSERT INTO account VALUES ('a', 'secret-token');
              CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT NOT NULL,
-               time_updated INTEGER NOT NULL, time_archived INTEGER);
+               time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, time_archived INTEGER);
              CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
                time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);
              CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL,
@@ -273,7 +278,7 @@ mod tests {
 
     fn session(conn: &Connection, id: &str, parent: Option<&str>, dir: &str, updated: i64, archived: Option<i64>) {
         conn.execute(
-            "INSERT INTO session VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO session VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
             rusqlite::params![id, parent, dir, updated, archived],
         )
         .unwrap();
@@ -321,7 +326,7 @@ mod tests {
         part(&conn, "p6", "m2", "ses_new", 2_200, serde_json::json!({"type": "tool", "state": {"output": "huge"}}));
         part(&conn, "p7", "m2", "ses_new", 3_000, serde_json::json!({"type": "text", "text": "Fixed.", "time": {"start": 3_000, "end": 3_100}}));
 
-        let t = session_transcript(&db, dir, None, 120).unwrap();
+        let t = session_transcript(&db, dir, None, None, 120).unwrap();
         assert!(t.available);
         assert_eq!(kinds(&t), vec![("prompt", "fix the tests"), ("answer", "Let me look."), ("answer", "Fixed.")]);
         assert_eq!(t.entries[0].at.as_deref(), Some("1970-01-01T00:00:01.000Z"));
@@ -336,7 +341,7 @@ mod tests {
         message(&conn, "m1", "s", 1_000, serde_json::json!({"role": "assistant", "time": {"created": 1_000}}));
         part(&conn, "p1", "m1", "s", 1_001, serde_json::json!({"type": "text", "text": "Done part.", "time": {"start": 1_001, "end": 1_050}}));
         part(&conn, "p2", "m1", "s", 1_100, serde_json::json!({"type": "text", "text": "Still wri", "time": {"start": 1_100}}));
-        let t = session_transcript(&db, "/p", None, 120).unwrap();
+        let t = session_transcript(&db, "/p", None, None, 120).unwrap();
         assert_eq!(kinds(&t), vec![("answer", "Done part.")]);
     }
 
@@ -348,7 +353,7 @@ mod tests {
         part(&conn, "p1", "m1", "s", 1_000, serde_json::json!({"type": "compaction"}));
         message(&conn, "m2", "s", 2_000, serde_json::json!({"role": "assistant", "summary": true, "time": {"completed": 3}}));
         part(&conn, "p2", "m2", "s", 2_001, serde_json::json!({"type": "text", "text": "Summary of everything", "time": {"start": 1, "end": 2}}));
-        let t = session_transcript(&db, "/p", None, 120).unwrap();
+        let t = session_transcript(&db, "/p", None, None, 120).unwrap();
         assert!(t.available);
         assert!(t.entries.is_empty());
     }
@@ -356,9 +361,24 @@ mod tests {
     #[test]
     fn a_folder_with_no_session_is_a_fresh_empty_chat_and_a_missing_store_is_none() {
         let (db, _conn) = store();
-        let t = session_transcript(&db, "/nothing/here", None, 120).unwrap();
+        let t = session_transcript(&db, "/nothing/here", None, None, 120).unwrap();
         assert!(t.available && t.entries.is_empty());
-        assert!(session_transcript(&db.with_file_name("absent.db"), "/p", None, 120).is_none());
+        assert!(session_transcript(&db.with_file_name("absent.db"), "/p", None, None, 120).is_none());
+    }
+
+    #[test]
+    fn a_fresh_tab_reads_only_sessions_created_since_its_launch() {
+        let (db, conn) = store();
+        session(&conn, "ses_before", None, "/p", 100, None);
+        message(&conn, "m0", "ses_before", 100, serde_json::json!({"role": "user"}));
+        part(&conn, "p0", "m0", "ses_before", 100, serde_json::json!({"type": "text", "text": "yesterday's chat"}));
+        let fresh = session_transcript(&db, "/p", Some(500), None, 120).unwrap();
+        assert!(fresh.available && fresh.entries.is_empty());
+        session(&conn, "ses_mine", None, "/p", 600, None);
+        message(&conn, "m1", "ses_mine", 600, serde_json::json!({"role": "user"}));
+        part(&conn, "p1", "m1", "ses_mine", 600, serde_json::json!({"type": "text", "text": "new question"}));
+        let mine = session_transcript(&db, "/p", Some(500), fresh.version.as_deref(), 120).unwrap();
+        assert_eq!(kinds(&mine), vec![("prompt", "new question")]);
     }
 
     #[test]
@@ -367,11 +387,11 @@ mod tests {
         session(&conn, "s", None, "/p", 1, None);
         message(&conn, "m1", "s", 1_000, serde_json::json!({"role": "user"}));
         part(&conn, "p1", "m1", "s", 1_000, serde_json::json!({"type": "text", "text": "hi"}));
-        let first = session_transcript(&db, "/p", None, 120).unwrap();
-        let again = session_transcript(&db, "/p", first.version.as_deref(), 120).unwrap();
+        let first = session_transcript(&db, "/p", None, None, 120).unwrap();
+        let again = session_transcript(&db, "/p", None, first.version.as_deref(), 120).unwrap();
         assert!(again.unchanged && again.entries.is_empty());
         part(&conn, "p2", "m1", "s", 1_500, serde_json::json!({"type": "text", "text": "more"}));
-        let moved = session_transcript(&db, "/p", first.version.as_deref(), 120).unwrap();
+        let moved = session_transcript(&db, "/p", None, first.version.as_deref(), 120).unwrap();
         assert!(!moved.unchanged);
         assert_eq!(kinds(&moved), vec![("prompt", "hi\nmore")]);
     }
@@ -385,7 +405,7 @@ mod tests {
             message(&conn, &m, "s", 1_000 * (i + 1), serde_json::json!({"role": "user"}));
             part(&conn, &p, &m, "s", 1_000 * (i + 1), serde_json::json!({"type": "text", "text": format!("prompt {i}")}));
         }
-        let t = session_transcript(&db, "/p", None, 2).unwrap();
+        let t = session_transcript(&db, "/p", None, None, 2).unwrap();
         assert_eq!(kinds(&t), vec![("prompt", "prompt 3"), ("prompt", "prompt 4")]);
         assert!(t.truncated);
     }

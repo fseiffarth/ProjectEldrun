@@ -1731,8 +1731,11 @@ async function agentTranscriptFor(
     agent: tab.cmd,
     projectId: scope.id,
     // OpenCode records no session id Eldrun can follow; its session is the
-    // newest one of the folder the tab runs in.
+    // newest one of the folder the tab runs in — for a tab opened fresh rather
+    // than restored with `--continue`, the newest one begun since it launched,
+    // so a new tab is a new chat and not the folder's last conversation.
     tabDir: tab.cwd || scope.cwd,
+    since: tab.launchedAt && !tab.args?.includes("--continue") ? tab.launchedAt : null,
     sessionId: tab.sessionId,
     version: version ?? null,
     limit: limit ?? null,

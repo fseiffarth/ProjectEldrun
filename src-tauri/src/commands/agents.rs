@@ -1331,7 +1331,8 @@ pub async fn agent_tab_recent_prompts(
 /// The stored conversation of the tab launched as `agent` with launch id
 /// `session_id` in `tab_dir` — its prompts and answers, read from the CLI's
 /// own transcript or session store (`services::agent_transcript`) for the
-/// phone's Focus view. `version` is
+/// phone's Focus view. `since` is the launch moment (epoch ms) of a tab
+/// opened fresh rather than restored. `version` is
 /// the fingerprint the caller last saw; a matching one is answered
 /// `unchanged` without a parse. Always answers: an agent with no readable
 /// transcript comes back `available: false` with the reason, never an error.
@@ -1340,6 +1341,7 @@ pub async fn agent_tab_transcript(
     agent: String,
     project_id: Option<String>,
     tab_dir: Option<String>,
+    since: Option<i64>,
     session_id: String,
     version: Option<String>,
     limit: Option<usize>,
@@ -1350,6 +1352,7 @@ pub async fn agent_tab_transcript(
             &agent,
             project_id.as_deref(),
             tab_dir.as_deref(),
+            since,
             &session_id,
             version.as_deref(),
             limit.unwrap_or(DEFAULT_LIMIT),
