@@ -19,6 +19,8 @@
  * Nothing here sends keystrokes: what a tapped row does is the caller's.
  */
 
+import { busyRow } from "./agentBusy";
+
 export interface SelectOption {
   /** Position in the run, 0-based. The caller moves the highlight by the
    * difference between this and `current`, which is why it is not the printed
@@ -175,6 +177,14 @@ function readContinuation(
   return { label: text.slice(0, descriptionColumn).trim(), description: text.slice(descriptionColumn).trim() };
 }
 
+/** Where the dialog's own text ends going up. A `/model` opened mid-turn is
+ * drawn right under Claude Code's spinner (`✻ Wiggling… (12s · ↓ 2k tokens)`)
+ * with no blank between them: read as text, the spinner became the heading —
+ * a new one every tick, so every repaint looked like a new step. */
+function dialogText(line: SelectLineLike): boolean {
+  return !!line.text.trim() && !busyRow(line.text);
+}
+
 /** The dialog's heading, read upwards from its first row: past the blank the
  * TUI leaves under the heading, then the contiguous block above it, of which
  * the first line is the heading and the rest its blurb. */
@@ -182,7 +192,7 @@ function readTitle(lines: readonly SelectLineLike[], start: number): string | un
   let index = start - 1;
   while (index >= 0 && !lines[index].text.trim()) index -= 1;
   const block: string[] = [];
-  while (index >= 0 && lines[index].text.trim()) {
+  while (index >= 0 && dialogText(lines[index])) {
     block.unshift(lines[index].text.trim());
     if (block.length > HEADING_BLOCK) return undefined;
     index -= 1;
@@ -216,7 +226,9 @@ function readContext(lines: readonly SelectLineLike[], start: number): { questio
   let taken = 0;
   for (let block = 0; block < CONTEXT_BLOCKS && taken < CONTEXT_LINES; block += 1) {
     while (index >= 0 && !lines[index].text.trim()) index -= 1;
-    while (index >= 0 && lines[index].text.trim() && taken < CONTEXT_LINES) {
+    // The spinner is the session's, not the dialog's: nothing above it is.
+    if (index >= 0 && busyRow(lines[index].text)) break;
+    while (index >= 0 && dialogText(lines[index]) && taken < CONTEXT_LINES) {
       context = index;
       taken += 1;
       index -= 1;

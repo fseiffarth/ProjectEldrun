@@ -91,6 +91,7 @@ export const dict: Dict = {
   "mobile.focus.sessionUnreadable": "Gespeicherte Sitzung nicht lesbar",
   "mobile.focus.untested": "Ungetestet",
   "mobile.focus.working": "Agent arbeitet…",
+  "mobile.focus.workingModel": "{model} arbeitet…",
   "mobile.focus.workingTokens": "{count} Tokens",
   "mobile.model.effortTitle": "Denkaufwand für {model}",
   "mobile.model.effortHint": "Antigravity setzt Modell und Denkaufwand zusammen",

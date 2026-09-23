@@ -2133,6 +2133,10 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
     sessionWork?.elapsed,
     sessionWork?.tokens ? t("mobile.focus.workingTokens", { count: sessionWork.tokens }) : undefined,
   ].filter((fact): fact is string => !!fact);
+  /** Who the working row names: the model's family word as the session prints
+   * it (`Opus 4.5` → `Opus`), or the tab's published model behind it; a tab
+   * with neither keeps the generic "Agent". */
+  const workingModel = (status?.model ?? tab.agent_model)?.trim().split(/\s+/)[0];
   /** The screen's lines as the reading view shows them: the revealed history,
    * the open chunk, then the live tail. */
   const screenStream = useMemo(
@@ -2379,7 +2383,7 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
                   </div>}
                   {sessionBusy && <div className="transcript-working" role="status">
                     <span className="transcript-working-dots" aria-hidden="true"><i /><i /><i /></span>
-                    {t("mobile.focus.working")}
+                    {workingModel ? t("mobile.focus.workingModel", { model: workingModel }) : t("mobile.focus.working")}
                     {workFacts.length > 0 && <small className="transcript-working-facts">
                       {workFacts.join(" · ")}
                       {isUntested("mobile.focus.workingFacts") && <em> · {t("mobile.focus.untested")}</em>}

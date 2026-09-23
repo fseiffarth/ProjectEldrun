@@ -349,6 +349,29 @@ describe("Eldrun Mobile select dialog", () => {
     expect(prompt?.options[1].description).toBeUndefined();
   });
 
+  it("does not take Claude's spinner above a mid-turn picker for its heading", () => {
+    // `/model` opened while a turn runs is drawn right under the spinner, with
+    // no blank between them — and the spinner's verb and timer change every
+    // tick, so as the heading every repaint read as a new step.
+    const read = (spinner: string) => readSelectPrompt(lines(
+      "Some answer text.",
+      "",
+      spinner,
+      "Select model",
+      "Switch between Claude models.",
+      "",
+      "  1. Default (recommended)   Opus",
+      "❯ 2. Sonnet                  Everyday tasks",
+    ));
+    const first = read("✻ Wiggling… (12s · ↓ 2.1k tokens)");
+    const later = read("✶ Whirring… (13s · ↓ 2.2k tokens)");
+    expect(first?.title).toBe("Select model");
+    expect(first?.question).toBe(3);
+    // Nothing above the spinner is the dialog's.
+    expect(first?.context).toBe(3);
+    expect(selectSignature(first!)).toBe(selectSignature(later!));
+  });
+
   it("leaves a dialog untitled rather than titling it with the output above it", () => {
     const prompt = readSelectPrompt(lines(
       "I read the three files and they agree on the shape of the fix,",

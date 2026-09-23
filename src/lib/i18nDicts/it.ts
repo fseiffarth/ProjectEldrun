@@ -91,6 +91,7 @@ export const dict: Dict = {
   "mobile.focus.sessionUnreadable": "Impossibile leggere la sessione salvata",
   "mobile.focus.untested": "Non testato",
   "mobile.focus.working": "L'agente sta lavorando…",
+  "mobile.focus.workingModel": "{model} sta lavorando…",
   "mobile.focus.workingTokens": "{count} token",
   "mobile.model.effortTitle": "Sforzo per {model}",
   "mobile.model.effortHint": "Antigravity applica insieme il modello e il suo sforzo",

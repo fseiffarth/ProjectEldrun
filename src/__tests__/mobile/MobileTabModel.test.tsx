@@ -119,7 +119,7 @@ describe("Mobile bridge — the model beside a tab", () => {
   it("falls back to the transcript's model, shortened, when no pane here has the screen", async () => {
     await vi.waitFor(async () => {
       const answer = await ask({ type: "catalog", request_id: "m2", project_id: paper.id });
-      expect(answer.statuses).toMatchObject([{ tmux_session: TMUX, model: "opus-4-1" }]);
+      expect(answer.statuses).toMatchObject([{ tmux_session: TMUX, model: "Opus 4.1" }]);
     });
   });
 

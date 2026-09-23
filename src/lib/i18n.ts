@@ -133,6 +133,7 @@ export const en = {
   "mobile.focus.sessionUnreadable": "Stored session could not be read",
   "mobile.focus.untested": "Untested",
   "mobile.focus.working": "Agent is working…",
+  "mobile.focus.workingModel": "{model} is working…",
   "mobile.focus.workingTokens": "{count} tokens",
   "mobile.model.effortTitle": "Effort for {model}",
   "mobile.model.effortHint": "Antigravity sets the model and its effort together",
