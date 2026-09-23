@@ -171,7 +171,7 @@ interface MobileAgentTranscript {
   reason?: string;
   version?: string;
   unchanged?: boolean;
-  entries: { kind: string; text: string; at?: string; cut?: boolean }[];
+  entries: { kind: string; text: string; at?: string; cut?: boolean; subagent?: string; role?: string }[];
   truncated: boolean;
   /** Codex's context and rate-limit figures, passed through untouched. */
   usage?: { contextLeft?: number; session?: { used: number; resetsAt?: number }; week?: { used: number; resetsAt?: number } };
@@ -212,7 +212,7 @@ type DesktopRequest =
   | { type: "prompts"; request_id: string; project_id: string }
   | { type: "prompt_mutate"; request_id: string; project_id: string; action: PromptMutation }
   | { type: "agent_status"; request_id: string; project_id: string; tmux_session: string; refresh: boolean }
-  | { type: "agent_transcript"; request_id: string; project_id: string; tmux_session: string; version?: string | null; limit?: number | null }
+  | { type: "agent_transcript"; request_id: string; project_id: string; tmux_session: string; subagent?: string | null; version?: string | null; limit?: number | null }
   | { type: "tab_seen"; request_id: string; project_id: string; tmux_session: string }
   | { type: "tab_input"; request_id: string; project_id: string; tmux_session: string }
   | { type: "tab_prompt"; request_id: string; project_id: string; tmux_session: string; message: string }
@@ -1710,11 +1710,13 @@ async function attachDesktopImage(projectId: string, imageId: string): Promise<D
  * `services::agent_transcript`) for the tab's launch id — the same resolution
  * the Agents view's model tag and last-prompt line use, live id first. A tab
  * with no session id (an agent Eldrun does not resume) has no transcript to
- * name, and says so rather than answering with somebody else's.
+ * name, and says so rather than answering with somebody else's. `subagent`
+ * is the handle on one of its `agent` entries, read instead.
  */
 async function agentTranscriptFor(
   projectId: string,
   tmuxSession: string,
+  subagent: string | null | undefined,
   version: string | null | undefined,
   limit: number | null | undefined,
 ): Promise<DesktopResponse> {
@@ -1737,6 +1739,7 @@ async function agentTranscriptFor(
     tabDir: tab.cwd || scope.cwd,
     since: tab.launchedAt && !tab.args?.includes("--continue") ? tab.launchedAt : null,
     sessionId: tab.sessionId,
+    subagent: subagent ?? null,
     version: version ?? null,
     limit: limit ?? null,
   }).catch((): MobileAgentTranscript => ({ available: false, reason: "read_failed", entries: [], truncated: false }));
@@ -1780,7 +1783,7 @@ async function handleRequest(
     case "prompts": return promptsFor(request.project_id);
     case "prompt_mutate": return mutatePrompt(request.project_id, request.action);
     case "agent_status": return agentStatusFor(request.project_id, request.tmux_session, request.refresh);
-    case "agent_transcript": return agentTranscriptFor(request.project_id, request.tmux_session, request.version, request.limit);
+    case "agent_transcript": return agentTranscriptFor(request.project_id, request.tmux_session, request.subagent, request.version, request.limit);
     case "tab_seen": return markTabSeen(request.project_id, request.tmux_session);
     case "tab_input": return markTabInput(request.project_id, request.tmux_session);
     case "tab_prompt": return recordTabPrompt(request.project_id, request.tmux_session, request.message);

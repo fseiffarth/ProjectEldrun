@@ -391,11 +391,22 @@ export async function getAgentStatus(tabId: string, refresh = false): Promise<Ag
 }
 
 /** One turn of an agent tab's stored conversation, as the desktop reads it
- * off the CLI's own transcript (`services::agent_transcript`). */
-export interface TranscriptEntry { kind: "prompt" | "answer"; text: string; at?: string; cut?: boolean }
+ * off the CLI's own transcript (`services::agent_transcript`). An `agent`
+ * entry is a subagent the agent spawned: `text` is what it was sent to do,
+ * `role` its kind, and `subagent` the handle that reads its own conversation
+ * (`getTranscript`) — absent until its CLI has recorded where that lives. */
+export interface TranscriptEntry {
+  kind: "prompt" | "answer" | "agent";
+  text: string;
+  at?: string;
+  cut?: boolean;
+  subagent?: string;
+  role?: string;
+}
 export interface SessionTranscript {
   available: boolean;
-  /** Why not, when unavailable: `unsupported`, `no_session`, `no_transcript`, `read_failed`. */
+  /** Why not, when unavailable: `unsupported`, `no_session`, `no_transcript`,
+   * `no_subagent`, `read_failed`. */
   reason?: string;
   /** Hand back on the next read to be answered `unchanged`. */
   version?: string;
@@ -421,11 +432,14 @@ export interface SessionUsage {
 /** `GET /api/v1/tabs/{id}/transcript` — the Focus view's stored-session feed.
  * `version` is what the last answer carried: while the transcript file has
  * not moved the desktop answers `unchanged` and no turns cross the link, which
- * is what makes polling it while the agent works affordable on cellular. */
-export async function getTranscript(tabId: string, version?: string, limit?: number, signal?: AbortSignal): Promise<SessionTranscript> {
+ * is what makes polling it while the agent works affordable on cellular.
+ * `subagent`, the handle on an `agent` entry, reads that subagent's own
+ * conversation instead. */
+export async function getTranscript(tabId: string, version?: string, limit?: number, signal?: AbortSignal, subagent?: string): Promise<SessionTranscript> {
   const query = new URLSearchParams();
   if (version) query.set("version", version);
   if (limit) query.set("limit", String(limit));
+  if (subagent) query.set("subagent", subagent);
   const suffix = query.size > 0 ? `?${query}` : "";
   const { transcript } = await api<{ transcript: SessionTranscript }>(
     `/api/v1/tabs/${encodeURIComponent(tabId)}/transcript${suffix}`,

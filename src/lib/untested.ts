@@ -290,6 +290,7 @@ export const UNTESTED = {
   "mobile.focus.onScreen": { area: "mobile", what: "Terminal · Reader on-screen transcript note", tested: "2026-09-23" },
   "mobile.focus.readAloud": { area: "mobile", what: "Terminal · Reader auto-read toggle", tested: "2026-09-23" },
   "mobile.focus.session": { area: "mobile", what: "Terminal · Reader session card", tested: "2026-09-23" },
+  "mobile.focus.subagents": { area: "mobile", what: "Terminal · Reader subagent cards open the subagent's own conversation (Claude, Codex, OpenCode); bar goes back up and steps between siblings" },
   "mobile.focus.statusLine": { area: "mobile", what: "Terminal · Reader status-line strip", tested: "2026-09-23" },
   "mobile.focus.pinnedPrompt": { area: "mobile", what: "Terminal · Reader pins the newest prompt at the top once its bubble scrolls away; tap scrolls back to it", tested: "2026-09-23" },
   "mobile.focus.workingFacts": { area: "mobile", what: "Terminal · Reader elapsed time and tokens while the agent works", tested: "2026-09-23" },

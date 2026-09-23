@@ -1709,12 +1709,14 @@ async fn agent_status(
 }
 
 /// `?version=` is the fingerprint the phone last saw; `?limit=` how many of
-/// the newest turns it wants. Anything else is refused.
+/// the newest turns it wants; `?subagent=` the handle on an `agent` entry,
+/// whose conversation is read instead. Anything else is refused.
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct TranscriptQuery {
     version: Option<String>,
     limit: Option<usize>,
+    subagent: Option<String>,
 }
 
 /// `GET /api/v1/tabs/{tab_id}/transcript` — the stored conversation behind
@@ -1731,6 +1733,14 @@ async fn agent_transcript(
     if let Err(error) = authenticate(&headers, &state) {
         return error;
     }
+    // A handle is a digest the desktop minted; anything else is not one.
+    if query
+        .subagent
+        .as_deref()
+        .is_some_and(|token| !crate::services::agent_transcript::is_subagent_token(token))
+    {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_subagent");
+    }
     let (project_id, tmux_session) = match agent_tab_target(&state, &tab_id) {
         Ok(target) => target,
         Err(error) => return error,
@@ -1743,6 +1753,7 @@ async fn agent_transcript(
             request_id,
             project_id,
             tmux_session,
+            subagent: query.subagent,
             version: query.version,
             limit: query.limit,
         },

@@ -739,10 +739,14 @@ pub enum DesktopRequest {
     /// the phone's Focus view. Addressed like `AgentStatus`. `version` is the
     /// fingerprint the phone last saw, answered `unchanged` while the file has
     /// not moved; `limit` is how many of the newest turns to carry.
+    /// `subagent` is the handle on one of its `agent` entries: that
+    /// subagent's conversation is read instead.
     AgentTranscript {
         request_id: String,
         project_id: String,
         tmux_session: String,
+        #[serde(default)]
+        subagent: Option<String>,
         #[serde(default)]
         version: Option<String>,
         #[serde(default)]

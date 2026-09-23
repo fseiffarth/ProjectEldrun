@@ -75,7 +75,8 @@ import { agentInputWrites, bracketsAgentMessage } from "../terminal/composer";
 import { agentWork } from "../terminal/agentBusy";
 import { chatTurns, isPromptEcho } from "../terminal/chatTurns";
 import { answerHtml } from "../terminal/answerMarkdown";
-import { commandArgsInline, slashCommand, transcriptTurns, type SlashCommand } from "../terminal/transcriptTurns";
+import { commandArgsInline, slashCommand, transcriptTurns, type SlashCommand, type TranscriptTurn } from "../terminal/transcriptTurns";
+import { openSubagent, siblingPosition, stepSibling, type SubagentStep } from "../terminal/subagents";
 import { MAX_PENDING, pendingPrompt, withPending, type PendingPrompt } from "../terminal/pendingPrompts";
 import { afterClear, clearMark, type ClearMark } from "../terminal/clearedSession";
 import { ageLabel, sizeLabel } from "../terminal/fileLabels";
@@ -248,7 +249,9 @@ const LIMITS_POLL = 120_000;
 function sameTranscript(a: SessionTranscript, b: SessionTranscript): boolean {
   return a.available === b.available && a.truncated === b.truncated && a.version === b.version
     && a.entries.length === b.entries.length
-    && a.entries.every((entry, index) => entry.kind === b.entries[index].kind && entry.text === b.entries[index].text && entry.cut === b.entries[index].cut);
+    && a.entries.every((entry, index) => entry.kind === b.entries[index].kind && entry.text === b.entries[index].text && entry.cut === b.entries[index].cut
+      // A subagent's handle can arrive after its entry did.
+      && entry.subagent === b.entries[index].subagent && entry.role === b.entries[index].role);
 }
 
 /** "Screenshots · 3 min ago · 1.2 MB", or "Clipboard · 1920×1080". */
@@ -342,21 +345,48 @@ const AnswerText = memo(function AnswerText({ text }: { text: string }) {
   return <div className="transcript-md" dangerouslySetInnerHTML={{ __html: html }} />;
 });
 
+/** A subagent the agent spawned, in its place in the chat: what it was sent
+ * to do under its kind, a tap away from its own conversation. Not a bubble —
+ * the agent did not say it — but a card on the agent's side. One whose CLI
+ * has not yet recorded where its conversation lives cannot be opened yet. */
+function SubagentCard({ turn, label, untested, onOpen }: {
+  turn: TranscriptTurn;
+  label: string;
+  untested: string;
+  onOpen?: (turn: TranscriptTurn) => void;
+}) {
+  const openable = !!turn.subagent && !!onOpen;
+  return <button type="button" className="transcript-agent" disabled={!openable} aria-label={`${label}: ${turn.role ? `${turn.role} · ` : ""}${turn.text}`} onClick={() => onOpen?.(turn)}>
+    <svg className="transcript-agent-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4v7a4 4 0 0 0 4 4h7m-3-3 3 3-3 3" /></svg>
+    <span className="transcript-agent-body">
+      <small>{turn.role ?? label}{untested && <em> · {untested}</em>}</small>
+      <span>{turn.text}{turn.cut && "…"}</span>
+    </span>
+    {openable && <svg className="transcript-agent-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>}
+  </button>;
+}
+
 /** The prompts and answers of the stored session (`api.getTranscript`), laid
  * out the same way as the screen's chat — bubbles on the right for the
  * reader's own prompts, the agent's answers on the left — from the record the
  * agent itself keeps, which reaches back past the pane's scrollback and
- * carries no tool status. `cut` marks text the desktop bounded. */
-const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promptLabel }: {
+ * carries no tool status. `cut` marks text the desktop bounded. A subagent
+ * the agent spawned is a card (`SubagentCard`) that opens its conversation. */
+const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promptLabel, agentLabel = "", agentUntested = "", onOpenAgent }: {
   entries: SessionTranscript["entries"];
   cutLabel: string;
   promptLabel: string;
+  agentLabel?: string;
+  agentUntested?: string;
+  onOpenAgent?: (turn: TranscriptTurn) => void;
 }) {
   // One bubble per record, keyed by its time (`transcriptTurns`).
   const turns = useMemo(() => transcriptTurns(entries), [entries]);
   const { hold, menu } = useMessageMenu();
   return <>{turns.map((turn) => <Fragment key={turn.key}>
-    {turn.command
+    {turn.kind === "agent"
+      ? <SubagentCard turn={turn} label={agentLabel} untested={agentUntested} onOpen={onOpenAgent} />
+      : turn.command
       ? <CommandDivider command={turn.command} label={promptLabel} press={hold(turn.key, () => turn.text)} />
       : turn.kind === "prompt"
       ? <div className="readable-turn user" role="group" aria-label={promptLabel} data-prompt={turn.text} {...hold(turn.key, () => turn.text)}>
@@ -688,6 +718,16 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
   const [statusStrip, setStatusStrip] = useState(false);
   /** Turns asked for; grows with "Show earlier turns". */
   const [transcriptLimit, setTranscriptLimit] = useState(TRANSCRIPT_STEP);
+  /** The subagents walked into from the stored session (`subagents.ts`),
+   * outermost first; empty while the session itself is read. */
+  const [subagentPath, setSubagentPath] = useState<readonly SubagentStep[]>([]);
+  const openStep = subagentPath[subagentPath.length - 1];
+  /** The last read of a subagent's conversation, and whose it is — a read
+   * that belongs to another subagent is never drawn under this one's bar. */
+  const [subRead, setSubRead] = useState<{ token: string; transcript: SessionTranscript } | null>(null);
+  const [subLimit, setSubLimit] = useState(TRANSCRIPT_STEP);
+  /** Where to scroll once the conversation just gone back up to is drawn. */
+  const restoreScroll = useRef<number | null>(null);
   /** Bumped by every change of the screen: the settle timer re-reads the
    * session after it. */
   const [screenTick, setScreenTick] = useState(0);
@@ -1364,6 +1404,92 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
   const sinceClear = useMemo(() => afterClear(transcript?.entries ?? [], clearedAt), [transcript, clearedAt]);
   const storedEntries = useMemo(() => sinceClear ?? transcript?.entries ?? [], [sinceClear, transcript]);
   const sessionEntries = useMemo(() => withPending(storedEntries, pending), [storedEntries, pending]);
+  /** The open subagent's conversation, once read. */
+  const subToken = openStep?.token;
+  const subTranscript = subRead && subRead.token === subToken ? subRead.transcript : null;
+  // Another tab is another session, with subagents of its own.
+  useEffect(() => { setSubagentPath([]); }, [tab.id]);
+  useEffect(() => { setSubLimit(TRANSCRIPT_STEP); }, [subToken]);
+  /** Reads the open subagent's conversation as the session itself is read: at
+   * once, then every TRANSCRIPT_POLL while the page is visible — a subagent
+   * still at work keeps writing. */
+  useEffect(() => {
+    if (!subToken || tab.kind !== "agent" || view !== "focus") return;
+    let stopped = false;
+    let version: string | undefined;
+    let inflight: AbortController | undefined;
+    const read = () => {
+      if (stopped || document.visibilityState === "hidden") return;
+      inflight?.abort();
+      const controller = new AbortController();
+      inflight = controller;
+      void getTranscript(tab.id, version, subLimit, controller.signal, subToken).then(
+        (next) => {
+          if (stopped || controller.signal.aborted || !next || typeof next !== "object" || next.unchanged) return;
+          version = next.version;
+          setSubRead((current) => current && current.token === subToken && sameTranscript(current.transcript, next)
+            ? current
+            : { token: subToken, transcript: next });
+        },
+        () => {},
+      );
+    };
+    read();
+    const timer = window.setInterval(read, TRANSCRIPT_POLL);
+    document.addEventListener("visibilitychange", read);
+    return () => {
+      stopped = true;
+      inflight?.abort();
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", read);
+    };
+  }, [subToken, subLimit, tab.id, tab.kind, view]);
+  /** The conversation on screen — the session's, or the open subagent's —
+   * which is where a card tapped in it was opened from. */
+  const levelEntries = openStep ? (subTranscript?.entries ?? []) : sessionEntries;
+  const levelEntriesRef = useRef(levelEntries);
+  levelEntriesRef.current = levelEntries;
+  const openSubagentTurn = useCallback((turn: TranscriptTurn) => {
+    const token = turn.subagent;
+    if (!token) return;
+    const top = readableHost.current?.scrollTop ?? 0;
+    setSubagentPath((path) => openSubagent(path, { token, task: turn.text, role: turn.role }, levelEntriesRef.current, top));
+    // A conversation opens on its newest turn, as the session does.
+    atBottomRef.current = true;
+    setAtBottom(true);
+  }, []);
+  /** Back up one level, to where that conversation was scrolled. */
+  const subagentUp = () => {
+    if (!openStep) return;
+    restoreScroll.current = openStep.scrollTop;
+    atBottomRef.current = false;
+    setAtBottom(false);
+    setSubagentPath((path) => path.slice(0, -1));
+  };
+  const subagentSibling = (delta: number) => {
+    atBottomRef.current = true;
+    setAtBottom(true);
+    setSubagentPath((path) => stepSibling(path, delta));
+  };
+  // A prompt sent from here goes to the session, never to a subagent: the
+  // Reader goes back to the chat it lands in.
+  const pendingCount = useRef(pending.length);
+  useEffect(() => {
+    if (pending.length > pendingCount.current) {
+      atBottomRef.current = true;
+      setAtBottom(true);
+      setSubagentPath([]);
+    }
+    pendingCount.current = pending.length;
+  }, [pending.length]);
+  useLayoutEffect(() => {
+    const top = restoreScroll.current;
+    const stream = readableHost.current;
+    // Wait until the conversation gone back to is drawn.
+    if (top === null || !stream || (openStep && !subTranscript)) return;
+    restoreScroll.current = null;
+    stream.scrollTop = top;
+  }, [openStep, subTranscript]);
   /** Read-aloud: each answer that arrives at the end of the stored session is
    * spoken once. What the first read brought is history, as is anything
    * "earlier" reveals above it or a whole other session swapped in — only a
@@ -1397,7 +1523,7 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
     if (!sessionShown || !atBottom) return;
     const stream = readableHost.current;
     if (stream && typeof stream.scrollTo === "function") stream.scrollTo({ top: stream.scrollHeight });
-  }, [sessionShown, transcript, pending, atBottom]);
+  }, [sessionShown, transcript, pending, atBottom, subToken, subTranscript]);
   /** Reads the outbox now and every `OUTBOX_POLL` while the page is visible;
    * coming back to the page reads it at once. A listing that could not be
    * fetched keeps what was shown — the next poll retries. */
@@ -2330,6 +2456,45 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
     description: desktopImageDescription(image),
     current: false,
   }));
+  const subagentUntested = isUntested("mobile.focus.subagents") ? t("mobile.focus.untested") : "";
+  /** Where the open subagent stands among its siblings, and the conversation
+   * the bar goes back up to. */
+  const subagentPosition = openStep ? siblingPosition(openStep) : { index: -1, count: 0 };
+  const subagentParent = subagentPath.length > 1 ? subagentPath[subagentPath.length - 2].task : t("mobile.subagent.main");
+  /** A subagent's conversation in the Reader: under a bar that goes back up
+   * to the conversation it was opened from and steps through the subagents
+   * beside it, laid out as the session is. Its first prompt is the task it
+   * was given; the cards in it open its own subagents. */
+  const subagentView = openStep && <>
+    <nav className="subagent-bar" aria-label={t("mobile.subagent.region")}>
+      <button className="subagent-up" onClick={subagentUp} aria-label={t("mobile.subagent.back", { name: subagentParent })}>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 6-6 6 6 6" /></svg>
+      </button>
+      <div className="subagent-title">
+        <small>{openStep.role ?? t("mobile.subagent.region")}{subagentUntested && <em> · {subagentUntested}</em>}</small>
+        <strong>{openStep.task || openStep.role}</strong>
+      </div>
+      {subagentPosition.count > 1 && <div className="subagent-steps">
+        <button disabled={subagentPosition.index <= 0} onClick={() => subagentSibling(-1)} aria-label={t("mobile.subagent.previous")}>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 6-6 6 6 6" /></svg>
+        </button>
+        <span>{t("mobile.subagent.position", { index: subagentPosition.index + 1, count: subagentPosition.count })}</span>
+        <button disabled={subagentPosition.index >= subagentPosition.count - 1} onClick={() => subagentSibling(1)} aria-label={t("mobile.subagent.next")}>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
+        </button>
+      </div>}
+    </nav>
+    {!subTranscript
+      ? <div className="readable-empty"><strong>{t("mobile.subagent.loading")}</strong></div>
+      : !subTranscript.available
+      ? <div className="readable-empty"><strong>{t("mobile.subagent.missing")}</strong><span>{t("mobile.subagent.missingHint")}</span><button onClick={subagentUp}>{t("mobile.subagent.back", { name: subagentParent })}</button></div>
+      : subTranscript.entries.length === 0
+      ? <div className="readable-empty"><strong>{t("mobile.subagent.empty")}</strong></div>
+      : <div className="readable-lines chat transcript" data-testid="subagent-transcript">
+          {subTranscript.truncated && <button className="readable-earlier" onClick={() => setSubLimit((limit) => limit + TRANSCRIPT_STEP)}>{t("mobile.transcript.earlier")}</button>}
+          <TranscriptTurns entries={subTranscript.entries} cutLabel={t("mobile.transcript.cut")} promptLabel={t("mobile.subagent.task")} agentLabel={t("mobile.subagent.region")} agentUntested={subagentUntested} onOpenAgent={openSubagentTurn} />
+        </div>}
+  </>;
   return <main className={`terminal-screen ${tab.kind}-tab`} style={viewportHeight ? { height: viewportHeight } : undefined}><header><button className="back" onClick={back}>‹</button><div className="terminal-title"><h1>{tab.label}</h1><small>{t(tab.kind === "agent" ? "mobile.focus.agentSession" : "mobile.focus.shellSession")}</small></div>{outbox.length > 0 && <button className="terminal-gallery" onClick={() => setGallery(true)} aria-label={t("mobile.outbox.galleryOpen", { count: outbox.length })} title={t("mobile.outbox.region")}><span aria-hidden="true">🖼</span><small>{outbox.length}</small></button>}<div className="terminal-view-switch" aria-label={t("mobile.focus.outputView")}><button className={view === "focus" ? "selected" : ""} aria-pressed={view === "focus"} aria-haspopup={chat ? "menu" : undefined} aria-expanded={chat ? focusMenu : undefined} onClick={() => {
       // An agent tab's Reader is a list once it is up: where it reads from.
       if (chat && view === "focus") setFocusMenu((open) => !open);
@@ -2402,12 +2567,14 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
             followReadable(stream.scrollHeight - stream.scrollTop - stream.clientHeight < 120);
             checkPinnedPrompt();
           }}>
-          {sessionShown
+          {sessionShown && openStep
+            ? subagentView
+            : sessionShown
             ? (transcript && sessionEntries.length === 0 && !liveQuestion && !sessionBusy
               ? <div className="readable-empty"><strong>{t("mobile.transcript.empty")}</strong><span>{t("mobile.transcript.emptyHint")}</span></div>
               : <div className="readable-lines chat transcript" data-testid="session-transcript">
                   {transcript?.truncated && !sinceClear && <button className="readable-earlier" onClick={() => setTranscriptLimit((limit) => limit + TRANSCRIPT_STEP)}>{t("mobile.transcript.earlier")}</button>}
-                  <TranscriptTurns entries={sessionEntries} cutLabel={t("mobile.transcript.cut")} promptLabel={t("mobile.transcript.prompt")} />
+                  <TranscriptTurns entries={sessionEntries} cutLabel={t("mobile.transcript.cut")} promptLabel={t("mobile.transcript.prompt")} agentLabel={t("mobile.subagent.region")} agentUntested={subagentUntested} onOpenAgent={openSubagentTurn} />
                   {liveQuestion && <div className="transcript-screen" role="group" aria-label={t("mobile.transcript.question")}>
                     <small>{t("mobile.transcript.question")}{isUntested("mobile.focus.onScreen") && <> · {t("mobile.focus.untested")}</>}</small>
                     {/* The screen the dialog was drawn onto, as the screen drew

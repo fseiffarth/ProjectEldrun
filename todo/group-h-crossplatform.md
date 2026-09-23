@@ -2883,6 +2883,41 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
 
+- [~] **31bc — Subagents in the Reader, opened and stepped through**
+  (2026-09-24; ✅ code-complete, automated tests passing —
+  `MobileTerminalSubagents.test.tsx`, `agent_transcript`/`opencode_store`
+  subagent tests, and a read of a real Claude session with two subagents;
+  ⚠️ not verified on a phone — needs `npm run package:dev` + relaunch, the
+  PWA and the backend are baked in. Pill: `mobile.focus.subagents`).
+  - Each subagent the agent spawned is a card in its place in the stored
+    session: kind (`Explore`, a Codex role · nickname, an OpenCode agent)
+    over its task. Tapping it opens that subagent's own conversation — its
+    task as the first prompt, its messages as bubbles, its own subagents as
+    cards — under a sticky bar: ‹ back up (to where that conversation was
+    scrolled), the task, and `‹ 1 of 3 ›` through the subagents beside it.
+    Sending a prompt from there goes back to the session.
+  - Per CLI: Claude `<session>/subagents/agent-<id>.jsonl` matched to its
+    `Agent` call by the `.meta.json` beside it; Codex `thread_spawn_edges`
+    in its state store (⚠️ no Codex subagent run exists on this machine —
+    shape read from the 0.156.1 binary, not a real run); OpenCode child
+    sessions by `parent_id`. The phone only ever holds a digest of the id,
+    looked up among the tab session's own subagents.
+  - [ ] 🖐️ Manual phone QA — in a Claude tab ask for two parallel Explore
+    agents. In the Reader two cards appear under the answer that spawned
+    them; tap the first → its task, then its messages; `1 of 2`, › → the
+    second; ‹ back → the session, scrolled where it was. While a subagent
+    is still working its conversation grows in place. Send a prompt from
+    inside a subagent → back in the session with the bubble. Repeat in a
+    Codex tab with multi-agent on, and an OpenCode tab (`@explore …`).
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
 *Not coming to the phone (decided, not forgotten — see
 `docs/mobile_box_parity_plan.md`): editing a box from the phone (membership,
 rename, Dissolve), listing a box's members as project rows, a per-member

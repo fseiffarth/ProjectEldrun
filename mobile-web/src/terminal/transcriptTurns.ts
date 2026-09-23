@@ -12,7 +12,7 @@ export interface TranscriptTurn {
    * so a position-based key re-keyed — and re-mounted — every bubble on every
    * new record, which is what made the chat jump while the agent worked. */
   key: string;
-  kind: "prompt" | "answer";
+  kind: "prompt" | "answer" | "agent";
   text: string;
   /** Some of the text was bounded by the desktop. */
   cut: boolean;
@@ -20,6 +20,10 @@ export interface TranscriptTurn {
   index: number;
   /** A prompt that is a slash command, drawn as a divider (`slashCommand`). */
   command: SlashCommand | null;
+  /** On a subagent (`agent`): the handle that opens its conversation, absent
+   * until its CLI has recorded where that lives, and its kind. */
+  subagent?: string;
+  role?: string;
 }
 
 /** A slash command split into its name and what follows it. */
@@ -61,6 +65,7 @@ export function transcriptTurns(entries: readonly TranscriptEntry[]): Transcript
       cut: entry.cut === true,
       index,
       command: entry.kind === "prompt" ? slashCommand(entry.text) : null,
+      ...(entry.kind === "agent" ? { subagent: entry.subagent, role: entry.role } : {}),
     };
   });
 }

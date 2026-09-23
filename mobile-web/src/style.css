@@ -585,6 +585,33 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .transcript-md .tok-tag { color:#f47868; }
 .transcript-md .tok-arg { font-style:italic; }
 .transcript-cut { display:block; margin-top:4px; color:#9298aa; font-size:.72rem; }
+/* A subagent the agent spawned (`SubagentCard`): on the agent's side, but a
+   card rather than a bubble — the agent did not say it — in the working
+   row's blue, with a chevron when it opens its own conversation. */
+.transcript-agent { justify-self:start; display:flex; align-items:center; gap:10px; max-width:92%; min-width:0; padding:8px 10px; border:1px solid #2c3a55; border-radius:12px; background:#131926; color:#dbe4f6; font:inherit; text-align:left; }
+.transcript-agent:not(:disabled):active { background:#1a2233; }
+.transcript-agent:disabled { opacity:.7; }
+.transcript-agent svg { flex:0 0 auto; width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+.transcript-agent-icon { color:#8fb8ff; }
+.transcript-agent-chevron { color:#6f7890; }
+.transcript-agent-body { display:grid; gap:1px; min-width:0; }
+.transcript-agent-body small { color:#8fb8ff; font-size:.66rem; text-transform:uppercase; letter-spacing:.05em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.transcript-agent-body small em { font-style:normal; }
+.transcript-agent-body > span { font-size:.86rem; line-height:1.35; overflow-wrap:break-word; }
+/* Over a subagent's conversation: back up, its task, and ‹ n of m › through
+   the subagents beside it. Sticks to the top of the reading view, over its
+   padding, so the way back never scrolls away. */
+.subagent-bar { position:sticky; top:-12px; z-index:2; display:flex; align-items:center; gap:8px; margin:-12px -14px 12px; padding:8px 10px; border-bottom:1px solid #262a3a; background:#10131b; }
+.subagent-bar button { display:grid; place-items:center; width:32px; height:32px; padding:0; border:1px solid #34384a; border-radius:9px; background:#151823; color:#c8cdda; }
+.subagent-bar button:disabled { opacity:.35; }
+.subagent-bar svg { width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+.subagent-title { display:grid; flex:1 1 auto; min-width:0; }
+.subagent-title small { color:#8fb8ff; font-size:.64rem; text-transform:uppercase; letter-spacing:.05em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.subagent-title small em { font-style:normal; }
+.subagent-title strong { color:#e7e9f2; font:600 .86rem/1.3 Inter,ui-sans-serif,system-ui,sans-serif; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.subagent-steps { display:flex; flex:0 0 auto; align-items:center; gap:6px; color:#9da3b6; font-size:.72rem; font-variant-numeric:tabular-nums; }
+.subagent-bar + .readable-empty { min-height:calc(100% - 56px); }
+.readable-empty button { margin-top:6px; }
 /* What the screen is drawing right now, under the stored session: shown only
    while it holds a choice the session is waiting on. */
 .transcript-screen { display:grid; gap:6px; padding:8px 10px; border-left:3px solid #8fb8ff; border-radius:8px; background:#14161e; }

@@ -16,6 +16,12 @@
 //! launch are its own: before its first prompt it has none, and the folder's
 //! older conversation is somebody else's.
 //!
+//! A subagent OpenCode spawns (its `task` tool) runs as a child session —
+//! `parent_id` naming the session that spawned it — and is one `agent` entry
+//! in its parent's conversation, placed when it was created; its own
+//! conversation is read by the handle on that entry, looked up only among the
+//! tab's session's descendants.
+//!
 //! What is read is the conversation only: the user's typed text parts (not
 //! the `synthetic` ones OpenCode writes for itself, such as a file's content
 //! or its auto-continue nudge) and the assistant's text parts, each finished
@@ -34,7 +40,9 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
 
 use crate::paths;
-use crate::services::agent_transcript::{transcript_entry, AgentTranscript, TranscriptEntry};
+use crate::services::agent_transcript::{
+    agent_entry, insert_by_time, subagent_token, transcript_entry, AgentTranscript, TranscriptEntry, MAX_SUBAGENT_DEPTH,
+};
 use crate::services::prompt_blame::epoch_ms_to_iso;
 
 /// The most messages of one session read per answer: the newest ones. What
@@ -55,11 +63,14 @@ pub fn db_path() -> PathBuf {
 /// in `directory` — created at or after `since` (epoch ms) when given: the
 /// last `limit` turns, or `unchanged` when `version` still names it as it is.
 /// A folder with no such session yet is an available, empty transcript — a
-/// tab before its first prompt. `None` when the store cannot be read at all.
+/// tab before its first prompt. `subagent` reads, instead, the descendant of
+/// that session whose handle it is. `None` when the store cannot be read at
+/// all.
 pub fn session_transcript(
     db: &Path,
     directory: &str,
     since: Option<i64>,
+    subagent: Option<&str>,
     version: Option<&str>,
     limit: usize,
 ) -> Option<AgentTranscript> {
@@ -83,11 +94,21 @@ pub fn session_transcript(
         .optional()
         .ok()?;
     let Some(session) = session else {
+        if subagent.is_some() {
+            return Some(AgentTranscript::unavailable("no_subagent"));
+        }
         return Some(AgentTranscript {
             available: true,
             version: Some(format!("new:{directory}")),
             ..Default::default()
         });
+    };
+    let session = match subagent {
+        None => session,
+        Some(token) => match descendants(&conn, &session).into_iter().find(|id| subagent_token(id) == token) {
+            Some(child) => child,
+            None => return Some(AgentTranscript::unavailable("no_subagent")),
+        },
     };
     let current = fingerprint(&conn, &session)?;
     if version == Some(current.as_str()) {
@@ -99,6 +120,7 @@ pub fn session_transcript(
         });
     }
     let (mut entries, mut truncated) = read_entries(&conn, &session)?;
+    insert_by_time(&mut entries, children(&conn, &session), truncated);
     if entries.len() > limit {
         entries.drain(..entries.len() - limit);
         truncated = true;
@@ -112,6 +134,64 @@ pub fn session_transcript(
         truncated,
         usage: None,
     })
+}
+
+/// The sessions `session` spawned, as its `agent` entries: the task its title
+/// names (without the ` (@explore subagent)` OpenCode appends), the agent it
+/// ran as. A store whose `session` table lacks those columns has none.
+fn children(conn: &Connection, session: &str) -> Vec<TranscriptEntry> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT id, title, agent, time_created FROM session WHERE parent_id = ?1
+          ORDER BY time_created, id LIMIT 500",
+    ) else {
+        return Vec::new();
+    };
+    stmt.query_map([session], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, i64>(3)?,
+        ))
+    })
+    .map(|rows| {
+        rows.filter_map(Result::ok)
+            .filter_map(|(id, title, agent, created)| {
+                let title = title.unwrap_or_default();
+                let mut entry = agent_entry(task_of(&title), agent.as_deref(), Some(epoch_ms_to_iso(created)))?;
+                entry.subagent = Some(subagent_token(&id));
+                Some(entry)
+            })
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// A child session's title without the ` (@<agent> subagent)` OpenCode ends
+/// it with.
+fn task_of(title: &str) -> &str {
+    let title = title.trim_end();
+    title
+        .strip_suffix(" subagent)")
+        .and_then(|rest| rest.rfind(" (@").map(|at| rest[..at].trim_end()))
+        .unwrap_or(title)
+}
+
+/// Every session under `session`: its children, theirs, and so on.
+fn descendants(conn: &Connection, session: &str) -> Vec<String> {
+    let Ok(mut stmt) = conn.prepare(
+        "WITH RECURSIVE tree(id, depth) AS (
+             SELECT id, 1 FROM session WHERE parent_id = ?1
+             UNION
+             SELECT s.id, tree.depth + 1 FROM session s JOIN tree ON s.parent_id = tree.id
+              WHERE tree.depth < ?2)
+         SELECT id FROM tree LIMIT 500",
+    ) else {
+        return Vec::new();
+    };
+    stmt.query_map(rusqlite::params![session, MAX_SUBAGENT_DEPTH as i64], |row| row.get::<_, String>(0))
+        .map(|rows| rows.filter_map(Result::ok).collect())
+        .unwrap_or_default()
 }
 
 /// Moves whenever the session gains a message or a part, or a part is updated
@@ -326,7 +406,7 @@ mod tests {
         part(&conn, "p6", "m2", "ses_new", 2_200, serde_json::json!({"type": "tool", "state": {"output": "huge"}}));
         part(&conn, "p7", "m2", "ses_new", 3_000, serde_json::json!({"type": "text", "text": "Fixed.", "time": {"start": 3_000, "end": 3_100}}));
 
-        let t = session_transcript(&db, dir, None, None, 120).unwrap();
+        let t = session_transcript(&db, dir, None, None, None, 120).unwrap();
         assert!(t.available);
         assert_eq!(kinds(&t), vec![("prompt", "fix the tests"), ("answer", "Let me look."), ("answer", "Fixed.")]);
         assert_eq!(t.entries[0].at.as_deref(), Some("1970-01-01T00:00:01.000Z"));
@@ -341,7 +421,7 @@ mod tests {
         message(&conn, "m1", "s", 1_000, serde_json::json!({"role": "assistant", "time": {"created": 1_000}}));
         part(&conn, "p1", "m1", "s", 1_001, serde_json::json!({"type": "text", "text": "Done part.", "time": {"start": 1_001, "end": 1_050}}));
         part(&conn, "p2", "m1", "s", 1_100, serde_json::json!({"type": "text", "text": "Still wri", "time": {"start": 1_100}}));
-        let t = session_transcript(&db, "/p", None, None, 120).unwrap();
+        let t = session_transcript(&db, "/p", None, None, None, 120).unwrap();
         assert_eq!(kinds(&t), vec![("answer", "Done part.")]);
     }
 
@@ -353,7 +433,7 @@ mod tests {
         part(&conn, "p1", "m1", "s", 1_000, serde_json::json!({"type": "compaction"}));
         message(&conn, "m2", "s", 2_000, serde_json::json!({"role": "assistant", "summary": true, "time": {"completed": 3}}));
         part(&conn, "p2", "m2", "s", 2_001, serde_json::json!({"type": "text", "text": "Summary of everything", "time": {"start": 1, "end": 2}}));
-        let t = session_transcript(&db, "/p", None, None, 120).unwrap();
+        let t = session_transcript(&db, "/p", None, None, None, 120).unwrap();
         assert!(t.available);
         assert!(t.entries.is_empty());
     }
@@ -361,9 +441,9 @@ mod tests {
     #[test]
     fn a_folder_with_no_session_is_a_fresh_empty_chat_and_a_missing_store_is_none() {
         let (db, _conn) = store();
-        let t = session_transcript(&db, "/nothing/here", None, None, 120).unwrap();
+        let t = session_transcript(&db, "/nothing/here", None, None, None, 120).unwrap();
         assert!(t.available && t.entries.is_empty());
-        assert!(session_transcript(&db.with_file_name("absent.db"), "/p", None, None, 120).is_none());
+        assert!(session_transcript(&db.with_file_name("absent.db"), "/p", None, None, None, 120).is_none());
     }
 
     #[test]
@@ -372,12 +452,12 @@ mod tests {
         session(&conn, "ses_before", None, "/p", 100, None);
         message(&conn, "m0", "ses_before", 100, serde_json::json!({"role": "user"}));
         part(&conn, "p0", "m0", "ses_before", 100, serde_json::json!({"type": "text", "text": "yesterday's chat"}));
-        let fresh = session_transcript(&db, "/p", Some(500), None, 120).unwrap();
+        let fresh = session_transcript(&db, "/p", Some(500), None, None, 120).unwrap();
         assert!(fresh.available && fresh.entries.is_empty());
         session(&conn, "ses_mine", None, "/p", 600, None);
         message(&conn, "m1", "ses_mine", 600, serde_json::json!({"role": "user"}));
         part(&conn, "p1", "m1", "ses_mine", 600, serde_json::json!({"type": "text", "text": "new question"}));
-        let mine = session_transcript(&db, "/p", Some(500), fresh.version.as_deref(), 120).unwrap();
+        let mine = session_transcript(&db, "/p", Some(500), None, fresh.version.as_deref(), 120).unwrap();
         assert_eq!(kinds(&mine), vec![("prompt", "new question")]);
     }
 
@@ -387,11 +467,11 @@ mod tests {
         session(&conn, "s", None, "/p", 1, None);
         message(&conn, "m1", "s", 1_000, serde_json::json!({"role": "user"}));
         part(&conn, "p1", "m1", "s", 1_000, serde_json::json!({"type": "text", "text": "hi"}));
-        let first = session_transcript(&db, "/p", None, None, 120).unwrap();
-        let again = session_transcript(&db, "/p", None, first.version.as_deref(), 120).unwrap();
+        let first = session_transcript(&db, "/p", None, None, None, 120).unwrap();
+        let again = session_transcript(&db, "/p", None, None, first.version.as_deref(), 120).unwrap();
         assert!(again.unchanged && again.entries.is_empty());
         part(&conn, "p2", "m1", "s", 1_500, serde_json::json!({"type": "text", "text": "more"}));
-        let moved = session_transcript(&db, "/p", None, first.version.as_deref(), 120).unwrap();
+        let moved = session_transcript(&db, "/p", None, None, first.version.as_deref(), 120).unwrap();
         assert!(!moved.unchanged);
         assert_eq!(kinds(&moved), vec![("prompt", "hi\nmore")]);
     }
@@ -405,8 +485,47 @@ mod tests {
             message(&conn, &m, "s", 1_000 * (i + 1), serde_json::json!({"role": "user"}));
             part(&conn, &p, &m, "s", 1_000 * (i + 1), serde_json::json!({"type": "text", "text": format!("prompt {i}")}));
         }
-        let t = session_transcript(&db, "/p", None, None, 2).unwrap();
+        let t = session_transcript(&db, "/p", None, None, None, 2).unwrap();
         assert_eq!(kinds(&t), vec![("prompt", "prompt 3"), ("prompt", "prompt 4")]);
         assert!(t.truncated);
+    }
+
+    #[test]
+    fn a_task_subagent_is_an_entry_and_its_session_reads_by_handle() {
+        let (db, conn) = store();
+        session(&conn, "root", None, "/p", 100, None);
+        session(&conn, "kid", Some("root"), "/p", 150, None);
+        session(&conn, "grandkid", Some("kid"), "/p", 170, None);
+        session(&conn, "other", None, "/q", 90, None);
+        session(&conn, "strangers-kid", Some("other"), "/q", 95, None);
+        conn.execute_batch("ALTER TABLE session ADD COLUMN title TEXT; ALTER TABLE session ADD COLUMN agent TEXT;").unwrap();
+        conn.execute("UPDATE session SET title = 'Explore the repo (@explore subagent)', agent = 'explore' WHERE id = 'kid'", []).unwrap();
+        message(&conn, "m1", "root", 110, serde_json::json!({"role": "user"}));
+        part(&conn, "p1", "m1", "root", 110, serde_json::json!({"type": "text", "text": "map it"}));
+        message(&conn, "m2", "root", 200, serde_json::json!({"role": "assistant", "time": {"completed": 210}}));
+        part(&conn, "p2", "m2", "root", 200, serde_json::json!({"type": "text", "text": "Mapped.", "time": {"start": 200, "end": 210}}));
+        message(&conn, "k1", "kid", 151, serde_json::json!({"role": "user"}));
+        part(&conn, "kp1", "k1", "kid", 151, serde_json::json!({"type": "text", "text": "look at src"}));
+        message(&conn, "k2", "kid", 160, serde_json::json!({"role": "assistant", "time": {"completed": 165}}));
+        part(&conn, "kp2", "k2", "kid", 160, serde_json::json!({"type": "text", "text": "src holds the app.", "time": {"start": 160, "end": 165}}));
+
+        let t = session_transcript(&db, "/p", None, None, None, 120).unwrap();
+        assert_eq!(kinds(&t), vec![("prompt", "map it"), ("agent", "Explore the repo"), ("answer", "Mapped.")]);
+        assert_eq!(t.entries[1].role.as_deref(), Some("explore"));
+        let token = t.entries[1].subagent.clone().expect("handle");
+
+        let sub = session_transcript(&db, "/p", None, Some(&token), None, 120).unwrap();
+        assert_eq!(kinds(&sub), vec![("prompt", "look at src"), ("answer", "src holds the app.")]);
+        // Deeper descendants read too; another folder's are not this tab's.
+        assert!(session_transcript(&db, "/p", None, Some(&subagent_token("grandkid")), None, 120).unwrap().available);
+        let foreign = session_transcript(&db, "/p", None, Some(&subagent_token("strangers-kid")), None, 120).unwrap();
+        assert_eq!(foreign.reason.as_deref(), Some("no_subagent"));
+    }
+
+    #[test]
+    fn a_child_title_loses_the_suffix_opencode_appends() {
+        assert_eq!(task_of("Explore codebase structure (@explore subagent)"), "Explore codebase structure");
+        assert_eq!(task_of("Plain title"), "Plain title");
+        assert_eq!(task_of("(@x subagent)"), "(@x subagent)");
     }
 }
