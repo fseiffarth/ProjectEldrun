@@ -612,14 +612,29 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
   const [focusSource, setFocusSource] = useState<"session" | "screen">("session");
   const [readAloud, setReadAloud] = useState(() => readFlag("focusReadAloud"));
   const [voiceRemote, setVoiceRemote] = useState(() => readFlag("voiceRemote"));
-  /** Only a browser with an on-device recognizer has anything to choose. */
-  const [voiceLocalOffered] = useState(() => speechRecognitionConstructor()?.available !== undefined);
+  /** Only a phone with an on-device recognizer for the dictation language has
+   * anything to choose. Android's Chrome has the API but no model, so `available`
+   * existing is not enough: without the probe the menu offered a choice the
+   * phone ignored, dictating with its speech service either way. */
+  const [voiceLocalOffered, setVoiceLocalOffered] = useState(false);
   /** The language read-aloud and dictation use, and whether its picker is
    * open. Only the picker reads this state — the speaking and listening sites
    * ask `speechTag()` for the stored value at the moment they need it, so a
    * change reaches them without a re-render of anything. */
   const [speechLang, setSpeechLang] = useState<SpeechLang>(() => readSpeechLang());
   const [speechLangSheet, setSpeechLangSheet] = useState(false);
+  useEffect(() => {
+    const Recognition = speechRecognitionConstructor();
+    if (!Recognition?.available) {
+      setVoiceLocalOffered(false);
+      return;
+    }
+    let live = true;
+    Recognition.available({ langs: [speechTag()], processLocally: true, quality: "dictation" })
+      .then((availability) => { if (live) setVoiceLocalOffered(availability !== "unavailable"); })
+      .catch(() => { if (live) setVoiceLocalOffered(false); });
+    return () => { live = false; };
+  }, [speechLang]);
   /** Whether the list under the Focus button is open: where an agent tab's
    * Focus reads from, the stored session or the screen. A dimmed Session row
    * says why it cannot be read — a phone shows no tooltip. */
