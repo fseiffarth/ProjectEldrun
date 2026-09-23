@@ -77,6 +77,7 @@ import { chatTurns, isPromptEcho } from "../terminal/chatTurns";
 import { answerHtml } from "../terminal/answerMarkdown";
 import { commandArgsInline, slashCommand, transcriptTurns, type SlashCommand } from "../terminal/transcriptTurns";
 import { MAX_PENDING, pendingPrompt, withPending, type PendingPrompt } from "../terminal/pendingPrompts";
+import { afterClear, clearMark, type ClearMark } from "../terminal/clearedSession";
 import { ageLabel, sizeLabel } from "../terminal/fileLabels";
 import { resetText, StatusSheet } from "./StatusSheet";
 import { limitMeters, parseUsageReport, type LimitMeters } from "../../../shared/usageReport";
@@ -634,6 +635,16 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
    * shown as the reader's bubbles at the end of the session chat. */
   const [pending, setPending] = useState<PendingPrompt[]>([]);
   const pendingId = useRef(0);
+  /** Where the stored session stood when this phone cleared it
+   * (`clearedSession.ts`): until the new chat has a transcript of its own, what
+   * the desktop answers with is the conversation just cleared. */
+  const [clearedAt, setClearedAt] = useState<ClearMark | null>(null);
+  /** The new-conversation button was tapped while Codex worked — Codex refuses
+   * `/clear` then, and says so only on the desktop's screen. */
+  const [clearRefused, setClearRefused] = useState(false);
+  const liveBusy = useMemo(() => agentWork(liveScreen) !== null, [liveScreen]);
+  // Once the turn is over the button works again; the note goes with it.
+  useEffect(() => { if (clearRefused && !liveBusy) setClearRefused(false); }, [clearRefused, liveBusy]);
   const [focusSource, setFocusSource] = useState<"session" | "screen">("session");
   const [readAloud, setReadAloud] = useState(() => readFlag("focusReadAloud"));
   const [voiceRemote, setVoiceRemote] = useState(() => readFlag("voiceRemote"));
@@ -715,6 +726,8 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
     setDraft(readDraft(tab.id));
     setTranscript(null);
     setPending([]);
+    setClearedAt(null);
+    setClearRefused(false);
     setFocusSource("session");
     setFocusMenu(false);
     setStatusStrip(false);
@@ -1339,7 +1352,11 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
     || (pending.length > 0 && CODEX_AGENT.test(tab.agent_label ?? tab.label)));
   /** The session chat's entries: the stored ones, with each prompt sent
    * from here held in its place (`withPending`). */
-  const sessionEntries = useMemo(() => withPending(transcript?.entries ?? [], pending), [transcript, pending]);
+  /** The new chat's records while the one cleared from here is still what the
+   * desktop answers with; `null` once another session is read. */
+  const sinceClear = useMemo(() => afterClear(transcript?.entries ?? [], clearedAt), [transcript, clearedAt]);
+  const storedEntries = useMemo(() => sinceClear ?? transcript?.entries ?? [], [sinceClear, transcript]);
+  const sessionEntries = useMemo(() => withPending(storedEntries, pending), [storedEntries, pending]);
   /** Read-aloud: each answer that arrives at the end of the stored session is
    * spoken once. What the first read brought is history, as is anything
    * "earlier" reveals above it or a whole other session swapped in — only a
@@ -1570,11 +1587,11 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
     // so a bubble for it would wait forever. `/clear` also ends the chat the
     // earlier bubbles were waiting in.
     if (/^\s*\//u.test(draft)) {
-      if (/^\s*\/clear\b/u.test(draft)) setPending([]);
+      if (/^\s*\/clear\b/u.test(draft)) startedOver();
       rememberSlashCommand(slashCliKey, draft);
       setUsedSlash(readSlashCommands(slashCliKey));
     } else {
-      const sent = pendingPrompt(++pendingId.current, draft, transcript?.entries ?? []);
+      const sent = pendingPrompt(++pendingId.current, draft, storedEntries);
       setPending((current) => [...current, sent].slice(-MAX_PENDING));
       // The phone knows the words before they leave; the desktop records them
       // as this tab's prompt — the only record of it for an agent whose
@@ -1584,10 +1601,26 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
     setDraft("");
     forgetDictation();
   };
+  /** Codex at work: it answers `/clear` with "disabled while a task is in
+   * progress" and keeps the conversation. */
+  const codexBusy = () => CODEX_AGENT.test(tab.agent_label ?? tab.label) && liveBusy;
+  /** A `/clear` just left for the agent: the chat shown starts over. What the
+   * session held stays hidden until the new one is read, unless Codex was busy
+   * and refused it — then the conversation goes on, and so does the chat. */
+  const startedOver = () => {
+    setPending([]);
+    if (!codexBusy()) setClearedAt(clearMark(transcript?.entries ?? []));
+  };
   /** The field's new-conversation button sends the selected CLI's command at
-   * once — no confirm dialog. The draft is left alone. */
+   * once — no confirm dialog. The draft is left alone. A Codex that is working
+   * would refuse it, so the button says so here instead. */
   const clearConversation = () => {
-    if (sendAgentText(NEW_CONVERSATION_COMMAND)) setPending([]);
+    if (codexBusy()) {
+      setClearRefused(true);
+      return;
+    }
+    setClearRefused(false);
+    if (sendAgentText(NEW_CONVERSATION_COMMAND)) startedOver();
   };
   /** The composer's `/` menu: the commands that continue the draft, the
    * reader's own first. Picking one only fills the field — the reader still
@@ -1648,7 +1681,8 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
    * usage panel the desktop can run, but writes both into its rollout: the
    * stored session's figures fill in what the screen and the panel leave out,
    * so its facts row reads like Claude's. */
-  const storedUsage = transcript?.usage;
+  // The cleared conversation's figures are not the new chat's.
+  const storedUsage = sinceClear ? undefined : transcript?.usage;
   const contextLeft = status?.context ?? (storedUsage?.contextLeft != null ? `${storedUsage.contextLeft}%` : undefined);
   const shownLimits = limits.session || limits.week ? limits : sessionLimits(storedUsage, new Date(Date.now()));
   /** The picker the model chip opened, read off the screen while the sheet is
@@ -2365,7 +2399,7 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
             ? (transcript && sessionEntries.length === 0 && !liveQuestion && !sessionBusy
               ? <div className="readable-empty"><strong>{t("mobile.transcript.empty")}</strong><span>{t("mobile.transcript.emptyHint")}</span></div>
               : <div className="readable-lines chat transcript" data-testid="session-transcript">
-                  {transcript?.truncated && <button className="readable-earlier" onClick={() => setTranscriptLimit((limit) => limit + TRANSCRIPT_STEP)}>{t("mobile.transcript.earlier")}</button>}
+                  {transcript?.truncated && !sinceClear && <button className="readable-earlier" onClick={() => setTranscriptLimit((limit) => limit + TRANSCRIPT_STEP)}>{t("mobile.transcript.earlier")}</button>}
                   <TranscriptTurns entries={sessionEntries} cutLabel={t("mobile.transcript.cut")} promptLabel={t("mobile.transcript.prompt")} />
                   {liveQuestion && <div className="transcript-screen" role="group" aria-label={t("mobile.transcript.question")}>
                     <small>{t("mobile.transcript.question")}{isUntested("mobile.focus.onScreen") && <> · {t("mobile.focus.untested")}</>}</small>
@@ -2433,6 +2467,7 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
       {tab.kind === "agent" && voiceLine && <div className={voiceProblem ? "voice-feedback error" : "voice-feedback"} role={voiceProblem ? "alert" : "status"} aria-live="polite">{voiceLine}{listening && !voiceProblem && !voicePreview && isUntested("mobile.voice.keepListening") && <em>{t("mobile.focus.untested")}</em>}</div>}
       {stoppedReason && <div className="voice-feedback error" role="alert">{stoppedReason}</div>}
       {sendFailed && !stoppedReason && <div className="voice-feedback error" role="alert">That did not reach the desktop — the connection dropped. It will retry on its own.</div>}
+      {clearRefused && liveBusy && <div className="voice-feedback" role="status">{t("mobile.composer.clearBusy")}{isUntested("mobile.composer.clearBusy") && <> · <em>{t("mobile.focus.untested")}</em></>}</div>}
       {lastSent && !sessionShown && <div className="last-sent"><span>Sent</span><p>{lastSent}</p></div>}
       {uploads.map((upload) => upload.failure
         ? <div key={upload.id} className="inbox-upload error" role="alert"><strong>{upload.name}</strong><span>{upload.failure}</span><button onClick={() => dismissUpload(upload.id)} aria-label={`Dismiss ${upload.name}`}>✕</button></div>

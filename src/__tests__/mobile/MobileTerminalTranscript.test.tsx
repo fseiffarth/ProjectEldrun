@@ -387,6 +387,63 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     ]);
   });
 
+  it("starts Reader on an empty chat after a Codex /clear, until the new session is read", async () => {
+    const codex = { ...TAB, id: "tab-codex", label: "Codex", agent_label: "Codex" };
+    localStorage.setItem("eldrun.mobile.view.codex", "focus");
+    let stored: unknown = { ...STORED, usage: { contextLeft: 12 } };
+    vi.stubGlobal("fetch", sidecarFetch(() => stored));
+    render(<Terminal tab={codex} back={() => {}} />);
+    await settle();
+    expect(screen.getByText("add a clear button")).toBeTruthy();
+
+    // Codex writes no rollout — and reports no new id — until the first
+    // prompt, so the desktop still answers with the cleared conversation.
+    fireEvent.click(screen.getByRole("button", { name: "Start a new conversation" }));
+    await settle();
+    expect(screen.queryByText("add a clear button")).toBeNull();
+    expect(screen.queryByText("12%")).toBeNull();
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    await settle();
+    expect(screen.queryByText("add a clear button")).toBeNull();
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Message agent" }), { target: { value: "fresh start" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await settle();
+    expect([...screen.getByTestId("session-transcript").querySelectorAll(".readable-turn")]
+      .map((bubble) => bubble.textContent)).toEqual(["fresh start"]);
+
+    // The new rollout is bound: its records are the chat.
+    stored = { available: true, version: "new-rollout", truncated: false, entries: [
+      { kind: "prompt", text: "fresh start", at: "2026-09-24T08:00:00Z" },
+      { kind: "answer", text: "Starting fresh." },
+    ] };
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    await settle();
+    expect([...screen.getByTestId("session-transcript").querySelectorAll(".readable-turn")]
+      .map((bubble) => bubble.textContent)).toEqual(["fresh start", "Starting fresh."]);
+  });
+
+  it("does not send /clear to a working Codex, and says why on the phone", async () => {
+    const codex = { ...TAB, id: "tab-codex", label: "Codex", agent_label: "Codex" };
+    localStorage.setItem("eldrun.mobile.view.codex", "focus");
+    vi.stubGlobal("fetch", sidecarFetch(() => STORED));
+    render(<Terminal tab={codex} back={() => {}} />);
+    await settle();
+    const working = new TextEncoder().encode("• Working (6s • esc to interrupt)\n› ");
+    const payload = new ArrayBuffer(working.byteLength);
+    new Uint8Array(payload).set(working);
+    act(() => { FakeWebSocket.instances[0].onmessage?.({ data: payload } as MessageEvent); });
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 200)); });
+    const before = FakeWebSocket.instances[0].sent.length;
+
+    fireEvent.click(screen.getByRole("button", { name: "Start a new conversation" }));
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 350)); });
+    expect(FakeWebSocket.instances[0].sent.length).toBe(before);
+    expect(screen.getByText(/Codex is still working/)).toBeTruthy();
+    // The conversation goes on, and so does the chat.
+    expect(screen.getByText("add a clear button")).toBeTruthy();
+  });
+
   it("clears the draft with the composer's ✕", async () => {
     vi.stubGlobal("fetch", sidecarFetch(() => STORED));
     render(<Terminal tab={TAB} back={() => {}} />);

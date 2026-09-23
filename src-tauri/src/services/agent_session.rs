@@ -1617,7 +1617,11 @@ pub(crate) fn container_hook_command() -> String {
 /// conversation. A Claude tab's session id is its launch key and stays that id
 /// until `/clear` or `/resume` rolls it (the `source` field says which), and
 /// `Stop` never introduces an id, so a session id that is neither the key nor
-/// the current record is accepted only from a `clear`/`resume` start. A Codex
+/// the current record is accepted only from a `clear`/`resume` start — and only
+/// with Claude's own transcript for it (`…/<session_id>.jsonl`): a Codex run
+/// from the tab's shell fires the same `clear` start after its own `/clear`,
+/// with a null `transcript_path` or a `rollout-…` one, and took the Claude
+/// tab's record over, so the phone read that Codex's rollout (2026-09-24). A Codex
 /// tab (`ELDRUN_TAB_AGENT=codex`) mints its own ids, so its record is free-form
 /// — except that a Claude fired inside it (`CLAUDECODE` is set by Claude for its
 /// children, never by Codex) is refused outright.
@@ -1647,6 +1651,8 @@ fn posix_hook_script_body(live_dir: &str) -> String {
          src=$(printf '%s' \"$input\" | sed -n 's/.*\"source\"[[:space:]]*:[[:space:]]*\"\\([a-zA-Z]*\\)\".*/\\1/p')\n\
          event=$(printf '%s' \"$input\" | sed -n 's/.*\"hook_event_name\"[[:space:]]*:[[:space:]]*\"\\([a-zA-Z_]*\\)\".*/\\1/p')\n\
          ntype=$(printf '%s' \"$input\" | sed -n 's/.*\"notification_type\"[[:space:]]*:[[:space:]]*\"\\([a-zA-Z_]*\\)\".*/\\1/p')\n\
+         tpath=$(printf '%s' \"$input\" | sed -n 's/.*\"transcript_path\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p')\n\
+         tnull=$(printf '%s' \"$input\" | sed -n 's/.*\"transcript_path\"[[:space:]]*:[[:space:]]*null.*/null/p')\n\
          [ -n \"$sid\" ] || exit 0\n\
          dir=\"{live_dir}\"\n\
          mkdir -p \"$dir\" 2>/dev/null || exit 0\n\
@@ -1665,6 +1671,10 @@ fn posix_hook_script_body(live_dir: &str) -> String {
          \x20   if [ \"$event\" != SessionStart ] && [ -n \"$cur\" ] && [ \"$sid\" != \"$cur\" ]; then exit 0; fi ;;\n\
          \x20 *) if [ \"$sid\" != \"$ELDRUN_TAB_UID\" ] && [ \"$sid\" != \"$cur\" ]; then\n\
          \x20      case \"$src\" in clear|resume) ;; *) exit 0 ;; esac\n\
+         \x20      # Claude names the new transcript after its session; a Codex run under\n\
+         \x20      # the tab sends null (a /clear, no rollout yet) or a rollout-… file.\n\
+         \x20      [ \"$tnull\" = null ] && exit 0\n\
+         \x20      case \"$tpath\" in \"\"|*/\"$sid\".jsonl) ;; *) exit 0 ;; esac\n\
          \x20    fi ;;\n\
          esac\n\
          if [ \"$event\" = SessionStart ] && [ \"$ELDRUN_TAB_AGENT\" = claude ] && [ -n \"$ELDRUN_PROJECT_DIR\" ]; then\n\
@@ -1751,6 +1761,11 @@ fn hook_script_body(live_dir: &str) -> String {
          \x20 $src = ''\r\n\
          \x20 if ($ms.Success) {{ $src = $ms.Groups[1].Value }}\r\n\
          \x20 if (($src -ne 'clear') -and ($src -ne 'resume')) {{ exit 0 }}\r\n\
+         \x20 # Claude names the new transcript after its session; a Codex run under\r\n\
+         \x20 # the tab sends null (a /clear, no rollout yet) or a rollout-... file.\r\n\
+         \x20 if ($payload -match '\"transcript_path\"\\s*:\\s*null') {{ exit 0 }}\r\n\
+         \x20 $mt = [regex]::Match($payload, '\"transcript_path\"\\s*:\\s*\"([^\"]*)\"')\r\n\
+         \x20 if ($mt.Success -and ($mt.Groups[1].Value -notmatch ('[\\\\/]' + [regex]::Escape($sid) + '\\.jsonl$'))) {{ exit 0 }}\r\n\
          }}\r\n\
          if ($env:ELDRUN_TAB_AGENT -eq 'claude' -and $env:ELDRUN_PROJECT_DIR -and $event -eq 'SessionStart') {{ Write-Output 'To put a file in front of the user on their phone, run `eldrun-send <file>` (local and container tabs).' }}\r\n\
          # The turn state, from the events the agent fires as it works (see the\r\n\
@@ -2579,6 +2594,28 @@ mod tests {
         let (rec, _) = run_hook(&script, &live, uid, claude, true, &start(nested, "resume"));
         assert_eq!(rec.as_deref(), Some(nested));
         assert_eq!(source().as_deref(), Some("resume"));
+
+        // A Codex started from the tab's shell fires the same `clear` start
+        // after its own `/clear` — with no rollout yet (null) or a rollout file,
+        // never Claude's `<session_id>.jsonl`. It must not take the record.
+        let codex_nested = "01a0d043-b4df-7e63-9813-002da0a652e9";
+        let codex_start = |path: &str| {
+            format!(r#"{{"session_id":"{codex_nested}","transcript_path":{path},"cwd":"/p","hook_event_name":"SessionStart","model":"m","permission_mode":"default","source":"clear"}}"#)
+        };
+        let (rec, _) = run_hook(&script, &live, uid, claude, true, &codex_start("null"));
+        assert_eq!(rec.as_deref(), Some(nested));
+        let rollout = format!(r#""/h/.codex/sessions/2026/09/23/rollout-2026-09-23T23-54-53-{codex_nested}.jsonl""#);
+        let (rec, _) = run_hook(&script, &live, uid, claude, true, &codex_start(&rollout));
+        assert_eq!(rec.as_deref(), Some(nested));
+        assert_eq!(source().as_deref(), Some("resume"));
+        // Claude's own `/clear` names its transcript after the new session.
+        let claude_clear = format!(
+            r#"{{"session_id":"{cleared}","transcript_path":"/h/.claude/projects/-p/{cleared}.jsonl","hook_event_name":"SessionStart","source":"clear"}}"#
+        );
+        let (rec, _) = run_hook(&script, &live, uid, claude, true, &claude_clear);
+        assert_eq!(rec.as_deref(), Some(cleared));
+        let (rec, _) = run_hook(&script, &live, uid, claude, true, &start(nested, "resume"));
+        assert_eq!(rec.as_deref(), Some(nested));
 
         // No agent marker (an older launch): the strict rule applies.
         let (rec, _) = run_hook(&script, &live, uid, None, true, &start(cleared, "startup"));

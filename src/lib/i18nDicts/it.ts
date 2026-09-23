@@ -37,6 +37,7 @@ export const dict: Dict = {
   "mobile.outbox.untested": "Non testato",
   "mobile.composer.clear": "Svuota il messaggio",
   "mobile.composer.clearChat": "Avvia una nuova conversazione",
+  "mobile.composer.clearBusy": "Codex sta ancora lavorando e non può avviare una nuova conversazione ora. Fermalo con Esc, poi tocca di nuovo.",
   "mobile.slash.title": "Comandi",
   "mobile.slash.recent": "Già inviato",
   "mobile.slash.forget": "Dimentica {command}",

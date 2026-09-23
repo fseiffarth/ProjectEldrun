@@ -67,6 +67,7 @@ export const en = {
   "mobile.outbox.untested": "Untested",
   "mobile.composer.clear": "Clear the message",
   "mobile.composer.clearChat": "Start a new conversation",
+  "mobile.composer.clearBusy": "Codex is still working and can’t start a new conversation now. Stop it with Esc, then tap again.",
   "mobile.slash.title": "Commands",
   "mobile.slash.recent": "Sent before",
   "mobile.slash.forget": "Forget {command}",

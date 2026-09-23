@@ -286,6 +286,7 @@ export const UNTESTED = {
   "mobile.boxAccess": { area: "mobile", what: "MobileSettings · Box access" },
   "mobile.composer.slash": { area: "mobile", what: "Terminal · Composer `/` menu: slash commands per CLI, the ones sent before first", tested: "2026-09-23" },
   "mobile.focus.messageMenu": { area: "mobile", what: "Terminal · Reader click-hold menu on a chat message (copy, read aloud)", tested: "2026-09-23" },
+  "mobile.composer.clearBusy": { area: "mobile", what: "Terminal · new-conversation button on a working Codex says to stop it first; after a clear the Reader starts empty" },
   "mobile.focus.onScreen": { area: "mobile", what: "Terminal · Reader on-screen transcript note", tested: "2026-09-23" },
   "mobile.focus.readAloud": { area: "mobile", what: "Terminal · Reader auto-read toggle", tested: "2026-09-23" },
   "mobile.focus.session": { area: "mobile", what: "Terminal · Reader session card", tested: "2026-09-23" },
