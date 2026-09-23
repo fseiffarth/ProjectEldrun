@@ -4,7 +4,8 @@ import { useT } from "../../../src/lib/i18n";
 
 /**
  * What the project header's ＋ opens: a shell, or one of the agents this
- * desktop offers, in the modes it offers them in.
+ * desktop offers, in the modes it offers them in — and, last, a document from
+ * this phone into the project's inbox (`useProjectInbox`).
  *
  * These are the buttons that used to stand at the foot of the project screen,
  * under every tab card. The sheet puts a shell action first and keeps the
@@ -14,10 +15,12 @@ import { useT } from "../../../src/lib/i18n";
  * new session, and the sheet closes on the tap rather than waiting for the
  * desktop, so a slow create is a screen the reader can still read.
  */
-export function NewTabSheet({ agents, busy, onPick, onClose }: {
+export function NewTabSheet({ agents, busy, onPick, onSendFile, onClose }: {
   agents: AgentRow[];
   busy: boolean;
   onPick: (kind: "shell" | "agent", agent?: AgentRow, mode?: string) => void;
+  /** Opens the phone's file picker; runs inside the tap, which the picker needs. */
+  onSendFile: () => void;
   onClose: () => void;
 }) {
   const t = useT();
@@ -35,6 +38,12 @@ export function NewTabSheet({ agents, busy, onPick, onClose }: {
         {/* A desktop that reports no agents still opens shells — say so, rather
             than leaving the sheet looking half-loaded. */}
         {agents.length === 0 && <p className="sheet-note">{t("mobile.newTab.noAgents")}</p>}
+        {/* No desktop round trip: the sidecar writes the file itself, so this
+            is not held back while a create is in flight. */}
+        <button className="new-tab-file" onClick={onSendFile}>
+          <span><strong>{t("mobile.projectInbox.send")}{isUntested("mobile.project.sendFile") && <span className="untested">{t("mobile.newTab.untested")}</span>}</strong><small>{t("mobile.projectInbox.hint")}</small></span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m-5 5 5-5 5 5M5 20h14" /></svg>
+        </button>
       </div>
     </section>
   </div>;

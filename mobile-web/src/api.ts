@@ -580,6 +580,18 @@ export async function uploadToInbox(tabId: string, file: Blob, name: string): Pr
   return body.attachment;
 }
 
+/** `POST /api/v1/projects/{id}/inbox` — the project screen's **＋ → Send a
+ * file**: the same drop box as `uploadToInbox`, named by the project because
+ * that screen has no tab to name. */
+export async function uploadToProjectInbox(projectId: string, file: Blob, name: string): Promise<InboxAttachment> {
+  const [status, body] = await postFile<{ attachment?: InboxAttachment }>(
+    `/api/v1/projects/${encodeURIComponent(projectId)}/inbox?name=${encodeURIComponent(name)}`,
+    file,
+  );
+  if (!body?.attachment?.reference) throw new ApiError(status, "malformed_response");
+  return body.attachment;
+}
+
 /** A file the phone sent to the desktop's global inbox: its stored name and
  * size only — it belongs to no project, so there is nothing to reference. */
 export interface DesktopInboxFile { name: string; size: number }

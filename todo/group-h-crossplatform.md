@@ -2857,6 +2857,32 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
 
+- [~] **31bb — The project screen's ＋ sends a document from the phone**
+  (2026-09-23; ✅ code-complete, automated tests passing —
+  `MobileNewTabSheet.test.tsx`, host test
+  `a_file_sent_from_the_project_screen_lands_in_that_projects_inbox`; ⚠️ not
+  verified on a phone — needs a rebuild + restart, the PWA is baked in).
+  - The ＋ sheet ends in **Send a file from this phone** (native picker, any
+    type, several at once). Each file goes raw to the new
+    `POST /api/v1/projects/{id}/inbox` — the same `.eldrun/inbox/` drop box
+    and limits as the Focus composer's + (31n), named by the project because
+    that screen has no tab. A row per pick under the header says
+    *In the project as @.eldrun/inbox/<stamp>-<name>* with **Copy** (puts the
+    `@reference ` on the clipboard for an agent's prompt) and ✕.
+  - [ ] 🖐️ Manual phone QA — open a project, ＋ → Send a file from this
+    phone, pick a PDF and a photo: the sheet closes, two rows say *Sending…*
+    then *In the project as @.eldrun/inbox/…*. Copy → paste into an agent
+    tab's composer → the agent reads the file. Also from a project with every
+    tab closed. A >24 MB pick fails at once with *is larger than 24 MB.*
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
 *Not coming to the phone (decided, not forgotten — see
 `docs/mobile_box_parity_plan.md`): editing a box from the phone (membership,
 rename, Dissolve), listing a box's members as project rows, a per-member

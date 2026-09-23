@@ -8,6 +8,7 @@ import { useRowDrag } from "../rowDrag";
 import { applyServerOrder, placeBeside } from "../tabReorder";
 import { ColorSheet } from "./ColorSheet";
 import { NewTabSheet } from "./NewTabSheet";
+import { useProjectInbox } from "../components/ProjectInbox";
 import { PromptsSheet } from "./PromptsSheet";
 import { RenameSheet } from "./RenameSheet";
 import { ScheduleSheet } from "./ScheduleSheet";
@@ -120,6 +121,8 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
   /** The header's ＋: what to open next — a shell, or one of the desktop's
    * agents in one of its modes. */
   const [newTabOpen, setNewTabOpen] = useState(false);
+  /** The ＋ sheet's "Send a file": its picker and a row per pick. */
+  const projectInbox = useProjectInbox(id);
   /** The agent tab being renamed. The desktop owns the tab layout, so the sheet
    * writes through the bridge and the next poll brings the new label back. */
   const [renameTab, setRenameTab] = useState<TabRow | null>(null);
@@ -386,6 +389,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
         "Desktop unavailable" notice that vanished a moment later. */}
     {detail && !detail.desktop_available && <p className="notice">Desktop unavailable — existing sessions can still be opened, but activating a project and creating tabs require Eldrun.</p>}
     {error && <p className="error">{error}</p>}
+    {projectInbox.view}
     {canReorder && <p className="reorder-hint">Drag <span aria-hidden="true">⠿</span> to arrange — this is the desktop's own tab order, so the Eldrun window follows. {isUntested("mobile.project.reorder") && <span className="untested">Untested</span>}</p>}
     <section className="cards">{tabs.map((tab) => <div
       className={`tab-card${tabColorCss(tab.color) ? " has-tab-color" : ""}${drag.rowClass(tab.id)}`}
@@ -466,6 +470,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
       busy={creating}
       onClose={() => setNewTabOpen(false)}
       onPick={(kind, agent, mode) => { setNewTabOpen(false); void create(kind, agent, mode); }}
+      onSendFile={() => { projectInbox.open(); setNewTabOpen(false); }}
     />}
     {promptsOpen && detail && <PromptsSheet projectId={id} tabs={detail.tabs} onClose={() => setPromptsOpen(false)} onSchedule={(tab, initialMessage) => { setPromptsOpen(false); setScheduleTab({ tab, initialMessage }); }} />}
     {colorTab && <ColorSheet

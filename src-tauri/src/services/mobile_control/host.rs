@@ -2224,9 +2224,42 @@ async fn inbox_upload(
     };
     let root = project.root.clone();
     drop(catalog);
+    store_in_project_inbox(root, query.name, body).await
+}
+
+/// `POST /api/v1/projects/{project_id}/inbox` — the project screen's
+/// **＋ → Send a file**: the same drop box as `inbox_upload`, named by the
+/// project, because that screen has no tab to name — a project whose tabs are
+/// all closed can still be sent a document for the next session.
+async fn project_inbox_upload(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(project_id): Path<String>,
+    Query(query): Query<InboxQuery>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    if !exact_origin(&headers, &state) {
+        return api_error(StatusCode::FORBIDDEN, "invalid_origin");
+    }
+    match project_drop_box_root(&state, &project_id) {
+        Ok(root) => store_in_project_inbox(root, query.name, body).await,
+        Err(error) => error,
+    }
+}
+
+/// One project-inbox write, answered with the stored name, the project-relative
+/// reference and the size — never the root it was written under.
+async fn store_in_project_inbox(
+    root: PathBuf,
+    name: String,
+    body: Bytes,
+) -> (StatusCode, Json<serde_json::Value>) {
     // The write is synchronous filesystem work of up to MAX_INBOX_FILE bytes;
     // keep it off the connection executor.
-    let stored = tokio::task::spawn_blocking(move || inbox::store(&root, &query.name, &body))
+    let stored = tokio::task::spawn_blocking(move || inbox::store(&root, &name, &body))
         .await
         .unwrap_or_else(|error| Err(inbox::InboxError::Io(error.to_string())));
     match stored {
@@ -2414,11 +2447,11 @@ fn outbox_root(
     Ok(project.root.clone())
 }
 
-/// The same root by the project itself, for the project screen's shelf. The
-/// outbox belongs to the project, not to one of its sessions: a project whose
-/// tabs are all closed — or one that never had an agent tab — still has the
-/// files the desktop sent, and the screen that lists them has no tab to name.
-fn project_outbox_root(
+/// The same root by the project itself, for the project screen's outbox and
+/// its ＋ → Send a file. Both drop boxes belong to the project, not to one of
+/// its sessions: a project whose tabs are all closed — or one that never had
+/// an agent tab — still has them, and that screen has no tab to name.
+fn project_drop_box_root(
     state: &HostState,
     project_id: &str,
 ) -> Result<PathBuf, (StatusCode, Json<serde_json::Value>)> {
@@ -2468,7 +2501,7 @@ async fn project_outbox_list(
     if let Err(error) = authenticate(&headers, &state) {
         return error;
     }
-    match project_outbox_root(&state, &project_id) {
+    match project_drop_box_root(&state, &project_id) {
         Ok(root) => outbox_listing(root).await,
         Err(error) => error,
     }
@@ -2519,7 +2552,7 @@ async fn project_outbox_file(
     if let Err(error) = authenticate(&headers, &state) {
         return error.into_response();
     }
-    let root = match project_outbox_root(&state, &project_id) {
+    let root = match project_drop_box_root(&state, &project_id) {
         Ok(root) => root,
         Err(error) => return error.into_response(),
     };
@@ -2566,7 +2599,7 @@ async fn project_outbox_delete(
     if !exact_origin(&headers, &state) {
         return api_error(StatusCode::FORBIDDEN, "invalid_origin");
     }
-    match project_outbox_root(&state, &project_id) {
+    match project_drop_box_root(&state, &project_id) {
         Ok(root) => outbox_removal(root, name).await,
         Err(error) => error,
     }
@@ -2741,6 +2774,10 @@ fn router(state: HostState) -> Router {
         .route(
             "/api/v1/tabs/{tab_id}/inbox",
             post(inbox_upload).layer(DefaultBodyLimit::max(inbox::MAX_INBOX_FILE)),
+        )
+        .route(
+            "/api/v1/projects/{project_id}/inbox",
+            post(project_inbox_upload).layer(DefaultBodyLimit::max(inbox::MAX_INBOX_FILE)),
         )
         .route(
             "/api/v1/inbox",
@@ -3200,6 +3237,7 @@ mod tests {
             "/api/v1/calendar",
             "/api/v1/tabs/anything/schedules",
             "/api/v1/tabs/anything/inbox",
+            "/api/v1/projects/anything/inbox",
             "/api/v1/inbox",
             "/api/v1/tabs/anything/desktop-images",
             "/api/v1/tabs/anything/prompt",
@@ -4360,6 +4398,57 @@ mod tests {
         let (status, ..) = host.send(request).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert!(!host.root.join(inbox::INBOX_DIR).exists(), "a refused upload wrote to disk");
+    }
+
+    #[tokio::test]
+    async fn a_file_sent_from_the_project_screen_lands_in_that_projects_inbox() {
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(61)).await.0;
+        let (_, _, projects_body) = host.send(get_as("/api/v1/projects", &cookie)).await;
+        let project_id = json(&projects_body)["projects"][0]["id"]
+            .as_str()
+            .expect("opaque project id")
+            .to_string();
+        let send = |project: &str, origin: &str, bytes: Vec<u8>| {
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/projects/{project}/inbox?name=notes.pdf"))
+                .header(header::ORIGIN, origin)
+                .header(header::COOKIE, cookie_pair(&cookie))
+                .body(Body::from(bytes))
+                .expect("request")
+        };
+
+        // Wrong origin: refused before anything is written.
+        let (status, ..) = host
+            .send(send(&project_id, "https://elsewhere.example", b"x".to_vec()))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(!host.root.join(inbox::INBOX_DIR).exists(), "a refused upload wrote to disk");
+
+        let (status, _, body) = host.send(send("not-a-project", ORIGIN, b"x".to_vec())).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "answered: {body}");
+
+        // Larger than a control message: the route carries the inbox's limit.
+        let bytes = vec![0xEF; MAX_CONTROL_MESSAGE * 4];
+        let (status, _, body) = host.send(send(&project_id, ORIGIN, bytes.clone())).await;
+        assert_eq!(status, StatusCode::CREATED, "answered: {body}");
+        let reference = json(&body)["attachment"]["reference"]
+            .as_str()
+            .expect("reference")
+            .to_string();
+        assert!(reference.starts_with(".eldrun/inbox/"), "{reference}");
+        assert!(reference.ends_with("-notes.pdf"), "{reference}");
+        assert!(
+            !body.contains(&host.root.to_string_lossy().to_string()),
+            "a filesystem path leaked: {body}"
+        );
+        assert_eq!(std::fs::read(host.root.join(&reference)).unwrap(), bytes);
+
+        let (status, ..) = host
+            .send(send(&project_id, ORIGIN, vec![0; inbox::MAX_INBOX_FILE + 1]))
+            .await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     #[tokio::test]

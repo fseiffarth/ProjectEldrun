@@ -80,6 +80,31 @@ describe("Mobile project screen — the ＋", () => {
     expect(screen.queryByRole("dialog", { name: "New tab" })).toBeNull();
   });
 
+  it("sends a phone file into the project's inbox and shows the reference an agent reads it by", async () => {
+    serve(DETAIL);
+    const base = fetchMock.getMockImplementation();
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => String(url).includes("/inbox")
+      ? Promise.resolve(new Response(JSON.stringify({ attachment: { name: "20260923-120000-notes.pdf", reference: ".eldrun/inbox/20260923-120000-notes.pdf", size: 3 } }), { status: 201 }))
+      : base?.(url, init));
+    render(<Project id="p" back={() => {}} terminal={() => {}} />);
+    await screen.findByText("claude 1");
+    fireEvent.click(screen.getByRole("button", { name: "New tab" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Send a file from this phone/ }));
+    // The picker opened on the tap; the sheet is out of the way of its answer.
+    expect(screen.queryByRole("dialog", { name: "New tab" })).toBeNull();
+
+    const input = screen.getByTestId("project-inbox-input") as HTMLInputElement;
+    Object.defineProperty(input, "files", { value: [new File(["pdf"], "notes.pdf", { type: "application/pdf" })], configurable: true });
+    fireEvent.change(input);
+
+    expect(await screen.findByText("In the project as @.eldrun/inbox/20260923-120000-notes.pdf")).toBeTruthy();
+    const post = fetchMock.mock.calls.find(([url]) => String(url).includes("/inbox"));
+    expect(String(post?.[0])).toBe("/api/v1/projects/p/inbox?name=notes.pdf");
+    expect((post?.[1] as RequestInit).method).toBe("POST");
+    // A file is not a tab: nothing was created on the desktop.
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/tabs"))).toBe(false);
+  });
+
   it("holds the ＋ while the desktop is away, which is what could answer it", async () => {
     serve({ ...DETAIL, desktop_available: false });
     render(<Project id="p" back={() => {}} terminal={() => {}} />);

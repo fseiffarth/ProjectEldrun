@@ -303,6 +303,7 @@ export const UNTESTED = {
   "mobile.outbox.step": { area: "mobile", what: "OutboxViewer · Step through the gallery's pictures full screen (‹ ›, swipe, arrow keys)" },
   "mobile.outbox.zoom": { area: "mobile", what: "OutboxViewer · Pinch, double tap and drag to zoom and pan a picture full screen; the picture fits the phone's width" },
   "mobile.project.newTab": { area: "mobile", what: "NewTabSheet · The header's ＋ opens a shell or an agent" },
+  "mobile.project.sendFile": { area: "mobile", what: "NewTabSheet · ＋ → Send a file from this phone into the project's inbox (.eldrun/inbox/), with a Copy of its @reference" },
   "mobile.project.reorder": { area: "mobile", what: "Project · Drag to reorder the desktop's tabs" },
   "mobile.project.modelTap": { area: "mobile", what: "Project · Tap a tab card's model to open the session with its model picker up", tested: "2026-09-23" },
   "inbox.menuTitle": { area: "mobile", what: "InboxIndicator · Sent from your phone (global inbox)" },
