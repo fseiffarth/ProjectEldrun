@@ -101,6 +101,47 @@ describe("Eldrun Mobile keeps the files the agent sent out of the chat", () => {
     expect(screen.getByRole("dialog", { name: "run12.png" }).querySelector("img")?.getAttribute("src")).toBe("/api/v1/tabs/tab-7/outbox/run12.png");
   });
 
+  it("steps through the gallery's pictures in the full-screen viewer, skipping the other kinds", async () => {
+    vi.stubGlobal("fetch", sidecarFetch([
+      { name: "c.png", kind: "image/png", size: 3_000, modified: 300 },
+      { name: "paper.pdf", kind: "application/pdf", size: 400, modified: 250 },
+      { name: "b.png", kind: "image/png", size: 2_000, modified: 200 },
+      { name: "a.jpg", kind: "image/jpeg", size: 1_000, modified: 100 },
+    ]));
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+
+    fireEvent.click(screen.getByRole("button", { name: "Files from the agent (4)" }));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Files from the agent" })).getByRole("button", { name: "Open c.png" }));
+    const shown = () => screen.getByRole("dialog", { name: /\.(png|jpg)$/ });
+    const src = () => shown().querySelector("img")?.getAttribute("src");
+
+    // The newest picture: nothing before it, the PDF not counted.
+    expect(shown().textContent).toContain("1 / 3");
+    expect(within(shown()).queryByRole("button", { name: "Previous picture" })).toBeNull();
+    fireEvent.click(within(shown()).getByRole("button", { name: "Next picture" }));
+    expect(src()).toBe("/api/v1/tabs/tab-7/outbox/b.png");
+    expect(shown().textContent).toContain("2 / 3");
+
+    // A swipe to the left is the next (older) one; the last has no Next.
+    const stage = shown().querySelector(".outbox-viewer-stage")!;
+    fireEvent.touchStart(stage, { touches: [{ clientX: 300, clientY: 400 }] });
+    fireEvent.touchEnd(stage, { changedTouches: [{ clientX: 120, clientY: 410 }] });
+    expect(src()).toBe("/api/v1/tabs/tab-7/outbox/a.jpg");
+    expect(within(shown()).queryByRole("button", { name: "Next picture" })).toBeNull();
+
+    // A mostly vertical drag is not a step.
+    fireEvent.touchStart(shown().querySelector(".outbox-viewer-stage")!, { touches: [{ clientX: 100, clientY: 100 }] });
+    fireEvent.touchEnd(shown().querySelector(".outbox-viewer-stage")!, { changedTouches: [{ clientX: 170, clientY: 400 }] });
+    expect(src()).toBe("/api/v1/tabs/tab-7/outbox/a.jpg");
+
+    // The arrow keys step as well, and Escape still closes back to the grid.
+    fireEvent.keyDown(window, { key: "ArrowLeft" });
+    expect(src()).toBe("/api/v1/tabs/tab-7/outbox/b.png");
+    fireEvent.keyDown(window, { key: "Escape" });
+    screen.getByRole("dialog", { name: "Files from the agent" });
+  });
+
   it("saves any file from its tile, the picture that has no ⋯ included", async () => {
     vi.stubGlobal("fetch", sidecarFetch([
       { name: "run12.png", kind: "image/png", size: 48_000, modified: 200 },

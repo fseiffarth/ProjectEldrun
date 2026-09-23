@@ -612,14 +612,16 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
   const [desktopFailure, setDesktopFailure] = useState("");
   const [uploads, setUploads] = useState<InboxUpload[]>([]);
   /** The pictures the agent left in the project's `.eldrun/outbox/` for this
-   * phone (the desktop's `outbox.rs`), newest first — the strip above the
-   * composer, and the one way an image reaches the phone from a session: a
+   * phone (the desktop's `outbox.rs`), newest first — the gallery beside the
+   * tab name, and the one way an image reaches the phone from a session: a
    * terminal carries none, and Focus classifies nothing, so a path printed
    * by the agent is never guessed at. */
   const [outbox, setOutbox] = useState<OutboxFile[]>([]);
   /** This screen reads the project's outbox through its own tab — the project
    * screen reads the same files through the project (`OutboxScope`). */
   const outboxScope = useMemo(() => ({ tab: tab.id }), [tab.id]);
+  /** The pictures among them, which the full-screen viewer steps through. */
+  const outboxPictures = useMemo(() => outbox.filter((file) => file.kind.startsWith("image/")), [outbox]);
   /** Whether the gallery sheet is up (the button beside the tab name). */
   const [gallery, setGallery] = useState(false);
   /** The picture open full-screen. */
@@ -2547,7 +2549,7 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
     {/* The viewer covers the phone; the gallery stays chosen behind it, so
         closing the file lands back on the grid. */}
     {gallery && !outboxOpen && <OutboxGallery scope={outboxScope} files={outbox} onOpen={openOutbox} onDetails={setOutboxOpen} onDelete={removeOutbox} onClose={() => setGallery(false)} />}
-    {outboxOpen && <OutboxViewer key={`${tab.id}/${outboxOpen.name}`} scope={outboxScope} file={outboxOpen} onClose={() => setOutboxOpen(null)} />}
+    {outboxOpen && <OutboxViewer key={`${tab.id}/${outboxOpen.name}`} scope={outboxScope} file={outboxOpen} pictures={outboxPictures} onStep={setOutboxOpen} onClose={() => setOutboxOpen(null)} />}
 
   </main>;
 }

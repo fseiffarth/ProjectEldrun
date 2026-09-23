@@ -141,6 +141,8 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
   /** The file open full screen (a picture or a text preview). */
   const [fileOpen, setFileOpen] = useState<OutboxFile | null>(null);
   const outboxScope = useMemo(() => ({ project: id }), [id]);
+  /** The pictures among them, which the full-screen viewer steps through. */
+  const outboxPictures = useMemo(() => outbox.filter((file) => file.kind.startsWith("image/")), [outbox]);
   /** The tab whose colour is being picked (#264), of any kind the phone lists —
    * colouring is how a row of look-alike sessions is told apart, which is as
    * true of five shells as of five agents. */
@@ -516,6 +518,6 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     {/* The viewer covers the phone; the gallery stays open behind it, so
         closing the file comes back to the list it was opened from. */}
     {galleryOpen && !fileOpen && <OutboxGallery scope={outboxScope} files={outbox} onOpen={openFile} onDetails={setFileOpen} onDelete={removeFile} onClose={() => setGalleryOpen(false)} />}
-    {fileOpen && <OutboxViewer key={`${id}/${fileOpen.name}`} scope={outboxScope} file={fileOpen} onClose={() => setFileOpen(null)} />}
+    {fileOpen && <OutboxViewer key={`${id}/${fileOpen.name}`} scope={outboxScope} file={fileOpen} pictures={outboxPictures} onStep={setFileOpen} onClose={() => setFileOpen(null)} />}
   </main>;
 }

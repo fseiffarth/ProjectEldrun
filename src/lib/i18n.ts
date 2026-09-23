@@ -173,6 +173,9 @@ export const en = {
   "mobile.outbox.shelf": "Files from the desktop",
   "mobile.outbox.fromDesktop": "From the desktop",
   "mobile.outbox.all": "All {count} files",
+  "mobile.outbox.previous": "Previous picture",
+  "mobile.outbox.next": "Next picture",
+  "mobile.outbox.position": "{index} / {count}",
 
   // Common action words, shared across surfaces.
   "common.back": "Back",

@@ -2828,6 +2828,35 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
 
+- [~] **31ba — The gallery's pictures, cropped and stepped through** (2026-09-23;
+  ✅ code-complete, automated tests passing —
+  `MobileFocusOutboxGallery.test.tsx`; ⚠️ not verified on a phone, and the
+  phone serves the PWA baked into the binary, so it needs a rebuild + restart).
+  - **Thumbnails**: the tile styles went with the old strip in 31am, so a
+    gallery picture drew as a bare browser button around a stretched image.
+    A picture tile is again the picture alone, cropped to 4:3 with a border,
+    name and age under it — on the Focus gallery and the project shelf alike.
+  - **Stepping**: a picture opened full screen (`OutboxViewer`) steps through
+    the gallery's other pictures in place — ‹ › on the picture's edges, a
+    sideways swipe (a pinch or a mostly vertical drag is left alone), or the
+    arrow keys; the head reads `2 / 5 · 48 KB`. PDFs, texts and downloads are
+    skipped: they open their own way. The neighbours are fetched ahead so a
+    step does not land on a blank. Sizes read `1.4 MB` rather than `1434 KB`.
+  - [ ] 🖐️ Manual phone QA — `eldrun-send` three PNGs and a PDF from one tab,
+    open the gallery: the three pictures are cropped tiles of one shape, none
+    squashed. Tap the newest → `1 / 3`, no ‹; tap › → `2 / 3`; swipe left →
+    `3 / 3`, no ›; swipe right → back; drag down instead → nothing moves;
+    pinch → zooms, no step. ✕ lands on the grid. From the project screen's
+    shelf the same.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
 *Not coming to the phone (decided, not forgotten — see
 `docs/mobile_box_parity_plan.md`): editing a box from the phone (membership,
 rename, Dissolve), listing a box's members as project rows, a per-member

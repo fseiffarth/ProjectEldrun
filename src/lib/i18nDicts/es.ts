@@ -131,6 +131,9 @@ export const dict: Dict = {
   "mobile.outbox.shelf": "Archivos del escritorio",
   "mobile.outbox.fromDesktop": "Del escritorio",
   "mobile.outbox.all": "Los {count} archivos",
+  "mobile.outbox.previous": "Imagen anterior",
+  "mobile.outbox.next": "Imagen siguiente",
+  "mobile.outbox.position": "{index} / {count}",
 
   "settings.projectRemarks": "Observaciones de archivos del proyecto",
   "settings.projectRemarksHelp": "Adjunta notas de revisión y líneas opcionales a archivos del proyecto en un REMARKS.md apto para git.",
