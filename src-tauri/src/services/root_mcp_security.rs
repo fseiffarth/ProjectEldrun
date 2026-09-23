@@ -14,8 +14,10 @@ pub const MAX_LOG_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Serialize)]
 pub struct Audit {
+    /// Empty for a request that never authenticated ([`audit_admission`]).
     pub session: String,
-    pub caller: Caller,
+    /// `None` for the same: no token, no class.
+    pub caller: Option<Caller>,
     pub tool: String,
     pub outcome: &'static str,
     pub elapsed_ms: u64,
@@ -25,6 +27,34 @@ pub struct Audit {
 }
 static AUDIT: std::sync::Mutex<std::collections::VecDeque<Audit>> =
     std::sync::Mutex::new(std::collections::VecDeque::new());
+/// Rows in memory at most; the oldest goes when a new one arrives.
+pub const AUDIT_ROWS: usize = 500;
+/// Of those, how many may be unauthenticated admission failures: a probe
+/// must show, but a flood of probes must not push the real records out.
+pub const AUDIT_ADMISSION_ROWS: usize = 50;
+/// The `tool` of an [`audit_admission`] row.
+pub const ADMISSION: &str = "admission";
+
+/// A request refused before it authenticated: wrong or missing token, a
+/// browser `Origin`, a foreign `Host`. Only the fixed `reason` is kept — never
+/// the header, the token material or the path as sent — and the category is
+/// bounded on its own ([`AUDIT_ADMISSION_ROWS`]).
+pub fn audit_admission(reason: &'static str) {
+    let mut rows = AUDIT.lock().unwrap_or_else(|p| p.into_inner());
+    if rows.iter().filter(|r| r.tool == ADMISSION).count() >= AUDIT_ADMISSION_ROWS {
+        if let Some(oldest) = rows.iter().position(|r| r.tool == ADMISSION) {
+            rows.remove(oldest);
+        }
+    }
+    if rows.len() >= AUDIT_ROWS {
+        rows.pop_front();
+    }
+    rows.push_back(Audit {
+        session: String::new(), caller: None, tool: ADMISSION.into(), outcome: "denied",
+        elapsed_ms: 0, target: None, reason: Some(reason),
+        time: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
+    });
+}
 pub fn audit(
     session: &super::root_mcp::Session,
     name: &str,
@@ -36,14 +66,14 @@ pub fn audit(
 
 pub fn audit_reason(session: &super::root_mcp::Session, name: &str, outcome: &'static str, elapsed: std::time::Duration, reason: Option<&'static str>) {
     let mut rows = AUDIT.lock().unwrap_or_else(|p| p.into_inner());
-    if rows.len() >= 500 {
+    if rows.len() >= AUDIT_ROWS {
         rows.pop_front();
     }
     rows.push_back(Audit {
         target: session.identity.schedule_target.as_ref().map(|b| b.target.clone()),
         reason,
         session: session.id.clone(),
-        caller: session.identity.caller,
+        caller: Some(session.identity.caller),
         // Do not echo arbitrary method names (which may contain private text).
         tool: if tool(name).is_some() || super::schedule_mcp::tool_names().contains(&name) {
             name
@@ -67,6 +97,10 @@ pub fn audit_rows() -> Vec<Audit> {
         .cloned()
         .collect()
 }
+#[cfg(test)]
+pub(crate) fn audit_clear() {
+    AUDIT.lock().unwrap_or_else(|p| p.into_inner()).clear();
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Policy {
@@ -75,6 +109,9 @@ pub struct Policy {
     pub mail: bool,
     /// `Settings::root_mcp_mail_local_only`: mail for local-model tabs only.
     pub mail_local_only: bool,
+    /// `Settings::root_mcp_mail_local_read`: a local-model tab may read the
+    /// marked mails ([`Self::reads_mail`]).
+    pub mail_local_read: bool,
     pub review: String,
 }
 impl Policy {
@@ -91,6 +128,7 @@ impl Policy {
             local_only: s.root_mcp_local_only(),
             mail: s.root_mcp_mail(),
             mail_local_only: s.root_mcp_mail_local_only(),
+            mail_local_read: s.root_mcp_mail_local_read(),
             review: s
                 .root_mcp_review
                 .as_deref()
@@ -111,6 +149,18 @@ impl Policy {
     /// local-only mail serves it nothing.
     pub fn serves_mail(&self, caller: Caller) -> bool {
         self.mail && (!self.mail_local_only || caller == Caller::LocalModel)
+    }
+    /// Whether `caller` is listed and served the mail **read** tools: a reader
+    /// whenever it is served mail, a local-model tab only while
+    /// `mail_local_read` is on (and then marked mails only,
+    /// `root_mcp_mail::ScopedMail`). A cloud root agent never reads.
+    pub fn reads_mail(&self, caller: Caller) -> bool {
+        self.serves_mail(caller)
+            && match caller {
+                Caller::Reader => true,
+                Caller::LocalModel => self.mail_local_read,
+                Caller::Agent | Caller::Scheduler => false,
+            }
     }
 }
 
@@ -142,6 +192,23 @@ pub struct Access {
     pub write: bool,
 }
 impl Access {
+    /// The copy a proposal carries (`mcp_access`), read back leniently: a
+    /// field a later build added is dropped, not a reason to refuse approval
+    /// of what an older build staged. The wire (`root_mcp_session_access`)
+    /// stays strict.
+    pub fn from_stored(value: &Value) -> Result<Self, String> {
+        let mut value = value.clone();
+        let obj = value.as_object_mut().ok_or("Invalid MCP access grant")?;
+        obj.retain(|k, _| matches!(k.as_str(), "calendars" | "projects" | "accounts" | "families" | "write"));
+        for key in ["calendars", "projects", "accounts"] {
+            if let Some(scope) = obj.get_mut(key).and_then(Value::as_object_mut) {
+                scope.retain(|k, _| matches!(k.as_str(), "all" | "ids"));
+            }
+        }
+        let access: Self = serde_json::from_value(value).map_err(|_| "Invalid MCP access grant")?;
+        access.validate()?;
+        Ok(access)
+    }
     pub fn initial(caller: Caller) -> Self {
         let reader = caller == Caller::Reader;
         Self {
@@ -223,14 +290,17 @@ pub struct ToolPolicy {
     pub destructive: bool,
     root: bool,
     reader: bool,
+    /// Also served to a local-model tab. Only the mail read tools set it, and
+    /// [`Policy::reads_mail`] still gates them per request.
+    local: bool,
 }
 impl ToolPolicy {
     pub fn serves(&self, caller: Caller) -> bool {
-        if caller == Caller::Scheduler { return false; }
-        if caller == Caller::Reader {
-            self.reader
-        } else {
-            self.root
+        match caller {
+            Caller::Scheduler => false,
+            Caller::Reader => self.reader,
+            Caller::LocalModel => self.root || self.local,
+            Caller::Agent => self.root,
         }
     }
 }
@@ -261,7 +331,7 @@ pub fn tool(name: &str) -> Option<ToolPolicy> {
         "todo_update" | "todo_delete" => ("board", true, true, true, true),
         "mail_accounts_list" | "mail_drafts_list" => ("mail", false, false, true, true),
         "mail_folders" | "mail_search" | "mail_read" | "mail_thread" => {
-            ("mail", false, false, false, true)
+            return Some(ToolPolicy { family: "mail", write: false, destructive: false, root: false, reader: true, local: true });
         }
         "mail_draft_create" => ("mail", true, false, true, true),
         "mail_draft_update" | "mail_draft_delete" => ("mail", true, true, true, true),
@@ -273,6 +343,7 @@ pub fn tool(name: &str) -> Option<ToolPolicy> {
         destructive,
         root,
         reader,
+        local: false,
     })
 }
 
@@ -358,7 +429,7 @@ mod tests {
         let classes = [Caller::Agent, Caller::LocalModel, Caller::Reader, Caller::Scheduler];
         for mail in [false, true] {
             for mail_local_only in [false, true] {
-                let policy = Policy { enabled: true, local_only: false, mail, mail_local_only, review: "all".into() };
+                let policy = Policy { enabled: true, local_only: false, mail, mail_local_only, mail_local_read: false, review: "all".into() };
                 for caller in classes {
                     let expected = mail && (!mail_local_only || caller == Caller::LocalModel);
                     assert_eq!(policy.serves_mail(caller), expected, "mail={mail} local={mail_local_only} {caller:?}");
@@ -394,6 +465,104 @@ mod tests {
         // A wrongly typed value is unreadable settings, which refuse everything.
         std::fs::write(&path, r#"{"root_mcp_mail":true,"root_mcp_mail_local_only":"yes"}"#).unwrap();
         assert!(Policy::load(&path).is_err());
+    }
+
+    /// Reading mail: a reader whenever it is served mail; a local-model tab
+    /// only with `mail_local_read`, which also survives `mail_local_only`; a
+    /// cloud root agent never, whatever the switches say.
+    #[test]
+    fn only_readers_and_opted_in_local_models_read_mail() {
+        for mail in [false, true] {
+            for mail_local_only in [false, true] {
+                for mail_local_read in [false, true] {
+                    let p = Policy { enabled: true, local_only: false, mail, mail_local_only, mail_local_read, review: "all".into() };
+                    let case = format!("mail={mail} local_only={mail_local_only} local_read={mail_local_read}");
+                    assert!(!p.reads_mail(Caller::Agent) && !p.reads_mail(Caller::Scheduler), "{case}");
+                    assert_eq!(p.reads_mail(Caller::Reader), mail && !mail_local_only, "{case}");
+                    assert_eq!(p.reads_mail(Caller::LocalModel), mail && mail_local_read, "{case}");
+                }
+            }
+        }
+        for name in ["mail_folders", "mail_search", "mail_read", "mail_thread"] {
+            let t = tool(name).unwrap();
+            assert!(t.serves(Caller::Reader) && t.serves(Caller::LocalModel), "{name}");
+            assert!(!t.serves(Caller::Agent) && !t.serves(Caller::Scheduler), "{name}");
+        }
+        // No other tool gains a local-only row.
+        for name in super::super::root_mcp::tool_names() {
+            let t = tool(name).unwrap();
+            if !["mail_folders", "mail_search", "mail_read", "mail_thread"].contains(&name) {
+                assert_eq!(t.serves(Caller::LocalModel), t.serves(Caller::Agent), "{name}");
+            }
+        }
+    }
+
+    /// An older build must approve what a newer one staged: a grant with a
+    /// field it never heard of parses to the fields it knows, while the same
+    /// value on the wire is still refused.
+    #[test]
+    fn a_stored_grant_tolerates_unknown_fields_the_wire_does_not() {
+        let mut stored = serde_json::to_value(Access::initial(Caller::Agent)).unwrap();
+        stored["future_field"] = json!({"nested": true});
+        stored["calendars"]["future_scope_field"] = json!(1);
+        let back = Access::from_stored(&stored).unwrap();
+        assert_eq!(back, Access::initial(Caller::Agent));
+        assert!(serde_json::from_value::<Access>(stored.clone()).is_err(), "the wire stays strict");
+        // A round trip through serialisation is exact once the extras are gone.
+        assert_eq!(serde_json::to_value(&back).unwrap(), serde_json::to_value(Access::initial(Caller::Agent)).unwrap());
+        assert!(Access::from_stored(&json!({"write": true})).is_err(), "a missing field is still missing");
+        assert!(Access::from_stored(&json!("no")).is_err());
+    }
+
+    /// The validator's own bound on a string: 32 KiB unless the schema names
+    /// a larger one (the `.ics` import does), and the message says which.
+    #[test]
+    fn validator_honours_a_schemas_own_max_length() {
+        let default = json!({"type": "string"});
+        assert!(validate(&default, &json!("x".repeat(32 * 1024))).is_ok());
+        let err = validate(&default, &json!("x".repeat(32 * 1024 + 1))).unwrap_err();
+        assert!(err.contains("32 KiB"), "{err}");
+        let wide = json!({"type": "string", "maxLength": 96 * 1024});
+        assert!(validate(&wide, &json!("x".repeat(96 * 1024))).is_ok());
+        let err = validate(&wide, &json!("x".repeat(96 * 1024 + 1))).unwrap_err();
+        assert!(err.contains("96 KiB"), "{err}");
+        let narrow = json!({"type": "string", "maxLength": 8});
+        assert!(validate(&narrow, &json!("123456789")).is_err());
+        assert!(validate(&narrow, &json!("12345678")).is_ok());
+    }
+
+    /// Audit rows name a tool only when it is one Eldrun serves; anything else
+    /// — a method name an agent made up, private text included — is written
+    /// down as `protocol`. The ring holds 500 rows, and the admission failures
+    /// in it are bounded on their own so a probe flood cannot evict the rest.
+    #[test]
+    fn audit_masks_unknown_names_and_caps_its_rows() {
+        audit_clear();
+        let (_, session) = super::super::root_mcp::test_session(Caller::Agent);
+        audit(&session, "calendar_list", "allowed", std::time::Duration::ZERO);
+        audit(&session, "schedule_prompt", "refused", std::time::Duration::ZERO);
+        audit(&session, "tools/call: my private note about Alice", "refused", std::time::Duration::ZERO);
+        audit(&session, "", "denied", std::time::Duration::ZERO);
+        let rows = audit_rows();
+        let tools: Vec<&str> = rows.iter().map(|r| r.tool.as_str()).collect();
+        assert_eq!(tools, ["calendar_list", "schedule_prompt", "protocol", "protocol"]);
+        assert!(rows.iter().all(|r| r.caller == Some(Caller::Agent) && r.session == session.id));
+        assert!(!serde_json::to_string(&rows).unwrap().contains("Alice"));
+        for _ in 0..(AUDIT_ADMISSION_ROWS + 10) {
+            audit_admission("unauthorized");
+        }
+        let rows = audit_rows();
+        assert_eq!(rows.iter().filter(|r| r.tool == ADMISSION).count(), AUDIT_ADMISSION_ROWS);
+        assert_eq!(rows.iter().filter(|r| r.tool != ADMISSION).count(), 4, "probes evict probes, not records");
+        let probe = rows.iter().find(|r| r.tool == ADMISSION).unwrap();
+        assert!(probe.caller.is_none() && probe.session.is_empty() && probe.reason == Some("unauthorized") && probe.outcome == "denied");
+        for _ in 0..AUDIT_ROWS {
+            audit(&session, "ping", "allowed", std::time::Duration::ZERO);
+        }
+        assert_eq!(audit_rows().len(), AUDIT_ROWS);
+        assert_eq!(audit_rows().iter().filter(|r| r.tool == ADMISSION).count(), 0, "the oldest rows go first, probes included");
+        super::super::root_mcp::revoke_tab(&session.identity.tab);
+        audit_clear();
     }
 
     #[test]

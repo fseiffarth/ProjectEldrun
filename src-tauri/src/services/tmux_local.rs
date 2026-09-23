@@ -378,6 +378,16 @@ const SECRET_ENV: &[&str] = &[crate::services::root_mcp::TOKEN_ENV, crate::servi
 /// carries every variable; without it the script exports them, except the
 /// [`SECRET_ENV`] ones, which ride on this line as an `env` prefix — tmux's own
 /// argv lives in memory only, and the line stays a few hundred bytes.
+///
+/// Known limit, on tmux < 3.2 only: this line (and the inline `export`s of
+/// [`command_line`] when the argv is short enough to skip the script) is what
+/// tmux hands to `sh -c`, so for the shell's lifetime the secrets are in that
+/// process's argv, readable by anything of the same uid — the same exposure an
+/// unfenced agent already has through `/proc/<pid>/environ`
+/// (`docs/context/root_console.md`, *Known limit*). Keeping them off the disk
+/// was the point; keeping them out of every same-uid argv on an old tmux
+/// would mean writing them to a 0600 file, which is the thing that must not
+/// happen. `-e` (tmux ≥ 3.2) has neither problem.
 fn launcher_line(path: &str, env: &HashMap<String, String>, session_env: bool) -> String {
     let quoted = shell_quote(path);
     if session_env {

@@ -20,7 +20,7 @@ export interface IcsImportResult {
 
 export async function importIcsText(text: string, calendarName: string): Promise<IcsImportResult> {
   const parsed = parseIcs(text);
-  const { createCalendar, createEvent, createTask } = useCalendarStore.getState();
+  const { createCalendar, createEvent, createTask, deleteCalendar } = useCalendarStore.getState();
   const target = await createCalendar({
     name: calendarName,
     color: "#8d8fd6",
@@ -28,11 +28,20 @@ export async function importIcsText(text: string, calendarName: string): Promise
     readonly: false,
     imported: true,
   });
-  for (const e of parsed.events) {
-    await createEvent({ ...e, calendar_id: target.id });
-  }
-  for (const tk of parsed.tasks) {
-    await createTask({ ...tk, calendar_id: target.id });
+  try {
+    for (const e of parsed.events) {
+      await createEvent({ ...e, calendar_id: target.id });
+    }
+    for (const tk of parsed.tasks) {
+      await createTask({ ...tk, calendar_id: target.id });
+    }
+  } catch (error) {
+    // A row that could not be written leaves no partial calendar behind: the
+    // one just created goes with whatever landed in it, and the failure is
+    // reported with the calendar's name so the user knows what was undone.
+    // Should the delete itself fail, the name still says where to look.
+    const cleaned = await deleteCalendar(target.id).then(() => true, () => false);
+    throw new Error(`${String(error)} (${cleaned ? "removed the partial calendar" : "a partial calendar remains"} "${target.name}")`);
   }
   return {
     events: parsed.events.length,

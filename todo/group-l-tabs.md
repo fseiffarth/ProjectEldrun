@@ -429,6 +429,15 @@ correctness/UX work atop the same layout model #42 detaches.*
   shows `caldav_href`. Switch the agent fence off for root: the ⚿ badge gains ⚠
   and the review strip says review is not enforced. Open a reader draft with
   recipients: the composer shows the recipients warning.
+- [ ] **Root MCP token is inherited by everything the agent runs** (open,
+  2026-09-23). The token reaches Claude/Codex/Vibe through the process
+  environment (`${ELDRUN_ROOT_MCP_TOKEN}`, `bearer_token_env_var`,
+  `api_key_env`), so hooks, package scripts, Makefiles and `curl` inside the tab
+  can call the tools as the tab; the schedule token is the same for project
+  agents. Documented (`docs/context/root_console.md`, *Known limit,
+  inherited*; audit help text). Closing it needs the CLI to read the secret
+  from a 0600 file and scrub the variable before spawning children — file
+  upstream requests, or wrap the CLI once one supports a token file.
 - [ ] **Root MCP `calendar_import_ics` — live QA** (implemented 2026-09-21, not
   run live; pill `rootReview.icsImport`). After the updated backend is running,
   give a root agent an `.ics` and ask it to import it: the reply must say

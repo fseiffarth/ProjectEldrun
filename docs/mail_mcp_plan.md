@@ -22,7 +22,17 @@ access rather than per tool; a conversation is matched by subject (the store
 keeps no `References`); the per-account switch sits in the account dialog, not
 the Mail AI (local) section, whose promise is the opposite one; and the Drafts
 list is a strip of agent drafts in the mail view, since Eldrun lists no local
-drafts yet.
+drafts yet. **Local-model reads built 2026-09-23, nothing run live** (§1,
+*Local-model reads*): a Vibe local-model tab may read the marked mails behind
+its own switch. **Three-state switch built 2026-09-23, nothing run live** (§1,
+*Marked mails only*). Where that build differs from the text: an `agent_marks`
+row carries the store id *and* the keyed `Message-ID` digest (the id is what
+the reader's queries join on, the digest is what carries the mark onto a
+re-indexed copy), so a message without a `Message-ID` can be marked too and
+keeps its mark as long as its row lives; the mail view draws the row mark from
+an id list (`mail_agent_marks`) rather than a header field; the share controls
+are the list's right-click group, a button on the open message, and
+`mail_headers`'s `agent_only` filter behind the *Shared* chip.
 
 Companion: [`mcp_staged_writes_plan.md`](mcp_staged_writes_plan.md) puts a
 review gate in front of the calendar and board tools (per-tab sandbox copy,
@@ -75,7 +85,7 @@ injected agent is able to *do*. Three legs make it dangerous:
 
 | Leg | The root agent today | What this plan does |
 |---|---|---|
-| Private data | calendar, board, `~/eldrun/root` | per-account opt-in, **off by default** |
+| Private data | calendar, board, `~/eldrun/root` | per-account opt-in, **off by default**; first on = **marked mails only** |
 | Untrusted content | *new with these tools* — anyone who can e-mail you | never reaches an agent with open network; for the reader: envelope, text only, caps, no links |
 | Exfiltration | **full shell, full network** | the reader has neither the host's shell nor its network |
 
@@ -200,8 +210,19 @@ cloud API request — containment narrows where else it can go, not this. That i
   always a cloud CLI — gets no endpoint. Unlike `root_mcp_local_only` it leaves
   the calendar, board and project tools alone. Read per request.
 - A new per-account switch, **off by default**, beside the existing per-account
-  AI switches: `MailAiPrefs.agent_access` (`Option<bool>`, unset = off). The
-  existing `mail_account_set_ai` command already writes that struct.
+  AI switches, with **three states**:
+  - **Off** (default). The account does not exist for the tools.
+  - **Marked mails only.** The reader sees the messages you marked and nothing
+    else. This is the state an account lands in when you first turn it on.
+  - **Whole account.** Every message of the account, one deliberate step
+    further.
+
+  Stored as two fields of `MailAiPrefs`, both written by the existing
+  `mail_account_set_ai` command: `agent_access` (`Option<bool>`, unset = off)
+  stays the gate, and `agent_scope` (`Option<"marked" | "all">`, unset =
+  `marked`) picks the width. An `agent_access: true` written by the two-state
+  build round-trips and reads as *marked only*: nothing has run live, and
+  narrowing is the safe direction.
 - Its copy says the opposite of the local assistant's: *"A contained reader
   agent may read this account's mail. What it reads is sent to that agent's
   provider."* The switch governs **reading**. Draft-only access from a root tab
@@ -211,9 +232,77 @@ cloud API request — containment narrows where else it can go, not this. That i
   from `mail_accounts_list`, and its ids are refused everywhere else with the
   same "unknown account" error an invalid id gets, so the refusal leaks nothing.
 - The ⚿ badge in the root overlay gains a mail mark while at least one account
-  is open to agents.
+  is open to agents, and distinguishes *marked only* from *whole account*: the
+  two carry very different exposure.
+
+#### Marked mails only
+
+One invariant, the account's, applied per message: **what the reader cannot
+see does not exist.**
+
+- **The mark is local.** It lives in the mail store's SQLite as a table
+  `agent_marks (account_id, rfc_message_id, marked_at)`, keyed by the RFC
+  `Message-ID` so it survives a resync, and it is never written as an IMAP
+  keyword: a flag on the server syncs to the provider and shows in every other
+  client, and "shared with an agent" is not something that should leave the
+  machine. The row also carries the store id, which is what the reader's
+  queries join on; a message with no `Message-ID` is marked by that id alone
+  and keeps the mark as long as its row lives. The digest also folds in the
+  sender address, and a copy is adopted only once the original marked row has
+  left the index, so a thread participant reusing a Message-ID gets nothing.
+- **Absent everywhere.** In this state `mail_search` searches the marked set;
+  `mail_folders` lists the account's folders with `unread` and `total` counted
+  over the marked set; `mail_read`, `mail_thread` and `reply_to_message_id` on
+  an unmarked message refuse with the same "unknown message" error an invalid
+  id gets. `mail_thread` returns the *marked* members of the thread only, never
+  an unmarked sibling for context, and never refuses the whole thread.
+- **Unmarking is immediate.** The next call refuses. The copy beside the
+  control says the rest plainly: a reader that already read the message has
+  it, and its provider has it.
+- **Encrypted mail stays opaque when marked.** The PGP rule below holds
+  regardless of the mark.
+- **Whole account is a mode, not a mark on everything.** Switching to *whole
+  account* leaves the marks in place; switching back narrows to them again.
+- **Marks are permanent until you remove them.** No expiry: it matches the
+  account switch. If a timer is ever wanted, it goes on the individual mark
+  with a visible date, not on the account.
+- **Not a denylist.** A per-message "hide from agents" on top of whole-account
+  access fails open: you have to remember to hide a message before the reader
+  gets to it. The allowlist fails safe.
+- `mail_accounts_list` returns the account's `scope` (`marked` | `all`) so the
+  reader can tell a small inbox from an empty one. It leaks nothing the reader
+  could not infer.
 - The local assistant's invariant is untouched. `mail_ai` keeps its own path
   and its own refusal; the agent tools never call it.
+
+#### Local-model reads
+
+Built 2026-09-23 at the user's request, nothing run live. It is the one way a
+root tab reads mail, and it rests on the local-model tab having no leg of the
+threat to stand on except the ones Eldrun already gates:
+
+- **No shell, no web.** A local-model tab is Mistral Vibe with
+  `VIBE_ENABLED_TOOLS = ["eldrun_*"]` (`root_mcp::apply_to_spawn_with`): its
+  only tools are this server's. That is Vibe's own filter, not a sandbox —
+  the one control here Eldrun does not enforce itself.
+- **The model is on this machine.** Every read re-checks `ollama_host` with
+  `mail_ai::resolve_endpoint` and refuses a non-loopback host
+  (`LOCAL_READ_REMOTE`), `ollama_allow_remote_host` or not.
+- **Marked mails only**, whatever the account's scope — *whole account* stays
+  a reader's mode — and only of accounts whose `agent_access` is on. Drafts
+  keep needing no consent.
+- **Taint latches on the first read** (`Session::has_read_mail`), not at
+  spawn: from then on every calendar/board write stages with the mark,
+  whatever `root_mcp_review` says, and new drafts carry origin `reader`, so the
+  composer shows the mail-reading banner. Reply drafts follow the reader's
+  recipient rule.
+- **Its own switch**, `Settings::root_mcp_mail_local_read`, absent = off,
+  under the mail switch; `Policy::reads_mail` is the verdict, read per request.
+  It survives `root_mcp_mail_local_only` — they point the same way.
+
+What it does not close: an injected mail can still steer what the model
+proposes and drafts. The exits are the review strip and the composer's Send,
+both yours.
 
 ### 2. The envelope wraps the whole tool result, not the body
 
@@ -278,14 +367,16 @@ tainted, because it cannot read. A reader is tainted from its first byte.
 mints a secret per root-agent spawn and maps it to `{tab, caller}` beside the
 runtime. `Caller::{Agent, LocalModel}` retains `root_mcp_local_only`; tokens are
 revoked at teardown, and constant-time comparisons run for every candidate.
-See [Staged writes](context/root_console.md#staged-writes). Mail still needs to
-extend these callers with `Reader`, force that class's writes to stage regardless
-of the root setting, and set the proposal's taint mark. The existing review
-surface already carries that mark; agent draft rows remain to be integrated.
+See [Staged writes](context/root_console.md#staged-writes). **Shipped:** the
+callers carry `Reader`, that class's writes (and a local-model tab's after its
+first read) stage regardless of the root setting with the proposal's taint mark,
+and agent draft rows are integrated on the review surface
+(`services::root_mcp_mail`, `context/root_console.md`).
 
 | Class | Handed to | Tools it is served |
 |---|---|---|
-| `Root` / `RootLocal` | a root agent, as today | everything the server has today, plus the **draft** tools. No mail read tool. |
+| `Root` / `RootLocal` (shipped as `Caller::{Agent, LocalModel}`) | a root agent, as today | everything the server has today, plus the **draft** tools. No mail read tool. |
+| `LocalModel`, reads on | a Vibe local-model tab with `root_mcp_mail_local_read` | the root tab's tools, plus the **mail read** tools over **marked mails only** (see *Local-model reads*); after its first read, its writes always stage. |
 | `Reader` | an agent tab in a `mail_reader` VM | the **mail read** tools, the **draft** tools, and — only once staged writes exist — the calendar/board write tools, *always staged*. |
 
 What a `Reader` is **not** served, by dispatch and not by politeness:
@@ -363,7 +454,7 @@ All ids are the store's own opaque ids. No tool takes a path.
 
 | Tool | Class | Arguments | Returns |
 |---|---|---|---|
-| `mail_accounts_list` | both | none | Accounts: id, name, address. For a reader, only accounts with `agent_access` on |
+| `mail_accounts_list` | both | none | Accounts: id, name, address. For a reader, only accounts with `agent_access` on, each with its `scope` (`marked` \| `all`) |
 | `mail_folders` | reader | `account_id` | Folders: id, name, kind, unread, total |
 | `mail_search` | reader | `account_id`, optional `folder_id`, `query`, `from`, `since`, `until`, `unread_only`, `limit` ≤ 50, `cursor` | Enveloped header rows (id, from, to, subject, date, flags, has_attachments, snippet) and the next cursor |
 | `mail_read` | reader | `message_id` | Enveloped text body, headers, link texts, attachment names and sizes, `truncated`, crypto verdict |
@@ -461,13 +552,23 @@ Backend:
   tools share out of the command bodies, so the tools and the commands cannot
   drift. `mail_draft_save` clears `origin` (a save from the composer is yours).
 - `src-tauri/src/schema/mail.rs`: `MailAiPrefs.agent_access`,
-  `MailDraft.origin`.
+  `MailAiPrefs.agent_scope`, `MailDraft.origin`.
 - `src-tauri/src/services/mail_store.rs`: a thread query if none exists yet;
-  drafts filtered by origin.
+  drafts filtered by origin; the `agent_marks` table (additive migration, like
+  `mail_remote_allow`), mark/unmark by `rfc_message_id`, and a "marked only"
+  restriction that every reader query takes so no call path can forget it.
+- `src-tauri/src/commands/mail.rs`: `mail_agent_mark` (mark/unmark a set),
+  `mail_agent_mark_sender`, `mail_agent_mark_folder`, `mail_agent_marks` (the
+  id list the mail view draws its row mark from), `mail_headers`'s
+  `agent_only`, and `widest_agent_scope` for the badge.
 
 Frontend:
 
-- The per-account AI settings: the new switch and its copy (`i18n.ts`).
+- The per-account AI settings: the three-state switch (a radio group, not a
+  checkbox) and its copy (`i18n.ts`), with the unmark note.
+- `MailList` / `MailMessageView`: the "shared with agents" mark on a row, the
+  toggle in the row's context menu and the message header, bulk mark by sender
+  and by folder, and a "shared with agents" filter chip.
 - The VM project's settings: the "mail reader" switch with its "narrowed and
   logged" copy, and the refusal when egress is wider than the default.
 - The composer: the agent banner, its reader variant, and the empty-`to`
@@ -499,6 +600,26 @@ Docs:
   a property named `path`, `file`, `attachment`, `bcc` or `url`.
 - **Default off.** With no account opted in, `mail_accounts_list` is empty and
   every other tool refuses a real account id with the unknown-account error.
+- **Marked only.** Table-driven over the three states. In `marked`: search
+  returns the marked rows only; folder counts equal the marked set's; `mail_read`,
+  `mail_thread` and `reply_to_message_id` on an unmarked id return a response
+  byte-identical to an invalid id's; `mail_thread` on a marked message omits its
+  unmarked siblings. `agent_access: true` with no `agent_scope` behaves as
+  `marked`. Unmarking between two calls makes the second refuse.
+- **The mark is local and survives a resync.** Marking writes no IMAP flag
+  (the row's flags are untouched); the message indexed again under a new store
+  id arrives marked, and unmarking one copy unmarks every row with that
+  `Message-ID`; a row with no `Message-ID` is marked by its id alone
+  (`mail_store::tests::an_agent_mark_is_local_follows_the_message_id_and_scopes_every_read`).
+  A store id reused after a delete starts unmarked and an account's removal
+  removes its marks; a duplicate `Message-ID` is adopted only once the
+  original has left the index and only from the same sender; a plain→sealed
+  conversion rekeys `mid_key`, blanks an orphan mark's key and still adopts a
+  re-indexed copy; the marked page filters by query in a sealed store
+  (`an_agent_mark_does_not_outlive_its_row`,
+  `a_duplicate_message_id_is_adopted_only_as_a_move_from_the_same_sender`,
+  `encrypted::converting_a_plain_store_rekeys_agent_marks`,
+  `encrypted::the_marked_page_filters_by_query_in_a_sealed_store`).
 - **Locked.** Every tool refuses with the locked message and nothing prompts.
 - **Read leaves no trace.** Flags and unread counts are identical before and
   after `mail_read`.
@@ -568,8 +689,11 @@ guest — that is live QA below.
 5. The **read** tools, served to `Reader` only: opt-in switch, envelope,
    `strip_invisible`, link-text-only, caps, `reply_to_message_id`, draft
    isolation by class.
-6. Frontend for the reader: the VM project switch and its copy, the per-account
-   switch, the reader banner variant.
+   5b. **Marked mails only**: `agent_scope`, the `agent_marks` table and
+   migration, the restriction in every reader query, the mark commands.
+6. Frontend for the reader: the VM project switch and its copy, the
+   three-state per-account switch, the row mark, filter chip and bulk marks,
+   the reader banner variant.
 7. *With `mcp_staged_writes_plan.md`:* the reader's always-staged calendar/board
    writes and drafts in the review strip.
 8. Docs, the TODO item with its QA steps, `npm run backend:stale`.
@@ -592,8 +716,15 @@ Reader (after step 6):
 - Flag a VM project as mail reader with default egress; with every account's
   switch off, its agent lists the mail tools and `mail_accounts_list` returns
   nothing.
-- Turn one account on: search, read a message, confirm it stays unread in the
-  mail view.
+- Turn one account on: it lands in *marked mails only*; `mail_accounts_list`
+  shows it with `scope: marked`, search returns nothing, folder counts are zero.
+- Mark one message from the list's context menu: search finds it, `mail_read`
+  reads it, the thread call shows it alone even though the thread has replies,
+  and the message stays unread in the mail view.
+- Unmark it: the next `mail_read` returns the unknown-message error.
+- In another client, confirm no new IMAP keyword appeared on the message.
+- Switch to *whole account*: search finds the rest. Switch back: only the mark
+  again.
 - From the reader's shell, `curl` any site: it fails, and the blocked-CONNECT
   log shows it.
 - Allow GitHub on that project: the window refuses until the reader flag is

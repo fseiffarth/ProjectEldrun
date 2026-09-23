@@ -885,7 +885,7 @@ const SEARCH_KEYS: Record<NavEntry, TranslationKey[]> = {
   browser: ["settings.browserHome", "settings.browserSearch", "settings.browserLinkTarget", "settings.browserRestoreNavigate", "settings.browserLivePages"],
   calendar: ["settings.calendarGlobalApp", "settings.todoBoard", "settings.weekStartsOn", "settings.defaultView", "settings.dayGridStart", "settings.defaultReminder"],
   usageStats: ["settings.dailyRecap", "settings.openUsageStats"],
-  rootConsole: ["settings.rootMcp", "settings.rootMcpLocalOnly", "settings.rootMcpMail", "settings.rootMcpMailLocalOnly", "rootReview.setting", "mcpSecurity.title"],
+  rootConsole: ["settings.rootMcp", "settings.rootMcpLocalOnly", "settings.rootMcpMail", "settings.rootMcpMailLocalOnly", "settings.rootMcpMailLocalRead", "rootReview.setting", "mcpSecurity.title"],
   remoteFeatures: ["settings.vpnEnabled", "settings.machinesEnabled", "settings.headlessRemote"],
   mobile: ["settings.mobileIndicator"],
   performance: ["settings.energySaver", "settings.fastMode"],
@@ -1538,6 +1538,16 @@ export function SettingsDialog({
               disabled={!(settings?.root_mcp ?? true) || !(settings?.root_mcp_mail ?? false)}
               onChange={(e) => void updateSettings({ root_mcp_mail_local_only: e.target.checked })}
               help={t("settings.rootMcpMailLocalOnlyHelp")}
+            />
+            {/* The one way a root tab reads mail: a local model, marked mails
+                only, loopback Ollama only (`Policy::reads_mail`). Absent means
+                off; read per request. */}
+            <ToggleCard
+              label={<>{t("settings.rootMcpMailLocalRead")} <UntestedTag id="settings.rootMcpMailLocalRead" /></>}
+              checked={settings?.root_mcp_mail_local_read ?? false}
+              disabled={!(settings?.root_mcp ?? true) || !(settings?.root_mcp_mail ?? false)}
+              onChange={(e) => void updateSettings({ root_mcp_mail_local_read: e.target.checked })}
+              help={t("settings.rootMcpMailLocalReadHelp")}
             />
 
             <SettingRow

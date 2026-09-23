@@ -3593,6 +3593,7 @@ impl crate::services::root_mcp_mail::MailAccess for AgentMail {
             .into_iter()
             .map(|a| crate::services::root_mcp_mail::AgentAccount {
                 agent_access: a.ai.as_ref().and_then(|ai| ai.agent_access) == Some(true),
+                scope: a.ai.as_ref().and_then(|ai| ai.agent_scope).unwrap_or_default(),
                 id: a.id,
                 name: a.label,
                 address: a.address,
@@ -3600,8 +3601,25 @@ impl crate::services::root_mcp_mail::MailAccess for AgentMail {
             .collect())
     }
 
-    fn folders(&self, account_id: &str) -> Result<Vec<MailFolder>, String> {
-        self.store()?.folders(account_id)
+    fn folders(&self, account_id: &str, marked_only: bool) -> Result<Vec<MailFolder>, String> {
+        let store = self.store()?;
+        let mut folders = store.folders(account_id)?;
+        if marked_only {
+            // The folders stay listed — their existence is the account's
+            // structure, which the consent covers — but the counts are the
+            // marked set's, so an empty-looking folder is an empty one.
+            let counts = store.agent_marked_counts(account_id)?;
+            for f in &mut folders {
+                let (unread, total) = counts
+                    .iter()
+                    .find(|(id, _, _)| *id == f.id)
+                    .map(|(_, unread, total)| (*unread, *total))
+                    .unwrap_or((0, 0));
+                f.unread = unread;
+                f.total = total;
+            }
+        }
+        Ok(folders)
     }
 
     fn headers(
@@ -3611,13 +3629,22 @@ impl crate::services::root_mcp_mail::MailAccess for AgentMail {
         limit: u32,
         query: Option<&str>,
         unread_only: bool,
+        marked_only: bool,
     ) -> Result<MailHeaderPage, String> {
-        self.store()?
-            .headers_page(folder_id, offset, limit, query, MailSort::Date, true, unread_only)
+        let store = self.store()?;
+        if marked_only {
+            store.headers_page_marked(folder_id, offset, limit, query, MailSort::Date, true, unread_only)
+        } else {
+            store.headers_page(folder_id, offset, limit, query, MailSort::Date, true, unread_only)
+        }
     }
 
     fn header(&self, message_id: &str) -> Result<Option<MailHeader>, String> {
         self.store()?.header(message_id)
+    }
+
+    fn is_marked(&self, message_id: &str) -> Result<bool, String> {
+        self.store()?.agent_marked(message_id)
     }
 
     fn body(&self, message_id: &str) -> Result<MailBody, String> {

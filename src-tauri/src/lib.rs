@@ -2141,6 +2141,10 @@ pub fn run() {
                 // listener with nothing behind it. Bounded (admin-socket
                 // timeouts), best-effort, and a no-op when Mobile is off.
                 tauri::async_runtime::block_on(commands::mobile_control::stop_host_for_exit());
+                // The root MCP listener: stop accepting, drain in-flight
+                // workers briefly, and drop every per-tab calendar copy so
+                // nothing of the endpoint outlives the quit.
+                commands::root_mcp::stop_for_exit();
                 // Abort every terminal's process subtree so no inner process (a
                 // dev server, a build, a training run) outlives Eldrun. Runs
                 // before the container teardown below, since a containerized

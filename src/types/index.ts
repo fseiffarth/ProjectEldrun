@@ -262,6 +262,9 @@ export interface Settings {
    *  On, cloud agent CLIs are neither listed nor served a mail tool and a
    *  contained reader is refused; the rest of the tools are untouched. */
   root_mcp_mail_local_only?: boolean;
+  /** Root console: a local-model tab may read the mails shared with agents —
+   *  marked messages only, and only while Ollama is loopback. Absent means off. */
+  root_mcp_mail_local_read?: boolean;
   /** Side panel: the **Alerts** group in the file viewer — urgent mail, the
    *  calendar entries about to start, and the to-do cards whose due date is here
    *  or past, merged into one time-ordered strip. **Default true.**

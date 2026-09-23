@@ -695,9 +695,14 @@ pub async fn pty_spawn(
         }
     }
 
-    let result = crate::terminal::spawn_pty(app, registry.inner().clone(), opts);
+    let mcp_token_handed_out = mcp_spawn_guard.as_ref().is_some_and(|g| g.holds_token());
+    let result = crate::terminal::spawn_pty(app.clone(), registry.inner().clone(), opts);
     if result.is_ok() {
         if let Some(guard) = mcp_spawn_guard.as_mut() { guard.keep(); }
+        if mcp_token_handed_out {
+            // The MCP session access fold lists live sessions; a new token is one.
+            let _ = tauri::Emitter::emit(&app, crate::commands::root_mcp::SESSIONS_EVENT, ());
+        }
         if let Some(claim) = resume_claim {
             claim.keep();
         }

@@ -41,6 +41,10 @@ interface RootReviewState {
   count: number;
   error: string | null;
   busy: boolean;
+  /** Ids of staged files this window already imported. A file whose import
+   *  succeeded but whose staged copy could not be removed stays on the list
+   *  until the next refresh drops it, and its ✓ must not import it twice. */
+  imported: string[];
   /** Whether the console's ✓ Approvals button has its panel dropped. It lives
    *  here rather than in `RootOverlay` so a flow that floats the console can
    *  open it *at* the rows; the console clears it when it closes. */
@@ -69,7 +73,7 @@ async function action(command: string, args: Record<string, unknown>) {
   }
 }
 export const useRootReviewStore = create<RootReviewState>((set) => ({
-  proposals: [], imports: [], count: 0, error: null, busy: false, panel: false,
+  proposals: [], imports: [], count: 0, error: null, busy: false, imported: [], panel: false,
   setPanel: (panel) => set({ panel }),
   refresh: async () => {
     const version = ++refreshVersion;
@@ -91,13 +95,19 @@ export const useRootReviewStore = create<RootReviewState>((set) => ({
     approvals: proposals.map(({ id, digest }) => ({ id, digest })),
   }),
   importStaged: async (staged, fallbackName) => {
-    if (useRootReviewStore.getState().busy) return;
+    const state = useRootReviewStore.getState();
+    if (state.busy || state.imported.includes(staged.id)) return;
     useRootReviewStore.setState({ busy: true, error: null });
     try {
-      // The staged copy goes first: a failed import must not leave a card whose
-      // second ✓ imports the same file into a second calendar.
-      await invoke("root_mcp_import_remove", { id: staged.id });
+      // The import goes first: a failed one keeps the card (and its error) so
+      // the user can try again, and `importIcsText` removes the calendar it
+      // began when a row fails, so nothing half-imported is left behind. The
+      // staged copy goes only once the import is in — and this window's list
+      // of imported ids is what stops a second ✓ on a card whose removal
+      // failed from importing the same file into a second calendar.
       await importIcsText(staged.text, staged.name || fallbackName);
+      useRootReviewStore.setState((s) => ({ imported: [...s.imported, staged.id] }));
+      await invoke("root_mcp_import_remove", { id: staged.id });
       await useRootReviewStore.getState().refresh();
     } catch (error) {
       await useRootReviewStore.getState().refresh();

@@ -204,6 +204,14 @@ pub struct Settings {
     /// request, like the switches above. Subordinate to `root_mcp_mail`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_mcp_mail_local_only: Option<bool>,
+    /// Root console: a **local-model tab** may read the mails you shared with
+    /// agents (`MailAiPrefs::agent_access` on the account, then a per-message
+    /// mark) — marked messages only, whatever the account's scope, and only
+    /// while `ollama_host` is loopback. Absent means off: a root tab then
+    /// writes drafts and reads nothing. Read per request. Subordinate to
+    /// `root_mcp_mail`. Design: `docs/mail_mcp_plan.md` §"Local-model reads".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_mcp_mail_local_read: Option<bool>,
     /// Side panel: the opt-in **Alerts** group in the file viewer — urgent
     /// mail, the calendar entries about to start, and the to-do cards whose due
     /// date is here or past, in one time-ordered strip.
@@ -953,6 +961,11 @@ impl Settings {
         self.root_mcp_mail_local_only.unwrap_or(false)
     }
 
+    /// Whether a local-model tab may read the marked mails. Off unless set.
+    pub fn root_mcp_mail_local_read(&self) -> bool {
+        self.root_mcp_mail_local_read.unwrap_or(false)
+    }
+
     /// Whether the root MCP tools are kept to local-model tabs. Off unless set.
     pub fn root_mcp_local_only(&self) -> bool {
         self.root_mcp_local_only.unwrap_or(false)
@@ -1099,6 +1112,22 @@ mod tests {
         let back: Settings =
             serde_json::from_str(&serde_json::to_string(&s).unwrap()).expect("round trip");
         assert_eq!(back.fast_mode, Some(true));
+    }
+
+    /// Local-model mail reads are absent by default (off), a real field the MCP
+    /// policy can read, and an explicit `false` survives a round trip.
+    #[test]
+    fn root_mcp_mail_local_read_defaults_absent_and_is_a_real_field() {
+        let raw = serde_json::to_string(&Settings::default()).unwrap();
+        assert!(!raw.contains("root_mcp_mail_local_read"), "{raw}");
+        assert!(!Settings::default().root_mcp_mail_local_read());
+        for (body, want) in [(r#"{"root_mcp_mail_local_read":true}"#, true), (r#"{"root_mcp_mail_local_read":false}"#, false)] {
+            let s: Settings = serde_json::from_str(body).expect("parse");
+            assert!(s.extra.is_empty(), "fell through to `extra`: {:?}", s.extra.keys().collect::<Vec<_>>());
+            assert_eq!(s.root_mcp_mail_local_read(), want);
+            let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).expect("round trip");
+            assert_eq!(back.root_mcp_mail_local_read, Some(want));
+        }
     }
 
     /// The mail tools' local-only companion is absent by default (reads off),
