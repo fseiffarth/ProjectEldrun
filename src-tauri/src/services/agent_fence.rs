@@ -1276,13 +1276,16 @@ pub fn wrap_pty_options_sandbox_exec(
 
 pub fn box_root_arg(cmd: &str) -> Option<&'static str> {
     match basename(cmd) {
-        "claude" | "codex" => Some("--add-dir"),
+        "claude" => Some("--add-dir"),
         "gemini" => Some("--include-directories"),
         _ => None,
     }
 }
 
 /// Add agent-native working roots without duplicating an existing flag/value.
+/// Codex's `--add-dir` asks for extra writable roots and is ignored with a
+/// warning under read-only or managed permissions. Its mode belongs to Codex,
+/// so the outer fence supplies box access without adding that flag.
 pub fn add_box_root_args(opts: &mut PtyOptions, roots: &[PathBuf], own_dir: &Path) {
     if roots.len() <= 1 {
         return;
@@ -2098,7 +2101,7 @@ mod tests {
         add_box_root_args(&mut shell, &roots, Path::new("/p"));
         assert!(shell.args.is_empty());
         let mut one = opts("codex");
-        add_box_root_args(&mut one, &roots[..1], Path::new("/p"));
+        add_box_root_args(&mut one, &roots, Path::new("/p"));
         assert!(one.args.is_empty());
     }
 }

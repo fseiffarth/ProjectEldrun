@@ -65,9 +65,12 @@ the keyring
 and D-Bus sockets, the Docker socket, and other projects. The owning project is
 then mounted read-write. If it belongs to project boxes, every box folder and
 member root is added read-write; membership in several boxes produces the union.
-A `box:<id>` tab receives that box's roots directly. Claude/Codex also receive
+A `box:<id>` tab receives that box's roots directly. Claude also receives
 `--add-dir` and Gemini receives `--include-directories`, so their own working-dir
-checks agree with the OS boundary.
+checks agree with the OS boundary. Codex receives no automatic `--add-dir`:
+that flag requests extra writable roots, and Codex warns and ignores it when
+its own effective permissions are read-only or managed. Codex's permission
+mode remains its own; the outer fence still exposes the box roots.
 
 The fence is on by default globally. A project can inherit, force it off, or
 force it on; changing either setting affects a tab only when that tab respawns.
