@@ -178,7 +178,7 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith("add a clear button");
   });
 
-  it("pins the newest prompt over the top once its bubble scrolls away, and a tap returns to it", async () => {
+  it("pins the prompt the scroll position is reading the answer to, and a tap returns to it", async () => {
     localStorage.setItem("eldrun.mobile.view.claude-code", "focus");
     vi.stubGlobal("fetch", sidecarFetch(() => ({
       ...STORED,
@@ -186,31 +186,43 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     })));
     const scrollIntoView = vi.fn();
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scrollIntoView });
-    // The output's top edge sits at 100; the newest prompt either above it or in view.
-    let promptBottom = 180;
+    // The output's top edge sits at 100; each prompt bubble is 40 tall and
+    // placed by its top edge.
+    const tops: Record<string, number> = { "an older question": 110, "add a clear button": 300 };
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
       if (this.classList.contains("readable-output")) return new DOMRect(0, 100, 400, 600);
-      if (this.dataset.prompt === "add a clear button") return new DOMRect(0, promptBottom - 40, 300, 40);
-      return new DOMRect(0, 0, 300, 40);
+      const top = this.dataset.prompt === undefined ? undefined : tops[this.dataset.prompt];
+      return new DOMRect(0, top ?? 0, 300, 40);
     });
+    const label = "Your prompt for this answer — show it";
+    const pinnedText = () => screen.queryByRole("button", { name: label })?.querySelector(".readable-pinned-prompt-text")?.textContent ?? null;
     render(<Terminal tab={TAB} back={() => {}} />);
     await settle();
     const output = document.querySelector(".readable-output") as HTMLElement;
-    expect(screen.queryByRole("button", { name: "Your last prompt — show it" })).toBeNull();
+    // Both bubbles in view: nothing to pin.
+    expect(pinnedText()).toBeNull();
 
-    promptBottom = 60;
+    // Scrolled into the older answer, the newer prompt still below: the older
+    // prompt pins, not the newest.
+    tops["an older question"] = 20;
+    tops["add a clear button"] = 400;
     fireEvent.scroll(output);
-    const pinned = screen.getByRole("button", { name: "Your last prompt — show it" });
-    // The newest prompt, not the first one.
-    expect(pinned.querySelector(".readable-pinned-prompt-text")?.textContent).toBe("add a clear button");
-    fireEvent.click(pinned);
+    expect(pinnedText()).toBe("an older question");
+
+    // The newer bubble half off the top is still in view: nothing pins.
+    tops["add a clear button"] = 80;
+    fireEvent.scroll(output);
+    expect(pinnedText()).toBeNull();
+
+    // Scrolled past the newer bubble: it pins, and a tap returns to it.
+    tops["add a clear button"] = 20;
+    tops["an older question"] = -200;
+    fireEvent.scroll(output);
+    expect(pinnedText()).toBe("add a clear button");
+    fireEvent.click(screen.getByRole("button", { name: label }));
     expect(scrollIntoView).toHaveBeenCalledWith({ block: "start", behavior: "smooth" });
     const prompts = screen.getAllByRole("group", { name: "Your prompt" });
     expect(scrollIntoView.mock.contexts[0]).toBe(prompts[prompts.length - 1]);
-
-    promptBottom = 180;
-    fireEvent.scroll(output);
-    expect(screen.queryByRole("button", { name: "Your last prompt — show it" })).toBeNull();
   });
 
   it("falls back to the screen when the session is unavailable, and can be switched to it", async () => {

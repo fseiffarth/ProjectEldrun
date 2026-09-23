@@ -532,23 +532,30 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
     atBottomRef.current = value;
     setAtBottom(value);
   };
-  /** The reader's newest prompt while its bubble is scrolled off the top of
-   * Focus, pinned there so the answer below is read against the question
-   * that asked for it; empty while the bubble itself is in view. Read off
-   * the chat as drawn (`data-prompt`), so the stored session and the screen
-   * reading pin alike. */
+  /** The prompt the answer at the top of Focus belongs to — the last one
+   * that starts above the scroll position — while its bubble is scrolled off
+   * the top, pinned there so that answer is read against the question that
+   * asked for it; empty while the bubble itself is in view. Read off the chat
+   * as drawn (`data-prompt`), so the stored session and the screen reading
+   * pin alike. */
   const [pinnedPrompt, setPinnedPrompt] = useState("");
   const pinnedPromptEl = useRef<HTMLElement | null>(null);
   const checkPinnedPrompt = useCallback(() => {
     const stream = readableHost.current;
-    const prompts = stream?.querySelectorAll<HTMLElement>("[data-prompt]");
-    const last = prompts && prompts.length > 0 ? prompts[prompts.length - 1] : null;
-    // A bubble with no height is one not laid out (a hidden page), not one
-    // scrolled away.
-    const box = last?.getBoundingClientRect();
-    const above = !!stream && !!box && box.height > 0 && box.bottom <= stream.getBoundingClientRect().top;
-    pinnedPromptEl.current = above ? last : null;
-    setPinnedPrompt(above ? (last?.dataset.prompt ?? "").trim() : "");
+    const prompts = stream?.querySelectorAll<HTMLElement>("[data-prompt]") ?? [];
+    const top = stream?.getBoundingClientRect().top ?? 0;
+    let owner: HTMLElement | null = null;
+    for (let i = prompts.length - 1; i >= 0; i--) {
+      const box = prompts[i].getBoundingClientRect();
+      // A bubble with no height is one not laid out (a hidden page), not one
+      // scrolled away.
+      if (box.height > 0 && box.top < top) {
+        owner = box.bottom <= top ? prompts[i] : null;
+        break;
+      }
+    }
+    pinnedPromptEl.current = owner;
+    setPinnedPrompt((owner?.dataset.prompt ?? "").trim());
   }, []);
   /** Whether Terminal view is panned to the newest rows. Kept from the box's
    * own scroll events rather than measured when it is wanted: a resize is the
