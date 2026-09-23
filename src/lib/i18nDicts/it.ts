@@ -21,6 +21,8 @@ export const dict: Dict = {
   "scheduleMcp.dismiss": "Scarta",
   "scheduleMcp.lineage": "Dopo l’invio {id}",
   "scheduleMcp.removeProposals": "Rimuovi anche le proposte non approvate di questa sessione",
+  "scheduleMcp.confirmApplyTitle": "Applicare le programmazioni degli agenti senza approvazione?",
+  "scheduleMcp.confirmApplyBody": "In «{project}», un prompt singolo che un agente programma per sé stesso verrà eseguito senza la tua approvazione. I prompt ricorrenti attendono ancora l'approvazione.",
   "mcpSecurity.scheduler": "Agente di programmazione",
   "mobile.outbox.countOne": "1 file nella posta in uscita del progetto",
   "mobile.outbox.actions": "Azioni per il file {name}",

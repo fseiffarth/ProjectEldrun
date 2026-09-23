@@ -193,7 +193,11 @@ async fn handle(State(state): State<ServerState>, request: Request) -> Response 
             security::audit_reason(&session, &tool, "denied", started.elapsed(), Some("policy_disabled"));
             return StatusCode::FORBIDDEN.into_response();
         }
-        let reset = if message["method"] == "tools/call" && message["params"]["name"] == "schedule_prompt"
+        // Arguments and the hourly budget are checked *before* the usage
+        // probe: a malformed or over-budget `after_usage_reset` call is refused
+        // without spawning the agent CLI, so the probe cannot be run unbounded.
+        let admission = crate::services::schedule_mcp::admit(&session, &message);
+        let reset = if admission.is_ok() && message["method"] == "tools/call" && message["params"]["name"] == "schedule_prompt"
             && message["params"]["arguments"]["when"]["type"] == "after_usage_reset" {
             let agent = session.identity.schedule_target.as_ref().map(|b| b.agent.clone()).unwrap_or_default();
             let report = tokio::time::timeout(Duration::from_secs(8), crate::commands::agents::agent_usage(agent, Some(false))).await.ok();
@@ -201,7 +205,7 @@ async fn handle(State(state): State<ServerState>, request: Request) -> Response 
         } else { None };
         let outcome = tokio::task::spawn_blocking(move || {
             let (_global, _own) = (global, own);
-            crate::services::schedule_mcp::handle_message(&session, &message, reset)
+            crate::services::schedule_mcp::handle_admitted(&session, &message, reset, admission)
         }).await;
         let Ok((reply, changed)) = outcome else { return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
         let failed = reply.as_ref().is_some_and(|r| r.get("error").is_some() || r["result"]["isError"] == true);

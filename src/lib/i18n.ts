@@ -3802,6 +3802,8 @@ export const en = {
   "scheduleMcp.dismiss": "Dismiss",
   "scheduleMcp.lineage": "Following delivery {id}",
   "scheduleMcp.removeProposals": "Also remove this session's unapproved proposals",
+  "scheduleMcp.confirmApplyTitle": "Apply agent schedules without approval?",
+  "scheduleMcp.confirmApplyBody": "In \"{project}\", a one-time prompt an agent schedules for itself will fire without your approval. Recurring prompts still wait for approval.",
   "mcpSecurity.scheduler": "Schedule agent",
   "settings.rootMcpHelp": "Root-console agents (Ctrl+Shift+R) wearing the Models & agents menu's MCP chip get Eldrun's own tools: your projects, calendar and to-do board. Off hands new agents nothing and refuses the ones already running, without a restart. No project's agents ever get them.",
   "settings.rootMcpLocalOnly": "Only local models get these tools",

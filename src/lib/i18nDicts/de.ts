@@ -21,6 +21,8 @@ export const dict: Dict = {
   "scheduleMcp.dismiss": "Verwerfen",
   "scheduleMcp.lineage": "Nach Zustellung {id}",
   "scheduleMcp.removeProposals": "Auch die nicht freigegebenen Vorschläge dieser Sitzung entfernen",
+  "scheduleMcp.confirmApplyTitle": "Agenten-Zeitpläne ohne Freigabe übernehmen?",
+  "scheduleMcp.confirmApplyBody": "In „{project}“ wird ein einmaliger Prompt, den ein Agent für sich selbst plant, ohne deine Freigabe ausgelöst. Wiederkehrende Prompts warten weiterhin auf Freigabe.",
   "mcpSecurity.scheduler": "Zeitplan-Agent",
   "mobile.outbox.countOne": "1 Datei im Projektausgang",
   "mobile.outbox.actions": "Dateiaktionen für {name}",

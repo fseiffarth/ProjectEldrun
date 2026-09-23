@@ -39,6 +39,7 @@ import { useRemoteMachinesStore, type DroppedGlobalMachine } from "../../stores/
 import { Dropdown } from "../common/Dropdown";
 import { PasswordInput } from "../common/PasswordInput";
 import { FolderPickerDialog } from "../common/FolderPickerDialog";
+import { useDialogs } from "../common/PromptDialogs";
 import { RemoteConnMenu } from "../header/RemoteConnMenu";
 import { VmSettingsDialog } from "./VmSettingsDialog";
 import { categoryColor, primaryCategoryColor, projectCategories } from "../../lib/theme/categoryColor";
@@ -1488,6 +1489,7 @@ export function ProjectPill({
   const setProjectRemoteControl = useProjectsStore((s) => s.setProjectRemoteControl);
   const setProjectAgentFence = useProjectsStore((s) => s.setProjectAgentFence);
   const setProjectScheduleMcp = useProjectsStore((s) => s.setProjectScheduleMcp);
+  const { confirmAction, dialogs: pillDialogs } = useDialogs();
   const [agentFenceStatus, setAgentFenceStatus] = useState<AgentFenceStatus | null>(null);
   useEffect(() => {
     if (!contextMenu) return;
@@ -1974,6 +1976,7 @@ export function ProjectPill({
     <>
       {/* Hover popup — hidden while context menu is open (which calls hover.close). */}
       {!contextMenu && !fastMode && <ProjectHoverCard project={project} state={hover} />}
+      {pillDialogs}
 
       {/* Right-click context menu */}
       {contextMenu && createPortal(
@@ -2371,7 +2374,22 @@ export function ProjectPill({
                 setContextMenu(null);
                 const levels = ["off", "propose", "apply"] as const;
                 const current = levels.indexOf(project.schedule_mcp ?? "propose");
-                void setProjectScheduleMcp(project.id, levels[(current + 1) % levels.length]);
+                const next = levels[(current + 1) % levels.length];
+                // Widening into `apply` lets an agent's one-time prompt fire
+                // with no approval at all: that step asks first. Off → propose
+                // widens nothing the user has not yet seen, so it stays a click.
+                void (async () => {
+                  if (next === "apply") {
+                    const ok = await confirmAction({
+                      title: t("scheduleMcp.confirmApplyTitle"),
+                      body: t("scheduleMcp.confirmApplyBody", { project: project.name }),
+                      confirmLabel: t("scheduleMcp.apply"),
+                      danger: true,
+                    });
+                    if (!ok) return;
+                  }
+                  await setProjectScheduleMcp(project.id, next);
+                })();
               }}
               title={t("scheduleMcp.menuTitle")}
             >
