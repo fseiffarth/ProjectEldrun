@@ -48,6 +48,7 @@ import {
 } from "./perfStats";
 import { UntestedTag } from "../components/common/UntestedTag";
 import "./devPerf.css";
+import { TimerIcon } from "../components/common/icons/Icon";
 
 const RATE_WINDOW_MS = 60_000;
 const STALL_WINDOW_MS = 60_000;
@@ -180,7 +181,7 @@ export function DevPerfHost() {
         title="Perf monitor (Ctrl+Alt+P)"
         onClick={() => setOpen(true)}
       >
-        ⏱
+        <TimerIcon />
       </button>,
       layer,
     );
@@ -219,16 +220,16 @@ export function DevPerfHost() {
                 setFabHidden(false);
                 writeFabHidden(false);
               }}
-              title="Put the ⏱ button back in the corner"
+              title="Put the timer button back in the corner"
             >
-              Show ⏱
+              Show <TimerIcon />
             </button>
           ) : (
             <button
               onClick={hideEntirely}
-              title="Hide the panel and the ⏱ button — Ctrl+Alt+P brings it back"
+              title="Hide the panel and the timer button — Ctrl+Alt+P brings it back"
             >
-              Hide ⏱
+              Hide <TimerIcon />
             </button>
           )}
           <button
@@ -236,7 +237,7 @@ export function DevPerfHost() {
             title={
               fabHidden
                 ? "Close (Ctrl+Alt+P reopens)"
-                : "Close to the ⏱ button (Ctrl+Alt+P)"
+                : "Close to the timer button (Ctrl+Alt+P)"
             }
           >
             ✕

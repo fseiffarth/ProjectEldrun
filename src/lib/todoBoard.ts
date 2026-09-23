@@ -1028,7 +1028,7 @@ export function taskFromMail(
   const sender = from && address && from !== address ? `${from} <${address}>` : from || address;
   return convertedCard(conv, {
     title: header.subject || fallbackTitle,
-    notes: sender ? `✉ ${sender}` : "✉",
+    notes: sender ?? "",
     priority: header.priority === "urgent" ? 1 : 5,
     due: null,
     mail: {

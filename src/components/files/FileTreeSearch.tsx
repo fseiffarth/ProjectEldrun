@@ -36,6 +36,7 @@ import {
 import { openFileEntry } from "./openFileEntry";
 import { FileIcon } from "../common/icons/FileIcon";
 import { useT } from "../../lib/i18n";
+import { ArrowUpRightIcon } from "../common/icons/Icon";
 
 /** The `.ext` (lowercased, dot-included) of a path's basename, matching the
  *  shape `FileIcon` and `FileEntry.extension` use; "" when there is none. */
@@ -267,7 +268,7 @@ export function FileTreeSearch({
                   openEntry(e.path, false);
                 }}
               >
-                ↗
+                <ArrowUpRightIcon />
               </button>
             )}
           </div>

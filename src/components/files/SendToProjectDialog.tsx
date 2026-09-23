@@ -6,7 +6,7 @@ import { resolveProjectDirectory, resolveLocalMirror, type ProjectEntry } from "
 import { type FileEntry } from "../../lib/viewers/fileUtils";
 import { loadLastSendTarget, saveLastSendTarget } from "../../lib/projects/sendToProject";
 import { useT } from "../../lib/i18n";
-import { FolderIcon, GlobeIcon } from "../common/icons/Icon";
+import { ArrowLeftIcon, ArrowUpIcon, FolderIcon, GlobeIcon } from "../common/icons/Icon";
 
 /** The item being sent — always a LOCAL absolute path (the dialog is only opened
  *  for local file-tree rows, so `import_external_file` can read it as an ordinary
@@ -209,7 +209,7 @@ export function SendToProjectDialog({ source, fromProjectId, onClose }: Props) {
                 onClick={() => setPhase("project")}
                 title={t("sendToProject.changeProject")}
               >
-                ⬅ {t("common.back")}
+                <ArrowLeftIcon /> {t("common.back")}
               </button>
               <button
                 type="button"
@@ -217,7 +217,7 @@ export function SendToProjectDialog({ source, fromProjectId, onClose }: Props) {
                 onClick={() => loadFolder(selected, parentRel(rel))}
                 title={t("folderPicker.upOneFolder")}
               >
-                ⬆ {t("folderPicker.up")}
+                <ArrowUpIcon /> {t("folderPicker.up")}
               </button>
               <span className="folder-picker-cur" title={`${selected.name}/${rel}`}>
                 {selected.name} / {relLabel}

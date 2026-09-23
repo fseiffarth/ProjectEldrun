@@ -123,7 +123,7 @@ import { slideStopIndex } from "../../../lib/viewers/deck/present";
 import { posterPng } from "./gifPlayback";
 import { useT } from "../../../lib/i18n";
 import { useUnsavedWork } from "../../../lib/window/unsavedWork";
-import { PlayIcon } from "../../common/icons/Icon";
+import { ArrowUpRightIcon, PlayIcon } from "../../common/icons/Icon";
 
 /** Bounds for the rail's user-resizable width (px). Wide enough at the max that
  *  a thumbnail is actually legible, narrow enough at the min to stay a rail. */
@@ -1666,7 +1666,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
                 : t("deckView.savedState")}
         </span>
         <button className="file-viewer-zoom-btn" onClick={onOpenExternally} title={t("deckView.openExternallyTitle")}>
-          ↗
+          <ArrowUpRightIcon />
         </button>
       </div>
 
@@ -1738,7 +1738,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
               )}
               {s.after && (
                 <span className="deck-rail-gif" title={t("deckView.gifPlaysTitle")}>
-                  ▶
+                  <PlayIcon />
                 </span>
               )}
               {/* Reorder and copy are both durable — reorder moves this slide in the

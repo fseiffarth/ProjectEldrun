@@ -65,7 +65,7 @@ import { setVpnAutoConnect, vpnUsernameFor } from "../../lib/remote/vpn/vpnAutoC
 import type { StoredVpnConfig } from "../../types";
 import { MobileSettings } from "../mobile/MobileSettings";
 import { UpdatesPanel } from "./UpdatesPanel";
-import { BugIcon, PlayIcon } from "../common/icons/Icon";
+import { BugIcon, PlayIcon, WarningIcon } from "../common/icons/Icon";
 import {
   SETTINGS_ANCHORS,
   SettingRow,
@@ -323,12 +323,12 @@ function ShortcutsSettings({ onBack, onClose }: SubPanelProps) {
         </div>
         {fixed && (
           <div className="shortcut-conflict">
-            ⚠ {t("shortcuts.fixedConflict", { chord: chordLabel(effective) })}
+            <WarningIcon /> {t("shortcuts.fixedConflict", { chord: chordLabel(effective) })}
           </div>
         )}
         {clash && (
           <div className="shortcut-conflict">
-            ⚠ {t("shortcuts.conflict", { actions: clash.map(labelOf).join(", ") })}
+            <WarningIcon /> {t("shortcuts.conflict", { actions: clash.map(labelOf).join(", ") })}
           </div>
         )}
       </div>
@@ -644,7 +644,7 @@ function ArchivedProjectsPanel({ onBack, onClose }: SubPanelProps) {
                   <div className="archived-project-confirm-group">
                     {unsynced && unsynced.total > 0 && (
                       <p className="archived-project-warn">
-                        ⚠ {unsynced.verified
+                        <WarningIcon /> {unsynced.verified
                           ? t(unsynced.total === 1 ? "archive.unsyncedVerifiedOne" : "archive.unsyncedVerifiedMany", {
                               count: unsynced.total,
                               branches: unsynced.branches.map((b) => b.name).join(", "),

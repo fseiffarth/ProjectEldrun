@@ -49,7 +49,7 @@ import { useBoxesStore } from "../../stores/boxes";
 import { boxColor } from "../../lib/theme/boxColor";
 import { bindDragRelease, dragPlatform } from "../../lib/window/dragPlatform";
 import { useT } from "../../lib/i18n";
-import { PauseIcon } from "../common/icons/Icon";
+import { CheckboxIcon, PauseIcon, SquareIcon } from "../common/icons/Icon";
 import {
   agentFenceInstallCommand,
   agentFenceLabelKey,
@@ -2133,7 +2133,7 @@ export function ProjectPill({
                   title={t(member ? "pill.leaveBoxTitle" : "pill.joinBoxTitle", { name: b.name })}
                 >
                   <span className="context-menu-checkmark" aria-hidden>
-                    {member ? "☑" : "☐"}
+                    {member ? <CheckboxIcon /> : <SquareIcon />}
                   </span>
                   <span
                     className="context-menu-box-swatch"

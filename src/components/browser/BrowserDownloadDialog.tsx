@@ -3,6 +3,7 @@ import { formatDownloadSize, stripControls } from "../../lib/browser";
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
 import type { DownloadRequest } from "../../types/browser";
+import { WarningIcon } from "../common/icons/Icon";
 
 /**
  * The download consent dialog.
@@ -71,7 +72,7 @@ export function BrowserDownloadDialog({
           {request.sniff_mismatch && (
             /* Persistent, not a dismissible toast: a name that lies about the
                bytes is the single strongest signal a download is hostile. */
-            <div className="browser-warning-strip">{t("browser.downloadMismatch")}</div>
+            <div className="browser-warning-strip"><WarningIcon /> {t("browser.downloadMismatch")}</div>
           )}
 
           <p className="browser-download-note">{t("browser.downloadNote")}</p>

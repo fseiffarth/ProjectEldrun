@@ -14,6 +14,7 @@ import { ScopeSetStatusBars } from "./PillStatusBars";
 import { MenuShortcut } from "../common/MenuShortcut";
 import { UntestedTag } from "../common/UntestedTag";
 import { BoxColorPicker } from "./BoxColorPicker";
+import { CheckboxIcon, SquareIcon } from "../common/icons/Icon";
 
 /** This chip's entry in the shared header hover-menu id (stores/headerHoverMenu). */
 const SCOPE_MENU_ID = "box-scope-chip";
@@ -448,7 +449,7 @@ export function BoxScopeChip({
                   })}
                   onClick={() => void useBoxesStore.getState().setBoxPillHidden(b.id, !b.hide_pill)}
                 >
-                  {b.hide_pill ? "☐" : "☑"}
+                  {b.hide_pill ? <SquareIcon /> : <CheckboxIcon />}
                 </button>
                 <button
                   // A drop target in its own right while a pill drag is in
@@ -554,7 +555,7 @@ export function BoxScopeChip({
                   })}
                 >
                   <span className="context-menu-checkmark" aria-hidden>
-                    {row.member ? "☑" : "☐"}
+                    {row.member ? <CheckboxIcon /> : <SquareIcon />}
                   </span>
                   {row.name}
                 </button>

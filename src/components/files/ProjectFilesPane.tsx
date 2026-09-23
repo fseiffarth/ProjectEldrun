@@ -24,7 +24,7 @@ import type { ProjectBox, ProjectEntry } from "../../types";
 import type { SortKey } from "../../lib/viewers/fileUtils";
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
-import { FolderIcon } from "../common/icons/Icon";
+import { FolderIcon, GearIcon } from "../common/icons/Icon";
 
 /**
  * THE project file view — the tree, the remote sync row and the Downloads
@@ -405,7 +405,7 @@ function BoxRootSection({
               onClick={() => setShowSettings(true)}
               title={t("projectFilesView.projectSettingsTitle")}
             >
-              ⚙
+              <GearIcon />
             </button>
           )}
           <UntestedTag id="projectFilesPane.1" />

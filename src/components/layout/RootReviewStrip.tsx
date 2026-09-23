@@ -5,6 +5,7 @@ import { UntestedTag } from "../common/UntestedTag";
 import { useMailStore } from "../../stores/mail";
 import { inspectIcs } from "../../lib/calendar/icsSafety";
 import { IcsReportBody } from "../calendar/IcsImportReviewDialog";
+import { UndoIcon } from "../common/icons/Icon";
 
 /** Strip bidi overrides, zero-width controls and default-ignorable text. Keep
  * normal line breaks; rendering is always React text, never HTML/Markdown. */
@@ -223,7 +224,7 @@ export function RootReviewStrip({ advisory = false, domain }: { advisory?: boole
               </>}
               {proposal.status === "applied" && proposal.undo && <button className="root-review-btn undo" disabled={busy}
                 title={t("rootReview.undo")} aria-label={t("rootReview.undo")}
-                onClick={() => void decide(proposal, "undo")}>↩</button>}
+                onClick={() => void decide(proposal, "undo")}><UndoIcon /></button>}
             </div>
           </article>;
         })}

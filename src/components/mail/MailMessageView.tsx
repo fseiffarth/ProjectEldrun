@@ -43,6 +43,7 @@ import type {
   MailLink,
   MailPreviewBlob,
 } from "../../types/mail";
+import { UndoIcon } from "../common/icons/Icon";
 
 /**
  * The message pane: headers, the sandboxed body, the links panel, the remote
@@ -284,7 +285,7 @@ function MailRepliesPanel({ header }: { header: MailHeader }) {
   return (
     <div className="mail-auth mail-replies">
       <div className="mail-auth-head">
-        <span className="mail-meta-label">↩ {t("mail.replies", { count: replies.length })}</span>
+        <span className="mail-meta-label"><UndoIcon /> {t("mail.replies", { count: replies.length })}</span>
         <UntestedTag id="mailMessageView.4" />
       </div>
       <div className="mail-links-rows">

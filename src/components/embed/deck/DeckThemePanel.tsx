@@ -30,6 +30,7 @@ import { defaultFooter } from "../../../lib/viewers/deck/model";
 import { ColorField } from "./DeckInspector";
 import { FontField } from "./FontField";
 import { useT, type TranslationKey } from "../../../lib/i18n";
+import { ArrowLeftIcon, ArrowRightIcon, ArrowsHorizontalIcon } from "../../common/icons/Icon";
 
 export const ALIGN_KEYS: Record<TextAlign, TranslationKey> = {
   left: "deckThemePanel.alignLeft",
@@ -116,7 +117,7 @@ export function DeckThemePanel({
             onClick={() => setText({ align: a })}
             title={t("deckThemePanel.alignDefaultTitle", { align: t(ALIGN_KEYS[a]) })}
           >
-            {a === "left" ? "⬅" : a === "center" ? "↔" : "➡"}
+            {a === "left" ? <ArrowLeftIcon /> : a === "center" ? <ArrowsHorizontalIcon /> : <ArrowRightIcon />}
           </button>
         ))}
         <label className="deck-field deck-field-narrow">
@@ -243,7 +244,7 @@ export function DeckThemePanel({
                 onClick={() => setFooter({ align: a })}
                 title={t("deckThemePanel.footerAlignTitle", { align: t(ALIGN_KEYS[a]) })}
               >
-                {a === "left" ? "⬅" : a === "center" ? "↔" : "➡"}
+                {a === "left" ? <ArrowLeftIcon /> : a === "center" ? <ArrowsHorizontalIcon /> : <ArrowRightIcon />}
               </button>
             ))}
             <label className="deck-field deck-field-narrow">

@@ -20,6 +20,7 @@ import {
   type ChangeBlock,
   type Decision,
 } from "../../lib/viewers/linediff";
+import { ArrowLeftIcon, ArrowRightIcon, UndoIcon } from "../common/icons/Icon";
 
 /** Mirrors the Rust `GitCommit` (serde default snake→camel via serde? no — the
  *  struct is plain, so fields arrive as declared: hash/short/subject/… ). */
@@ -204,7 +205,7 @@ function SideColumn({
                     }
                     onClick={() => enabled && onTake(b)}
                   >
-                    {label}
+                    {side === "left" ? <>{label} <ArrowRightIcon /></> : <><ArrowLeftIcon /> {label}</>}
                   </button>
                 );
               })}
@@ -615,7 +616,7 @@ export function CompareView({
                           if (enabled) toggle(b);
                         }}
                       >
-                        {dec === "accept" ? "✓" : "↩"} {i + 1}
+                        {dec === "accept" ? "✓" : <UndoIcon />} {i + 1}
                       </span>
                     );
                   })}

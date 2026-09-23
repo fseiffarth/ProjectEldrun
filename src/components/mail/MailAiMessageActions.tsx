@@ -74,7 +74,7 @@ export function MailAiMessageActions({ header }: { header: MailHeader }) {
 
   const senderLine = (() => {
     const s = formatAddress(header.from);
-    return s ? `✉ ${s}` : "✉";
+    return s;
   })();
 
   const showError = (err: unknown) => {

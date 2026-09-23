@@ -10,7 +10,7 @@ import { useDialogs } from "../common/PromptDialogs";
 import { useTabsStore } from "../../stores/tabs";
 import { useT, type TranslationKey } from "../../lib/i18n";
 import { GitMergeBar, GitPullPanel, type MergeState } from "./GitPullPanel";
-import { LockIcon, UnlockIcon } from "../common/icons/Icon";
+import { LockIcon, UnlockIcon, WarningIcon } from "../common/icons/Icon";
 
 interface GitCommit {
   hash: string;
@@ -1264,7 +1264,7 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
                   )}
                   {wt.is_prunable && (
                     <span className="git-worktree-flag" aria-label={t("gitHistory.prunable")}>
-                      ⚠
+                      <WarningIcon />
                     </span>
                   )}
                   {label}

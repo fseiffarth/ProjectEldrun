@@ -553,7 +553,7 @@ export function NetworkTrafficPane({ projectId, visible, onConnect }: Props) {
           <div className="network-heading">{t("network.heading")}</div>
           <div className="network-subheading">
             {view === "link"
-              ? `${link?.localEndpoint ?? t("network.localFallback")} ↔ ${link?.remoteEndpoint ?? host?.hostLabel ?? t("network.sshHostFallback")}`
+              ? `${link?.localEndpoint ?? t("network.localFallback")} ⇄ ${link?.remoteEndpoint ?? host?.hostLabel ?? t("network.sshHostFallback")}`
               : host?.hostLabel ?? t("network.localHost")}
           </div>
         </div>

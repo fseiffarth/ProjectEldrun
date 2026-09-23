@@ -16,6 +16,7 @@ import { MarkdownPromptField } from "../common/MarkdownPromptField";
 import { AgentScheduleDialog } from "./AgentScheduleDialog";
 import { AgentScheduleProposal } from "./AgentScheduleProposal";
 import { isPromptTargetTab } from "./PromptChartTab";
+import { ArrowUpRightIcon } from "../common/icons/Icon";
 
 interface Props { scope: string; active: boolean }
 const EMPTY_TABS: TabEntry[] = [];
@@ -267,7 +268,7 @@ export function AgentSchedulesView({ scope, active }: Props) {
             {open && <AgentTabComposer scope={scope} tab={tab} offered={prefaceCommandsFor(tab.cmd, settings?.agent_preface_commands)} models={agentModelsFor(tab.cmd, settings?.agent_models)} />}
           </div>
           <div className="agent-prompts-tab-actions">
-            <button className="agent-composer-chip" type="button" onClick={() => jumpToTab(scope, tab.key)}>↗ {t("agentPrompts.jump")}</button>
+            <button className="agent-composer-chip" type="button" onClick={() => jumpToTab(scope, tab.key)}><ArrowUpRightIcon /> {t("agentPrompts.jump")}</button>
             <button className={`agent-composer-chip${open ? " active" : ""}`} type="button" aria-pressed={open} onClick={() => setUnfolded((keys) => keys.includes(tab.key) ? keys.filter((key) => key !== tab.key) : [...keys, tab.key])}>{t("agentPrompts.composerToggle")}</button>
             <button className={`agent-composer-chip${tab.autoContinue ? " active" : ""}`} type="button" aria-pressed={!!tab.autoContinue} data-testid="agent-continue-toggle" onClick={() => { setAutoContinue(scope, tab.key, !tab.autoContinue); void persistScopeLayout(scope); }}>⟳ {t("agentContinue.toggle")}</button>
             {schedules.filter((s) => s.origin).map((schedule) => <div key={schedule.id}>

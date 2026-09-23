@@ -559,8 +559,9 @@ describe("box chip rendering (slice model)", () => {
     // Members first, then the rest.
     const rows = [...ctx.querySelectorAll("[data-member-id]")] as HTMLElement[];
     expect(rows.map((r) => r.getAttribute("data-member-id"))).toEqual(["p2", "p1"]);
-    expect(rows[0].textContent).toContain("☑");
-    expect(rows[1].textContent).toContain("☐");
+    // A ticked box draws two paths (frame + tick); an empty one just the frame.
+    expect(rows[0].querySelectorAll(".context-menu-checkmark svg path").length).toBe(1);
+    expect(rows[1].querySelectorAll(".context-menu-checkmark svg path").length).toBe(0);
 
     await act(async () => {
       fireEvent.click(rows[1]);

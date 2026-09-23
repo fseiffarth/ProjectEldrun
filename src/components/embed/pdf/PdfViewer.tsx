@@ -155,7 +155,7 @@ import {
 } from "../../../lib/viewers/tex/tex";
 import { useT, type TranslationKey } from "../../../lib/i18n";
 import { useUnsavedWork } from "../../../lib/window/unsavedWork";
-import { CommentIcon, PlayIcon, SearchIcon, TagIcon } from "../../common/icons/Icon";
+import { ArrowUpRightIcon, CommentIcon, PlayIcon, SearchIcon, TagIcon } from "../../common/icons/Icon";
 
 /** How often the open PDF re-checks its file's mtime for an on-disk change (a
  *  LaTeX recompile rewrites the very bytes this tab is showing). Mirrors the
@@ -4286,7 +4286,7 @@ function PdfCanvas({
             title={t("pdfViewer.openExternalTitle")}
             aria-label={t("pdfViewer.openExternalTitle")}
           >
-            ↗
+            <ArrowUpRightIcon />
           </button>
         )}
       </div>

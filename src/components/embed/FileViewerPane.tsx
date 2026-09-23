@@ -267,7 +267,7 @@ import { isBibPath } from "../../lib/viewers/tex/bib";
 import { hasCards } from "../../lib/viewers/yamlGrid";
 import { useI18nStore, useT, type TranslationKey } from "../../lib/i18n";
 import { defaultSpellLanguage, dictionaryLabel } from "../../lib/spellDictionaries";
-import { BoltIcon, BugIcon, CommentIcon, LinkIcon, PlayIcon, UploadIcon } from "../common/icons/Icon";
+import { ArrowUpRightIcon, BoltIcon, BugIcon, CommentIcon, GearIcon, LinkIcon, PlayIcon, UploadIcon, WarningIcon } from "../common/icons/Icon";
 
 // The five heavyweight leaf viewers are code-split (§5.1 startup size): a
 // static import here would parse pdfjs-dist + pdf-lib + fontkit (PdfView,
@@ -1175,7 +1175,7 @@ export function ViewerHeader({
         title={t("pdfViewer.openExternalTitle")}
         aria-label={t("pdfViewer.openExternalTitle")}
       >
-        ↗
+        <ArrowUpRightIcon />
       </button>
     </div>
   );
@@ -9908,7 +9908,7 @@ function TexView({
           aria-pressed={showOptions}
           title={t("fileViewer.compilerOptionsTitle")}
         >
-          {t("fileViewer.optionsBtn")}
+          {t("fileViewer.optionsBtn")} <GearIcon />
         </button>
         <button
           className={`file-viewer-tex-preview-toggle${hoverPref.on ? " active" : ""}`}
@@ -9936,7 +9936,7 @@ function TexView({
             onClick={() => openPdf(pdfPath)}
             title={t("fileViewer.openCompiledPdfTitle")}
           >
-            {t("fileViewer.openPdfBtn")}
+            {t("fileViewer.openPdfBtn")} <ArrowUpRightIcon />
           </button>
         )}
         <button
@@ -10040,7 +10040,7 @@ function TexView({
       )}
       {shellEscape && (
         <div className="file-viewer-tex-shell-warning" role="alert">
-          {t("fileViewer.shellEscapeWarnPre")}<code>\write18</code>{t("fileViewer.shellEscapeWarnMid")}{" "}
+          <WarningIcon /> {t("fileViewer.shellEscapeWarnPre")}<code>\write18</code>{t("fileViewer.shellEscapeWarnMid")}{" "}
           <code>texmf.cnf</code> {t("fileViewer.shellEscapeWarnOr")} <code>latexmkrc</code>{" "}
           {t("fileViewer.shellEscapeWarnPost")} <code>.tex</code> {t("fileViewer.shellEscapeWarnEnd")}
         </div>
@@ -10049,7 +10049,7 @@ function TexView({
       {compileError && (
         <div className="file-viewer-tex-error-card" role="alert">
           <div className="file-viewer-tex-error-head">
-            <span className="file-viewer-tex-error-icon" aria-hidden="true">⚠</span>
+            <span className="file-viewer-tex-error-icon" aria-hidden="true"><WarningIcon /></span>
             <span className="file-viewer-tex-error-title">
               {t("fileViewer.compileErrorTitle")}
             </span>

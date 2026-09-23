@@ -283,7 +283,7 @@ export const UNTESTED = {
   "mobile.rootAccess": { area: "mobile", what: "MobileSettings · Root console on the phone (switch, review gate, pending count on the phone's row)" },
   "mobile.outbox.gallery": { area: "mobile", what: "OutboxGallery · Files the agent sent to the phone, Save on every tile" },
   "mobile.project.newTab": { area: "mobile", what: "NewTabSheet · The header's ＋ opens a shell or an agent" },
-  "mobile.project.outbox": { area: "mobile", what: "Project · Shelf under the tab cards for the files the desktop sent (eldrun-send), with the header's 🖼 and the shelf's button on the whole gallery" },
+  "mobile.project.outbox": { area: "mobile", what: "Project · Shelf under the tab cards for the files the desktop sent (eldrun-send), with the header's picture button and the shelf's button on the whole gallery" },
   "mobile.project.reorder": { area: "mobile", what: "Project · Drag to reorder the desktop's tabs" },
   "mobile.project.modelTap": { area: "mobile", what: "Project · Tap a tab card's model to open the session with its model picker up" },
   "inbox.menuTitle": { area: "mobile", what: "InboxIndicator · Sent from your phone (global inbox)" },

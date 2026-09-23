@@ -13,6 +13,7 @@ import {
 } from "../../lib/todoBoard";
 import { useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
+import { CheckboxIcon } from "../common/icons/Icon";
 
 /** The clock half of the rail. Nothing in the store changes when 15:00 passes. */
 const TICK_MS = 60_000;
@@ -100,7 +101,7 @@ export function TodoAgendaRail({ tasks, defaultCalendarId, intakeColumnId }: Pro
           // it does. Opening it from here would need the board's focus request,
           // which the rail has no business raising over its own overlay.
           <span className="todo-agenda-carded" title={t("todoAgenda.alreadyCard")} aria-hidden>
-            ☑
+            <CheckboxIcon />
           </span>
         ) : (
           <button

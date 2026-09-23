@@ -12,6 +12,7 @@ import {
 import { useExperimental } from "../../lib/experimental";
 import { selectUrgentMail, taskFromMail } from "../../lib/todoBoard";
 import { useT } from "../../lib/i18n";
+import { MailIcon } from "../common/icons/Icon";
 
 interface Props {
   tasks: CalendarTask[];
@@ -155,7 +156,7 @@ export function TodoMailRail({ tasks, defaultCalendarId, intakeColumnId }: Props
                   onClick={() => void openInMail(header)}
                   title={t("todoMail.open")}
                 >
-                  ✉
+                  <MailIcon />
                 </button>
               </span>
             </li>

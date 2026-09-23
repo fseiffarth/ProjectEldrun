@@ -23,7 +23,7 @@ import { useListReorder } from "../../hooks/useListReorder";
 import { resolveRemarkAbsPath } from "../../lib/projects/projectRemarks";
 import { jumpToSource } from "../embed/FileViewerPane";
 import { basename } from "../../lib/paths";
-import { ClockIcon, PinIcon } from "../common/icons/Icon";
+import { ClockIcon, MailIcon, PinIcon } from "../common/icons/Icon";
 
 interface Props {
   task: CalendarTask;
@@ -471,7 +471,7 @@ export function TodoCard({ task, columns, onPointerDown, onEdit, onOpenMail }: P
               title={task.mail.subject || t("todoCard.openMail")}
               aria-label={t("todoCard.openMail")}
             >
-              ✉
+              <MailIcon />
             </button>
           )}
           {task.file && (

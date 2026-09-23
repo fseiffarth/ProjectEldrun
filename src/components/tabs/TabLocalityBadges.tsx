@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import {
   effectiveTabLocation,
   remoteHostIdOf,
@@ -14,6 +14,7 @@ import { useRunHostPrefStore } from "../../stores/remote/runHostPref";
 import { UntestedTag } from "../common/UntestedTag";
 import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import { useT } from "../../lib/i18n";
+import { CloudIcon, HomeIcon } from "../common/icons/Icon";
 
 /**
  * The two per-tab local/remote badges + the locality menu, factored out so the
@@ -66,7 +67,7 @@ export function TabSourceBadge({ tabKey }: { tabKey: string }) {
           ctl.set(onRemote ? "local" : "remote");
         }}
       >
-        {onRemote ? "☁" : "⌂"}
+        {onRemote ? <CloudIcon /> : <HomeIcon />}
       </button>
     );
   }
@@ -80,7 +81,7 @@ export function TabSourceBadge({ tabKey }: { tabKey: string }) {
           : t("tabLocality.localMirrorTitle")
       }
     >
-      {src === "remote" ? "☁" : "⌂"}
+      {src === "remote" ? <CloudIcon /> : <HomeIcon />}
     </span>
   );
 }
@@ -171,7 +172,7 @@ export function TabLocalityBadge({
         onOpen((e.currentTarget as HTMLElement).getBoundingClientRect(), hostId !== null);
       }}
     >
-      {hostId === null ? "⌂" : "☁"}
+      {hostId === null ? <HomeIcon /> : <CloudIcon />}
     </button>
   );
 }
@@ -208,7 +209,7 @@ export function LocalityMenu({
   };
   const machineItem = (
     loc: TabLocation,
-    glyph: string,
+    glyph: ReactNode,
     text: string,
     opts?: { disabled?: boolean; note?: string; title?: string },
   ) => (
@@ -235,13 +236,13 @@ export function LocalityMenu({
     >
         {menu.view === "root" ? (
           <>
-            {machineItem("local", "⌂", t("tabLocality.localMirrorItem"))}
+            {machineItem("local", <HomeIcon />, t("tabLocality.localMirrorItem"))}
             <button
               className="tab-new-menu-item"
               onClick={() => onChangeView("machines")}
             >
               <span className="tab-new-menu-dot tab-new-menu-dot--accent">
-                {onRemoteNow ? "●" : "☁"}
+                {onRemoteNow ? "●" : <CloudIcon />}
               </span>
               {t("tabLocality.remoteEllipsis")}
               <span className="tab-menu-hint">{t("tabLocality.chooseMachineHint")}</span>
@@ -259,13 +260,13 @@ export function LocalityMenu({
             </button>
             {machineItem(
               "remote",
-              "☁",
+              <CloudIcon />,
               primaryHost ? t("tabLocality.primaryWithHost", { host: primaryHost }) : t("tabLocality.primary"),
             )}
             {(computeHosts ?? []).map((h) =>
               machineItem(
                 `host:${h.id}`,
-                "☁",
+                <CloudIcon />,
                 h.label || h.host || h.id,
                 workerRunnable(h)
                   ? undefined
@@ -328,7 +329,7 @@ export function RunHostPicker({
           });
         }}
       >
-        <span aria-hidden="true">{onRemote ? "☁" : "⌂"}</span>
+        <span aria-hidden="true">{onRemote ? <CloudIcon /> : <HomeIcon />}</span>
         <span className="run-host-label">{t("tabLocality.runLabel", { label })}</span>
       </button>
       {menu && (

@@ -14,6 +14,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useFileScope, writeFileBytes } from "./fileAccess";
 import { useT } from "../../lib/i18n";
 import "./ImageAnnotator.css";
+import { ArrowUpRightIcon, PencilIcon } from "../common/icons/Icon";
 
 type Tool = "pen" | "rect" | "arrow" | "text";
 
@@ -358,7 +359,7 @@ export function ImageAnnotator({
                       : t("imageAnnotator.toolText")
               }
             >
-              {tl === "pen" ? "✏︎" : tl === "rect" ? "▢" : tl === "arrow" ? "↗" : "T"}
+              {tl === "pen" ? <PencilIcon /> : tl === "rect" ? "▢" : tl === "arrow" ? <ArrowUpRightIcon /> : "T"}
             </button>
           ))}
         </div>
