@@ -2283,6 +2283,29 @@ button:has(> .menu-shortcut) {
   background: var(--control-bg);
 }
 
+/* The box pill's menu is a `.context-menu`, whose `.context-menu button` rule
+   (display:block; width:100%; min-height; padding) outranks the bare
+   `.tab-color-swatch`, so inside it every chip grew into a full-width row and
+   the palette ran ten rows tall. Put the chip's own box back, and drop the
+   menu scheme's hover underline, which is for full-width rows. */
+.context-menu .tab-color-swatch {
+  display: inline-block;
+  width: 18px;
+  min-height: 0;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--border-color);
+}
+.context-menu .tab-color-swatch:hover {
+  border-color: var(--text-primary);
+}
+.context-menu .tab-color-swatch.is-current {
+  border-color: var(--text-primary);
+}
+.context-menu .tab-color-swatch::after {
+  content: none;
+}
+
 .tab-new-menu-hint {
   padding: 4px 10px;
   font-size: 11px;
