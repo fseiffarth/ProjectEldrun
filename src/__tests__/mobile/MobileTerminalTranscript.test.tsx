@@ -178,6 +178,41 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith("add a clear button");
   });
 
+  it("pins the newest prompt over the top once its bubble scrolls away, and a tap returns to it", async () => {
+    localStorage.setItem("eldrun.mobile.view.claude-code", "focus");
+    vi.stubGlobal("fetch", sidecarFetch(() => ({
+      ...STORED,
+      entries: [{ kind: "prompt", text: "an older question", at: "2026-09-15T05:40:00.000Z" }, { kind: "answer", text: "An older answer." }, ...STORED.entries],
+    })));
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scrollIntoView });
+    // The output's top edge sits at 100; the newest prompt either above it or in view.
+    let promptBottom = 180;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.classList.contains("readable-output")) return new DOMRect(0, 100, 400, 600);
+      if (this.dataset.prompt === "add a clear button") return new DOMRect(0, promptBottom - 40, 300, 40);
+      return new DOMRect(0, 0, 300, 40);
+    });
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+    const output = document.querySelector(".readable-output") as HTMLElement;
+    expect(screen.queryByRole("button", { name: "Your last prompt — show it" })).toBeNull();
+
+    promptBottom = 60;
+    fireEvent.scroll(output);
+    const pinned = screen.getByRole("button", { name: "Your last prompt — show it" });
+    // The newest prompt, not the first one.
+    expect(pinned.querySelector(".readable-pinned-prompt-text")?.textContent).toBe("add a clear button");
+    fireEvent.click(pinned);
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "start", behavior: "smooth" });
+    const prompts = screen.getAllByRole("group", { name: "Your prompt" });
+    expect(scrollIntoView.mock.contexts[0]).toBe(prompts[prompts.length - 1]);
+
+    promptBottom = 180;
+    fireEvent.scroll(output);
+    expect(screen.queryByRole("button", { name: "Your last prompt — show it" })).toBeNull();
+  });
+
   it("falls back to the screen when the session is unavailable, and can be switched to it", async () => {
     localStorage.setItem("eldrun.mobile.view.claude-code", "focus");
     let stored: unknown = { available: false, reason: "no_session", entries: [], truncated: false };

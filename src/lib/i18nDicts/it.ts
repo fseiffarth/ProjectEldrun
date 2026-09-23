@@ -99,6 +99,7 @@ export const dict: Dict = {
   "mobile.focus.statusLine": "Riga di stato",
   "mobile.focus.statusLineHide": "Nascondi la riga di stato",
   "mobile.focus.statusLineEmpty": "Nessuna riga di stato sullo schermo",
+  "mobile.focus.lastPrompt": "Il tuo ultimo prompt — mostralo",
   "mobile.focus.modeFixed": "OpenCode fissa il suo agente all'avvio della sessione: dal telefono non si cambia. Avvia la scheda con `opencode --mini --agent plan` per l'altro.",
   "mobile.focus.openCodeMini": "OpenCode ha una modalità leggibile: avvia la scheda con `opencode --mini` e Focus potrà mostrare questa sessione come una chat.",
   "mobile.transcript.earlier": "Mostra i turni precedenti",

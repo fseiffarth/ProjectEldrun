@@ -290,6 +290,7 @@ export const UNTESTED = {
   "mobile.focus.readAloud": { area: "mobile", what: "Terminal · Reader auto-read toggle" },
   "mobile.focus.session": { area: "mobile", what: "Terminal · Reader session card" },
   "mobile.focus.statusLine": { area: "mobile", what: "Terminal · Reader status-line strip" },
+  "mobile.focus.pinnedPrompt": { area: "mobile", what: "Terminal · Reader pins the newest prompt at the top once its bubble scrolls away; tap scrolls back to it" },
   "mobile.focus.workingFacts": { area: "mobile", what: "Terminal · Reader elapsed time and tokens while the agent works" },
   "mobile.model.effort": { area: "mobile", what: "Terminal · Antigravity effort step in the model sheet" },
   "mobile.home.reorder": { area: "mobile", what: "Home · Drag to reorder the project list" },

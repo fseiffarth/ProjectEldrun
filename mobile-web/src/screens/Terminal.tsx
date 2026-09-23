@@ -307,7 +307,7 @@ const ReadableTurns = memo(function ReadableTurns({ lines, chat, agent, promptLa
     const command = turn.role === "user" ? slashCommand(readableText(shown)) : null;
     if (command) return <Fragment key={turn.key}><CommandDivider command={command} label={promptLabel} press={press} /></Fragment>;
     return turn.role === "user"
-      ? <div key={turn.key} className="readable-turn user" role="group" aria-label={promptLabel} {...press}>{rows}</div>
+      ? <div key={turn.key} className="readable-turn user" role="group" aria-label={promptLabel} data-prompt={readableText(shown)} {...press}>{rows}</div>
       : <div key={turn.key} className={turn.answer ? "readable-turn agent answer" : "readable-turn agent"} {...press}>{rows}</div>;
   })}{menu}</>;
 });
@@ -324,7 +324,7 @@ function CommandDivider({ command, label, press }: {
 }) {
   const inline = commandArgsInline(command.args);
   return <>
-    <div className="readable-command" role="separator" aria-label={label} {...press}>
+    <div className="readable-command" role="separator" aria-label={label} data-prompt={command.args ? `${command.name} ${command.args}` : command.name} {...press}>
       <span className="readable-command-text">{inline && command.args ? `${command.name} ${command.args}` : command.name}</span>
     </div>
     {!inline && <div className="readable-turn user command-args" role="group" aria-label={label} {...press}>
@@ -358,7 +358,7 @@ const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promp
     {turn.command
       ? <CommandDivider command={turn.command} label={promptLabel} press={hold(turn.key, () => turn.text)} />
       : turn.kind === "prompt"
-      ? <div className="readable-turn user" role="group" aria-label={promptLabel} {...hold(turn.key, () => turn.text)}>
+      ? <div className="readable-turn user" role="group" aria-label={promptLabel} data-prompt={turn.text} {...hold(turn.key, () => turn.text)}>
           <p className="transcript-text">{turn.text}</p>
           {turn.cut && <small className="transcript-cut">{cutLabel}</small>}
         </div>
@@ -531,6 +531,24 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
     atBottomRef.current = value;
     setAtBottom(value);
   };
+  /** The reader's newest prompt while its bubble is scrolled off the top of
+   * Focus, pinned there so the answer below is read against the question
+   * that asked for it; empty while the bubble itself is in view. Read off
+   * the chat as drawn (`data-prompt`), so the stored session and the screen
+   * reading pin alike. */
+  const [pinnedPrompt, setPinnedPrompt] = useState("");
+  const pinnedPromptEl = useRef<HTMLElement | null>(null);
+  const checkPinnedPrompt = useCallback(() => {
+    const stream = readableHost.current;
+    const prompts = stream?.querySelectorAll<HTMLElement>("[data-prompt]");
+    const last = prompts && prompts.length > 0 ? prompts[prompts.length - 1] : null;
+    // A bubble with no height is one not laid out (a hidden page), not one
+    // scrolled away.
+    const box = last?.getBoundingClientRect();
+    const above = !!stream && !!box && box.height > 0 && box.bottom <= stream.getBoundingClientRect().top;
+    pinnedPromptEl.current = above ? last : null;
+    setPinnedPrompt(above ? (last?.dataset.prompt ?? "").trim() : "");
+  }, []);
   /** Whether Terminal view is panned to the newest rows. Kept from the box's
    * own scroll events rather than measured when it is wanted: a resize is the
    * moment the answer is needed and the moment it is already gone, because
@@ -2132,6 +2150,8 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
       setCopied(false);
     }
   };
+  // New turns push the prompt up as surely as a scroll does.
+  useLayoutEffect(checkPinnedPrompt, [checkPinnedPrompt, view, sessionShown, sessionEntries, screenStream]);
   const jumpToLatest = () => {
     const stream = readableHost.current;
     if (!stream) return;
@@ -2333,6 +2353,7 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
           onScroll={(event) => {
             const stream = event.currentTarget;
             followReadable(stream.scrollHeight - stream.scrollTop - stream.clientHeight < 120);
+            checkPinnedPrompt();
           }}>
           {sessionShown
             ? (transcript && sessionEntries.length === 0 && !liveQuestion && !sessionBusy
@@ -2383,6 +2404,11 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
                   </>}
               </div>}
         </section>
+        {pinnedPrompt && <button className="readable-pinned-prompt" aria-label={t("mobile.focus.lastPrompt")}
+          onClick={() => pinnedPromptEl.current?.scrollIntoView({ block: "start", behavior: "smooth" })}>
+          <span className="readable-pinned-prompt-text">{pinnedPrompt}</span>
+          {isUntested("mobile.focus.pinnedPrompt") && <em>{t("mobile.focus.untested")}</em>}
+        </button>}
         {statusStrip && statusSwipe && <div className="focus-statusline" role="status" aria-label={t("mobile.focus.statusLine")}>
           <div className="focus-statusline-head"><strong>{t("mobile.focus.statusLine")} {isUntested("mobile.focus.statusLine") && <small>{t("mobile.focus.untested")}</small>}</strong><button onClick={() => setStatusStrip(false)} aria-label={t("mobile.focus.statusLineHide")}>✕</button></div>
           {frameStatus.length
