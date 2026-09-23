@@ -147,13 +147,13 @@ const TRANSCRIPT_STEP = 120;
 const AGENT_KEY_GAP = 80;
 const AGENT_SUBMIT_GAP = 200;
 
-/** Codex starts a fresh conversation with `/new`; the other supported
- * scrollback agents use `/clear`. The composer must send the command its own
- * CLI understands, rather than assuming Claude Code's spelling everywhere. */
+/** What the new-conversation button types. Every supported scrollback agent
+ * reads `/clear` as "start a new chat" — Codex too, since it grew the command.
+ * Codex's own `/new` is no longer a one-keystroke act: from 0.156 it opens a
+ * "Where should the new conversation run?" picker, which the button's single
+ * Enter leaves waiting on the desktop (2026-09-23). */
+const NEW_CONVERSATION_COMMAND = "/clear";
 const CODEX_AGENT = /codex/iu;
-function newConversationCommand(agentLabel: string): string {
-  return CODEX_AGENT.test(agentLabel) ? "/new" : "/clear";
-}
 
 /** Session lines the phone keeps. Matches the desktop sidecar's replay depth
  * (`pty_bridge::MOBILE_SCROLLBACK_LINES`) and the tmux `history-limit` Eldrun
@@ -1587,7 +1587,7 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
   /** The field's new-conversation button sends the selected CLI's command at
    * once — no confirm dialog. The draft is left alone. */
   const clearConversation = () => {
-    if (sendAgentText(newConversationCommand(agentLabel))) setPending([]);
+    if (sendAgentText(NEW_CONVERSATION_COMMAND)) setPending([]);
   };
   /** The composer's `/` menu: the commands that continue the draft, the
    * reader's own first. Picking one only fills the field — the reader still

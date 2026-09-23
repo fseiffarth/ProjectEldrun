@@ -77,10 +77,11 @@ describe("Eldrun Mobile slash commands — which CLI", () => {
     expect(slashCli("  ")).toBe("agent");
   });
 
-  it("offers each CLI only its own spelling — Codex starts over with /new, Claude Code with /clear", () => {
-    expect(slashCatalog("codex").map((entry) => entry.command)).toContain("/new");
-    expect(slashCatalog("codex").map((entry) => entry.command)).not.toContain("/clear");
+  it("offers each CLI only its own commands — Codex's /new is not Claude Code's", () => {
+    // Codex's /new asks where the new conversation runs; /clear just starts it.
+    expect(slashCatalog("codex").map((entry) => entry.command).slice(0, 2)).toEqual(["/clear", "/new"]);
     expect(slashCatalog("claude").map((entry) => entry.command)).toContain("/clear");
+    expect(slashCatalog("claude").map((entry) => entry.command)).not.toContain("/new");
     expect(slashCatalog("gemini").map((entry) => entry.command)).toContain("/compress");
     expect(slashCatalog("goose")).toEqual([]);
   });

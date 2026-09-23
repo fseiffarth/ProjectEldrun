@@ -102,7 +102,8 @@ const CATALOG: Record<string, CatalogEntry[]> = {
     { command: "/help", description: "List the commands" },
   ],
   codex: [
-    { command: "/new", description: "Start a new conversation" },
+    { command: "/clear", description: "Start a new conversation" },
+    { command: "/new", description: "New conversation, in a checkout or worktree" },
     { command: "/compact", description: "Summarize the conversation to free context" },
     { command: "/model", description: "Choose the model and reasoning effort" },
     { command: "/approvals", description: "What runs without asking" },

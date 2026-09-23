@@ -238,7 +238,7 @@ describe("Eldrun Mobile — a multi-step /model picker", () => {
     expect(FakeWebSocket.sent).toEqual([UP, UP, "\r"]);
   });
 
-  it("sends /new from Codex's empty field button at once, without a confirm dialog", async () => {
+  it("sends /clear from Codex's empty field button at once, without a confirm dialog", async () => {
     const confirm = vi.fn(() => false);
     vi.stubGlobal("confirm", confirm);
     render(<Terminal tab={{ id: "tab", label: "Codex", kind: "agent", available: true, viewer_busy: false }} back={() => {}} />);
@@ -252,6 +252,6 @@ describe("Eldrun Mobile — a multi-step /model picker", () => {
     fireEvent.click(screen.getByRole("button", { name: "Start a new conversation" }));
     await settle(300);
     expect(confirm).not.toHaveBeenCalled();
-    expect(FakeWebSocket.sent.join("")).toContain("/new");
+    expect(FakeWebSocket.sent.join("")).toContain("/clear");
   });
 });
