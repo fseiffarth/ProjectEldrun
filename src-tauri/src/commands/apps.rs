@@ -98,7 +98,20 @@ pub struct WindowRegistry {
     /// popout; read just after switch-back re-shows it, to restore its monitor.
     pub detached_bounds: HashMap<String, DetachedBounds>,
     /// Wayland popouts parked without unmapping their compositor-owned surfaces.
+    /// Only the fallback now: a popout holding unsaved work (or one that never
+    /// answered the retire request) is minimized instead of closed.
     pub detached_parking: crate::services::window_state::DetachedParking,
+    /// Wayland retire bookkeeping (close on scope-out, respawn on scope-in).
+    pub detached_retire: crate::services::window_state::DetachedRetire,
+    /// Labels a `detach_subwindow` call is building right now. Reserved under
+    /// this lock before `build()`, so a second call for the same label returns
+    /// instead of racing the build — and a failed build releases only its own
+    /// reservation, never a live window's entry.
+    pub detached_building: std::collections::HashSet<String>,
+    /// The tab scope the main window shows, as last told by
+    /// `sync_detached_scope` (`None` until the first scope change). A popout
+    /// built for another scope retires as soon as its build completes.
+    pub detached_active_scope: Option<String>,
 }
 
 pub type WindowRegistryState = Arc<Mutex<WindowRegistry>>;

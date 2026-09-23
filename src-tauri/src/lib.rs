@@ -1847,6 +1847,8 @@ pub fn run() {
             commands::subwindow::snap_detached_window,
             commands::subwindow::sync_detached_scope,
             commands::subwindow::detached_window_is_parked,
+            commands::subwindow::detached_retire_ack,
+            commands::subwindow::detached_retire_ready,
             // The deck presenter's audience window (M#90)
             commands::presenter::open_presenter_window,
             commands::presenter::close_presenter_window,
@@ -2081,7 +2083,9 @@ pub fn run() {
                     // number while it is still on screen.
                     if _app.get_webview_window(label).is_none() {
                         let reg = _app.state::<WindowRegistryState>();
-                        let wid = commands::subwindow::release_detached_entry(
+                        // A Wayland scope-out retire is an intended close whose
+                        // record stays for the respawn: released, not reported.
+                        let (wid, report) = commands::subwindow::on_detached_destroyed(
                             &mut reg.lock().unwrap(),
                             label,
                         );
@@ -2098,10 +2102,12 @@ pub fn run() {
                         // were stranded in a `detached: true` record with no
                         // window, no dock-back path, their PTYs running hidden,
                         // and the failure repeated at every launch.
-                        let _ = _app.emit(
-                            "detached-window-destroyed",
-                            serde_json::json!({ "label": label }),
-                        );
+                        if report {
+                            let _ = _app.emit(
+                                "detached-window-destroyed",
+                                serde_json::json!({ "label": label }),
+                            );
+                        }
                     }
                 }
             }

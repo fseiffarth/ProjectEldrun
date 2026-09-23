@@ -380,6 +380,39 @@ describe("Group B — two heaps, one protocol", () => {
     expect(main.tabs.orderedTabKeys(main.tabs.useTabsStore.getState().layout)).toContain(b.key);
   });
 
+  it("a popout a Wayland scope-out retired comes back from its kept record", async () => {
+    const { main, b, groupId, label } = await setup();
+    const store = main.tabs.useTabsStore;
+    const detachCalls = () => shared.calls.filter((c) => c.cmd === "detach_subwindow");
+
+    // Leaving the scope: the backend closes the window as a planned retire,
+    // which it does NOT report as a death — so nothing docks back.
+    store.getState().setScope("q");
+    shared.live.delete(label);
+    await waitFor(() =>
+      expect(shared.calls.some((c) => c.cmd === "sync_detached_scope")).toBe(true),
+    );
+    expect(store.getState().detachedGroupsByScope["p"]).toHaveLength(1);
+    expect(detachCalls()).toHaveLength(0);
+
+    // Returning asks for it again, under the same label …
+    store.getState().setScope("p");
+    await waitFor(() => expect(detachCalls()).toHaveLength(1));
+    expect(detachCalls()[0].args).toMatchObject({ projectId: "p", groupId });
+
+    // … and the rebuilt window is seeded from the record the retire kept.
+    const view = await mountFakePopout(main, bus, { scope: "p", groupId, label });
+    teardown.push(view.dispose);
+    await view.requestSeed();
+    expect(main.tabs.orderedTabKeys(view.subtree)).toEqual([b.key]);
+
+    // A real crash after that still docks the tabs back (#224).
+    shared.live.delete(label);
+    await bus.emit("detached-window-destroyed", { label });
+    expect(store.getState().detachedGroupsByScope["p"]).toHaveLength(0);
+    expect(main.tabs.orderedTabKeys(store.getState().layout)).toContain(b.key);
+  });
+
   it("a detach whose window fails to open leaves the group in the layout", async () => {
     const main = await loadHeap();
     resetTabs(main, "p");

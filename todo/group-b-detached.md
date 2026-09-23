@@ -951,6 +951,46 @@ writes are now forwarded rather than dropped.
        - [ ] ✅ Works on macOS
        - [ ] ❌ Doesn't work on macOS
 
+264. **[Bug] Switching between two projects that each have a popout showed a
+     third, empty popout on GNOME/Wayland** (2026-09-23). Wayland parking was
+     `minimize()` + a flag GTK can never reconcile there; when the compositor
+     put the other project's popout back on screen, its renderer (told it was
+     parked) blanked every pane. The sync also ran twice per switch, unordered
+     (`setScope` and `project_runtime::switch`'s worker thread). Fix: `setScope`
+     is the one sync authority; on native Wayland a left scope's popouts are
+     CLOSED (after they flush autosave and report no unsaved work — dirty or
+     silent ones fall back to minimize, and then keep rendering), their records
+     kept, and `respawnDetachedForScope` rebuilds them on return at their saved
+     size (the compositor picks the position). X11/Windows/macOS keep hide/show.
+     `detach_subwindow` now reserves its label atomically and waits out a
+     same-label retire (fast A→B→A). A popout that never announced it can
+     answer (`detached_retire_ready` — still loading, or a renderer from before
+     this protocol) holds no work and is closed without asking.
+     Trade-off (Wayland only): a respawned popout is a fresh renderer, so its
+     popout-local view state is gone — scroll position, PDF page, search,
+     selection, undo — and GNOME chooses where it opens; only its size comes back.
+     - [x] 🤖 Automated test — `subwindow.rs` / `window_state.rs` unit tests
+       (sync planner, retire tokens, `Destroyed` disposition, reservation),
+       `DetachedScopeVisibility.test.ts`, `DetachedRetire.test.ts`,
+       `DetachedTwoHeap.test.ts` (retire keeps the record; crash still docks).
+     - [ ] 🖐️ Manual test — open two projects, each with a popout (drag a tab
+       out). Switch back and forth several times, slowly and then fast: at no
+       point is there a blank/empty popout; only the active project's popout is
+       on screen, and on return it reopens with its tabs (terminals keep their
+       scrollback) at the size it had. With autosave off, type into a file in a
+       popout and switch away: the popout is minimized, not closed, and the edit
+       is still there on return. X11: put a popout on the second monitor,
+       switch to another project and back — it returns on the same monitor at
+       the same position and size.
+       - [ ] ✅ Works on Linux (X11)
+       - [ ] ❌ Doesn't work on Linux (X11)
+       - [ ] ✅ Works on Linux (Wayland)
+       - [ ] ❌ Doesn't work on Linux (Wayland)
+       - [ ] ✅ Works on Windows
+       - [ ] ❌ Doesn't work on Windows
+       - [ ] ✅ Works on macOS
+       - [ ] ❌ Doesn't work on macOS
+
 ---
 
 **Verified sound by the same audit** (so nobody re-audits it): seed handshake

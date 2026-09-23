@@ -154,6 +154,7 @@ import {
   type CaretPhrase,
 } from "../../../lib/viewers/tex/tex";
 import { useT, type TranslationKey } from "../../../lib/i18n";
+import { useUnsavedWork } from "../../../lib/window/unsavedWork";
 import { CommentIcon, PlayIcon, SearchIcon, TagIcon } from "../../common/icons/Icon";
 
 /** How often the open PDF re-checks its file's mtime for an on-disk change (a
@@ -1854,6 +1855,7 @@ function PdfCanvas({
   // the LIVE dirty flag to decide whether an on-disk change may auto-reload.
   const dirtyRef = useRef(false);
   dirtyRef.current = dirty;
+  useUnsavedWork(dirty);
 
   // ── Presenting this PDF fullscreen (`present.ts`) ────────────────────────
   //

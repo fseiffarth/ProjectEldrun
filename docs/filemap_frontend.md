@@ -23,6 +23,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `src/crashReporter.ts` | Captures/forwards WebKitGTK renderer crashes to the backend. |
 | `src/lib/window/rendererWatchdog.ts` | Renderer memory watchdog: reloads a window whose webview renderer passes 4 GB. Per window (AppShell + DetachedApp); own renderer pid is probed, not asked; 10-min reload cooldown. Tests: `RendererWatchdog.test.ts`. |
 | `src/lib/window/dropClaim.ts` | Cross-window tab drops without desktop coordinates (native Wayland): the source broadcasts `DETACHED_DROP_PROBE` at release, the window that receives the pointer next answers `DETACHED_DROP_CLAIM` with the pane under it; main hosts popout-sourced probes in `CenterPanel`, `TabBar` consumes claims for its own. No claim → the tab stays. Tests: `DropClaim.test.ts`, `DetachedDropClaimHost.test.tsx`. |
+| `src/lib/window/unsavedWork.ts` | Per-heap registry of unsaved editor work; a popout answers the Wayland retire request (`detached-retire-request-<label>`) by flushing autosave and reporting clean/dirty. Tests: `DetachedRetire.test.ts`. |
 | `src/lib/window/strayFullscreen.ts` | Clears a stray OS fullscreen (it silently makes a popout unmovable). `isFullscreen()` can't be trusted, so it clears unconditionally; judgement in pure `mayClearStrayFullscreen`. |
 | `src/types/index.ts` | Shared TypeScript types. |
 
@@ -211,7 +212,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | File | Purpose |
 |------|---------|
 | `projects.ts` | Project list, active project, CRUD, `setActive`. Also owns scope restore: `restoreProjectScope` (one project's saved tabs into its own scope, no switch) and `restoreActiveProjectScopes` (every **active** pill at launch — active means its terminals were never stopped, so they resume without waiting for a click). |
-| `tabs.ts` | Tab/subwindow layout tree per scope; tab persistence policy. |
+| `tabs.ts` | Tab/subwindow layout tree per scope; tab persistence policy. `setScope` syncs popouts, then `respawnDetachedForScope` rebuilds the scope's (Wayland retire). |
 | `boxes.ts` | Project boxes: N:M membership (`boxMembership`/`useBoxMembership`; `addToBox`/`removeFromBox`/`boxProjects` — no silent dissolve), the persisted `box:<id>` scope's restore + seed (`restoreBoxScope`), and the box-scope helpers (`boxFolderOfScope`, `boxMembersOfScope`). |
 | `settings.ts` | App settings (theme, default agent, git profile, shortcuts, etc.). |
 | `ollamaAutoload.ts` | Loads chosen Ollama models at start (`settings.ollama_autoload_models`). Suppressed by Energy Saver. |

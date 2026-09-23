@@ -1447,6 +1447,13 @@ interface TabsStore {
   // Never invokes the backend: the window is already gone, and the two
   // dock paths' `attach_subwindow` is idempotent anyway.
   recoverDetachedGroup: (scope: string, groupId: string) => void;
+  // #42: ask the backend for every popout of `scope` — called by `setScope`
+  // right after the scope sync. A live popout makes each call a no-op (X11,
+  // Windows, macOS park by hiding, so theirs always are); native Wayland closes
+  // an inactive scope's popouts and keeps their records, so this is where they
+  // come back, at their saved size. A failed rebuild docks the record back
+  // (`recoverDetachedGroup`), as a failed detach always has.
+  respawnDetachedForScope: (scope: string) => void;
   // #42: WM-close of a popout closes its tabs for good instead of docking them
   // back: kills each tab's PTY (the popout's panes are NOT mounted in the main
   // window and the detached viewer is attach-only, so nothing else tears them
@@ -2289,8 +2296,17 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     // so this is the one call that covers all of them. Never from a popout's own
     // heap (`getDetachedWindowContext`): its store mirrors ONE group and its idea
     // of "the scope" must not drive which windows the main window shows.
+    //
+    // Then the incoming scope's popouts are asked for (after the sync, so a
+    // Wayland retire of the same label is already known to the backend, which
+    // waits it out) — unless the scope moved on meanwhile: its own setScope
+    // asks for its own.
     if (prev !== scope && !getDetachedWindowContext()) {
-      void invoke("sync_detached_scope", { scope }).catch(() => {});
+      void invoke("sync_detached_scope", { scope })
+        .catch(() => {})
+        .then(() => {
+          if (get().scope === scope) get().respawnDetachedForScope(scope);
+        });
     }
     set((s) => {
       const tabs = s.tabsByScope[scope] ?? [];
@@ -4308,6 +4324,23 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       get().attachGroup(groupId, { skipBackend: true });
     } else {
       get().dropDetachedGroup(scope, groupId, { skipBackend: true });
+    }
+  },
+
+  respawnDetachedForScope: (scope) => {
+    if (getDetachedWindowContext()) return;
+    for (const entry of get().detachedGroupsByScope[scope] ?? []) {
+      const b = entry.bounds;
+      invoke("detach_subwindow", {
+        projectId: scope,
+        groupId: entry.id,
+        x: b?.x ?? null,
+        y: b?.y ?? null,
+        width: b?.w ?? null,
+        height: b?.h ?? null,
+      }).catch(() => {
+        get().recoverDetachedGroup(scope, entry.id);
+      });
     }
   },
 

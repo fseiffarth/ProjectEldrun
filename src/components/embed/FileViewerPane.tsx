@@ -1,5 +1,6 @@
 import { PreviewImages } from "./previewImages";
 import { DraftSaver } from "./draftSaver";
+import { registerUnsavedWork } from "../../lib/window/unsavedWork";
 import { lineStarts, indexedLine } from "./lineIndex";
 import { Suspense, createContext, lazy, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -1461,8 +1462,14 @@ export function useEditableFile(path: string, enabled = true) {
     saver.onStatus = (busy, error) => {
       if (active) { setSaving(busy); setSaveError(error); }
     };
+    // A popout closed by a Wayland scope-out asks this before it goes.
+    const unregister = registerUnsavedWork({
+      dirty: () => saver.dirty,
+      flush: () => saver.flushIfAutosave(),
+    });
     return () => {
       active = false;
+      unregister();
       saver.dispose();
     };
   }, [saver, path, scope]);
