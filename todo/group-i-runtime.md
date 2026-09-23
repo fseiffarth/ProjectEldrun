@@ -58,5 +58,19 @@ but backend-owned.*
       `GLIBC_TUNABLES=glibc.malloc.perturb=165:glibc.malloc.tcache_count=0`
       (use-after-free shows at the use) or `WEBKIT_DISABLE_COMPOSITING_MODE=1`
       for a session to bisect Mesa out.
+      - Sixth, 2026-09-23 17:05 (1a36cae, not retained — retention began with
+        e3d4ad9): `smallbin double linked list corrupted` in `realloc` under a
+        WebKit→Rust IPC callback, while an agent tab was preparing a commit
+        (the 13:53 and 2026-09-22 16:33 crashes also sat minutes before a
+        commit's freeze; the freezes started *after* the crashes, and
+        `install` leaves the running inode alone, so the rebuild itself is
+        not the writer). On 2026-09-18 Orca crashed one second before Eldrun.
+        No crash ever left a core: the session's soft core limit is 0, and
+        apport drops a process whose exe path was replaced ("executable was
+        modified after program start"). Now the launcher raises the limit and
+        `package-dev.sh` no longer installs over a running window (the next
+        launch adopts), so the next crash's core lands in
+        `/var/lib/apport/coredump/` — inspect the corrupted chunk with gdb
+        against `dev-builds/eldrun-<commit>`.
 
 ---

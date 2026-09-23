@@ -152,5 +152,14 @@ fi
 # Same reason as start-eldrun-tauri-hotreload.sh: keep the CSS-themed scrollbar.
 export GTK_OVERLAY_SCROLLING=0
 
+# Let a crash leave a core. The desktop session starts us with a soft core
+# limit of 0, so apport (the kernel's core_pattern here) wrote nothing for any
+# of the main-process heap-corruption aborts of 2026-09-17..23; a backtrace of
+# those names only the victim, while the core holds the overwritten chunk.
+# Apport ignores unpackaged binaries but still writes the core, to
+# /var/lib/apport/coredump/ (newest 5 per user), as long as this path is not
+# replaced under the window — package-dev.sh holds its install back for that.
+ulimit -S -c unlimited 2>/dev/null || true
+
 cd "$HOME"
 exec "$BINARY"
