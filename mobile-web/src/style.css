@@ -40,39 +40,36 @@ nav button,.keys button { flex:1; }
 .activity-sort.in-header { flex:0 1 auto; min-width:0; margin:0; }
 .activity-sort.in-header select { flex:0 1 auto; max-width:11rem; }
 @media (max-width:420px) { .activity-sort.in-header > span { display:none; } }
-/* The project screen's header runs on two rows: the chevron and the name on the
-   first, the gallery, the sort and ＋ on the second, so the name keeps the width. */
-.project-header { flex-wrap:wrap; row-gap:6px; }
+/* Keep the project name readable above the controls on narrow phones. */
+.project-header { flex-wrap:wrap; row-gap:10px; }
 .project-header-tools { flex:1 0 100%; display:flex; align-items:center; gap:10px; min-width:0; }
 .project-header-tools .activity-sort.in-header { flex:1 1 auto; }
 .project-header-tools .activity-sort.in-header > span { display:inline; }
 .project-header-tools .activity-sort.in-header select { flex:1 1 auto; max-width:none; }
 .project-header-tools .new-tab { margin-left:auto; }
-/* It stays put while the cards scroll under it: a project holds more cards
-   than a phone shows, and ＋, the sort and the gallery were gone after the
-   first two. The screen's top padding moves into the bar, so the status-bar
-   inset is painted over rather than showing cards through it. The row is one
-   40px line — the pill, the select and ＋ at the same height — and the title
-   row is only as tall as a thumb needs, which is most of the band that sat
-   empty above the name. */
-.project-screen { padding-top:0; }
-.project-header { position:sticky; top:0; z-index:5; margin:0 -18px 12px; padding:max(6px,env(safe-area-inset-top)) 18px 10px; background:#000; box-shadow:0 1px 0 #1c1f2b; }
-.project-header > .back { min-height:44px; margin-left:-12px; padding:0 8px 0 12px; }
-.project-header > .terminal-title { min-height:44px; align-content:center; }
-.project-header-tools > * { height:40px; }
-.project-header-tools .terminal-gallery { padding:0 12px; }
-.project-header-tools .activity-sort.in-header select { height:40px; padding-block:0; }
-.project-header-tools .new-tab { display:grid; place-items:center; width:44px; padding:0; }
+/* The sticky bar and cards share a softer surface, while the controls remain
+   visible as the tab list scrolls. */
+.project-screen { padding-top:0; background:radial-gradient(ellipse 85% 300px at 50% 0, #1c2034 0, #0e111b 72%, #0e111b 100%); }
+.project-header { position:sticky; top:0; z-index:5; margin:0 -18px 16px; padding:max(8px,env(safe-area-inset-top)) 18px 14px; border-bottom:1px solid #2b3040; background:rgba(15,18,29,.96); box-shadow:0 8px 24px rgba(0,0,0,.16); }
+.project-header > .back { display:grid; place-items:center; width:44px; height:44px; margin-left:-8px; padding:0; border-radius:12px; background:#222637; color:#d9dcf0; font-size:1.7rem; }
+.project-header > .terminal-title { min-width:0; flex:1; min-height:44px; align-content:center; }
+.project-header h1 { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:1.3rem; letter-spacing:-.025em; }
+.project-header-tools > * { height:42px; }
+.project-header-tools .terminal-gallery { padding:0 12px; border-color:#3d435a; background:#242a3c; }
+.project-header-tools .activity-sort.in-header { gap:8px; margin:0; }
+.project-header-tools .activity-sort.in-header select { height:42px; padding-block:0; border-color:#3d435a; border-radius:12px; background-color:#242838; }
+.project-header-tools .new-tab { display:grid; place-items:center; width:44px; padding:0; border-radius:12px; box-shadow:0 4px 14px rgba(108,92,231,.25); font-size:1.5rem; }
+@media (max-width:390px) { .project-header-tools .activity-sort.in-header > span { display:none; } }
 .cards { display:grid; gap:10px; }
+.project-screen .cards { gap:12px; }
 .card { width:100%; text-align:left; justify-content:space-between; padding:16px; background:rgba(28,31,43,.92); }
 .card span:first-child { display:grid; gap:4px; }
 .card-trailing { flex:0 0 auto; gap:10px; }
-/* An agent tab reads as one block: the card opens the session (its name
-   renames it), and under it a foot says what is scheduled and carries the
-   controls that need no session — the scheduled prompts, and close. It is the desktop Agents view's
-   tab row, stacked for a 360px phone: a bare ◷ in the row's gutter never said
-   that scheduling had moved out here. */
+/* Project rows also use this shell for their reorder grip. The layered card
+   treatment below belongs to the project screen's agent tab overview only. */
 .tab-card { position:relative; display:grid; border:1px solid #383c4d; border-radius:11px; background:rgba(28,31,43,.92); }
+.project-screen .tab-card { overflow:hidden; border-color:#363c50; border-radius:18px; background:linear-gradient(155deg, #222637, #1a1d2b 76%); box-shadow:0 8px 24px rgba(0,0,0,.15); }
+.project-screen .tab-card:focus-within { border-color:#8578ed; }
 .tab-card .card { border:0; background:transparent; }
 /* #264 — a tab the user has coloured. The desktop spends the tab's bottom rule
    on the colour; a card has no such edge, so it spends its left border, which
@@ -99,38 +96,35 @@ nav button,.keys button { flex:1; }
    keeps it once it has started. */
 .tab-card-head { display:flex; align-items:stretch; min-width:0; }
 .tab-card-head .card { flex:1 1 auto; min-width:0; }
+.project-screen .tab-card-head { min-height:64px; }
+.project-screen .tab-card-head .card { padding:16px 4px 12px; }
 /* The colour chooser: a small dot in the card's upper-left corner. The button
    is wider than the dot so a thumb can hit it, and the card's own left padding
    closes up so the label does not drift right. */
-.tab-card-dot { position:relative; z-index:1; flex:0 0 auto; align-self:flex-start; width:34px; padding:21px 0 12px 8px; border:0; border-radius:11px 0 0 0; background:transparent; line-height:0; }
-.tab-card-dot span { display:block; width:11px; height:11px; margin:0 auto; border:1px solid #6f7488; border-radius:50%; }
+.tab-card-dot { position:relative; z-index:1; flex:0 0 auto; align-self:flex-start; display:grid; place-items:center; width:44px; height:60px; padding:0; border:0; border-radius:18px 0 0 0; background:transparent; line-height:0; }
+.tab-card-dot span { display:block; width:14px; height:14px; border:2px solid #747c97; border-radius:50%; }
 .tab-card.has-tab-color .tab-card-dot span { border-color:var(--tab-color); background:var(--tab-color); }
-.tab-card-head .tab-card-dot + .card { padding-left:6px; }
+.tab-card-head .tab-card-dot + .card { padding-left:2px; }
 /* The opener is stretched over the whole card — head, prompts and foot — so
    the mark that says so can sit on the foot's right end rather than beside the
    ✕. Everything that is its own control (the dot, the name, ✕, the grip, ◷)
    lifts itself above it; the rest of the card is the opener's. */
 .tab-card-main { position:relative; }
 .tab-card-main.unavailable > span { opacity:.45; }
-.tab-card-open { position:absolute; inset:0; padding:0; border:0; border-radius:11px; background:transparent; }
+.tab-card-open { position:absolute; inset:0; padding:0; border:0; border-radius:18px; background:transparent; }
 .tab-card-open:disabled { opacity:1; }
 .tab-card-name { position:relative; z-index:1; justify-self:start; min-width:0; margin:-4px -6px; padding:4px 6px; border:0; border-radius:6px; background:transparent; text-align:left; }
-.tab-card-name strong { text-decoration:underline dotted #6f7488; text-underline-offset:4px; overflow-wrap:anywhere; }
-/* The name and the model tag share one row: the tag is the fact one scans a
-   list of tabs for, and a line of its own would push every card's prompts down.
-   The name keeps the row's spare width (a long one wraps within it) and the tag
-   its own, so it is never the thing that gets cut. The stronger selector is
-   what beats `.card span:first-child`, which would otherwise stack the two. */
-.tab-card-head .tab-card-main .tab-card-title { display:flex; align-items:baseline; gap:8px; min-width:0; }
-/* Plain muted words beside the name, in no box at all: the status pill's
-   outline is how a *state* is marked, and wearing it made a fact that never
-   changes look like one more thing to read. It says what the session's own
-   status line says (`agentModel.screenModelTag`), so the tag and the chip over
-   the keyboard are one reading in two places. The name keeps the row's spare
-   width and wraps; the tag keeps its own and is only cut past 60% of the row. */
-.tab-card-main .tab-card-model { position:relative; z-index:1; display:inline-block; flex:0 0 auto; max-width:60%; margin:-4px -6px -4px 0; padding:4px 6px 4px 0; border:0; border-radius:6px; background:transparent; color:#9498aa; font-size:.72rem; font-weight:600; text-align:left; text-transform:none; text-decoration:underline dotted #6f7488; text-underline-offset:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.tab-card-main .tab-card-model:disabled { opacity:1; text-decoration:none; }
+.tab-card-name strong { font-size:1.02rem; letter-spacing:-.02em; overflow-wrap:anywhere; }
+.tab-card-name:active,.tab-card-model:active { background:#343a52; }
+/* The name and model share a row when there is room, then wrap without
+   truncating the tab name. The stronger selector overrides the generic card. */
+.tab-card-head .tab-card-main .tab-card-title { display:flex; align-items:center; flex-wrap:wrap; gap:8px; min-width:0; }
+/* The model is a quiet button: it still opens the picker, but the session name
+   and live state carry the stronger visual weight. */
+.tab-card-main .tab-card-model { position:relative; z-index:1; display:inline-block; flex:0 1 auto; max-width:100%; margin:0; padding:5px 8px; border:1px solid #414861; border-radius:8px; background:#2b3145; color:#b6bdd8; font-size:.72rem; font-weight:600; text-align:left; text-transform:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.tab-card-main .tab-card-model:disabled { opacity:1; }
 .tab-card-grip { position:relative; z-index:1; flex:0 0 auto; width:44px; padding:0; border:0; border-left:1px solid #2d3040; border-radius:0 11px 0 0; background:transparent; color:#6f7488; font-size:1.05rem; touch-action:none; cursor:grab; }
+.project-screen .tab-card-grip { border-left-color:#34394d; border-radius:0 18px 0 0; color:#848ba4; }
 .tab-card-grip:active { cursor:grabbing; color:#d3d6e4; }
 /* A card that is only its head — the home screen's project rows, which wear the
    same row so their grip sits beside the opener rather than on it. With no
@@ -144,34 +138,31 @@ nav button,.keys button { flex:1; }
 .tab-card.drop-before { box-shadow:inset 0 3px 0 0 #7c6cff; }
 .tab-card.drop-after { box-shadow:inset 0 -3px 0 0 #7c6cff; }
 .reorder-hint { margin:-4px 0 12px; color:#9aa0b4; font-size:.84rem; }
-.tab-card-foot { display:flex; align-items:center; gap:4px; padding:0 16px 8px 8px; }
-.tab-card-when { min-width:0; flex:1 1 auto; }
+.tab-card-foot { display:flex; align-items:center; gap:8px; min-height:56px; padding:8px 14px 9px 10px; border-top:1px solid #303549; }
+.tab-card-when { min-width:0; flex:1 1 auto; color:#a9b0c6; font-size:.78rem; line-height:1.3; }
 /* The state and the ›, on the foot's right end. The foot's own right padding is
    the gap to the card's edge, so the cluster keeps the ✕'s column without
    sitting under it. */
-.tab-card-foot .card-trailing { margin-left:auto; color:#9498aa; }
-/* The card's icon-only controls: the ✕ in its top-right corner and the ◷ that
-   leads the schedule line. A 36px hit box around a small glyph, borderless
-   like `.sheet-close`, so they read as controls without shouting over the tab. */
-.tab-card-icon { position:relative; z-index:1; flex:0 0 auto; display:grid; place-items:center; width:36px; height:36px; padding:0; border:0; border-radius:9px; background:transparent; color:#9498aa; font-size:1rem; line-height:1; }
+.tab-card-foot .card-trailing { margin-left:auto; color:#9498aa; font-size:1.25rem; }
+.tab-card .agent-status { padding:5px 9px; border-radius:999px; font-size:.72rem; line-height:1; white-space:nowrap; }
+/* The ✕ and ◷ retain separate, comfortable touch targets. */
+.tab-card-icon { position:relative; z-index:1; flex:0 0 auto; display:grid; place-items:center; width:40px; height:40px; padding:0; border:0; border-radius:11px; background:transparent; color:#a3aac0; font-size:1rem; line-height:1; }
 .tab-card-icon:active { background:rgba(56,60,80,.8); color:#d3d6e4; }
-.tab-card-icon.accent { color:#a99cff; font-size:1.15rem; }
-.tab-card-close { align-self:flex-start; margin:6px 6px 0 0; font-size:.9rem; }
+.tab-card-icon.accent { background:#2e2b48; color:#bcb0ff; font-size:1.15rem; }
+.tab-card-close { align-self:flex-start; margin:10px 8px 0 0; font-size:.9rem; }
 .tab-card-close:active { color:#ff9aa6; }
 .tab-card-head .tab-card-main { padding-right:4px; }
 /* The same pill the sheets' headings wear (`.option-sheet h2 small`), as a
    class, for the places that mark an unverified feature outside a heading. */
 .untested { margin-left:6px; color:#8fb8ff; font-size:.62rem; text-transform:uppercase; }
-/* What each agent session was last asked, between the card and its foot. Always
-   drawn, never behind a disclosure: it is what tells two "claude" tabs apart.
-   The newest prompt wraps to three lines, the ones behind it are one each, so a
-   card's height is bounded whatever the prompts were. */
-.tab-card-prompts { display:grid; gap:4px; padding:0 16px 12px; min-width:0; }
-.tab-card-prompts-label { font-size:.72rem; text-transform:uppercase; letter-spacing:.06em; color:#6f7488; }
-.tab-card-prompt { display:flex; gap:8px; margin:0; min-width:0; color:#9498aa; font-size:.86rem; }
-.tab-card-prompt.latest { color:#d3d6e4; }
-.tab-card-prompt.empty { color:#6f7488; font-style:italic; }
-.tab-card-prompt-when { flex:0 0 auto; color:#6f7488; font-variant-numeric:tabular-nums; }
+/* The newest prompt is the primary preview; older ones form a quiet history. */
+.tab-card-prompts { display:grid; gap:0; min-width:0; margin:0 12px 12px; padding:10px; border:1px solid #343a50; border-radius:13px; background:#171b29; }
+.tab-card-prompts-label { margin:1px 2px 8px; font-size:.68rem; font-weight:700; text-transform:uppercase; letter-spacing:.09em; color:#929cba; }
+.tab-card-prompt { display:flex; gap:8px; min-width:0; margin:0; padding:5px 2px; border-top:1px solid #292f40; color:#a3abc2; font-size:.82rem; line-height:1.35; }
+.tab-card-prompt.latest { display:grid; gap:3px; margin-bottom:3px; padding:9px 10px; border:0; border-radius:9px; background:#282e42; color:#ecedfa; font-size:.88rem; }
+.tab-card-prompt.empty { border:0; color:#8992ad; font-style:italic; }
+.tab-card-prompt-when { flex:0 0 auto; color:#858fac; font-size:.75rem; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.tab-card-prompt.latest .tab-card-prompt-when { color:#afa5f4; font-size:.7rem; font-weight:700; }
 .tab-card-prompt-text { min-width:0; overflow:hidden; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:1; overflow-wrap:anywhere; }
 .tab-card-prompt.latest .tab-card-prompt-text { -webkit-line-clamp:3; }
 /* The same reading on the flat Agents list, where a row is one tap tall: two
