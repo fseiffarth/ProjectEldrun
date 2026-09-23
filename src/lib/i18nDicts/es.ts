@@ -3441,6 +3441,8 @@ export const dict: Dict = {
   "todoBoard.noMatches": "Ninguna tarjeta coincide con los filtros.",
   "todoBoard.writeFailed": "No se pudo guardar el cambio: {error}",
   "todoBoard.wipLimit": "{count} de {limit}",
+  "todoBoard.collapseColumn": "Contraer columna",
+  "todoBoard.expandColumn": "Expandir columna",
   "todoBoard.moveLeft": "Mover columna a la izquierda",
   "todoBoard.moveRight": "Mover columna a la derecha",
   "todoCard.edit": "Editar tarjeta",

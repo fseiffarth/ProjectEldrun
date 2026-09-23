@@ -3441,6 +3441,8 @@ export const dict: Dict = {
   "todoBoard.noMatches": "Nessuna scheda corrisponde ai filtri.",
   "todoBoard.writeFailed": "Impossibile salvare la modifica: {error}",
   "todoBoard.wipLimit": "{count} di {limit}",
+  "todoBoard.collapseColumn": "Comprimi colonna",
+  "todoBoard.expandColumn": "Espandi colonna",
   "todoBoard.moveLeft": "Sposta colonna a sinistra",
   "todoBoard.moveRight": "Sposta colonna a destra",
   "todoCard.edit": "Modifica scheda",

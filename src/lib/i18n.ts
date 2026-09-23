@@ -3585,6 +3585,8 @@ export const en = {
   "todoBoard.noMatches": "No cards match the filters.",
   "todoBoard.writeFailed": "The change could not be saved: {error}",
   "todoBoard.wipLimit": "{count} of {limit}",
+  "todoBoard.collapseColumn": "Collapse column",
+  "todoBoard.expandColumn": "Expand column",
   "todoBoard.moveLeft": "Move column left",
   "todoBoard.moveRight": "Move column right",
   "todoCard.edit": "Edit card",

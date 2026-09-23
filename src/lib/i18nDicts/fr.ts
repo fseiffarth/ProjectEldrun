@@ -3443,6 +3443,8 @@ export const dict: Dict = {
   "todoBoard.noMatches": "Aucune carte ne correspond aux filtres.",
   "todoBoard.writeFailed": "La modification n’a pas pu être enregistrée : {error}",
   "todoBoard.wipLimit": "{count} sur {limit}",
+  "todoBoard.collapseColumn": "Replier la colonne",
+  "todoBoard.expandColumn": "Déplier la colonne",
   "todoBoard.moveLeft": "Déplacer la colonne à gauche",
   "todoBoard.moveRight": "Déplacer la colonne à droite",
   "todoCard.edit": "Modifier la carte",

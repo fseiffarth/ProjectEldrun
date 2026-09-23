@@ -3446,6 +3446,8 @@ export const dict: Dict = {
   "todoBoard.noMatches": "Keine Karten passen zu den Filtern.",
   "todoBoard.writeFailed": "Die Änderung konnte nicht gespeichert werden: {error}",
   "todoBoard.wipLimit": "{count} von {limit}",
+  "todoBoard.collapseColumn": "Spalte einklappen",
+  "todoBoard.expandColumn": "Spalte ausklappen",
   "todoBoard.moveLeft": "Spalte nach links",
   "todoBoard.moveRight": "Spalte nach rechts",
   "todoCard.edit": "Karte bearbeiten",
