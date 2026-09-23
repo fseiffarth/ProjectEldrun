@@ -23,9 +23,15 @@
 # and a binary whose mtime is newer than the crash was installed after it. On
 # either, Eldrun frames are left unresolved unless `--force`; system-library
 # frames resolve regardless, since those come from packages, not this build.
-# To symbolize an old crash for real, rebuild the commit it ran
-# (`~/.local/share/eldrun/package-dev-auto.log` records which commit each freeze
-# installed, with its timestamp) and pass that binary's log through addr2line.
+# So each installed dev build is also kept under
+# `<state dir>/dev-builds/eldrun-<commit>` (scripts/retain-dev-build.sh, from
+# package-dev.sh and the launcher), and the crash header records
+# `commit=<short sha>`: when the recorded path is stale, the retained copy for
+# that commit is used instead. Rebuilding the commit is NOT a substitute — a
+# rebuild of the very same commit with the same toolchain came out with a
+# different code layout (2026-09-23), so its names are the plausible-but-wrong
+# kind described above. Crashes from before the header carried a commit can
+# only be mapped by launch time via package-dev-auto.log, and stay unresolved.
 set -euo pipefail
 
 nth=1
@@ -71,6 +77,27 @@ if [ -z "$stale" ] && [ -n "$crash_at" ] && [ -r "$exe" ]; then
   fi
 fi
 
+# The retained copy of the build that crashed, if the header names its commit
+# and scripts/retain-dev-build.sh kept it. A `+local` copy is a dirty-tree
+# freeze of that commit — the same bytes only if the crash ran that freeze.
+commit=$(printf '%s' "$ctx" | sed -n 's/.* commit=\([^ ]*\).*/\1/p' | head -1)
+retained=""
+if [ -n "$commit" ] && [ "$commit" != unknown ] && [ -n "$exe_recorded" ]; then
+  for cand in "$(dirname "$exe_recorded")/dev-builds/eldrun-$commit" \
+              "$(dirname "$exe_recorded")/dev-builds/eldrun-$commit+local"; do
+    if [ -r "$cand" ]; then retained="$cand"; break; fi
+  done
+fi
+if [ -n "$retained" ] && { [ -n "$stale" ] || [ ! -r "$exe" ]; }; then
+  echo "note: the recorded binary is stale; resolving Eldrun frames against the retained" >&2
+  echo "      build of commit $commit: $retained" >&2
+  case "$retained" in
+    *+local) echo "      (a dirty-tree freeze of that commit — only right if the crash ran that freeze)" >&2 ;;
+  esac
+  exe="$retained"
+  stale=""
+fi
+
 if [ -n "$exe" ] && [ ! -r "$exe" ]; then
   echo "note: $exe is gone or unreadable; Eldrun frames stay unresolved" >&2
   exe=""
@@ -91,6 +118,10 @@ printf '%s\n' "$block" | grep -E '^[^ ].*\(\+0x[0-9a-f]+\)' | while IFS= read -r
   [ -n "$offset" ] || { echo "  $line"; continue; }
   if [ -z "$exe" ] && [ "$module" = "$exe_recorded" ]; then
     resolved="?? (not resolved: the binary on disk is not this build)"
+  elif [ "$module" = "$exe_recorded" ]; then
+    # Eldrun's own frames: against the recorded file, or the retained copy.
+    resolved=$(addr2line -e "$exe" -f -C -i -p "$offset" 2>/dev/null | head -3 | paste -sd '|' -)
+    [ -n "$resolved" ] || resolved="?? (no symbols in $exe)"
   elif [ -r "$module" ]; then
     resolved=$(addr2line -e "$module" -f -C -i -p "$offset" 2>/dev/null | head -3 | paste -sd '|' -)
     [ -n "$resolved" ] || resolved="?? (no symbols in $module)"

@@ -36,13 +36,27 @@ static CRASH_LOG_FD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32
 #[cfg(windows)]
 static CRASH_LOG_HANDLE: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
+/// The short commit this binary was built from (`src-tauri/build.rs`), or
+/// "unknown" outside git. Written into every `=== STARTED` and crash header:
+/// the frozen dev binary is replaced on every commit, so the path a crash
+/// records is gone by the time anyone looks, and the commit is what
+/// `scripts/crash-symbolize.sh` needs to find the retained copy
+/// (`scripts/retain-dev-build.sh`).
+const BUILD_COMMIT: &str = match option_env!("ELDRUN_BUILD_COMMIT") {
+    Some(c) => c,
+    None => "unknown",
+};
+
 /// Install a panic hook + OS signal handlers that append to crash.log.
 fn install_crash_logger() {
     let state_dir = storage::state_dir();
     let _ = std::fs::create_dir_all(&state_dir);
     let path = state_dir.join("crash.log");
 
-    append_to_log(&path, &format!("=== STARTED {} ===", iso_now()));
+    append_to_log(
+        &path,
+        &format!("=== STARTED {} commit={} ===", iso_now(), BUILD_COMMIT),
+    );
 
     let path2 = path.clone();
     std::panic::set_hook(Box::new(move |info| {
@@ -275,7 +289,7 @@ fn fault_pc(_ctx: *mut libc::c_void) -> usize {
 }
 
 /// Format the context line under the crash header without allocating:
-/// `  at <UTC> pc=0x… tid=<n> thread=<comm> exe=<path> v<version>\n`.
+/// `  at <UTC> pc=0x… tid=<n> thread=<comm> exe=<path> v<version> commit=<sha>\n`.
 #[cfg(unix)]
 fn format_crash_context(pc: usize, buf: &mut [u8]) -> usize {
     let mut pos = 0;
@@ -326,6 +340,8 @@ fn format_crash_context(pc: usize, buf: &mut [u8]) -> usize {
     }
     pos = crash_push(buf, pos, b" v");
     pos = crash_push(buf, pos, env!("CARGO_PKG_VERSION").as_bytes());
+    pos = crash_push(buf, pos, b" commit=");
+    pos = crash_push(buf, pos, BUILD_COMMIT.as_bytes());
     crash_push(buf, pos, b"\n")
 }
 

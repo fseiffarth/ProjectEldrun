@@ -13,7 +13,7 @@ only when breaking it does damage. The *why* goes in code comments or
 | File | Purpose |
 |------|---------|
 | `main.rs` | Tauri app entry point, plugin registration. |
-| `lib.rs` | Command registration (`generate_handler!`), app setup, hook/restore install; crash logger (panic hook + async-signal-safe fatal-signal handler that restores `SIG_DFL` and re-raises; `scripts/crash-symbolize.sh`); per-window renderer reload budget; macOS menu bar (`macos_menu_plan`). |
+| `lib.rs` | Command registration (`generate_handler!`), app setup, hook/restore install; crash logger (panic hook + async-signal-safe fatal-signal handler that restores `SIG_DFL` and re-raises; headers carry `commit=` so `scripts/crash-symbolize.sh` can use the build `scripts/retain-dev-build.sh` kept); per-window renderer reload budget; macOS menu bar (`macos_menu_plan`). |
 | `storage.rs` | JSON persistence helpers: unique-temp atomic replacement and serialized, corruption-preserving read-modify-write transactions. |
 | `paths.rs` | Canonical Eldrun directory paths. |
 | `sysstat.rs` | Per-process CPU via `/proc` (`descendant_pids`), whole-system `SystemSnapshot`, and `machine_load()` — aggregate-only, no process table (cheap enough to poll). Unsupported target answers `supported: false`, never zeros. |

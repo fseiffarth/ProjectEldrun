@@ -278,6 +278,10 @@ install -Dm755 "$RAW_BIN" "$BINARY_DEST"
 # The record travels with the binary: the launcher reads `<installed>.frozen`
 # to say which commit it is opening and whether that is behind HEAD.
 install -m644 "$FROZEN_STAMP" "$BINARY_DEST.frozen" 2>/dev/null || true
+# And keep this build under dev-builds/eldrun-<commit>: the next install
+# replaces the path, and a crash in this snapshot is only symbolizable
+# against these exact bytes (scripts/crash-symbolize.sh).
+"$ROOT/scripts/retain-dev-build.sh" "$BINARY_DEST" "$COMMIT$DIRTY" || true
 
 STAMP="$(date +%Y-%m-%d)"
 

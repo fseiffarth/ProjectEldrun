@@ -98,6 +98,11 @@ if [ -f "$BUILT" ] && [ "$BUILT" -nt "$BINARY" ]; then
     # Keep the build-time record beside what was installed, so the next launch
     # can say which commit it is opening without hashing anything.
     if [ -f "$FROZEN" ]; then install -m644 "$FROZEN" "$BINARY.frozen" 2>/dev/null || true; else rm -f "$BINARY.frozen"; fi
+    # Keep the adopted build under dev-builds/eldrun-<commit> for
+    # scripts/crash-symbolize.sh; the next adopt replaces the path.
+    if [ -f "$FROZEN" ]; then
+      "$ROOT/scripts/retain-dev-build.sh" "$BINARY" "$(sed -n 's/^commit=//p' "$FROZEN")" 2>/dev/null || true
+    fi
     # The desktop entry's Comment names the frozen snapshot; keep it honest.
     desktop="$HOME/.local/share/applications/EldrunDev.desktop"
     if [ -f "$desktop" ]; then

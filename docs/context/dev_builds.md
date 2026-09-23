@@ -108,6 +108,19 @@ change was not run live.
   kept beside the installed binary) with `HEAD` and notifies how many commits
   behind it is opening, and why — the hook's own failure notice never
   arrives from an agent tab.
+  **Each install is also kept** (2026-09-23) under
+  `~/.local/share/eldrun/dev-builds/eldrun-<commit>` — a hardlink made by
+  `scripts/retain-dev-build.sh` from both install paths (`package-dev.sh` and
+  the launcher's adopt), newest six by default (`ELDRUN_DEV_BUILDS_KEEP`).
+  `install` replaces the path on every freeze, so a window that crashes has
+  been running a `(deleted)` binary for hours, and its `module+offset` frames
+  named nothing: five main-process heap-corruption crashes (2026-09-17..23)
+  went undiagnosed that way, and rebuilding the commit did not help — the same
+  commit, toolchain and flags produced a different code layout, so the names
+  it yielded were plausible and wrong. The crash header now carries
+  `commit=<short sha>` (`ELDRUN_BUILD_COMMIT` from `build.rs`), and
+  `scripts/crash-symbolize.sh` resolves against the retained copy when the
+  recorded path is stale.
   It declines in CI and from a linked worktree (freezing an agent's tree over
   the user's binary is exactly the surprise to avoid). Off with `git config
   eldrun.autoDevBuild false`, or `ELDRUN_NO_AUTO_DEV_BUILD=1` for one commit;
