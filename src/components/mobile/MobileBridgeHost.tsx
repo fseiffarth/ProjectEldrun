@@ -126,7 +126,7 @@ interface MobileCalendarEvent {
   status?: string;
   recurring: boolean;
 }
-interface MobileCalendarInfo { id: string; name: string; color: string; visible: boolean; readonly: boolean; source_url?: string; caldav: boolean }
+interface MobileCalendarInfo { id: string; name: string; color: string; visible: boolean; readonly: boolean; subscribed: boolean; caldav: boolean }
 interface MobileCalendar { month: string; week_start: 0 | 1; calendars: MobileCalendarInfo[]; events: MobileCalendarEvent[]; truncated: boolean }
 interface MobileCalendarEventInput { calendar_id: string; start: string; end: string; all_day: boolean; title: string; location: string; notes: string; conference: string; category: string; status: string }
 type CalendarAction =
@@ -1309,7 +1309,9 @@ async function calendarSnapshot(month: string): Promise<MobileCalendar> {
       color: boundedText(entry.color, 64).value,
       visible: entry.visible,
       readonly: entry.readonly,
-      source_url: entry.source_url ? boundedText(entry.source_url, 2_000).value : undefined,
+      // Only the fact: a feed URL routinely embeds a private token, and the
+      // phone only ever asked whether there was one.
+      subscribed: !!entry.source_url,
       caldav: !!entry.caldav_account_id,
     }))),
     truncated: occurrences.length > shown.length,

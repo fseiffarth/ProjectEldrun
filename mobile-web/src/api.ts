@@ -171,7 +171,9 @@ export interface MobileCalendarInfo {
   color: string;
   visible: boolean;
   readonly: boolean;
-  source_url?: string;
+  /** A subscribed feed. Only the fact crosses; the feed URL, which routinely
+   * embeds a private token, stays on the desktop. */
+  subscribed?: boolean;
   caldav: boolean;
 }
 export interface MobileCalendarEventInput {

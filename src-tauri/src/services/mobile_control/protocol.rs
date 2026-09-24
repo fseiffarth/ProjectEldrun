@@ -328,8 +328,11 @@ pub struct MobileCalendarInfo {
     pub color: String,
     pub visible: bool,
     pub readonly: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_url: Option<String>,
+    /// A subscribed (ICS feed) calendar. Only the fact crosses: the feed URL
+    /// routinely embeds a private token, and the phone only ever asked whether
+    /// there was one.
+    #[serde(default)]
+    pub subscribed: bool,
     pub caldav: bool,
 }
 
@@ -1555,7 +1558,7 @@ mod tests {
                     color: "#7c6cff".into(),
                     visible: true,
                     readonly: false,
-                    source_url: None,
+                    subscribed: false,
                     caldav: false,
                 }],
                 events: vec![super::MobileCalendarEvent {
@@ -1586,6 +1589,28 @@ mod tests {
     /// The terminal control plane, byte for byte as `mobile-web/src/terminal/
     /// protocol.ts` shapes it: every frame the phone sends decodes, nothing it
     /// does not name is accepted, and every server frame survives a round trip.
+    #[test]
+    fn a_calendar_row_says_subscribed_and_never_carries_its_feed_url() {
+        let row = super::MobileCalendarInfo {
+            id: "opaque-calendar".into(),
+            name: "Holidays".into(),
+            color: "#00aa88".into(),
+            visible: true,
+            readonly: true,
+            subscribed: true,
+            caldav: false,
+        };
+        let json = serde_json::to_string(&row).expect("serialize");
+        assert!(json.contains("\"subscribed\":true"));
+        assert!(!json.contains("source_url"));
+        // A bridge that predates the flag still parses: the flag defaults off.
+        let older: super::MobileCalendarInfo = serde_json::from_str(
+            r##"{"id":"x","name":"Local","color":"#000","visible":true,"readonly":false,"caldav":false}"##,
+        )
+        .expect("older row");
+        assert!(!older.subscribed);
+    }
+
     #[test]
     fn terminal_frames_match_the_phones_wire_shapes_exactly() {
         use super::{TerminalControl, TerminalEvent};
