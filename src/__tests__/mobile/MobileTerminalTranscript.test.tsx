@@ -129,6 +129,25 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     expect(localStorage.getItem("eldrun.mobile.view.claude-code")).toBeNull();
   });
 
+  it("stays in the Reader for a tab with no session id yet, and paints the session once it reads", async () => {
+    // A tab the phone just created: the bridge answers `no_session` until the
+    // agent's hook records one. The Reader reads the screen meanwhile and
+    // never hands over to Terminal — nothing would bring it back.
+    let stored: unknown = { available: false, reason: "no_session", entries: [], truncated: false };
+    vi.stubGlobal("fetch", sidecarFetch(() => stored));
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+    expect(screen.getByRole("button", { name: "Reader" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.queryByTestId("session-transcript")).toBeNull();
+    expect(localStorage.getItem("eldrun.mobile.view.claude-code")).toBeNull();
+
+    stored = STORED;
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    await settle();
+    expect(screen.getByRole("button", { name: "Reader" }).getAttribute("aria-pressed")).toBe("true");
+    screen.getByTestId("session-transcript");
+  });
+
   it("opens a shell tab on Terminal", async () => {
     vi.stubGlobal("fetch", sidecarFetch(() => STORED));
     render(<Terminal tab={{ ...TAB, id: "tab-9", kind: "shell", agent_label: undefined }} back={() => {}} />);

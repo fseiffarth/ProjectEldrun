@@ -1717,6 +1717,10 @@ async function attachDesktopImage(projectId: string, imageId: string): Promise<D
   }
 }
 
+/** The agents whose transcript `services::agent_transcript` reads; any other
+ * family answers `unsupported` there, and so does the short-circuit below. */
+const TRANSCRIPT_AGENTS = new Set(["claude", "codex", "opencode"]);
+
 /**
  * The phone's Focus view on an agent tab: the conversation as the agent's own
  * transcript records it, read by the backend (`agent_tab_transcript`,
@@ -1740,7 +1744,13 @@ async function agentTranscriptFor(
   const tab = scheduleTargetTab(scope.id, tmuxSession);
   if (!tab) return { status: "error", code: "tab_not_found", message: "Agent tab is unavailable" };
   if (!tab.sessionId) {
-    return { status: "agent_transcript", transcript: { available: false, reason: "no_session", entries: [], truncated: false } };
+    // Two different answers for the phone: a family whose transcript is
+    // never read (the backend's `unsupported`, decided by the same list) hands
+    // Focus to the terminal; a tab that has no session id *yet* — every tab
+    // the phone just created, until the agent's hook records one — keeps
+    // Focus reading the screen until the session reads.
+    const reason = TRANSCRIPT_AGENTS.has(tab.cmd) ? "no_session" : "unsupported";
+    return { status: "agent_transcript", transcript: { available: false, reason, entries: [], truncated: false } };
   }
   const transcript = await invoke<MobileAgentTranscript>("agent_tab_transcript", {
     agent: tab.cmd,

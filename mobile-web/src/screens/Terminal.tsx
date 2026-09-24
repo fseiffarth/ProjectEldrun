@@ -1423,14 +1423,19 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
     // The stored session mounts the reading view over a full-screen program
     // too, so its availability re-runs this as well.
   }, [view, altScreen, focusSource, transcript?.available]);
-  // A default Focus on a session that does not read (no session id yet, an
-  // agent whose transcript is not read, no desktop) would only re-read the
-  // screen: open Terminal instead, without writing that as the reader's choice.
+  // A default Focus on an agent whose transcript is never read (`unsupported`)
+  // would only re-read the screen: open Terminal instead, without writing
+  // that as the reader's choice. Every other reason is a session on its way —
+  // a tab the phone just created has no session id until its hook records
+  // one, a read can fail once, Codex binds its rollout late — so Focus stays,
+  // reading the screen meanwhile, and paints the stored session the moment it
+  // reads. It used to leave for Terminal on any of these, and since that was
+  // not the reader's choice either, nothing ever brought it back.
   useEffect(() => {
     // A just-sent prompt is still a useful Reader conversation when Codex has
     // not produced a readable rollout yet. Keep its local bubble on screen
     // instead of swapping to the terminal and making it vanish mid-turn.
-    if (!viewChosen.current && view === "focus" && transcript?.available === false
+    if (!viewChosen.current && view === "focus" && transcript?.available === false && transcript.reason === "unsupported"
       && (!CODEX_AGENT.test(tab.agent_label ?? tab.label) || pending.length === 0)) setView("terminal");
   }, [view, transcript, pending, tab.agent_label, tab.label]);
   /** Whether Focus is reading the stored session rather than the screen. */
@@ -2631,7 +2636,7 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
           setFocusSource("session");
           setFocusMenu(false);
         }}>
-          <span><strong>{t("mobile.focus.session")} {isUntested("mobile.focus.session") && <em>{t("mobile.focus.untested")}</em>}</strong><small>{transcript?.available ? t("mobile.focus.sessionHint") : t(noSessionReason(transcript))}</small></span>
+          <span><strong>{t("mobile.focus.session")} {isUntested("mobile.focus.session") && <em>{t("mobile.focus.untested")}</em>}</strong><small>{transcript?.available ? t("mobile.focus.sessionHint") : t(noSessionReason(transcript))}{!transcript?.available && transcript?.reason === "no_session" && isUntested("mobile.focus.noSessionYet") && <em> · {t("mobile.focus.untested")}</em>}</small></span>
           {sessionShown && <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 13 4.5 4.5L19 7" /></svg>}
         </button>
         <button role="menuitemradio" aria-checked={!sessionShown} onClick={() => {
