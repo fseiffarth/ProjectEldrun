@@ -380,6 +380,13 @@ fn tmux_wrap_exec(exec_line: &str, wrap: &TmuxWrap, env_prefix: &str) -> String 
     match wrap {
         TmuxWrap::Session(name) => {
             let q = shell_quote(name);
+            // Session-scoped, unlike the two globals above: the prefix is the
+            // one key a user's own tmux sessions on the same server depend on.
+            // Eldrun's sessions have no use for it — both clients run with
+            // `status off` and nothing binds the prefix — and with it off a
+            // phone's raw keystrokes can reach only the pane, never tmux's own
+            // command line (`docs/context/root_console.md`).
+            let prefix = format!("';' set -t {q} prefix None");
             // tmux runs its command argument via `sh -c`, so the (quoted) exec
             // line — `exec "${SHELL:-/bin/bash}" -l…` — is executed exactly as it
             // would be directly, only now inside the persistent session, with the
@@ -390,7 +397,7 @@ fn tmux_wrap_exec(exec_line: &str, wrap: &TmuxWrap, env_prefix: &str) -> String 
             } else { "" };
             format!(
                 "if command -v tmux >/dev/null 2>&1; then \
-                 exec tmux {history} new-session -A -D -s {q}{credential} {target} {opts}; \
+                 exec tmux {history} new-session -A -D -s {q}{credential} {target} {opts} {prefix}; \
                  else printf 'eldrun: tmux not found on the remote host; session persistence is OFF (install tmux to enable it)\\n' >&2; {exec_line}; fi"
             )
         }
@@ -1520,8 +1527,9 @@ mod tests {
             "exec tmux set -g history-limit 10000 ';' new-session -A -D -s 'eldrun-p1_shell-1' "
         ));
         assert!(cmd.contains("'exec \"${SHELL:-/bin/bash}\" -l'"));
-        // status/mouse options are chained as separate tmux commands.
-        assert!(cmd.contains("';' set -g status off ';' set -g mouse on"));
+        // status/mouse options are chained as separate tmux commands; the
+        // prefix is switched off for this session alone, never globally.
+        assert!(cmd.contains("';' set -g status off ';' set -g mouse on ';' set -t 'eldrun-p1_shell-1' prefix None;"));
         // Fallback: a host without tmux still runs the plain exec.
         assert!(cmd.contains("session persistence is OFF"));
         assert!(cmd.contains("; exec \"${SHELL:-/bin/bash}\" -l; fi"));

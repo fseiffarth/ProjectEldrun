@@ -638,3 +638,11 @@ So root is a phone scope, behind a line drawn where the rights actually are
   raises the console (`useRootOverlayStore.show`); root is never switched to.
 - Root Claude tabs still spawn without `--remote-control`, so they never appear
   in Claude's own phone app — a different decision from Eldrun's paired phone.
+- **The phone's raw terminal input is trusted as the user's, and reaches the
+  pane only.** Eldrun sets `prefix None` on every tmux session it creates
+  (`tmux_local::local_tmux_args`, `ssh_exec::tmux_wrap_exec`; session-scoped,
+  so a user's own tmux sessions on the same server keep theirs). Both clients
+  already ran `status off` and nothing of Eldrun's binds the prefix, so nobody
+  loses a key — and without one, no keystroke from a paired phone can open
+  tmux's own command line and detach, rename or spawn past the review gate
+  above. Decided 2026-09-24 (`docs/mobile_link_hardening_plan.md`, decision 5).

@@ -460,6 +460,15 @@ fn local_tmux_args_for(
         session,
         "window-size",
         "largest",
+        // No prefix key on an Eldrun session: nothing of Eldrun's binds it,
+        // and without one a phone's raw keystrokes reach the pane only, never
+        // tmux's own command line (`docs/context/root_console.md`).
+        ";",
+        "set-option",
+        "-t",
+        session,
+        "prefix",
+        "None",
     ] {
         args.push(tok.to_string());
     }
@@ -621,6 +630,12 @@ mod tests {
                 "eldrun-abc",
                 "window-size",
                 "largest",
+                ";",
+                "set-option",
+                "-t",
+                "eldrun-abc",
+                "prefix",
+                "None",
             ]
         );
     }
