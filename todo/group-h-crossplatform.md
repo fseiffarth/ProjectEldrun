@@ -2918,6 +2918,107 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
 
+- [~] **31bi — Mobile ↔ desktop link hardening** (2026-09-24; ✅ code-complete,
+  automated tests passing — `auth.rs`, `pty_bridge.rs`, `limits.rs`,
+  `protocol.rs`, the mobile vitest suite; ⚠️ never run on a phone; the sidecar
+  and the bridge both changed, so a rebuild + restart first). The nine steps of
+  `docs/mobile_link_hardening_plan.md`: input frames acked by the sidecar and a
+  lost prompt marked on its own bubble with Resend (1); sliding 15-min session
+  renewed silently on a 401 while the reader is active, PIN on every cold open,
+  `session_expired` told apart from `access_revoked` (2); the service worker
+  serves the cached shell on a proxy 502 (3); one failure vocabulary
+  (`connection.ts` `describeFailure`), usage errors as codes, the reconnect line
+  once per outage (4); the Reader stays for a tab with no session id yet (5);
+  `subscribed` replaces the calendar feed URL on the wire, calendar edits in a
+  sheet and deletes in the option sheet (6); a 5-minute idle deadline on every
+  sidecar socket, the history replay in ≤64 KB frames, a flooding pane sheds its
+  oldest output instead of closing the link (7); the Home list reloads on
+  show/online and on a slow retry (8); per-domain bridge mutation queues (9);
+  tmux `prefix None` on Eldrun sessions (decision 5). Not done from the plan:
+  the optional `calendar_writes`/`todo_writes` desktop switches (6, "consider")
+  — a CalDAV delete from the phone is still guarded by the confirm sheet alone.
+  - [ ] 🖐️ Manual phone QA — open the PWA with the desktop closed: the app's own "Eldrun Mobile isn't running on your desktop" splash, never the proxy's 502 page (step 3).
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual phone QA — type a prompt, drop the phone to airplane mode within a second, wait a minute, reconnect: the bubble stays where it was, says "Not delivered", and Resend delivers it exactly once (step 1).
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual phone QA — `systemctl --user restart` the mobile host while reading a tab: no PIN screen, the terminal reconnects on its own; then leave the phone untouched past the 3-minute idle lock and come back: the PIN screen (step 2).
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual phone QA — kill the PWA from the app switcher and reopen: the PIN or fingerprint every time, and the reader lands back on the tab they had open (step 2).
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual phone QA — create an agent tab from the phone: it opens in the Reader, reads the screen until the agent's hook records a session, then paints the stored session without a tap (step 5).
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual phone QA — quit the desktop with the sidecar up, then open a project: prose ("Eldrun isn't running on your desktop."), never `Error: desktop_unavailable`; the status sheet's usage error reads as a sentence too (step 4).
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual phone QA — Calendar → Calendars → Edit opens a sheet with name and colour; Delete asks in the option sheet; a subscribed feed still says Subscribed (step 6).
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual phone QA — on the Projects tab, kill the sidecar, wait for the red notice, start it again: the list comes back on its own within half a minute, or at once when the app is brought back to the front (step 8).
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual phone QA — with a phone on cellular, run `yes` in a shell tab for ten seconds: the terminal keeps up or skips ahead, but never disconnects and replays the whole flood (step 7).
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
 *Not coming to the phone (decided, not forgotten — see
 `docs/mobile_box_parity_plan.md`): editing a box from the phone (membership,
 rename, Dissolve), listing a box's members as project rows, a per-member
