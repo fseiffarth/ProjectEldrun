@@ -505,6 +505,44 @@ jobs:
             printf '\nThis is an early alpha; expect rough edges.\n'
           } > release-body.md
 
+      # Only the public key: the job verifies its own signature against the
+      # key the updater has compiled in, so a wrong secret fails here instead
+      # of shipping a release no installed Eldrun will accept.
+      - name: Check out the release public key
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          sparse-checkout: src-tauri/release-signing.pub.pem
+          sparse-checkout-cone-mode: false
+          path: repo
+
+      # The in-app updater installs nothing unless its SHA-256 is in this
+      # signed list (#160, services::app_update). No secret → no release.
+      - name: Sign release checksums
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$RELEASE_SIGNING_KEY" ]; then
+            echo "::error::RELEASE_SIGNING_KEY is not set; refusing to publish an unsigned release"
+            exit 1
+          fi
+          key="$RUNNER_TEMP/release-signing.key.pem"
+          trap 'rm -f "$key"' EXIT
+          (umask 077; printf '%s\n' "$RELEASE_SIGNING_KEY" > "$key")
+          find release-assets -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.exe' -o -name '*.dmg' \) \
+            | sort | while read -r f; do
+                printf '%s  %s\n' "$(sha256sum "$f" | cut -d' ' -f1)" "$(basename "$f")"
+              done > SHA256SUMS
+          test -s SHA256SUMS
+          if [ "$(cut -d' ' -f3 SHA256SUMS | sort | uniq -d)" != "" ]; then
+            echo "::error::two release assets share a name"
+            exit 1
+          fi
+          cat SHA256SUMS
+          openssl dgst -sha256 -sign "$key" -out SHA256SUMS.sig SHA256SUMS
+          openssl dgst -sha256 -verify repo/src-tauri/release-signing.pub.pem \
+            -signature SHA256SUMS.sig SHA256SUMS
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
@@ -526,3 +564,5 @@ jobs:
             release-assets/**/*.deb
             release-assets/**/*.exe
             release-assets/**/*.dmg
+            SHA256SUMS
+            SHA256SUMS.sig

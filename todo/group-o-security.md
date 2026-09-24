@@ -865,13 +865,34 @@ intent. What is left is listed here.
     checksum, so a compromised GitHub account or CI run ships code straight
     to every user who clicks Install. Sign in CI (minisign or the Tauri
     updater key) and verify before `install` runs the staged file.
-    - **Blocked on the key (2026-09-18).** Planned shape, no new crates: CI
+    - **Was blocked on the key (2026-09-18).** Planned shape, no new crates: CI
       signs each asset with `openssl dgst -sha256 -sign` (ECDSA P-256, key in
       the `RELEASE_SIGNING_KEY` secret) and uploads `<asset>.sig`; the updater
       hashes while downloading and verifies with the `p256` crate against a
       public key compiled in, refusing an unsigned or mismatched file. The
       maintainer generates the key pair; only the public half enters the repo.
-    - [ ] 🤖 Automated test — a tampered staged file is refused.
+    - **Built 2026-09-24 (not live).** Shape changed from per-asset `.sig`:
+      the release job publishes `SHA256SUMS` + `SHA256SUMS.sig` (one DER
+      signature, checked in CI against the committed public key) and fails when
+      the `RELEASE_SIGNING_KEY` secret is missing. The updater verifies the list,
+      requires the asset name to carry the release version (no signed
+      downgrade), hashes while downloading and again before `install`.
+      Key pair from `scripts/release-signing-keygen.sh`; public half in
+      `src-tauri/release-signing.pub.pem`.
+    - [x] 🤖 Automated test — openssl signatures (low- and high-S) verify;
+      tampered list, foreign key, wrong version, duplicate or missing entry are
+      refused (`services::app_update` tests).
+    - [ ] 🖐️ Manual test — after the first signed release: Settings → Updates →
+      Download on an AppImage build installs it; the release page shows
+      `SHA256SUMS` and `SHA256SUMS.sig`.
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 ### Threat-model re-evaluation follow-ups (2026-09-24)
 

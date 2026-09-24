@@ -85,7 +85,7 @@ only when breaking it does damage. The *why* goes in code comments or
 | `ssh_exec.rs` | Remote command execution over SSH (PTY tabs, git-over-ssh, ControlMaster). With `tmux_session`/`tmux_attach`, `wrap_pty_options` forwards reader credentials via the encrypted SSH environment channel (no host argv secret) and nests the exec in `tmux new-session -A -D -s <frontend-minted name>` (#85). |
 | `remote_agents.rs` | Remote agent bootstrap/resume for SSH projects. |
 | `remote_sync.rs` | Selective byte-sync core for remote projects: mirror paths, manifest, host/mirror walks, divergence + push/pull primitives. |
-| `app_update.rs` | App update check against GitHub releases (not the Tauri updater: releases are unsigned). Asset URLs checked against this repo's release-download prefix; per-platform installer handoff. |
+| `app_update.rs` | App update check against GitHub releases (not the Tauri updater). Asset URLs checked against this repo's release-download prefix; nothing staged unless its hash is in the release's signed `SHA256SUMS` (key: `release-signing.pub.pem`, #160); per-platform installer handoff. |
 | `big_folders.rs` | Giant-folder census for the setup prompt: local walk + remote `du -ak -x` reduced to one `(rel, bytes)` shape; pure `tally_dirs` + `pick` report the shallowest over-threshold folder. |
 | `caldav.rs` | CalDAV transport (RFC 4791/6578) on `reqwest` + `roxmltree`: fixed XML templates, multistatus parsing. Never parses iCalendar (opaque text to the frontend). |
 | `dev_build.rs` | Reads `package-dev-auto.sh`'s state files + log tail for the header dev-build chip (step, estimate, failure, behind, relaunch); `spawn_relauncher` backs the chip's "Relaunch now". `None` unless compiled with `ELDRUN_DEV_SOURCE_ROOT`. |
