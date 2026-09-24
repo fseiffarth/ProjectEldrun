@@ -925,29 +925,110 @@ fn staged_symlink(src: &str, dst: &str) -> Option<FenceSymlink> {
 /// work", on every fenced scope, most visibly the root console, which has no
 /// per-project fence override to turn off.
 ///
-/// The **whole directory**, not the spawn's own `VIBE_HOME`: that value comes
-/// from the renderer, and a read-write mount is never built from something the
-/// renderer names. It holds no credential of the user's — Eldrun writes these
-/// files itself, pointing at the local Ollama server.
+/// Only the spawn's **own** home, and only for a spawn whose `VIBE_HOME` names
+/// one ([`local_model_home`]). Mounting the whole directory into every fenced
+/// tab let any agent — a Claude tab in some project — plant a hook, tool or
+/// config there that the next local-model tab ran, possibly unfenced or in the
+/// root console's fence (threat model gap 7). Inside the home, everything
+/// vibe loads code, hooks, env, instructions or config from is read-only
+/// ([`LOCAL_MODEL_CONTROL`]); vibe keeps writing its logs, history, cache and
+/// trusted-folder list beside them.
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
-pub(crate) fn local_model_mounts(state_dir: &Path) -> Vec<BindMount> {
-    let dir = state_dir.join("vibe_local");
-    if !dir.is_dir() {
-        // Nothing has prepared a local-model home yet. Mounting a directory
-        // that does not exist fails the spawn, and a tab that never drives one
-        // loses nothing by its absence.
+pub(crate) fn local_model_mounts(home: Option<&Path>) -> Vec<BindMount> {
+    let Some(home) = home else {
         return Vec::new();
+    };
+    // Eldrun's hook alone, whatever an earlier tab left in the file.
+    if let Err(e) = crate::services::agent_session::register_vibe_hook_in(home) {
+        eprintln!("agent_fence: reset local vibe hooks: {e}");
     }
-    let path = dir.to_string_lossy().into_owned();
-    vec![BindMount {
+    let path = home.to_string_lossy().into_owned();
+    let mut mounts = vec![BindMount {
         src: path.clone(),
         dst: path,
         read_only: false,
-    }]
+    }];
+    // Placed after the home mount, so they shadow it.
+    mounts.extend(local_model_control_paths(home).into_iter().map(|p| {
+        let p = p.to_string_lossy().into_owned();
+        BindMount {
+            src: p.clone(),
+            dst: p,
+            read_only: true,
+        }
+    }));
+    mounts
+}
+
+/// What vibe reads from `VIBE_HOME` that makes it run or trust something:
+/// `config.toml` (MCP servers, enabled tools), `hooks.toml`, `.env`,
+/// `AGENTS.md`, and the user tool/plugin/skill/agent/prompt dirs.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+const LOCAL_MODEL_CONTROL: &[(&str, bool)] = &[
+    ("config.toml", false),
+    ("hooks.toml", false),
+    (".env", false),
+    ("AGENTS.md", false),
+    ("tools", true),
+    ("plugins", true),
+    ("skills", true),
+    ("agents", true),
+    ("prompts", true),
+];
+
+/// Every [`LOCAL_MODEL_CONTROL`] path in `home`, created empty where missing:
+/// a path that doesn't exist can't be mounted read-only, and one the agent
+/// could create would be as good as writable. An empty `.env` or `AGENTS.md`
+/// changes nothing (vibe skips a blank instructions file). A symlink in one of
+/// these places is not Eldrun's and is replaced.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+pub(crate) fn local_model_control_paths(home: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for &(name, is_dir) in LOCAL_MODEL_CONTROL {
+        let path = home.join(name);
+        if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+            let _ = std::fs::remove_file(&path);
+        }
+        let ready = if is_dir {
+            std::fs::create_dir_all(&path).is_ok() && path.is_dir()
+        } else {
+            std::fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(&path)
+                .is_ok()
+                && path.is_file()
+        };
+        if ready {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// The spawn's own local-model home: its `VIBE_HOME`, when that is a direct
+/// child of `<state_dir>/vibe_local` and an existing directory. The value comes
+/// from the renderer, so this is the only shape a read-write mount is built
+/// from; anything else mounts nothing.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+pub(crate) fn local_model_home(
+    env: &std::collections::HashMap<String, String>,
+    state_dir: &Path,
+) -> Option<PathBuf> {
+    let candidate = PathBuf::from(env.get("VIBE_HOME")?);
+    let child = candidate.strip_prefix(state_dir.join("vibe_local")).ok()?;
+    let mut parts = child.components();
+    let one = matches!(parts.next(), Some(std::path::Component::Normal(_))) && parts.next().is_none();
+    let real_dir = std::fs::symlink_metadata(&candidate).is_ok_and(|m| m.is_dir());
+    (one && real_dir).then_some(candidate)
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
-fn agent_state_mounts(scope_id: &str, roots: &[PathBuf]) -> (Vec<BindMount>, Vec<FenceSymlink>) {
+fn agent_state_mounts(
+    scope_id: &str,
+    roots: &[PathBuf],
+    env: &std::collections::HashMap<String, String>,
+) -> (Vec<BindMount>, Vec<FenceSymlink>) {
     let home = paths::home_dir_string();
     let state_dir = storage::state_dir();
     let live_root = crate::services::agent_session::live_sessions_dir();
@@ -1033,7 +1114,7 @@ fn agent_state_mounts(scope_id: &str, roots: &[PathBuf]) -> (Vec<BindMount>, Vec
             .into_iter()
             .filter_map(|m| mount_pair(&m, true)),
     );
-    mounts.extend(local_model_mounts(&state_dir));
+    mounts.extend(local_model_mounts(local_model_home(env, &state_dir).as_deref()));
     let bin = crate::services::agent_bin::bin_dir();
     let _ = std::fs::create_dir_all(&bin);
     let bin = bin.to_string_lossy().into_owned();
@@ -1308,7 +1389,7 @@ pub fn wrap_pty_options_bwrap(
         return Err(fence_unavailable_message());
     }
     let bwrap = crate::paths::system_executable("bwrap").ok_or_else(fence_unavailable_message)?;
-    let (mut mounts, symlinks) = agent_state_mounts(scope_id, roots);
+    let (mut mounts, symlinks) = agent_state_mounts(scope_id, roots, &opts.env);
     let support_mounts = mounts.clone();
     let protected = codex_content_paths(&paths::home_dir());
     mounts.retain(|m| !protected.contains(&m.dst));
@@ -1492,7 +1573,7 @@ pub(crate) fn sandbox_exec_profile(inputs: &SeatbeltInputs) -> String {
 fn sandbox_exec_inputs(opts: &PtyOptions, roots: &[PathBuf], scope_id: &str) -> SeatbeltInputs {
     let home = paths::home_dir_string();
     let state_dir = storage::state_dir();
-    let (mounts, _symlinks) = agent_state_mounts(scope_id, roots);
+    let (mounts, _symlinks) = agent_state_mounts(scope_id, roots, &opts.env);
     let mut writable: Vec<String> = Vec::new();
     let mut readable: Vec<String> = Vec::new();
     let mut protected: Vec<String> = Vec::new();
@@ -1523,6 +1604,16 @@ fn sandbox_exec_inputs(opts: &PtyOptions, roots: &[PathBuf], scope_id: &str) -> 
         protected.push(format!("{home}/{rel}"));
     }
     protected.push(state_dir.join("hooks").to_string_lossy().into_owned());
+    // A local-model home is writable, its control files are not (gap 7):
+    // Seatbelt has no mount order, so a read-only path inside a writable one
+    // has to be denied explicitly.
+    if let Some(home) = local_model_home(&opts.env, &state_dir) {
+        protected.extend(
+            local_model_control_paths(&home)
+                .into_iter()
+                .map(|p| p.to_string_lossy().into_owned()),
+        );
+    }
     protected.push(crate::services::agent_bin::bin_dir().to_string_lossy().into_owned());
     protected.extend(codex_content_paths(&paths::home_dir()));
     // Claude's identity/onboarding file: readable and writable so a fenced tab
@@ -2537,30 +2628,72 @@ mod tests {
     }
 
     #[test]
-    fn the_local_model_home_is_mounted_read_write_when_one_exists() {
+    fn only_the_spawns_own_local_model_home_is_mounted() {
         let state = tempfile::tempdir().unwrap();
-        // Nothing prepared yet: no mount, and no directory created either.
-        assert!(local_model_mounts(state.path()).is_empty());
-        assert!(!state.path().join("vibe_local").exists());
+        let root = state.path().join("vibe_local");
+        std::fs::create_dir_all(root.join("gemma4-e4b")).unwrap();
+        std::fs::create_dir_all(root.join("qwen3-coder")).unwrap();
+        let env = |v: &str| std::collections::HashMap::from([("VIBE_HOME".to_string(), v.to_string())]);
 
-        std::fs::create_dir_all(state.path().join("vibe_local/gemma4-e4b")).unwrap();
-        let mounts = local_model_mounts(state.path());
-        let dir = state
-            .path()
-            .join("vibe_local")
-            .to_string_lossy()
-            .into_owned();
-        // Identical src/dst — `VIBE_HOME` names this absolute path — and
-        // writable, since vibe keeps its session logs and cache beside the
-        // config Eldrun writes.
+        // Not a local-model tab (a Claude tab, the root console's agent): nothing.
+        assert_eq!(local_model_home(&Default::default(), state.path()), None);
+        assert!(local_model_mounts(None).is_empty());
+        // The renderer names the home; only a direct, existing child counts.
+        for bad in [
+            root.to_string_lossy().into_owned(),
+            root.join("gemma4-e4b/logs").to_string_lossy().into_owned(),
+            root.join("../vibe_local/gemma4-e4b").to_string_lossy().into_owned(),
+            root.join("missing").to_string_lossy().into_owned(),
+            "/home/u/.vibe".to_string(),
+        ] {
+            assert_eq!(local_model_home(&env(&bad), state.path()), None, "{bad}");
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(state.path(), root.join("link")).unwrap();
+            let link = root.join("link").to_string_lossy().into_owned();
+            assert_eq!(local_model_home(&env(&link), state.path()), None);
+        }
+
+        let own = root.join("gemma4-e4b");
+        let home = local_model_home(&env(&own.to_string_lossy()), state.path()).unwrap();
+        let mounts = local_model_mounts(Some(&home));
+        let own_str = own.to_string_lossy().into_owned();
+        // The home itself, writable — vibe keeps its logs and history there —
+        // and never the sibling models' homes or the directory above.
         assert_eq!(
-            mounts,
-            vec![BindMount {
-                src: dir.clone(),
-                dst: dir,
-                read_only: false,
-            }]
+            mounts[0],
+            BindMount { src: own_str.clone(), dst: own_str.clone(), read_only: false }
         );
+        assert!(mounts.iter().all(|m| Path::new(&m.dst).starts_with(&own)));
+        // Every control path is shadowed read-only, created where missing.
+        for &(name, is_dir) in LOCAL_MODEL_CONTROL {
+            let path = own.join(name);
+            assert_eq!(path.is_dir(), is_dir, "{name}");
+            let dst = path.to_string_lossy().into_owned();
+            let pos = mounts.iter().position(|m| m.dst == dst).unwrap_or_else(|| panic!("{name}"));
+            assert!(mounts[pos].read_only, "{name}");
+            assert!(pos > 0, "{name} must come after the home mount");
+        }
+        // Vibe's own state stays writable: no mount for logs/ or vibehistory.
+        assert!(!mounts.iter().any(|m| m.dst.ends_with("/logs") || m.dst.ends_with("vibehistory")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_control_path_is_replaced_not_followed() {
+        let state = tempfile::tempdir().unwrap();
+        let home = state.path().join("vibe_local/gemma4-e4b");
+        std::fs::create_dir_all(&home).unwrap();
+        let outside = state.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, home.join("tools")).unwrap();
+        std::os::unix::fs::symlink(outside.join("x.toml"), home.join("hooks.toml")).unwrap();
+        local_model_control_paths(&home);
+        assert!(!std::fs::symlink_metadata(home.join("tools")).unwrap().file_type().is_symlink());
+        assert!(home.join("tools").is_dir());
+        assert!(!std::fs::symlink_metadata(home.join("hooks.toml")).unwrap().file_type().is_symlink());
+        assert!(!outside.join("x.toml").exists());
     }
 
     #[test]

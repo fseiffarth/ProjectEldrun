@@ -76,13 +76,7 @@ fn vibe_home_for(opts: &PtyOptions) -> PathBuf {
     };
     // The renderer supplies env. Only Eldrun's dedicated local-model homes may
     // select another session store; never read an arbitrary renderer path.
-    let local_root = paths::home_dir().join(".local/share/eldrun/vibe_local");
-    let Ok(child) = candidate.strip_prefix(&local_root) else {
-        return default;
-    };
-    if child.components().count() == 1
-        && child.components().all(|c| matches!(c, std::path::Component::Normal(_)))
-    {
+    if is_local_vibe_home(&candidate) {
         candidate
     } else {
         default
@@ -1528,9 +1522,25 @@ pub fn install_session_start_hook() -> std::io::Result<()> {
 
 /// Vibe's user hook runs after each completed turn and reports the live ID.
 /// Local-model homes have their own hooks.toml, so preparation calls this too.
+///
+/// A local-model home (`<state>/vibe_local/<alias>`) is Eldrun's own, so its
+/// file is rewritten to hold Eldrun's hook alone: a hook a fenced agent planted
+/// there before the fence made the file read-only must not survive into the
+/// next local-model tab (threat model gap 7).
 pub fn register_vibe_hook_in(home: &std::path::Path) -> std::io::Result<()> {
+    write_vibe_hooks(home, is_local_vibe_home(home))
+}
+
+fn write_vibe_hooks(home: &std::path::Path, eldrun_owned: bool) -> std::io::Result<()> {
     std::fs::create_dir_all(home)?;
     let path = home.join("hooks.toml");
+    if eldrun_owned {
+        let fresh = vibe_hook_block()?;
+        if std::fs::read_to_string(&path).ok().as_deref() != Some(fresh.as_str()) {
+            std::fs::write(&path, fresh)?;
+        }
+        return Ok(());
+    }
     let mut content = match std::fs::read_to_string(&path) {
         Ok(content) => content,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -1542,12 +1552,30 @@ pub fn register_vibe_hook_in(home: &std::path::Path) -> std::io::Result<()> {
     if !content.is_empty() && !content.ends_with('\n') {
         content.push('\n');
     }
-    let cmd = serde_json::to_string(&hook_command()).map_err(std::io::Error::other)?;
-    content.push_str(&format!(
-        "\n# Eldrun: remember the live Vibe session for this tab.\n\
-         [[hooks]]\nname = \"eldrun-session\"\ntype = \"post_agent\"\ncommand = {cmd}\ntimeout = 10.0\n"
-    ));
+    content.push('\n');
+    content.push_str(&vibe_hook_block()?);
     std::fs::write(path, content)
+}
+
+fn vibe_hook_block() -> std::io::Result<String> {
+    let cmd = serde_json::to_string(&hook_command()).map_err(std::io::Error::other)?;
+    Ok(format!(
+        "# Eldrun: remember the live Vibe session for this tab.\n\
+         [[hooks]]\nname = \"eldrun-session\"\ntype = \"post_agent\"\ncommand = {cmd}\ntimeout = 10.0\n"
+    ))
+}
+
+/// Whether `home` is one of Eldrun's local-model `VIBE_HOME`s — the same root
+/// and one-component rule [`vibe_home_for`] applies.
+fn is_local_vibe_home(home: &std::path::Path) -> bool {
+    is_local_vibe_home_in(home, &paths::home_dir().join(".local/share/eldrun/vibe_local"))
+}
+
+fn is_local_vibe_home_in(home: &std::path::Path, local_root: &std::path::Path) -> bool {
+    home.strip_prefix(local_root).is_ok_and(|child| {
+        child.components().count() == 1
+            && child.components().all(|c| matches!(c, std::path::Component::Normal(_)))
+    })
 }
 
 fn write_hook_script() -> std::io::Result<()> {
@@ -2047,6 +2075,31 @@ mod tests {
         assert!(once.contains("name = \"mine\""));
         assert_eq!(once.matches("name = \"eldrun-session\"").count(), 1);
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn a_local_model_home_keeps_only_eldruns_hook() {
+        let home = unique_tmp("eldrun-vibe-local-hooks");
+        std::fs::create_dir_all(&home).unwrap();
+        let hooks = home.join("hooks.toml");
+        std::fs::write(&hooks, "[[hooks]]\nname = \"planted\"\ntype = \"post_agent\"\ncommand = \"true\"\n").unwrap();
+        write_vibe_hooks(&home, true).unwrap();
+        let once = std::fs::read_to_string(&hooks).unwrap();
+        assert!(!once.contains("planted"));
+        assert_eq!(once.matches("name = \"eldrun-session\"").count(), 1);
+        write_vibe_hooks(&home, true).unwrap();
+        assert_eq!(std::fs::read_to_string(&hooks).unwrap(), once);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn only_a_direct_child_of_vibe_local_is_a_local_model_home() {
+        let root = std::path::Path::new("/s/eldrun/vibe_local");
+        assert!(is_local_vibe_home_in(&root.join("gemma4-e4b"), root));
+        assert!(!is_local_vibe_home_in(root, root));
+        assert!(!is_local_vibe_home_in(&root.join("a/b"), root));
+        assert!(!is_local_vibe_home_in(&root.join("../x"), root));
+        assert!(!is_local_vibe_home_in(std::path::Path::new("/home/u/.vibe"), root));
     }
 
     #[cfg(unix)]

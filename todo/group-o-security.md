@@ -1029,3 +1029,35 @@ table). Code-read findings; only #862 was reproduced (scratch repo, git 2.53).
       new state files created 0600 (`storage::ensure_private_state_dir`,
       `write_json`; project-folder files keep the umask); every workflow
       action pinned by commit SHA (bump them by hand — no Dependabot).
+
+870. **Any fenced agent could plant code the next local-model tab runs.**
+    Threat model gap 7. `agent_fence::local_model_mounts` bound all of
+    `<state>/vibe_local` read-write into every fence, whatever the CLI, and
+    `register_vibe_hook_in` only appended to a local home's `hooks.toml`; vibe
+    also loads MCP servers from `config.toml`, env from `.env`, and code from
+    `tools/`/`plugins/`. A Claude tab in one project could so run a hook in
+    the next local-model tab — unfenced, or in the root console's fence.
+    - **Fixed 2026-09-24 (not live).** Only the spawn's own home is mounted,
+      and only when its `VIBE_HOME` is a direct, real child of `vibe_local`
+      (`local_model_home`); its control paths (`LOCAL_MODEL_CONTROL`) are
+      read-only binds after it (Seatbelt: denied writes), created empty where
+      missing, symlinks replaced; a local home's `hooks.toml` is rewritten to
+      Eldrun's hook alone. Residual: same-model tabs share logs, history and
+      `trusted_folders.toml`. Vibe saving its own config in a fenced local tab
+      now fails (Eldrun owns that file).
+    - [x] 🤖 Automated test — `only_the_spawns_own_local_model_home_is_mounted`,
+      `a_symlinked_control_path_is_replaced_not_followed`,
+      `a_local_model_home_keeps_only_eldruns_hook`; the layering was checked
+      once under real bubblewrap (control files unwritable and unrenamable,
+      logs/history writable, sibling homes invisible).
+    - [ ] 🖐️ Manual test — a fenced local-model (Ollama) tab starts, answers,
+      and resumes; from a fenced Claude tab `ls ~/.local/share/eldrun/vibe_local`
+      shows nothing.
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
