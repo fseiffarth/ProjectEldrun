@@ -411,10 +411,10 @@ pub fn root_project_read_only_paths(
 }
 
 /// [`root_project_read_only_paths`] against the live state, for tab `tab`
-/// spawning in `scope_id`; empty for any project or box scope. Records whether
-/// the switch was on for this argv ([`take_root_projects_granted`]), so the
-/// spawn path hands the tab's MCP session the answer its fence actually got
-/// rather than a second read of a setting that may have flipped in between.
+/// spawning in `scope_id`; empty for any project or box scope. Records the
+/// paths this argv binds ([`take_root_projects_granted`]), so the spawn path
+/// hands the tab's MCP session exactly what its fence got rather than a second
+/// read of a setting or a project list that may have changed in between.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn root_project_read_only_paths_for(tab: &str, scope_id: &str) -> Vec<String> {
     let mut grants = root_project_grants().lock().unwrap_or_else(|p| p.into_inner());
@@ -423,22 +423,24 @@ fn root_project_read_only_paths_for(tab: &str, scope_id: &str) -> Vec<String> {
         return Vec::new();
     }
     let settings = settings();
-    if settings.root_fence_projects_readable() {
-        grants.insert(tab.to_string());
-    }
     let (boxes, projects) = read_lists();
-    root_project_read_only_paths(&settings, &projects, &boxes, &storage::state_dir())
+    let paths = root_project_read_only_paths(&settings, &projects, &boxes, &storage::state_dir());
+    if settings.root_fence_projects_readable() {
+        grants.insert(tab.to_string(), paths.iter().map(PathBuf::from).collect());
+    }
+    paths
 }
 
-fn root_project_grants() -> &'static Mutex<HashSet<String>> {
-    static GRANTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-    GRANTS.get_or_init(|| Mutex::new(HashSet::new()))
+fn root_project_grants() -> &'static Mutex<HashMap<String, Vec<PathBuf>>> {
+    static GRANTS: OnceLock<Mutex<HashMap<String, Vec<PathBuf>>>> = OnceLock::new();
+    GRANTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Whether the fence just built for root tab `tab` exposes the projects
-/// read-only, consumed once by the spawn path. False on a platform with no
-/// fence wrapper (the spawn path treats an unfenced root agent separately).
-pub fn take_root_projects_granted(tab: &str) -> bool {
+/// The project paths the fence just built for root tab `tab` binds read-only,
+/// consumed once by the spawn path; `None` when the switch was off. Also
+/// `None` on a platform with no fence wrapper (the spawn path treats an
+/// unfenced root agent separately).
+pub fn take_root_projects_granted(tab: &str) -> Option<Vec<PathBuf>> {
     root_project_grants().lock().unwrap_or_else(|p| p.into_inner()).remove(tab)
 }
 
@@ -1543,7 +1545,8 @@ fn sandbox_exec_inputs(opts: &PtyOptions, roots: &[PathBuf], scope_id: &str) -> 
     readable.extend(root_project_read_only_paths_for(&opts.id, scope_id));
     let search_dirs = command_search_dirs(opts);
     // The agent's own install, writable so it can update itself — the same
-    // native-installer layout the Linux fence hands back read-write.
+    // payload root the Linux fence hands back read-write. The launcher dir is
+    // not (#861): Seatbelt cannot give a private copy, so the link swap fails.
     writable.extend(updatable_install_dirs(
         &opts.cmd,
         &search_dirs,

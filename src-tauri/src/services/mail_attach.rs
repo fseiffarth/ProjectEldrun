@@ -6,7 +6,7 @@
 //! Eldrun read on the agent's behalf. What holds that to the tab's own view:
 //!
 //! - the caller's session recorded at spawn that its fence shows the projects
-//!   (`root_mcp::Session::projects_readable`) — checked by `root_mcp_mail`;
+//!   (`root_mcp::Session::projects_grant`) — checked by `root_mcp_mail`;
 //! - the roots are the ones a fenced tab *of that project* would get
 //!   ([`agent_fence::attach_roots`]), minus any at `/`, at or above `$HOME`, or
 //!   inside Eldrun's state (the fence masks those);
@@ -70,6 +70,12 @@ pub struct Lists<'a> {
     pub boxes: &'a BoxesList,
     pub state_dir: &'a Path,
     pub home: &'a Path,
+    /// The project paths the calling tab's fence exposed when it was spawned
+    /// (`root_mcp::ProjectsGrant::Paths`); `None` for an unfenced tab, which
+    /// already reads everything. A project added after the spawn is in
+    /// `projects.json` but not in the tab's sandbox, and Eldrun never reads
+    /// what the tab's fence hides.
+    pub granted: Option<&'a [PathBuf]>,
 }
 
 const ITEM_SHAPE: &str = "`attach` is a list of {\"project\": id or name, \"path\": path inside that project}";
@@ -143,6 +149,18 @@ pub fn denied_name(name: &str) -> Option<&'static str> {
 /// Why a root is not attachable from at all: `/`, `$HOME` or an ancestor of it
 /// (the fence shows neither), or a place inside Eldrun's state (masked).
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
+/// A project this root tab's sandbox was not built with (added, or moved,
+/// after the tab started).
+pub const NOT_IN_GRANT: &str = "that project was not in this tab's view when it started; open a new root tab to attach from it";
+
+/// Whether `root` lies inside a path the tab's fence exposed. `None` is an
+/// unfenced tab. Component-wise `starts_with`, so `/w/alpha2` is not inside
+/// `/w/alpha`.
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+fn within_grant(granted: Option<&[PathBuf]>, root: &Path) -> bool {
+    granted.is_none_or(|g| g.iter().any(|p| root.starts_with(p)))
+}
+
 fn root_refusal(root: &Path, home: &Path, state_dir: &Path) -> Option<&'static str> {
     let forms: Vec<PathBuf> = [Some(root.to_path_buf()), root.canonicalize().ok()].into_iter().flatten().collect();
     let homes: Vec<PathBuf> = [Some(home.to_path_buf()), home.canonicalize().ok()].into_iter().flatten().collect();
@@ -208,6 +226,12 @@ pub fn resolve(lists: &Lists, project_id: &str, path: &str) -> Result<Resolved, 
 fn read_from_roots(lists: &Lists, roots: &[PathBuf], parts: &[&str], asked: &str, path: &str) -> Result<Resolved, String> {
     let private = super::agent_fence::private_state_paths(lists.state_dir);
     for (i, root) in roots.iter().enumerate() {
+        if !within_grant(lists.granted, root) {
+            if i == 0 {
+                return Err(NOT_IN_GRANT.into());
+            }
+            continue;
+        }
         if let Some(reason) = root_refusal(root, lists.home, lists.state_dir) {
             if i == 0 {
                 return Err(format!("nothing is attached from here: {reason}"));
@@ -359,6 +383,29 @@ mod tests {
         for name in ["paper.pdf", "notes.txt", "keynote.pdf", "environment.yml"] {
             assert!(denied_name(name).is_none(), "{name}");
         }
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn a_project_outside_the_spawn_grant_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let (alpha, beta) = (dir.path().join("w/alpha"), dir.path().join("w/alpha2"));
+        for d in [&alpha, &beta] {
+            std::fs::create_dir_all(d).unwrap();
+            std::fs::write(d.join("notes.txt"), b"hi").unwrap();
+        }
+        let projects: ProjectsList = serde_json::from_value(serde_json::json!([
+            {"id":"a","name":"Alpha","status":"active","position":0,"local_file":"","directory": alpha},
+            {"id":"b","name":"Later","status":"active","position":1,"local_file":"","directory": beta}
+        ])).unwrap();
+        let (state, home) = (dir.path().join("state"), dir.path().join("home"));
+        // The tab was spawned while only Alpha existed.
+        let granted = vec![alpha.clone()];
+        let lists = Lists { projects: &projects, boxes: &Vec::new(), state_dir: &state, home: &home, granted: Some(&granted) };
+        assert!(resolve(&lists, "a", "notes.txt").is_ok());
+        assert_eq!(resolve(&lists, "b", "notes.txt").unwrap_err(), NOT_IN_GRANT, "a sibling sharing a name prefix is not inside");
+        let unfenced = Lists { granted: None, ..lists };
+        assert!(resolve(&unfenced, "b", "notes.txt").is_ok());
     }
 
     #[test]

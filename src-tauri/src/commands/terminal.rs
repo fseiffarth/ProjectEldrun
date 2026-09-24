@@ -639,10 +639,10 @@ pub async fn pty_spawn(
     // tmux server on the host while the command *inside* its session is
     // fenced.  A missing/blocked fence tool fails closed.
     let mut fenced_registration: Option<(String, String)> = None;
-    // What the root tab's MCP session records as `projects_readable`: the
-    // answer the fence argv got when fenced, `true` when the agent runs
+    // What the root tab's MCP session records as its projects grant: the
+    // paths the fence argv bound when fenced, everything when the agent runs
     // unfenced (it already reads everything).
-    let mut root_reads_projects = root_agent;
+    let mut root_projects = crate::services::root_mcp::ProjectsGrant::All;
     #[cfg(target_os = "linux")]
     let mut fenced_content_shadow = None;
     #[cfg(not(target_os = "linux"))]
@@ -674,7 +674,10 @@ pub async fn pty_spawn(
                 crate::services::agent_fence::wrap_pty_options_sandbox_exec(
                     &mut opts, roots, &scope_id,
                 )?;
-                root_reads_projects = crate::services::agent_fence::take_root_projects_granted(&opts.id);
+                root_projects = match crate::services::agent_fence::take_root_projects_granted(&opts.id) {
+                    Some(paths) => crate::services::root_mcp::ProjectsGrant::Paths(paths),
+                    None => crate::services::root_mcp::ProjectsGrant::Hidden,
+                };
                 fenced_registration = Some((opts.id.clone(), scope_id));
             }
             crate::services::agent_fence::FenceDecision::Unavailable => {
@@ -685,8 +688,8 @@ pub async fn pty_spawn(
     }
 
     // Before the agent process exists, so no tool call can see the default.
-    if root_agent && root_reads_projects {
-        crate::services::root_mcp::mark_tab_projects_readable(&opts.id);
+    if root_agent && root_projects != crate::services::root_mcp::ProjectsGrant::Hidden {
+        crate::services::root_mcp::mark_tab_projects_readable(&opts.id, root_projects);
     }
 
     // Persistent LOCAL (tmux) sessions (TODO #85): a tab that resolved to a LOCAL

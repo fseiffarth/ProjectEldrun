@@ -111,7 +111,7 @@ fn register_token(token: String, identity: Identity, read_mail: bool) {
         access: Access::initial(identity.caller), identity,
         revoked: Arc::new(AtomicBool::new(false)),
         read_mail: Arc::new(AtomicBool::new(read_mail)),
-        projects_readable: Arc::new(AtomicBool::new(false)),
+        projects_grant: Arc::new(std::sync::Mutex::new(ProjectsGrant::Hidden)),
         permits: Arc::new(tokio::sync::Semaphore::new(2)),
         rate: Arc::new(std::sync::Mutex::new((std::time::Instant::now(), 0))),
         schedule_rate: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
@@ -119,15 +119,31 @@ fn register_token(token: String, identity: Identity, read_mail: bool) {
     map.insert(token, session);
 }
 /// Record that `tab`'s fence lets it read the projects
-/// ([`Session::projects_readable`]): a root spawn with
+/// ([`Session::projects_grant`]): a root spawn with
 /// `Settings::root_fence_projects_readable` on, or one that ends up unfenced
 /// (fence off, or a platform without one) and so already reads everything.
 /// Called from the spawn path before the agent process exists, so nothing can
 /// have called the tools in between.
-pub fn mark_tab_projects_readable(tab: &str) {
+pub fn mark_tab_projects_readable(tab: &str, grant: ProjectsGrant) {
     for s in tokens().lock().unwrap_or_else(|p| p.into_inner()).values() {
-        if s.identity.tab == tab && s.identity.caller != Caller::Helper { s.projects_readable.store(true, Ordering::Release); }
+        if s.identity.tab == tab && s.identity.caller != Caller::Helper {
+            *s.projects_grant.lock().unwrap_or_else(|p| p.into_inner()) = grant.clone();
+        }
     }
+}
+
+/// What a root tab's fence let it read of the projects, recorded at spawn
+/// ([`mark_tab_projects_readable`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProjectsGrant {
+    /// The projects are hidden from the tab (the default, and the switch off).
+    Hidden,
+    /// Exactly these paths, bound read-only into the tab's sandbox when it
+    /// was built. A project added afterwards is in `projects.json` but not in
+    /// the sandbox, so it is not in this list either.
+    Paths(Vec<std::path::PathBuf>),
+    /// The tab runs unfenced and already reads everything.
+    All,
 }
 /// Whether the tab held a token.
 pub fn revoke_tab(tab: &str) -> bool {
@@ -185,11 +201,11 @@ pub(crate) fn test_session_with(caller: Caller, tab: &str, state: &Path, endpoin
     let session = authenticate(Some(&format!("Bearer {token}"))).unwrap();
     (token, session)
 }
-/// A root session whose fence exposes the projects (`Session::projects_readable`).
+/// A root session that reads every project (`Session::projects_grant`, unfenced).
 #[cfg(test)]
 pub(crate) fn test_session_reading_projects(caller: Caller, tab: &str, state: &Path) -> (String, Session) {
     let (token, _) = test_session_with(caller, tab, state, None);
-    mark_tab_projects_readable(tab);
+    mark_tab_projects_readable(tab, ProjectsGrant::All);
     let session = authenticate(Some(&format!("Bearer {token}"))).unwrap();
     (token, session)
 }
@@ -250,12 +266,13 @@ pub struct Session {
     /// its drafts carry the reader mark. Never cleared — the text stays in
     /// the model's context for the rest of the tab.
     read_mail: Arc<AtomicBool>,
-    /// Whether this spawn's fence lets it read the projects: set once at spawn
-    /// ([`mark_tab_projects_readable`]), never from the live setting, so a
-    /// switch flipped later does not change what Eldrun reads for a running
-    /// tab. The mail `attach` argument reads nothing while it is false —
-    /// Eldrun never reads what the calling tab's fence hides.
-    projects_readable: Arc<AtomicBool>,
+    /// What this spawn's fence lets it read of the projects: set once at spawn
+    /// ([`mark_tab_projects_readable`]), never from the live setting or the
+    /// live project list, so a switch flipped or a project added later does
+    /// not change what Eldrun reads for a running tab. The mail `attach`
+    /// argument reads only inside it — Eldrun never reads what the calling
+    /// tab's fence hides.
+    projects_grant: Arc<std::sync::Mutex<ProjectsGrant>>,
     pub permits: Arc<tokio::sync::Semaphore>,
     rate: Arc<std::sync::Mutex<(std::time::Instant, u32)>>,
     schedule_rate: Arc<std::sync::Mutex<std::collections::VecDeque<std::time::Instant>>>,
@@ -280,8 +297,8 @@ impl Session {
     }
     pub fn mark_read_mail(&self) { self.read_mail.store(true, Ordering::Release); }
     pub fn has_read_mail(&self) -> bool { self.read_mail.load(Ordering::Acquire) }
-    /// [`Self::projects_readable`] as recorded at spawn.
-    pub fn projects_readable(&self) -> bool { self.projects_readable.load(Ordering::Acquire) }
+    /// [`Self::projects_grant`] as recorded at spawn.
+    pub fn projects_grant(&self) -> ProjectsGrant { self.projects_grant.lock().unwrap_or_else(|p| p.into_inner()).clone() }
     /// The stable per-tab id ownership is keyed by (`root_mcp_mail` drafts):
     /// the tab's hash, the same one that names its sandbox copy, so a resumed
     /// tab finds what its earlier spawn wrote. [`Self::id`] is per spawn.

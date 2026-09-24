@@ -197,8 +197,10 @@ channel, never `roots_for_scope`, whose roots are read-write binds; the state
 masks still win, so a default mirror under `remote-projects/` stays hidden).
 It is a widening on purpose — a root agent that reads every project reads
 untrusted text from all of them and has the open network — so it is a switch,
-recorded per tab at spawn (`Session::projects_readable`, true for an unfenced
-agent) and read by the mail `attach` argument, never the live setting. So an audit record is the **tab's**, not necessarily the agent's
+recorded per tab at spawn as the exact paths its sandbox bound
+(`Session::projects_grant`; everything for an unfenced agent) and read by the
+mail `attach` argument, never the live setting or project list — a project
+added after the tab started is refused until a new root tab is opened. So an audit record is the **tab's**, not necessarily the agent's
 own call, and the *MCP session access* fold says so. The one thing that would
 close it — the CLI reading the secret from a 0600 file and scrubbing the
 variable before it spawns children — is the CLI's to do, not Eldrun's.

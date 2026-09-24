@@ -983,14 +983,17 @@ fn attach_files(mail: &ScopedMail, caller: Caller, args: &Value, before: Option<
     // The tab's own fence, as recorded when it was spawned: with the projects
     // hidden from the tab, Eldrun reading them for it is the widening the
     // `.ics` import rule forbids.
-    if !mail.stores.session.is_some_and(|s| s.projects_readable()) {
-        return Err(attach::NEEDS_PROJECTS_READABLE.into());
-    }
+    let grant = mail.stores.session.map_or(super::root_mcp::ProjectsGrant::Hidden, |s| s.projects_grant());
+    let granted: Option<Vec<std::path::PathBuf>> = match grant {
+        super::root_mcp::ProjectsGrant::Hidden => return Err(attach::NEEDS_PROJECTS_READABLE.into()),
+        super::root_mcp::ProjectsGrant::Paths(paths) => Some(paths),
+        super::root_mcp::ProjectsGrant::All => None,
+    };
     let stores = mail.stores;
     let projects: crate::schema::projects::ProjectsList = crate::storage::read_json(stores.projects).unwrap_or_default();
     let boxes: crate::schema::boxes::BoxesList = crate::storage::read_json(&stores.state.join("boxes.json")).unwrap_or_default();
     let home = crate::paths::home_dir();
-    let lists = attach::Lists { projects: &projects, boxes: &boxes, state_dir: stores.state, home: &home };
+    let lists = attach::Lists { projects: &projects, boxes: &boxes, state_dir: stores.state, home: &home, granted: granted.as_deref() };
     let (mut add, mut reply, mut total) = (Vec::new(), Vec::new(), 0u64);
     for item in &items {
         stores.check()?;

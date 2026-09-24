@@ -73,7 +73,10 @@ each remote project's local mirror is added **read-only**.
 - Project scopes are untouched; `compute_fence_roots` for a project id keeps
   returning only that project's roots plus its boxes.
 - Recorded at spawn into the root MCP `Session` (like the token), as
-  `projects_readable: bool`. Phase 1 reads that record, never the live
+  `projects_grant`: the exact paths the fence bound (`Paths`), nothing
+  (`Hidden`), or everything for an unfenced agent (`All`). Attach refuses a
+  root outside the recorded paths, so a project added after the tab started
+  needs a new root tab. Phase 1 reads that record, never the live
   setting: the tab's own fence is what matters, and a flag flipped later must
   not change what Eldrun reads for a running tab. When the global fence is
   off (the agent is unfenced), the record is `true`: it already sees

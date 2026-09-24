@@ -3680,7 +3680,7 @@ mod tests {
         ])).unwrap();
         let state = dir.path().join("state");
         let home = dir.path().join("home");
-        let lists = crate::services::mail_attach::Lists { projects: &projects, boxes: &Vec::new(), state_dir: &state, home: &home };
+        let lists = crate::services::mail_attach::Lists { projects: &projects, boxes: &Vec::new(), state_dir: &state, home: &home, granted: None };
         let file = crate::services::mail_attach::resolve(&lists, "p1", "out/paper.pdf").unwrap();
         assert_eq!(file.source, "Alpha/out/paper.pdf");
         let staged = NewStagedFile { staged_id: "s1".into(), filename: file.filename, mime: file.mime, source: file.source, bytes: file.bytes };
