@@ -847,12 +847,25 @@ async function mutateSchedule(
       scheduleId: action.schedule_id,
     });
   } else {
+    // The phone edits only these three fields and never shows prefix commands.
+    // Keep commands the desktop composer attached to an existing rule; the
+    // desktop editor may still deliberately clear them by writing [].
+    const existing = action.type === "update"
+      ? (await invoke<ScheduledAgentPrompt[]>("agent_schedules_list", {
+        projectId,
+        scheduleTargetId: target,
+      })).find((schedule) => schedule.id === action.schedule_id)
+      : undefined;
+    if (action.type === "update" && !existing) {
+      return { status: "error", code: "schedule_not_found", message: "Schedule is unavailable" };
+    }
     await invoke("agent_schedule_upsert", {
       projectId,
       scheduleTargetId: target,
       schedule: {
         id: action.type === "create" ? crypto.randomUUID() : action.schedule_id,
         ...action.schedule,
+        ...(existing ? { preface: existing.preface ?? [] } : {}),
       },
     });
     void persistScopeLayout(projectId);
