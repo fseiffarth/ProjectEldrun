@@ -1820,7 +1820,8 @@ mod tests {
     /// `root_fence_projects_readable`: on, every project directory, box folder
     /// and remote mirror reaches a root spawn's argv as `--ro-bind-try` and
     /// never as a `--bind`; off, none of them appears; a project scope's roots
-    /// are the same either way.
+    /// are the same either way. Unix paths: the fence exists on Linux/macOS only.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn the_root_fence_exposes_projects_read_only_only_when_switched_on() {
         let projects: ProjectsList = serde_json::from_str(

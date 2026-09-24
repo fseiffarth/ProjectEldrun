@@ -395,9 +395,10 @@ pub(crate) fn pin_common_dir(cmd: &mut std::process::Command, project_dir: &Path
     let Some(git_dir) = discover_git_dir(project_dir).filter(|g| g.main) else {
         return;
     };
-    // Absolute but not canonical: git cannot parse Windows' `\\?\` form.
+    // git cannot parse Windows' `\\?\` form, and `absolute` keeps it when the
+    // caller already canonicalized `project_dir` (the dir-size breakdown does).
     if let Ok(abs) = std::path::absolute(&git_dir.path) {
-        cmd.env("GIT_COMMON_DIR", abs);
+        cmd.env("GIT_COMMON_DIR", crate::commands::fs::display_path(&abs));
     }
 }
 
