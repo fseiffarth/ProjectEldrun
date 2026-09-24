@@ -6,6 +6,7 @@ import { setUnauthorizedHandler, type TabRow } from "./api";
 import { classifyUnavailable, describeUnavailable, unavailableDetail, type UnavailableReason } from "./connection";
 import { forgetLastPlace, rememberLastPlace, restoreLastPlace, type LastPlace, type MobileSection } from "./lastPlace";
 import { hasLocalUnlock } from "./localLock";
+import { isUntested } from "../../src/lib/untested";
 import { Pair } from "./screens/Pair";
 import { LocalUnlock } from "./screens/LocalUnlock";
 import { Home } from "./screens/Home";
@@ -313,6 +314,7 @@ export function App() {
     return (
       <Splash message={title} tone="error">
         <p className="splash-hint">{hint}</p>
+        {unavailable.reason === "host_down" && isUntested("mobile.link.offlineShell") && <p className="splash-hint muted"><span className="untested">Untested</span></p>}
         <p className="splash-hint muted">No project or terminal data is loaded from cache.</p>
         {unavailable.detail && <p className="splash-detail">{unavailable.detail}</p>}
         <button className="primary" onClick={begin}>Retry</button>

@@ -65,6 +65,15 @@ self.addEventListener("fetch", (event) => {
     if (cacheable) {
       const copy = response.clone(); caches.open(CACHE).then((cache) => cache.put(event.request, copy));
     }
+    /* A navigation the proxy answered *for* the sidecar is a miss, not a page:
+     * with the desktop closed, Tailscale Serve answers 502 with its own error
+     * page, and the phone rendered that instead of the app. The cached shell
+     * boots and then says, in the app's own words, that Eldrun Mobile isn't
+     * running on the desktop (`connection.ts`, `host_down`). The proxy's body
+     * is never stored — `cacheable` above already needs `ok`. */
+    if (navigation && (!response.ok || !isDocument)) {
+      return cached().then((hit) => hit || response);
+    }
     return response;
   });
   /* Hashed build output is immutable — the host serves it with a one-year
