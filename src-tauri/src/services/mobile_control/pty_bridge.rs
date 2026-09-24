@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     io::{Read, Write},
     path::PathBuf,
     process::Command,
@@ -9,10 +9,10 @@ use std::{
     },
 };
 
-use axum::extract::ws::{CloseFrame, Message, WebSocket};
+use axum::extract::ws::{Message, WebSocket};
 use futures_util::{SinkExt, StreamExt};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 
 use super::protocol::{
     TerminalControl, TerminalEvent, MAX_COLS, MAX_INPUT_FRAME, MAX_OUTPUT_QUEUE, MAX_ROWS,
@@ -237,6 +237,98 @@ fn normalize_scrollback(output: Vec<u8>) -> Vec<u8> {
 /// one that has not gone out in this long has no reader behind it.
 const WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
+/// The history replay goes out in frames of at most this many bytes, each
+/// under its own `WRITE_TIMEOUT`. As one frame, ten thousand captured lines
+/// (`MOBILE_SCROLLBACK_LINES`, easily a megabyte with colour) timed out on a
+/// slow link before the phone had taken it, the attach returned without a
+/// `closing` frame, and the phone reconnected into the same replay again.
+const REPLAY_CHUNK: usize = 64 * 1024;
+
+/// The replay as the frames that carry it: whole, in order, none over
+/// `REPLAY_CHUNK`. The `replay` marker goes out once before the first; a
+/// chunk boundary means nothing to the phone's emulator, which reads a byte
+/// stream.
+fn replay_frames(history: &[u8]) -> Vec<Vec<u8>> {
+    history.chunks(REPLAY_CHUNK).map(<[u8]>::to_vec).collect()
+}
+
+/// The session's output on its way to the phone, bounded by
+/// `MAX_OUTPUT_QUEUE` bytes.
+///
+/// A phone that reads slower than a flooding pane fills this. It used to be a
+/// channel whose full state ended the reader thread and closed the socket
+/// with 1013, and the phone then reconnected into a replay of the very flood
+/// that had closed it. The link is kept instead: the oldest queued bytes are
+/// shed, and the newest — the screen the pane is drawing now — go out. A
+/// terminal is a repaint stream, so what a shed costs is a screen the next
+/// redraw replaces, not a connection.
+struct OutputQueue {
+    state: Mutex<OutputState>,
+    ready: Notify,
+}
+
+#[derive(Default)]
+struct OutputState {
+    chunks: VecDeque<Vec<u8>>,
+    bytes: usize,
+    /// The reader has stopped: the PTY reached EOF or the queue was closed.
+    closed: bool,
+    /// Bytes were dropped at least once.
+    shed: bool,
+}
+
+impl OutputQueue {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new(OutputState::default()),
+            ready: Notify::new(),
+        })
+    }
+
+    /// Queue one chunk, shedding the oldest ones past the byte budget.
+    fn push(&self, chunk: Vec<u8>) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.bytes += chunk.len();
+        state.chunks.push_back(chunk);
+        while state.bytes > MAX_OUTPUT_QUEUE && state.chunks.len() > 1 {
+            if let Some(oldest) = state.chunks.pop_front() {
+                state.bytes -= oldest.len();
+                state.shed = true;
+            }
+        }
+        drop(state);
+        self.ready.notify_one();
+    }
+
+    fn close(&self) {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner).closed = true;
+        self.ready.notify_one();
+    }
+
+    fn shed(&self) -> bool {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner).shed
+    }
+
+    /// The next chunk; `None` once the reader has stopped and nothing is left.
+    async fn pop(&self) -> Option<Vec<u8>> {
+        loop {
+            {
+                let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+                if let Some(chunk) = state.chunks.pop_front() {
+                    state.bytes -= chunk.len();
+                    return Some(chunk);
+                }
+                if state.closed {
+                    return None;
+                }
+            }
+            // `notify_one` stores a permit when nobody waits, so a push that
+            // lands between the check above and this await is not lost.
+            self.ready.notified().await;
+        }
+    }
+}
+
 /// How long a viewer may go without sending anything before it is closed
 /// (`idle_timeout`, retry allowed).
 ///
@@ -349,22 +441,21 @@ pub async fn attach(
     let mut writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let master = pair.master;
     const OUTPUT_CHUNK: usize = 16 * 1024;
-    let (output_tx, mut output_rx) = mpsc::channel::<Vec<u8>>(MAX_OUTPUT_QUEUE / OUTPUT_CHUNK);
-    let output_backpressure = Arc::new(AtomicBool::new(false));
-    let reader_backpressure = output_backpressure.clone();
-    let output_task = tokio::task::spawn_blocking(move || loop {
-        let mut bytes = vec![0; OUTPUT_CHUNK];
-        let Ok(read) = reader.read(&mut bytes) else {
-            break;
-        };
-        if read == 0 {
-            break;
+    let output = OutputQueue::new();
+    let reader_queue = output.clone();
+    let output_task = tokio::task::spawn_blocking(move || {
+        loop {
+            let mut bytes = vec![0; OUTPUT_CHUNK];
+            let Ok(read) = reader.read(&mut bytes) else {
+                break;
+            };
+            if read == 0 {
+                break;
+            }
+            bytes.truncate(read);
+            reader_queue.push(bytes);
         }
-        bytes.truncate(read);
-        if output_tx.try_send(bytes).is_err() {
-            reader_backpressure.store(true, Ordering::Release);
-            break;
-        }
+        reader_queue.close();
     });
     // The desktop can widen the window at any moment, which would silently start
     // panning the phone again. Poll it off the main loop so the fork never
@@ -410,8 +501,10 @@ pub async fn attach(
             return Ok(());
         }
     }
-    if !history.is_empty() && !deliver(&mut ws_tx, Message::Binary(history.into())).await {
-        return Ok(());
+    for chunk in replay_frames(&history) {
+        if !deliver(&mut ws_tx, Message::Binary(chunk.into())).await {
+            return Ok(());
+        }
     }
     let mut authorization_tick = tokio::time::interval(std::time::Duration::from_secs(1));
     let mut tick = 0u32;
@@ -459,17 +552,11 @@ pub async fn attach(
             Some((cols, rows)) = window_rx.recv() => {
                 if !deliver(&mut ws_tx, Message::Text(TerminalEvent::Window { cols, rows }.to_frame().into())).await { break Ok(()); }
             }
-            output = output_rx.recv() => match output {
+            chunk = output.pop() => match chunk {
                 Some(bytes) => if !deliver(&mut ws_tx, Message::Binary(bytes.into())).await { break Ok(()); },
-                None => {
-                    if output_backpressure.load(Ordering::Acquire) {
-                        let _ = deliver(&mut ws_tx, Message::Close(Some(CloseFrame {
-                            code: 1013,
-                            reason: "output_backpressure".into(),
-                        }))).await;
-                    }
-                    break Ok(())
-                },
+                // The pane's output ended: tmux detached the client, or the
+                // session is gone. A shed on the way is not a reason to close.
+                None => break Ok(()),
             },
             incoming = ws_rx.next() => match incoming {
                 Some(Ok(Message::Binary(bytes))) => {
@@ -529,6 +616,8 @@ pub async fn attach(
     drop(session);
     drop(writer);
     drop(master);
+    // Observable in tests only: a shed is a repaint the next redraw covers.
+    let _ = output.shed();
     result
 }
 
@@ -538,8 +627,11 @@ mod tests {
         normalize_scrollback, parse_window_size, tmux_attach_command, tmux_capture_command,
         tmux_window_size_command, MOBILE_SCROLLBACK_LINES,
     };
-    use super::{ack_frame, deliver, input_report_due, INPUT_REPORT_INTERVAL, IDLE_TIMEOUT, WRITE_TIMEOUT};
-    use crate::services::mobile_control::protocol::{TerminalControl, TerminalEvent};
+    use super::{
+        ack_frame, deliver, input_report_due, replay_frames, OutputQueue, IDLE_TIMEOUT,
+        INPUT_REPORT_INTERVAL, REPLAY_CHUNK, WRITE_TIMEOUT,
+    };
+    use crate::services::mobile_control::protocol::{TerminalControl, TerminalEvent, MAX_OUTPUT_QUEUE};
     use axum::extract::ws::Message;
     use std::{
         ffi::OsStr,
@@ -732,6 +824,63 @@ mod tests {
             serde_json::from_str::<TerminalControl>(r#"{"type":"ping"}"#),
             Ok(TerminalControl::Ping)
         ));
+    }
+
+    #[test]
+    fn the_replay_goes_out_in_bounded_frames_in_order() {
+        assert!(replay_frames(b"").is_empty());
+        let small = replay_frames(b"one\r\n");
+        assert_eq!(small, vec![b"one\r\n".to_vec()]);
+        let history: Vec<u8> = (0..(REPLAY_CHUNK * 2 + 17)).map(|i| (i % 251) as u8).collect();
+        let frames = replay_frames(&history);
+        assert_eq!(frames.len(), 3);
+        assert!(frames.iter().all(|frame| frame.len() <= REPLAY_CHUNK));
+        assert_eq!(frames[0].len(), REPLAY_CHUNK);
+        assert_eq!(frames[2].len(), 17);
+        assert_eq!(frames.concat(), history);
+    }
+
+    #[tokio::test]
+    async fn a_flooding_pane_sheds_its_oldest_output_and_keeps_the_link() {
+        let queue = OutputQueue::new();
+        let chunk = vec![b'x'; 16 * 1024];
+        let fits = MAX_OUTPUT_QUEUE / chunk.len();
+        for _ in 0..fits {
+            queue.push(chunk.clone());
+        }
+        assert!(!queue.shed(), "within budget nothing is dropped");
+        // The phone stalls; the pane keeps painting.
+        for _ in 0..3 {
+            queue.push(vec![b'y'; chunk.len()]);
+        }
+        assert!(queue.shed());
+        {
+            let state = queue.state.lock().unwrap();
+            assert!(state.bytes <= MAX_OUTPUT_QUEUE);
+            assert_eq!(state.chunks.len(), fits);
+            // The newest bytes — the screen as it is now — are what is kept.
+            assert_eq!(state.chunks.back().unwrap()[0], b'y');
+        }
+        // …and the link is still open: the consumer drains rather than closes.
+        assert!(queue.pop().await.is_some());
+        queue.close();
+        while queue.pop().await.is_some() {}
+    }
+
+    #[tokio::test]
+    async fn the_output_consumer_ends_only_when_the_reader_has_stopped() {
+        let queue = OutputQueue::new();
+        let producer = {
+            let queue = queue.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                queue.push(b"late".to_vec());
+                queue.close();
+            })
+        };
+        assert_eq!(queue.pop().await.as_deref(), Some(&b"late"[..]));
+        assert!(queue.pop().await.is_none());
+        producer.await.expect("producer");
     }
 
     #[test]
