@@ -464,6 +464,12 @@ pub async fn pty_spawn(
     if agent_spawn && !root_agent && reader_project.is_none() {
         crate::services::root_mcp::apply_schedule_to_spawn(&mut opts);
     }
+    // The read-only help server (`services::help_mcp`): every LOCAL agent tab,
+    // root or project, beside whatever the lines above handed out. Last, since
+    // it merges into the Vibe env the root/schedule wiring sets outright.
+    if agent_spawn {
+        crate::services::root_mcp::apply_help_to_spawn(&mut opts);
+    }
     let mut mcp_spawn_guard = agent_spawn
         .then(|| crate::services::root_mcp::SpawnTokenGuard::new(&opts));
 
@@ -633,6 +639,10 @@ pub async fn pty_spawn(
     // tmux server on the host while the command *inside* its session is
     // fenced.  A missing/blocked fence tool fails closed.
     let mut fenced_registration: Option<(String, String)> = None;
+    // What the root tab's MCP session records as `projects_readable`: the
+    // answer the fence argv got when fenced, `true` when the agent runs
+    // unfenced (it already reads everything).
+    let mut root_reads_projects = root_agent;
     #[cfg(target_os = "linux")]
     let mut fenced_content_shadow = None;
     #[cfg(not(target_os = "linux"))]
@@ -664,6 +674,7 @@ pub async fn pty_spawn(
                 crate::services::agent_fence::wrap_pty_options_sandbox_exec(
                     &mut opts, roots, &scope_id,
                 )?;
+                root_reads_projects = crate::services::agent_fence::take_root_projects_granted(&opts.id);
                 fenced_registration = Some((opts.id.clone(), scope_id));
             }
             crate::services::agent_fence::FenceDecision::Unavailable => {
@@ -671,6 +682,11 @@ pub async fn pty_spawn(
             }
             _ => {}
         }
+    }
+
+    // Before the agent process exists, so no tool call can see the default.
+    if root_agent && root_reads_projects {
+        crate::services::root_mcp::mark_tab_projects_readable(&opts.id);
     }
 
     // Persistent LOCAL (tmux) sessions (TODO #85): a tab that resolved to a LOCAL

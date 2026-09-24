@@ -75,9 +75,12 @@ use sha2::{Digest, Sha256};
 use crate::schema::mail::{
     MailAttachmentMeta, MailDraft, MailFlag, MailFolder, MailFolderKind, MailHeader,
     MailHeaderPage, MailPriority, MailPriorityCounts, MailPrioritySource, MailSort,
-    StagedAttachment,
+    NewStagedFile, StagedAttachment,
 };
 use crate::services::mail_crypt::{self, MailKeys};
+
+/// One staged file of a send: its row and the decrypted outbox copy.
+pub type OutgoingFile = (StagedAttachment, Vec<u8>);
 
 /// Forward-only schema version, recorded in `meta`.
 ///
@@ -549,6 +552,12 @@ impl MailStore {
             [],
         )
         .map_err(|e| e.to_string())?;
+        // Who staged a file and, for an agent's, where it came from
+        // (`<project name>/<relative path>`, sealable). Additive for the reason
+        // the `priority` ALTER documents; `''` reads as unset, so every row
+        // staged before these existed is the user's own pick.
+        let _ = conn.execute("ALTER TABLE staged ADD COLUMN origin TEXT NOT NULL DEFAULT ''", []);
+        let _ = conn.execute("ALTER TABLE staged ADD COLUMN source TEXT NOT NULL DEFAULT ''", []);
         // v1 → v2. Both of these moved a `UNIQUE`/`PRIMARY KEY` off a column that
         // became sealable and onto a keyed digest beside it, which SQLite cannot
         // express as an `ALTER` — a constraint change is a table rebuild. The
@@ -2316,9 +2325,112 @@ impl MailStore {
 
     /// Atomic MCP compare-and-swap. A composer save clears origin/owner and
     /// makes a racing agent edit/delete fail instead of reclaiming the draft.
+    ///
+    /// Invariant: every `staged` table row of an agent draft is agent-origin.
+    /// A file the user picked into it (`mail_attach_pick`, no save needed)
+    /// takes the draft out of the agent's reach, like a composer save does.
+    /// The draft JSON's `staged` is rewritten from the table, which is the
+    /// truth a send reads; the JSON only mirrors it.
     pub fn change_agent_draft(&self, before: Option<&MailDraft>, after: Option<&MailDraft>) -> Result<(), String> {
         let draft = after.or(before).ok_or("Missing draft")?;
-        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        {
+            let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+            self.agent_draft_guard(&conn, before, after)?;
+            if let Some(next) = after {
+                let mut next = next.clone();
+                next.staged = self.staged_rows(&conn, &next.id)?;
+                self.write_agent_draft(&conn, before.is_none(), &next)?;
+                return Ok(());
+            }
+            conn.execute("DELETE FROM drafts WHERE id = ?1", params![draft.id]).map_err(|e| e.to_string())?;
+            conn.execute("DELETE FROM staged WHERE draft_id = ?1", params![draft.id]).map_err(|e| e.to_string())?;
+        }
+        // An agent's delete takes its staged copies with it, as `delete_draft`
+        // does for the composer's discard.
+        let _ = std::fs::remove_dir_all(self.outbox_dir(&draft.id));
+        Ok(())
+    }
+
+    /// An agent's write that also changes the files it staged, all under one
+    /// lock: the draft compare-and-swap, the table-origin check, the sealed
+    /// copies, the rows, and the draft JSON (its `staged` rewritten from the
+    /// table). `remove` names agent rows only; a user row is never touched.
+    /// Returns the draft's staged set after the change.
+    pub fn change_draft_files(
+        &self,
+        before: Option<&MailDraft>,
+        after: &MailDraft,
+        add: Vec<NewStagedFile>,
+        remove: &[String],
+    ) -> Result<Vec<StagedAttachment>, String> {
+        let mut conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        self.agent_draft_guard(&conn, before, Some(after))?;
+        let dir = self.outbox_dir(&after.id);
+        let mut written: Vec<PathBuf> = Vec::new();
+        let result = (|| -> Result<Vec<StagedAttachment>, String> {
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            if !add.is_empty() {
+                std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                harden(&dir, 0o700);
+            }
+            for file in &add {
+                let path = dir.join(sanitize_id(&file.staged_id));
+                std::fs::write(&path, self.seal_staged(&after.id, &file.staged_id, &file.bytes))
+                    .map_err(|e| e.to_string())?;
+                written.push(path.clone());
+                harden(&path, 0o600);
+                let row = staged_row(&after.id, &file.staged_id);
+                tx.execute(
+                    "INSERT INTO staged (draft_id, staged_id, filename, mime, size, origin, source)
+                     VALUES (?1,?2,?3,?4,?5,'agent',?6)",
+                    params![
+                        after.id,
+                        file.staged_id,
+                        self.seal_text("", "staged", "filename", &row, &file.filename),
+                        self.seal_text("", "staged", "mime", &row, &file.mime),
+                        file.bytes.len() as i64,
+                        self.seal_text("", "staged", "source", &row, &file.source)
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            for id in remove {
+                tx.execute(
+                    "DELETE FROM staged WHERE draft_id = ?1 AND staged_id = ?2 AND origin = 'agent'",
+                    params![after.id, id],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            let mut next = after.clone();
+            next.staged = self.staged_rows(&tx, &after.id)?;
+            self.write_agent_draft(&tx, before.is_none(), &next)?;
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(next.staged)
+        })();
+        drop(conn);
+        match result {
+            Ok(rows) => {
+                for id in remove.iter().filter(|id| !rows.iter().any(|r| &r.staged_id == *id)) {
+                    let _ = std::fs::remove_file(dir.join(sanitize_id(id)));
+                }
+                Ok(rows)
+            }
+            Err(e) => {
+                // Nothing staged: a copy whose row never landed is removed.
+                for path in written {
+                    let _ = std::fs::remove_file(path);
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// The checks every agent write makes under the store lock: the stored
+    /// draft still equals `before` (a composer save in between fails the
+    /// write), `after` is shaped like an agent draft, and no table row of the
+    /// draft is the user's.
+    fn agent_draft_guard(&self, conn: &Connection, before: Option<&MailDraft>, after: Option<&MailDraft>) -> Result<(), String> {
+        let draft = after.or(before).ok_or("Missing draft")?;
         let current: Option<Option<String>> = conn.query_row(
             "SELECT account_id, json FROM drafts WHERE id = ?1", params![draft.id], |r| {
                 let account: String = r.get(0)?;
@@ -2332,25 +2444,75 @@ impl MailStore {
             .map(serde_json::to_value).transpose().map_err(|e| e.to_string())?;
         if current != expected { return Err("Draft changed; refresh before editing".into()); }
         if let Some(next) = after {
-            if next.origin.is_none() || next.owner_session.is_none() || !next.staged.is_empty() || !next.bcc.is_empty() {
+            if next.origin.is_none() || next.owner_session.is_none() || !next.bcc.is_empty()
+                || next.staged.iter().any(|a| a.origin.as_deref() != Some("agent"))
+            {
                 return Err("Invalid agent draft".into());
             }
-            if before.is_none() {
-                let count: i64 = conn.query_row("SELECT COUNT(*) FROM drafts", [], |r| r.get(0)).map_err(|e| e.to_string())?;
-                if count >= 500 { return Err("Draft storage limit reached; review existing drafts".into()); }
-            }
-            conn.execute("INSERT INTO drafts (id, account_id, json) VALUES (?1, ?2, ?3)
-                ON CONFLICT(id) DO UPDATE SET account_id = excluded.account_id, json = excluded.json",
-                params![next.id, next.account_id, self.seal_text(&next.account_id, "drafts", "json", &next.id,
-                    &serde_json::to_string(next).map_err(|e| e.to_string())?)]).map_err(|e| e.to_string())?;
-        } else {
-            conn.execute("DELETE FROM drafts WHERE id = ?1", params![draft.id]).map_err(|e| e.to_string())?;
+        }
+        let user_rows: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM staged WHERE draft_id = ?1 AND origin != 'agent'",
+            params![draft.id], |r| r.get(0)).map_err(|e| e.to_string())?;
+        if user_rows > 0 {
+            return Err("the user attached a file to this draft in the composer; it is out of the agent's reach".into());
         }
         Ok(())
     }
 
+    fn write_agent_draft(&self, conn: &Connection, new: bool, next: &MailDraft) -> Result<(), String> {
+        if new {
+            let count: i64 = conn.query_row("SELECT COUNT(*) FROM drafts", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+            if count >= 500 { return Err("Draft storage limit reached; review existing drafts".into()); }
+        }
+        conn.execute("INSERT INTO drafts (id, account_id, json) VALUES (?1, ?2, ?3)
+            ON CONFLICT(id) DO UPDATE SET account_id = excluded.account_id, json = excluded.json",
+            params![next.id, next.account_id, self.seal_text(&next.account_id, "drafts", "json", &next.id,
+                &serde_json::to_string(next).map_err(|e| e.to_string())?)]).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// A composer save: the staged list is the store's, not the caller's, read
+    /// and written under one lock so a pick or an agent write cannot land
+    /// between the read and the save.
+    pub fn save_draft_with_staged(&self, draft: &mut MailDraft) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        draft.staged = self.staged_rows(&conn, &draft.id)?;
+        Self::put_draft(self, &conn, draft)
+    }
+
+    /// What a send builds from, checked under one lock: the draft is the
+    /// user's (a composer save cleared its `origin`), and its staged set is
+    /// exactly `staged_ids` — the set the composer showed. The bytes are the
+    /// sealed copies, read before the lock is released.
+    pub fn outgoing(&self, draft_id: &str, staged_ids: &[String]) -> Result<(MailDraft, Vec<OutgoingFile>), String> {
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        let draft = self.draft_in(&conn, draft_id)?.ok_or_else(|| format!("draft '{draft_id}' not found"))?;
+        if draft.origin.is_some() {
+            return Err("this draft was written by an agent and has not been saved in the composer; open it there and send it from there".into());
+        }
+        let rows = self.staged_rows(&conn, draft_id)?;
+        let mut have: Vec<&str> = rows.iter().map(|r| r.staged_id.as_str()).collect();
+        let mut shown: Vec<&str> = staged_ids.iter().map(String::as_str).collect();
+        have.sort_unstable();
+        shown.sort_unstable();
+        shown.dedup();
+        if have != shown {
+            return Err("the attachments changed since the composer showed them; review them and send again".into());
+        }
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let bytes = self.staged_bytes(draft_id, &row.staged_id)?;
+            out.push((row, bytes));
+        }
+        Ok((draft, out))
+    }
+
     pub fn save_draft(&self, draft: &MailDraft) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        self.put_draft(&conn, draft)
+    }
+
+    fn put_draft(&self, conn: &Connection, draft: &MailDraft) -> Result<(), String> {
         conn.execute(
             "INSERT INTO drafts (id, account_id, json) VALUES (?1, ?2, ?3)
              ON CONFLICT(id) DO UPDATE SET account_id = excluded.account_id, json = excluded.json",
@@ -2376,6 +2538,10 @@ impl MailStore {
 
     pub fn draft(&self, draft_id: &str) -> Result<Option<MailDraft>, String> {
         let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        self.draft_in(&conn, draft_id)
+    }
+
+    fn draft_in(&self, conn: &Connection, draft_id: &str) -> Result<Option<MailDraft>, String> {
         let json: Option<Option<String>> = conn
             .query_row(
                 "SELECT account_id, json FROM drafts WHERE id = ?1",
@@ -2464,13 +2630,18 @@ impl MailStore {
             filename: filename.to_string(),
             mime: mime.to_string(),
             size: bytes.len() as u64,
+            origin: None,
+            source: None,
         };
         let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        // The user's pick: `origin` stays `''`, which is what takes an agent
+        // draft out of the agent's reach (`agent_draft_guard`).
         conn.execute(
-            "INSERT INTO staged (draft_id, staged_id, filename, mime, size)
-             VALUES (?1,?2,?3,?4,?5)
+            "INSERT INTO staged (draft_id, staged_id, filename, mime, size, origin, source)
+             VALUES (?1,?2,?3,?4,?5,'','')
              ON CONFLICT(draft_id, staged_id) DO UPDATE SET
-                filename = excluded.filename, mime = excluded.mime, size = excluded.size",
+                filename = excluded.filename, mime = excluded.mime, size = excluded.size,
+                origin = '', source = ''",
             params![
                 draft_id,
                 staged.staged_id,
@@ -2510,9 +2681,13 @@ impl MailStore {
 
     pub fn staged(&self, draft_id: &str) -> Result<Vec<StagedAttachment>, String> {
         let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        self.staged_rows(&conn, draft_id)
+    }
+
+    fn staged_rows(&self, conn: &Connection, draft_id: &str) -> Result<Vec<StagedAttachment>, String> {
         let mut stmt = conn
             .prepare(
-                "SELECT staged_id, filename, mime, size FROM staged
+                "SELECT staged_id, filename, mime, size, origin, source FROM staged
                  WHERE draft_id = ?1 ORDER BY staged_id",
             )
             .map_err(|e| e.to_string())?;
@@ -2520,6 +2695,8 @@ impl MailStore {
             .query_map(params![draft_id], |r| {
                 let staged_id: String = r.get(0)?;
                 let row = staged_row(draft_id, &staged_id);
+                let origin: String = r.get(4)?;
+                let source = self.open_text(r, 5, "", "staged", "source", &row)?.unwrap_or_default();
                 Ok(StagedAttachment {
                     filename: self
                         .open_text(r, 1, "", "staged", "filename", &row)?
@@ -2529,6 +2706,8 @@ impl MailStore {
                         .unwrap_or_default(),
                     size: r.get::<_, i64>(3)? as u64,
                     staged_id,
+                    origin: Some(origin).filter(|o| !o.is_empty()),
+                    source: Some(source).filter(|s| !s.is_empty()),
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -2659,7 +2838,7 @@ impl MailStore {
             "staged",
             &["draft_id", "staged_id"],
             None,
-            &["filename", "mime"],
+            &["filename", "mime", "source"],
         )?;
         changed += self.seal_table("folders", &["id"], Some("account_id"), &["path", "name"])?;
         changed += self.seal_table("mail_remote_allow", &["addr_key"], None, &["address"])?;
@@ -3371,6 +3550,147 @@ mod tests {
             priority_source: None,
             priority_reason: None,
         }
+    }
+
+    fn agent_draft(id: &str) -> MailDraft {
+        MailDraft { id: id.into(), account_id: "a1".into(), origin: Some("agent".into()), owner_session: Some("tab".into()), ..Default::default() }
+    }
+
+    fn agent_file(id: &str, bytes: &[u8]) -> NewStagedFile {
+        NewStagedFile { staged_id: id.into(), filename: format!("{id}.pdf"), mime: "application/pdf".into(), source: format!("Alpha/out/{id}.pdf"), bytes: bytes.to_vec() }
+    }
+
+    /// An agent's files land as agent rows with their source, the draft JSON
+    /// mirrors the table, and replace semantics drop exactly the named rows.
+    #[test]
+    fn agent_files_are_staged_as_agent_rows_and_replaced_in_one_step() {
+        let (_dir, store) = store();
+        let d = agent_draft("d1");
+        let rows = store.change_draft_files(None, &d, vec![agent_file("s1", b"one"), agent_file("s2", b"two")], &[]).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|r| r.origin.as_deref() == Some("agent")));
+        assert_eq!(rows[0].source.as_deref(), Some("Alpha/out/s1.pdf"));
+        let stored = store.draft("d1").unwrap().unwrap();
+        assert_eq!(stored.staged, rows, "the JSON mirrors the table");
+        let rows = store.change_draft_files(Some(&stored), &stored, vec![agent_file("s3", b"three")], &["s1".into(), "s2".into()]).unwrap();
+        assert_eq!(rows.iter().map(|r| r.staged_id.as_str()).collect::<Vec<_>>(), ["s3"]);
+        assert!(store.staged_bytes("d1", "s1").is_err(), "a replaced copy is removed");
+        assert_eq!(store.staged_bytes("d1", "s3").unwrap(), b"three");
+    }
+
+    /// A file the user picked into an agent draft takes the draft out of the
+    /// agent's reach: text writes, file writes and deletes all refuse.
+    #[test]
+    fn an_agent_write_against_a_draft_with_a_user_row_is_refused() {
+        let (_dir, store) = store();
+        let d = agent_draft("d1");
+        store.change_agent_draft(None, Some(&d)).unwrap();
+        store.stage_attachment("d1", "u1", "mine.txt", "text/plain", b"mine").unwrap();
+        let mut next = d.clone();
+        next.subject = "x".into();
+        assert!(store.change_agent_draft(Some(&d), Some(&next)).unwrap_err().contains("out of the agent's reach"));
+        assert!(store.change_draft_files(Some(&d), &d, vec![agent_file("s1", b"a")], &[]).is_err());
+        assert!(store.change_agent_draft(Some(&d), None).is_err());
+        assert_eq!(store.staged("d1").unwrap().len(), 1, "nothing staged, nothing dropped");
+        assert!(store.staged_bytes("d1", "s1").is_err());
+    }
+
+    /// Compare-and-swap: a composer save between the agent's read and write
+    /// makes the file write fail, and nothing it carried is staged.
+    #[test]
+    fn a_composer_save_in_between_fails_the_agent_file_write() {
+        let (_dir, store) = store();
+        let d = agent_draft("d1");
+        store.change_agent_draft(None, Some(&d)).unwrap();
+        let mut human = d.clone();
+        human.origin = None;
+        human.owner_session = None;
+        store.save_draft_with_staged(&mut human).unwrap();
+        assert!(store.change_draft_files(Some(&d), &d, vec![agent_file("s1", b"a")], &[]).is_err());
+        assert!(store.staged("d1").unwrap().is_empty());
+        assert!(!store.outbox_dir("d1").join("s1").exists(), "no copy outlives a refused write");
+    }
+
+    #[test]
+    fn an_agent_delete_removes_the_outbox_copies() {
+        let (_dir, store) = store();
+        let d = agent_draft("d1");
+        store.change_draft_files(None, &d, vec![agent_file("s1", b"a")], &[]).unwrap();
+        assert!(store.outbox_dir("d1").exists());
+        let stored = store.draft("d1").unwrap().unwrap();
+        store.change_agent_draft(Some(&stored), None).unwrap();
+        assert!(!store.outbox_dir("d1").exists());
+        assert!(store.staged("d1").unwrap().is_empty());
+    }
+
+    /// A `staged` table from before `origin`/`source` existed gains them on
+    /// open, and its rows read back as the user's own picks.
+    #[test]
+    fn old_staged_rows_load_as_the_users_own() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let conn = Connection::open(dir.path().join("mail.db")).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE staged (draft_id TEXT NOT NULL, staged_id TEXT NOT NULL, filename TEXT NOT NULL,
+                    mime TEXT NOT NULL, size INTEGER NOT NULL, PRIMARY KEY (draft_id, staged_id));
+                 INSERT INTO staged VALUES ('d1', 's1', 'old.pdf', 'application/pdf', 3);",
+            )
+            .unwrap();
+        }
+        let store = MailStore::open(dir.path()).unwrap();
+        let rows = store.staged("d1").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!((rows[0].filename.as_str(), rows[0].origin.as_deref(), rows[0].source.as_deref()), ("old.pdf", None, None));
+        // And a draft JSON without the fields round-trips through the schema.
+        let old: MailDraft = serde_json::from_str(r#"{"id":"d1","account_id":"a1","staged":[{"staged_id":"s1","filename":"old.pdf","mime":"application/pdf","size":3}]}"#).unwrap();
+        assert_eq!(old.staged[0].origin, None);
+        assert!(!serde_json::to_string(&old).unwrap().contains("origin"));
+    }
+
+    /// Send is bound to the reviewed set: a stale id list refuses, a draft the
+    /// composer never saved refuses, and the matching set sends the copies.
+    #[test]
+    fn outgoing_is_bound_to_the_shown_set_and_a_saved_draft() {
+        let (_dir, store) = store();
+        let d = agent_draft("d1");
+        store.change_draft_files(None, &d, vec![agent_file("s1", b"one")], &[]).unwrap();
+        assert!(store.outgoing("d1", &["s1".into()]).unwrap_err().contains("agent"), "origin still set");
+        let mut mine = store.draft("d1").unwrap().unwrap();
+        mine.origin = None;
+        mine.owner_session = None;
+        store.save_draft_with_staged(&mut mine).unwrap();
+        assert_eq!(mine.staged.len(), 1);
+        assert!(store.outgoing("d1", &[]).is_err(), "a file the composer did not show");
+        assert!(store.outgoing("d1", &["s1".into(), "s9".into()]).is_err());
+        let (_, files) = store.outgoing("d1", &["s1".into()]).unwrap();
+        assert_eq!(files[0].1, b"one");
+    }
+
+    /// The copy is taken when the agent asks: a project file changed after the
+    /// call is not what is sent.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn content_is_pinned_at_call_time() {
+        let (dir, store) = store();
+        let work = dir.path().join("work/alpha");
+        std::fs::create_dir_all(work.join("out")).unwrap();
+        std::fs::write(work.join("out/paper.pdf"), b"version one").unwrap();
+        let projects: crate::schema::projects::ProjectsList = serde_json::from_value(serde_json::json!([
+            {"id":"p1","name":"Alpha","status":"active","position":0,"local_file":"","directory": work}
+        ])).unwrap();
+        let state = dir.path().join("state");
+        let home = dir.path().join("home");
+        let lists = crate::services::mail_attach::Lists { projects: &projects, boxes: &Vec::new(), state_dir: &state, home: &home };
+        let file = crate::services::mail_attach::resolve(&lists, "p1", "out/paper.pdf").unwrap();
+        assert_eq!(file.source, "Alpha/out/paper.pdf");
+        let staged = NewStagedFile { staged_id: "s1".into(), filename: file.filename, mime: file.mime, source: file.source, bytes: file.bytes };
+        store.change_draft_files(None, &agent_draft("d1"), vec![staged], &[]).unwrap();
+        std::fs::write(work.join("out/paper.pdf"), b"version two, swapped in").unwrap();
+        let mut mine = store.draft("d1").unwrap().unwrap();
+        mine.origin = None;
+        store.save_draft_with_staged(&mut mine).unwrap();
+        let (_, files) = store.outgoing("d1", &["s1".into()]).unwrap();
+        assert_eq!(files[0].1, b"version one");
     }
 
     /// The sync loop's arrival watermark: `None` before any message lands, then

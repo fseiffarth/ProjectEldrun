@@ -49,8 +49,9 @@
 //!   not the shared root: one flat directory let a contained agent overwrite
 //!   another project's tab record and so choose which conversation an
 //!   *uncontained* agent resumes;
-//! - Gemini creds (`~/.gemini`, `~/.config/gemini`, rw, when present) — narrowed
-//!   from the whole `~/.config` so `gh`/`gcloud`/etc. secrets are *not* exposed;
+//! - `~/.gemini` (and `~/.config/gemini`) **per entry**, like `~/.claude`: creds
+//!   and conversations rw, its settings/MCP files staged, its commands and
+//!   extensions read-only (see [`GEMINI_UNMOUNTED`]);
 //! - `<state_dir>/hooks` mounted **read-only** (see the RCE note below);
 //! - the agents' hook-registration files (`~/.claude/settings.json[.local]`,
 //!   `~/.codex/config.toml`) as **per-project writable copies** shadowing the
@@ -98,7 +99,9 @@
 //! Tabs are spawned as `docker exec -i -t -w <cwd> … <name> sh -c '…' sh <cmd>
 //! <args…>`. Per-tab env (`opts.env`, `TERM`/`COLORTERM`) and **agent-auth env**
 //! (`ssh_exec::AGENT_AUTH_ENV`, read off the host process at exec time so
-//! rotated tokens are picked up per spawn) ride as `-e` flags. The `sh -c`
+//! rotated tokens are picked up per spawn) ride as `-e` flags — secrets as a
+//! bare `-e NAME` whose value docker reads from the client's environment, since
+//! `/proc/<pid>/cmdline` is world-readable (#864). The `sh -c`
 //! wrapper records the process's pid into an in-container pidfile before
 //! exec'ing the real command: Docker does **not** kill an exec'd process when
 //! its client dies, so closing a tab would otherwise leave the agent running
@@ -357,11 +360,43 @@ pub fn docker_create_args(
     a
 }
 
+/// Whether a tab variable's VALUE must stay off the `docker exec` argv (#864):
+/// the forwarded agent credentials and Eldrun's MCP bearer tokens. The docker
+/// client stays alive for the tab's whole life, and `/proc/<pid>/cmdline` is
+/// readable by every local user — not only this uid.
+fn is_secret_exec_env(key: &str) -> bool {
+    crate::services::ssh_exec::AGENT_AUTH_ENV.contains(&key)
+        || [
+            crate::services::root_mcp::TOKEN_ENV,
+            crate::services::root_mcp::SCHEDULE_TOKEN_ENV,
+            crate::services::root_mcp::HELP_TOKEN_ENV,
+        ]
+        .contains(&key)
+}
+
+/// The environment the `docker` CLIENT process must carry for
+/// [`docker_exec_args`]: every secret it names as a bare `-e NAME`, which
+/// docker resolves from its own environment (0400, same-uid) instead of argv.
+/// `auth_env` wins a clash, as its later `-e` did when values rode the argv.
+pub fn docker_exec_client_env(
+    env: &BTreeMap<String, String>,
+    auth_env: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    env.iter()
+        .filter(|(k, _)| is_secret_exec_env(k))
+        .chain(auth_env.iter())
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+
 /// Build the `docker exec …` argv that runs a tab's command inside the session
-/// container. Per-tab env rides as `-e` flags (the exec inherits the container
-/// env, notably `HOME`, from create). The `sh -c` wrapper writes the process's
-/// pid to `pidfile` before exec'ing the real command — the tab-kill contract
-/// (see the module doc and [`kill_tab_process`]).
+/// container. Per-tab env rides as `-e K=V` flags (the exec inherits the
+/// container env, notably `HOME`, from create) — except a secret (every
+/// `auth_env` entry, and any [`is_secret_exec_env`] key of `env`), which rides
+/// as a bare `-e NAME`: docker takes its value from the client's environment,
+/// which the caller fills from [`docker_exec_client_env`] (#864). The `sh -c`
+/// wrapper writes the process's pid to `pidfile` before exec'ing the real
+/// command — the tab-kill contract (see the module doc and [`kill_tab_process`]).
 pub fn docker_exec_args(
     name: &str,
     cwd: &str,
@@ -383,14 +418,20 @@ pub fn docker_exec_args(
         "COLORTERM=truecolor".to_string(),
     ];
     for (k, v) in env {
+        if auth_env.contains_key(k) {
+            continue; // named once, below; the auth value wins as it always did
+        }
         a.push("-e".to_string());
+        if is_secret_exec_env(k) {
+            a.push(k.clone());
+            continue;
+        }
         let value = if k == "ELDRUN_PROJECT_DIR" { container_path(v) } else { v.clone() };
         a.push(format!("{k}={value}"));
     }
-    for (k, v) in auth_env {
+    for k in auth_env.keys() {
         a.push("-e".to_string());
-        let value = if k == "ELDRUN_PROJECT_DIR" { container_path(v) } else { v.clone() };
-        a.push(format!("{k}={value}"));
+        a.push(k.clone());
     }
     a.push(name.to_string());
     a.push("sh".to_string());
@@ -729,8 +770,10 @@ pub fn wrap_pty_options_docker(opts: &mut PtyOptions) -> Result<(), String> {
     opts.args = docker_exec_args(&name, &opts.cwd, &env, &auth_env, &pidfile, &cmd, &cmd_args);
     opts.cmd = "docker".to_string();
     // Env now rides inside the docker argv as `-e` flags; the docker client
-    // itself needs nothing from opts.env.
+    // itself needs nothing from opts.env — except the secrets, which the argv
+    // only names (`-e NAME`) and docker reads from the client's own env (#864).
     opts.env.clear();
+    opts.env.extend(docker_exec_client_env(&env, &auth_env));
     Ok(())
 }
 
@@ -1655,6 +1698,69 @@ const AGENT_READ_ONLY: &[&str] = &["*.sh", "*.md"];
 /// `config.toml` is the staged-shadow destination (see [`staged_config_mounts`]).
 const CODEX_UNMOUNTED: &[&str] = &["history.jsonl", "config.toml"];
 
+/// Entries of `~/.gemini` (and `~/.config/gemini`) that are not mounted (#865).
+/// The whole home used to be one read-write mount, so any fenced agent could
+/// add an `mcpServers` command or a hook to `settings.json`, or rewrite
+/// `GEMINI.md`, for the next **uncontained** Gemini or Antigravity to run.
+/// Now it is narrowed per entry exactly like `~/.claude`: an entry left out is
+/// unreachable, and a new one lands in the throwaway home.
+///
+/// - `settings.json`, `trustedFolders.json`, `projects.json` — staged as
+///   writable per-spawn copies by [`staged_config_mounts`] (MCP servers, hooks
+///   and folder trust live in the first two; the registry is written by
+///   rename, which a file mount refuses);
+/// - `history` — checkpointing's shadow git repositories: the host's Gemini
+///   runs git in them, so a planted `config` or hook there runs uncontained;
+/// - `antigravity` — the Antigravity IDE's home, whose `mcp_config.json` the
+///   host IDE starts; the CLI keeps nothing there;
+/// - `config`, `antigravity-cli` — narrowed one level further, see
+///   [`GEMINI_CONFIG_UNMOUNTED`] and [`ANTIGRAVITY_UNMOUNTED`].
+const GEMINI_UNMOUNTED: &[&str] = &[
+    "settings.json",
+    "trustedFolders.json",
+    "projects.json*",
+    "history",
+    "antigravity",
+    "config",
+    "antigravity-cli",
+];
+
+/// Entries of `~/.gemini` a fenced Gemini reads but must never write, on top
+/// of [`AGENT_READ_ONLY`] (`GEMINI.md`, scripts): the `.env` it loads into its
+/// environment, custom commands (prompts that can carry `!{shell}` blocks),
+/// extensions (which declare MCP servers), policies (which auto-approve tools),
+/// and skills/agents/hooks.
+const GEMINI_READ_ONLY: &[&str] = &[
+    ".env",
+    "commands",
+    "extensions",
+    "extension-enablement.json",
+    "policies",
+    "skills",
+    "agents",
+    "hooks",
+];
+
+/// `~/.gemini/config`, Antigravity's shared config: its MCP server list and
+/// user settings are staged copies (see [`staged_config_mounts`]); the rest
+/// (the project records) stays mounted.
+const GEMINI_CONFIG_UNMOUNTED: &[&str] = &["config.json", "mcp_config.json"];
+
+/// `~/.gemini/antigravity-cli`, the Antigravity CLI's home. Its conversations,
+/// brain and caches stay mounted; its `settings.json` is staged; the helper
+/// binaries (`bin/`) and bundled skills (`builtin/`) it unpacks, and anything
+/// that could name a command, are not mounted — the host CLI executes them.
+const ANTIGRAVITY_UNMOUNTED: &[&str] = &[
+    "settings.json",
+    "bin",
+    "builtin",
+    "skills",
+    "plugins",
+    "extensions",
+    "hooks",
+    "mcp_config.json",
+];
+
 /// Codex's SQLite files must live in the per-scope directory mounted over
 /// `~/.codex`, rather than being mounted one file at a time from the host.
 /// SQLite removes and recreates its `-wal`/`-shm` sidecars; a file bind pins the
@@ -1691,6 +1797,17 @@ fn narrowed_agent_mounts(
     unmounted: &[&str],
     codex_state_overlay: bool,
 ) -> (Vec<String>, Vec<String>) {
+    narrowed_agent_mounts_with(dir, unmounted, &[], codex_state_overlay)
+}
+
+/// [`narrowed_agent_mounts`] with extra `read_only` patterns on top of
+/// [`AGENT_READ_ONLY`].
+fn narrowed_agent_mounts_with(
+    dir: &str,
+    unmounted: &[&str],
+    read_only: &[&str],
+    codex_state_overlay: bool,
+) -> (Vec<String>, Vec<String>) {
     let base = Path::new(dir);
     if !base.is_dir() {
         return (Vec::new(), Vec::new());
@@ -1711,7 +1828,7 @@ fn narrowed_agent_mounts(
     let (mut rw, mut ro) = (Vec::new(), Vec::new());
     for name in &names {
         let pair = format!("{dir}/{name}:{dir}/{name}");
-        if matches_entry(name, AGENT_READ_ONLY) {
+        if matches_entry(name, AGENT_READ_ONLY) || matches_entry(name, read_only) {
             ro.push(pair);
         } else {
             rw.push(pair);
@@ -1758,12 +1875,20 @@ pub(crate) fn agent_home_mounts(
     }
     // The in-container SessionStart hook writes a tab's live id here.
     rw.push(format!("{live_sessions_src}:{live_sessions_dst}"));
-    // Gemini credentials only — narrowed from the whole `~/.config` so unrelated
-    // secrets (`gh`, `gcloud`, …) are never exposed to the container.
-    for cand in [format!("{home}/.gemini"), format!("{home}/.config/gemini")] {
-        if Path::new(&cand).is_dir() {
-            rw.push(format!("{cand}:{cand}"));
-        }
+    // Gemini and Antigravity: per entry, never the whole home (#865, see
+    // `GEMINI_UNMOUNTED`). The staged settings copies come from
+    // `staged_config_mounts`. Nothing is mounted for a home that does not
+    // exist, so no empty root-owned dir is auto-created in `$HOME`.
+    for (dir, unmounted) in [
+        (format!("{home}/.gemini"), GEMINI_UNMOUNTED),
+        (format!("{home}/.gemini/config"), GEMINI_CONFIG_UNMOUNTED),
+        (format!("{home}/.gemini/antigravity-cli"), ANTIGRAVITY_UNMOUNTED),
+        (format!("{home}/.config/gemini"), GEMINI_UNMOUNTED),
+    ] {
+        let (entry_rw, entry_ro) =
+            narrowed_agent_mounts_with(&dir, unmounted, GEMINI_READ_ONLY, false);
+        rw.extend(entry_rw);
+        ro.extend(entry_ro);
     }
     // OpenCode keeps every session in `~/.local/share/opencode/opencode.db`
     // (plus `auth.json`) and its last model/prompt history under
@@ -1782,6 +1907,13 @@ pub(crate) fn agent_home_mounts(
         if Path::new(&dir).is_dir() {
             if writable { &mut rw } else { &mut ro }.push(format!("{dir}:{dir}"));
         }
+    }
+    // The ripgrep and language-server binaries OpenCode downloads into its data
+    // dir, which the host's OpenCode runs: read-only over the writable store
+    // (#865). Only when present — a mount point would be created on the host.
+    let opencode_bin = format!("{home}/.local/share/opencode/bin");
+    if Path::new(&opencode_bin).is_dir() {
+        ro.push(format!("{opencode_bin}:{opencode_bin}"));
     }
     // The other "continue last session" agents: only the session store their
     // continue flag reads is mounted, so a restored tab finds its conversation.
@@ -2205,6 +2337,19 @@ pub(crate) fn stage_dir(project_id: &str) -> PathBuf {
         .join(sanitize_key(project_id))
 }
 
+/// Gemini/Antigravity files that name commands the host CLI runs (MCP servers,
+/// hooks, folder trust), plus the registry Gemini rewrites by rename — staged
+/// by [`staged_config_mounts`] like the hook-registration files (#865), but
+/// only when present. See [`GEMINI_UNMOUNTED`].
+pub(crate) const GEMINI_STAGED: &[&str] = &[
+    ".gemini/settings.json",
+    ".gemini/trustedFolders.json",
+    ".gemini/projects.json",
+    ".gemini/config/config.json",
+    ".gemini/config/mcp_config.json",
+    ".gemini/antigravity-cli/settings.json",
+];
+
 /// Copy the agents' hook-registration files into the per-project `stage` dir
 /// and return rw mounts of the *copies* at the files' identical container
 /// paths. The container thus gets writable settings it can freely rewrite (so
@@ -2236,11 +2381,20 @@ pub(crate) fn staged_config_mounts(home: &str, stage: &Path) -> Vec<(String, Str
         ".claude/settings.local.json",
         ".codex/config.toml",
         ".vibe/hooks.toml",
-    ] {
+    ]
+    .into_iter()
+    .chain(GEMINI_STAGED.iter().copied())
+    {
         // Native separators: the container path is the host original's own path.
         let src_path = rel
             .split('/')
             .fold(home.to_path_buf(), |p, seg| p.join(seg));
+        // Gemini's homes are mounted per entry (`GEMINI_UNMOUNTED`), never whole,
+        // so a missing file there has no host path to write through to: only an
+        // existing one is shadowed, and no Gemini dir appears where none was.
+        if GEMINI_STAGED.contains(&rel) && !src_path.is_file() {
+            continue;
+        }
         // Flatten the host path to a unique leaf so the files never collide.
         let src = src_path.to_string_lossy().into_owned();
         let leaf = src
@@ -3177,11 +3331,12 @@ mod tests {
         ));
         assert!(has_flag_value(&out, "-e", "TERM=xterm-256color"));
         assert!(has_flag_value(&out, "-e", "ELDRUN_TAB_UID=tab-1"));
-        // Auth env rides at exec (rotated tokens per spawn), before the name.
-        assert!(has_flag_value(&out, "-e", "ANTHROPIC_API_KEY=sk-test"));
+        // Auth env rides at exec (rotated tokens per spawn), before the name —
+        // by NAME only; the value is in the docker client's env (#864).
+        assert!(has_flag_value(&out, "-e", "ANTHROPIC_API_KEY"));
         let key = out
             .iter()
-            .position(|s| s == "ANTHROPIC_API_KEY=sk-test")
+            .position(|s| s == "ANTHROPIC_API_KEY")
             .unwrap();
         let name = pos(&out, "eldrun-p1").unwrap();
         assert!(key < name, "env must precede the container name");
@@ -3194,6 +3349,31 @@ mod tests {
         assert_eq!(out[name + 4], "sh");
         // Original command + resume args preserved in order after the wrapper.
         assert_eq!(&out[name + 5..], &["claude", "--resume", "uuid-1"]);
+    }
+
+    #[test]
+    fn exec_argv_carries_no_secret_value() {
+        // #864: `/proc/<pid>/cmdline` is world-readable and the docker client
+        // lives as long as the tab — a key or token VALUE must be on no argv item.
+        let envs = env(&[
+            ("ELDRUN_TAB_UID", "tab-1"),
+            (crate::services::root_mcp::TOKEN_ENV, "root-s3cret"),
+            ("OPENAI_API_KEY", "tab-s3cret"),
+        ]);
+        let auth = env(&[("ANTHROPIC_API_KEY", "auth-s3cret"), ("OPENAI_API_KEY", "auth-wins-s3cret")]);
+        let out = docker_exec_args("eldrun-p1", "/p", &envs, &auth, "/tmp/x.pid", "claude", &[]);
+        assert!(!out.iter().any(|a| a.contains("s3cret")), "{out:?}");
+        for name in [crate::services::root_mcp::TOKEN_ENV, "ANTHROPIC_API_KEY", "OPENAI_API_KEY"] {
+            assert_eq!(out.iter().filter(|a| *a == name).count(), 1, "{name} named once: {out:?}");
+            assert!(has_flag_value(&out, "-e", name));
+        }
+        assert!(has_flag_value(&out, "-e", "ELDRUN_TAB_UID=tab-1"));
+        // …and the values reach the docker client's own environment instead.
+        let client = docker_exec_client_env(&envs, &auth);
+        assert_eq!(client.get(crate::services::root_mcp::TOKEN_ENV).map(String::as_str), Some("root-s3cret"));
+        assert_eq!(client.get("ANTHROPIC_API_KEY").map(String::as_str), Some("auth-s3cret"));
+        assert_eq!(client.get("OPENAI_API_KEY").map(String::as_str), Some("auth-wins-s3cret"));
+        assert!(!client.contains_key("ELDRUN_TAB_UID"));
     }
 
     #[test]
@@ -3567,8 +3747,121 @@ mod tests {
         assert!(!rw.contains(&pair(".config/opencode")));
         // Cache holds downloaded binaries: not mounted at all.
         assert!(!rw.iter().chain(&ro).any(|m| m.contains(".cache/opencode")));
+        // #865: the binaries OpenCode keeps in its data dir (ripgrep, language
+        // servers) are read-only over the writable store, once they exist.
+        assert!(!ro.contains(&pair(".local/share/opencode/bin")));
+        std::fs::create_dir_all(format!("{home_str}/.local/share/opencode/bin")).unwrap();
+        let (_, ro) = agent_home_mounts(&home_str, "/state/ls/p1", "/state/ls", false);
+        assert!(ro.contains(&pair(".local/share/opencode/bin")));
 
         std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// #865: no Gemini/Antigravity file that names a command the host CLI runs
+    /// is mounted writable — settings and MCP lists are staged copies,
+    /// instructions/commands/extensions read-only, checkpoint git repos and
+    /// helper binaries not mounted — while creds and conversations stay
+    /// read-write and a missing home creates nothing.
+    #[test]
+    fn gemini_home_is_narrowed_and_its_config_never_writable() {
+        let base = tempfile::tempdir().unwrap();
+        let home = base.path().join("home");
+        let stage = base.path().join("stage");
+        std::fs::create_dir_all(&stage).unwrap();
+        let home_str = home.to_string_lossy().into_owned();
+        let pair = |rel: &str| format!("{home_str}/{rel}:{home_str}/{rel}");
+
+        // Never used Gemini: nothing mounted, nothing staged, nothing created.
+        std::fs::create_dir_all(&home).unwrap();
+        let (rw, ro) = agent_home_mounts(&home_str, "/state/ls/p1", "/state/ls", false);
+        assert!(!rw.iter().chain(&ro).any(|m| m.contains(".gemini")));
+        assert!(!staged_config_mounts(&home_str, &stage).iter().any(|(_, d)| d.contains(".gemini")));
+        assert!(!home.join(".gemini").exists());
+
+        let files = [
+            "settings.json",
+            "trustedFolders.json",
+            "projects.json",
+            "projects.json.1234.tmp",
+            "GEMINI.md",
+            ".env",
+            "oauth_creds.json",
+            "google_accounts.json",
+            "config/config.json",
+            "config/mcp_config.json",
+            "config/projects/p.json",
+            "antigravity/mcp_config.json",
+            "antigravity-cli/settings.json",
+            "antigravity-cli/bin/webm_encoder",
+            "antigravity-cli/builtin/skills/SKILL.md",
+            "antigravity-cli/conversations/c.db",
+            "antigravity-cli/history.jsonl",
+            "commands/deploy.toml",
+            "extensions/x/gemini-extension.json",
+            "history/abc/config",
+            "tmp/proj/chats/session.json",
+        ];
+        for rel in files {
+            let path = home.join(".gemini").join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "{}").unwrap();
+        }
+        let (rw, ro) = agent_home_mounts(&home_str, "/state/ls/p1", "/state/ls", false);
+        let staged = staged_config_mounts(&home_str, &stage);
+
+        // Credentials and conversations: writable, so login and resume work.
+        for rel in [
+            "oauth_creds.json",
+            "google_accounts.json",
+            "tmp",
+            "config/projects",
+            "antigravity-cli/conversations",
+            "antigravity-cli/history.jsonl",
+        ] {
+            assert!(rw.contains(&pair(&format!(".gemini/{rel}"))), "{rel} not writable: {rw:?}");
+        }
+        // Readable, never writable.
+        for rel in ["GEMINI.md", ".env", "commands", "extensions"] {
+            assert!(ro.contains(&pair(&format!(".gemini/{rel}"))), "{rel} not read-only: {ro:?}");
+        }
+        // Nothing that names a command is writable, nor any home as a whole.
+        for denied in [
+            ".gemini",
+            ".gemini/settings.json",
+            ".gemini/trustedFolders.json",
+            ".gemini/projects.json",
+            ".gemini/GEMINI.md",
+            ".gemini/.env",
+            ".gemini/commands",
+            ".gemini/extensions",
+            ".gemini/history",
+            ".gemini/antigravity",
+            ".gemini/config",
+            ".gemini/config/config.json",
+            ".gemini/config/mcp_config.json",
+            ".gemini/antigravity-cli",
+            ".gemini/antigravity-cli/settings.json",
+            ".gemini/antigravity-cli/bin",
+            ".gemini/antigravity-cli/builtin",
+        ] {
+            assert!(!rw.contains(&pair(denied)), "{denied} mounted writable");
+        }
+        // Checkpoint repos, the IDE's home and the unpacked helpers: absent.
+        for rel in ["history", "antigravity", "antigravity-cli/bin", "antigravity-cli/builtin"] {
+            let path = format!("{home_str}/.gemini/{rel}");
+            let under = |m: &String| m.contains(&format!("{path}:")) || m.contains(&format!("{path}/"));
+            assert!(!rw.iter().chain(&ro).any(under), "{rel} mounted");
+        }
+        // The settings and MCP lists: throwaway copies at the real paths.
+        for rel in GEMINI_STAGED {
+            let dst = rel.split('/').fold(home.clone(), |p, seg| p.join(seg));
+            let dst = dst.to_string_lossy().into_owned();
+            let (src, _) = staged
+                .iter()
+                .find(|(_, d)| *d == dst)
+                .unwrap_or_else(|| panic!("{rel} not staged: {staged:?}"));
+            assert!(Path::new(src).starts_with(&stage));
+        }
     }
 
     #[test]

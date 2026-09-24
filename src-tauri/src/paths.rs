@@ -36,8 +36,15 @@ pub fn path_finder(os: OsKind) -> &'static str {
 /// are GUI-less subprocesses we only read output from; without `CREATE_NO_WINDOW`
 /// each invocation pops a transient console window, and a single TeX compile
 /// spawns several. No-op on non-Windows targets.
+///
+/// One of Eldrun's own helpers ([`TRUSTED_HELPERS`]) is taken from the
+/// root-owned system directories first — see [`helper_program`].
 pub fn command_no_window(bin: impl AsRef<OsStr>) -> Command {
-    let mut cmd = Command::new(bin);
+    let bin = bin.as_ref();
+    let mut cmd = match helper_program(bin) {
+        Some(program) => Command::new(program),
+        None => Command::new(bin),
+    };
     augment_command_path(&mut cmd);
     hide_command_window(&mut cmd);
     cmd
@@ -58,6 +65,83 @@ fn hide_command_window(_cmd: &mut Command) {
 /// per-user/package-manager directories.
 pub fn binary_on_path(bin: &str) -> bool {
     resolve_executable(bin).is_some()
+}
+
+/// Eldrun's own security-relevant helpers: they run with its full authority
+/// in project folders and against remote hosts, often in the background. By
+/// bare name they would resolve through [`effective_path`], which puts
+/// user-writable dirs (`~/.local/bin`, …) first — a planted `~/.local/bin/git`
+/// would then run at the next file-tree poll (#861).
+const TRUSTED_HELPERS: &[&str] = &["git", "tmux", "ssh", "scp", "sftp", "rsync"];
+
+/// Directories only root can add a program to on a sane Unix install. Each
+/// hit is still checked with [`root_owned_file`].
+#[cfg(unix)]
+const SYSTEM_BIN_DIRS: &[&str] = &[
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+    "/usr/local/bin",
+    "/usr/local/sbin",
+];
+
+/// The first `dir/bin` in `dirs` that `trusted` accepts. Pure over `trusted`.
+#[cfg(any(unix, test))]
+fn first_trusted_in(
+    dirs: &[PathBuf],
+    bin: &str,
+    trusted: &impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    if bin.is_empty() || bin.contains('/') || bin.contains('\\') {
+        return None;
+    }
+    dirs.iter().map(|dir| dir.join(bin)).find(|cand| trusted(cand))
+}
+
+/// An executable only root can have put there or changed: after resolving
+/// links, the file and its directory are root-owned and neither is group- or
+/// world-writable. (A Homebrew `/usr/local/bin` owned by the user fails this.)
+#[cfg(unix)]
+fn root_owned_file(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(real) = path.canonicalize() else {
+        return false;
+    };
+    let locked = |p: &Path| {
+        std::fs::metadata(p).is_ok_and(|m| m.uid() == 0 && m.mode() & 0o022 == 0)
+    };
+    std::fs::metadata(&real).is_ok_and(|m| m.is_file() && m.mode() & 0o111 != 0)
+        && locked(&real)
+        && real.parent().is_some_and(locked)
+}
+
+/// `bin` from the root-owned system directories only — never from `PATH` or a
+/// per-user directory. `None` when there is no such copy (always on Windows).
+/// The agent fence takes `bwrap` from here and fails closed without it.
+pub fn system_executable(bin: &str) -> Option<PathBuf> {
+    #[cfg(unix)]
+    {
+        let dirs: Vec<PathBuf> = SYSTEM_BIN_DIRS.iter().map(PathBuf::from).collect();
+        first_trusted_in(&dirs, bin, &root_owned_file)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = bin;
+        None
+    }
+}
+
+/// The program to spawn for one of Eldrun's own helpers ([`TRUSTED_HELPERS`]):
+/// its root-owned system copy when there is one. `None` for any other name,
+/// and for a helper the system lacks (Homebrew's tmux, Git for Windows), which
+/// then resolves on the effective `PATH` as before.
+pub fn helper_program(bin: &OsStr) -> Option<PathBuf> {
+    let name = bin.to_str()?;
+    if !TRUSTED_HELPERS.contains(&name) {
+        return None;
+    }
+    system_executable(name)
 }
 
 /// True when a failed `rename` failed only because source and destination sit
@@ -817,6 +901,52 @@ mod tests {
         assert_eq!(resolve_offpath_binary("/usr/bin/vibe"), None);
         assert_eq!(resolve_offpath_binary(r"C:\tools\vibe.exe"), None);
         assert_eq!(resolve_offpath_binary(""), None);
+    }
+
+    /// #861: a helper planted in a user-writable dir listed first never wins
+    /// over the trusted system copy, and a qualified name is not looked up.
+    #[test]
+    fn a_planted_user_helper_never_shadows_the_system_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let user = tmp.path().join("home/.local/bin");
+        let system = tmp.path().join("usr/bin");
+        for dir in [&user, &system] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("git"), "#!/bin/sh\n").unwrap();
+        }
+        let trusted = |p: &Path| p.starts_with(&system) && p.is_file();
+        let dirs = [user.clone(), system.clone()];
+        assert_eq!(first_trusted_in(&dirs, "git", &trusted), Some(system.join("git")));
+        assert_eq!(first_trusted_in(&dirs, "bwrap", &trusted), None);
+        assert_eq!(first_trusted_in(&dirs, "../usr/bin/git", &trusted), None);
+        assert_eq!(first_trusted_in(&dirs, "", &trusted), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn helpers_come_from_root_owned_system_dirs_only() {
+        use std::os::unix::fs::MetadataExt;
+        // Not a helper: left to the ordinary PATH lookup.
+        assert_eq!(helper_program(OsStr::new("claude")), None);
+        assert_eq!(helper_program(OsStr::new("/usr/bin/git")), None);
+        // A file this (non-root) user owns is never trusted, wherever it sits.
+        let tmp = tempfile::tempdir().unwrap();
+        let planted = tmp.path().join("git");
+        std::fs::write(&planted, "#!/bin/sh\n").unwrap();
+        if std::fs::metadata(&planted).unwrap().uid() != 0 {
+            assert!(!root_owned_file(&planted));
+        }
+        // Whatever the host has: a hit is under a system dir, never home, and
+        // the spawned program is that absolute path.
+        for bin in TRUSTED_HELPERS.iter().chain(&["bwrap"]) {
+            if let Some(found) = system_executable(bin) {
+                assert!(SYSTEM_BIN_DIRS.iter().any(|d| found.starts_with(d)), "{found:?}");
+                assert!(!found.starts_with(home_dir()), "{found:?}");
+                if TRUSTED_HELPERS.contains(bin) {
+                    assert_eq!(command_no_window(bin).get_program(), found.as_os_str());
+                }
+            }
+        }
     }
 
     #[test]

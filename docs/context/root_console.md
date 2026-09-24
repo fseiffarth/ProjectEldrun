@@ -163,10 +163,15 @@ and one reply out).
   a tmux without `new-session -e` (< 3.2) that script would also hold the
   exported environment, so the token is left out of it and travels as an `env`
   prefix on tmux's own, short argv instead — which tmux hands to `sh -c`, so on
-  such a tmux the token *is* in that shell's argv (same-uid readable, like the
-  environment of any unfenced process; see the known limit below). Keeping it
-  out of there too would mean a file on disk, which is the thing that must not
-  happen; tmux ≥ 3.2 has neither problem.
+  such a tmux the token *is* in the client's and that shell's argv, and
+  `/proc/<pid>/cmdline` is readable by **every local user**, not only yours.
+  Keeping it out of there too would mean a file on disk, which is the thing
+  that must not happen. On tmux ≥ 3.2 no token value is on any argv (#864):
+  the three MCP tokens are left off `new-session -e` and listed in tmux's
+  global `update-environment` (fixed slots from 8630), so tmux copies them
+  from the client's *environment* (0400) into the new session — and marks
+  them removed for a tab that has none, so no tab inherits the token of the
+  tab that happened to start the tmux server.
 - **Hidden from fenced project agents.** Bubblewrap gives each fenced agent its
   own pid namespace and `/proc`, so it cannot read the root agent's environment
   or argv.
@@ -184,7 +189,16 @@ package script, a Makefile, a `curl` — holds the token and can call the tools
 as the tab. The same holds for a project agent's schedule token. The fence
 does not narrow this (the root fence's roots are `~/eldrun/root`; a project
 agent's fence contains its project, and the schedule endpoint is loopback
-either way). So an audit record is the **tab's**, not necessarily the agent's
+either way). One exception widens the root fence: with
+`root_fence_projects_readable` on (default off), a root spawn also gets every
+local project directory, box folder and remote mirror **read-only**
+(`agent_fence::root_project_read_only_paths`, the `extra_ro`/`readable`
+channel, never `roots_for_scope`, whose roots are read-write binds; the state
+masks still win, so a default mirror under `remote-projects/` stays hidden).
+It is a widening on purpose — a root agent that reads every project reads
+untrusted text from all of them and has the open network — so it is a switch,
+recorded per tab at spawn (`Session::projects_readable`, true for an unfenced
+agent) and read by the mail `attach` argument, never the live setting. So an audit record is the **tab's**, not necessarily the agent's
 own call, and the *MCP session access* fold says so. The one thing that would
 close it — the CLI reading the secret from a 0600 file and scrubbing the
 variable before it spawns children — is the CLI's to do, not Eldrun's.
@@ -382,6 +396,30 @@ lives in the mail store, shows in the review panel as a row that *opens the
 composer*, and `mail_draft_send` stays a Tauri command — nothing here sends.
 The `root-mcp-changed` event gains `kind: "draft"`, carrying the id and origin
 only.
+
+**Attachments and suggestions (root tab only; `mail_mcp_attachments_plan.md`).**
+- `attach: [{project, path}]` (≤ 5) on `mail_draft_create`/`_update`, replace
+  semantics. Refused unless the tab's spawn record says its fence shows the
+  projects, and on Windows. Resolution is the **same-roots rule**
+  (`services::mail_attach`): the roots a fenced tab of that project gets
+  (`agent_fence::attach_roots`: a remote project's mirror, never its remote
+  `directory`), none at `/`, at or above `$HOME`, or in the state dir; the path
+  checked before I/O and opened by an `openat(O_NOFOLLOW)` walk, `O_NONBLOCK`
+  and `fstat`-regular for the file, nothing in `.git`, capped at 20 MiB a file,
+  25 MiB a draft and 100 MiB a tab. The bytes are copied into the sealed outbox
+  when the agent calls; the reply carries filename, size and sha256.
+- The `staged` table carries `origin` and `source`; it is the truth Send
+  reads. An agent write refuses once any row of the draft is the user's
+  (`MailStore::change_draft_files`, one lock), and an agent delete removes the
+  outbox copies.
+- `suggested_to` (≤ 5, syntax-checked) is stored, never copied into `to`, never
+  read by a send, not echoed by `mail_drafts_list`; the composer shows each as
+  an "Agent suggests: X — Add" pill.
+- **Send is bound to the reviewed set.** `mail_agent_drafts` fills
+  `staged` from the table and the composer shows each agent file with its
+  source; `doSend` stops when the saved set differs from the one on screen, and
+  `mail_draft_send(stagedIds)` refuses in the backend when the store's set
+  differs or the draft was never saved by the composer.
 
 **Locked means refused.** `commands::mail::AgentMail` never opens the store: not
 opened this run, or opened as the memory-only stand-in, both answer "mail is

@@ -1095,6 +1095,8 @@ pub async fn sync_apply_delete(
             Err(e) => return Err(format!("could not confirm the host copy is gone: {e}")),
         }
         if local_exists {
+            // #863: never unlink through a symlinked directory out of the mirror.
+            remote_sync::confined_mirror_path(&remote_sync::mirror_dir(&project_id), &rel_path)?;
             std::fs::remove_file(&mirror_path)
                 .map_err(|e| format!("delete local mirror copy failed: {e}"))?;
             // The mirror copy was the file's last copy anywhere; the confirm dialog
@@ -1771,16 +1773,17 @@ async fn pull_subtree(
     // the very folder the user just said to leave on the host.
     let rsynced = is_dir && skipped_excluded == 0 && try_rsync_pull(target, rel, &files).await;
 
+    let mirror_root = remote_sync::mirror_dir(project_id);
     let mut done = 0usize;
     for file in files {
         let host_abs = join_remote(&target.spec.remote_path, &file.rel);
         let local = mirror_local_path(project_id, &file.rel);
         // rsync already wrote the bytes; only stat locally to capture the base.
-        // Otherwise pull the file over SFTP.
+        // Otherwise pull the file over SFTP (which confines the write, #863).
         let local_base = if rsynced {
             std::fs::metadata(&local).ok().map(|m| local_meta(&m))
         } else {
-            remote_sync::pull_file(sftp, &host_abs, file.size, &local)
+            remote_sync::pull_file(sftp, &host_abs, file.size, &mirror_root, &file.rel)
                 .await
                 .ok()
         };
@@ -1818,9 +1821,16 @@ async fn try_rsync_pull(target: &RemoteTarget, rel: &str, files: &[remote_sync::
         return false;
     };
     let spec = target.spec.clone();
-    let project_id = target.project_id.clone();
     let host_src = join_remote(&spec.remote_path, rel);
-    let local_dest = mirror_local_path(&project_id, rel);
+    // #863: rsync writes THROUGH its destination, so a symlink at or above it
+    // inside the mirror (a fenced agent can plant one) must not be the target.
+    // Below it rsync replaces a symlinked directory rather than following it.
+    // Refused → the SFTP floor, whose per-file writes are confined too.
+    let Ok(local_dest) =
+        remote_sync::confined_mirror_dir(&remote_sync::mirror_dir(&target.project_id), rel)
+    else {
+        return false;
+    };
     tokio::task::spawn_blocking(move || {
         if !remote_sync::rsync_available_host(&spec) {
             return false;

@@ -278,7 +278,9 @@ pub fn local_tmux_args(
 /// `export`ed at the head of the command line tmux runs — while a bare shell tab
 /// keeps the pre-fix behavior, since there is no command line to prefix and
 /// overriding tmux's `default-command` to synthesize one would take the user's
-/// own `~/.tmux.conf` out of the loop.
+/// own `~/.tmux.conf` out of the loop. The [`SECRET_ENV`] tokens are the one
+/// exception to `-e`: they reach the session through `update-environment` from
+/// the client's environment, never as a value on argv (#864).
 ///
 /// Only a freshly *created* session is reached either way: `-A` on an existing
 /// one attaches, and its pane keeps the process (and environment) it was started
@@ -369,25 +371,36 @@ pub(crate) fn launcher_script(
     script
 }
 
-/// Env values that must never be written into a [`launcher_script`]: the script
-/// sits on disk for the session's lifetime (and past a crash), and the root
-/// console's MCP token is documented as never written to disk.
-const SECRET_ENV: &[&str] = &[crate::services::root_mcp::TOKEN_ENV, crate::services::root_mcp::SCHEDULE_TOKEN_ENV];
+/// Env values that must never be written into a [`launcher_script`] nor onto
+/// any argv: the script sits on disk for the session's lifetime (and past a
+/// crash), the root console's MCP token is documented as never written to
+/// disk, and `/proc/<pid>/cmdline` is readable by EVERY local user (0444, not
+/// same-uid) — the tmux client that carries the argv stays attached for the
+/// tab's whole life (#864).
+const SECRET_ENV: &[&str] = &[
+    crate::services::root_mcp::TOKEN_ENV,
+    crate::services::root_mcp::SCHEDULE_TOKEN_ENV,
+    crate::services::root_mcp::HELP_TOKEN_ENV,
+];
+
+/// First `update-environment` array slot Eldrun claims for [`SECRET_ENV`] (one
+/// slot per key, fixed, so every tab re-sets the same entries instead of growing
+/// the list). Far above tmux's defaults (0–8) and any hand-written list.
+const SECRET_UPDATE_ENV_SLOT: usize = 8630;
 
 /// The tmux command line that runs a launcher `path`. With `-e` the session env
-/// carries every variable; without it the script exports them, except the
-/// [`SECRET_ENV`] ones, which ride on this line as an `env` prefix — tmux's own
-/// argv lives in memory only, and the line stays a few hundred bytes.
+/// carries every variable (the [`SECRET_ENV`] ones via `update-environment`, see
+/// [`local_tmux_args_for`]); without it the script exports them, except the
+/// [`SECRET_ENV`] ones, which ride on this line as an `env` prefix — never on
+/// disk, and the line stays a few hundred bytes.
 ///
 /// Known limit, on tmux < 3.2 only: this line (and the inline `export`s of
-/// [`command_line`] when the argv is short enough to skip the script) is what
-/// tmux hands to `sh -c`, so for the shell's lifetime the secrets are in that
-/// process's argv, readable by anything of the same uid — the same exposure an
-/// unfenced agent already has through `/proc/<pid>/environ`
-/// (`docs/context/root_console.md`, *Known limit*). Keeping them off the disk
-/// was the point; keeping them out of every same-uid argv on an old tmux
-/// would mean writing them to a 0600 file, which is the thing that must not
-/// happen. `-e` (tmux ≥ 3.2) has neither problem.
+/// [`command_line`] when the argv is short enough to skip the script) is on the
+/// tmux client's argv and is what tmux hands to `sh -c`, so for the tab's
+/// lifetime the secrets are in those processes' argv — and `/proc/<pid>/cmdline`
+/// is readable by every local user, not only this uid (#864). Keeping them off
+/// the disk was the point; the ≥ 3.2 path keeps them off argv as well, by
+/// letting tmux copy them from the client's *environment* (0400).
 fn launcher_line(path: &str, env: &HashMap<String, String>, session_env: bool) -> String {
     let quoted = shell_quote(path);
     if session_env {
@@ -421,11 +434,29 @@ fn local_tmux_args_for(
         "history-limit".into(),
         TMUX_HISTORY_LINES.to_string(),
         ";".into(),
-        "new-session".into(),
-        "-A".into(),
     ];
     if session_env {
-        for (k, v) in &pairs {
+        // #864: a secret never rides `-e KEY=VALUE` — this client's argv is
+        // world-readable for the tab's life. It is in the client's environment
+        // instead (`build_command` puts `opts.env` there), and a key listed in the
+        // global `update-environment` is copied from the creating (or attaching)
+        // client's environment into the session's. A key the tab lacks is marked
+        // removed, so a tab never inherits the token of the tab that started the
+        // server. Fixed slots: idempotent, and the user's own entries are kept.
+        for (i, key) in SECRET_ENV.iter().enumerate() {
+            args.extend([
+                "set-option".into(),
+                "-g".into(),
+                format!("update-environment[{}]", SECRET_UPDATE_ENV_SLOT + i),
+                key.to_string(),
+                ";".into(),
+            ]);
+        }
+    }
+    args.push("new-session".into());
+    args.push("-A".into());
+    if session_env {
+        for (k, v) in pairs.iter().filter(|(k, _)| !SECRET_ENV.contains(k)) {
             args.push("-e".into());
             // One argv item, so no quoting: a value with spaces, quotes or `;`
             // reaches tmux exactly as written.
@@ -646,9 +677,10 @@ mod tests {
         // reattaches (resumable-command-tab guarantee) instead of re-running.
         let args =
             local_tmux_args_with("eldrun-x", "python", &["train.py".into()], &HashMap::new(), true);
-        assert_eq!(args[5], "new-session");
+        let new_session = args.iter().position(|a| a == "new-session").unwrap();
+        assert_eq!(args[new_session - 1], ";");
         assert!(args.iter().any(|a| a == "eldrun-x"));
-        let target = &args[9];
+        let target = &args[new_session + 4];
         assert_eq!(
             target,
             "'python' 'train.py'; exec \"${SHELL:-/bin/bash}\" -l"
@@ -783,6 +815,97 @@ mod tests {
         assert!(launched.iter().any(|a| a == "ELDRUN_TAB_UID=tab-uid-1"));
         // A shell tab has no command line to move, launcher or not.
         assert!(command_line("", &[], &env, true).is_none());
+    }
+
+    #[test]
+    fn no_argv_item_carries_a_secret_value() {
+        // #864: `/proc/<pid>/cmdline` is world-readable and the tmux client stays
+        // attached, so a token VALUE must be on no argv item — inline, launcher,
+        // or either tmux generation's fallback that does not need the export.
+        let env = env_of(&[
+            ("ELDRUN_TAB_UID", "tab-uid-1"),
+            (crate::services::root_mcp::TOKEN_ENV, "root-s3cret"),
+            (crate::services::root_mcp::SCHEDULE_TOKEN_ENV, "sched-s3cret"),
+            (crate::services::root_mcp::HELP_TOKEN_ENV, "help-s3cret"),
+        ]);
+        let leaks = |args: &[String]| args.iter().any(|a| a.contains("s3cret"));
+        for cmd in ["", "claude", "bwrap"] {
+            let args = local_tmux_args_with("eldrun-x", cmd, &["--x".into()], &env, true);
+            assert!(!leaks(&args), "{args:?}");
+            // The non-secret variable still rides `-e`.
+            assert!(args.iter().any(|a| a == "ELDRUN_TAB_UID=tab-uid-1"), "{args:?}");
+        }
+        let line = launcher_line("/l.sh", &env, true);
+        let launched = local_tmux_args_for("eldrun-x", Some(&line), &env, true, true);
+        assert!(!leaks(&launched), "{launched:?}");
+        // Instead every secret key is listed in `update-environment`, ahead of
+        // `new-session`, so tmux copies it from the client's environment.
+        let args = local_tmux_args_with("eldrun-x", "claude", &[], &env, true);
+        let new_session = args.iter().position(|a| a == "new-session").unwrap();
+        for (i, key) in SECRET_ENV.iter().enumerate() {
+            let slot = format!("update-environment[{}]", SECRET_UPDATE_ENV_SLOT + i);
+            let at = args.iter().position(|a| *a == slot).unwrap();
+            assert!(at < new_session);
+            assert_eq!(args[at - 2..at + 3], ["set-option", "-g", &slot, key, ";"]);
+        }
+        // A tab without tokens clears them too (no inheriting the founding tab's).
+        let plain = local_tmux_args_with("eldrun-x", "", &[], &env_of(&[]), true);
+        assert!(plain.iter().any(|a| a == &format!("update-environment[{SECRET_UPDATE_ENV_SLOT}]")));
+        // The < 3.2 fallback has no update-environment step (unchanged shape).
+        let old = local_tmux_args_with("eldrun-x", "", &[], &env, false);
+        assert!(!old.iter().any(|a| a.starts_with("update-environment")));
+    }
+
+    /// Live check against a real tmux on a private socket (skipped when tmux is
+    /// missing or older than 3.2): the pane gets the token from the client's
+    /// environment, and the token is on no argv of the client.
+    #[cfg(unix)]
+    #[test]
+    fn a_real_tmux_session_gets_the_secret_from_the_client_environment() {
+        let Ok(v) = std::process::Command::new("tmux").arg("-V").output() else {
+            return;
+        };
+        if !v.status.success() || !version_supports_session_env(&String::from_utf8_lossy(&v.stdout)) {
+            return;
+        }
+        let socket = format!("eldrun-test-864-{}", std::process::id());
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("env.txt");
+        let token_env = crate::services::root_mcp::TOKEN_ENV;
+        let tmux = |args: &[String], env: &[(&str, &str)]| {
+            let mut cmd = std::process::Command::new("tmux");
+            cmd.args(["-L", &socket, "-f", "/dev/null"]).args(args).env_remove(token_env);
+            for (k, val) in env {
+                cmd.env(k, val);
+            }
+            cmd.output().unwrap()
+        };
+        // A founding session whose client carries a DIFFERENT token: it becomes
+        // the server's global environment, which the second tab must not see.
+        let founder = vec!["new-session".to_string(), "-d".into(), "-s".into(), "founder".into(), "sleep 30".into()];
+        assert!(tmux(&founder, &[(token_env, "founder-token")]).status.success());
+
+        let env = env_of(&[(token_env, "tab-token-value"), ("ELDRUN_TAB_UID", "u1")]);
+        let script = format!("env > '{}'", out.display());
+        let mut args = local_tmux_args_with("eldrun-t", "sh", &["-c".into(), script], &env, true);
+        assert!(!args.iter().any(|a| a.contains("tab-token-value")), "{args:?}");
+        // Detached: a test has no terminal to attach to.
+        let at = args.iter().position(|a| a == "-A").unwrap();
+        args.insert(at + 1, "-d".into());
+        let created = tmux(&args, &[(token_env, "tab-token-value")]);
+        assert!(created.status.success(), "{}", String::from_utf8_lossy(&created.stderr));
+        let mut seen = String::new();
+        for _ in 0..50 {
+            seen = std::fs::read_to_string(&out).unwrap_or_default();
+            if seen.contains("ELDRUN_TAB_UID") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let _ = tmux(&["kill-server".to_string()], &[]);
+        assert!(seen.contains(&format!("{token_env}=tab-token-value")), "{seen}");
+        assert!(seen.contains("ELDRUN_TAB_UID=u1"), "{seen}");
+        assert!(!seen.contains("founder-token"), "{seen}");
     }
 
     #[test]

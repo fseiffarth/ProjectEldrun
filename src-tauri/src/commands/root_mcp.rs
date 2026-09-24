@@ -188,6 +188,26 @@ async fn handle(State(state): State<ServerState>, request: Request) -> Response 
         security::audit_reason(&audit_session, "", "refused", started.elapsed(), Some("batch"));
         return Json(root_mcp::rpc_error(Value::Null, -32600, "batch requests are not supported: one message per request")).into_response();
     }
+    if session.identity.caller == root_mcp::Caller::Helper {
+        // The help identity (`services::help_mcp`): the compiled-in corpus and
+        // nothing else. The switch is read per request, like the root one, so
+        // "off" refuses tabs that already hold a token. Help calls are not
+        // written to the audit ring: every agent tab may ask, and 500 rows of
+        // doc lookups must not push the root tools' records out. Admission
+        // failures above are still recorded.
+        if !root_mcp::help_enabled_in(&storage::state_dir().join("settings.json")) || session.check().is_err() {
+            return StatusCode::FORBIDDEN.into_response();
+        }
+        let reply = tokio::task::spawn_blocking(move || {
+            let (_global, _own) = (global, own);
+            crate::services::help_mcp::handle_message(&session, &message)
+        }).await;
+        return match reply {
+            Ok(Some(reply)) => Json(reply).into_response(),
+            Ok(None) => StatusCode::ACCEPTED.into_response(),
+            Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        };
+    }
     if session.identity.caller == root_mcp::Caller::Scheduler {
         if session.identity.project.as_deref().is_none_or(|p| crate::services::schedule_mcp::level(p).is_err()) || session.check().is_err() {
             security::audit_reason(&session, &tool, "denied", started.elapsed(), Some("policy_disabled"));
@@ -350,6 +370,7 @@ pub fn start(app: AppHandle) {
         let router = Router::new()
             .route("/mcp", post(handle))
             .route("/mcp/schedule", post(handle))
+            .route("/mcp/help", post(handle))
             .layer(axum::middleware::map_response(close_connection))
             .with_state(ServerState { app, port: addr.port() });
         let listener = BoundedListener { tcp: listener, slots: Arc::new(tokio::sync::Semaphore::new(SOCKETS)) };
@@ -388,6 +409,25 @@ pub struct RootMcpStatus {
     /// the calendar store or the review setting itself — the review strip is
     /// then a courtesy, and the badge has to say so rather than imply a gate.
     pub review_enforced: bool,
+    /// A root agent started now could read the projects: fenced with
+    /// `Settings::root_fence_projects_readable` on, or unfenced. What the mail
+    /// `attach` argument needs; a running tab keeps what it was spawned with.
+    pub projects_readable: bool,
+    /// The help server (`services::help_mcp`), for the intro/Settings chip.
+    pub help: HelpMcpStatus,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HelpMcpStatus {
+    /// A local agent tab opened now gets the help server: the listener is up
+    /// and `Settings::help_mcp` is not switched off.
+    pub enabled: bool,
+    /// CLIs named the server on their command line; tool-tagged local Vibe
+    /// models get it too. Other agent CLIs get the env pair only.
+    pub wired_clis: &'static [&'static str],
+    /// Topics compiled into this build.
+    pub topics: usize,
 }
 
 /// What the overlay's rights badge shows. Deliberately carries neither the port
@@ -399,6 +439,9 @@ pub fn root_mcp_status() -> RootMcpStatus {
     let local = crate::services::root_mcp_security::Policy::load(&settings)
         .is_ok_and(|p| p.serves(root_mcp::Caller::LocalModel) && p.reads_mail(root_mcp::Caller::LocalModel));
     let open = (reader || local) && crate::commands::mail::any_account_open_to_agents();
+    let review_enforced = crate::services::agent_fence::policy_enabled(None)
+        && crate::services::agent_fence::platform_fenceable()
+        && crate::services::agent_fence::bwrap_available();
     RootMcpStatus {
         running: root_mcp::runtime().is_some(),
         enabled: root_mcp::enabled(),
@@ -410,10 +453,36 @@ pub fn root_mcp_status() -> RootMcpStatus {
         } else {
             open.then_some(crate::schema::mail::MailAgentScope::Marked)
         },
-        review_enforced: crate::services::agent_fence::policy_enabled(None)
-            && crate::services::agent_fence::platform_fenceable()
-            && crate::services::agent_fence::bwrap_available(),
+        review_enforced,
+        projects_readable: !review_enforced
+            || crate::storage::read_json::<crate::schema::Settings>(&settings)
+                .is_ok_and(|s| s.root_fence_projects_readable()),
+        help: HelpMcpStatus {
+            enabled: root_mcp::runtime().is_some() && root_mcp::help_enabled_in(&settings),
+            wired_clis: crate::services::help_mcp::WIRED_CLIS,
+            topics: crate::services::help_mcp::index().topics.len(),
+        },
     }
+}
+
+/// The window's own view of the help corpus (an intro / Settings "Ask" box):
+/// the same index and bounds the `eldrun-help` MCP server answers from.
+/// Off the main thread: the first call builds the index.
+#[tauri::command]
+pub async fn help_search(query: String, limit: Option<usize>) -> Result<Vec<crate::services::help_mcp::Hit>, String> {
+    tokio::task::spawn_blocking(move || {
+        let query: String = query.chars().take(crate::services::help_mcp::MAX_QUERY_BYTES).collect();
+        crate::services::help_mcp::index().search(&query, limit.unwrap_or(crate::services::help_mcp::DEFAULT_RESULTS))
+    }).await.map_err(|e| e.to_string())
+}
+#[tauri::command]
+pub async fn help_read(topic_id: String, section: Option<String>) -> Result<crate::services::help_mcp::Read, String> {
+    tokio::task::spawn_blocking(move || crate::services::help_mcp::index().read(&topic_id, section.as_deref()))
+        .await.map_err(|e| e.to_string())?
+}
+#[tauri::command]
+pub async fn help_topics() -> Result<Vec<crate::services::help_mcp::TopicRef>, String> {
+    tokio::task::spawn_blocking(|| crate::services::help_mcp::index().list()).await.map_err(|e| e.to_string())
 }
 
 fn review_stores<T>(f: impl FnOnce(&Stores) -> Result<T, String>) -> Result<T, String> {
@@ -565,8 +634,9 @@ pub async fn root_mcp_session_revoke(app: AppHandle, id: String, remove_proposal
 
 fn path_serves(path: &str, caller: root_mcp::Caller) -> bool {
     match path {
-        "/mcp" => caller != root_mcp::Caller::Scheduler,
+        "/mcp" => !matches!(caller, root_mcp::Caller::Scheduler | root_mcp::Caller::Helper),
         "/mcp/schedule" => caller == root_mcp::Caller::Scheduler,
+        "/mcp/help" => caller == root_mcp::Caller::Helper,
         _ => false,
     }
 }
@@ -583,6 +653,35 @@ mod security_tests {
                 .body(axum::body::Body::from("not json")).unwrap();
             assert!(matches!(admit(req, 8765).await, Err(StatusCode::UNAUTHORIZED)));
             assert!(path_serves(if caller == root_mcp::Caller::Scheduler { "/mcp/schedule" } else { "/mcp" }, caller));
+            root_mcp::revoke_tab(&session.identity.tab);
+        }
+    }
+    /// The help identity reaches `/mcp/help` and nothing else; no other
+    /// class reaches `/mcp/help`. Refused at admission, before the body.
+    #[tokio::test]
+    async fn help_route_is_its_own_lane() {
+        let post = |path: &str, token: &str| Request::builder().method("POST").uri(path).header("host", "127.0.0.1:8765")
+            .header("content-type", "application/json").header("authorization", format!("Bearer {token}"))
+            .body(axum::body::Body::from("not json")).unwrap();
+        let (token, helper) = root_mcp::test_session(root_mcp::Caller::Helper);
+        for path in ["/mcp", "/mcp/schedule", "/mcp/other"] {
+            assert!(matches!(admit(post(path, &token), 8765).await, Err(StatusCode::UNAUTHORIZED)), "{path}");
+        }
+        // Right lane: admitted as far as the body, which is not JSON.
+        assert!(matches!(admit(post("/mcp/help", &token), 8765).await, Err(StatusCode::BAD_REQUEST)));
+        // A browser Origin or a foreign Host never gets that far.
+        let mut req = post("/mcp/help", &token);
+        req.headers_mut().insert(header::ORIGIN, "http://127.0.0.1:8765".parse().unwrap());
+        assert!(matches!(admit(req, 8765).await, Err(StatusCode::FORBIDDEN)));
+        let mut req = post("/mcp/help", &token);
+        req.headers_mut().insert(header::HOST, format!("{}:{}", root_mcp::READER_GUEST_HOST, root_mcp::READER_GUEST_PORT).parse().unwrap());
+        assert!(matches!(admit(req, 8765).await, Err(StatusCode::FORBIDDEN)));
+        assert!(matches!(admit(post("/mcp/help", "0".repeat(64).as_str()), 8765).await, Err(StatusCode::UNAUTHORIZED)));
+        root_mcp::revoke_tab(&helper.identity.tab);
+        assert!(matches!(admit(post("/mcp/help", &token), 8765).await, Err(StatusCode::UNAUTHORIZED)), "a closed tab's token");
+        for caller in [root_mcp::Caller::Agent, root_mcp::Caller::LocalModel, root_mcp::Caller::Reader, root_mcp::Caller::Scheduler] {
+            let (token, session) = root_mcp::test_session(caller);
+            assert!(matches!(admit(post("/mcp/help", &token), 8765).await, Err(StatusCode::UNAUTHORIZED)), "{caller:?}");
             root_mcp::revoke_tab(&session.identity.tab);
         }
     }

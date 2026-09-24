@@ -138,7 +138,7 @@ impl Policy {
         }
     }
     pub fn serves(&self, caller: Caller) -> bool {
-        if caller == Caller::Scheduler { return false; }
+        if matches!(caller, Caller::Scheduler | Caller::Helper) { return false; }
         self.enabled
             && (!self.local_only || caller == Caller::LocalModel)
             && (caller != Caller::Reader || self.serves_mail(caller))
@@ -159,7 +159,7 @@ impl Policy {
             && match caller {
                 Caller::Reader => true,
                 Caller::LocalModel => self.mail_local_read,
-                Caller::Agent | Caller::Scheduler => false,
+                Caller::Agent | Caller::Scheduler | Caller::Helper => false,
             }
     }
 }
@@ -293,11 +293,15 @@ pub struct ToolPolicy {
     /// Also served to a local-model tab. Only the mail read tools set it, and
     /// [`Policy::reads_mail`] still gates them per request.
     local: bool,
+    /// Served to [`Caller::Helper`] (`services::help_mcp`) — and then to no
+    /// other class: the help tools set it and nothing else.
+    help: bool,
 }
 impl ToolPolicy {
     pub fn serves(&self, caller: Caller) -> bool {
         match caller {
             Caller::Scheduler => false,
+            Caller::Helper => self.help,
             Caller::Reader => self.reader,
             Caller::LocalModel => self.root || self.local,
             Caller::Agent => self.root,
@@ -331,7 +335,13 @@ pub fn tool(name: &str) -> Option<ToolPolicy> {
         "todo_update" | "todo_delete" => ("board", true, true, true, true),
         "mail_accounts_list" | "mail_drafts_list" => ("mail", false, false, true, true),
         "mail_folders" | "mail_search" | "mail_read" | "mail_thread" => {
-            return Some(ToolPolicy { family: "mail", write: false, destructive: false, root: false, reader: true, local: true });
+            return Some(ToolPolicy { family: "mail", write: false, destructive: false, root: false, reader: true, local: true, help: false });
+        }
+        // The help corpus (`services::help_mcp`): read-only, compiled in, and
+        // served to the help identity alone — never to a root or reader tab
+        // through `/mcp`, so the root tool list stays what it was.
+        "eldrun_help_search" | "eldrun_help_read" | "eldrun_help_topics" | "eldrun_help_status" => {
+            return Some(ToolPolicy { family: "help", write: false, destructive: false, root: false, reader: false, local: false, help: true });
         }
         "mail_draft_create" => ("mail", true, false, true, true),
         "mail_draft_update" | "mail_draft_delete" => ("mail", true, true, true, true),
@@ -344,6 +354,7 @@ pub fn tool(name: &str) -> Option<ToolPolicy> {
         root,
         reader,
         local: false,
+        help: false,
     })
 }
 

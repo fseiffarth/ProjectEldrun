@@ -132,6 +132,87 @@ fn resolve_tool(lang: &str, path: Option<&str>) -> Option<Tool> {
     })
 }
 
+/// rustup's `rustfmt` proxy picks its toolchain from the nearest
+/// `rust-toolchain`/`rust-toolchain.toml` above its cwd — the edited file's
+/// folder, i.e. the project — and a toolchain *path* there (`[toolchain] path =
+/// "/abs/tc"`, or a legacy file holding just a path) makes it exec that
+/// directory's `bin/rustfmt` on the host (#866; verified with rustup 1.29). A
+/// named channel only ever runs a toolchain rustup installed itself, so that
+/// choice is honoured. Anything else — a path, or a file this cannot read as
+/// plain channel settings — is overridden with the user's default toolchain
+/// through `RUSTUP_TOOLCHAIN`, which rustup ranks above every toolchain file.
+///
+/// `Ok(None)` when there is nothing to pin: no toolchain file, a plain one, or
+/// a `rustfmt` that is not a rustup proxy (no `rustup` beside it — the toolchain
+/// file then means nothing to it). Refuses when a pin is needed but rustup
+/// names no default toolchain, rather than run the project's.
+fn rustup_toolchain_pin(rustfmt: &Path, cwd: &Path) -> Result<Option<String>, String> {
+    let Some(text) = nearest_toolchain_file(cwd) else {
+        return Ok(None);
+    };
+    if toolchain_file_is_plain_channel(&text) {
+        return Ok(None);
+    }
+    let rustup = rustfmt.with_file_name(format!("rustup{}", std::env::consts::EXE_SUFFIX));
+    if !rustup.is_file() {
+        return Ok(None);
+    }
+    // `rustup default` reads rustup's own settings, never a toolchain file.
+    let default = crate::paths::command_for_program(&rustup)
+        .arg("default")
+        .stdin(Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .split_whitespace()
+                .next()
+                .map(str::to_string)
+        });
+    default.map(Some).ok_or_else(|| {
+        "rustfmt: this project's rust-toolchain file names a toolchain path, and rustup has no \
+         default toolchain to format with instead"
+            .to_string()
+    })
+}
+
+/// The contents of the toolchain file rustup would read for `start`: the
+/// nearest directory holding one wins, and within it both names are read (a
+/// path in either counts).
+fn nearest_toolchain_file(start: &Path) -> Option<String> {
+    start.ancestors().find_map(|dir| {
+        let found: Vec<String> = ["rust-toolchain", "rust-toolchain.toml"]
+            .iter()
+            .filter_map(|n| std::fs::read(dir.join(n)).ok())
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+            .collect();
+        (!found.is_empty()).then(|| found.join("\n"))
+    })
+}
+
+/// Whether a toolchain file is only named-channel settings: `[toolchain]` and
+/// bare `channel`/`components`/`targets`/`profile` keys (a legacy one-line
+/// channel name too), with nothing path-shaped anywhere. Deliberately a
+/// whitelist of shapes rather than a TOML parse looking for `path` — a quoted
+/// or escaped key (`"p\u0061th"`), a dotted one or an inline table all spell
+/// `path` without the word, and every one of them fails this.
+fn toolchain_file_is_plain_channel(text: &str) -> bool {
+    if text.contains(['/', '\\', ':']) {
+        return false;
+    }
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .all(|l| match l.split_once('=') {
+            Some((key, _)) => matches!(key.trim(), "channel" | "components" | "targets" | "profile"),
+            None => {
+                l == "[toolchain]"
+                    || l.chars().all(|c| c.is_ascii_alphanumeric() || " \t\"'-_.,[]".contains(c))
+            }
+        })
+}
+
 /// Whether a formatter for `lang` is available (drives the button's enabled
 /// state). `path` lets a project-local prettier count.
 #[tauri::command]
@@ -153,9 +234,11 @@ pub fn formatter_available(lang: String, path: Option<String>) -> bool {
 pub fn format_source(text: String, lang: String, path: Option<String>) -> Result<String, String> {
     let tool = resolve_tool(&lang, path.as_deref())
         .ok_or_else(|| format!("formatter-unavailable:{lang}"))?;
-    // A project's own prettier, a JS config or a config loading plugins is
-    // project code run on the host: ask once (`services::exec_trust`). black,
-    // rustfmt and gofmt read data-only configs and need no gate.
+    // A project's own prettier, a JS config, a config loading plugins or naming
+    // a shared config is project code run on the host: ask once
+    // (`services::exec_trust`). black, rustfmt and gofmt read data-only configs
+    // and need no gate — but *which* rustfmt runs is the project's choice too
+    // when rustfmt is rustup's proxy, so that choice is pinned below.
     if is_prettier_lang(&lang) {
         if let Some(cwd) = &tool.cwd {
             crate::services::exec_trust::require(crate::services::exec_trust::TrustKind::Prettier, cwd)?;
@@ -169,6 +252,11 @@ pub fn format_source(text: String, lang: String, path: Option<String>) -> Result
         .stderr(Stdio::piped());
     if let Some(cwd) = &tool.cwd {
         cmd.current_dir(cwd);
+        if lang == "rust" {
+            if let Some(toolchain) = rustup_toolchain_pin(&tool.program, cwd)? {
+                cmd.env("RUSTUP_TOOLCHAIN", toolchain);
+            }
+        }
     }
 
     let mut child = cmd
@@ -294,5 +382,84 @@ mod tests {
             let err = format_source("fn  main(){}".into(), "rust".into(), None).unwrap_err();
             assert!(err.starts_with("formatter-unavailable:"));
         }
+    }
+
+    #[test]
+    fn only_a_plain_channel_toolchain_file_is_honoured() {
+        for plain in [
+            "stable\n",
+            "1.80.0",
+            "[toolchain]\nchannel = \"nightly-2024-01-01\"\n# a comment\n",
+            "[toolchain]\nchannel = \"stable\"\ncomponents = [\n  \"rustfmt\",\n  \"clippy\",\n]\nprofile = \"minimal\"\n",
+        ] {
+            assert!(toolchain_file_is_plain_channel(plain), "{plain}");
+        }
+        for hostile in [
+            "[toolchain]\npath = \"/home/u/proj/tc\"\n",
+            "/home/u/proj/tc\n",
+            "C:\\proj\\tc",
+            "[toolchain]\n\"p\\u0061th\" = \"tc\"\n",
+            "toolchain.path = \"tc\"\n",
+            "toolchain = { path = \"tc\" }\n",
+            "[toolchain]\nchannel = \"stable\"\npath = \"tc\"\n",
+        ] {
+            assert!(!toolchain_file_is_plain_channel(hostile), "{hostile}");
+        }
+    }
+
+    #[test]
+    fn the_nearest_toolchain_file_wins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sub = tmp.path().join("a").join("b");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(tmp.path().join("rust-toolchain.toml"), "path = \"/x\"").unwrap();
+        std::fs::write(tmp.path().join("a").join("rust-toolchain"), "stable").unwrap();
+        assert_eq!(nearest_toolchain_file(&sub).as_deref(), Some("stable"));
+        assert!(nearest_toolchain_file(tmp.path()).unwrap().contains("path"));
+    }
+
+    /// #866 end to end: a `rust-toolchain.toml` naming a toolchain path in the
+    /// project must not get Format to exec that path's `bin/rustfmt`. Needs
+    /// rustup's proxy on PATH; skipped (not failed) where rustup no longer
+    /// honours the plant, since then there is nothing to guard.
+    #[cfg(unix)]
+    #[test]
+    fn a_toolchain_path_in_the_project_never_runs_on_format() {
+        use std::os::unix::fs::PermissionsExt;
+        let Some(tool) = resolve_tool("rust", None) else {
+            eprintln!("rustfmt not on PATH — skipping");
+            return;
+        };
+        if !tool.program.with_file_name("rustup").is_file() {
+            eprintln!("rustfmt is not rustup's proxy — skipping");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let proj = tmp.path().canonicalize().unwrap().join("proj");
+        let bin = proj.join("tc").join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let marker = tmp.path().join("ran");
+        let fake = bin.join("rustfmt");
+        std::fs::write(&fake, format!("#!/bin/sh\ntouch '{}'\ncat\n", marker.display())).unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(
+            proj.join("rust-toolchain.toml"),
+            format!("[toolchain]\npath = \"{}\"\n", proj.join("tc").display()),
+        )
+        .unwrap();
+        let _ = crate::paths::command_for_program(&tool.program)
+            .current_dir(&proj)
+            .stdin(Stdio::null())
+            .output();
+        if !marker.exists() {
+            eprintln!("this rustup does not run a toolchain path — skipping");
+            return;
+        }
+        std::fs::remove_file(&marker).unwrap();
+
+        let file = proj.join("main.rs").to_string_lossy().into_owned();
+        // Ok or an error (the default toolchain may lack rustfmt) — never the plant.
+        let _ = format_source("fn  main(){}".into(), "rust".into(), Some(file));
+        assert!(!marker.exists(), "the project's own rustfmt ran through Format");
     }
 }

@@ -740,7 +740,8 @@ mod tests {
         let _ = git(&["config", "user.email", "t@e"]);
         let _ = git(&["config", "user.name", "t"]);
         std::fs::write(tmp.join("code.txt"), b"v1").unwrap();
-        assert!(git(&["add", "code.txt"]).status.success());
+        let added = git(&["add", "code.txt"]);
+        assert!(added.status.success(), "{}", String::from_utf8_lossy(&added.stderr));
         assert!(git(&["commit", "-q", "-m", "c1"]).status.success());
         // An untracked experiment output — must never appear in the bundle.
         std::fs::write(tmp.join("checkpoint.bin"), b"weights").unwrap();

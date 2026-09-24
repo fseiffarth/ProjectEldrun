@@ -32,6 +32,7 @@ use serde_json::{json, Map, Value};
 use super::root_mcp::{Caller, Change, Effects, Stores};
 use crate::schema::mail::{
     MailAgentScope, MailBody, MailDraft, MailFolder, MailFolderKind, MailHeader, MailHeaderPage,
+    NewStagedFile, StagedAttachment,
 };
 
 /// Every mail tool, exactly. A tenth name fails `the_mail_allowlist_is_exact`
@@ -89,6 +90,7 @@ pub fn origin_of(caller: Caller, read_mail: bool) -> &'static str {
         Caller::LocalModel if read_mail => "reader",
         Caller::Agent | Caller::LocalModel => "agent",
         Caller::Scheduler => "scheduler",
+        Caller::Helper => "helper",
     }
 }
 
@@ -150,6 +152,31 @@ pub trait MailAccess {
         // with a comparison under its database lock.
         if let Some(d) = after { self.save_draft(d) }
         else { self.delete_draft(&before.ok_or("Missing draft")?.id) }
+    }
+    /// An agent write that also changes the files it staged
+    /// (`MailStore::change_draft_files`): `add` copied in, the agent rows in
+    /// `remove` dropped, the draft written — one step, under the store's lock
+    /// in the real implementation. Returns the staged set afterwards. The
+    /// default keeps the set on the draft itself, for fixtures.
+    fn change_draft_files(
+        &self,
+        before: Option<&MailDraft>,
+        after: &MailDraft,
+        add: Vec<NewStagedFile>,
+        remove: &[String],
+    ) -> Result<Vec<StagedAttachment>, String> {
+        let mut next = after.clone();
+        next.staged.retain(|a| !remove.contains(&a.staged_id));
+        next.staged.extend(add.into_iter().map(|f| StagedAttachment {
+            size: f.bytes.len() as u64,
+            staged_id: f.staged_id,
+            filename: f.filename,
+            mime: f.mime,
+            origin: Some("agent".into()),
+            source: Some(f.source),
+        }));
+        self.change_draft(before, Some(&next))?;
+        Ok(next.staged)
     }
 }
 
@@ -267,6 +294,14 @@ impl ScopedMail<'_> {
         });
         if let Some(d) = &next { self.account(&d.account_id)?; }
         self.inner.change_draft(before, next.as_ref())
+    }
+    fn change_draft_files(&self, before: Option<&MailDraft>, after: &MailDraft, add: Vec<NewStagedFile>, remove: &[String]) -> Result<Vec<StagedAttachment>, String> {
+        self.stores.check()?;
+        if before.is_some_and(|d| !self.owns(d)) { return Err("unknown draft".into()); }
+        let mut next = after.clone();
+        next.owner_session = self.stores.session.map(|s| s.tab_key());
+        self.account(&next.account_id)?;
+        self.inner.change_draft_files(before, &next, add, remove)
     }
 }
 
@@ -501,6 +536,26 @@ pub fn tool_schemas(caller: Caller, reads: bool) -> Vec<Value> {
         draft_fields.insert("to".into(), json!({ "type": "array", "items": { "type": "string" }, "description": "Only addresses already on the replied-to message, or the account's own. Leave empty otherwise; the user types the address." }));
         draft_fields.insert("cc".into(), json!({ "type": "array", "items": { "type": "string" }, "description": "Same rule as `to`." }));
     }
+    // A root tab only: it names files by project and path (Eldrun copies them
+    // under the same-roots rule), and it may *suggest* a recipient the user
+    // adds with a click. Never a reader's or a local model's.
+    if caller == Caller::Agent {
+        draft_fields.insert("attach".into(), json!({
+            "type": "array", "maxItems": super::mail_attach::MAX_FILES,
+            "description": "Project files to attach, at most 5 (20 MiB each, 25 MiB per draft). Eldrun copies each file when you call and shows it to the user with its source before sending. On an update the list replaces the files this draft has; omit it to keep them, pass [] to remove them. Only files a fenced tab of that project could read are attached: no links, nothing in .git, no key or credential files.",
+            "items": { "type": "object",
+                "properties": {
+                    "project": { "type": "string", "maxLength": 200, "description": "Project id or name (projects_list)." },
+                    "path": { "type": "string", "maxLength": 1024, "description": "Path inside that project, forward slashes, no `..`." }
+                },
+                "required": ["project", "path"] }
+        }));
+        draft_fields.insert("suggested_to".into(), json!({
+            "type": "array", "maxItems": 5,
+            "items": { "type": "string", "maxLength": 320 },
+            "description": "Addresses to suggest, at most 5. They are never set as recipients: the user sees each as a suggestion and adds it with a click. On an update the list replaces the suggestions; [] removes them."
+        }));
+    }
     let with = |extra: Value, required: &[&str]| {
         let mut props = draft_fields.clone();
         for (k, v) in extra.as_object().cloned().unwrap_or_default() {
@@ -508,7 +563,11 @@ pub fn tool_schemas(caller: Caller, reads: bool) -> Vec<Value> {
         }
         json!({ "type": "object", "properties": props, "required": required })
     };
-    let draft_note = "The draft appears in Eldrun's mail view marked as written by an agent. Only the user can send it, and the user types the recipient; there are no attachments.";
+    let draft_note = if caller == Caller::Agent {
+        "The draft appears in Eldrun's mail view marked as written by an agent. Only the user can send it. Files are attached from projects only, by project and path, copied when you ask, and shown to the user with their source before sending; recipients are suggestions the user adds."
+    } else {
+        "The draft appears in Eldrun's mail view marked as written by an agent. Only the user can send it, and the user types the recipient; there are no attachments."
+    };
     let mut tools = vec![json!({
         "name": "mail_accounts_list",
         "description": "List the user's mail accounts: id, name and address. Nothing about servers or credentials. When this agent may read mail, `scope` says whether the account is open in full (\"all\"), only the messages the user marked for agents (\"marked\"), or not readable at all (\"drafts_only\").",
@@ -870,6 +929,110 @@ fn apply_text(args: &Value, draft: &mut MailDraft) {
     }
 }
 
+/// `suggested_to`: at most five syntax-checked addresses, stored on the draft
+/// and never copied into `to` — the composer offers each as a pill the user
+/// adds with a click. A root tab's only way to name a recipient.
+fn apply_suggested(caller: Caller, args: &Value, draft: &mut MailDraft) -> Result<(), String> {
+    let Some(list) = list_arg(args, "suggested_to")? else { return Ok(()) };
+    if caller != Caller::Agent {
+        return Err("`suggested_to` is not available to this agent".into());
+    }
+    if list.len() > 5 {
+        return Err("at most 5 suggested recipients".into());
+    }
+    let checked = list
+        .iter()
+        .map(|raw| {
+            // Nothing the pill would render differently from what is added.
+            if strip_invisible(raw) != *raw {
+                return Err(format!("'{}' carries invisible characters", strip_invisible(raw)));
+            }
+            crate::services::mail_engine::validate_recipient(raw).map_err(String::from)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    draft.suggested_to = (!checked.is_empty()).then_some(checked);
+    Ok(())
+}
+
+/// What an `attach` changes: the copies to stage, the agent rows it replaces,
+/// and the per-file reply (name, size, digest — never bytes).
+struct Staging {
+    add: Vec<NewStagedFile>,
+    remove: Vec<String>,
+    reply: Vec<Value>,
+}
+
+/// Resolve and read the files an `attach` names (`services::mail_attach`).
+/// `None` when the argument is absent. Refused whole — nothing staged — on the
+/// first file that fails a check or a cap.
+fn attach_files(mail: &ScopedMail, caller: Caller, args: &Value, before: Option<&MailDraft>) -> Result<Option<Staging>, String> {
+    use super::mail_attach as attach;
+    if args.get("attach").is_some() && caller != Caller::Agent {
+        return Err(attach::NOT_FOR_CALLER.into());
+    }
+    let Some(items) = attach::parse(args)? else { return Ok(None) };
+    let remove: Vec<String> = before
+        .map(|b| b.staged.iter().filter(|a| a.origin.as_deref() == Some("agent")).map(|a| a.staged_id.clone()).collect())
+        .unwrap_or_default();
+    if items.is_empty() {
+        return Ok(Some(Staging { add: Vec::new(), remove, reply: Vec::new() }));
+    }
+    if cfg!(not(any(target_os = "linux", target_os = "macos"))) {
+        return Err(attach::WINDOWS_REFUSED.into());
+    }
+    // The tab's own fence, as recorded when it was spawned: with the projects
+    // hidden from the tab, Eldrun reading them for it is the widening the
+    // `.ics` import rule forbids.
+    if !mail.stores.session.is_some_and(|s| s.projects_readable()) {
+        return Err(attach::NEEDS_PROJECTS_READABLE.into());
+    }
+    let stores = mail.stores;
+    let projects: crate::schema::projects::ProjectsList = crate::storage::read_json(stores.projects).unwrap_or_default();
+    let boxes: crate::schema::boxes::BoxesList = crate::storage::read_json(&stores.state.join("boxes.json")).unwrap_or_default();
+    let home = crate::paths::home_dir();
+    let lists = attach::Lists { projects: &projects, boxes: &boxes, state_dir: stores.state, home: &home };
+    let (mut add, mut reply, mut total) = (Vec::new(), Vec::new(), 0u64);
+    for item in &items {
+        stores.check()?;
+        let id = super::root_mcp::resolve_project(stores, &item.project)?;
+        let file = attach::resolve(&lists, &id, &item.path)?;
+        total += file.bytes.len() as u64;
+        if total > attach::MAX_DRAFT_BYTES {
+            return Err(format!("the files come to more than {} MiB for one draft; nothing was attached", attach::MAX_DRAFT_BYTES / (1024 * 1024)));
+        }
+        use sha2::Digest;
+        let digest: String = sha2::Sha256::digest(&file.bytes).iter().map(|b| format!("{b:02x}")).collect();
+        reply.push(json!({ "filename": file.filename, "size": file.bytes.len(), "sha256": digest }));
+        add.push(NewStagedFile { staged_id: mail.new_id(), filename: file.filename, mime: file.mime, source: file.source, bytes: file.bytes });
+    }
+    // Per tab, across its drafts: what this draft keeps is replaced, so only
+    // the other drafts' agent files count beside the new set.
+    let others: u64 = mail
+        .drafts()?
+        .iter()
+        .filter(|d| before.is_none_or(|b| b.id != d.id))
+        .flat_map(|d| d.staged.iter())
+        .filter(|a| a.origin.as_deref() == Some("agent"))
+        .map(|a| a.size)
+        .sum();
+    if others + total > attach::MAX_TAB_BYTES {
+        return Err(format!("this tab's drafts would hold more than {} MiB of attached files; delete a draft or remove files first", attach::MAX_TAB_BYTES / (1024 * 1024)));
+    }
+    Ok(Some(Staging { add, remove, reply }))
+}
+
+/// Write the draft, through the file-changing path when `attach` was given.
+fn write_draft(mail: &ScopedMail, before: Option<&MailDraft>, draft: &MailDraft, staging: Option<Staging>, reply: &mut Value) -> Result<(), String> {
+    match staging {
+        Some(st) => {
+            mail.change_draft_files(before, draft, st.add, &st.remove)?;
+            reply["attached"] = json!(st.reply);
+        }
+        None => mail.change_draft(before, Some(draft))?,
+    }
+    Ok(())
+}
+
 fn mail_draft_create(mail: &ScopedMail, caller: Caller, args: &Value) -> Result<(Value, Change), String> {
     let acc = account(mail, caller, str_arg(args, "account_id").ok_or("`account_id` is required")?)?;
     let mut draft = MailDraft {
@@ -879,9 +1042,12 @@ fn mail_draft_create(mail: &ScopedMail, caller: Caller, args: &Value) -> Result<
         ..Default::default()
     };
     apply_recipients(mail, caller, &acc, args, &mut draft)?;
+    apply_suggested(caller, args, &mut draft)?;
     apply_text(args, &mut draft);
-    mail.change_draft(None, Some(&draft))?;
-    Ok((json!({ "draft_id": draft.id, "sent": false, "note": "A draft only. The user reviews and sends it in Eldrun." }), draft_change(&draft, "upsert")))
+    let staging = attach_files(mail, caller, args, None)?;
+    let mut reply = json!({ "draft_id": draft.id, "sent": false, "note": "A draft only. The user reviews and sends it in Eldrun." });
+    write_draft(mail, None, &draft, staging, &mut reply)?;
+    Ok((reply, draft_change(&draft, "upsert")))
 }
 
 fn mail_draft_update(mail: &ScopedMail, caller: Caller, args: &Value) -> Result<(Value, Change), String> {
@@ -889,6 +1055,7 @@ fn mail_draft_update(mail: &ScopedMail, caller: Caller, args: &Value) -> Result<
     let before = draft.clone();
     let acc = account(mail, caller, &draft.account_id)?;
     apply_recipients(mail, caller, &acc, args, &mut draft)?;
+    apply_suggested(caller, args, &mut draft)?;
     apply_text(args, &mut draft);
     // The mark follows the tab's state at the time of writing: a draft begun
     // before the tab's first read and edited after it may now carry what a
@@ -896,11 +1063,14 @@ fn mail_draft_update(mail: &ScopedMail, caller: Caller, args: &Value) -> Result<
     if draft.origin.as_deref() == Some("agent") && origin_of(caller, mail.read_mail()) == "reader" {
         draft.origin = Some("reader".into());
     }
-    // No attachment path exists for an agent; keep it that way on every write.
-    draft.staged.clear();
+    // Files change only through `attach` (the store keeps the table as the
+    // truth and every row agent-origin); no other path adds one.
+    draft.staged.retain(|a| a.origin.as_deref() == Some("agent"));
     draft.bcc.clear();
-    mail.change_draft(Some(&before), Some(&draft))?;
-    Ok((json!({ "draft_id": draft.id, "sent": false }), draft_change(&draft, "upsert")))
+    let staging = attach_files(mail, caller, args, Some(&before))?;
+    let mut reply = json!({ "draft_id": draft.id, "sent": false });
+    write_draft(mail, Some(&before), &draft, staging, &mut reply)?;
+    Ok((reply, draft_change(&draft, "upsert")))
 }
 
 fn mail_draft_delete(mail: &ScopedMail, caller: Caller, args: &Value) -> Result<(Value, Change), String> {
@@ -1036,6 +1206,8 @@ mod tests {
         locked: bool,
         /// Every access, so "read leaves no trace" can assert nothing wrote.
         writes: Mutex<Vec<String>>,
+        /// Every file an agent's `attach` staged: (source, bytes).
+        files: Mutex<Vec<(String, Vec<u8>)>>,
     }
 
     impl Fx {
@@ -1110,6 +1282,17 @@ mod tests {
             let mut n = self.ids.lock().unwrap();
             *n += 1;
             format!("d{n}")
+        }
+        fn change_draft_files(&self, before: Option<&MailDraft>, after: &MailDraft, add: Vec<NewStagedFile>, remove: &[String]) -> Result<Vec<StagedAttachment>, String> {
+            self.gate()?;
+            let mut next = after.clone();
+            next.staged.retain(|a| !remove.contains(&a.staged_id));
+            for f in add {
+                self.files.lock().unwrap().push((f.source.clone(), f.bytes.clone()));
+                next.staged.push(StagedAttachment { size: f.bytes.len() as u64, staged_id: f.staged_id, filename: f.filename, mime: f.mime, origin: Some("agent".into()), source: Some(f.source) });
+            }
+            self.change_draft(before, Some(&next))?;
+            Ok(next.staged)
         }
     }
 
@@ -1258,19 +1441,38 @@ mod tests {
         assert_eq!(got, expected);
     }
 
-    /// In the style of `no_command_takes_a_path`: no mail tool can be handed a
-    /// path, a file, an attachment, a bcc or a URL, for either class.
+    /// In the style of `no_command_takes_a_path`: a path is an argument only
+    /// inside a root tab's `attach` items, and no mail tool of any class can be
+    /// handed a file, an attachment's content, a bcc or a URL.
     #[test]
-    fn no_mail_tool_takes_a_path_a_file_a_bcc_or_a_url() {
-        for (caller, reads) in [(Caller::Agent, false), (Caller::Reader, true), (Caller::LocalModel, true)] {
+    fn only_a_root_tabs_attach_items_take_a_path_and_nothing_takes_a_file_a_bcc_or_a_url() {
+        fn walk(props: &Map<String, Value>, under_attach: bool, tool: &str, paths: &mut Vec<String>) {
+            for (key, schema) in props {
+                if key == "path" {
+                    assert!(under_attach, "{tool} takes `path` outside `attach`");
+                    paths.push(tool.to_string());
+                }
+                if let Some(inner) = schema["items"]["properties"].as_object() {
+                    walk(inner, under_attach || key == "attach", tool, paths);
+                }
+            }
+        }
+        for (caller, reads) in [(Caller::Agent, false), (Caller::Reader, true), (Caller::LocalModel, true), (Caller::LocalModel, false)] {
+            let mut paths = Vec::new();
             for tool in tool_schemas(caller, reads) {
                 let props = tool["inputSchema"]["properties"].as_object().cloned().unwrap_or_default();
                 for key in props.keys() {
-                    for banned in ["path", "file", "attachment", "bcc", "url"] {
+                    for banned in ["path", "file", "attachment", "bcc", "url", "content", "base64"] {
                         assert!(!key.contains(banned), "{} has `{key}`", tool["name"]);
                     }
                 }
+                walk(&props, false, tool["name"].as_str().unwrap(), &mut paths);
+                let has = |k: &str| props.contains_key(k);
+                assert_eq!(has("attach"), caller == Caller::Agent && tool["name"] != "mail_draft_delete" && tool["name"] != "mail_drafts_list" && tool["name"] != "mail_accounts_list", "{caller:?} {}", tool["name"]);
+                assert_eq!(has("suggested_to"), has("attach"));
             }
+            let expected: &[&str] = if caller == Caller::Agent { &["mail_draft_create", "mail_draft_update"] } else { &[] };
+            assert_eq!(paths, expected, "{caller:?}");
         }
     }
 
@@ -1846,7 +2048,7 @@ mod tests {
         assert_eq!(made["sent"], false);
         let draft = f.drafts.lock().unwrap()[0].clone();
         assert_eq!(draft.origin.as_deref(), Some("agent"));
-        assert!(draft.to.is_empty() && draft.cc.is_empty() && draft.bcc.is_empty() && draft.staged.is_empty());
+        assert!(draft.to.is_empty() && draft.cc.is_empty() && draft.bcc.is_empty());
         assert!(draft.in_reply_to.is_none());
         let change = &effects.changes[0];
         assert_eq!((change.kind, change.op), ("draft", "upsert"));
@@ -1927,6 +2129,231 @@ mod tests {
         assert!(run(&f, Caller::Agent, "mail_draft_update", json!({ "draft_id": root, "body_text": "v3" })).is_err());
         let (_, effects) = call(&stores(Some(&f), Caller::Reader), "mail_draft_delete", &json!({ "draft_id": reader })).unwrap();
         assert_eq!((effects.changes[0].kind, effects.changes[0].op), ("draft", "delete"));
+    }
+
+    /// A tree of projects on disk and the lists naming them, for `attach`.
+    struct Tree {
+        dir: tempfile::TempDir,
+        projects: std::path::PathBuf,
+        state: std::path::PathBuf,
+        settings: std::path::PathBuf,
+    }
+
+    /// `Alpha` (p1) and `Beta` (p2) share box b1; `Gamma` (p3) is alone;
+    /// `Delta` (p4) is a legacy remote project with no `mirror` key (its
+    /// default mirror lies in the state dir); `Epsilon` (p6) is a remote
+    /// project with an explicit mirror; `Homey` (p5) claims the home folder.
+    fn tree() -> Tree {
+        let dir = tempfile::tempdir().unwrap();
+        let w = dir.path().join("work");
+        let (alpha, beta, gamma, delta_remote) = (w.join("alpha"), w.join("beta"), w.join("gamma"), w.join("delta-remote"));
+        let state = dir.path().join("state");
+        let mirror = state.join("remote-projects/p4/mirror");
+        let eps_mirror = w.join("epsilon-mirror");
+        for d in [alpha.join("out"), alpha.join(".git"), beta.clone(), gamma.clone(), delta_remote.clone(), mirror.clone(), eps_mirror.clone(), dir.path().join("outside")] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(alpha.join("out/paper.pdf"), b"%PDF-1.7 paper").unwrap();
+        for name in [".git/config", ".env", "id_ed25519", "foo.pem"] {
+            std::fs::write(alpha.join(name), b"secret").unwrap();
+        }
+        std::fs::File::create(alpha.join("big.bin")).unwrap().set_len(crate::schema::mail::MAX_STAGED_BYTES + 1).unwrap();
+        std::fs::File::create(alpha.join("half.bin")).unwrap().set_len(13 * 1024 * 1024).unwrap();
+        for i in 1..=6 {
+            std::fs::write(alpha.join(format!("f{i}.txt")), format!("file {i}")).unwrap();
+        }
+        std::fs::write(dir.path().join("outside/secret.txt"), b"outside").unwrap();
+        std::os::unix::fs::symlink(dir.path().join("outside/secret.txt"), alpha.join("link-out.txt")).unwrap();
+        std::os::unix::fs::symlink(alpha.join("out/paper.pdf"), alpha.join("link-in.pdf")).unwrap();
+        std::os::unix::fs::symlink(alpha.join("out"), alpha.join("outlink")).unwrap();
+        let fifo = std::ffi::CString::new(alpha.join("pipe").to_str().unwrap()).unwrap();
+        // SAFETY: a valid C string naming a path inside the temp tree.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        std::fs::write(beta.join("b.txt"), b"beta's").unwrap();
+        std::fs::write(delta_remote.join("r.txt"), b"remote path read locally").unwrap();
+        std::fs::write(mirror.join("m.txt"), b"mirrored").unwrap();
+        std::fs::write(eps_mirror.join("e.txt"), b"mirrored").unwrap();
+        let projects = dir.path().join("projects.json");
+        std::fs::write(&projects, serde_json::to_string(&json!([
+            {"id":"p1","name":"Alpha","status":"active","position":0,"local_file":"","directory": alpha},
+            {"id":"p2","name":"Beta","status":"active","position":1,"local_file":"","directory": beta},
+            {"id":"p3","name":"Gamma","status":"active","position":2,"local_file":"","directory": gamma},
+            {"id":"p4","name":"Delta","status":"active","position":3,"local_file":"","directory": delta_remote, "remote":{"host":"h.example.com"}},
+            {"id":"p5","name":"Homey","status":"active","position":4,"local_file":"","directory": crate::paths::home_dir()},
+            {"id":"p6","name":"Epsilon","status":"active","position":5,"local_file":"","directory": delta_remote, "remote":{"host":"h.example.com"}, "mirror": eps_mirror},
+        ])).unwrap()).unwrap();
+        std::fs::write(state.join("boxes.json"), r#"[{"id":"b1","name":"Box","member_ids":["p1","p2"],"position":0}]"#).unwrap();
+        let settings = dir.path().join("settings.json");
+        std::fs::write(&settings, r#"{"root_mcp_mail":true}"#).unwrap();
+        Tree { dir, projects, state, settings }
+    }
+
+    fn tree_stores<'a>(f: &'a Fx, t: &'a Tree, caller: Caller, session: &'a super::super::root_mcp::Session) -> Stores<'a> {
+        let mut s = stores(Some(f), caller);
+        s.projects = &t.projects;
+        s.state = &t.state;
+        s.settings = &t.settings;
+        s.session = Some(session);
+        s
+    }
+
+    fn attach(project: &str, path: &str) -> Value {
+        json!({ "account_id": "open", "subject": "paper", "attach": [{ "project": project, "path": path }] })
+    }
+
+    /// The same-roots rule, row by row: what a fenced tab of the project could
+    /// read attaches; every escape, link, special file, secret-shaped name, cap
+    /// and foreign root refuses, and a refusal stages nothing.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn attach_follows_the_same_roots_rule() {
+        let t = tree();
+        let f = fx();
+        let tab = "root:attach-table";
+        let (_, session) = super::super::root_mcp::test_session_reading_projects(Caller::Agent, tab, &t.state);
+        let st = tree_stores(&f, &t, Caller::Agent, &session);
+        let go = |args: Value| call(&st, "mail_draft_create", &args).map(|(v, _)| v);
+
+        let made = go(attach("Alpha", "out/paper.pdf")).unwrap();
+        let file = &made["attached"][0];
+        assert_eq!((file["filename"].as_str(), file["size"].as_u64()), (Some("paper.pdf"), Some(14)));
+        assert_eq!(file["sha256"].as_str().unwrap().len(), 64);
+        assert!(made.get("bytes").is_none() && file.get("content").is_none(), "no bytes back");
+        let draft = f.drafts.lock().unwrap().iter().find(|d| d.id == made["draft_id"].as_str().unwrap()).cloned().unwrap();
+        assert!(draft.to.is_empty(), "attaching never addresses");
+        assert_eq!(draft.staged[0].source.as_deref(), Some("Alpha/out/paper.pdf"));
+        assert_eq!(f.files.lock().unwrap().clone(), [("Alpha/out/paper.pdf".to_string(), b"%PDF-1.7 paper".to_vec())]);
+
+        let refused = |args: Value, why: &str| {
+            let before = f.files.lock().unwrap().len();
+            let err = go(args.clone()).unwrap_err();
+            assert!(err.contains(why), "{args}: {err}");
+            assert_eq!(f.files.lock().unwrap().len(), before, "{args} staged something");
+        };
+        refused(attach("Alpha", "../beta/b.txt"), "`..`");
+        refused(attach("Alpha", "/etc/hostname"), "no leading `/`");
+        refused(attach("Alpha", "out\\paper.pdf"), "forward slashes");
+        refused(attach("Alpha", "out/paper.pdf\0"), "forward slashes");
+        refused(attach("Alpha", "link-out.txt"), "symbolic link");
+        refused(attach("Alpha", "link-in.pdf"), "symbolic link");
+        refused(attach("Alpha", "outlink/paper.pdf"), "symbolic link");
+        refused(attach("Alpha", "pipe"), "not a regular file");
+        refused(attach("Alpha", ".git/config"), ".git");
+        for name in [".env", "id_ed25519", "foo.pem"] {
+            refused(attach("Alpha", name), "looks like a key");
+        }
+        refused(attach("Alpha", "big.bin"), "larger than 20 MiB");
+        refused(json!({ "account_id": "open", "attach": [{ "project": "Alpha", "path": "half.bin" }, { "project": "Alpha", "path": "half.bin" }] }), "25 MiB");
+        let six: Vec<Value> = (1..=6).map(|i| json!({ "project": "Alpha", "path": format!("f{i}.txt") })).collect();
+        refused(json!({ "account_id": "open", "attach": six }), "at most 5");
+        refused(attach("Nope", "out/paper.pdf"), "no project named");
+        // A box member sees its siblings' roots; a project in no box does not.
+        let sibling = go(attach("Alpha", "b.txt")).unwrap();
+        assert_eq!(f.files.lock().unwrap().last().unwrap().0, "Beta/b.txt", "{sibling}");
+        refused(attach("Gamma", "b.txt"), "no file");
+        // A remote project resolves to its mirror, never its remote path read
+        // on this disk. A legacy one's default mirror lies in the state dir,
+        // which the root fence masks, so nothing of it attaches either.
+        go(attach("Epsilon", "e.txt")).unwrap();
+        assert_eq!(f.files.lock().unwrap().last().unwrap(), &("Epsilon/e.txt".to_string(), b"mirrored".to_vec()));
+        refused(attach("Epsilon", "r.txt"), "no file");
+        refused(attach("Delta", "m.txt"), "Eldrun's own state");
+        refused(attach("Delta", "r.txt"), "Eldrun's own state");
+        refused(attach("Homey", "anything.txt"), "home folder");
+
+        // Per tab, across its drafts: a tab already holding 99 MiB cannot add 2.
+        f.drafts.lock().unwrap().push(MailDraft {
+            id: "heavy".into(), account_id: "open".into(), origin: Some("agent".into()), owner_session: Some(session.tab_key()),
+            staged: vec![StagedAttachment { staged_id: "h".into(), filename: "h".into(), mime: "x".into(), size: 99 * 1024 * 1024, origin: Some("agent".into()), source: Some("Alpha/h".into()) }],
+            ..Default::default()
+        });
+        std::fs::File::create(t.dir.path().join("work/alpha/two.bin")).unwrap().set_len(2 * 1024 * 1024).unwrap();
+        refused(attach("Alpha", "two.bin"), "100 MiB");
+        super::super::root_mcp::revoke_tab(tab);
+    }
+
+    /// Replace semantics on update: the list given is the set; omitted keeps
+    /// it; `[]` removes it.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn attach_on_update_replaces_keeps_or_clears() {
+        let t = tree();
+        let f = fx();
+        let tab = "root:attach-update";
+        let (_, session) = super::super::root_mcp::test_session_reading_projects(Caller::Agent, tab, &t.state);
+        let st = tree_stores(&f, &t, Caller::Agent, &session);
+        let id = call(&st, "mail_draft_create", &attach("Alpha", "f1.txt")).unwrap().0["draft_id"].as_str().unwrap().to_string();
+        let names = || f.drafts.lock().unwrap().iter().find(|d| d.id == id).unwrap().staged.iter().map(|a| a.filename.clone()).collect::<Vec<_>>();
+        call(&st, "mail_draft_update", &json!({ "draft_id": id, "body_text": "v2" })).unwrap();
+        assert_eq!(names(), ["f1.txt"], "omitted keeps");
+        call(&st, "mail_draft_update", &json!({ "draft_id": id, "attach": [{ "project": "p1", "path": "f2.txt" }, { "project": "alpha", "path": "f3.txt" }] })).unwrap();
+        assert_eq!(names(), ["f2.txt", "f3.txt"], "the list replaces");
+        call(&st, "mail_draft_update", &json!({ "draft_id": id, "attach": [] })).unwrap();
+        assert!(names().is_empty(), "[] clears");
+        super::super::root_mcp::revoke_tab(tab);
+    }
+
+    /// The spawn record, not the setting: a session whose fence hid the
+    /// projects is refused by name, and so is a session-less call.
+    #[test]
+    fn attach_needs_a_tab_that_reads_the_projects() {
+        let t = tree();
+        let f = fx();
+        let tab = "root:attach-hidden";
+        let (_, session) = super::super::root_mcp::test_session_with(Caller::Agent, tab, &t.state, None);
+        let st = tree_stores(&f, &t, Caller::Agent, &session);
+        let err = call(&st, "mail_draft_create", &attach("Alpha", "out/paper.pdf")).unwrap_err();
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        assert!(err.contains("Root agent reads projects"), "{err}");
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        assert!(err.contains("Windows"), "{err}");
+        assert!(f.drafts.lock().unwrap().is_empty() && f.files.lock().unwrap().is_empty());
+        let mut none = tree_stores(&f, &t, Caller::Agent, &session);
+        none.session = None;
+        assert!(call(&none, "mail_draft_create", &attach("Alpha", "out/paper.pdf")).is_err());
+        super::super::root_mcp::revoke_tab(tab);
+    }
+
+    /// Reader and local-model tabs: neither argument is in their schema, and
+    /// sent anyway, both refuse before anything is read or written.
+    #[test]
+    fn attach_and_suggestions_are_a_root_tabs_only() {
+        let t = tree();
+        let f = fx();
+        for caller in [Caller::Reader, Caller::LocalModel] {
+            for tool in tool_schemas(caller, true).iter().chain(tool_schemas(caller, false).iter()) {
+                let props = &tool["inputSchema"]["properties"];
+                assert!(props.get("attach").is_none() && props.get("suggested_to").is_none(), "{caller:?} {}", tool["name"]);
+            }
+            let tab = format!("root:attach-{caller:?}");
+            let (_, session) = super::super::root_mcp::test_session_reading_projects(caller, &tab, &t.state);
+            let st = tree_stores(&f, &t, caller, &session);
+            assert_eq!(call(&st, "mail_draft_create", &attach("Alpha", "out/paper.pdf")).unwrap_err(), super::super::mail_attach::NOT_FOR_CALLER);
+            let err = call(&st, "mail_draft_create", &json!({ "account_id": "open", "suggested_to": ["bob@example.com"] })).unwrap_err();
+            assert!(err.contains("not available"), "{err}");
+            super::super::root_mcp::revoke_tab(&tab);
+        }
+        assert!(f.drafts.lock().unwrap().is_empty() && f.files.lock().unwrap().is_empty());
+    }
+
+    /// Phase 2: a suggestion is stored as a suggestion, never as `to`; the
+    /// draft list does not echo it; a bad address, an invisible character or
+    /// a sixth suggestion refuses.
+    #[test]
+    fn suggested_recipients_are_stored_never_addressed_and_never_echoed() {
+        let f = fx();
+        let made = run(&f, Caller::Agent, "mail_draft_create", json!({ "account_id": "open", "suggested_to": ["bob@example.com", "carol@example.org"] })).unwrap();
+        let draft = f.drafts.lock().unwrap().iter().find(|d| d.id == made["draft_id"].as_str().unwrap()).cloned().unwrap();
+        assert!(draft.to.is_empty() && draft.cc.is_empty());
+        assert_eq!(draft.suggested_to.as_ref().map(Vec::len), Some(2));
+        let listed = run(&f, Caller::Agent, "mail_drafts_list", json!({})).unwrap();
+        assert!(!listed.to_string().contains("example.org"), "{listed}");
+        for bad in [json!(["not an address"]), json!(["bob@example.com\r\nBcc: x@example.net"]), json!(["bob\u{202e}@example.com"]), json!(["a@example.com", "b@example.com", "c@example.com", "d@example.com", "e@example.com", "f@example.com"])] {
+            assert!(run(&f, Caller::Agent, "mail_draft_create", json!({ "account_id": "open", "suggested_to": bad })).is_err(), "{bad}");
+        }
+        let id = made["draft_id"].as_str().unwrap();
+        run(&f, Caller::Agent, "mail_draft_update", json!({ "draft_id": id, "suggested_to": [] })).unwrap();
+        assert!(f.drafts.lock().unwrap().iter().find(|d| d.id == id).unwrap().suggested_to.is_none());
     }
 
     #[test]

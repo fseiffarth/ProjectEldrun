@@ -177,6 +177,11 @@ pub struct Settings {
     pub root_mcp: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule_mcp: Option<bool>,
+    /// The read-only help server (`services::help_mcp`) handed to every local
+    /// agent tab. **Absent means on**; a stored `false` stops new tabs getting
+    /// it and makes `/mcp/help` refuse the tabs that already hold a token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub help_mcp: Option<bool>,
     /// Root-agent write review: absent/unknown = all, or destructive / off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_mcp_review: Option<String>,
@@ -430,6 +435,12 @@ pub struct Settings {
     /// paths. Default false; independent of agent login and resume credentials.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_fence_cargo_credentials: Option<bool>,
+    /// Let a fenced **root** agent read every project (local directories, box
+    /// folders, remote mirrors) read-only. Default off: one poisoned project can
+    /// then reach the others through an agent with open network access.
+    /// Project scopes are untouched (`agent_fence::root_project_read_only_paths`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_fence_projects_readable: Option<bool>,
     /// Prefix chips offered by the side panel's per-tab agent composer, keyed by
     /// agent command (`claude`, `codex`, …). Each entry is one of that CLI's own
     /// slash commands, submitted ahead of the prompt. Unset falls back to the
@@ -898,6 +909,12 @@ impl Settings {
         self.agent_fence.unwrap_or(true)
     }
 
+    /// Whether the root fence exposes every project read-only. Off unless
+    /// written: it is a widening, and the mail `attach` argument depends on it.
+    pub fn root_fence_projects_readable(&self) -> bool {
+        self.root_fence_projects_readable.unwrap_or(false)
+    }
+
     /// The configured read-only toolchain/config allowlist, or the documented
     /// defaults when the key has never been written.
     pub fn agent_fence_paths(&self) -> Vec<String> {
@@ -940,6 +957,11 @@ impl Settings {
     /// Whether the root console's MCP tools are served. On unless switched off.
     pub fn root_mcp(&self) -> bool {
         self.root_mcp.unwrap_or(true)
+    }
+
+    /// Whether the help MCP is handed to agent tabs. On unless switched off.
+    pub fn help_mcp(&self) -> bool {
+        self.help_mcp.unwrap_or(true)
     }
 
     /// The agent CLIs [`Self::root_mcp_agents`] names, with its `root_agents`
@@ -1181,6 +1203,11 @@ mod tests {
         let publishing: Settings = serde_json::from_str(r#"{"agent_fence_cargo_credentials":true}"#).unwrap();
         assert_eq!(publishing.agent_fence_cargo_credentials, Some(true));
         assert_eq!(serde_json::to_value(&publishing).unwrap()["agent_fence_cargo_credentials"], true);
+        // The root fence's project view: off unless written, and it round-trips.
+        assert!(!defaults.root_fence_projects_readable());
+        assert!(serde_json::to_value(&defaults).unwrap().get("root_fence_projects_readable").is_none());
+        let reading: Settings = serde_json::from_str(r#"{"root_fence_projects_readable":true}"#).unwrap();
+        assert!(reading.root_fence_projects_readable());
         assert_eq!(
             defaults.agent_fence_paths(),
             super::DEFAULT_AGENT_FENCE_PATHS

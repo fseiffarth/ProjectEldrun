@@ -195,9 +195,44 @@ fn embed_build_commit() {
     }
 }
 
+/// Embed the help corpus (`docs/help/*.md`) for `services::help_mcp`: one
+/// `include_str!` per file, sorted by name, so the binary serves exactly the
+/// docs it was built from and never reads the project tree at runtime. A
+/// missing directory yields an empty corpus rather than a failed build; the
+/// `help_mcp` tests hold the real files to the front-matter contract.
+fn generate_help_corpus() {
+    let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("manifest dir"));
+    let dir = manifest.join("../docs/help");
+    println!("cargo:rerun-if-changed={}", dir.display());
+    let mut files: Vec<(String, PathBuf)> = fs::read_dir(&dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "md"))
+                .filter_map(|p| {
+                    let name = p.file_name()?.to_str()?.to_string();
+                    let path = fs::canonicalize(&p).ok()?;
+                    Some((name, path))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    files.sort();
+    let rows = files
+        .iter()
+        .map(|(name, path)| format!("({name:?}, include_str!({:?}))", path.display().to_string()))
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let generated = format!("pub static HELP_CORPUS: &[(&str, &str)] = &[{rows}];\n");
+    let out = PathBuf::from(env::var("OUT_DIR").expect("out dir")).join("help_corpus.rs");
+    fs::write(out, generated).expect("write help corpus");
+}
+
 fn main() {
     watch_frontend_dist();
     embed_build_commit();
     generate_mobile_assets();
+    generate_help_corpus();
     tauri_build::build()
 }

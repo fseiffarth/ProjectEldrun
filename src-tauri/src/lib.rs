@@ -1435,6 +1435,9 @@ pub fn run() {
             commands::projects::adopt_folder_tab_layout,
             commands::projects::root_work_dir,
             commands::root_mcp::root_mcp_status,
+            commands::root_mcp::help_search,
+            commands::root_mcp::help_read,
+            commands::root_mcp::help_topics,
             commands::root_mcp::root_mcp_security_status,
             commands::root_mcp::root_mcp_session_access,
             commands::root_mcp::root_mcp_session_revoke,
@@ -1592,6 +1595,7 @@ pub fn run() {
             commands::mail::mail_attachment_save,
             commands::mail::mail_attachment_save_to_project,
             commands::mail::mail_attachment_preview,
+            commands::mail::mail_staged_preview,
             // Encryption at rest (docs/mail_encryption_plan.md). Four verbs
             // rather than a toggle, because the states are not symmetric: a
             // store waiting for a passphrase, and one running memory-only

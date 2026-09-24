@@ -1,4 +1,7 @@
-use crate::schema::{agent_prompts::ProjectAgentPrompt, AgentScheduleRule, ScheduledAgentPrompt};
+use crate::schema::{
+    agent_prompts::ProjectAgentPrompt, AgentScheduleLastRun, AgentScheduleRule,
+    ScheduledAgentPrompt,
+};
 use serde::{Deserialize, Serialize};
 
 pub const MAX_CONTROL_MESSAGE: usize = 64 * 1024;
@@ -73,14 +76,63 @@ pub struct CreateTabRequest {
     pub idempotency_key: String,
 }
 
-/// Phone-editable schedule fields. Receipts are desktop-owned and therefore are
-/// not accepted in a mutation body.
+/// Phone-editable schedule fields. Receipts and prefix commands are desktop-owned
+/// and therefore are not accepted in a mutation body. The desktop bridge keeps
+/// existing prefix commands when applying a phone update.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MobileScheduleInput {
     pub enabled: bool,
     pub message: String,
     pub rule: AgentScheduleRule,
+}
+
+/// Only the schedule fields the phone uses. The stored row's prefix commands
+/// and agent session attribution stay in the desktop-control protocol.
+#[derive(Debug, Clone, Serialize)]
+pub struct MobileSchedule {
+    pub id: String,
+    pub enabled: bool,
+    pub message: String,
+    pub rule: AgentScheduleRule,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last: Option<AgentScheduleLastRun>,
+}
+
+impl From<ScheduledAgentPrompt> for MobileSchedule {
+    fn from(schedule: ScheduledAgentPrompt) -> Self {
+        Self {
+            id: schedule.id,
+            enabled: schedule.enabled,
+            message: schedule.message,
+            rule: schedule.rule,
+            last: schedule.last,
+        }
+    }
+}
+
+/// A collected prompt's public fields. Its target is a desktop schedule
+/// handle, never an id the browser API needs or accepts.
+#[derive(Debug, Clone, Serialize)]
+pub struct MobileCollectedPrompt {
+    pub id: String,
+    pub message: String,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+}
+
+impl From<ProjectAgentPrompt> for MobileCollectedPrompt {
+    fn from(prompt: ProjectAgentPrompt) -> Self {
+        Self {
+            id: prompt.id,
+            message: prompt.message,
+            created_at: prompt.created_at,
+            updated_at: prompt.updated_at,
+            tags: prompt.tags,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

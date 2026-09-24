@@ -143,8 +143,9 @@ fn cap_server_search_matches(mut uids: Vec<u32>) -> (Vec<u32>, bool) {
 /// Largest attachment handed to the in-pane previewer over IPC.
 const MAX_PREVIEW_BYTES: usize = 4 * 1024 * 1024;
 
-/// Largest single file the user may attach to a draft.
-const MAX_STAGED_BYTES: u64 = 20 * 1024 * 1024;
+// Largest single file the user may attach to a draft — shared with the
+// agent `attach` path, so it lives in the schema.
+use crate::schema::mail::MAX_STAGED_BYTES;
 
 // ── Managed state ───────────────────────────────────────────────────────────
 
@@ -3446,8 +3447,9 @@ pub async fn mail_draft_save(
         draft.owner_session = None;
         // The staged list is the store's, not the caller's: a draft cannot
         // invent an attachment it did not pick through `mail_attach_pick`.
-        draft.staged = store.staged(&draft.id)?;
-        store.save_draft(&draft)?;
+        // Read and written under one lock, so what comes back is exactly what
+        // Send will be held to (`mail_draft_send`'s `staged_ids`).
+        store.save_draft_with_staged(&mut draft)?;
         Ok(draft)
     })
     .await
@@ -3471,6 +3473,11 @@ pub async fn mail_agent_drafts(state: State<'_, MailState>) -> Result<Vec<MailDr
         };
         let mut drafts = store.drafts()?;
         drafts.retain(|d| d.origin.is_some());
+        // The table is the truth Send reads; the composer seeds its chips from
+        // this, so a file the agent staged is never sent unseen.
+        for d in &mut drafts {
+            d.staged = store.staged(&d.id)?;
+        }
         Ok(drafts)
     })
     .await
@@ -3681,6 +3688,16 @@ impl crate::services::root_mcp_mail::MailAccess for AgentMail {
         self.store()?.change_agent_draft(before, after)
     }
 
+    fn change_draft_files(
+        &self,
+        before: Option<&MailDraft>,
+        after: &MailDraft,
+        add: Vec<crate::schema::mail::NewStagedFile>,
+        remove: &[String],
+    ) -> Result<Vec<StagedAttachment>, String> {
+        self.store()?.change_draft_files(before, after, add, remove)
+    }
+
     fn new_id(&self) -> String {
         uuid_v4()
     }
@@ -3688,9 +3705,14 @@ impl crate::services::root_mcp_mail::MailAccess for AgentMail {
 
 /// Send one draft. Nothing is ever sent without this explicit call — no read
 /// receipts, no one-click unsubscribe, no auto-RSVP.
+///
+/// `staged_ids` is the attachment set the composer showed. The send is bound
+/// to it in the backend: a different set in the store, or a draft an agent
+/// wrote that the composer never saved, refuses before a message is built.
 #[tauri::command]
 pub async fn mail_draft_send(
     draft_id: String,
+    staged_ids: Vec<String>,
     sign: bool,
     encrypt: bool,
     state: State<'_, MailState>,
@@ -3700,19 +3722,13 @@ pub async fn mail_draft_send(
     let id = draft_id.clone();
     let prepared = tokio::task::spawn_blocking(move || {
         let store = store_of(&rt2)?;
-        let draft = store
-            .draft(&id)?
-            .ok_or_else(|| format!("draft '{id}' not found"))?;
+        let (draft, staged) = store.outgoing(&id, &staged_ids)?;
         let account = account_by_id(&accounts_path(), &draft.account_id)?;
 
-        let mut attachments = Vec::new();
-        for staged in store.staged(&id)? {
-            attachments.push(OutboundAttachment {
-                filename: staged.filename,
-                mime: staged.mime,
-                bytes: store.staged_bytes(&id, &staged.staged_id)?,
-            });
-        }
+        let attachments: Vec<OutboundAttachment> = staged
+            .into_iter()
+            .map(|(meta, bytes)| OutboundAttachment { filename: meta.filename, mime: meta.mime, bytes })
+            .collect();
         // The account's `label` — the dialog's **Name** — is the sending
         // identity: it is what recipients read in `From:`. `display_name` is
         // this machine's own nickname for the account (the accounts badge) and
@@ -4184,6 +4200,36 @@ pub async fn mail_attachment_preview(
     .map_err(|e| e.to_string())?
 }
 
+/// Bounded bytes of one file staged on a draft — the outbox copy, decrypted
+/// here, never the original — for the composer's review chip. The same caps
+/// as [`mail_attachment_preview`]; nothing is written to disk.
+#[tauri::command]
+pub async fn mail_staged_preview(
+    draft_id: String,
+    staged_id: String,
+    state: State<'_, MailState>,
+) -> Result<MailPreviewBlob, String> {
+    let rt = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let store = store_of(&rt)?;
+        let meta = store
+            .staged(&draft_id)?
+            .into_iter()
+            .find(|a| a.staged_id == staged_id)
+            .ok_or("that attachment is no longer on the draft")?;
+        let bytes = store.staged_bytes(&draft_id, &meta.staged_id)?;
+        let truncated = bytes.len() > MAX_PREVIEW_BYTES;
+        let slice = &bytes[..bytes.len().min(MAX_PREVIEW_BYTES)];
+        Ok(MailPreviewBlob {
+            mime: meta.mime,
+            bytes_b64: base64::engine::general_purpose::STANDARD.encode(slice),
+            truncated,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4461,6 +4507,7 @@ mod tests {
             "mail_attachment_save",
             "mail_attachment_save_to_project",
             "mail_attachment_preview",
+            "mail_staged_preview",
         ] {
             assert!(
                 src.contains(&format!("pub async fn {name}(")),

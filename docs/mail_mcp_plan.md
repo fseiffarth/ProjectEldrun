@@ -402,10 +402,16 @@ refused.
 You are the send gate, so the draft has to make the gate easy to hold. A
 highlighted field in a composer is not a gate: it relies on you reading it.
 
-- **No attachments.** Agent drafts always have an empty `staged` list. The mail
-  boundary is path-free (`no_command_takes_a_path`), and "attach
-  `~/.ssh/id_ed25519`" followed by an unthinking Send is the obvious attack.
-  The MCP draft tool takes no attachment argument at all.
+- **Attachments from projects only, root tab only**
+  (`mail_mcp_attachments_plan.md`). A root tab's `attach` names files by
+  project and path; Eldrun copies what a fenced tab of that project could read
+  (the same-roots rule, `services::mail_attach`) into the sealed outbox at call
+  time, and only when the tab was spawned with the root fence's project view
+  (`Settings::root_fence_projects_readable`) or unfenced. A reader or local
+  model has no such argument. The composer shows each file with its source,
+  and Send is bound to the shown set (`mail_draft_send`'s `stagedIds`). The
+  "attach `~/.ssh/id_ed25519`" attack still has no path: no absolute path, no
+  `..`, no link, nothing outside the project roots.
 - **No bcc.** `mail_draft_create` has no `bcc` argument. An invisible recipient
   list is the one field nobody re-reads before sending, so it does not exist on
   this path rather than being highlighted on it.
@@ -414,7 +420,9 @@ highlighted field in a composer is not a gate: it relies on you reading it.
   to, and the argument is refused for it), the allowed recipients are the addresses already on that
   message (from, to, cc) plus your own; anything else is refused. A draft that
   replies to nothing is created with an **empty** `to` and a note in the body's
-  place — the address has to be typed by you in the composer. Prefilling a
+  place — the address has to be typed by you in the composer. A root tab may
+  pass `suggested_to`: stored as a suggestion, never copied into `to`, never
+  read by a send, shown as a pill you add with a click. Prefilling a
   stranger's address and colouring it red is a decision made for you by whoever
   wrote the mail.
 - **Marked.** `MailDraft` gains `origin: Option<String>` (`"agent"` for a root
@@ -595,9 +603,11 @@ Docs:
 
 - **The allowlist.** `tool_names()` filtered to `mail_*` equals the nine names
   above, exactly. A further tool fails the test
-  until someone edits the list on purpose. A second test reads the source, in
-  the style of `no_command_takes_a_path`, and asserts no mail tool's schema has
-  a property named `path`, `file`, `attachment`, `bcc` or `url`.
+  until someone edits the list on purpose. A second test
+  (`only_a_root_tabs_attach_items_take_a_path_and_nothing_takes_a_file_a_bcc_or_a_url`,
+  in the style of `no_command_takes_a_path`) asserts `path` appears only inside
+  a root tab's `attach` items, and no mail tool has a property named `file`,
+  `attachment`, `bcc`, `url`, `content` or `base64`.
 - **Default off.** With no account opted in, `mail_accounts_list` is empty and
   every other tool refuses a real account id with the unknown-account error.
 - **Marked only.** Table-driven over the three states. In `marked`: search
@@ -655,8 +665,9 @@ Docs:
 - **Per-tab tokens.** Two root spawns get different tokens; each is refused at
   the other's tab identity; a closed tab's token is refused; a plain (non-reader)
   project agent spawn is handed nothing.
-- **Drafts.** Agent drafts carry their class's `origin` and an empty `staged`; a
-  root tab's draft always has an empty `to`; update
+- **Drafts.** Agent drafts carry their class's `origin`; their `staged` rows
+  are all agent-origin (`attach_follows_the_same_roots_rule` for what may
+  attach); a root tab's draft always has an empty `to`; update
   and delete refuse a draft without that origin; a composer save clears it;
   `reply_to_message_id` fills the threading headers from the store; a recipient
   outside the replied-to message is refused; a reply-to-nothing draft has an

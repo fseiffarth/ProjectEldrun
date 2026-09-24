@@ -1059,7 +1059,12 @@ pub struct MailBody {
 
 // ── Compose ─────────────────────────────────────────────────────────────────
 
-/// A file the user explicitly picked, already copied inside the mail sandbox
+/// Largest single file staged onto a draft — the composer's cap, and the one
+/// `services::mail_attach` reads up to (plus one byte, to know it was over).
+pub const MAX_STAGED_BYTES: u64 = 20 * 1024 * 1024;
+
+/// A file the user explicitly picked — or, with `origin: "agent"`, one a root
+/// agent named by project and path — already copied inside the mail sandbox
 /// directory. The draft references `staged_id`s only — never a path.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StagedAttachment {
@@ -1067,6 +1072,27 @@ pub struct StagedAttachment {
     pub filename: String,
     pub mime: String,
     pub size: u64,
+    /// `"agent"` for a row an agent staged; unset for the user's own pick, and
+    /// for every row written before the column existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    /// Where an agent's row came from, `<project name>/<relative path>`, shown
+    /// on the chip so `paper.pdf` from one project is not taken for another's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+/// One file an agent's `attach` resolved, on its way into the outbox
+/// (`MailStore::change_draft_files`). Never serialized: the bytes go to disk
+/// sealed, and `source` onto the row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewStagedFile {
+    pub staged_id: String,
+    pub filename: String,
+    pub mime: String,
+    /// `<project name>/<relative path>`.
+    pub source: String,
+    pub bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1097,6 +1123,10 @@ pub struct MailDraft {
     /// MCP spawn owner. Older class-only drafts stay available in the composer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_session: Option<String>,
+    /// Addresses a root agent *suggested*. Never copied into `to`, never read
+    /// by a send: the composer offers each as a pill the user adds by a click.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_to: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]

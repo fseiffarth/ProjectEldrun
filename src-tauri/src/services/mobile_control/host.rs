@@ -31,7 +31,8 @@ use super::{
     limits,
     protocol::{
         clean_tab_color, CalendarAction, CreateTabRequest, DesktopRequest, DesktopResponse,
-        MailMarkAction, MobilePromptInput, MobileScheduleInput, PromptMutation, ScheduleMutation,
+        MailMarkAction, MobileCollectedPrompt, MobilePromptInput, MobileSchedule,
+        MobileScheduleInput, PromptMutation, ScheduleMutation,
         TabPlace, TodoAction, MAX_CONTROL_MESSAGE, MAX_INPUT_FRAME, MAX_MAIL_REPLY_BYTES,
         MAX_TAB_LABEL, TERMINAL_PROTOCOL,
     },
@@ -1582,7 +1583,10 @@ fn schedule_desktop_error(
         }) => (
             StatusCode::OK,
             Json(json!({
-                "schedules": schedules,
+                "schedules": schedules
+                    .into_iter()
+                    .map(MobileSchedule::from)
+                    .collect::<Vec<_>>(),
                 "time_zone": time_zone,
                 "next_runs": next_runs,
             })),
@@ -1879,6 +1883,10 @@ fn prompt_desktop_error(
 ) -> (StatusCode, Json<serde_json::Value>) {
     match response {
         Ok(DesktopResponse::Prompts { prompts }) => {
+            let prompts = prompts
+                .into_iter()
+                .map(MobileCollectedPrompt::from)
+                .collect::<Vec<_>>();
             (StatusCode::OK, Json(json!({ "prompts": prompts })))
         }
         Ok(DesktopResponse::Error { code, .. }) => api_error(
@@ -3300,6 +3308,68 @@ mod tests {
         assert!(!body.contains(RAW_PROJECT));
         assert!(!body.contains(&host.root.to_string_lossy().to_string()));
         assert!(!body.contains("scheduleTargetId"));
+    }
+
+    #[test]
+    fn successful_schedule_response_exposes_only_phone_fields() {
+        use crate::schema::{AgentScheduleLastRun, AgentScheduleResult, AgentScheduleRule};
+
+        let (status, Json(body)) = schedule_desktop_error(Ok(DesktopResponse::Schedules {
+            schedules: vec![crate::schema::ScheduledAgentPrompt {
+                id: "schedule-1".into(),
+                enabled: true,
+                message: "Review".into(),
+                rule: AgentScheduleRule::Daily { time: "09:00".into() },
+                preface: vec!["/clear".into()],
+                last: Some(AgentScheduleLastRun {
+                    occurrence: "2026-09-24T09:00".into(),
+                    result: AgentScheduleResult::Delivered,
+                    at: "2026-09-24T09:01:00Z".into(),
+                }),
+                origin: Some(crate::schema::agent_tasks::ScheduleOrigin {
+                    by: crate::schema::agent_tasks::ScheduleAuthor::Agent,
+                    session: "raw-session-id".into(),
+                    at: "2026-09-23T08:00:00Z".into(),
+                    from_delivery: None,
+                }),
+            }],
+            time_zone: "Europe/Berlin".into(),
+            next_runs: Default::default(),
+        }));
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["schedules"], serde_json::json!([{
+            "id": "schedule-1",
+            "enabled": true,
+            "message": "Review",
+            "rule": { "type": "daily", "time": "09:00" },
+            "last": {
+                "occurrence": "2026-09-24T09:00",
+                "result": "delivered",
+                "at": "2026-09-24T09:01:00Z",
+            },
+        }]));
+    }
+
+    #[test]
+    fn successful_prompt_response_omits_internal_target() {
+        let (status, Json(body)) = prompt_desktop_error(Ok(DesktopResponse::Prompts {
+            prompts: vec![crate::schema::agent_prompts::ProjectAgentPrompt {
+                id: "prompt-1".into(),
+                message: "Review".into(),
+                created_at: "2026-09-23T08:00:00Z".into(),
+                updated_at: "2026-09-24T08:00:00Z".into(),
+                tags: vec!["review".into()],
+                target: Some("raw-schedule-target-id".into()),
+            }],
+        }));
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["prompts"], serde_json::json!([{
+            "id": "prompt-1",
+            "message": "Review",
+            "created_at": "2026-09-23T08:00:00Z",
+            "updated_at": "2026-09-24T08:00:00Z",
+            "tags": ["review"],
+        }]));
     }
 
     #[tokio::test]
