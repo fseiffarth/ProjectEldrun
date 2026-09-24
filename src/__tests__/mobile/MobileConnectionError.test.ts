@@ -2,7 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../../../mobile-web/src/api";
 import {
   classifyUnavailable,
+  describeFailure,
   describeUnavailable,
+  knownFailureCodes,
+  localFailureText,
   unavailableDetail,
   type UnavailableReason,
 } from "../../../mobile-web/src/connection";
@@ -106,6 +109,40 @@ describe("describeUnavailable", () => {
     const { hint } = describeUnavailable("unreachable");
     expect(hint).toContain("Tailscale");
     expect(hint).toContain("asleep");
+  });
+});
+
+describe("describeFailure", () => {
+  it("turns every known code into a sentence that is not the code", () => {
+    for (const code of knownFailureCodes()) {
+      const text = describeFailure(code);
+      expect(text, code).not.toBe(code);
+      expect(text, code).not.toMatch(/^[a-z_]+$/);
+      expect(text.length, code).toBeGreaterThan(12);
+      // Prose on an ApiError too — the splash's own title where the code is
+      // one `classifyUnavailable` places (a proxy, a limiter, a dead link).
+      const onError = describeFailure(new ApiError(400, code));
+      expect(onError, code).not.toBe(code);
+      expect(onError, code).not.toMatch(/^[a-z_]+$/);
+    }
+  });
+
+  it("never renders a bare code, whatever shape it arrives in", () => {
+    for (const source of ["some_new_code", new ApiError(500, "boom"), new Error("odd_thing"), undefined, 42]) {
+      const text = describeFailure(source);
+      expect(text).toBe("Your desktop reported an error.");
+    }
+    expect(describeFailure(new ApiError(503, "desktop_unavailable"))).toBe("Eldrun isn't running on your desktop.");
+    expect(describeFailure("desktop_unavailable")).toBe("Eldrun isn't running on your desktop.");
+    expect(describeFailure(new ApiError(502, "request_failed"))).toBe("Eldrun Mobile isn't running on your desktop.");
+    expect(describeFailure("session_expired")).toMatch(/lapsed/);
+    expect(describeFailure(new ApiError(0, "offline"))).toMatch(/Can't reach|offline/);
+  });
+
+  it("shows the phone's own lock messages as written, and nothing else raw", () => {
+    expect(localFailureText(new Error("Incorrect PIN."))).toBe("Incorrect PIN.");
+    expect(localFailureText(new Error("not_allowed"))).toBe("That did not work. Try again.");
+    expect(localFailureText("NotAllowedError")).toBe("That did not work. Try again.");
   });
 });
 

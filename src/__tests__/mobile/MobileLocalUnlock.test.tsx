@@ -99,7 +99,8 @@ describe("Mobile local unlock — setup", () => {
     type(/New PIN/, "123456");
     type(/Confirm PIN/, "123456");
     fireEvent.click(screen.getByRole("button", { name: "Set PIN and verify device" }));
-    expect((await screen.findByText(/Choose a 6–12 digit PIN/)).textContent).toContain("Error");
+    // The lock's own sentence, as written — no `Error:` prefix from `String(error)`.
+    expect((await screen.findByText(/Choose a 6–12 digit PIN/)).textContent).toBe("Choose a 6–12 digit PIN.");
     expect(onUnlocked).not.toHaveBeenCalled();
     expect((screen.getByRole("button", { name: "Set PIN and verify device" }) as HTMLButtonElement).disabled).toBe(false);
   });
@@ -132,7 +133,7 @@ describe("Mobile local unlock — unlock", () => {
     render(<LocalUnlock setup={false} onUnlocked={onUnlocked} />);
     await screen.findByLabelText("PIN");
     type("PIN", "123456");
-    expect((await screen.findByText(/Incorrect PIN/)).textContent).toBe("Error: Incorrect PIN.");
+    expect((await screen.findByText(/Incorrect PIN/)).textContent).toBe("Incorrect PIN.");
     expect(onUnlocked).not.toHaveBeenCalled();
   });
 

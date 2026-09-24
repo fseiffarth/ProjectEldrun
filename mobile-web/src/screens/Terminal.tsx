@@ -26,6 +26,7 @@ import {
   type SessionTranscript,
   type TabRow,
 } from "../api";
+import { describeFailure } from "../connection";
 import { DRAFT_SAVE_DELAY, readDraft, writeDraft } from "../drafts";
 import { OUTBOX_POLL, sameOutbox } from "../outbox";
 import { readFlag, readTerminalView, writeFlag, writeTerminalView, type TerminalViewChoice } from "../prefs";
@@ -190,18 +191,6 @@ const MODE_SETTLE = 340;
  * so a mode that is genuinely offered is always reached — and a mode that is
  * not ends the walk where it started. */
 const MODE_CYCLE_LIMIT = 6;
-
-const CLOSE_REASONS: Record<string, string> = {
-  access_revoked: "This device's access to the session was withdrawn.",
-  idle_timeout: "The session was released after a period without contact.",
-  invalid_terminal_control: "The connection sent something the desktop rejected.",
-  invalid_terminal_size: "The connection sent something the desktop rejected.",
-  input_frame_too_large: "The last input was too large to deliver.",
-  resize_failed: "The desktop could not resize the session.",
-  replaced: "This session was opened on another device or tab.",
-  session_busy: "Another viewer is holding this session.",
-  session_gone: "This session has ended on the desktop.",
-};
 
 /** Why a phone file did not reach the project inbox, by the desktop's code. */
 const UPLOAD_FAILURES: Record<string, string> = {
@@ -1123,7 +1112,7 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
               if (reason.status !== 404 && reason.status !== 410) return;
               stopped = true;
               clearTimeout(reconnectTimer);
-              setStoppedReason(CLOSE_REASONS.session_gone);
+              setStoppedReason(describeFailure("session_gone"));
             });
         }
         reconnectTimer = window.setTimeout(connect, delay);
@@ -1169,7 +1158,7 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
             stopped = true;
             clearTimeout(reconnectTimer);
           }
-          setStoppedReason(CLOSE_REASONS[control.reason] ?? `The desktop closed the session (${control.reason}).`);
+          setStoppedReason(describeFailure(control.reason));
         }
       };
     };
@@ -2639,7 +2628,7 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
     </div>
     <div className="terminal-controls">
       {tab.kind === "agent" && voiceLine && <div className={voiceProblem ? "voice-feedback error" : "voice-feedback"} role={voiceProblem ? "alert" : "status"} aria-live="polite">{voiceLine}{listening && !voiceProblem && !voicePreview && isUntested("mobile.voice.keepListening") && <em>{t("mobile.focus.untested")}</em>}</div>}
-      {stoppedReason && <div className="voice-feedback error" role="alert">{stoppedReason}</div>}
+      {stoppedReason && <div className="voice-feedback error" role="alert">{stoppedReason}{isUntested("mobile.link.failureText") && <em> · {t("mobile.focus.untested")}</em>}</div>}
       {sendFailed && !stoppedReason && <div className="voice-feedback error" role="alert">That did not reach the desktop — the connection dropped. It will retry on its own.</div>}
       {clearRefused && liveBusy && <div className="voice-feedback" role="status">{t("mobile.composer.clearBusy")}{isUntested("mobile.composer.clearBusy") && <> · <em>{t("mobile.focus.untested")}</em></>}</div>}
       {lastSent && !sessionShown && <div className="last-sent"><span>Sent</span><p>{lastSent}</p></div>}

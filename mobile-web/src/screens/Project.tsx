@@ -18,6 +18,7 @@ import { OutboxViewer } from "../components/OutboxViewer";
 import { tabColorCss } from "../tabColors";
 import { useT } from "../../../src/lib/i18n";
 import { isUntested } from "../../../src/lib/untested";
+import { describeFailure } from "../connection";
 
 /** The orders this list offers, in the words this screen can use for them. The
  * cross-project Agents list calls `native` "Status", because there the arrival
@@ -183,7 +184,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
       // Keep the last good view rather than blanking the tab list: on a poll
       // this fast, one dropped packet used to wipe the screen and flash the
       // "Desktop unavailable" notice on every flaky-signal hiccup.
-      .catch((reason) => setError(`Host unavailable: ${String(reason)}`))
+      .catch((reason) => setError(describeFailure(reason)))
       .finally(() => { inFlight.current = false; });
   }, [id]);
   useEffect(() => {
@@ -274,7 +275,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
       const body = await api<{ tab: TabRow }>(`/api/v1/projects/${encodeURIComponent(id)}/tabs`, { method: "POST", body: JSON.stringify({ project_id: id, kind, agent_id: agent?.id, mode, idempotency_key: idempotencyKey }) });
       pendingKeys.current.delete(action);
       terminal(body.tab);
-    } catch (reason) { setError(String(reason)); void load(); } finally { setCreating(false); }
+    } catch (reason) { setError(describeFailure(reason)); void load(); } finally { setCreating(false); }
   };
   /** Drop the row here rather than reloading, and remember that it is gone: the
    *  next catalog read can still be carrying the tab that was just closed — the
@@ -337,7 +338,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     try {
       await api(`/api/v1/projects/${encodeURIComponent(id)}/activate`, { method: "POST" });
       void load();
-    } catch (reason) { setError(String(reason)); void load(); } finally { setActivating(false); }
+    } catch (reason) { setError(describeFailure(reason)); void load(); } finally { setActivating(false); }
   };
   return <main className="screen project-screen">
     {/* Two rows: the chevron and the name on the first, so a long name keeps the

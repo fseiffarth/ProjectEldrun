@@ -145,3 +145,137 @@ export function unavailableDetail(error: unknown): string | undefined {
   if (!(error instanceof ApiError)) return undefined;
   return error.status === 0 ? error.code : `${error.status} ${error.code}`;
 }
+
+/**
+ * Codes on the wire, prose on the phone. The sidecar and the desktop bridge
+ * answer every refusal with one fixed code (`api_error` in `host.rs`, the
+ * `code:` of a bridge error, a terminal socket's `closing` reason, the usage
+ * sheet's `error`), and this is the one table that turns a code into a
+ * sentence. A screen used to render `String(error)`, which put
+ * `Error: desktop_unavailable` — or a CLI's stderr with paths in it — in
+ * front of the reader; nothing renders a code now, and a code this table does
+ * not know reads as the generic line rather than as itself.
+ */
+const FAILURE_TEXT: Record<string, string> = {
+  // The terminal socket's `closing` reasons (`pty_bridge.rs`).
+  access_revoked: "This device's access to the session was withdrawn.",
+  session_expired: "Your sign-in lapsed while you were away. Unlock to continue.",
+  idle_timeout: "The session was released after a period without contact.",
+  invalid_terminal_control: "The connection sent something the desktop rejected.",
+  invalid_terminal_size: "The connection sent something the desktop rejected.",
+  input_frame_too_large: "The last input was too large to deliver.",
+  resize_failed: "The desktop could not resize the session.",
+  replaced: "This session was opened on another device or tab.",
+  session_busy: "Another viewer is holding this session.",
+  session_gone: "This session has ended on the desktop.",
+  // The sidecar's own refusals (`host.rs`).
+  desktop_unavailable: "Eldrun isn't running on your desktop.",
+  launch_pending: "The desktop is still opening that tab. Try again in a moment.",
+  catalog_unavailable: "The desktop's project list could not be read.",
+  request_failed: "Your desktop reported an error.",
+  malformed_response: "The desktop answered in a shape this app does not recognize.",
+  authentication_required: "Your sign-in lapsed. Unlock to continue.",
+  invalid_origin: "This isn't the address your desktop expects.",
+  too_many_attempts: "Too many attempts. Wait a moment before retrying.",
+  timeout: "Your desktop didn't answer in time.",
+  offline: "The connection dropped.",
+  project_not_found: "This project is no longer shared with the phone.",
+  project_ineligible: "This project is no longer shared with the phone.",
+  tab_not_found: "That tab is no longer available.",
+  tab_scope_mismatch: "That tab belongs to another project.",
+  agent_tab_required: "That is not an agent tab.",
+  invalid_request: "The desktop rejected the request.",
+  invalid_view: "The desktop rejected the request.",
+  invalid_month: "The desktop rejected that month.",
+  invalid_subagent: "That subagent is no longer available.",
+  invalid_prompt: "The desktop rejected that prompt.",
+  invalid_label: "The desktop rejected that name.",
+  invalid_color: "The desktop rejected that colour.",
+  invalid_anchor: "The desktop rejected that move.",
+  query_too_long: "That search is too long.",
+  file_not_found: "That file is no longer on the desktop.",
+  read_failed: "The desktop could not read that.",
+  delete_failed: "The desktop could not delete that.",
+  reply_too_long: "The reply is too long.",
+  empty_reply: "The reply is empty.",
+  // The desktop bridge's refusals (`MobileBridgeHost.tsx`).
+  desktop_error: "Eldrun on the desktop hit an error handling that.",
+  launch_failed: "The desktop could not open that tab.",
+  unknown_agent: "The desktop does not know that agent.",
+  unsupported_mode: "Agent mode is unavailable for that agent.",
+  persist_failed: "The desktop could not save that.",
+  calendar_unavailable: "The desktop's calendar could not be read.",
+  invalid_event: "The desktop rejected that event.",
+  event_not_found: "That event is no longer in the calendar.",
+  invalid_task: "The desktop rejected that card.",
+  task_not_found: "That card is no longer on the board.",
+  invalid_column: "The desktop rejected that column.",
+  column_follows_date: "That column is set by the card's date; change the date instead.",
+  prompt_not_found: "That prompt is no longer collected.",
+  alert_gone: "That alert has already been handled.",
+  alert_resolve_failed: "That alert could not be completed. Eldrun on the desktop owns it.",
+  mail_read_disabled: "Mail on the phone is switched off in Eldrun → Settings → Eldrun Mobile.",
+  mail_actions_disabled: "Switched off in Eldrun → Settings → Eldrun Mobile → Mail from the phone.",
+  mail_reply_disabled: "Replies from the phone are switched off in Eldrun → Settings → Eldrun Mobile.",
+  mail_mark_failed: "The desktop could not change that flag.",
+  mail_reply_failed: "The desktop could not send that reply.",
+  no_reply_address: "That message has no address to reply to.",
+  folder_not_found: "That folder is no longer available.",
+  message_not_found: "The message moved; refresh the folder.",
+  unexpected_mail_view: "The desktop answered in a shape this app does not recognize.",
+  // The usage sheet (`commands::agent_usage`).
+  no_usage_readout: "This agent has no usage readout Eldrun can ask for without opening a tab.",
+  cli_not_installed: "This agent's CLI is not installed on the desktop.",
+  cli_failed: "The agent's CLI could not be run on the desktop.",
+  cli_timeout: "The agent's CLI did not answer in time. Try again.",
+  cli_error: "The agent's CLI reported an error instead of its usage panel.",
+  cli_output_withheld: "The agent's CLI answered with text the desktop keeps to itself.",
+};
+
+const GENERIC_FAILURE = FAILURE_TEXT.request_failed;
+
+/** Whether a string is a wire code and not already prose. */
+function isCode(value: string): boolean {
+  return /^[a-z][a-z0-9_]*$/.test(value);
+}
+
+/** The code behind a failure, or `undefined` for something that carries none. */
+export function failureCode(source: unknown): string | undefined {
+  if (typeof source === "string") return isCode(source) ? source : undefined;
+  if (source instanceof ApiError) return source.code;
+  if (source instanceof Error) return isCode(source.message) ? source.message : undefined;
+  return undefined;
+}
+
+/**
+ * The one sentence for a failure, whatever shape it arrived in: an `ApiError`
+ * from `api()`, a `closing` reason from the terminal socket, a code the usage
+ * sheet was given, or a thrown `Error` whose message is a code. A transport
+ * or proxy failure is placed by `classifyUnavailable` first, so "the desktop
+ * is closed" and "the phone is off the tailnet" keep the titles the splash
+ * uses for them.
+ */
+export function describeFailure(source: unknown): string {
+  if (source instanceof ApiError) {
+    const reason = classifyUnavailable(source);
+    if (reason !== "server_error") return describeUnavailable(reason).title;
+  }
+  const code = failureCode(source);
+  return (code && FAILURE_TEXT[code]) || GENERIC_FAILURE;
+}
+
+/** Every code the table knows, for the test that checks each reads as prose. */
+export function knownFailureCodes(): string[] {
+  return Object.keys(FAILURE_TEXT);
+}
+
+/**
+ * A failure of the phone's own lock (`localLock.ts`), which throws sentences
+ * it wrote itself — "Incorrect PIN.", "Too many attempts…" — rather than
+ * codes. Those are shown as written; anything else gets the generic line
+ * rather than `String(error)`.
+ */
+export function localFailureText(reason: unknown): string {
+  if (reason instanceof Error && reason.message && !isCode(reason.message)) return reason.message;
+  return "That did not work. Try again.";
+}

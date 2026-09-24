@@ -1,18 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ApiError, api, normalizeTodoBoard, type TodoBoard, type TodoCard, type TodoColumn, type TodoTaskInput } from "../api";
+import { api, normalizeTodoBoard, type TodoBoard, type TodoCard, type TodoColumn, type TodoTaskInput } from "../api";
+import { describeFailure, failureCode } from "../connection";
 import { readFlag, readOrder, writeFlag, writeOrder } from "../prefs";
 import { COLUMN_FOLLOWS_DATE, intakeColumn, localDate, moveAccepted } from "../todoDates";
 
 type Editing = TodoCard | "new" | null;
 
-/** A refusal the phone can explain, or the raw code when it cannot. */
+/** A refusal in the reader's words — never the code (`connection.ts`). The
+ * date-governed column keeps its own longer explanation. */
 function boardError(reason: unknown): string {
-  const code = reason instanceof ApiError ? reason.code : String(reason);
-  if (code === "column_follows_date") return COLUMN_FOLLOWS_DATE;
-  if (code === "desktop_unavailable") return "Eldrun is not running on the desktop.";
-  if (code === "task_not_found") return "That card is no longer on the board.";
-  if (code === "invalid_column") return "That column is no longer on the board.";
-  return code;
+  return failureCode(reason) === "column_follows_date" ? COLUMN_FOLLOWS_DATE : describeFailure(reason);
 }
 
 function dayNumber(date: string): number {
@@ -98,7 +95,7 @@ export function Todo({ card }: { card?: string }) {
   const load = useCallback(() => {
     void api<{ board: TodoBoard }>("/api/v1/todo")
       .then(({ board }) => { setBoard(normalizeTodoBoard(board)); setError(""); })
-      .catch((reason) => setError(`Desktop board unavailable: ${boardError(reason)}`));
+      .catch((reason) => setError(boardError(reason)));
   }, []);
   useEffect(load, [load]);
   // An alert that named a card opens that card, and does it exactly once: the

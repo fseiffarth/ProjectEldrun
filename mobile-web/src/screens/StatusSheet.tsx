@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { ApiError, getAgentStatus, type AgentStatusReport, type TabRow } from "../api";
+import { getAgentStatus, type AgentStatusReport, type TabRow } from "../api";
+import { describeFailure } from "../connection";
 import { limitMeters, noteParts, parseUsageReport, resolveResetAt, type LimitMeters } from "../../../shared/usageReport";
 import type { SessionStatus } from "../terminal/statusLine";
 
@@ -92,11 +93,7 @@ export function StatusSheet({ tab, live, onLimits, onClose }: {
       setReport(next);
       if (next.usage.raw) onLimits?.(limitMeters(parseUsageReport(next.usage.raw)));
     } catch (cause) {
-      setError(cause instanceof ApiError && (cause.status === 503 || cause.code === "desktop_unavailable")
-        ? "Open desktop Eldrun to read this session's status."
-        : cause instanceof ApiError && cause.code === "timeout"
-          ? "The agent's CLI did not answer in time. Try again."
-          : "The status could not be read.");
+      setError(describeFailure(cause));
     } finally {
       setBusy(false);
     }
@@ -131,10 +128,14 @@ export function StatusSheet({ tab, live, onLimits, onClose }: {
       {busy && !report && <p className="sheet-note">Reading…</p>}
 
       {view === "formatted" && report && <>
+        {/* `usage.error` is a code (`connection.ts`): the CLI's own stderr
+            stays on the desktop, since it names paths there. */}
         {usage?.supported === false && <p className="sheet-note">
-          {usage.error ?? `${usage.label} has no usage readout Eldrun can ask for without opening a tab.`}
+          {usage.error && usage.error !== "no_usage_readout" && usage.error !== "unknown_agent"
+            ? describeFailure(usage.error)
+            : `${usage.label} has no usage readout Eldrun can ask for without opening a tab.`}
         </p>}
-        {usage?.supported && usage.error && <p className="sheet-note error">{usage.error}</p>}
+        {usage?.supported && usage.error && <p className="sheet-note error">{describeFailure(usage.error)}</p>}
         {panel && panel.meters.map((meter) => <div className="usage-meter" key={meter.label}>
           <div>
             <strong>{meter.label}</strong>
@@ -167,7 +168,7 @@ export function StatusSheet({ tab, live, onLimits, onClose }: {
       </>}
 
       {view === "terminal" && <pre className="usage-raw" aria-label="Usage panel as the CLI printed it">
-        {usage?.raw ?? usage?.error ?? (busy ? "Reading…" : "Nothing was printed.")}
+        {usage?.raw ?? (usage?.error ? describeFailure(usage.error) : busy ? "Reading…" : "Nothing was printed.")}
       </pre>}
 
       <div className="mobile-schedule-actions">

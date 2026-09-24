@@ -155,6 +155,8 @@ type TodoAction =
   | { type: "column_rename"; column_id: string; name: string }
   | { type: "column_move"; column_id: string; delta: -1 | 1 }
   | { type: "column_delete"; column_id: string };
+/** `error` is a fixed code (`AgentUsageReport.code`), never the CLI's own
+ * words: its stderr names paths on this machine. */
 interface MobileAgentUsage { label: string; supported: boolean; raw?: string; error?: string; cached: boolean }
 interface MobileAgentTally { prompts: number; worked_s: number; decisions: number; done: number }
 interface MobileAgentStatus {
@@ -953,6 +955,7 @@ async function agentStatusFor(
       label: agentLabel(leaf),
       supported: false,
       error: String(error),
+      code: "cli_failed",
       cached: false,
     })),
     invoke<{ days: Record<string, Record<string, number>> }>("usage_summary", {
@@ -970,12 +973,22 @@ async function agentStatusFor(
       usage: {
         label: usage.label,
         supported: usage.supported,
-        raw: usage.raw,
-        error: usage.error,
+        // The panel goes as printed, unless the CLI printed a path of this
+        // machine into it — then the phone is told that, not the path.
+        raw: usage.raw && !namesLocalPath(usage.raw) ? usage.raw : undefined,
+        error: usage.raw && namesLocalPath(usage.raw)
+          ? "cli_output_withheld"
+          : usage.code ?? (usage.error ? "cli_error" : undefined),
         cached: usage.cached,
       },
     },
   };
+}
+
+/** Whether a CLI's text names a place on this machine — a home directory, a
+ * temp or system path, a Windows drive — which the phone must not be shown. */
+function namesLocalPath(text: string): boolean {
+  return /(^|[\s("'`])(?:~\/|\/(?:home|Users|tmp|var|etc|opt|usr|root|mnt|media|private)\/|[A-Za-z]:\\)/.test(text);
 }
 
 async function taskId(task: CalendarTask) {

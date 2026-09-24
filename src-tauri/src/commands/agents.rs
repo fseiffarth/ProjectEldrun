@@ -1240,21 +1240,28 @@ pub struct AgentUsageReport {
     pub supported: bool,
     /// The panel exactly as the CLI printed it. Parsed by the reader.
     pub raw: Option<String>,
-    /// Why there is no panel, in the CLI's own words where it had any.
+    /// Why there is no panel, in the CLI's own words where it had any. For the
+    /// desktop's own sheet; the phone is given `code` instead, because a CLI's
+    /// stderr routinely names paths on this machine.
     pub error: Option<String>,
+    /// The same reason as one fixed code: `unknown_agent`, `no_usage_readout`,
+    /// `cli_not_installed`, `cli_failed`, `cli_timeout`, `cli_error`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
     /// True when this answer came from the short-lived cache rather than from a
     /// fresh run, so a reader can tell a stale figure from a live one.
     pub cached: bool,
 }
 
 impl AgentUsageReport {
-    fn refused(agent: &str, label: &str, supported: bool, error: String) -> Self {
+    fn refused(agent: &str, label: &str, supported: bool, code: &str, error: String) -> Self {
         Self {
             agent: agent.to_string(),
             label: label.to_string(),
             supported,
             raw: None,
             error: Some(error),
+            code: Some(code.to_string()),
             cached: false,
         }
     }
@@ -1377,13 +1384,14 @@ pub async fn agent_usage(agent: String, refresh: Option<bool>) -> AgentUsageRepo
     use crate::services::agent_usage as usage;
 
     let Some(spec) = find_spec_by_id_or_bin(&agent) else {
-        return AgentUsageReport::refused(&agent, &agent, false, format!("unknown agent: {agent}"));
+        return AgentUsageReport::refused(&agent, &agent, false, "unknown_agent", format!("unknown agent: {agent}"));
     };
     let Some(argv) = usage::usage_argv(spec.id) else {
         return AgentUsageReport::refused(
             spec.id,
             spec.label,
             false,
+            "no_usage_readout",
             format!("{} has no usage readout that can be read without a tab", spec.label),
         );
     };
@@ -1401,6 +1409,7 @@ pub async fn agent_usage(agent: String, refresh: Option<bool>) -> AgentUsageRepo
             supported: true,
             raw: Some(raw),
             error: None,
+            code: None,
             cached: true,
         };
     }
@@ -1410,6 +1419,7 @@ pub async fn agent_usage(agent: String, refresh: Option<bool>) -> AgentUsageRepo
             spec.id,
             spec.label,
             true,
+            "cli_not_installed",
             format!("{} is not installed", spec.label),
         );
     };
@@ -1418,7 +1428,7 @@ pub async fn agent_usage(agent: String, refresh: Option<bool>) -> AgentUsageRepo
     // a question that has nothing to do with that folder.
     let cwd = match warmup_dir() {
         Ok(dir) => dir,
-        Err(error) => return AgentUsageReport::refused(spec.id, spec.label, true, error),
+        Err(error) => return AgentUsageReport::refused(spec.id, spec.label, true, "cli_failed", error),
     };
 
     let mut cmd = tokio::process::Command::from(crate::paths::command_no_window(&path));
@@ -1444,13 +1454,14 @@ pub async fn agent_usage(agent: String, refresh: Option<bool>) -> AgentUsageRepo
     .await
     {
         Ok(Ok(output)) => output,
-        Ok(Err(error)) => return AgentUsageReport::refused(spec.id, spec.label, true, error),
+        Ok(Err(error)) => return AgentUsageReport::refused(spec.id, spec.label, true, "cli_failed", error),
         // `kill_on_drop` reaps the child as the future is dropped here.
         Err(_) => {
             return AgentUsageReport::refused(
                 spec.id,
                 spec.label,
                 true,
+                "cli_timeout",
                 format!(
                     "{} did not answer within {}s",
                     spec.label,
@@ -1470,10 +1481,11 @@ pub async fn agent_usage(agent: String, refresh: Option<bool>) -> AgentUsageRepo
                 supported: true,
                 raw: Some(raw),
                 error: None,
+                code: None,
                 cached: false,
             }
         }
-        Err(error) => AgentUsageReport::refused(spec.id, spec.label, true, error),
+        Err(error) => AgentUsageReport::refused(spec.id, spec.label, true, "cli_error", error),
     }
 }
 
