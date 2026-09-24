@@ -447,19 +447,27 @@ mod tests {
             format!("[toolchain]\npath = \"{}\"\n", proj.join("tc").display()),
         )
         .unwrap();
-        let _ = crate::paths::command_for_program(&tool.program)
-            .current_dir(&proj)
-            .stdin(Stdio::null())
-            .output();
+        // `cargo test` under rustup exports `RUSTUP_TOOLCHAIN` itself, which would
+        // mask the plant — so both runs clear it, and the second sets only what
+        // `format_source` sets.
+        let rustfmt = |pin: Option<&str>| {
+            let mut cmd = crate::paths::command_for_program(&tool.program);
+            cmd.current_dir(&proj).stdin(Stdio::null()).env_remove("RUSTUP_TOOLCHAIN");
+            if let Some(t) = pin {
+                cmd.env("RUSTUP_TOOLCHAIN", t);
+            }
+            let _ = cmd.output();
+        };
+        rustfmt(None);
         if !marker.exists() {
             eprintln!("this rustup does not run a toolchain path — skipping");
             return;
         }
         std::fs::remove_file(&marker).unwrap();
 
-        let file = proj.join("main.rs").to_string_lossy().into_owned();
-        // Ok or an error (the default toolchain may lack rustfmt) — never the plant.
-        let _ = format_source("fn  main(){}".into(), "rust".into(), Some(file));
-        assert!(!marker.exists(), "the project's own rustfmt ran through Format");
+        let pin = rustup_toolchain_pin(&tool.program, &proj).expect("a default toolchain");
+        let pin = pin.expect("a toolchain path must be pinned over");
+        rustfmt(Some(&pin));
+        assert!(!marker.exists(), "the project's own rustfmt ran despite the pin");
     }
 }
