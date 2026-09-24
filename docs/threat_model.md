@@ -148,11 +148,11 @@ state-dir permissions).
   "override mistake"). The phone PWA is not hardened this way.
 - `mobile_control` mutex locks recover from poisoning (done 2026-09-18), so a
   panicking handler can't lock the phone out.
-- #869 batch: state dir created 0700 and `storage::write_json` at 0600 (today
-  0775/0664 — safe only because `~` is 0700); pin `actions/*` and
-  `github/codeql-action` by SHA (`contents: write` release job included); add
-  `base-uri 'none'; form-action 'none'` to the CSP and drop `script-src blob:`
-  if nothing needs it; forward agent API keys only to agent tabs.
+- #869 batch: add `base-uri 'none'; form-action 'none'` to the CSP and drop
+  `script-src blob:` if nothing needs it; forward agent API keys only to agent
+  tabs. Done 2026-09-24: the state dir is tightened to 0700 at startup and new
+  state files are written 0600 (`storage::ensure_private_state_dir`); every
+  workflow action is pinned by commit SHA.
 - `cargo audit` ignores RUSTSEC-2023-0071 (`rsa` timing, via `pgp`).
 
 ---

@@ -1004,3 +1004,7 @@ table). Code-read findings; only #862 was reproduced (scratch repo, git 2.53).
     agent API keys only to agent tabs; CalDAV stops sending credentials to
     server-named cross-origin/plain-http hrefs; phone PWA prototype hardening;
     audit the fence's shared network namespace (X11/abstract sockets).
+    - **Partly done 2026-09-24:** state dir tightened to 0700 at startup and
+      new state files created 0600 (`storage::ensure_private_state_dir`,
+      `write_json`; project-folder files keep the umask); every workflow
+      action pinned by commit SHA (bump them by hand — no Dependabot).
