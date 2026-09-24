@@ -27,6 +27,7 @@ import type {
   ProjectEntry,
   Theme,
   UnsyncedReport,
+  VmDoctorReport,
 } from "../../types";
 import { THEMES } from "../../types";
 import type { LinkOpenTarget } from "../../types/browser";
@@ -59,6 +60,7 @@ import { PasswordInput } from "../common/PasswordInput";
 import { useT, LANGUAGES, type Language, type TranslationKey } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
 import { IS_MAC, IS_WINDOWS, PLATFORM } from "../../lib/platform";
+import { runInstallInTab } from "../../lib/installCommand";
 import { useHintsStore } from "../../stores/hints";
 import { canConnectVpnSilently } from "../../lib/remote/vpn/vpnConnect";
 import { setVpnAutoConnect, vpnUsernameFor } from "../../lib/remote/vpn/vpnAutoConnect";
@@ -129,6 +131,60 @@ export function WorkspaceParkingNote() {
         {t("settings.workspaceNoParking")} <UntestedTag id="settings.workspaceNoParking" />
       </p>
     </SettingsCard>
+  );
+}
+
+/** Machine-wide VM prerequisites, using the same doctor and root-tab install
+ *  command as the project creation dialog. */
+function VmInstallSettings() {
+  const t = useT();
+  const [doctor, setDoctor] = useState<VmDoctorReport | null>(null);
+  const [error, setError] = useState(false);
+  const [installing, setInstalling] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    const check = () => {
+      void invoke<VmDoctorReport>("vm_doctor")
+        .then((report) => {
+          if (!live) return;
+          setDoctor(report);
+          setError(false);
+          if (!report.install_command) setInstalling(false);
+        })
+        .catch(() => { if (live) setError(true); });
+    };
+    check();
+    if (installing) {
+      const timer = window.setInterval(check, 3000);
+      return () => { live = false; window.clearInterval(timer); };
+    }
+    return () => { live = false; };
+  }, [installing]);
+
+  return (
+    <SettingRow
+      label={<>{t("settings.vmPrerequisites")} <UntestedTag id="settings.vmPrerequisites" /></>}
+      control={doctor?.install_command ? (
+        <button
+          type="button"
+          className="settings-btn"
+          onClick={() => {
+            setInstalling(true);
+            runInstallInTab(t("projectDialog.vmInstallLabel"), doctor.install_command!, IS_WINDOWS ? "default" : "bash");
+          }}
+        >
+          {t("projectDialog.vmInstallBtn")}
+        </button>
+      ) : null}
+      help={error
+        ? t("settings.vmCheckFailed")
+        : doctor === null
+          ? t("settings.vmChecking")
+          : doctor.ok
+            ? t("settings.vmReady")
+            : doctor.reasons.join(" ")}
+    />
   );
 }
 
@@ -845,6 +901,7 @@ const MAIN_SECTIONS = [
   "usageStats",
   "rootConsole",
   "remoteFeatures",
+  "vm",
   "mobile",
   "performance",
   "resourceMonitor",
@@ -868,7 +925,7 @@ const SETTINGS_GROUPS: { key: "general" | "workspace" | "agents" | "remote" | "s
   { key: "general", entries: ["general", "layout", "clock", "hintsOnboarding", "shortcuts", "updates", "help"] },
   { key: "workspace", entries: ["global", "filetypes", "downloads", "browser", "calendar", "usageStats", "archive", "scaffoldRepair"] },
   { key: "agents", entries: ["agents", "ollama", "rootConsole"] },
-  { key: "remote", entries: ["remoteFeatures", "git", "remoteHosts", "vpn", "mobile"] },
+  { key: "remote", entries: ["remoteFeatures", "git", "remoteHosts", "vpn", "vm", "mobile"] },
   { key: "system", entries: ["performance", "resourceMonitor", "experimental"] },
 ];
 
@@ -887,6 +944,7 @@ const SEARCH_KEYS: Record<NavEntry, TranslationKey[]> = {
   usageStats: ["settings.dailyRecap", "settings.openUsageStats"],
   rootConsole: ["settings.rootMcp", "settings.rootMcpLocalOnly", "settings.rootMcpMail", "settings.rootMcpMailLocalOnly", "settings.rootMcpMailLocalRead", "rootReview.setting", "mcpSecurity.title"],
   remoteFeatures: ["settings.vpnEnabled", "settings.machinesEnabled", "settings.headlessRemote"],
+  vm: ["settings.vmPrerequisites", "projectDialog.vmInstallBtn"],
   mobile: ["settings.mobileIndicator"],
   performance: ["settings.energySaver", "settings.fastMode"],
   resourceMonitor: ["settings.showCpu", "settings.showRam", "settings.showGpu", "statusCluster.settingLabel"],
@@ -1592,6 +1650,11 @@ export function SettingsDialog({
               onChange={(e) => void updateSettings({ connections_headless: e.target.checked })}
               help={t("settings.headlessRemoteHelp")}
             />
+            </>)}
+
+            {section === "vm" && (<>
+            <SettingsSection anchor="settings-anchor-vm" title={t("settings.vm")} />
+            <VmInstallSettings />
             </>)}
 
             {section === "mobile" && (<>

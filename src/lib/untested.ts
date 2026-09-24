@@ -41,6 +41,7 @@ export const UNTESTED = {
   "desktop.intro.agents": { area: "shell", what: "How to start · Agent CLIs page: installed chips, install/sign-in in a terminal, Node.js prerequisite" },
   "desktop.intro.localModels": { area: "shell", what: "How to start · Local models page: Ollama install/start, recommended pull, GPU load, use for tabs" },
   "desktop.intro.askEldrun": { area: "shell", what: "How to start · Ask Eldrun page: help-server status, on/off switch, help search box" },
+  "settings.vmPrerequisites": { area: "settings", what: "VM page · install missing QEMU prerequisites in a root terminal tab" },
 
   // --- agents — Agent sessions, schedules and the prompt chart ------
   "agentSchedule.title": { area: "agents", what: "AgentScheduleDialog · Scheduled prompts · {tab}" },
