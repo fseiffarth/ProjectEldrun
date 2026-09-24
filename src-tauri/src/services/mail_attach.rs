@@ -146,9 +146,6 @@ pub fn denied_name(name: &str) -> Option<&'static str> {
     None
 }
 
-/// Why a root is not attachable from at all: `/`, `$HOME` or an ancestor of it
-/// (the fence shows neither), or a place inside Eldrun's state (masked).
-#[cfg(any(target_os = "linux", target_os = "macos", test))]
 /// A project this root tab's sandbox was not built with (added, or moved,
 /// after the tab started).
 pub const NOT_IN_GRANT: &str = "that project was not in this tab's view when it started; open a new root tab to attach from it";
@@ -161,6 +158,9 @@ fn within_grant(granted: Option<&[PathBuf]>, root: &Path) -> bool {
     granted.is_none_or(|g| g.iter().any(|p| root.starts_with(p)))
 }
 
+/// Why a root is not attachable from at all: `/`, `$HOME` or an ancestor of it
+/// (the fence shows neither), or a place inside Eldrun's state (masked).
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn root_refusal(root: &Path, home: &Path, state_dir: &Path) -> Option<&'static str> {
     let forms: Vec<PathBuf> = [Some(root.to_path_buf()), root.canonicalize().ok()].into_iter().flatten().collect();
     let homes: Vec<PathBuf> = [Some(home.to_path_buf()), home.canonicalize().ok()].into_iter().flatten().collect();

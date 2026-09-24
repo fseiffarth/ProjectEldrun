@@ -1517,8 +1517,8 @@ mod tests {
         assert!(!session.has_read_mail(), "writing a draft is not reading");
 
         let accounts = run("mail_accounts_list", json!({})).unwrap()["accounts"].clone();
-        assert_eq!(accounts[0]["scope"], "marked", "{accounts}");
-        assert_eq!(accounts[1]["scope"], "drafts_only", "{accounts}");
+        assert_eq!(accounts[0]["scope"], "marked");
+        assert_eq!(accounts[1]["scope"], "drafts_only");
 
         let found = opened(&run("mail_search", json!({ "account_id": "open" })).unwrap());
         let ids: Vec<&str> = found["messages"].as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap()).collect();
@@ -2166,12 +2166,17 @@ mod tests {
             std::fs::write(alpha.join(format!("f{i}.txt")), format!("file {i}")).unwrap();
         }
         std::fs::write(dir.path().join("outside/secret.txt"), b"outside").unwrap();
-        std::os::unix::fs::symlink(dir.path().join("outside/secret.txt"), alpha.join("link-out.txt")).unwrap();
-        std::os::unix::fs::symlink(alpha.join("out/paper.pdf"), alpha.join("link-in.pdf")).unwrap();
-        std::os::unix::fs::symlink(alpha.join("out"), alpha.join("outlink")).unwrap();
-        let fifo = std::ffi::CString::new(alpha.join("pipe").to_str().unwrap()).unwrap();
-        // SAFETY: a valid C string naming a path inside the temp tree.
-        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        // Links and a FIFO for the Unix-only attach tests (attach reads nothing
+        // on Windows).
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(dir.path().join("outside/secret.txt"), alpha.join("link-out.txt")).unwrap();
+            std::os::unix::fs::symlink(alpha.join("out/paper.pdf"), alpha.join("link-in.pdf")).unwrap();
+            std::os::unix::fs::symlink(alpha.join("out"), alpha.join("outlink")).unwrap();
+            let fifo = std::ffi::CString::new(alpha.join("pipe").to_str().unwrap()).unwrap();
+            // SAFETY: a valid C string naming a path inside the temp tree.
+            assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        }
         std::fs::write(beta.join("b.txt"), b"beta's").unwrap();
         std::fs::write(delta_remote.join("r.txt"), b"remote path read locally").unwrap();
         std::fs::write(mirror.join("m.txt"), b"mirrored").unwrap();
