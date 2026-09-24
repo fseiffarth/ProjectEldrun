@@ -164,7 +164,7 @@ export const UNTESTED = {
   "machinesIndicator.4": { area: "header", what: "MachinesIndicator · Connect on launch & VPN-up" },
   "machinesIndicator.5": { area: "header", what: "MachinesIndicator · Use a row's ⇥ button", tested: "2026-09-20" },
   "machinesIndicator.6": { area: "header", what: "MachinesIndicator · on every connected machine and disconnects them. Can't be undone." },
-  "machines.utilAria": { area: "header", what: "MachinesIndicator · inline CPU/GPU utilization bars on Detailed machines" },
+  "machines.utilAria": { area: "header", what: "MachinesIndicator · inline CPU/GPU utilization bars on Detailed machines", tested: "2026-09-24" },
   "machinesIndicator.7": { area: "header", what: "MachinesIndicator · Remote host usage — check who's logged in and what's running on every machine here: CPU, …" },
   "machinesIndicator.8": { area: "header", what: "MachinesIndicator · — off while tagged HPC" },
   "machinesIndicator.9": { area: "header", what: "MachinesIndicator · HPC cluster (login node)" },
