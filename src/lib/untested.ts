@@ -303,6 +303,7 @@ export const UNTESTED = {
   "mobile.link.silentResume": { area: "mobile", what: "LocalUnlock · A sidecar restart or a lapsed session is renewed silently while the reader is active; a cold open always asks for the PIN" },
   "mobile.focus.noSessionYet": { area: "mobile", what: "Terminal · A tab created from the phone stays in the Reader and shows its stored session once the agent records one" },
   "mobile.calendar.manage": { area: "mobile", what: "Calendar · Edit a calendar's name and colour in a sheet; deletes ask in the option sheet" },
+  "mobile.todo.fold": { area: "mobile", what: "Todo · Tap a column's name to fold it; the fold is kept on this phone" },
   "mobile.mailActions": { area: "mobile", what: "MobileSettings · Mark read and star from the phone" },
   "mobile.mailRead": { area: "mobile", what: "MobileSettings · Read mail on the phone" },
   "mobile.mailReply": { area: "mobile", what: "MobileSettings · Reply from the phone" },
