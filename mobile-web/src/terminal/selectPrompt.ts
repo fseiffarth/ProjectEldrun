@@ -228,12 +228,16 @@ function readContext(lines: readonly SelectLineLike[], start: number): { questio
     while (index >= 0 && !lines[index].text.trim()) index -= 1;
     // The spinner is the session's, not the dialog's: nothing above it is.
     if (index >= 0 && busyRow(lines[index].text)) break;
+    const top = index;
     while (index >= 0 && dialogText(lines[index]) && taken < CONTEXT_LINES) {
       context = index;
       taken += 1;
       index -= 1;
     }
     if (block === 0) question = context;
+    // Claude Code's tab row over an agent's question is the question's label,
+    // not a block of context: what it labels is the agent's message above.
+    else if (top === index + 1 && readQuestionTabs(lines[top].text)) block -= 1;
   }
   return { question, context };
 }
@@ -417,4 +421,35 @@ export function selectMoveKeys(current: number, target: number): string[] {
   const distance = Math.abs(target - current);
   const key = target > current ? "\u001b[B" : "\u001b[A";
   return Array.from({ length: distance }, () => key);
+}
+
+/** One question of Claude Code's question dialog, as its tab row names it. */
+export interface QuestionTab {
+  label: string;
+  answered: boolean;
+}
+
+const TAB_ROW = /^\s*(?:←\s+)?((?:[☐☒☑✔✓]\s+\S.*?)(?:\s{2,}[☐☒☑✔✓]\s+\S.*?)*)(?:\s+→)?\s*$/u;
+const TAB = /^([☐☒☑✔✓])\s+(\S.*)$/u;
+
+/** The tab row Claude Code draws over the question an agent asks
+ * (`AskUserQuestion`): each question's short header behind a box —
+ * `☐ Push scope`, or `← ☒ Scope  ☐ Tag  ✔ Submit →` when it asks several —
+ * which lands at the bottom of the screen above the question as a bare row of
+ * checkboxes. It is the question's label, so a caller shows it as one; the
+ * `Submit` step is navigation, not a question, and is left out.
+ *
+ * At least one `☐`/`☒` has to be there: a lone `✔ Done` line is somebody's
+ * sentence, not this row. */
+export function readQuestionTabs(text: string): QuestionTab[] | null {
+  const row = TAB_ROW.exec(text);
+  if (!row || !/[☐☒]/u.test(row[1])) return null;
+  const tabs: QuestionTab[] = [];
+  for (const part of row[1].split(/\s{2,}/u)) {
+    const tab = TAB.exec(part);
+    if (!tab) return null;
+    if (tab[2] === "Submit" && (tab[1] === "✔" || tab[1] === "✓")) continue;
+    tabs.push({ label: tab[2], answered: tab[1] !== "☐" });
+  }
+  return tabs.length > 0 ? tabs : null;
 }

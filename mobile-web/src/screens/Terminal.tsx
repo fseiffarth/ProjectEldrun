@@ -33,7 +33,7 @@ import { OUTBOX_POLL, sameOutbox } from "../outbox";
 import { readFlag, readTerminalView, writeFlag, writeTerminalView, type TerminalViewChoice } from "../prefs";
 import { readSpeechLang, speechTag, type SpeechLang } from "../speechLang";
 import { TERMINAL_PROTOCOL, TERMINAL_SIZE } from "../terminal/protocol";
-import { dedentLines, dedentRows, readableRange, readableScreen, readableText, TRUNCATION_NOTICE, type ReadableLine } from "../terminal/readableScreen";
+import { dedentLines, dedentRows, joinProseWraps, readableRange, readableScreen, readableText, TRUNCATION_NOTICE, type ReadableLine } from "../terminal/readableScreen";
 import {
   absorbHistory,
   emptyHistory,
@@ -50,11 +50,13 @@ import { installFocusSwipe } from "../terminal/focusSwipe";
 import {
   mergeSelectRows,
   missingSelectRow,
+  readQuestionTabs,
   readSelectPrompt,
   sameSelectStep,
   selectKeys,
   selectMoveKeys,
   selectSignature,
+  type QuestionTab,
   type SelectOption,
   type SelectPrompt,
   type SelectStep,
@@ -438,8 +440,8 @@ function noSessionReason(transcript: SessionTranscript | null): TranslationKey {
 
 /**
  * The question the session is waiting on, as a phone list: the dialog's own
- * rows, under the number it printed beside each one, each a tap that answers
- * it. It sits inline in the reading view rather than in a sheet — the question
+ * rows in its own order, laid out as the model and mode sheets lay theirs out
+ * (`OptionSheet`), each a tap that answers it. It sits inline in the reading view rather than in a sheet — the question
  * is part of the conversation, and a modal over it would hide what it asks.
  *
  * Like `OptionSheet` it renders what the caller resolved and reports taps
@@ -457,8 +459,14 @@ function withoutEdgeBlanks(lines: readonly ReadableLine[]): ReadableLine[] {
   return lines.slice(first, end);
 }
 
-function QuestionList({ prompt, question, sent, sendingLabel, onPick }: {
+/** The mark Claude Code asks agents to put on the option they would pick. It
+ * is shown as a tag beside the label rather than as part of it. */
+const RECOMMENDED = /\s+\((Recommended)\)$/u;
+
+function QuestionList({ prompt, tabs, question, sent, sendingLabel, onPick }: {
   prompt: SelectPrompt;
+  /** The headers of the questions the dialog asks (`readQuestionTabs`). */
+  tabs: readonly QuestionTab[];
   /** The dialog's own question — the lines `prompt.question` points at. It is
    * the list's heading here, so it is shown in the reading view's own voice
    * (`plain`): a TUI paints its dialog in its own theme, and Codex's light
@@ -471,20 +479,29 @@ function QuestionList({ prompt, question, sent, sendingLabel, onPick }: {
   onPick: (option: SelectOption) => void;
 }) {
   return <>
+    {tabs.length > 0 && <div className="question-tabs">
+      {tabs.map((tab, index) => <span key={index} className={tab.answered ? "answered" : undefined}>{tab.answered && "✓ "}{tab.label}</span>)}
+    </div>}
     {question.length > 0 && <div className="question-ask">
       {question.map((line) => <ReadableRow key={line.key} line={line} plain />)}
     </div>}
-    <ul className="option-list question-list">{prompt.options.map((option) => <li key={option.number}>
-      <button
-        className={option.index === prompt.current ? "current" : ""}
-        aria-current={option.index === prompt.current || undefined}
-        disabled={sent !== undefined}
-        onClick={() => onPick(option)}>
-        <span className="question-number" aria-hidden="true">{option.number}</span>
-        <span><strong>{option.label}</strong>{option.description && <small>{option.description}</small>}</span>
-        {sent === option.number && <span className="sheet-pending" role="status">{sendingLabel}</span>}
-      </button>
-    </li>)}</ul>
+    <ul className="option-list question-list">{prompt.options.map((option) => {
+      const recommended = RECOMMENDED.exec(option.label);
+      const label = recommended ? option.label.slice(0, recommended.index) : option.label;
+      return <li key={option.number}>
+        <button
+          className={option.index === prompt.current ? "current" : ""}
+          aria-current={option.index === prompt.current || undefined}
+          disabled={sent !== undefined}
+          onClick={() => onPick(option)}>
+          <span>
+            <strong>{label}{recommended && <em className="question-recommended">{recommended[1]}</em>}</strong>
+            {option.description && <small>{option.description}</small>}
+          </span>
+          {sent === option.number && <span className="sheet-pending" role="status">{sendingLabel}</span>}
+        </button>
+      </li>;
+    })}</ul>
   </>;
 }
 
@@ -2374,15 +2391,26 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
   /** The dialog's own question — the block right above its rows, which the
    * list below shows as its heading — and the screen it was drawn onto, which
    * stays as the session drew it. Blank rows at either seam are the dialog's
-   * own gutter, not a paragraph of anybody's. */
-  const questionAsk = useMemo(
-    () => (liveQuestion ? dedentLines(withoutEdgeBlanks(liveTail.slice(liveQuestion.question, liveQuestion.start))) : []),
-    [liveQuestion, liveTail],
-  );
-  const questionContext = useMemo(
-    () => (liveQuestion ? withoutEdgeBlanks(liveTail.slice(liveQuestion.context, liveQuestion.question)) : []),
-    [liveQuestion, liveTail],
-  );
+   * own gutter, not a paragraph of anybody's.
+   *
+   * Between the two Claude Code draws a tab row over a question an agent asks
+   * (`readQuestionTabs`); it is the question's label, so it is lifted off and
+   * the list shows it as chips. Such a question and the agent's prose above it
+   * are rejoined into paragraphs (`joinProseWraps`) — any other dialog's
+   * screen, a diff or a command, stays as drawn. */
+  const [questionAsk, questionContext, questionTabs] = useMemo((): [ReadableLine[], ReadableLine[], QuestionTab[]] => {
+    if (!liveQuestion) return [[], [], []];
+    let ask = withoutEdgeBlanks(liveTail.slice(liveQuestion.question, liveQuestion.start));
+    let context = withoutEdgeBlanks(liveTail.slice(liveQuestion.context, liveQuestion.question));
+    let tabs = ask.length > 1 ? readQuestionTabs(ask[0].text) : null;
+    if (tabs) {
+      ask = withoutEdgeBlanks(ask.slice(1));
+    } else if (context.length > 0) {
+      tabs = readQuestionTabs(context[context.length - 1].text);
+      if (tabs) context = withoutEdgeBlanks(context.slice(0, -1));
+    }
+    return [joinProseWraps(dedentLines(ask)), tabs ? joinProseWraps(context) : context, tabs ?? []];
+  }, [liveQuestion, liveTail]);
   /** What the list on screen *is*, as a string: a stable dep for the effects
    * below, which must not restart on every repaint of the same question. */
   const questionSignature = liveQuestion ? selectSignature(liveQuestion) : "";
@@ -2713,7 +2741,7 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
                         something a phone can do — and the question above them
                         is that list's heading. */}
                     {questionContext.length > 0 && <ReadableTurns lines={questionContext} chat={chat} agent={agentLabel} promptLabel={t("mobile.transcript.prompt")} columns={paneColumns.current} />}
-                    <QuestionList prompt={liveQuestion} question={questionAsk} sent={sentSignature === questionSignature ? questionSent?.number : undefined} sendingLabel={t("mobile.transcript.answering")} onPick={answerQuestion} />
+                    <QuestionList prompt={liveQuestion} tabs={questionTabs} question={questionAsk} sent={sentSignature === questionSignature ? questionSent?.number : undefined} sendingLabel={t("mobile.transcript.answering")} onPick={answerQuestion} />
                   </div>}
                   {sessionBusy && <div className="transcript-working" role="status">
                     <span className="transcript-working-dots" aria-hidden="true"><i /><i /><i /></span>

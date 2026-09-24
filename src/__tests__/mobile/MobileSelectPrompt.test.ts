@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mergeSelectRows, missingSelectRow, readSelectPrompt, sameSelectStep, selectKeys, selectMoveKeys, selectSignature } from "../../../mobile-web/src/terminal/selectPrompt";
+import { mergeSelectRows, missingSelectRow, readQuestionTabs, readSelectPrompt, sameSelectStep, selectKeys, selectMoveKeys, selectSignature } from "../../../mobile-web/src/terminal/selectPrompt";
 import { currentMode, modeChoices } from "../../../mobile-web/src/terminal/agentModes";
 import { inputFrameStart, sessionStatus } from "../../../mobile-web/src/terminal/statusLine";
 
@@ -586,5 +586,22 @@ describe("Eldrun Mobile input frame", () => {
     expect(cut(...output)).toEqual(output);
     // A prompt further up than the frame window is scrolled-past output.
     expect(cut("\u276f ", "a", "b", "c", "d", "e", "f", "g", "h", "i").length).toBe(10);
+  });
+});
+
+describe("Eldrun Mobile question tabs", () => {
+  it("reads the header row Claude Code draws over an agent's question", () => {
+    expect(readQuestionTabs("☐ Push scope")).toEqual([{ label: "Push scope", answered: false }]);
+    // Several questions: answered ones are ticked, and Submit is navigation.
+    expect(readQuestionTabs("←  ☒ Scope  ☐ Release tag  ✔ Submit  →")).toEqual([
+      { label: "Scope", answered: true },
+      { label: "Release tag", answered: false },
+    ]);
+  });
+
+  it("is not fooled by a sentence", () => {
+    expect(readQuestionTabs("✔ Done")).toBeNull();
+    expect(readQuestionTabs("Push scope")).toBeNull();
+    expect(readQuestionTabs("● ☐ is how the box looks")).toBeNull();
   });
 });

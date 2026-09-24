@@ -614,8 +614,10 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .readable-empty button { margin-top:6px; }
 /* What the screen is drawing right now, under the stored session: shown only
    while it holds a choice the session is waiting on. */
-.transcript-screen { display:grid; gap:6px; padding:8px 10px; border-left:3px solid #8fb8ff; border-radius:8px; background:#14161e; }
-.transcript-screen small { color:#8fb8ff; font-size:.62rem; text-transform:uppercase; letter-spacing:.05em; }
+.transcript-screen { display:grid; gap:11px; padding:10px 10px 12px; border:1px solid #383c4d; border-radius:20px; background:#171a24; }
+/* Its own label only: a bare `small` also caught every option's note in the
+   list below and set it in tiny blue capitals. */
+.transcript-screen > small { padding:0 4px; color:#8fb8ff; font-size:.62rem; text-transform:uppercase; letter-spacing:.05em; }
 /* Under the stored session while the live screen shows the agent mid-turn. */
 .transcript-working { display:flex; align-items:center; gap:8px; padding:6px 10px; color:#9da3b6; font:500 .78rem/1.4 Inter,ui-sans-serif,system-ui,sans-serif; }
 .transcript-working-dots { display:inline-flex; gap:3px; }
@@ -801,17 +803,24 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .option-list svg { width:21px; height:21px; flex:0 0 auto; fill:none; stroke:currentColor; stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; }
 .sheet-pending { flex:0 0 auto; color:#c8cdda; font-size:.78rem; }
 /* The same list, inline in the reading view: the choice an agent is waiting on
-   (`QuestionList`). It carries the number the dialog printed beside each row,
-   so the list on the phone reads as the one on the screen — and a row the
-   session highlights is the one Enter would take, not an answer given. */
+   (`QuestionList`). It is the model and mode sheets' list (`OptionSheet`) —
+   label, note, one treatment for every row — and the row the session
+   highlights is the one Enter would take, not an answer given. */
 /* Its heading: the dialog's own question, in the reading view's own type
    rather than the colours the TUI painted its card with (`ReadableRow`
-   `plain`). Flush left — the rows below it carry the indent. */
-.question-ask { display:grid; gap:2px; padding:0 2px 2px; }
-.question-ask .readable-line { padding-left:0; text-indent:0; }
+   `plain`). Flush left, like the rows below it. */
+.question-ask { display:grid; gap:6px; padding:0 4px 2px; }
+.question-ask .readable-line { padding-left:0; text-indent:0; color:#e7e9f2; font:500 .95rem/1.45 Inter,ui-sans-serif,system-ui,sans-serif; }
+.question-ask .readable-line .b { font-weight:600; }
+/* The headers of the questions an agent asks, as Claude Code's tab row names
+   them (`readQuestionTabs`): the sheet's title, and an answered one ticked
+   and quieter. */
+.question-tabs { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 12px; padding:0 4px; }
+.question-tabs span { color:#e7e9f2; font:600 1.02rem/1.3 Inter,ui-sans-serif,system-ui,sans-serif; }
+.question-tabs span.answered { color:#7d8499; font-size:.84rem; font-weight:500; }
 .question-list button:disabled { opacity:.6; }
-.question-list button > .question-number { flex:0 0 auto; display:grid; place-items:center; width:22px; height:22px; border-radius:7px; background:#2a3044; color:#9da3b6; font:600 .76rem/1 Inter,ui-sans-serif,system-ui,sans-serif; }
-.question-list button.current > .question-number { background:#2b3550; color:#8fb6ff; }
+/* The pill the sheets' headings wear (`.option-sheet h2 small`). */
+.question-recommended { margin-left:6px; color:#8fb8ff; font-size:.62rem; font-style:normal; font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
 /* Launch curtain — the desktop app's `.startup-splash` ported (see base.css):
    the Eldrun mark inside two counter-rotating orbit rings, over the brand name,
    the state, and a sweeping progress hairline. The colours are literals rather
