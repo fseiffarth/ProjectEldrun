@@ -131,48 +131,50 @@ export function ProjectSearch({
       />
       {query.trim() && (
         <div className="project-search-popover" ref={resultsRef}>
-          {results.length === 0 ? (
-            <div className="project-search-empty">{t("projectSearch.noProjects")}</div>
-          ) : (
-            results.map((row, index) =>
-              row.kind === "box" ? (
-                <button
-                  key={`box:${row.box.id}`}
-                  data-result-index={index}
-                  className={`project-search-row is-box${index === selected ? " is-selected" : ""}`}
-                  onClick={() => activateSearchResult(row)}
-                  onMouseEnter={() => setSelected(index)}
-                >
-                  <span>
-                    <span className="project-box-badge" aria-hidden>▣</span> {row.box.name}
-                  </span>
-                  <small>
-                    {t(row.box.member_ids.length === 1 ? "projectSearch.boxMemberOne" : "projectSearch.boxMemberMany", {
-                      count: row.box.member_ids.length,
-                    })}
-                  </small>
-                </button>
-              ) : (
-                <button
-                  key={row.project.id}
-                  data-result-index={index}
-                  className={`project-search-row${index === selected ? " is-selected" : ""}`}
-                  onClick={() => activateSearchResult(row)}
-                  onMouseEnter={() => setSelected(index)}
-                >
-                  <span>{row.project.name}</span>
-                  {searchPaths(row.project).map((loc) => (
-                    <small key={loc.label ?? "dir"} title={loc.path}>
-                      {loc.label && (
-                        <span className="project-search-path-label">{loc.label}</span>
-                      )}
-                      <span className="project-search-path">{loc.path}</span>
+          <div className="menu-scroll-region">
+            {results.length === 0 ? (
+              <div className="project-search-empty">{t("projectSearch.noProjects")}</div>
+            ) : (
+              results.map((row, index) =>
+                row.kind === "box" ? (
+                  <button
+                    key={`box:${row.box.id}`}
+                    data-result-index={index}
+                    className={`project-search-row is-box${index === selected ? " is-selected" : ""}`}
+                    onClick={() => activateSearchResult(row)}
+                    onMouseEnter={() => setSelected(index)}
+                  >
+                    <span>
+                      <span className="project-box-badge" aria-hidden>▣</span> {row.box.name}
+                    </span>
+                    <small>
+                      {t(row.box.member_ids.length === 1 ? "projectSearch.boxMemberOne" : "projectSearch.boxMemberMany", {
+                        count: row.box.member_ids.length,
+                      })}
                     </small>
-                  ))}
-                </button>
-              ),
-            )
-          )}
+                  </button>
+                ) : (
+                  <button
+                    key={row.project.id}
+                    data-result-index={index}
+                    className={`project-search-row${index === selected ? " is-selected" : ""}`}
+                    onClick={() => activateSearchResult(row)}
+                    onMouseEnter={() => setSelected(index)}
+                  >
+                    <span>{row.project.name}</span>
+                    {searchPaths(row.project).map((loc) => (
+                      <small key={loc.label ?? "dir"} title={loc.path}>
+                        {loc.label && (
+                          <span className="project-search-path-label">{loc.label}</span>
+                        )}
+                        <span className="project-search-path">{loc.path}</span>
+                      </small>
+                    ))}
+                  </button>
+                ),
+              )
+            )}
+          </div>
         </div>
       )}
     </div>

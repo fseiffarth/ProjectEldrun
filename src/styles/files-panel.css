@@ -1246,13 +1246,15 @@
   max-width: min(480px, calc(100vw - 16px));
   width: max-content;
   z-index: 200;
-  background: var(--bg-panel);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius);
   max-height: 320px;
-  overflow-y: auto;
+  /* Shared popover surface (the `.context-menu` group); it never scrolls
+     itself — `.git-change-rows` is its `.menu-scroll-region` — so the accent
+     wash spans the whole frame. */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  color: var(--text-primary);
   font-size: var(--text-sm);
-  box-shadow: var(--shadow-2);
   padding: 4px 0;
 }
 

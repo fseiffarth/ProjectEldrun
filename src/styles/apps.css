@@ -379,9 +379,6 @@
   z-index: var(--z-menu);
   width: 320px;
   padding: 10px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-color);
-  box-shadow: var(--shadow-3);
   color: var(--text-primary);
 }
 
@@ -646,12 +643,13 @@
   right: 0;
   width: min(360px, 80vw);
   max-height: 420px;
-  overflow-y: auto;
+  /* The surface never scrolls — its rows do, in a `.menu-scroll-region` child,
+     so the accent wash covers the whole frame instead of scrolling away. */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   padding: 4px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-2);
+  color: var(--text-primary);
   z-index: 60;
 }
 
@@ -859,9 +857,18 @@
 .project-dialog::before,
 .settings-dialog::before,
 .stats-dialog::before,
+.file-delete-dialog::before,
 .context-menu::before,
 .tab-new-menu::before,
-.project-switcher-add-menu::before {
+.project-switcher-add-menu::before,
+.box-chip-menu::before,
+.project-search-popover::before,
+.global-app-edit-popover::before,
+.file-run-args::before,
+.file-viewer-run-args::before,
+.git-change-tree::before,
+.presentation-settings::before,
+.cal-alarm-popup::before {
   content: "";
   position: absolute;
   inset: 0;

@@ -1350,11 +1350,8 @@
   max-height: min(60vh, 560px);
   display: flex;
   flex-direction: column;
-  background: var(--bg-elevated);
+  /* Surface from the shared popover group (projects-tabs.css). */
   color: var(--text-primary);
-  border: 1px solid var(--accent);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-3);
 }
 
 .cal-alarm-head {

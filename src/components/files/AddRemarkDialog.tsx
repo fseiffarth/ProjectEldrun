@@ -1,13 +1,17 @@
-import { useState } from "react";
-import { createPortal } from "react-dom";
+import { useId, useState } from "react";
 import { useProjectRemarksStore } from "../../stores/projectRemarks";
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
+import { DialogShell } from "../common/PromptDialogs";
 
+/** A multi-line note on a file (or one of its lines). Wears the panel's
+ *  file-operation dialog (`DialogShell`), like every other question the file
+ *  tree and viewer ask. */
 export function AddRemarkDialog({ projectId, projectDir, file, line = null, onClose }: {
   projectId: string; projectDir: string; file: string; line?: number | null; onClose: () => void;
 }) {
   const t = useT();
+  const errorId = useId();
   const [text, setText] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -17,16 +21,26 @@ export function AddRemarkDialog({ projectId, projectDir, file, line = null, onCl
     try { await useProjectRemarksStore.getState().add(projectId, projectDir, file, line, text); onClose(); }
     catch (e) { setError(String(e)); setSaving(false); }
   };
-  return createPortal(
-    <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="modal-card project-remark-dialog" style={{ color: "var(--text-primary)" }} role="dialog" aria-modal="true">
-        <div className="modal-header"><h2>{t("projectRemarks.addTitle")}</h2><UntestedTag id="projectRemarks.addTitle" /><button onClick={onClose}>×</button></div>
-        <div className="modal-divider" />
-        <p className="muted">{line ? `${file}:${line}` : file}</p>
-        <textarea autoFocus className="cal-input" rows={5} value={text} onChange={(e) => setText(e.target.value)} placeholder={t("projectRemarks.placeholder")} />
-        {error && <p className="error-text">{error}</p>}
-        <div className="modal-actions"><button onClick={onClose}>{t("common.cancel")}</button><button className="primary" disabled={saving || !text.trim()} onClick={() => void save()}>{t("common.save")}</button></div>
+  return (
+    <DialogShell onDismiss={() => !saving && onClose()}>
+      <h2>{t("projectRemarks.addTitle")}<UntestedTag id="projectRemarks.addTitle" /></h2>
+      <div className="file-delete-path">{line ? `${file}:${line}` : file}</div>
+      <textarea
+        autoFocus
+        className="file-paste-name"
+        rows={5}
+        value={text}
+        disabled={saving}
+        aria-invalid={!!error}
+        aria-describedby={error ? errorId : undefined}
+        onChange={(e) => setText(e.target.value)}
+        placeholder={t("projectRemarks.placeholder")}
+      />
+      {error && <div id={errorId} role="alert" className="file-delete-path file-delete-error">{error}</div>}
+      <div className="file-delete-actions">
+        <button type="button" onClick={onClose} disabled={saving}>{t("common.cancel")}</button>
+        <button type="button" disabled={saving || !text.trim()} onClick={() => void save()}>{t("common.save")}</button>
       </div>
-    </div>, document.body,
+    </DialogShell>
   );
 }

@@ -487,8 +487,8 @@
 }
 
 /* The chip's dropdown — the only place boxes are listed. Portaled to the body
-   so it escapes the header's clipping, and wearing the switcher's own menu
-   chrome (.project-switcher-add-menu's shape) rather than a second look. */
+   so it escapes the header's clipping, and wearing the shared popover surface
+   (the `.context-menu` group below) rather than a second look. */
 .box-chip-menu {
   position: fixed;
   z-index: var(--z-menu);
@@ -496,9 +496,7 @@
   flex-direction: column;
   min-width: 170px;
   padding: 4px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-subtle);
-  box-shadow: var(--shadow-3);
+  color: var(--text-primary);
 }
 
 .box-chip-menu button {
@@ -1990,13 +1988,27 @@
 }
 
 /* One popover/menu surface for the whole app: context menus, the generic
-   dropdown (via .context-menu), the tab "+" menu and the project-switcher add
-   menu all read this. The individual rules keep only positioning / padding /
-   min-width. */
+   dropdown (via .context-menu), the tab "+" menu, the project-switcher add
+   menu, and the one-off popovers (box chip list, project search results, the
+   global-app editor, the run-arguments prompts, the git change tree, the
+   presenter's marker settings, the reminder popup) all read this. The
+   individual rules keep only positioning / padding / min-width.
+
+   No `position` here: every member places itself (fixed or absolute), which is
+   also what anchors the `::before` wash — and several of them are declared
+   EARLIER in the cascade (viewers.css, files-panel.css, above in this file),
+   where a grouped `position: relative` would win and unpin them. */
 .context-menu,
 .tab-new-menu,
-.project-switcher-add-menu {
-  position: relative;
+.project-switcher-add-menu,
+.box-chip-menu,
+.project-search-popover,
+.global-app-edit-popover,
+.file-run-args,
+.file-viewer-run-args,
+.git-change-tree,
+.presentation-settings,
+.cal-alarm-popup {
   background: var(--bg-elevated);
   /* No boxed outline: a 1px frame around a tinted popover reads as a stray
      hairline ring drawn around the accent wash below, not as an edge. The
@@ -2315,8 +2327,9 @@ button:has(> .menu-shortcut) {
 
 /* #py right-click-Run "arguments" popover on a file-tree row. A transparent
    full-window backdrop catches the outside click that closes it; the panel is
-   pinned at the cursor (clamped on-screen by useClampToViewport). Canonical
-   panel chrome + explicit colours (a portal child inherits none). */
+   pinned at the cursor (clamped on-screen by useClampToViewport). The shared
+   popover surface (the `.context-menu` group) + an explicit colour (a portal
+   child inherits none). */
 .file-run-args-backdrop {
   position: fixed;
   inset: 0;
@@ -2330,11 +2343,7 @@ button:has(> .menu-shortcut) {
   gap: 6px;
   min-width: 240px;
   padding: 8px;
-  background: var(--bg-elevated);
   color: var(--text-primary);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-3);
 }
 .file-run-args-label {
   font-size: 10px;

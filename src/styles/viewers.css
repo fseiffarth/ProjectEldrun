@@ -183,10 +183,10 @@
   gap: 8px;
   width: 190px;
   padding: 10px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius);
-  background: var(--bg-elevated, var(--bg-panel));
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  color: var(--text-primary);
+  /* A stacking context, so the shared surface's `z-index: -1` accent wash
+     paints inside this popover rather than behind the toolbar. */
+  z-index: 1;
 }
 
 .presentation-slider {
@@ -476,9 +476,9 @@
   align-items: center;
   gap: 4px;
 }
-/* Right-click-Run "arguments" popover — canonical panel chrome (see the menu
-   layout convention): explicit colours so a portal-free child never inherits
-   the body's default black text. */
+/* Right-click-Run "arguments" popover — the shared popover surface (the
+   `.context-menu` group in projects-tabs.css), plus an explicit colour so it
+   never inherits the body's default black text. */
 .file-viewer-run-args {
   position: absolute;
   top: calc(100% + 4px);
@@ -489,11 +489,7 @@
   gap: 6px;
   min-width: 220px;
   padding: 8px;
-  background: var(--bg-elevated);
   color: var(--text-primary);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  box-shadow: var(--shadow-2);
 }
 .file-viewer-run-args-label {
   font-size: 10px;
@@ -6116,4 +6112,4 @@
 .project-remark-row.missing { opacity:.55; }
 .project-remark-target { font:inherit; color:var(--accent); border:0; background:none; padding:0; }
 .project-remark-text { white-space:pre-wrap; overflow-wrap:anywhere; }
-.project-remark-dialog textarea { width:100%; resize:vertical; }
+.file-delete-dialog textarea.file-paste-name { resize:vertical; }
