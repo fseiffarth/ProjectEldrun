@@ -61,6 +61,8 @@ class FakeWebSocket {
   /** Binary input frames sent so far — what the desktop's ack counts. */
   get frames() { return this.sent.filter((frame) => frame === "<bytes>").length; }
   ack(seq = this.frames) { this.onmessage?.({ data: JSON.stringify({ type: "ack", seq }) } as MessageEvent); }
+  pong() { this.onmessage?.({ data: JSON.stringify({ type: "pong" }) } as MessageEvent); }
+  get pings() { return this.sent.filter((frame) => frame.includes('"ping"')).length; }
 }
 
 import { Terminal } from "../../../mobile-web/src/screens/Terminal";
@@ -153,6 +155,54 @@ describe("Eldrun Mobile prompt delivery", () => {
     await tick(6_000);
     expect(bubble().hasAttribute("data-send-failed")).toBe(false);
     expect(screen.queryByText(/Not delivered/)).toBeNull();
+  });
+
+  it("takes the marker down when the ack comes after the deadline", async () => {
+    await sendPrompt();
+    const shown = bubble();
+    await tick(5_200);
+    expect(shown.getAttribute("data-send-failed")).toBe("true");
+    act(() => socket().ack());
+    await tick(0);
+    expect(bubble()).toBe(shown);
+    expect(shown.hasAttribute("data-send-failed")).toBe(false);
+    expect(screen.queryByText(/Not delivered/)).toBeNull();
+  });
+
+  it("counts a pong as delivery for the frames sent before its ping — a sidecar that never acks", async () => {
+    await sendPrompt();
+    await tick(5_200);
+    expect(bubble().getAttribute("data-send-failed")).toBe("true");
+    // The next ping goes out after every frame of the prompt.
+    const pings = socket().pings;
+    await tick(20_000);
+    expect(socket().pings).toBeGreaterThan(pings);
+    act(() => socket().pong());
+    await tick(0);
+    expect(bubble().hasAttribute("data-send-failed")).toBe(false);
+  });
+
+  it("does not take a pong for a ping sent before the frames as their delivery", async () => {
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await tick(20_050);
+    expect(socket().pings).toBe(1);
+    fireEvent.change(screen.getByRole("textbox", { name: "Message agent" }), { target: { value: "also the tests" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await tick(600);
+    act(() => socket().pong());
+    await tick(5_200);
+    expect(bubble().getAttribute("data-send-failed")).toBe("true");
+  });
+
+  it("takes the composer's notice down when a late keystroke is acked", async () => {
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await tick(50);
+    fireEvent.click(screen.getByRole("button", { name: "Enter" }));
+    await tick(5_200);
+    screen.getByText(/That did not reach the desktop/);
+    act(() => socket().ack());
+    await tick(0);
+    expect(screen.queryByText(/That did not reach the desktop/)).toBeNull();
   });
 
   it("marks the prompt at once when the socket closes under it", async () => {

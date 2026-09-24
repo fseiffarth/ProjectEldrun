@@ -29,7 +29,8 @@ export interface PendingPrompt {
   anchorSeen: number;
   /** The link never acknowledged one of its input frames: the words did not
    * reach the session. The bubble stays where it is and says so, with a
-   * resend beside it — it is never removed or moved. */
+   * resend beside it — it is never removed or moved. The session's own
+   * record of the prompt overrules this (`withPending`). */
   failed?: boolean;
   /** A resend is on its way and waiting for its acknowledgement. */
   retrying?: boolean;
@@ -84,9 +85,14 @@ export function withPending(entries: readonly TranscriptEntry[], pending: readon
   if (pending.length === 0) return entries as TranscriptEntry[];
   const shown = [...entries];
   let lastSlot = -1;
+  // A prompt the session recorded reached it, whatever the link said.
+  const arrived = new Set<number>();
   for (const prompt of pending) {
     const record = recordOf(prompt, shown);
-    if (record >= 0) shown.splice(record, 1);
+    if (record >= 0) {
+      shown.splice(record, 1);
+      arrived.add(prompt.id);
+    }
   }
   for (const prompt of pending) {
     // After the last entry at or before the send — an entry without a stamp
@@ -124,8 +130,8 @@ export function withPending(entries: readonly TranscriptEntry[], pending: readon
       text: prompt.text,
       at: after,
       pending: prompt.id,
-      ...(prompt.failed ? { failed: true } : {}),
-      ...(prompt.retrying ? { retrying: true } : {}),
+      ...(prompt.failed && !arrived.has(prompt.id) ? { failed: true } : {}),
+      ...(prompt.retrying && !arrived.has(prompt.id) ? { retrying: true } : {}),
     });
     lastSlot = slot;
   }

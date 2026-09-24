@@ -115,6 +115,17 @@ describe("Eldrun Mobile Focus holds a sent prompt in its place", () => {
     expect(shape(withPending([answer("More.", "2026-09-18T10:01:00Z"), prompt("continue", "2026-09-18T10:03:00Z")], [sent]))).toEqual(["answer:More.", "prompt:continue"]);
   });
 
+  it("drops the not-delivered marker once the session recorded the prompt", () => {
+    const before = [answer("Ready.", "2026-09-18T10:00:00Z")];
+    const sent = { ...pendingPrompt(1, "also the tests", before), failed: true };
+    expect(withPending(before, [sent])[1]).toMatchObject({ pending: 1, failed: true });
+    // The link lost the ack, not the words: the record is the proof.
+    const arrived = [...before, prompt("also the tests", "2026-09-18T10:00:30Z")];
+    const shown = withPending(arrived, [sent]);
+    expect(shape(shown)).toEqual(["answer:Ready.", "prompt:also the tests"]);
+    expect(shown[1].failed).toBeUndefined();
+  });
+
   it("keeps two prompts sent in a row in their order", () => {
     const before = [answer("Ready.", "2026-09-18T10:00:00Z")];
     const first = pendingPrompt(1, "one", before);

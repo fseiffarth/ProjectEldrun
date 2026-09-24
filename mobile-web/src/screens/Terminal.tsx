@@ -1042,32 +1042,64 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
      * nothing has to ride on a raw keystroke frame. */
     let inputFrames = 0;
     /** Frames the desktop has not acked yet, by ordinal: when they went, and
-     * the pending bubble they carry a piece of. */
-    const unacked = new Map<number, { at: number; prompt?: number }>();
+     * the pending bubble they carry a piece of. One past its deadline stays
+     * here, `late`, until its socket goes: an ack that comes after all still
+     * takes the marker back down. */
+    const unacked = new Map<number, { at: number; prompt?: number; late?: boolean }>();
     let ackTimer = 0;
+    /** `inputFrames` at each ping still waiting for its pong. The desktop
+     * reads the socket in order, so a pong vouches for every frame sent
+     * before its ping — which is also all a sidecar that predates the ack
+     * says about them. */
+    const pingMarks: number[] = [];
     /** Whether an interruption notice is already on screen for this outage:
      * one line per outage, not one per reconnect attempt. */
     let interrupted = false;
     const markPrompt = (id: number, state: { failed: boolean; retrying: boolean }) => {
       setPending((current) => current.map((prompt) => prompt.id === id ? { ...prompt, ...state } : prompt));
     };
-    /** Give up on every unacked frame older than `olderThan` (all of them, on
-     * a close): its bubble is marked not delivered, or, for a keystroke with
-     * no bubble, the composer's notice goes up. */
-    const failUnacked = (olderThan: number) => {
+    /** Give up on every unacked frame older than `olderThan`: its bubble is
+     * marked not delivered, or, for a keystroke with no bubble, the
+     * composer's notice goes up. `lost` (a close, a replay) also forgets
+     * them — no ack can come for them any more. */
+    const failUnacked = (olderThan: number, lost = false) => {
       const failed = new Set<number>();
       let bare = false;
       for (const [seq, entry] of unacked) {
         if (entry.at > olderThan) continue;
-        unacked.delete(seq);
+        if (lost) unacked.delete(seq);
+        if (entry.late) continue;
+        entry.late = true;
         if (entry.prompt === undefined) bare = true;
         else failed.add(entry.prompt);
       }
       for (const id of failed) markPrompt(id, { failed: true, retrying: false });
       if (bare) setSendFailed(true);
     };
+    /** Everything up to the `seq`-th frame reached the PTY (frames are
+     * ordered). A bubble whose last frame is in clears its marker, and so
+     * does the composer's notice once no late keystroke is left. */
+    const acked = (seq: number) => {
+      const delivered = new Set<number>();
+      let bare = false;
+      for (const [frame, entry] of unacked) {
+        if (frame > seq) continue;
+        unacked.delete(frame);
+        if (entry.prompt !== undefined) delivered.add(entry.prompt);
+        else if (entry.late) bare = true;
+      }
+      const waiting = [...unacked.values()];
+      for (const id of delivered) {
+        if (!waiting.some((entry) => entry.prompt === id)) markPrompt(id, { failed: false, retrying: false });
+      }
+      if (bare && !waiting.some((entry) => entry.late && entry.prompt === undefined)) setSendFailed(false);
+    };
+    const sendPing = (socket: WebSocket) => {
+      pingMarks.push(inputFrames);
+      socket.send(JSON.stringify({ type: "ping" }));
+    };
     const armAck = () => {
-      if (ackTimer || unacked.size === 0) return;
+      if (ackTimer || ![...unacked.values()].some((entry) => !entry.late)) return;
       ackTimer = window.setTimeout(() => {
         ackTimer = 0;
         failUnacked(Date.now() - ACK_DEADLINE);
@@ -1157,6 +1189,7 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
         lastPong = Date.now();
         pongs = 0;
         inputFrames = 0;
+        pingMarks.length = 0;
         interrupted = false;
         setConnected(true);
         setSendFailed(false);
@@ -1177,7 +1210,7 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
         connectedRef.current = false;
         voiceRequest.current += 1;
         // Whatever this socket still owed an ack for is gone with it.
-        failUnacked(Number.POSITIVE_INFINITY);
+        failUnacked(Number.POSITIVE_INFINITY, true);
         setConnected(false);
         setPreparingVoice(false);
         const activeRecognition = recognition.current;
@@ -1238,26 +1271,18 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
         if (control.type === "pong") {
           lastPong = Date.now();
           pongs += 1;
+          const mark = pingMarks.shift();
+          if (mark !== undefined) acked(mark);
           return;
         }
         if (control.type === "ack") {
-          // Frames are ordered, so everything up to this ordinal reached the
-          // PTY. A bubble whose last frame is in clears its marker.
-          const delivered = new Set<number>();
-          for (const [seq, entry] of unacked) {
-            if (seq > control.seq) continue;
-            unacked.delete(seq);
-            if (entry.prompt !== undefined) delivered.add(entry.prompt);
-          }
-          for (const id of delivered) {
-            if (![...unacked.values()].some((entry) => entry.prompt === id)) markPrompt(id, { failed: false, retrying: false });
-          }
+          acked(control.seq);
           return;
         }
         if (control.type === "replay") {
           // A replay on a socket that still owed acks means the desktop
           // reattached under us: what was in flight did not reach the pane.
-          failUnacked(Number.POSITIVE_INFINITY);
+          failUnacked(Number.POSITIVE_INFINITY, true);
           // The server is about to resend the session. Without an explicit
           // boundary the replay was appended to whatever was already on screen,
           // so each reconnect left another copy of the same agent turn — and a
@@ -1349,7 +1374,7 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
         ws.close();
         return;
       }
-      ws.send(JSON.stringify({ type: "ping" }));
+      sendPing(ws);
     }, PING_INTERVAL);
     // The page came back into view — a phone unlocked, the app switched back
     // to. A socket that closed while it was away has its reconnect waiting on
@@ -1370,7 +1395,7 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
       }
       if (current.readyState !== WebSocket.OPEN) return;
       const seen = pongs;
-      current.send(JSON.stringify({ type: "ping" }));
+      sendPing(current);
       clearTimeout(resumeTimer);
       resumeTimer = window.setTimeout(() => {
         if (stopped || ws !== current || current.readyState !== WebSocket.OPEN) return;
@@ -2794,7 +2819,7 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
     <div className="terminal-controls">
       {tab.kind === "agent" && voiceLine && <div className={voiceProblem ? "voice-feedback error" : "voice-feedback"} role={voiceProblem ? "alert" : "status"} aria-live="polite">{voiceLine}{listening && !voiceProblem && !voicePreview && isUntested("mobile.voice.keepListening") && <em>{t("mobile.focus.untested")}</em>}</div>}
       {stoppedReason && <div className="voice-feedback error" role="alert">{stoppedReason}{isUntested("mobile.link.failureText") && <em> · {t("mobile.focus.untested")}</em>}</div>}
-      {sendFailed && !stoppedReason && <div className="voice-feedback error" role="alert">That did not reach the desktop — the connection dropped. It will retry on its own.</div>}
+      {sendFailed && !stoppedReason && <div className="voice-feedback error" role="alert">That did not reach the desktop — the connection dropped. Send it again once it is back.</div>}
       {clearRefused && liveBusy && <div className="voice-feedback" role="status">{t("mobile.composer.clearBusy")}{isUntested("mobile.composer.clearBusy") && <> · <em>{t("mobile.focus.untested")}</em></>}</div>}
       {lastSent && !sessionShown && <div className="last-sent"><span>Sent</span><p>{lastSent}</p></div>}
       {uploads.map((upload) => upload.failure
