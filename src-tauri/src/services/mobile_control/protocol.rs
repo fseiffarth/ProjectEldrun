@@ -1167,12 +1167,17 @@ pub enum TerminalControl {
     Detached,
 }
 
-/// Server → client control frames. The phone needs three things it cannot infer
+/// Server → client control frames. The phone needs four things it cannot infer
 /// from the byte stream: the tmux window geometry it must adopt (otherwise tmux
 /// pans a narrow client across a wide window and silently crops every line),
 /// an explicit replay boundary (so a reattach replaces the screen instead of
-/// appending a second copy of it), and the reason a socket is closing (so a
-/// revoked device is told that, not "reconnecting…").
+/// appending a second copy of it), the reason a socket is closing (so a
+/// revoked device is told that, not "reconnecting…"), and an acknowledgement
+/// per input frame: `Ack { seq }` says the phone's `seq`-th binary frame on
+/// this socket has been written to the session's PTY. A half-open cellular
+/// link keeps a socket OPEN while every byte sent into it is lost; the phone
+/// marks a prompt whose frames were never acked as not delivered instead of
+/// showing it as sent forever.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TerminalEvent {
@@ -1180,6 +1185,7 @@ pub enum TerminalEvent {
     Window { cols: u16, rows: u16 },
     Replay,
     Closing { reason: String, retry: bool },
+    Ack { seq: u64 },
 }
 
 impl TerminalEvent {

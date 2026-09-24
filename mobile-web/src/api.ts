@@ -411,6 +411,12 @@ export interface TranscriptEntry {
   cut?: boolean;
   subagent?: string;
   role?: string;
+  /** Phone-only, never on the wire: a prompt sent from here that the session
+   * has not recorded yet (`terminal/pendingPrompts`), by its id — and whether
+   * the link failed to deliver it, or is trying again. */
+  pending?: number;
+  failed?: boolean;
+  retrying?: boolean;
 }
 export interface SessionTranscript {
   available: boolean;

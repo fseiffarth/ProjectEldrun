@@ -24,6 +24,11 @@ export interface TranscriptTurn {
    * until its CLI has recorded where that lives, and its kind. */
   subagent?: string;
   role?: string;
+  /** A prompt sent from this phone the session has not recorded yet, by its
+   * id; `failed` once the link lost it, `retrying` while a resend waits. */
+  pending?: number;
+  failed?: boolean;
+  retrying?: boolean;
 }
 
 /** A slash command split into its name and what follows it. */
@@ -66,6 +71,7 @@ export function transcriptTurns(entries: readonly TranscriptEntry[]): Transcript
       index,
       command: entry.kind === "prompt" ? slashCommand(entry.text) : null,
       ...(entry.kind === "agent" ? { subagent: entry.subagent, role: entry.role } : {}),
+      ...(entry.pending !== undefined ? { pending: entry.pending, failed: entry.failed === true, retrying: entry.retrying === true } : {}),
     };
   });
 }

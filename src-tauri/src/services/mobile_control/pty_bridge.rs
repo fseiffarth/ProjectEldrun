@@ -265,6 +265,11 @@ fn input_report_due(last: Option<std::time::Instant>, now: std::time::Instant) -
     last.is_none_or(|at| now.duration_since(at) >= INPUT_REPORT_INTERVAL)
 }
 
+/// The acknowledgement for the phone's `seq`-th input frame on this socket.
+fn ack_frame(seq: u64) -> String {
+    TerminalEvent::Ack { seq }.to_frame()
+}
+
 /// `true` once the frame went out; `false` when the socket is closed or the
 /// peer stopped taking frames.
 async fn deliver<S>(sink: &mut S, message: Message) -> bool
@@ -413,6 +418,9 @@ pub async fn attach(
     let mut last_client_message = std::time::Instant::now();
     // When this viewer's typing was last reported to the desktop.
     let mut last_input_report: Option<std::time::Instant> = None;
+    // Binary input frames written to the PTY on this socket; the phone counts
+    // the ones it sent the same way, and each `ack` names this count.
+    let mut input_frames: u64 = 0;
     // The phone spoke: its session slides (`auth::SESSION_IDLE`). Every frame
     // it sends, not the tick — a tick is the sidecar checking, not the phone.
     let touch = |auth: &Arc<Mutex<AuthStore>>| {
@@ -470,7 +478,9 @@ pub async fn attach(
                     if bytes.len() > MAX_INPUT_FRAME { break Err("input_frame_too_large".into()); }
                     if writer.write_all(&bytes).is_err() || writer.flush().is_err() { break Ok(()); }
                     // After the write, so a frame that never reached the PTY is
-                    // never reported as having commanded it.
+                    // never reported as having commanded it — and never acked.
+                    input_frames += 1;
+                    if !deliver(&mut ws_tx, Message::Text(ack_frame(input_frames).into())).await { break Ok(()); }
                     if input_report_due(last_input_report, last_client_message) {
                         last_input_report = Some(last_client_message);
                         on_input();
@@ -528,8 +538,8 @@ mod tests {
         normalize_scrollback, parse_window_size, tmux_attach_command, tmux_capture_command,
         tmux_window_size_command, MOBILE_SCROLLBACK_LINES,
     };
-    use super::{deliver, input_report_due, INPUT_REPORT_INTERVAL, IDLE_TIMEOUT, WRITE_TIMEOUT};
-    use crate::services::mobile_control::protocol::TerminalEvent;
+    use super::{ack_frame, deliver, input_report_due, INPUT_REPORT_INTERVAL, IDLE_TIMEOUT, WRITE_TIMEOUT};
+    use crate::services::mobile_control::protocol::{TerminalControl, TerminalEvent};
     use axum::extract::ws::Message;
     use std::{
         ffi::OsStr,
@@ -704,6 +714,24 @@ mod tests {
             TerminalEvent::Closing { reason: "access_revoked".into(), retry: false }.to_frame(),
             r#"{"type":"closing","reason":"access_revoked","retry":false}"#
         );
+    }
+
+    #[test]
+    fn every_input_frame_is_acked_by_its_ordinal() {
+        // The phone counts the binary frames it sent on this socket; the ack
+        // names the count written, so frame 3's ack is `{"type":"ack","seq":3}`
+        // and nothing else has to ride on a raw keystroke frame.
+        assert_eq!(ack_frame(1), r#"{"type":"ack","seq":1}"#);
+        assert_eq!(ack_frame(3), r#"{"type":"ack","seq":3}"#);
+        assert_eq!(
+            serde_json::from_str::<TerminalEvent>(&ack_frame(7)).expect("round trip"),
+            TerminalEvent::Ack { seq: 7 }
+        );
+        // The control vocabulary the phone sends is unchanged by this.
+        assert!(matches!(
+            serde_json::from_str::<TerminalControl>(r#"{"type":"ping"}"#),
+            Ok(TerminalControl::Ping)
+        ));
     }
 
     #[test]

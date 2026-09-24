@@ -901,3 +901,12 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .outbox-text-body { overflow:auto; padding:12px; }
 .outbox-text-body pre { margin:0 0 12px; white-space:pre-wrap; overflow-wrap:anywhere; font-size:.8rem; }
 .outbox-viewer:has(> [role=alert]) { grid-template-rows:auto auto minmax(0,1fr); }
+
+/* A prompt bubble the link lost (Terminal · `TranscriptTurns`): the bubble
+   stays exactly where it was; the state line sits inside it, under the text,
+   with the resend beside the words. */
+.readable-turn.user .transcript-send-state { display: block; margin-top: 0.35rem; font-size: 0.78rem; color: var(--muted, #9aa3b5); }
+.readable-turn.user .transcript-send-state.failed { color: var(--danger, #ff6b6b); }
+.readable-turn.user .transcript-send-state button { margin-left: 0.5rem; padding: 0.1rem 0.55rem; font-size: 0.78rem; border-radius: 999px; border: 1px solid currentColor; background: transparent; color: inherit; }
+.readable-turn.user .transcript-send-state em { margin-left: 0.4rem; font-style: normal; opacity: 0.7; }
+.readable-turn.user[data-send-failed] { outline: 1px dashed var(--danger, #ff6b6b); outline-offset: 2px; }

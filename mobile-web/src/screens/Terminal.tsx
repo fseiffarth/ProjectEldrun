@@ -125,6 +125,16 @@ const PONG_GRACE = PING_INTERVAL * 2 + 5_000;
  * is asked to prove itself within this much, and closed (which reconnects)
  * if it does not. */
 const RESUME_GRACE = 4_000;
+/** How long an input frame may wait for the desktop's `ack` before the words
+ * in it count as lost. Longer than a round trip on a poor cellular link,
+ * well short of PONG_GRACE: the ack is what tells a prompt "sent" from a
+ * prompt buffered into a half-open socket, and a reader should learn which
+ * within seconds, not after the next missed pong. */
+const ACK_DEADLINE = 5_000;
+/** Bytes the browser may hold unsent before the link counts as stalled. The
+ * phone's frames are keystrokes and prompts; this much sitting in the socket's
+ * buffer is a link that has stopped taking anything. */
+const STALLED_BYTES = 64 * 1024;
 /** How often Focus re-reads the stored session while it is in view. The read
  * carries the last fingerprint, so an unchanged transcript costs one small
  * request and no turns cross the link. */
@@ -362,13 +372,15 @@ function SubagentCard({ turn, label, untested, onOpen }: {
  * agent itself keeps, which reaches back past the pane's scrollback and
  * carries no tool status. `cut` marks text the desktop bounded. A subagent
  * the agent spawned is a card (`SubagentCard`) that opens its conversation. */
-const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promptLabel, agentLabel = "", agentUntested = "", onOpenAgent }: {
+const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promptLabel, agentLabel = "", agentUntested = "", onOpenAgent, onResend }: {
   entries: SessionTranscript["entries"];
   cutLabel: string;
   promptLabel: string;
   agentLabel?: string;
   agentUntested?: string;
   onOpenAgent?: (turn: TranscriptTurn) => void;
+  /** Send a prompt the link lost once more, by its pending id. */
+  onResend?: (pending: number) => void;
 }) {
   // One bubble per record, keyed by its time (`transcriptTurns`).
   const turns = useMemo(() => transcriptTurns(entries), [entries]);
@@ -379,9 +391,19 @@ const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promp
       : turn.command
       ? <CommandDivider command={turn.command} label={promptLabel} press={hold(turn.key, () => turn.text)} />
       : turn.kind === "prompt"
-      ? <div className="readable-turn user" role="group" aria-label={promptLabel} data-prompt={turn.text} {...hold(turn.key, () => turn.text)}>
+      ? <div className="readable-turn user" role="group" aria-label={promptLabel} data-prompt={turn.text} data-send-failed={turn.failed || undefined} {...hold(turn.key, () => turn.text)}>
           <p className="transcript-text">{turn.text}</p>
           {turn.cut && <small className="transcript-cut">{cutLabel}</small>}
+          {/* The link never acknowledged this prompt's frames: it stays where
+              it is, says so, and offers to go again (a shown bubble never
+              changes or moves). While the resend waits it says that. */}
+          {turn.retrying
+            ? <small className="transcript-send-state" role="status">Sending again…</small>
+            : turn.failed && <small className="transcript-send-state failed" role="alert">
+                Not delivered — the connection dropped.
+                {onResend && turn.pending !== undefined && <button type="button" onClick={() => onResend(turn.pending as number)}>Resend</button>}
+                {isUntested("mobile.link.ack") && <em>Untested</em>}
+              </small>}
         </div>
       : <div className="readable-turn agent answer" {...hold(turn.key, () => turn.text)}>
           <AnswerText text={turn.text} />
@@ -477,7 +499,10 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
   /** Re-reads the emulated screen on demand — used when Focus is opened, so the
    * reading view is current instead of waiting for the next output byte. */
   const refreshReadable = useRef<() => void>(() => {});
-  const write = useRef<(value: string) => boolean>(() => false);
+  /** Hands bytes to the socket. `prompt` tags the frame with the pending
+   * bubble it belongs to, so a lost frame marks that bubble and not the
+   * composer's generic notice. */
+  const write = useRef<(value: string, prompt?: number) => boolean>(() => false);
   const recognition = useRef<DictationSession>();
   const dictateButton = useRef<HTMLButtonElement>(null);
   const connectedRef = useRef(false);
@@ -995,11 +1020,55 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
     /** Pongs received on the current socket — what the resume check compares,
      * since two timestamps in one millisecond would read as no pong. */
     let pongs = 0;
-    // Returns whether the bytes were handed to an open socket. Callers that
-    // confirm something to the user must not claim success on a `false`.
-    write.current = (value) => {
+    /** Binary input frames sent on the current socket. The desktop counts the
+     * ones it wrote to the PTY the same way and acks each by that ordinal, so
+     * nothing has to ride on a raw keystroke frame. */
+    let inputFrames = 0;
+    /** Frames the desktop has not acked yet, by ordinal: when they went, and
+     * the pending bubble they carry a piece of. */
+    const unacked = new Map<number, { at: number; prompt?: number }>();
+    let ackTimer = 0;
+    /** Whether an interruption notice is already on screen for this outage:
+     * one line per outage, not one per reconnect attempt. */
+    let interrupted = false;
+    const markPrompt = (id: number, state: { failed: boolean; retrying: boolean }) => {
+      setPending((current) => current.map((prompt) => prompt.id === id ? { ...prompt, ...state } : prompt));
+    };
+    /** Give up on every unacked frame older than `olderThan` (all of them, on
+     * a close): its bubble is marked not delivered, or, for a keystroke with
+     * no bubble, the composer's notice goes up. */
+    const failUnacked = (olderThan: number) => {
+      const failed = new Set<number>();
+      let bare = false;
+      for (const [seq, entry] of unacked) {
+        if (entry.at > olderThan) continue;
+        unacked.delete(seq);
+        if (entry.prompt === undefined) bare = true;
+        else failed.add(entry.prompt);
+      }
+      for (const id of failed) markPrompt(id, { failed: true, retrying: false });
+      if (bare) setSendFailed(true);
+    };
+    const armAck = () => {
+      if (ackTimer || unacked.size === 0) return;
+      ackTimer = window.setTimeout(() => {
+        ackTimer = 0;
+        failUnacked(Date.now() - ACK_DEADLINE);
+        armAck();
+      }, ACK_DEADLINE);
+    };
+    // Returns whether the bytes were handed to an open socket that is still
+    // taking them. Callers that confirm something to the user must not claim
+    // success on a `false`; the ack is what confirms delivery.
+    write.current = (value, prompt) => {
       if (ws?.readyState !== WebSocket.OPEN) return false;
+      // Buffered bytes the socket is not draining are the earliest sign of a
+      // stalled link — earlier than the missed pongs that would close it.
+      if (ws.bufferedAmount > STALLED_BYTES) return false;
       ws.send(new TextEncoder().encode(value));
+      inputFrames += 1;
+      unacked.set(inputFrames, { at: Date.now(), prompt });
+      armAck();
       return true;
     };
     // tmux sizes a window to its widest client and pans every narrower one
@@ -1070,6 +1139,8 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
         connectedRef.current = true;
         lastPong = Date.now();
         pongs = 0;
+        inputFrames = 0;
+        interrupted = false;
         setConnected(true);
         setSendFailed(false);
         // A retryable close (`idle_timeout`) explained itself and then
@@ -1088,6 +1159,8 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
         if (stopped || ws !== next) return;
         connectedRef.current = false;
         voiceRequest.current += 1;
+        // Whatever this socket still owed an ack for is gone with it.
+        failUnacked(Number.POSITIVE_INFINITY);
         setConnected(false);
         setPreparingVoice(false);
         const activeRecognition = recognition.current;
@@ -1107,7 +1180,12 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
           term.write("\r\n\x1b[31m[Session closed by the desktop.]\x1b[0m\r\n");
           return;
         }
-        term.write("\r\n\x1b[33m[Connection interrupted; reconnecting…]\x1b[0m\r\n");
+        // Once per outage: a long one used to print this on every attempt,
+        // which walked the screen away from what the reader was reading.
+        if (!interrupted) {
+          interrupted = true;
+          term.write("\r\n\x1b[33m[Connection interrupted; reconnecting…]\x1b[0m\r\n");
+        }
         const delay = Math.min(1_000 * 2 ** reconnectAttempt, 15_000);
         reconnectAttempt += 1;
         // A session that ended on the desktop refuses the upgrade at the HTTP
@@ -1145,7 +1223,24 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
           pongs += 1;
           return;
         }
+        if (control.type === "ack") {
+          // Frames are ordered, so everything up to this ordinal reached the
+          // PTY. A bubble whose last frame is in clears its marker.
+          const delivered = new Set<number>();
+          for (const [seq, entry] of unacked) {
+            if (seq > control.seq) continue;
+            unacked.delete(seq);
+            if (entry.prompt !== undefined) delivered.add(entry.prompt);
+          }
+          for (const id of delivered) {
+            if (![...unacked.values()].some((entry) => entry.prompt === id)) markPrompt(id, { failed: false, retrying: false });
+          }
+          return;
+        }
         if (control.type === "replay") {
+          // A replay on a socket that still owed acks means the desktop
+          // reattached under us: what was in flight did not reach the pane.
+          failUnacked(Number.POSITIVE_INFINITY);
           // The server is about to resend the session. Without an explicit
           // boundary the replay was appended to whatever was already on screen,
           // so each reconnect left another copy of the same agent turn — and a
@@ -1231,8 +1326,9 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
       if (ws?.readyState !== WebSocket.OPEN) return;
       // The server answers every ping. Silence past the grace window means the
       // link is gone even though the browser still reports OPEN, so force the
-      // close that drives the normal reconnect.
-      if (lastPong && Date.now() - lastPong > PONG_GRACE) {
+      // close that drives the normal reconnect. So does a send buffer the
+      // socket is not draining — the earlier tell of the same dead link.
+      if ((lastPong && Date.now() - lastPong > PONG_GRACE) || ws.bufferedAmount > STALLED_BYTES) {
         ws.close();
         return;
       }
@@ -1278,6 +1374,7 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
       write.current = () => false;
       bracketedPaste.current = () => false;
       clearTimeout(reconnectTimer);
+      clearTimeout(ackTimer);
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "detached" }));
       ws?.close();
       trimWatch?.dispose();
@@ -1644,9 +1741,11 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
     revealAnchor.current = undefined;
     stream.scrollTop = anchor.top + (stream.scrollHeight - anchor.height);
   }, [revealed]);
-  const type = (value: string) => {
-    const delivered = write.current(value);
-    setSendFailed(!delivered);
+  const type = (value: string, prompt?: number) => {
+    const delivered = write.current(value, prompt);
+    // A prompt's frames report through their bubble; the composer's notice
+    // is for keystrokes with no bubble to carry it.
+    if (prompt === undefined) setSendFailed(!delivered);
     return delivered;
   };
   /** A single keypress, unmodified — what an agent's select prompts, `less` and
@@ -1674,15 +1773,20 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
    * that fails raises the dropped-connection notice through `type`. Shared by
    * the composer's Send and by the sheet that answers a TUI dialog with the
    * same arrow/Enter keys the on-screen key row sends. */
-  const deliver = (writes: string[]) => {
+  const deliver = (writes: string[], prompt?: number) => {
     if (writes.length === 0) return true;
-    if (!type(writes[0])) return false;
+    if (!type(writes[0], prompt)) return false;
     const step = (index: number) => {
       if (index >= writes.length) return;
       // The submit gets the longer pause: it is the one write whose arrival in
       // the same read as the text would be swallowed as part of a paste.
       const gap = index === writes.length - 1 ? AGENT_SUBMIT_GAP : AGENT_KEY_GAP;
-      later(gap, () => { if (type(writes[index])) step(index + 1); });
+      later(gap, () => {
+        if (type(writes[index], prompt)) step(index + 1);
+        // A later piece refused by a socket that has since closed: the bubble
+        // says so, since its first piece went and left it looking sent.
+        else if (prompt !== undefined) setPending((current) => current.map((entry) => entry.id === prompt ? { ...entry, failed: true, retrying: false } : entry));
+      });
     };
     step(1);
     return true;
@@ -1691,10 +1795,10 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
    * text, submit — inside bracketed paste markers where the pane has the mode
    * on and the family wants them (`bracketsAgentMessage`). Shared by the
    * composer's Send and the composer chips' slash commands. */
-  const sendAgentText = (text: string) => {
+  const sendAgentText = (text: string, prompt?: number) => {
     clearPending();
     const bracketed = bracketsAgentMessage(tab.agent_label ?? tab.label, bracketedPaste.current());
-    return deliver(agentInputWrites(text, bracketed));
+    return deliver(agentInputWrites(text, bracketed), prompt);
   };
   /** Once dictated words have left the composer — sent or cleared — "Heard:"
    * stops quoting them. They stay counted as inserted: a recognizer that is
@@ -1715,17 +1819,18 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
       setDraft("");
       return;
     }
-    if (!sendAgentText(draft)) return;
-    setLastSent(draft);
     // A slash command is the CLI's, not a turn: the session never records it,
     // so a bubble for it would wait forever. `/clear` also ends the chat the
     // earlier bubbles were waiting in.
-    if (/^\s*\//u.test(draft)) {
+    const id = /^\s*\//u.test(draft) ? undefined : ++pendingId.current;
+    if (!sendAgentText(draft, id)) return;
+    setLastSent(draft);
+    if (id === undefined) {
       if (/^\s*\/clear\b/u.test(draft)) startedOver();
       rememberSlashCommand(slashCliKey, draft);
       setUsedSlash(readSlashCommands(slashCliKey));
     } else {
-      const sent = pendingPrompt(++pendingId.current, draft, storedEntries);
+      const sent = pendingPrompt(id, draft, storedEntries);
       setPending((current) => [...current, sent].slice(-MAX_PENDING));
       // The phone knows the words before they leave; the desktop records them
       // as this tab's prompt — the only record of it for an agent whose
@@ -1734,6 +1839,21 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
     }
     setDraft("");
     forgetDictation();
+  };
+  /** A prompt the link lost goes again, as the same bubble: the same words
+   * into the agent's line editor (which is reset first, so a half-delivered
+   * first try is not doubled), tagged with the same id so the ack clears
+   * the marker. The desktop hears the words again too; it folds a repeat of
+   * the same prompt close in time into one history row. */
+  const resendPrompt = (id: number) => {
+    const prompt = pending.find((entry) => entry.id === id);
+    if (!prompt || !connected) return;
+    setPending((current) => current.map((entry) => entry.id === id ? { ...entry, failed: false, retrying: true } : entry));
+    if (!sendAgentText(prompt.text, id)) {
+      setPending((current) => current.map((entry) => entry.id === id ? { ...entry, failed: true, retrying: false } : entry));
+      return;
+    }
+    void reportSentPrompt(tab.id, prompt.text).catch(() => {});
   };
   /** Codex at work: it answers `/clear` with "disabled while a task is in
    * progress" and keeps the conversation. */
@@ -2575,7 +2695,7 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
               ? <div className="readable-empty"><strong>{t("mobile.transcript.empty")}</strong><span>{t("mobile.transcript.emptyHint")}</span></div>
               : <div className="readable-lines chat transcript" data-testid="session-transcript">
                   {transcript?.truncated && !sinceClear && <button className="readable-earlier" onClick={() => setTranscriptLimit((limit) => limit + TRANSCRIPT_STEP)}>{t("mobile.transcript.earlier")}</button>}
-                  <TranscriptTurns entries={sessionEntries} cutLabel={t("mobile.transcript.cut")} promptLabel={t("mobile.transcript.prompt")} agentLabel={t("mobile.subagent.region")} agentUntested={subagentUntested} onOpenAgent={openSubagentTurn} />
+                  <TranscriptTurns entries={sessionEntries} cutLabel={t("mobile.transcript.cut")} promptLabel={t("mobile.transcript.prompt")} agentLabel={t("mobile.subagent.region")} agentUntested={subagentUntested} onOpenAgent={openSubagentTurn} onResend={resendPrompt} />
                   {liveQuestion && <div className="transcript-screen" role="group" aria-label={t("mobile.transcript.question")}>
                     <small>{t("mobile.transcript.question")}{isUntested("mobile.focus.onScreen") && <> · {t("mobile.focus.untested")}</>}</small>
                     {/* The screen the dialog was drawn onto, as the screen drew

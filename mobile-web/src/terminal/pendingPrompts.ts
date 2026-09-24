@@ -27,6 +27,12 @@ export interface PendingPrompt {
   anchor?: TranscriptEntry;
   /** Which copy of that record was the anchor, if its text repeated. */
   anchorSeen: number;
+  /** The link never acknowledged one of its input frames: the words did not
+   * reach the session. The bubble stays where it is and says so, with a
+   * resend beside it — it is never removed or moved. */
+  failed?: boolean;
+  /** A resend is on its way and waiting for its acknowledgement. */
+  retrying?: boolean;
 }
 
 /** At most this many are held; the oldest goes first. */
@@ -113,7 +119,14 @@ export function withPending(entries: readonly TranscriptEntry[], pending: readon
       if (anchor >= 0) slot = anchor + 1;
     }
     slot = Math.max(slot, lastSlot + 1);
-    shown.splice(slot, 0, { kind: "prompt", text: prompt.text, at: after });
+    shown.splice(slot, 0, {
+      kind: "prompt",
+      text: prompt.text,
+      at: after,
+      pending: prompt.id,
+      ...(prompt.failed ? { failed: true } : {}),
+      ...(prompt.retrying ? { retrying: true } : {}),
+    });
     lastSlot = slot;
   }
   return shown;
