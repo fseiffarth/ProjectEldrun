@@ -122,6 +122,8 @@ import { IconPicker } from "./IconPicker";
 import { slideStopIndex } from "../../../lib/viewers/deck/present";
 import { posterPng } from "./gifPlayback";
 import { useT } from "../../../lib/i18n";
+import { useUnsavedWork } from "../../../lib/window/unsavedWork";
+import { ArrowUpRightIcon, PlayIcon } from "../../common/icons/Icon";
 
 /** Bounds for the rail's user-resizable width (px). Wide enough at the max that
  *  a thumbnail is actually legible, narrow enough at the min to stay a rail. */
@@ -446,6 +448,9 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
 
   const flushRef = useRef(flush);
   flushRef.current = flush;
+  // A popout closing on a Wayland scope-out writes a pending debounced edit
+  // first (the deck always autosaves); a held deck stays dirty and keeps it open.
+  useUnsavedWork(dirty, () => flushRef.current(), () => dirtyRef.current);
 
   useEffect(() => {
     if (!deck || !loadedRef.current || hold) return;
@@ -1632,7 +1637,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
           disabled={deck.slides.length === 0}
           title={t("deckView.presentTitle")}
         >
-          ▶ {t("deckView.presentBtn")}
+          <PlayIcon /> {t("deckView.presentBtn")}
         </button>
         <button
           className="file-viewer-zoom-text"
@@ -1661,7 +1666,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
                 : t("deckView.savedState")}
         </span>
         <button className="file-viewer-zoom-btn" onClick={onOpenExternally} title={t("deckView.openExternallyTitle")}>
-          ↗
+          <ArrowUpRightIcon />
         </button>
       </div>
 
@@ -1733,7 +1738,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
               )}
               {s.after && (
                 <span className="deck-rail-gif" title={t("deckView.gifPlaysTitle")}>
-                  ▶
+                  <PlayIcon />
                 </span>
               )}
               {/* Reorder and copy are both durable — reorder moves this slide in the

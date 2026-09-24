@@ -5,6 +5,7 @@ import { useTodoStore } from "../../stores/todo";
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
 import { useFloatingFrame } from "../common/useFloatingFrame";
+import { TodoGlyph } from "../header/HeaderGlyphs";
 import { OverlayApprovals } from "../layout/OverlayApprovals";
 import { TodoPane } from "./TodoPane";
 
@@ -24,6 +25,15 @@ import { TodoPane } from "./TodoPane";
  * file and reaches nothing. Switching the gate off takes the surface away rather
  * than leaving it on screen over a button that is no longer there — the same
  * withdrawal rule both sibling overlays follow.
+ *
+ * It wears mail's chrome — the root console's floating subwindow
+ * (`.root-overlay.subwindow`), whose title bar is mark, tab strip, controls —
+ * so the header overlays share one top frame. The strip holds a single fixed,
+ * never-closing "Board" tab (mail's Inbox without the rest): the pane's filters
+ * (search, project, tag) are open-ended narrowing, not a handful of views, so
+ * they stay in the pane's own toolbar rather than becoming tabs. The backdrop
+ * keeps `.modal-backdrop`'s z-index, which the shell's mount order (after mail
+ * and the calendar) tie-breaks so the most recently opened surface is on top.
  *
  * **Not mounted in a popout.** `DetachedApp` has no header, so there would be no
  * way to open it, and `useTodoStore` is per-window zustand: a second board would
@@ -58,9 +68,13 @@ export function TodoOverlayHost() {
 
   if (!live) return null;
 
+  // `barProps.title` is the move hint; on the whole bar it would hover over the
+  // tab, so it goes on the mark alone (the root console's placement).
+  const { title: moveHint, ...barRest } = barProps;
+
   return (
     <div
-      className="modal-backdrop"
+      className="modal-backdrop root-overlay-backdrop app-overlay-backdrop"
       onMouseDown={(e) => {
         // Backdrop only: a card drag that starts on the board and ends out here
         // must not be read as "dismiss".
@@ -69,30 +83,42 @@ export function TodoOverlayHost() {
     >
       <div
         ref={frameRef}
-        className={`project-dialog dialog-framed todo-overlay ${frameClass}`}
+        className={`root-overlay subwindow focused todo-overlay ${frameClass}`}
         style={frameStyle}
         role="dialog"
         aria-modal="true"
         aria-label={t("todo.overlayTitle")}
       >
         {grips}
-        <div {...barProps} className={`settings-title-row ${barProps.className}`}>
-          <h2>
-            {t("todo.overlayTitle")} <UntestedTag id="todo.overlayTitle" />
-          </h2>
-          <OverlayApprovals domain="todo" />
-          {fillButton}
-          <button
-            type="button"
-            className="dialog-close-btn"
-            title={t("common.close")}
-            aria-label={t("common.close")}
-            onClick={() => useTodoStore.getState().closeOverlay()}
-          >
-            ×
-          </button>
+        {/* The root console's bar: mark, tab strip, controls. The bar is the
+            move handle; the tab and buttons keep their own press. */}
+        <div {...barRest} className={`tab-bar root-overlay-bar ${barRest.className}`}>
+          <div className="root-overlay-mark app-overlay-mark" title={moveHint}>
+            <TodoGlyph className="todo-overlay-glyph" />
+            <span className="app-overlay-label">{t("todo.overlayLabel")}</span>
+            <UntestedTag id="todo.overlayTitle" />
+          </div>
+          <div className="tab-strip" role="tablist">
+            {/* The board: the window's one tab, always active, never closes. */}
+            <div role="tab" tabIndex={0} aria-selected="true" className="tab todo-overlay-tab active">
+              <span className="tab-label">{t("todo.tabBoard")}</span>
+            </div>
+          </div>
+          <div className="tab-controls root-overlay-controls">
+            <OverlayApprovals domain="todo" />
+            {fillButton}
+            <button
+              type="button"
+              className="subwindow-hide"
+              title={t("common.close")}
+              aria-label={t("common.close")}
+              onClick={() => useTodoStore.getState().closeOverlay()}
+            >
+              ×
+            </button>
+          </div>
         </div>
-        <div className="todo-overlay-body">
+        <div className="subwindow-body todo-overlay-body">
           <TodoPane />
         </div>
       </div>

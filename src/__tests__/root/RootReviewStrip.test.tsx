@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { RootReviewStrip, stripInvisible } from "../../components/layout/RootReviewStrip";
+import { RootReviewStrip, stripInvisible, tabLabelForPty } from "../../components/layout/RootReviewStrip";
 import { useRootReviewStore, type RootProposal } from "../../stores/rootReview";
+import { useTabsStore, type TabEntry } from "../../stores/tabs";
 
 const decide = vi.fn();
 const applyAll = vi.fn();
@@ -71,6 +72,34 @@ describe("root-agent write review", () => {
     expect(reject.textContent).toBe("✗");
     fireEvent.click(reject);
     expect(decide).toHaveBeenCalledWith(expect.objectContaining({ id: "p" }), "reject");
+  });
+  it("offers Undo only on an applied automatic write, and says when a proposal came from a mail reader", () => {
+    useRootReviewStore.setState({ proposals: [
+      proposal({ id: "auto", tool: "todo_add", status: "applied", undo: true }),
+      proposal({ id: "manual", tool: "todo_add", status: "applied", undo: false }),
+      proposal({ id: "tainted", tainted: true }),
+      proposal({ id: "failed", status: "failed", undo: true }),
+    ], count: 1 });
+    render(<RootReviewStrip />);
+    expect(screen.getByText("Proposed by an agent that reads mail from outside")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Already decided \(3\)/ }));
+    expect(screen.getByText("Failed")).toBeTruthy();
+    expect(screen.getByText(/could not be stored \(not a conflict\)/)).toBeTruthy();
+    expect(screen.queryByText(/changed since the agent looked/)).toBeNull();
+    const undo = screen.getAllByRole("button", { name: "Undo" });
+    expect(undo.length).toBe(1);
+    fireEvent.click(undo[0]);
+    expect(decide).toHaveBeenCalledWith(expect.objectContaining({ id: "auto" }), "undo");
+    expect(decide).not.toHaveBeenCalledWith(expect.objectContaining({ id: "manual" }), expect.anything());
+  });
+  it("labels a card with its tab's title when the window still has the tab", () => {
+    useTabsStore.setState({ tabsByScope: { root: [{ key: "a", label: "Claude\u202e root", cmd: "claude", cwd: "/", kind: "agent" } as TabEntry] } });
+    render(<RootReviewStrip />);
+    const meta = screen.getByText(/Claude root/);
+    expect(meta.getAttribute("title")).toBe("root:a");
+    expect(tabLabelForPty(useTabsStore.getState(), "root:zzz")).toBeUndefined();
+    expect(tabLabelForPty(useTabsStore.getState(), "bare")).toBeUndefined();
+    useTabsStore.setState({ tabsByScope: {} });
   });
   it("shows outbound effects and strips invisible text without interpreting HTML", () => {
     const p = proposal({ calendars: [{ id: "work", name: "Work\u202e", caldav_account_id: "account" }] });

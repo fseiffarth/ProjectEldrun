@@ -167,6 +167,7 @@ describe("Eldrun Mobile reaches the files the agent sent through the gallery", (
       fireEvent.click(screen.getByRole("button", { name: "File actions for data.zip" }));
       await settle();
       fireEvent.click(screen.getByRole("button", { name: "Share…" }));
+      await settle();
       expect(share).toHaveBeenCalledTimes(1);
       const file = (share.mock.calls[0] as unknown as [{ files: File[] }])[0].files[0];
       expect(file.name).toBe("data.zip");

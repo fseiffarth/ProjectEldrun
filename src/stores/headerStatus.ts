@@ -4,9 +4,8 @@ import type { ConnState } from "./remote/remoteStatus";
 
 /**
  * What the header's right-hand status widgets currently have to say — the one
- * place `StatusCluster` reads to answer its two questions: which lamp to show
- * while everything is folded away, and which member has to come back OUT of the
- * fold because it is no longer nominal.
+ * place `StatusCluster` reads to answer which lamp to show while everything is
+ * folded away, and what each folded member would have said (its tooltip).
  *
  * Each widget self-reports rather than the cluster re-deriving six states from
  * six different stores: the widget already computed its own lamp (VPN's
@@ -36,17 +35,14 @@ export type HeaderStatusKey =
  *  - `attention` → transient and worth watching (a tunnel mid-connect).
  *  - `alert`     → wrong (offline, a machine erroring, a nearly flat battery).
  *
- * `attention` and `alert` **escalate**: that member is rendered in the bar even
- * while the cluster is collapsed. This is the whole reason a fold is safe —
- * folding hides five green lamps you had learned to ignore, and hides nothing
- * you would have acted on.
+ * The tone only colours the collapsed cluster's summary lamp (`summaryLamp`);
+ * a collapsed cluster hides every member, `alert` ones included — the user
+ * chose one lamp, and the lamp going red/amber is how a problem is said.
  *
- * Deliberately NOT escalated: anything that toggles on ordinary work. A CPU
- * spike during a build, a Mobile status flipping to "checking" every poll, a
- * fleet reconnecting at launch — each would pop a widget in and out of a bar
- * that is supposed to sit still, which is worse than the crowding this fixes.
- * Those report `ok` and stay folded; the expanded state is one click away.
- */
+ * Deliberately `ok`: anything that toggles on ordinary work. A CPU spike during
+ * a build, a Mobile status flipping to "checking" every poll, a fleet
+ * reconnecting at launch — each would flicker the summary lamp amber all day,
+ * which trains the user to ignore it. */
 export type HeaderStatusTone = "off" | "ok" | "attention" | "alert";
 
 export interface HeaderStatusReport {
@@ -96,7 +92,7 @@ export function useHeaderStatusReport(
   // Split from the unmount cleanup on purpose. One effect with a cleanup would
   // clear the key and re-add it on every tone change, and a member that blinks
   // out of existence for an instant also blinks the fold decision (see
-  // `foldable.length > 1` in StatusCluster).
+  // `MIN_FOLDABLE` in StatusCluster).
   useEffect(() => {
     const { report: publish } = useHeaderStatusStore.getState();
     publish(key, tone === null ? null : { tone, label: label ?? "" });
@@ -105,10 +101,6 @@ export function useHeaderStatusReport(
     () => () => useHeaderStatusStore.getState().report(key, null),
     [key],
   );
-}
-
-export function isEscalated(tone: HeaderStatusTone): boolean {
-  return tone === "attention" || tone === "alert";
 }
 
 /**

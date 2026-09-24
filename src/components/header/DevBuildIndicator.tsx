@@ -28,8 +28,8 @@ import { UntestedTag } from "../common/UntestedTag";
  * cluster member there.
  *
  * As a cluster member a running or queued build reports `attention` and a
- * failed one `alert`, so both escalate out of a folded cluster — watching the
- * build is the point of the chip. Idle reports `ok` and folds away.
+ * failed one `alert`, so a folded cluster's summary lamp turns amber / red.
+ * Idle reports `ok`.
  */
 
 type BuildState = "idle" | "waiting" | "building";
@@ -89,11 +89,11 @@ function HammerIcon({ tone }: { tone: string }) {
       <path
         d="M6.2 2.6h5.2l1.6 1.6v1.6H6.2z"
         stroke="currentColor"
-        strokeWidth="1.3"
+        strokeWidth="1.1"
         strokeLinejoin="round"
       />
       {/* handle */}
-      <line x1="9" y1="5.8" x2="9" y2="13.6" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+      <line x1="9" y1="5.8" x2="9" y2="13.6" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" />
     </svg>
   );
 }

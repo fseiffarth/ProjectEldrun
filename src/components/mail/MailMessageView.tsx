@@ -24,7 +24,6 @@ import {
   mailCryptoNoteKey,
   mailCryptoTone,
   openMailLink,
-  previewIsPdf,
   stripFormatControls,
 } from "../../lib/mail";
 import { useI18nStore, useT } from "../../lib/i18n";
@@ -33,7 +32,7 @@ import { useProjectsStore } from "../../stores/projects";
 import { useUse24h } from "../../lib/timeFormat";
 import { UntestedTag } from "../common/UntestedTag";
 import { MailAiMessageActions, MailAiProvenance } from "./MailAiMessageActions";
-import { MailPdfPreview } from "./MailPdfPreview";
+import { AttachmentPreview } from "./MailAttachmentPreview";
 import type {
   MailAttachmentMeta,
   MailAuthResults,
@@ -43,6 +42,7 @@ import type {
   MailLink,
   MailPreviewBlob,
 } from "../../types/mail";
+import { UndoIcon } from "../common/icons/Icon";
 
 /**
  * The message pane: headers, the sandboxed body, the links panel, the remote
@@ -88,6 +88,12 @@ export function MailMessageView({
   const use24h = useUse24h();
   const frameRef = useRef<HTMLIFrameElement>(null);
   const [confirmLink, setConfirmLink] = useState<MailLink | null>(null);
+  // Sharing with a contained reader agent (`docs/mail_mcp_plan.md` §1): the
+  // same mark the list's right-click sets, reachable from the open message.
+  const agentShareable = useMailStore(
+    (s) => !!header && s.accounts.find((a) => a.id === header.account_id)?.ai?.agent_access === true,
+  );
+  const agentShared = useMailStore((s) => !!header && s.agentMarks.includes(header.id));
 
   const unsafe = !!body?.html && bodyLooksUnsafe(body.html);
   // Memoized: a multi-MB srcdoc must not be re-assembled on every render.
@@ -161,6 +167,18 @@ export function MailMessageView({
           <button type="button" className="settings-btn" onClick={() => onReply("forward")}>
             {t("mail.composeForward")}
           </button>
+          {agentShareable && (
+            <button
+              type="button"
+              className="settings-btn untested"
+              title={t("mail.shareWithAgentsNote")}
+              aria-pressed={agentShared}
+              onClick={() => void useMailStore.getState().setAgentMark([header], !agentShared)}
+            >
+              {agentShared ? t("mail.stopSharingWithAgents") : t("mail.shareWithAgents")}
+              <UntestedTag id="mailMessageView.5" />
+            </button>
+          )}
         </div>
         {/* Local-model actions (#204/#207/#208): summarize, extract an event,
             extract a to-do — each gated by its own toggle and a loopback model. */}
@@ -284,7 +302,7 @@ function MailRepliesPanel({ header }: { header: MailHeader }) {
   return (
     <div className="mail-auth mail-replies">
       <div className="mail-auth-head">
-        <span className="mail-meta-label">↩ {t("mail.replies", { count: replies.length })}</span>
+        <span className="mail-meta-label"><UndoIcon /> {t("mail.replies", { count: replies.length })}</span>
         <UntestedTag id="mailMessageView.4" />
       </div>
       <div className="mail-links-rows">
@@ -800,46 +818,5 @@ function AttachmentSaveDialog({
       </div>
     </div>,
     document.body,
-  );
-}
-
-/** In-pane preview of bounded bytes. Images render from a `data:` URI; a PDF is
- *  drawn page by page onto canvases (`MailPdfPreview` — no text layer, no
- *  links); anything textual renders as escaped text in a `<pre>`; everything
- *  else says so rather than offering a way out of the app. */
-function AttachmentPreview({ blob }: { blob: MailPreviewBlob }) {
-  const t = useT();
-  const isPdf = previewIsPdf(blob);
-  const isImage = !isPdf && blob.mime.startsWith("image/") && blob.mime !== "image/svg+xml";
-  const isText = !isPdf && (blob.mime.startsWith("text/") || blob.mime === "application/json");
-
-  let text = "";
-  if (isText) {
-    try {
-      text = new TextDecoder().decode(
-        Uint8Array.from(atob(blob.bytes_b64), (c) => c.charCodeAt(0)),
-      );
-    } catch {
-      text = "";
-    }
-  }
-
-  return (
-    <div className="mail-attachment-preview">
-      {isImage && (
-        <img
-          className="mail-attachment-image"
-          src={`data:${blob.mime};base64,${blob.bytes_b64}`}
-          alt=""
-        />
-      )}
-      {isPdf && <MailPdfPreview bytesB64={blob.bytes_b64} truncated={blob.truncated} />}
-      {isText && <pre className="mail-attachment-text">{text}</pre>}
-      {!isImage && !isText && !isPdf && (
-        <div className="mail-note">{t("mail.previewUnavailable")}</div>
-      )}
-      {/* A cut-off PDF already says it is too large; "shortened" would be false comfort. */}
-      {blob.truncated && !isPdf && <div className="mail-note">{t("mail.previewTruncated")}</div>}
-    </div>
   );
 }

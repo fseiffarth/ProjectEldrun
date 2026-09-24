@@ -1796,7 +1796,7 @@ dependencies = [
 
 [[package]]
 name = "eldrun"
-version = "0.1.80"
+version = "0.1.85"
 dependencies = [
  "ammonia",
  "arboard",
@@ -1828,6 +1828,10 @@ dependencies = [
  "mail-send",
  "mime_guess",
  "notify",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "objc2-pdf-kit",
  "opener",
  "openssh-sftp-client",
  "p256",
@@ -4080,6 +4084,17 @@ dependencies = [
  "bitflags 2.13.0",
  "objc2",
  "objc2-core-foundation",
+]
+
+[[package]]
+name = "objc2-pdf-kit"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c14ed801ae810c6ba487cedd7616bb48f9a8e37940042f57e862538e2c7db117"
+dependencies = [
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
 ]
 
 [[package]]

@@ -1088,6 +1088,7 @@ pub fn spawn_pty(
     let route_seq = route_open(&opts.id);
     let mcp_token = opts.env.get(crate::services::root_mcp::TOKEN_ENV)
         .or_else(|| opts.env.get(crate::services::root_mcp::SCHEDULE_TOKEN_ENV)).cloned();
+    let help_token = opts.env.get(crate::services::root_mcp::HELP_TOKEN_ENV).cloned();
     tokio::spawn(async move {
         let emitter = app.clone();
         batch_output(rx, |bytes| match route_chunk(&id, bytes, route_seq) {
@@ -1178,6 +1179,9 @@ pub fn spawn_pty(
         }
         if current_spawn_ended {
             crate::services::agent_fence::on_tab_gone(&id);
+            if let Some(token) = help_token {
+                crate::services::root_mcp::revoke_token(&token);
+            }
             if let Some(token) = mcp_token {
                 let state = crate::storage::state_dir();
                 crate::services::root_mcp_review::on_spawn_gone(&state, &token);
@@ -1330,7 +1334,11 @@ fn build_command(opts: &PtyOptions) -> CommandBuilder {
     // path so the spawn finds it. No-op when the name already resolves on PATH or
     // carries a path — so ssh/docker-wrapped tabs (cmd "ssh"/"docker", both on
     // PATH) keep their remote/in-container binary names, which live in `args`.
-    let mut cmd = match crate::paths::resolve_offpath_binary(&cmd_str) {
+    // Eldrun's own helpers (the `ssh` of a remote tab, the local `tmux`) come
+    // from the root-owned system dirs first, never a user-writable one (#861).
+    let resolved = crate::paths::helper_program(std::ffi::OsStr::new(&cmd_str))
+        .or_else(|| crate::paths::resolve_offpath_binary(&cmd_str));
+    let mut cmd = match resolved {
         Some(resolved) => command_for_resolved(resolved),
         None => CommandBuilder::new(&cmd_str),
     };

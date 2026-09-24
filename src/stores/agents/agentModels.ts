@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
-import { screenModelTag, shortModelName } from "../../lib/agents/agentModel";
+import { claudeModelLabel, screenModelTag, shortModelName } from "../../lib/agents/agentModel";
+import { isClaudeCommand } from "../../lib/terminal/terminalControl";
 import { AGENT_ITEMS } from "../../components/tabs/newTabItems";
 import { adoptTranscriptPrompts, adoptTypedPrompt, type TranscriptPrompt } from "../../lib/agents/prompt/adopt";
 import { lastPromptEcho } from "../../lib/agents/prompt/echo";
@@ -106,7 +107,11 @@ export function agentTabModelTag(
   const ptyId = `${scope}:${tab.key}`;
   const term = terminalFor(ptyId);
   const shown = term && screenModelTag(term.buffer.active, agentTabLabel(tab));
-  return shown || byTab[ptyId];
+  if (shown) return shown;
+  // Claude's slug is put in the screen's words, so a tag reads the same
+  // whichever source answered.
+  const read = byTab[ptyId];
+  return read && isClaudeCommand(tab.cmd) ? claudeModelLabel(read) : read;
 }
 
 /** Prompts only ever arrive at the end of the tail (and fall off its front),

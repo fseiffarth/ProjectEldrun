@@ -11,7 +11,7 @@ import { useT } from "../../lib/i18n";
 
 /**
  * The root console's move / resize / fill, for the header overlays (mail,
- * calendar, to-do board) — the same frame math (`stores/rootOverlay`), the same
+ * calendar, to-do board, skills library) — the same frame math (`stores/rootOverlay`), the same
  * eight grips, the same "drag the title bar to move, double-click to fill".
  *
  * Local state rather than a store: nothing outside the overlay reads its frame.
@@ -22,8 +22,9 @@ import { useT } from "../../lib/i18n";
 /** Pixels a press on the title bar must travel before it is a move, not a click. */
 const DRAG_THRESHOLD_PX = 5;
 
-/** Presses on the title bar that keep their own meaning. */
-const BAR_NO_DRAG = "button, input, a, .untested-tag";
+/** Presses on the title bar that keep their own meaning — a tab in an
+ *  overlay's strip included. */
+const BAR_NO_DRAG = "button, input, a, .untested-tag, .tab";
 
 const FRAME_GRIPS: RootOverlayDragMode[] = ["n", "s", "e", "w", "ne", "nw", "se", "sw"];
 
@@ -185,15 +186,18 @@ export function useFloatingFrame(storageKey: string) {
         />
       ));
 
+  // The root console's own fill button (RootOverlay's ⤢/⤡), not a window-manager glyph.
   const fillButton = (
     <button
       type="button"
-      className="wm-btn wm-maximize"
+      className="subwindow-hide floating-frame-fill"
       title={saved.filled ? t("floatingFrame.restore") : t("floatingFrame.fill")}
       aria-label={saved.filled ? t("floatingFrame.restore") : t("floatingFrame.fill")}
       aria-pressed={saved.filled}
       onClick={toggleFilled}
-    />
+    >
+      {saved.filled ? "⤡" : "⤢"}
+    </button>
   );
 
   return {

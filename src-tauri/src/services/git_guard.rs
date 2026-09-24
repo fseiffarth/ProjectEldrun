@@ -22,9 +22,12 @@
 //! file that exists. Git creates lock files directly in the git dir, so the
 //! dir itself stays writable, and an agent can still *create* a
 //! `commondir` in a main `.git` (git then reads config and hooks from where it
-//! points — verified), or `git init` a repo where there was none. Eldrun's own
-//! local git follows `commondir` when it sanitizes (`commands::git`) and pins
-//! `core.fsmonitor`; a plain `git` in the user's terminal does not.
+//! points — verified: a plain `git add` runs the target's `post-index-change`),
+//! or `git init` a repo where there was none. Eldrun's own local git is not
+//! steered by either (#862): every call pins `GIT_COMMON_DIR` to a main `.git`
+//! (`commands::git::pin_common_dir`), so a planted `commondir` is ignored, and
+//! runs with hooks off except the verbs `services::exec_trust` gates. A plain
+//! `git` in the user's terminal still follows a planted `commondir`.
 
 use std::path::{Path, PathBuf};
 

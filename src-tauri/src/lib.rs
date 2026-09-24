@@ -36,13 +36,27 @@ static CRASH_LOG_FD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32
 #[cfg(windows)]
 static CRASH_LOG_HANDLE: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
+/// The short commit this binary was built from (`src-tauri/build.rs`), or
+/// "unknown" outside git. Written into every `=== STARTED` and crash header:
+/// the frozen dev binary is replaced on every commit, so the path a crash
+/// records is gone by the time anyone looks, and the commit is what
+/// `scripts/crash-symbolize.sh` needs to find the retained copy
+/// (`scripts/retain-dev-build.sh`).
+const BUILD_COMMIT: &str = match option_env!("ELDRUN_BUILD_COMMIT") {
+    Some(c) => c,
+    None => "unknown",
+};
+
 /// Install a panic hook + OS signal handlers that append to crash.log.
 fn install_crash_logger() {
     let state_dir = storage::state_dir();
     let _ = std::fs::create_dir_all(&state_dir);
     let path = state_dir.join("crash.log");
 
-    append_to_log(&path, &format!("=== STARTED {} ===", iso_now()));
+    append_to_log(
+        &path,
+        &format!("=== STARTED {} commit={} ===", iso_now(), BUILD_COMMIT),
+    );
 
     let path2 = path.clone();
     std::panic::set_hook(Box::new(move |info| {
@@ -275,7 +289,7 @@ fn fault_pc(_ctx: *mut libc::c_void) -> usize {
 }
 
 /// Format the context line under the crash header without allocating:
-/// `  at <UTC> pc=0x… tid=<n> thread=<comm> exe=<path> v<version>\n`.
+/// `  at <UTC> pc=0x… tid=<n> thread=<comm> exe=<path> v<version> commit=<sha>\n`.
 #[cfg(unix)]
 fn format_crash_context(pc: usize, buf: &mut [u8]) -> usize {
     let mut pos = 0;
@@ -326,6 +340,8 @@ fn format_crash_context(pc: usize, buf: &mut [u8]) -> usize {
     }
     pos = crash_push(buf, pos, b" v");
     pos = crash_push(buf, pos, env!("CARGO_PKG_VERSION").as_bytes());
+    pos = crash_push(buf, pos, b" commit=");
+    pos = crash_push(buf, pos, BUILD_COMMIT.as_bytes());
     crash_push(buf, pos, b"\n")
 }
 
@@ -1227,10 +1243,6 @@ pub fn run() {
             // idempotent, so a race with the frontend's first load is benign.
             std::thread::spawn(|| {
                 commands::projects::migrate_legacy_projects();
-                let mut projects = commands::projects::get_projects().unwrap_or_default();
-                if let Err(e) = commands::projects::ensure_trash_project(&mut projects) {
-                    eprintln!("Trash project setup: {e}");
-                }
             });
             // One-shot: adopt every existing project's tab layout / `open_apps`
             // out of its project tree and into `<state_dir>/sessions/<id>/`.
@@ -1423,6 +1435,9 @@ pub fn run() {
             commands::projects::adopt_folder_tab_layout,
             commands::projects::root_work_dir,
             commands::root_mcp::root_mcp_status,
+            commands::root_mcp::help_search,
+            commands::root_mcp::help_read,
+            commands::root_mcp::help_topics,
             commands::root_mcp::root_mcp_security_status,
             commands::root_mcp::root_mcp_session_access,
             commands::root_mcp::root_mcp_session_revoke,
@@ -1537,6 +1552,7 @@ pub fn run() {
             commands::mail::mail_sync,
             commands::mail::mail_sync_cancel,
             commands::mail::mail_headers,
+            commands::mail::mail_search,
             commands::mail::mail_replies,
             commands::mail::mail_body,
             commands::mail::mail_flag,
@@ -1569,12 +1585,17 @@ pub fn run() {
             commands::mail::mail_draft_save,
             commands::mail::mail_agent_drafts,
             commands::mail::mail_draft_discard,
+            commands::mail::mail_agent_mark,
+            commands::mail::mail_agent_mark_folder,
+            commands::mail::mail_agent_mark_sender,
+            commands::mail::mail_agent_marks,
             commands::mail::mail_draft_send,
             commands::mail::mail_attach_pick,
             commands::mail::mail_attach_remove,
             commands::mail::mail_attachment_save,
             commands::mail::mail_attachment_save_to_project,
             commands::mail::mail_attachment_preview,
+            commands::mail::mail_staged_preview,
             // Encryption at rest (docs/mail_encryption_plan.md). Four verbs
             // rather than a toggle, because the states are not symmetric: a
             // store waiting for a passphrase, and one running memory-only
@@ -1778,6 +1799,7 @@ pub fn run() {
             commands::printing::print_set_default,
             commands::printing::print_set_enabled,
             commands::printing::print_test_page,
+            commands::print_native::print_pdf_native,
             // Disk usage analyzer (commands::disk_usage)
             commands::disk_usage::disk_usage_scan,
             commands::disk_usage::disk_usage_cancel,
@@ -1850,6 +1872,8 @@ pub fn run() {
             commands::subwindow::snap_detached_window,
             commands::subwindow::sync_detached_scope,
             commands::subwindow::detached_window_is_parked,
+            commands::subwindow::detached_retire_ack,
+            commands::subwindow::detached_retire_ready,
             // The deck presenter's audience window (M#90)
             commands::presenter::open_presenter_window,
             commands::presenter::close_presenter_window,
@@ -1858,6 +1882,7 @@ pub fn run() {
             commands::workspace::workspace_name,
             commands::workspace::network_conn_type,
             commands::workspace::network_wifi_ssid,
+            commands::workspace::network_identity,
             // Project-runtime switching (replaces switch_project_windows)
             commands::project_runtime::switch_project_runtime,
             commands::project_runtime::load_side_panel_folder,
@@ -2083,7 +2108,9 @@ pub fn run() {
                     // number while it is still on screen.
                     if _app.get_webview_window(label).is_none() {
                         let reg = _app.state::<WindowRegistryState>();
-                        let wid = commands::subwindow::release_detached_entry(
+                        // A Wayland scope-out retire is an intended close whose
+                        // record stays for the respawn: released, not reported.
+                        let (wid, report) = commands::subwindow::on_detached_destroyed(
                             &mut reg.lock().unwrap(),
                             label,
                         );
@@ -2100,10 +2127,12 @@ pub fn run() {
                         // were stranded in a `detached: true` record with no
                         // window, no dock-back path, their PTYs running hidden,
                         // and the failure repeated at every launch.
-                        let _ = _app.emit(
-                            "detached-window-destroyed",
-                            serde_json::json!({ "label": label }),
-                        );
+                        if report {
+                            let _ = _app.emit(
+                                "detached-window-destroyed",
+                                serde_json::json!({ "label": label }),
+                            );
+                        }
                     }
                 }
             }
@@ -2116,6 +2145,10 @@ pub fn run() {
                 // listener with nothing behind it. Bounded (admin-socket
                 // timeouts), best-effort, and a no-op when Mobile is off.
                 tauri::async_runtime::block_on(commands::mobile_control::stop_host_for_exit());
+                // The root MCP listener: stop accepting, drain in-flight
+                // workers briefly, and drop every per-tab calendar copy so
+                // nothing of the endpoint outlives the quit.
+                commands::root_mcp::stop_for_exit();
                 // Abort every terminal's process subtree so no inner process (a
                 // dev server, a build, a training run) outlives Eldrun. Runs
                 // before the container teardown below, since a containerized

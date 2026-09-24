@@ -60,7 +60,7 @@ tool is unavailable, say so — never skip silently.
   is: grep `docs/filemap_rationale/` (frozen, verify against code).
 - Design rationale, one file per subsystem in `docs/context/` — open only the
   one you're touching: agent_authority, agent_schedule_mcp, agent_sessions,
-  caldav, dev_builds, docker_containers, git_sync, hpc_careful_mode, mail_encryption,
+  caldav, dev_builds, docker_containers, git_sync, help_mcp, hpc_careful_mode, mail_encryption,
   multi_host_remote, openvpn, project_boxes, project_transfer,
   remote_autoconnect, remote_credentials, remote_projects, root_console,
   tmux_sessions, usage_stats, vm_projects.

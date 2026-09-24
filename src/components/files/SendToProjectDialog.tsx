@@ -6,7 +6,7 @@ import { resolveProjectDirectory, resolveLocalMirror, type ProjectEntry } from "
 import { type FileEntry } from "../../lib/viewers/fileUtils";
 import { loadLastSendTarget, saveLastSendTarget } from "../../lib/projects/sendToProject";
 import { useT } from "../../lib/i18n";
-import { FolderIcon, GlobeIcon } from "../common/icons/Icon";
+import { ArrowLeftIcon, ArrowUpIcon, FolderIcon, GlobeIcon } from "../common/icons/Icon";
 
 /** The item being sent — always a LOCAL absolute path (the dialog is only opened
  *  for local file-tree rows, so `import_external_file` can read it as an ordinary
@@ -154,7 +154,7 @@ export function SendToProjectDialog({ source, fromProjectId, onClose }: Props) {
   return createPortal(
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div
-        className="settings-dialog folder-picker-dialog"
+        className="settings-dialog folder-picker-dialog send-to-project-dialog"
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="settings-title-row">
@@ -162,123 +162,125 @@ export function SendToProjectDialog({ source, fromProjectId, onClose }: Props) {
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
 
-        <p className="settings-help send-to-project-source" title={source.path}>
-          {t("sendToProject.sourceLabel")} <strong>{source.name}</strong>
-        </p>
+        <div className="dialog-scroll">
+          <p className="settings-help send-to-project-source" title={source.path}>
+            {t("sendToProject.sourceLabel")} <strong>{source.name}</strong>
+          </p>
 
-        {phase === "project" && (
-          <>
-            <p className="settings-help">{t("sendToProject.pickProject")}</p>
-            <div className="folder-picker-list">
-              {active.length === 0 ? (
-                <p className="settings-help">{t("sendToProject.noProjects")}</p>
-              ) : (
-                active.map((p) => {
-                  const disabled = !destRootFor(p);
-                  return (
+          {phase === "project" && (
+            <>
+              <p className="settings-help">{t("sendToProject.pickProject")}</p>
+              <div className="folder-picker-list">
+                {active.length === 0 ? (
+                  <p className="settings-help">{t("sendToProject.noProjects")}</p>
+                ) : (
+                  active.map((p) => {
+                    const disabled = !destRootFor(p);
+                    return (
+                      <button
+                        key={p.id}
+                        type="button"
+                        className="folder-picker-item send-to-project-item"
+                        disabled={disabled}
+                        title={disabled ? t("sendToProject.remoteUnsupported") : destRootFor(p)}
+                        onClick={() => pickProject(p)}
+                      >
+                        <span className="folder-picker-icon">{p.remote ? <GlobeIcon /> : <FolderIcon />}</span>
+                        <span className="folder-picker-name">{p.name}</span>
+                        {p.id === fromProjectId && (
+                          <span className="send-to-project-tag">{t("sendToProject.thisProject")}</span>
+                        )}
+                        {last?.projectId === p.id && (
+                          <span className="send-to-project-tag">{t("sendToProject.lastUsed")}</span>
+                        )}
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+              {error && <p className="settings-help folder-picker-error">{error}</p>}
+            </>
+          )}
+
+          {phase === "folder" && selected && (
+            <>
+              <div className="folder-picker-nav">
+                <button
+                  type="button"
+                  onClick={() => setPhase("project")}
+                  title={t("sendToProject.changeProject")}
+                >
+                  <ArrowLeftIcon /> {t("common.back")}
+                </button>
+                <button
+                  type="button"
+                  disabled={rel === ""}
+                  onClick={() => loadFolder(selected, parentRel(rel))}
+                  title={t("folderPicker.upOneFolder")}
+                >
+                  <ArrowUpIcon /> {t("folderPicker.up")}
+                </button>
+                <span className="folder-picker-cur" title={`${selected.name}/${rel}`}>
+                  {selected.name} / {relLabel}
+                </span>
+              </div>
+
+              <div className="folder-picker-list">
+                {loading && !listing ? (
+                  <p className="settings-help">{t("common.loading")}</p>
+                ) : listing && listing.length === 0 ? (
+                  <p className="settings-help">{t("folderPicker.noSubfolders")}</p>
+                ) : (
+                  listing?.map((entry) => (
                     <button
-                      key={p.id}
+                      key={entry.path}
                       type="button"
-                      className="folder-picker-item send-to-project-item"
-                      disabled={disabled}
-                      title={disabled ? t("sendToProject.remoteUnsupported") : destRootFor(p)}
-                      onClick={() => pickProject(p)}
+                      className="folder-picker-item"
+                      onClick={() => loadFolder(selected, rel ? `${rel}/${entry.name}` : entry.name)}
+                      title={entry.path}
                     >
-                      <span className="folder-picker-icon">{p.remote ? <GlobeIcon /> : <FolderIcon />}</span>
-                      <span className="folder-picker-name">{p.name}</span>
-                      {p.id === fromProjectId && (
-                        <span className="send-to-project-tag">{t("sendToProject.thisProject")}</span>
-                      )}
-                      {last?.projectId === p.id && (
-                        <span className="send-to-project-tag">{t("sendToProject.lastUsed")}</span>
-                      )}
+                      <span className="folder-picker-icon"><FolderIcon /></span>
+                      <span className="folder-picker-name">{entry.name}</span>
                     </button>
-                  );
-                })
-              )}
-            </div>
-            {error && <p className="settings-help folder-picker-error">{error}</p>}
-          </>
-        )}
+                  ))
+                )}
+              </div>
 
-        {phase === "folder" && selected && (
-          <>
-            <div className="folder-picker-nav">
-              <button
-                type="button"
-                onClick={() => setPhase("project")}
-                title={t("sendToProject.changeProject")}
-              >
-                ⬅ {t("common.back")}
-              </button>
-              <button
-                type="button"
-                disabled={rel === ""}
-                onClick={() => loadFolder(selected, parentRel(rel))}
-                title={t("folderPicker.upOneFolder")}
-              >
-                ⬆ {t("folderPicker.up")}
-              </button>
-              <span className="folder-picker-cur" title={`${selected.name}/${rel}`}>
-                {selected.name} / {relLabel}
-              </span>
-            </div>
+              {error && <p className="settings-help folder-picker-error">{error}</p>}
 
-            <div className="folder-picker-list">
-              {loading && !listing ? (
-                <p className="settings-help">{t("common.loading")}</p>
-              ) : listing && listing.length === 0 ? (
-                <p className="settings-help">{t("folderPicker.noSubfolders")}</p>
-              ) : (
-                listing?.map((entry) => (
-                  <button
-                    key={entry.path}
-                    type="button"
-                    className="folder-picker-item"
-                    onClick={() => loadFolder(selected, rel ? `${rel}/${entry.name}` : entry.name)}
-                    title={entry.path}
-                  >
-                    <span className="folder-picker-icon"><FolderIcon /></span>
-                    <span className="folder-picker-name">{entry.name}</span>
-                  </button>
-                ))
-              )}
-            </div>
+              <div className="folder-picker-actions">
+                <button type="button" onClick={onClose}>{t("common.cancel")}</button>
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={busy}
+                  onClick={doCopy}
+                >
+                  {busy ? t("common.loading") : t("sendToProject.copyHere")}
+                </button>
+              </div>
+            </>
+          )}
 
-            {error && <p className="settings-help folder-picker-error">{error}</p>}
-
-            <div className="folder-picker-actions">
-              <button type="button" onClick={onClose}>{t("common.cancel")}</button>
-              <button
-                type="button"
-                className="primary"
-                disabled={busy}
-                onClick={doCopy}
-              >
-                {busy ? t("common.loading") : t("sendToProject.copyHere")}
-              </button>
-            </div>
-          </>
-        )}
-
-        {phase === "done" && selected && (
-          <>
-            <div className="send-to-project-done">
-              <p className="send-to-project-done-title">✓ {t("sendToProject.successTitle")}</p>
-              <p className="settings-help">
-                {t("sendToProject.successBody", {
-                  name: source.name,
-                  dest: `${selected.name} / ${finalRel}`,
-                })}
-              </p>
-            </div>
-            <div className="folder-picker-actions">
-              <button type="button" className="primary" onClick={onClose}>
-                {t("common.close")}
-              </button>
-            </div>
-          </>
-        )}
+          {phase === "done" && selected && (
+            <>
+              <div className="send-to-project-done">
+                <p className="send-to-project-done-title">✓ {t("sendToProject.successTitle")}</p>
+                <p className="settings-help">
+                  {t("sendToProject.successBody", {
+                    name: source.name,
+                    dest: `${selected.name} / ${finalRel}`,
+                  })}
+                </p>
+              </div>
+              <div className="folder-picker-actions">
+                <button type="button" className="primary" onClick={onClose}>
+                  {t("common.close")}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
       </div>
     </div>,
     document.body,

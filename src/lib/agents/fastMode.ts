@@ -29,8 +29,7 @@ import { useSettingsStore } from "../../stores/settings";
  *    is not currently in.
  *  - **The project hover card** (`ProjectPill`) — polls `project_cpu_percent`
  *    every 1.5 s for as long as the pointer rests, plus a scaffold probe per
- *    open. The pill keeps a plain tooltip, the same fallback the Trash pill
- *    already uses.
+ *    open. The pill keeps a plain name tooltip.
  *  - **The tab hover card** (`TabBar`, `DetachedCenterPanel`) — its own ticking
  *    clock and store subscriptions per hover; the tab keeps its `title`.
  *  - **The header CPU/RAM/GPU readout** (`AppResourceDisplay`) — a

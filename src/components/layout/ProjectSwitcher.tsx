@@ -17,15 +17,16 @@ import { BOX_SCOPE_PREFIX, useBoxMembership, useBoxesStore } from "../../stores/
 import { useBoxEditorStore } from "../../stores/boxEditor";
 import { usePillSelectionStore } from "../../stores/drag/pillSelection";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
-import { TRASH_PROJECT_ID } from "../../lib/projects/trashProject";
 import { ROOT_SCOPE, useTabsStore } from "../../stores/tabs";
 import { useRootOverlayStore } from "../../stores/rootOverlay";
 import { useGitDirtyStore } from "../../stores/gitDirty";
 import { projectStations, useKeyboardSteeringStore } from "../../stores/keyboardSteering";
 import { useQuiesce, saverInterval } from "../../stores/power";
 import { useFastMode } from "../../lib/agents/fastMode";
-import { resolveProjectDirectory, type ProjectEntry } from "../../types";
+import { resolveProjectDirectory, type ProjectBox, type ProjectEntry } from "../../types";
+import { boxColor } from "../../lib/theme/boxColor";
 import { useT } from "../../lib/i18n";
+import { OPEN_PROJECT_DIALOG_EVENT } from "../../lib/projects/projectDialogEvent";
 
 // Re-exported for tests and any external callers that imported these scaffold
 // helpers from ProjectSwitcher before the dialog was extracted (the public
@@ -116,22 +117,24 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
     return () => window.removeEventListener("eldrun:open-settings", onOpenSettings);
   }, []);
 
-  // The built-in Trash workspace is PINNED, not one of the strip's projects:
-  // it is always present, always active, cannot be closed or reordered, and is
-  // the one project every other one may need to reach — so it belongs in the
-  // row's fixed leading segment beside ★ and the box chip, where it can never
-  // scroll away, rather than as the first pill of a strip that scrolls. Being
-  // out of `activeProjects` also takes it out of the slice, the reorder math
-  // and the git-dot poll (its `git_type` is "none", so that was a `git status`
-  // every 12 s on a folder that has no git).
-  const trashProject = useMemo(
-    () => projects.find((p) => p.id === TRASH_PROJECT_ID && p.status !== "inactive") ?? null,
-    [projects],
-  );
+  // The intro wizard's New / Import / Clone buttons open the very dialogs the
+  // + menu opens — this bar owns them, so they arrive as a window event (the
+  // `eldrun:open-settings` pattern above) rather than a second copy.
+  useEffect(() => {
+    const onOpenProjectDialog = (e: Event) => {
+      const kind = (e as CustomEvent).detail;
+      if (kind === "new" || kind === "import" || kind === "clone") {
+        closeHeaderMenu(ADD_MENU_ID);
+        setDialog(kind);
+      }
+    };
+    window.addEventListener(OPEN_PROJECT_DIALOG_EVENT, onOpenProjectDialog);
+    return () => window.removeEventListener(OPEN_PROJECT_DIALOG_EVENT, onOpenProjectDialog);
+  }, [closeHeaderMenu]);
 
   const activeProjects = useMemo(() => {
     return projects
-      .filter((p) => p.status !== "inactive" && p.id !== TRASH_PROJECT_ID)
+      .filter((p) => p.status !== "inactive")
       .sort((a, b) => a.position - b.position);
     // Keep the actual project objects live. A signature containing only the
     // bucketing fields pinned the old object when a local project finished
@@ -266,23 +269,13 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
     void setActive(alive ? back : null);
   };
 
-  // The two built-in scopes, picked from the same chip as the boxes. Both lift
-  // the slice: neither the root terminal nor Trash is inside any box, so a
-  // strip left filtered by a box nobody is in would be a strip that had quietly
-  // dropped most of the projects. Each also clears the multi-selection, exactly
-  // as a plain pill activation does.
+  // The built-in root scope, picked from the same chip as the boxes.
   // Root is no longer a place to switch to: it opens as the root console over
   // whatever is on screen (`stores/rootOverlay`), so picking it costs neither
   // the project in scope nor the slice. With no project open the root scope is
   // still what the center shows — the overlay simply floats over it.
   const selectRoot = () => {
     useRootOverlayStore.getState().show();
-  };
-  const selectTrash = () => {
-    if (!trashProject) return;
-    usePillSelectionStore.getState().clear();
-    setBoxFilter(null);
-    void setActive(trashProject.id);
   };
 
   // The pills the strip renders. A slice shows its box's members — plus the
@@ -294,11 +287,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   const visibleProjects = useMemo<ProjectEntry[]>(() => {
     if (!currentBox) return activeProjects;
     return projects
-      .filter(
-        (p) =>
-          p.id !== TRASH_PROJECT_ID &&
-          (currentBoxMemberIds.has(p.id) || p.id === scope),
-      )
+      .filter((p) => currentBoxMemberIds.has(p.id) || p.id === scope)
       .sort((a, b) => a.position - b.position);
   }, [activeProjects, currentBox, currentBoxMemberIds, projects, scope]);
 
@@ -503,21 +492,19 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
             `.header-left` draws exactly that line at its own trailing edge. Two
             hairlines ten pixels apart with nothing between them read as a
             rendering fault, and the doubling is also what made the clock sit
-            noticeably further from the root pill than the root pill sits from
-            the Trash pill. */}
+            noticeably further from the clock than the pills sit from each other. */}
         <div
           className={`project-pills-region${pillOverflow.left ? " overflow-left" : ""}${
             pillOverflow.right ? " overflow-right" : ""
           }`}
         >
           {/* The row's leading segment: ONE chip for every scope that is not a
-              project pill — the root terminal, the Trash workspace and the
-              boxes. It sits outside .project-pills-scroll, which is what pins
+              project pill — the root terminal and the boxes. It sits outside .project-pills-scroll, which is what pins
               it: the pills scroll past underneath and this never leaves the
               left edge, because the head of the row is what answers "where am
-              I". Root and Trash used to be pinned pills of their own here; each
-              was spending permanent header width on a destination reached by
-              name rather than by pointing, so both moved into the chip's
+              I". Root used to be a pinned pill of its own here; it was spending
+              permanent header width on a destination reached by name rather
+              than by pointing, so it moved into the chip's
               dropdown (see BoxScopeChip) and the strip got the space back.
               Everything reads its state off `scope`, like every pill beside it
               — activeId would keep a pill lit while a box is open. */}
@@ -526,20 +513,23 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
             selectedId={boxFilter}
             onSelect={selectBox}
             onRename={(boxId, name) => void renameBox(boxId, name)}
-            onDelete={(boxId) => void deleteBox(boxId)}
+            // The pill's Delete is one right-click away on every box now, so it
+            // asks the same question the editor's Dissolve does — and says the
+            // same thing about what survives (folder, agent docs, members).
+            onDelete={(boxId) => {
+              const target = boxes.find((b) => b.id === boxId);
+              if (!target) return;
+              if (!window.confirm(t("boxEditor.dissolveConfirm", { name: target.name }))) return;
+              void deleteBox(boxId);
+            }}
             active={!!boxFilter && scope === `${BOX_SCOPE_PREFIX}${boxFilter}`}
-            forcedDragOver={!!boxFilter && pillDrag?.overBoxId === boxFilter}
-            trash={trashProject ? { id: trashProject.id, name: trashProject.name } : null}
             rootActive={scope === ROOT_SCOPE}
-            trashActive={!!trashProject && scope === trashProject.id}
             onSelectRoot={selectRoot}
-            onSelectTrash={selectTrash}
             // Steering station 1 is the ring's root (`null`) head, which
             // `stationById` cannot carry precisely because it has no id.
             rootStation={steeringActive ? 1 : undefined}
-            trashStation={trashProject ? stationById?.get(trashProject.id) : undefined}
           />
-          {/* Hairline between the fixed leading segment (★ · 🗑 · ▣) and the
+          {/* Hairline between the fixed leading segment (★ · ▣) and the
               scrolling project strip, so the two zones read as two zones. */}
           {/* The pending-proposals count used to stand here as a second copy of
               the console's own badge. Eldrun's tools and what they propose are
@@ -570,13 +560,17 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
           >
             {visibleProjects.map((project) => {
               const isCurrentBoxMember = currentBoxMemberIds.has(project.id);
-              const boxNames = currentBox
+              // The swatches a member pill wears: one per box it is in, in the
+              // box's own colour. Inside a slice every pill is a member of the
+              // box being looked at, so only that box is worth a swatch there.
+              const boxTags = (currentBox
                 ? isCurrentBoxMember
-                  ? [currentBox.name]
+                  ? [currentBox]
                   : []
                 : (membership.get(project.id) ?? [])
-                    .map((boxId) => boxes.find((b) => b.id === boxId)?.name)
-                    .filter((n): n is string => !!n);
+                    .map((boxId) => boxes.find((b) => b.id === boxId))
+                    .filter((b): b is ProjectBox => !!b)
+              ).map((b) => ({ id: b.id, name: b.name, color: boxColor(b) }));
               return (
                 <ProjectPill
                   key={project.id}
@@ -601,7 +595,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
                   onReorder={(fromId, toId) => void reorderProjects(fromId, toId)}
                   onGroup={(fromId, toId) => void groupProjects(fromId, toId)}
                   onAssignToBox={(boxId) => void addToBox(project.id, boxId)}
-                  boxNames={boxNames}
+                  boxTags={boxTags}
                   isDragged={pillDrag?.id === project.id}
                   dragDx={pillDrag?.id === project.id ? pillDrag.dx : undefined}
                   shiftPx={pillShifts.get(project.id)}

@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Dropdown } from "../common/Dropdown";
 import { UntestedTag } from "../common/UntestedTag";
 import { useT } from "../../lib/i18n";
+import { useUnsavedWork } from "../../lib/window/unsavedWork";
 import { useProjectsStore } from "../../stores/projects";
 import { resolveProjectDirectory } from "../../types";
 import { isPathWithin } from "../../lib/paths";
@@ -19,6 +20,7 @@ import {
   type ChangeBlock,
   type Decision,
 } from "../../lib/viewers/linediff";
+import { ArrowLeftIcon, ArrowRightIcon, UndoIcon } from "../common/icons/Icon";
 
 /** Mirrors the Rust `GitCommit` (serde default snake→camel via serde? no — the
  *  struct is plain, so fields arrive as declared: hash/short/subject/… ). */
@@ -203,7 +205,7 @@ function SideColumn({
                     }
                     onClick={() => enabled && onTake(b)}
                   >
-                    {label}
+                    {side === "left" ? <>{label} <ArrowRightIcon /></> : <><ArrowLeftIcon /> {label}</>}
                   </button>
                 );
               })}
@@ -359,6 +361,11 @@ export function CompareView({
     setResultText(oldText == null ? rightText : buildMerged(rows, blocks, {}));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [oldText, rightText]);
+
+  // A merge in progress (GitMergeView's conflict resolve, SyncMergeView): picks
+  // or hand edits not yet applied live only here. Plain diffs (no `onApply`)
+  // hold nothing to lose.
+  useUnsavedWork(onApply != null && (manual || Object.keys(decisions).length > 0));
 
   const decisionOf = (b: ChangeBlock): Decision => decisions[b.id] ?? "accept";
 
@@ -609,7 +616,7 @@ export function CompareView({
                           if (enabled) toggle(b);
                         }}
                       >
-                        {dec === "accept" ? "✓" : "↩"} {i + 1}
+                        {dec === "accept" ? "✓" : <UndoIcon />} {i + 1}
                       </span>
                     );
                   })}

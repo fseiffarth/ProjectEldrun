@@ -49,6 +49,7 @@ import type {
   MailFolder,
   MailHeader,
   MailHeaderPage,
+  MailSearchPage,
   MailNewEvent,
   MailPasswordState,
   MailPreviewBlob,
@@ -177,6 +178,7 @@ export function mailHeaders(
   sort: MailSort = "date",
   desc = true,
   unreadOnly = false,
+  agentOnly = false,
 ): Promise<MailHeaderPage> {
   return invoke<MailHeaderPage>("mail_headers", {
     folderId,
@@ -186,7 +188,65 @@ export function mailHeaders(
     sort,
     desc,
     unreadOnly,
+    agentOnly,
   });
+}
+
+/**
+ * Search one folder's whole mailbox, not just the downloaded tail.
+ *
+ * A sync keeps only a folder's newest headers locally, so `mailHeaders` with
+ * a query can never match an old mail. This command asks the server first and
+ * backfills what it finds, then serves the same page shape — `remote` says
+ * whether the server was reached, and the list renders a local-only answer as
+ * one rather than letting it read as complete.
+ */
+export function mailSearch(
+  folderId: string,
+  offset: number,
+  limit: number,
+  query: string,
+  sort: MailSort = "date",
+  desc = true,
+  unreadOnly = false,
+  agentOnly = false,
+): Promise<MailSearchPage> {
+  return invoke<MailSearchPage>("mail_search", {
+    folderId,
+    query,
+    offset,
+    limit,
+    sort,
+    desc,
+    unreadOnly,
+    agentOnly,
+  });
+}
+
+// ── Marks for agents (`docs/mail_mcp_plan.md` §1, "Marked mails only") ──────
+//
+// Local, like a priority mark: a row in the store and never an IMAP keyword, so
+// "shared with an agent" reaches neither the provider nor another client. Each
+// resolves with how many rows changed.
+
+/** Mark, or with `false` unmark, messages for a contained reader agent. */
+export function mailAgentMark(messageIds: string[], marked: boolean): Promise<number> {
+  return invoke<number>("mail_agent_mark", { messageIds, marked });
+}
+
+/** Mark every message of a folder. */
+export function mailAgentMarkFolder(folderId: string): Promise<number> {
+  return invoke<number>("mail_agent_mark_folder", { folderId });
+}
+
+/** Mark every message of an account from one sender address, in any folder. */
+export function mailAgentMarkSender(accountId: string, address: string): Promise<number> {
+  return invoke<number>("mail_agent_mark_sender", { accountId, address });
+}
+
+/** The ids of an account's marked messages that are in the local index. */
+export function mailAgentMarks(accountId: string): Promise<string[]> {
+  return invoke<string[]>("mail_agent_marks", { accountId });
 }
 
 /**
@@ -579,10 +639,14 @@ export function mailDraftDiscard(draftId: string): Promise<void> {
  */
 export function mailDraftSend(
   draftId: string,
+  /** The attachment set the user was shown. The backend refuses the send when
+   *  the store's set differs — the reviewed set is exactly what is sent. */
+  stagedIds: string[],
   opts: { sign?: boolean; encrypt?: boolean } = {},
 ): Promise<MailSendResult> {
   return invoke<MailSendResult>("mail_draft_send", {
     draftId,
+    stagedIds,
     sign: opts.sign ?? false,
     encrypt: opts.encrypt ?? false,
   });
@@ -659,6 +723,12 @@ export function mailAttachmentPreview(
   partId: string,
 ): Promise<MailPreviewBlob> {
   return invoke<MailPreviewBlob>("mail_attachment_preview", { messageId, partId });
+}
+
+/** Bounded bytes of a file staged on a draft — the sealed outbox copy, which
+ *  is what a send attaches — for the composer's review. */
+export function mailStagedPreview(draftId: string, stagedId: string): Promise<MailPreviewBlob> {
+  return invoke<MailPreviewBlob>("mail_staged_preview", { draftId, stagedId });
 }
 
 // ── Events ───────────────────────────────────────────────────────────────────

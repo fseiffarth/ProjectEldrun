@@ -23,7 +23,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -147,7 +147,13 @@ fn state_dir(project_id: &str) -> PathBuf {
 /// override: `<state_dir>/.../<id>/mirror`. This remains the fallback so remote
 /// projects created before configurable mirrors keep their existing location.
 fn default_mirror_dir(project_id: &str) -> PathBuf {
-    state_dir(project_id).join("mirror")
+    default_mirror_dir_in(&crate::storage::state_dir(), project_id)
+}
+
+/// [`default_mirror_dir`] under an explicit state dir — for the pure fence
+/// planners (`agent_fence`, `mail_attach`), which tests point at a tempdir.
+pub fn default_mirror_dir_in(state_dir: &Path, project_id: &str) -> PathBuf {
+    state_dir.join("remote-projects").join(project_id).join("mirror")
 }
 
 /// A remote project's explicitly-chosen mirror root, read from the always-local
@@ -202,9 +208,90 @@ pub fn is_under_mirror(project_id: &str, abs_path: &str) -> bool {
 }
 
 /// Map a project-relative path to its absolute path inside the local mirror.
+/// Lexically confined (#863): only plain name components are kept, so a `..`,
+/// root or drive-prefix component can never step outside the mirror, whatever
+/// the caller holds (a frontend `rel`, a manifest key recorded before the host
+/// walk refused traversal names). Writers go through [`confined_mirror_path`],
+/// which refuses such a path instead of reinterpreting it.
 pub fn mirror_local_path(project_id: &str, rel: &str) -> PathBuf {
-    let clean = rel.trim_start_matches('/');
-    mirror_dir(project_id).join(clean)
+    mirror_dir(project_id).join(lexically_confined_rel(rel))
+}
+
+/// `rel` with every non-name component (`..`, `.`, root, drive prefix) dropped.
+fn lexically_confined_rel(rel: &str) -> PathBuf {
+    Path::new(rel)
+        .components()
+        .filter_map(|c| match c {
+            Component::Normal(name) => Some(name),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The name components of project-relative `rel`, or why it may not be written:
+/// a `..`, root or prefix component, or a NUL. A leading `/` is tolerated (the
+/// same "project-relative" reading [`mirror_local_path`] always gave it).
+fn rel_components(rel: &str) -> Result<Vec<&std::ffi::OsStr>, String> {
+    if rel.contains('\0') {
+        return Err(format!("refusing '{rel}': the path holds a NUL byte"));
+    }
+    let mut parts = Vec::new();
+    for c in Path::new(rel.trim_start_matches('/')).components() {
+        match c {
+            Component::Normal(name) => parts.push(name),
+            Component::CurDir => {}
+            _ => return Err(format!("refusing '{rel}': it steps outside the local mirror")),
+        }
+    }
+    Ok(parts)
+}
+
+/// Refuse when any EXISTING path among `root/parts[0]`, `root/parts[0]/parts[1]`,
+/// … is a symlink. Stops at the first missing component: whatever is created
+/// below it is a real directory. `root` itself is not checked — a user-chosen
+/// mirror root may legitimately be a link.
+fn refuse_symlinked_components(root: &Path, parts: &[&std::ffi::OsStr], rel: &str) -> Result<(), String> {
+    let mut cur = root.to_path_buf();
+    for part in parts {
+        cur.push(part);
+        match std::fs::symlink_metadata(&cur) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(format!(
+                    "refusing '{rel}': '{}' in the local mirror is a symlink",
+                    cur.strip_prefix(root).unwrap_or(&cur).display()
+                ));
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(format!("refusing '{rel}': {e}")),
+        }
+    }
+    Ok(())
+}
+
+/// The mirror path a WRITE of project-relative file `rel` may target, or why
+/// not (#863). Refuses (never reinterprets) a traversal/absolute/NUL `rel` or an
+/// empty one, and refuses when an existing DIRECTORY between `root` and the file
+/// is a symlink: a fenced agent can plant `mirror/d -> ~/.config`, and
+/// `create_dir_all` / `NamedTempFile::new_in` would follow it out of the mirror.
+/// The file itself may be a symlink — [`replace_local_atomic`]'s rename replaces
+/// the link, never its target.
+pub fn confined_mirror_path(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    let parts = rel_components(rel)?;
+    let Some((_, dirs)) = parts.split_last() else {
+        return Err(format!("refusing '{rel}': no file name inside the local mirror"));
+    };
+    refuse_symlinked_components(root, dirs, rel)?;
+    Ok(parts.iter().fold(root.to_path_buf(), |p, part| p.join(part)))
+}
+
+/// Like [`confined_mirror_path`], for a DIRECTORY that a bulk transfer writes
+/// into (rsync's destination): `rel` may be empty (the mirror root), and the
+/// directory itself must not be a symlink either, since rsync writes through it.
+pub fn confined_mirror_dir(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    let parts = rel_components(rel)?;
+    refuse_symlinked_components(root, &parts, rel)?;
+    Ok(parts.iter().fold(root.to_path_buf(), |p, part| p.join(part)))
 }
 
 // ── Manifest IO ───────────────────────────────────────────────────────────
@@ -567,13 +654,16 @@ async fn walk_inner(
 /// Pull one host file into the mirror: read it over SFTP (size-guarded, G8) and
 /// write it locally, creating parent dirs. Returns the local (size, mtime) base
 /// captured after the write. The host `abs` path must already be confined by the
-/// caller; `local` is the mirror destination.
+/// caller; the local destination is project-relative `rel` under `mirror_root`,
+/// confined here by [`write_mirror_file`] (#863) — refused before any byte moves.
 pub async fn pull_file(
     sftp: &openssh_sftp_client::Sftp,
     host_abs: &str,
     host_size: u64,
-    local: &Path,
+    mirror_root: &Path,
+    rel: &str,
 ) -> Result<(u64, Option<u64>), String> {
+    confined_mirror_path(mirror_root, rel)?;
     if host_size > MAX_SYNC_FILE_BYTES {
         return Err(format!(
             "'{host_abs}' is too large to sync ({host_size} bytes; limit {MAX_SYNC_FILE_BYTES})"
@@ -586,8 +676,8 @@ pub async fn pull_file(
             bytes.len()
         ));
     }
-    replace_local_atomic(local, &bytes)?;
-    let meta = std::fs::metadata(local).map_err(|e| e.to_string())?;
+    let local = write_mirror_file(mirror_root, rel, &bytes)?;
+    let meta = std::fs::metadata(&local).map_err(|e| e.to_string())?;
     let local_size = meta.len();
     let local_mtime = meta
         .modified()
@@ -597,7 +687,23 @@ pub async fn pull_file(
     Ok((local_size, local_mtime))
 }
 
-/// Atomically replace one mirror file with fully-read host bytes.
+/// Write `bytes` to project-relative `rel` under `mirror_root`, confined to the
+/// mirror (#863): [`confined_mirror_path`] before creating the parent dirs and
+/// again after, so a directory symlink planted while they were being created is
+/// still refused (a narrowed window, not a closed one — no `openat` walk here).
+/// Returns the path written.
+pub fn write_mirror_file(mirror_root: &Path, rel: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    let local = confined_mirror_path(mirror_root, rel)?;
+    if let Some(parent) = local.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    confined_mirror_path(mirror_root, rel)?;
+    replace_local_atomic(&local, bytes)?;
+    Ok(local)
+}
+
+/// Atomically replace one mirror file with fully-read host bytes. The caller
+/// confines `local` ([`write_mirror_file`]).
 fn replace_local_atomic(local: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = local.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -1291,6 +1397,83 @@ mod tests {
         std::fs::write(&target, b"old complete bytes").unwrap();
         replace_local_atomic(&target, b"new complete bytes").unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"new complete bytes");
+    }
+
+    #[test]
+    fn mirror_writes_refuse_traversal_names() {
+        // #863: a hostile host answers its walk with `../` "names".
+        let dir = tempfile::tempdir().unwrap();
+        let mirror = dir.path().join("mirror");
+        std::fs::create_dir_all(&mirror).unwrap();
+        for bad in [
+            "../escape.txt",
+            "../../.config/autostart/x.desktop",
+            "a/../../escape.txt",
+            "a/..",
+            "",
+            "/",
+            "nul\0byte",
+        ] {
+            assert!(confined_mirror_path(&mirror, bad).is_err(), "{bad:?} must be refused");
+            assert!(write_mirror_file(&mirror, bad, b"x").is_err(), "{bad:?} must not be written");
+        }
+        assert!(!dir.path().join("escape.txt").exists());
+        // Ordinary project-relative paths (a leading `/` read as relative, `./`
+        // tolerated) land inside the mirror.
+        assert_eq!(confined_mirror_path(&mirror, "a/b.txt").unwrap(), mirror.join("a/b.txt"));
+        assert_eq!(confined_mirror_path(&mirror, "/a/./b.txt").unwrap(), mirror.join("a/b.txt"));
+        let written = write_mirror_file(&mirror, "new/dir/f.txt", b"ok").unwrap();
+        assert_eq!(written, mirror.join("new/dir/f.txt"));
+        assert_eq!(std::fs::read(&written).unwrap(), b"ok");
+        // The rsync destination may be the mirror root itself; traversal is refused.
+        assert_eq!(confined_mirror_dir(&mirror, "").unwrap(), mirror);
+        assert!(confined_mirror_dir(&mirror, "../x").is_err());
+    }
+
+    #[test]
+    fn mirror_local_path_never_steps_outside_the_mirror() {
+        let p = mirror_local_path("pid", "../../../.config/autostart/x.desktop");
+        let mirror = mirror_dir("pid");
+        assert!(p.starts_with(&mirror), "{} escaped {}", p.display(), mirror.display());
+        assert!(!p.components().any(|c| c == Component::ParentDir));
+        assert_eq!(mirror_local_path("pid", "a/b.txt"), mirror.join("a/b.txt"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mirror_writes_refuse_a_symlinked_parent_directory() {
+        // #863: a fenced agent plants `mirror/d -> <outside>`; a pull of `d/x`
+        // must not follow it out of the mirror.
+        let dir = tempfile::tempdir().unwrap();
+        let mirror = dir.path().join("mirror");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(mirror.join("real")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, mirror.join("d")).unwrap();
+        std::os::unix::fs::symlink(&outside, mirror.join("real/deep")).unwrap();
+        for bad in ["d/x.desktop", "d/new/x.desktop", "real/deep/x.desktop"] {
+            assert!(confined_mirror_path(&mirror, bad).is_err(), "{bad:?} must be refused");
+            assert!(write_mirror_file(&mirror, bad, b"x").is_err(), "{bad:?} must not be written");
+        }
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0, "nothing landed outside");
+        // rsync writes through its destination: a symlinked one is refused too.
+        assert!(confined_mirror_dir(&mirror, "d").is_err());
+        assert!(confined_mirror_dir(&mirror, "real/deep/sub").is_err());
+        assert!(confined_mirror_dir(&mirror, "real").is_ok());
+        // A symlink AS the file is replaced by the atomic rename, never written through.
+        let victim = outside.join("victim.txt");
+        std::fs::write(&victim, b"precious").unwrap();
+        std::os::unix::fs::symlink(&victim, mirror.join("real/link.txt")).unwrap();
+        write_mirror_file(&mirror, "real/link.txt", b"host bytes").unwrap();
+        assert_eq!(std::fs::read(&victim).unwrap(), b"precious");
+        assert!(!std::fs::symlink_metadata(mirror.join("real/link.txt"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        // A symlinked mirror ROOT is the user's choice and stays usable.
+        let linked_root = dir.path().join("linked-mirror");
+        std::os::unix::fs::symlink(mirror.join("real"), &linked_root).unwrap();
+        assert!(write_mirror_file(&linked_root, "ok.txt", b"x").is_ok());
     }
 
     #[test]

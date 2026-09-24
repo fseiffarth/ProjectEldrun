@@ -7,6 +7,10 @@ export interface AgentUsageReport {
   supported: boolean;
   raw?: string;
   error?: string;
+  /** The refusal as one fixed code (`unknown_agent`, `no_usage_readout`,
+   * `cli_not_installed`, `cli_failed`, `cli_timeout`, `cli_error`) — what the
+   * phone is shown in place of `error`, which may name paths on this machine. */
+  code?: string;
   cached: boolean;
 }
 

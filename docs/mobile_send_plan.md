@@ -42,7 +42,7 @@ type-agnostic.
 
 ## 2. What exists, and what is missing
 
-Built (todo #31x, 2026-09-05, never seen on a phone):
+Built (todo #31bd, 2026-09-05, never seen on a phone):
 `services::mobile_control::outbox` lists `<project>/.eldrun/outbox/` and
 serves one file by leaf name (`GET /api/v1/tabs/{id}/outbox[/{name}]`,
 `host.rs`), read off disk by the sidecar itself so it answers with the desktop

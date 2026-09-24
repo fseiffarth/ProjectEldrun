@@ -129,7 +129,10 @@ and one reply out).
 **The boundary is a bearer token per root-agent spawn.**
 
 - **Minted per spawn and never written to disk.** A fenced project agent sees `/`
-  read-only, so a token in a file would be a token it can read.
+  read-only, so a token in a file would be a token it can read. What does reach
+  disk is a one-way hash: proposals carry `mcp_session = sha256(token)` as the
+  spawn's id, and drafts, sandbox copies and the mail-taint marker are keyed by
+  `sha256(tab)`, the stable per-tab id — neither can be turned back into a token.
 - **Handed out in one place.** `pty_spawn` calls
   `root_mcp::apply_to_spawn` only when `is_agent && project_id.is_none()`.
   `project_id` is the same trusted spawn input that picks the fence roots, and
@@ -154,12 +157,21 @@ and one reply out).
   falls back to `root_agents`, because before the chip was a switch every
   root agent got the tools. An unwired CLI's chip is dimmed and can't be
   switched on. So
-  no agent carries the token in its argv. This is what keeps it off disk, too:
-  a fenced argv is past tmux's message limit, and `tmux_local` then writes the
-  whole command line into a launcher script under the state dir. On a tmux
-  without `new-session -e` (< 3.2) that script would also hold the exported
-  environment, so the token is left out of it and travels as an `env` prefix on
-  tmux's own, short argv instead.
+  no agent carries the token in its *own* argv. This is what keeps it off
+  disk, too: a fenced argv is past tmux's message limit, and `tmux_local` then
+  writes the whole command line into a launcher script under the state dir. On
+  a tmux without `new-session -e` (< 3.2) that script would also hold the
+  exported environment, so the token is left out of it and travels as an `env`
+  prefix on tmux's own, short argv instead — which tmux hands to `sh -c`, so on
+  such a tmux the token *is* in the client's and that shell's argv, and
+  `/proc/<pid>/cmdline` is readable by **every local user**, not only yours.
+  Keeping it out of there too would mean a file on disk, which is the thing
+  that must not happen. On tmux ≥ 3.2 no token value is on any argv (#864):
+  the three MCP tokens are left off `new-session -e` and listed in tmux's
+  global `update-environment` (fixed slots from 8630), so tmux copies them
+  from the client's *environment* (0400) into the new session — and marks
+  them removed for a tab that has none, so no tab inherits the token of the
+  tab that happened to start the tmux server.
 - **Hidden from fenced project agents.** Bubblewrap gives each fenced agent its
   own pid namespace and `/proc`, so it cannot read the root agent's environment
   or argv.
@@ -167,6 +179,31 @@ and one reply out).
 **Known limit.** An agent you chose to run *unfenced* shares your uid and can
 read `/proc/<pid>/environ` and `/proc/<pid>/cmdline` of a root agent. That is
 what turning the fence off means, and the token does not pretend otherwise.
+
+**Known limit, inherited.** The token reaches the CLI through its environment
+(`${ELDRUN_ROOT_MCP_TOKEN}` in Claude's inline config, `bearer_token_env_var`
+for Codex, `api_key_env` for Vibe — each CLI reads it by name, so there is no
+way to hand it over that leaves it out of the process environment), and the
+environment is inherited: anything the agent runs in that tab — a git hook, a
+package script, a Makefile, a `curl` — holds the token and can call the tools
+as the tab. The same holds for a project agent's schedule token. The fence
+does not narrow this (the root fence's roots are `~/eldrun/root`; a project
+agent's fence contains its project, and the schedule endpoint is loopback
+either way). One exception widens the root fence: with
+`root_fence_projects_readable` on (default off), a root spawn also gets every
+local project directory, box folder and remote mirror **read-only**
+(`agent_fence::root_project_read_only_paths`, the `extra_ro`/`readable`
+channel, never `roots_for_scope`, whose roots are read-write binds; the state
+masks still win, so a default mirror under `remote-projects/` stays hidden).
+It is a widening on purpose — a root agent that reads every project reads
+untrusted text from all of them and has the open network — so it is a switch,
+recorded per tab at spawn as the exact paths its sandbox bound
+(`Session::projects_grant`; everything for an unfenced agent) and read by the
+mail `attach` argument, never the live setting or project list — a project
+added after the tab started is refused until a new root tab is opened. So an audit record is the **tab's**, not necessarily the agent's
+own call, and the *MCP session access* fold says so. The one thing that would
+close it — the CLI reading the secret from a 0600 file and scrubbing the
+variable before it spawns children — is the CLI's to do, not Eldrun's.
 
 **Browsers.** A request carrying an `Origin` header is refused. Browsers send
 that header on cross-origin POSTs and agent CLIs don't, so a web page cannot
@@ -266,8 +303,8 @@ subscription, and nothing here creates a collection on a server.
 
 **Tools say what they do, not whether to ask.** Each tool carries MCP
 annotations: the `*_list` tools and the read-only sweeps are `readOnlyHint`,
-and the deletes and
-`todo_update` are `destructiveHint`. Codex asks before any tool not marked
+and the deletes, `todo_update`, `calendar_update_event`, `calendar_move_events`
+and `mail_draft_update` are `destructiveHint`. Codex asks before any tool not marked
 read-only, so reads now go through without a prompt and writes still ask.
 Eldrun never passes `default_tools_approval_mode`: approval is the CLI's own,
 like its permission mode.
@@ -320,10 +357,17 @@ VM project (`docs/context/vm_projects.md`). `root_mcp::served` is the one class
 table: `tools/list` and dispatch both go through it, so a tool outside a class
 does not exist for it — the same "unknown tool" an invented name gets.
 
-- **A root tab never reads mail.** It has a shell and the open network, and
-  mail is text anyone can send you. It gets the draft tools and
+- **A cloud root tab never reads mail.** It has a shell and the open network,
+  and mail is text anyone can send you. It gets the draft tools and
   `mail_accounts_list`, nothing else; its draft schema has no recipient and no
   reply argument at all, so its drafts always have an empty `to`.
+- **A local-model tab** is the same, unless `root_mcp_mail_local_read` is on
+  (`Policy::reads_mail`): then it also reads — marked mails only, loopback
+  Ollama only — because its sole tools are this server's (Vibe's
+  `enabled_tools`). Its first read latches `Session::has_read_mail`, after
+  which it is treated as a reader for writes: always staged, tainted, reader
+  drafts. `served` lists the read tools for `LocalModel`; the switch decides
+  per request (`docs/mail_mcp_plan.md` §*Local-model reads*).
 - **A reader** gets the read tools (`mail_folders`, `mail_search`, `mail_read`,
   `mail_thread`) and the draft tools, is served **no cross-project sweep**, and
   its calendar/board writes **always stage** with `tainted: true`, whatever
@@ -354,6 +398,30 @@ lives in the mail store, shows in the review panel as a row that *opens the
 composer*, and `mail_draft_send` stays a Tauri command — nothing here sends.
 The `root-mcp-changed` event gains `kind: "draft"`, carrying the id and origin
 only.
+
+**Attachments and suggestions (root tab only; `mail_mcp_attachments_plan.md`).**
+- `attach: [{project, path}]` (≤ 5) on `mail_draft_create`/`_update`, replace
+  semantics. Refused unless the tab's spawn record says its fence shows the
+  projects, and on Windows. Resolution is the **same-roots rule**
+  (`services::mail_attach`): the roots a fenced tab of that project gets
+  (`agent_fence::attach_roots`: a remote project's mirror, never its remote
+  `directory`), none at `/`, at or above `$HOME`, or in the state dir; the path
+  checked before I/O and opened by an `openat(O_NOFOLLOW)` walk, `O_NONBLOCK`
+  and `fstat`-regular for the file, nothing in `.git`, capped at 20 MiB a file,
+  25 MiB a draft and 100 MiB a tab. The bytes are copied into the sealed outbox
+  when the agent calls; the reply carries filename, size and sha256.
+- The `staged` table carries `origin` and `source`; it is the truth Send
+  reads. An agent write refuses once any row of the draft is the user's
+  (`MailStore::change_draft_files`, one lock), and an agent delete removes the
+  outbox copies.
+- `suggested_to` (≤ 5, syntax-checked) is stored, never copied into `to`, never
+  read by a send, not echoed by `mail_drafts_list`; the composer shows each as
+  an "Agent suggests: X — Add" pill.
+- **Send is bound to the reviewed set.** `mail_agent_drafts` fills
+  `staged` from the table and the composer shows each agent file with its
+  source; `doSend` stops when the saved set differs from the one on screen, and
+  `mail_draft_send(stagedIds)` refuses in the backend when the store's set
+  differs or the draft was never saved by the composer.
 
 **Locked means refused.** `commands::mail::AgentMail` never opens the store: not
 opened this run, or opened as the memory-only stand-in, both answer "mail is
@@ -395,8 +463,12 @@ card whose body is the window's own `inspectIcs` report — the same
 So it stages at every `root_mcp_review` level including `off`, is never part of
 "Approve all", and lands in a **new local calendar**, never a CalDAV one: an
 invitation cannot be pushed to a server as the user's own entry, and undo is
-deleting one calendar. The staged copy is removed *before* the import runs, so
-a failed import cannot be approved twice into two calendars. Needs the
+deleting one calendar. The import runs *first* and the staged copy is removed
+once it is in: a failed import keeps the card and shows the error, the importer
+deletes the calendar it began when a row fails (or names it, should that delete
+fail too), and the window remembers which staged ids it imported so a card
+whose removal failed cannot be approved a second time into a second calendar.
+Needs the
 all-calendars grant and write access; a reader is not served it (it is handed
 no attachment, and this must not become the way one reaches the calendar).
 
@@ -457,8 +529,27 @@ the next request; already-pending proposals still need a decision.
 
 Tokens are fresh per spawn and revoked on tab teardown (including failed
 spawns). Teardown removes only the copy, retaining proposals as from a closed
-tab. The same PTY id on resume can find them with a fresh token. The runtime
-itself contains only the listener port, never a shared secret.
+tab; every copy left by a crash is swept at startup and again on a clean quit,
+after the listener stops accepting and the workers in flight get a short
+drain. The same PTY id on resume finds its proposals (`proposals_list` is per
+tab) and its mail drafts (owned by `sha256(tab)`) with a fresh token, and
+starts tainted if any earlier spawn of it read mail (the marker under
+`root_mcp/read_mail/`). The runtime itself contains only the listener port,
+never a shared secret.
+
+An automatic write (`destructive` level) is applied first and logged once, so
+the log never says `pending` for a change that landed; one the store could not
+take for a reason other than a stale row is logged `failed` (with the error),
+not `conflicted`, and the agent is told to propose it again. `list` also
+re-reads a pending automatic row whose rows already hold as `applied`.
+
+Refusals by name: a tool the user took away in *MCP session access* answers
+`ACCESS_NARROWED`; a local-model tab's mail read tool with the local-read
+switch off answers `LOCAL_READ_OFF`; only a tool outside the caller's class
+answers `unknown tool` (so a cloud tab never learns mail read tools exist).
+Over HTTP, a revoked or re-granted session gets its own 401 text rather than
+the 503 "switched off in Settings"; requests refused before they authenticated
+are audited as bounded, masked `admission` rows.
 
 The gate holds only while root agents are fenced. `root_mcp_status` carries
 `review_enforced` (fence policy on for root, platform fenceable, bubblewrap
@@ -469,10 +560,11 @@ review is advisory, because an unfenced agent can edit the store or
 This is a write-integrity gate, **not confidentiality protection**. Calendar
 visibility scoping is a separate read-gate feature and has not shipped here;
 fenced agents can still disclose what tools let them read. An unfenced agent
-can access the real store directly. Mail integration remains in
-`docs/mail_mcp_plan.md`: future agent drafts should share this surface, and its
-reader class must force staging and mark proposals regardless of the root's
-review setting. No mail reader, draft, send or approval tool was added here.
+can access the real store directly. Mail shipped on this surface
+(`docs/mail_mcp_plan.md`, `services::root_mcp_mail`): the reader class and a
+local-model tab that has read mail always stage, their proposals carry the
+mark, drafts are the proposal and the composer's Send the approval. No send or
+approval tool exists on the endpoint.
 
 ## MCP security policy and session controls
 
@@ -586,3 +678,11 @@ So root is a phone scope, behind a line drawn where the rights actually are
   raises the console (`useRootOverlayStore.show`); root is never switched to.
 - Root Claude tabs still spawn without `--remote-control`, so they never appear
   in Claude's own phone app — a different decision from Eldrun's paired phone.
+- **The phone's raw terminal input is trusted as the user's, and reaches the
+  pane only.** Eldrun sets `prefix None` on every tmux session it creates
+  (`tmux_local::local_tmux_args`, `ssh_exec::tmux_wrap_exec`; session-scoped,
+  so a user's own tmux sessions on the same server keep theirs). Both clients
+  already ran `status off` and nothing of Eldrun's binds the prefix, so nobody
+  loses a key — and without one, no keystroke from a paired phone can open
+  tmux's own command line and detach, rename or spawn past the review gate
+  above. Decided 2026-09-24 (`docs/mobile_link_hardening_plan.md`, decision 5).

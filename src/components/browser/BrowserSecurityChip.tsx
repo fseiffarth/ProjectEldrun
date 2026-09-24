@@ -4,7 +4,7 @@ import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
 import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import type { SecurityState } from "../../types/browser";
-import { LockIcon } from "../common/icons/Icon";
+import { LockIcon, WarningIcon } from "../common/icons/Icon";
 
 /**
  * The security chip and its popover.
@@ -57,7 +57,7 @@ export function BrowserSecurityChip({
         }}
       >
         <span className="browser-security-glyph" aria-hidden>
-          {securityGlyph(tone) ?? <LockIcon />}
+          {securityGlyph(tone) === "warning" ? <WarningIcon /> : securityGlyph(tone) ?? <LockIcon />}
         </span>
         <span className="browser-security-word">{label}</span>
         {security?.vpn_active && (

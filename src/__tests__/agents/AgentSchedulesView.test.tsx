@@ -54,7 +54,7 @@ describe("AgentSchedulesView order and model tag", () => {
     useActivityStore.setState({ lastWorkingByTab: { "p:agent-1": 1_000, "p:agent-2": 2_000 }, lastDoneByTab: { "p:agent-1": 3_000, "p:agent-2": 500 } });
     await act(async () => { render(<AgentSchedulesView scope="p" active />); });
     expect(names()).toEqual(["Claude", "Codex"]);
-    expect((await screen.findByTestId("agent-model")).textContent).toBe("opus-4-1");
+    expect((await screen.findByTestId("agent-model")).textContent).toBe("Opus 4.1");
     expect(screen.getAllByTestId("agent-model")).toHaveLength(1);
     expect((await screen.findByTestId("agent-last-prompt")).textContent).toBe("last prompt: fix the failing tests");
     expect(screen.getAllByTestId("agent-last-prompt")).toHaveLength(1);

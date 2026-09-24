@@ -14,6 +14,15 @@ import {
 } from "../../lib/window/coords";
 import { bindDragRelease, dragPlatform, PLATFORM } from "../../lib/window/dragPlatform";
 import {
+  DETACHED_DROP_CLAIM,
+  DETACHED_DROP_PROBE,
+  awaitPointerClaim,
+  installPointerTracker,
+  newDropToken,
+  type DetachedDropClaim,
+  type DetachedDropProbe,
+} from "../../lib/window/dropClaim";
+import {
   DETACHED_DRAG_END,
   DETACHED_DRAG_MOVE,
   DETACHED_DRAG_START,
@@ -44,7 +53,6 @@ import { TabHoverCard } from "../tabs/TabHoverCard";
 import { useFastMode } from "../../lib/agents/fastMode";
 import { WindowControls } from "../header/WindowControls";
 import { DragGhost, SplitPreviewOverlay } from "./CenterPanel";
-import { TRASH_PROJECT_ID } from "../../lib/projects/trashProject";
 import { TabDropPlaceholder } from "../tabs/TabDropPlaceholder";
 import { NewTabMenu } from "../tabs/NewTabMenu";
 import { CustomAgentDialog } from "../tabs/CustomAgentDialog";
@@ -71,6 +79,7 @@ import {
   dividerFraction,
   findGroup,
   isPtyTabKind,
+  type DetachedDockTarget,
   type DropEdge,
   type GroupNode,
   type LayoutNode,
@@ -79,7 +88,7 @@ import {
   type TabLocation,
 } from "../../stores/tabs";
 import { busyStateClass, useActivityStore } from "../../stores/activity";
-import type { DetachedRemoteInfo } from "../../stores/detached";
+import { detachedNewTabCwd, type DetachedRemoteInfo } from "../../stores/detached";
 import {
   TabSourceBadge,
   TabStatusMark,
@@ -376,9 +385,12 @@ export function DetachedCenterPanel({
   const fastMode = useFastMode();
   const [hoverTab, setHoverTab] = useState<{ key: string; x: number; y: number } | null>(null);
   // Multi-host locality menu (shared with TabBar). Machine names + the primary
-  // host come from the streamed `remoteInfo`; undefined ⇒ local project, no badge.
+  // host come from the streamed `remoteInfo`. Remoteness is the project's own
+  // `remote` config, as the main window's `isRemoteScope` reads it — NOT the
+  // seed's presence: since #232 every project scope (and a box) ships one, so
+  // `!!remoteInfo` put the Local/Remote badge on every local project's tabs.
   const [localityMenu, setLocalityMenu] = useState<LocalityMenuState | null>(null);
-  const isRemote = !!remoteInfo;
+  const isRemote = !!remoteInfo?.project?.remote;
   const primaryHost = remoteInfo?.primaryHost;
   const computeHosts = remoteInfo?.computeHosts;
   // One bar element per group, so a per-tab drag can hit-test the bar it's over.
@@ -814,41 +826,109 @@ export function DetachedCenterPanel({
   // it to this popout's drag store: a tab BAR → within-bar reorder slot; a group
   // BODY → edge split of that group. Mirrors CenterPanel.resolveTarget, but scans
   // this popout's own per-group bar/body refs (it may have several once split).
-  const resolveLocalTarget = useCallback((clientX: number, clientY: number) => {
-    const setTarget = useDragStore.getState().setTarget;
-    const clear = () =>
-      setTarget({ overGroup: null, edge: null, reorderGroup: null, reorderIndex: null });
-    const inside = (r: DOMRect) =>
-      clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom;
-
-    for (const [gid, bar] of barRefs.current) {
-      const br = bar.getBoundingClientRect();
-      if (!inside(br)) continue;
-      const tabEls = Array.from(bar.querySelectorAll<HTMLElement>(".tab"));
-      let slot = tabEls.length;
-      for (let i = 0; i < tabEls.length; i++) {
-        const r = tabEls[i].getBoundingClientRect();
-        if (clientX < r.left + r.width / 2) {
-          slot = i;
-          break;
+  //
+  // The pure hit-test (`hitTestLocal`) is split from the store write so the
+  // Wayland drop claim below can answer "which pane is under this point" without
+  // an in-flight drag in this popout's store.
+  const hitTestLocal = useCallback(
+    (
+      clientX: number,
+      clientY: number,
+    ):
+      | { kind: "bar"; groupId: string; slot: number }
+      | { kind: "body"; groupId: string; edge: DropEdge }
+      | null => {
+      const inside = (r: DOMRect) =>
+        clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom;
+      for (const [gid, bar] of barRefs.current) {
+        const br = bar.getBoundingClientRect();
+        if (!inside(br)) continue;
+        const tabEls = Array.from(bar.querySelectorAll<HTMLElement>(".tab"));
+        let slot = tabEls.length;
+        for (let i = 0; i < tabEls.length; i++) {
+          const r = tabEls[i].getBoundingClientRect();
+          if (clientX < r.left + r.width / 2) {
+            slot = i;
+            break;
+          }
         }
+        return { kind: "bar", groupId: gid, slot };
       }
-      setTarget({ overGroup: null, edge: null, reorderGroup: gid, reorderIndex: slot });
-      return;
-    }
-    for (const [gid, body] of bodyRefs.current) {
-      const r = body.getBoundingClientRect();
-      if (!inside(r)) continue;
-      const edge = pickEdge(
-        { left: r.left, top: r.top, width: r.width, height: r.height },
-        clientX,
-        clientY,
+      for (const [gid, body] of bodyRefs.current) {
+        const r = body.getBoundingClientRect();
+        if (!inside(r)) continue;
+        const edge = pickEdge(
+          { left: r.left, top: r.top, width: r.width, height: r.height },
+          clientX,
+          clientY,
+        );
+        return { kind: "body", groupId: gid, edge };
+      }
+      return null;
+    },
+    [],
+  );
+  const resolveLocalTarget = useCallback(
+    (clientX: number, clientY: number) => {
+      const setTarget = useDragStore.getState().setTarget;
+      const hit = hitTestLocal(clientX, clientY);
+      if (hit?.kind === "bar") {
+        setTarget({ overGroup: null, edge: null, reorderGroup: hit.groupId, reorderIndex: hit.slot });
+      } else if (hit?.kind === "body") {
+        setTarget({ overGroup: hit.groupId, edge: hit.edge, reorderGroup: null, reorderIndex: null });
+      } else {
+        setTarget({ overGroup: null, edge: null, reorderGroup: null, reorderIndex: null });
+      }
+    },
+    [hitTestLocal],
+  );
+
+  // #42 on native Wayland: CLAIM a tab that another window let go over us. With
+  // no desktop coordinates the source cannot tell which window it released over
+  // (see `lib/window/dropClaim`), so it broadcasts a probe and the window that
+  // receives the pointer next answers with the pane under it. Only a sibling of
+  // the SAME scope may answer — the host's dock moves the tab within one scope's
+  // records — and never the source itself (it committed a self-drop locally).
+  useEffect(() => {
+    installPointerTracker();
+    const label = getCurrentWindow().label;
+    let cancelClaim: (() => void) | null = null;
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void listen<DetachedDropProbe>(DETACHED_DROP_PROBE, (ev) => {
+      const probe = ev.payload;
+      if (probe.sourceLabel === label || probe.scope !== scope) return;
+      cancelClaim?.();
+      cancelClaim = awaitPointerClaim(
+        (clientX, clientY) => {
+          const hit = hitTestLocal(clientX, clientY);
+          const target: DetachedDockTarget | null =
+            hit?.kind === "bar"
+              ? { groupId: hit.groupId, index: hit.slot }
+              : hit?.kind === "body"
+                ? { groupId: hit.groupId, edge: hit.edge }
+                : null;
+          void emit(DETACHED_DROP_CLAIM, {
+            token: probe.token,
+            windowLabel: label,
+            groupId: popoutId,
+            clientX,
+            clientY,
+            target,
+          } satisfies DetachedDropClaim);
+        },
+        () => {},
+        { since: probe.releasedAt },
       );
-      setTarget({ overGroup: gid, edge, reorderGroup: null, reorderIndex: null });
-      return;
-    }
-    clear();
-  }, []);
+    })
+      .then((fn) => (disposed ? fn() : (unlisten = fn)))
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      cancelClaim?.();
+      unlisten?.();
+    };
+  }, [scope, popoutId, hitTestLocal]);
 
   // #42: a FILE dragged out of the file tree (a Files (Project) tab) onto a pane
   // inside THIS popout. The main window's `commitFileDrop` can't run here (the
@@ -1189,6 +1269,20 @@ export function DetachedCenterPanel({
       } satisfies DetachedDragEnd;
       if (streamStarted) {
         void emit(DETACHED_DRAG_END, end);
+      } else if (!cancelled && !shift && tabKey != null) {
+        // No desktop geometry (native Wayland — or a release that beat the frame
+        // snapshot) and the release was NOT over this popout: ask the window under
+        // the cursor to claim the tab (`lib/window/dropClaim`). The main window
+        // hosts the answer; none within the timeout leaves the tab where it is.
+        void emit(DETACHED_DROP_PROBE, {
+          token: newDropToken(win.label),
+          scope,
+          sourceLabel: win.label,
+          groupId: popoutId,
+          tabKey,
+          label: dragLabel,
+          releasedAt: Date.now(),
+        } satisfies DetachedDropProbe);
       } else if (!cancelled && shift && tabKey != null) {
         // Shift is an explicit new-window request, even without desktop geometry.
         // Send the host that request only on release; never stream fake positions
@@ -1656,7 +1750,7 @@ export function DetachedCenterPanel({
               `DetachedTabStrip` (i.e. outside the scrolling `.tab-strip`) for
               the main window's reason: the one control that adds a tab must not
               scroll away with the tabs when the bar overflows. */}
-          {scope !== TRASH_PROJECT_ID && <div className="tab-new-wrap">
+          <div className="tab-new-wrap">
             <button
               className="tab-new-btn"
               title={t("detachedTabs.newTab")}
@@ -1675,7 +1769,7 @@ export function DetachedCenterPanel({
             >
               +
             </button>
-          </div>}
+          </div>
           {/* Per-subwindow right file viewer, same ◫ toggle as the main window's
               TabBar. Applied optimistically + streamed to the main window. When
               the viewer is docked below, the control reserves its width (like
@@ -1962,16 +2056,17 @@ export function DetachedCenterPanel({
         )}
       </div>
       {dropActive && <div className="detached-drop-target" />}
-      {/* #42: the "+" add-tab menu for the group that opened it. cwd comes from a
-          tab already in that group (the popout's project directory). */}
+      {/* #42: the "+" add-tab menu for the group that opened it. cwd is the
+          main window's own new-tab folder (`detachedNewTabCwd`), not the active
+          tab's — a viewer tab's cwd is its file's folder. */}
       {addMenu &&
         (() => {
           const g = findGroup(tree, addMenu.groupId);
           if (!g) return null;
-          const cwd =
-            byKey.get(g.activeKey ?? g.tabKeys[0] ?? "")?.cwd ??
-            g.tabKeys.map((k) => byKey.get(k)?.cwd).find(Boolean) ??
-            "";
+          const cwd = detachedNewTabCwd(scope, remoteInfo, [
+            byKey.get(g.activeKey ?? g.tabKeys[0] ?? "")?.cwd,
+            ...g.tabKeys.map((k) => byKey.get(k)?.cwd),
+          ]);
           return (
             <NewTabMenu
               scope={scope}

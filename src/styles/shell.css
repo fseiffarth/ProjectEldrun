@@ -156,13 +156,13 @@ select option {
 }
 
 /* The head of the bar reads left-to-right as one evenly spaced run — grip ·
-   clock · hairline · ★ root · 🗑 Trash · ▣ box — and the spacing is what makes
-   it read as one: each item carries its own 10px of inset (the clock button's
-   padding, the root pill's, the Trash pill's, the box chip's), so the visible
+   clock · hairline · ▣ scope chip — and the spacing is what makes it read as
+   one: each item carries its own 10px of inset (the clock button's padding,
+   the box chip's), so the visible
    gap between any two neighbours is the sum of the two facing insets and is the
    same everywhere. Hence NO trailing padding here and no margin on the hairline:
    the pills' own left padding is the space after the line, and adding more would
-   push the root pill twice as far from the clock as the Trash pill is from it —
+   push the chip twice as far from the clock as the pills sit from each other —
    which is exactly what it used to do. The 5px gap pairs with the clock button's
    own 5px padding to make the grip-to-clock and clock-to-hairline gaps 10 too. */
 .header-left {
@@ -348,8 +348,8 @@ select option {
 
 /* ── App logo ────────────────────────────────────────────────────────── */
 /* The Eldrun spark. It used to live in a pill of its own at the head of the
-   project row (`.root-pill`, with a one-per-launch intro animation); root and
-   Trash now fold into the scope chip beside the projects, so the mark is drawn
+   project row (`.root-pill`, with a one-per-launch intro animation); root now
+   folds into the scope chip beside the projects, so the mark is drawn
    by `.box-chip-star` there and by `.detached-titlebar-logo` in a popout's
    title bar. Nothing sizes it here any more — each host does. */
 

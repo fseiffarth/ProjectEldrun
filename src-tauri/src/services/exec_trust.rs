@@ -7,8 +7,8 @@
 //! - **git hooks** (and the repo-scope config keys that name programs) on
 //!   Commit / Push / Reword / Publish,
 //! - a **`latexmkrc`** (Perl) on Build,
-//! - the project's own **prettier** (its `node_modules` copy, a JS config, or a
-//!   config that loads plugins) on Format.
+//! - the project's own **prettier** (its `node_modules` copy, a JS config, a
+//!   config that loads plugins, or one naming a shared config) on Format.
 //!
 //! Each gate collects the exact files that would run, fingerprints them
 //! (SHA-256 over sorted label + content), and compares against the approval
@@ -286,12 +286,15 @@ fn is_executable(path: &Path) -> bool {
 }
 
 fn git_subjects(repo: &Path) -> Vec<Subject> {
-    use crate::commands::git::hardened_git_command_in;
+    // The hooked variant, so the view is the one the gated verb gets: the hooks
+    // pin every other call carries would make `--git-path hooks` answer `./`.
+    // Neither query runs a hook.
+    use crate::commands::git::{hardened_git_command_in, hooked_git_command_in};
     let mut out = Vec::new();
     let mut have_hook = false;
 
     // `--git-path hooks` honours `core.hooksPath`.
-    if let Ok(o) = hardened_git_command_in(repo, &["rev-parse", "--git-path", "hooks"]).output() {
+    if let Ok(o) = hooked_git_command_in(repo, &["rev-parse", "--git-path", "hooks"]).output() {
         if o.status.success() {
             let rel = String::from_utf8_lossy(&o.stdout).trim().to_string();
             let hooks = if Path::new(&rel).is_absolute() { PathBuf::from(&rel) } else { repo.join(&rel) };
@@ -312,7 +315,7 @@ fn git_subjects(repo: &Path) -> Vec<Subject> {
     }
 
     if let Ok(o) =
-        hardened_git_command_in(repo, &["config", "--list", "--show-scope", "-z"]).output()
+        hooked_git_command_in(repo, &["config", "--list", "--show-scope", "-z"]).output()
     {
         if o.status.success() {
             for (scope, key, value) in parse_scoped_config(&o.stdout) {
@@ -467,8 +470,12 @@ fn prettier_packages(node_modules: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// A config that can execute code: JS/TS, a `plugins` list, or a package.json
-/// `"prettier": "<shared config package>"` reference.
+/// A config that can execute code: JS/TS, a `plugins` list, or a shared-config
+/// reference — prettier `require`s a config whose whole content is a string as
+/// a package, whether that is package.json's `"prettier": "@x/cfg"` or a
+/// `.prettierrc` holding just `"@x/cfg"` (#866). JSON, JSON5 and YAML configs
+/// are all read as YAML for that check (a JSON/JSON5 string is a YAML one);
+/// TOML cannot be a bare string.
 fn config_executes(name: &str, bytes: &[u8]) -> bool {
     let text = String::from_utf8_lossy(bytes);
     if name == "package.json" {
@@ -480,7 +487,9 @@ fn config_executes(name: &str, bytes: &[u8]) -> bool {
     let script = [".js", ".cjs", ".mjs", ".ts", ".cts", ".mts"]
         .iter()
         .any(|ext| name.ends_with(ext));
-    script || text.contains("plugins")
+    let shared = !name.ends_with(".toml")
+        && serde_yaml::from_str::<serde_yaml::Value>(&text).is_ok_and(|v| v.is_string());
+    script || shared || text.contains("plugins")
 }
 
 /// The nearest directory (walking up from `start`) holding a prettier config,
@@ -644,6 +653,28 @@ mod tests {
         std::fs::remove_file(tmp.path().join(".prettierrc")).unwrap();
         std::fs::write(tmp.path().join("prettier.config.js"), "module.exports={}").unwrap();
         assert!(!prettier_subjects(tmp.path()).is_empty());
+    }
+
+    /// #866: a config file holding only a module name is a shared config
+    /// prettier `require`s — code, however data-like the file looks.
+    #[test]
+    fn a_prettierrc_naming_a_shared_config_asks() {
+        for (name, body) in [
+            (".prettierrc", "\"@x/cfg\"\n"),
+            (".prettierrc.json", "\"@x/cfg\""),
+            (".prettierrc.json5", "'@x/cfg'"),
+            (".prettierrc.yaml", "some-shared-config\n"),
+        ] {
+            assert!(config_executes(name, body.as_bytes()), "{name}: {body}");
+            let tmp = tempfile::tempdir().unwrap();
+            std::fs::write(tmp.path().join(name), body).unwrap();
+            assert!(!prettier_subjects(tmp.path()).is_empty(), "{name} did not ask");
+        }
+        // Data stays data, whatever the format.
+        assert!(!config_executes(".prettierrc", b"semi: false\n"));
+        assert!(!config_executes(".prettierrc.json", br#"{"semi": false}"#));
+        assert!(!config_executes(".prettierrc.toml", b"semi = false\n"));
+        assert!(!config_executes(".prettierrc", b""));
     }
 
     #[cfg(unix)]

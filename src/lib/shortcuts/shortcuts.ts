@@ -48,6 +48,8 @@ export type ShortcutAction =
   | "closeAllTabs"
   | "steeringMode"
   | "cycleProjectBack"
+  | "cycleBox"
+  | "cycleBoxBack"
   | "shortcutHelp"
   | "rootConsole"
   | "texUp"
@@ -179,6 +181,24 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     group: "navigation",
     default: { key: "ArrowLeft", ctrl: true, shift: true },
     untested: "shortcut.cycleProjectBack",
+  },
+  // The boxes' twin of the project cycle: walk the box pills in the leading
+  // segment (their row order) and open the next / previous box. Ctrl+Shift+
+  // PageUp/Down is what tabbed terminals use to MOVE a tab, which an xterm.js
+  // terminal in Eldrun has no use for, and it is no editor chord either.
+  {
+    action: "cycleBox",
+    labelKey: "shortcut.cycleBox",
+    group: "navigation",
+    default: { key: "PageDown", ctrl: true, shift: true },
+    untested: "shortcut.cycleBox",
+  },
+  {
+    action: "cycleBoxBack",
+    labelKey: "shortcut.cycleBoxBack",
+    group: "navigation",
+    default: { key: "PageUp", ctrl: true, shift: true },
+    untested: "shortcut.cycleBoxBack",
   },
   {
     action: "shortcutHelp",

@@ -359,13 +359,10 @@ Contents:
   including backgrounded projects. Clicking switches to the project; the × button
   closes it. The pill's menu exposes the container toggle, remote actions, and
   **Publish to GitHub / GitLab** (see below).
-- **The Trash pill** — the permanent disposable-agent workspace
-  (`trash-project-pill`, `lib/projects/trashProject.ts`). It renders without the ordinary
-  pill affordances and cannot be closed or archived.
 - **The scope chip and the box pill** — `BoxScopeChip.tsx` is the row's fixed
   leading segment: one control standing for every scope that is not a project
-  pill. Its dropdown is the only list of boxes (with Root, the Trash workspace
-  and "All projects" above them); picking a box **slices** the strip to that
+  pill. Its dropdown is the only list of boxes (with Root and "All projects"
+  above them); picking a box **slices** the strip to that
   box's members. The selected box then stands beside the chip as a pill of its
   own (`.box-scope-pill`) with a member-count badge: click it to enter the box
   scope, drop a project pill on it (same pointer drag as pill reorder) to add a
@@ -711,22 +708,27 @@ merges across members, and box-rooted agent tabs (`BoxScopeChip.tsx`,
   retired; a stale persisted key is stripped in-memory on load and dropped from
   disk by the next ordinary `save_projects`. `get_boxes` reconciles away member
   ids that no longer reference a known project.
-- **Switcher (overlay model).** Member pills always render individually (with a
-  small ▣ badge naming their boxes); no box takes width in the scrolling strip.
-  Boxes are listed in the scope chip's dropdown, and the box picked there gets a
-  pill of its own in the fixed leading segment beside the chip. Empty and
-  one-member boxes survive and are still listed — the ONLY way a box disappears
-  is the box editor's explicit, confirmed **Dissolve** (the folder and agent
-  docs stay on disk).
-- **Box/unbox gestures.** Four ways in/out: the pill context menu's *Boxes*
-  group (checkbox row per box, additive toggle), Ctrl/Cmd-click multi-select →
-  "Box these (N)…", the box editor dialog (rename, full member list, dissolve;
-  opened from the box pill's menu, the pill menu, multi-select, or the switcher
-  "+"), and drag-and-drop (plain or Alt drop on the box pill — or on a row of
-  the chip's list, which springs open under a drag — = additive add; Alt-drop
-  one pill on another = new box of the two). While a box slice is selected the
-  switcher's "+" lists non-members to add, and each member pill's ✕ removes only
-  that membership.
+- **Switcher (overlay model).** Member pills always render individually, with
+  one colour swatch per box they are in (`lib/theme/boxColor`, a stable hue per
+  box id); no box takes width in the scrolling strip. Every box stands as a
+  small pill of its own in the fixed leading segment beside the scope chip —
+  its mark in the box's colour, one click into the box, a standing drop
+  target, right-click for rename / a Members checklist / edit / delete — up to
+  `MAX_BOX_PILLS`; the rest stay in the chip's dropdown (which always lists
+  every box) and the chip shows "+N". `Ctrl+Shift+PageDown/PageUp` cycle the
+  boxes. Empty and one-member boxes survive and are still listed — the ONLY way
+  a box disappears is an explicit, confirmed **Dissolve** / **Delete box** (the
+  folder and agent docs stay on disk).
+- **Box/unbox gestures.** Five ways in/out: the pill context menu's *Boxes*
+  group (checkbox row per box, additive toggle), the box pill's context menu's
+  *Members* checklist (toggles on the spot, stays open), Ctrl/Cmd-click
+  multi-select → "Box these (N)…", the box editor dialog (rename, full member
+  list, dissolve; opened from the box pill's menu, the pill menu, multi-select,
+  or the switcher "+"), and drag-and-drop (plain or Alt drop on any box pill —
+  or, when boxes overflow the row, on a row of the chip's list, which springs
+  open under a drag — = additive add; Alt-drop one pill on another = new box of
+  the two). While a box slice is selected the switcher's "+" lists non-members
+  to add, and each member pill's ✕ removes only that membership.
 - **Box folder, agent docs + member symlinks.** Opening a box (`openBox` →
   `ensure_box_folder`) lazily creates a folder under `~/eldrun/boxes/<name>/`
   (unique name resolved against other boxes and existing dirs) and
@@ -780,13 +782,6 @@ the project; nothing else about working in it changes.
   then on an ordinary `RemoteSpec { host: "127.0.0.1", port, vm: true }`.
   Mirrorless, locality pinned, with a CONNECT-proxy egress switch. Implemented;
   never live-booted.
-- **The Trash workspace** (`commands/projects.rs::ensure_trash_project`). A
-  permanent built-in project pill for disposable agents. It is created or
-  repaired before *every* project-list save and at startup, so ordinary project
-  operations cannot deactivate, archive, or weaken it, and `remove_all_owned`
-  spares it. Its sandbox spec is `SandboxScope::All` — every PTY is contained,
-  not just recognised agent CLIs — as defence in depth, so a stale shell tab in
-  it can never become a host escape.
 
 **Agent authority** has three axes that compose: the project container sandbox
 (OS containment), the tab's `location` (local / primary host / `host:<id>`
@@ -854,7 +849,7 @@ Tauri v2 Application
 +-- Rust backend (src-tauri/src/)
 |   +-- commands/         Tauri command handlers (~55 modules)
 |   |   +-- terminal.rs   PTY lifecycle, spawn/resize/kill/write
-|   |   +-- projects.rs   Project CRUD, scaffold + repair, Trash project, file tree
+|   |   +-- projects.rs   Project CRUD, scaffold + repair, file tree
 |   |   +-- fs.rs         Host-aware file read/write (local + SFTP paths)
 |   |   +-- git.rs / git_peer.rs / git_publish.rs / git_fork.rs
 |   |   +-- ssh.rs / remote.rs / sync.rs / vm.rs   Remote tiers and transports
@@ -924,7 +919,7 @@ All global data is under `~/.local/share/eldrun/`.
 
 | File | Purpose |
 |------|---------|
-| `projects.json` | Lightweight index of known projects (including the Trash entry). |
+| `projects.json` | Lightweight index of known projects. The retired built-in Trash workspace's `eldrun-trash` entry is dropped on every read/write. |
 | `boxes.json` | Project-box definitions (id, name, ordered `member_ids`, `folder?`, relations). |
 | `settings.json` | User settings: agent command, theme, workspace management, global apps, experimental flags, shortcut overrides, window state. |
 | `default_apps.json` | Global file-extension → app command map. |
@@ -1122,12 +1117,11 @@ startup. (The former `active_session.json` sentinel file is gone.)
 3. Projects marked `current` or `active` appear as project-switcher pills.
 4. The project marked `current` is the initial active scope; if none, root.
 5. Workspace management (if enabled) allocates desktops for visible projects.
-6. `ensure_trash_project` creates or repairs the permanent Trash pill.
-7. The daily recap opens on the first launch of each day (`daily_stats_recap`,
+6. The daily recap opens on the first launch of each day (`daily_stats_recap`,
    default on).
-8. If Eldrun Mobile is enabled, the loopback sidecar starts; the header's
+7. If Eldrun Mobile is enabled, the loopback sidecar starts; the header's
    `MobileIndicator` reports its status.
-9. Connection lamps fill in. Keychain reads are **bounded**
+8. Connection lamps fill in. Keychain reads are **bounded**
    (`remote_credentials::read_timed`, 4 s): a locked Secret Service collection
    reads identically to "nothing saved" and can otherwise block forever, which is
    what once left every lamp permanently amber.

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { UntestedTag } from "../common/UntestedTag";
 import {
@@ -14,12 +14,23 @@ import {
   mailFormalizeReply,
   mailPgpAvailable,
   mailPgpRecipientsReady,
+  mailStagedPreview,
   stripFormatControls,
   useMailAiFeature,
 } from "../../lib/mail";
 import { useI18nStore, useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
-import type { MailAccount, MailBody, MailDraft, MailHeader, StagedAttachment } from "../../types/mail";
+import type {
+  MailAccount,
+  MailBody,
+  MailDraft,
+  MailHeader,
+  MailPreviewBlob,
+  StagedAttachment,
+} from "../../types/mail";
+import type { MailComposeMode } from "../../stores/mail";
+import { WarningIcon } from "../common/icons/Icon";
+import { AttachmentPreview } from "./MailAttachmentPreview";
 
 /**
  * The composer.
@@ -33,11 +44,15 @@ import type { MailAccount, MailBody, MailDraft, MailHeader, StagedAttachment } f
  * the pick is keyed by draft id, the draft is saved first when it has no id yet;
  * that is the only reason `ensureDraft` exists.
  *
- * Chrome is the canonical `.modal-backdrop` > `.settings-dialog`, and the portal
- * sets its text color explicitly (`body` carries none, so black would be
- * inherited).
+ * Two hosts. As a dialog its chrome is the canonical `.modal-backdrop` >
+ * `.settings-dialog`, and the portal sets its text color explicitly (`body`
+ * carries none, so black would be inherited). `embedded`, it is the body of one
+ * of the mail window's tabs (`MailOverlay`): no portal, no backdrop, no title
+ * row — the tab strip names it and its × closes it — and it stays mounted while
+ * another tab is on screen, which is what keeps an unfinished mail unfinished
+ * rather than lost.
  */
-export type ComposeMode = "new" | "reply" | "replyAll" | "forward";
+export type ComposeMode = MailComposeMode;
 
 export interface MailComposeDialogProps {
   accounts: MailAccount[];
@@ -51,7 +66,21 @@ export interface MailComposeDialogProps {
   /** A stored draft an **agent** wrote (`origin` set), opened for review. The
    *  composer is the only way it leaves: Send is bound to what is on screen. */
   draft?: MailDraft;
+  /** The mail is finished with — sent, or its draft discarded. Nothing is left
+   *  to lose, so the host closes without asking. The dialog's × and backdrop
+   *  use it too. */
   onClose: () => void;
+  /** The Cancel button. Defaults to `onClose`; a tab host routes it through the
+   *  same "throw this away?" question as its tab ×. */
+  onCancel?: () => void;
+  /** Render as a mail-window tab body instead of a modal dialog. */
+  embedded?: boolean;
+  /** Called while what is on screen differs from what the composer opened with
+   *  (or last saved), with the current subject — the tab host's cue that
+   *  closing now throws text away. */
+  onDirty?: (subject: string) => void;
+  /** The draft was saved and nothing on screen is unsaved any more. */
+  onSaved?: (subject: string) => void;
 }
 
 /** Recipients are typed one per line or comma-separated, and parsed into a list —
@@ -87,6 +116,10 @@ export function MailComposeDialog({
   toAddress,
   draft,
   onClose,
+  onCancel,
+  embedded,
+  onDirty,
+  onSaved,
 }: MailComposeDialogProps) {
   const t = useT();
   const lang = useI18nStore((s) => s.lang);
@@ -103,15 +136,7 @@ export function MailComposeDialog({
           .filter((a) => a && a !== header.from.address)
           .join("\n")
       : "";
-  const subjectBase = stripFormatControls(header?.subject ?? "");
-  const initialSubject =
-    mode === "reply" || mode === "replyAll"
-      ? subjectBase.toLowerCase().startsWith("re:")
-        ? subjectBase
-        : `${t("mail.replyPrefix")}${subjectBase}`
-      : mode === "forward"
-        ? `${t("mail.forwardPrefix")}${subjectBase}`
-        : "";
+  const initialSubject = composeSubject(t, mode, header);
 
   const [from, setFrom] = useState(draft?.account_id ?? accountId);
   const [to, setTo] = useState(draft ? draft.to.join("\n") : initialTo);
@@ -133,7 +158,11 @@ export function MailComposeDialog({
     ),
   );
   const [draftId, setDraftId] = useState(draft?.id ?? "");
-  const [staged, setStaged] = useState<StagedAttachment[]>([]);
+  // Seeded from the draft: an agent's draft may already carry files it
+  // attached by project and path, and Send attaches the store's set — a file
+  // the composer did not show would go out unseen.
+  const [staged, setStaged] = useState<StagedAttachment[]>(draft?.staged ?? []);
+  const [preview, setPreview] = useState<{ stagedId: string; blob: MailPreviewBlob } | null>(null);
   const [busy, setBusy] = useState<"" | "attach" | "save" | "send">("");
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
@@ -220,6 +249,23 @@ export function MailComposeDialog({
     };
   }, [encrypt, recipientKey, from]);
 
+  // Dirty is "differs from the opening values", compared, not counted: a
+  // reply's quoted text is not the user's work yet, and an effect that skipped
+  // its first run would fire anyway under StrictMode's double mount. Staged
+  // attachments count by id, not by array (a save hands back a new array of the
+  // same files). A save moves the baseline to what was saved.
+  const snapshot = [from, to, cc, bcc, subject, text, staged.map((a) => a.staged_id).join(",")].join(
+    "\u0000",
+  );
+  const baseline = useRef(snapshot);
+  const latest = useRef(snapshot);
+  latest.current = snapshot;
+  const onDirtyRef = useRef(onDirty);
+  onDirtyRef.current = onDirty;
+  useEffect(() => {
+    if (snapshot !== baseline.current) onDirtyRef.current?.(subject);
+  }, [snapshot, subject]);
+
   function buildDraft(): MailDraft {
     return {
       id: draftId,
@@ -245,17 +291,43 @@ export function MailComposeDialog({
     };
   }
 
-  /** Persist the draft so it HAS an id — `mail_attach_pick` and `mail_draft_send`
-   *  are both keyed by one. Returns the id, or `""` when the save failed. */
-  async function ensureDraft(): Promise<string> {
+  /** Persist the draft. The backend answers with the staged set it holds,
+   *  which becomes what is on screen. `null` when the save failed. */
+  async function saveDraft(): Promise<MailDraft | null> {
     const saved = await mailDraftSave(buildDraft()).catch((err) => {
       setError(typeof err === "string" ? err : String(err));
       return null;
     });
-    if (!saved) return "";
+    if (!saved) return null;
     setDraftId(saved.id);
     setStaged(saved.staged ?? staged);
-    return saved.id;
+    return saved;
+  }
+
+  /** Persist the draft so it HAS an id — `mail_attach_pick` and `mail_draft_send`
+   *  are both keyed by one. Returns the id, or `""` when the save failed. */
+  async function ensureDraft(): Promise<string> {
+    return (await saveDraft())?.id ?? "";
+  }
+
+  // An agent's suggested recipients not yet in To — each a pill the user adds
+  // with a click. Never copied into To on their own.
+  const suggestions = (draft?.suggested_to ?? []).filter(
+    (a) => !parseRecipients(to).some((r) => r.toLowerCase() === a.toLowerCase()),
+  );
+  function addSuggestion(address: string) {
+    setTo((prev) => (prev.trim() ? `${prev.trimEnd()}\n${address}` : address));
+  }
+
+  async function togglePreview(stagedId: string) {
+    if (preview?.stagedId === stagedId) {
+      setPreview(null);
+      return;
+    }
+    if (!draftId) return;
+    const blob = await mailStagedPreview(draftId, stagedId).catch(() => null);
+    if (blob) setPreview({ stagedId, blob });
+    else setStatus(t("mail.previewUnavailable"));
   }
 
   async function doAttach() {
@@ -282,14 +354,22 @@ export function MailComposeDialog({
   async function doRemoveAttachment(stagedId: string) {
     if (draftId) await mailAttachRemove(draftId, stagedId).catch(() => {});
     setStaged((s) => s.filter((a) => a.staged_id !== stagedId));
+    if (preview?.stagedId === stagedId) setPreview(null);
   }
 
   async function doSaveDraft() {
     setBusy("save");
     setError("");
+    const saving = latest.current;
+    const savedSubject = subject;
     const id = await ensureDraft();
     setBusy("");
-    if (id) setStatus(t("mail.draftSaved"));
+    if (!id) return;
+    setStatus(t("mail.draftSaved"));
+    baseline.current = saving;
+    // Typed on while the save was in flight: that text is not saved, so the
+    // tab stays dirty.
+    if (latest.current === saving) onSaved?.(savedSubject);
   }
 
   async function doDiscard() {
@@ -314,12 +394,23 @@ export function MailComposeDialog({
     setBusy("send");
     setError("");
     setStatus("");
-    const id = await ensureDraft();
-    if (!id) {
+    // What the user is looking at, captured before the save. The save hands
+    // back the store's set; if that differs (a file staged or dropped behind
+    // the composer's back), stop here and show it rather than send it. The
+    // backend holds Send to the same ids.
+    const shown = staged.map((a) => a.staged_id).sort();
+    const saved = await saveDraft();
+    if (!saved) {
       setBusy("");
       return;
     }
-    const result = await mailDraftSend(id, { sign, encrypt }).catch((err) => {
+    const kept = (saved.staged ?? []).map((a) => a.staged_id).sort();
+    if (shown.length !== kept.length || shown.some((id, i) => id !== kept[i])) {
+      setBusy("");
+      setError(t("mail.attachmentsChangedBeforeSend"));
+      return;
+    }
+    const result = await mailDraftSend(saved.id, kept, { sign, encrypt }).catch((err) => {
       setError(typeof err === "string" ? err : String(err));
       return null;
     });
@@ -328,31 +419,20 @@ export function MailComposeDialog({
     if (result.error) {
       // Phase 3 sends directly and surfaces the failure — there is no retrying
       // outbox yet, so the message stays on screen rather than vanishing.
-      setError(`${t("mail.sendFailed")} ${result.error}`);
+      // The backend's half of the reviewed-set binding (`mail_draft_send`
+      // refuses a set that differs from `stagedIds`) says the same as ours.
+      setError(
+        result.error.includes("attachments changed")
+          ? t("mail.attachmentsChangedBeforeSend")
+          : `${t("mail.sendFailed")} ${result.error}`,
+      );
       return;
     }
     setStatus(t("mail.sent"));
     onClose();
   }
 
-  return createPortal(
-    <div className="modal-backdrop" onMouseDown={onClose}>
-      <div className="settings-dialog mail-compose-dialog" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="settings-title-row">
-          <h2>
-            {mode === "reply"
-              ? t("mail.composeReply")
-              : mode === "replyAll"
-                ? t("mail.composeReplyAll")
-                : mode === "forward"
-                  ? t("mail.composeForward")
-                  : t("mail.composeNew")}{" "}
-            <UntestedTag id="mailComposeDialog.1" />
-          </h2>
-          <button type="button" className="dialog-close-btn" onClick={onClose}>
-            ×
-          </button>
-        </div>
+  const form = (
         <div className="dialog-scroll">
           {draft?.origin && (
             <div className="mail-agent-banner" role="note">
@@ -365,7 +445,7 @@ export function MailComposeDialog({
                   the sender of a hostile message among them. The one thing Send
                   cannot check is whose text the body carries. */}
               {draft.origin === "reader" && parseRecipients(to).length > 0 && (
-                <div>{t("mail.agentDraftReaderRecipients")}</div>
+                <div><WarningIcon /> {t("mail.agentDraftReaderRecipients")}</div>
               )}
             </div>
           )}
@@ -373,18 +453,38 @@ export function MailComposeDialog({
             <label className="mail-field">
               <span className="mail-field-label">{t("mail.from")}</span>
               <select className="mail-input" value={from} onChange={(e) => setFrom(e.target.value)}>
+                {/* Several accounts often share one label (the owner's name),
+                    so the address rides along here. Display only — the value
+                    is the account id and the sent From: is untouched. */}
                 {accounts.map((a) => (
                   <option key={a.id} value={a.id}>
-                    {a.label || a.address}
+                    {a.label && a.label !== a.address ? `${a.label} <${a.address}>` : a.address}
                   </option>
                 ))}
               </select>
             </label>
           )}
+          {suggestions.length > 0 && (
+            <div className="mail-suggested">
+              {suggestions.map((address) => (
+                <span key={address} className="mail-suggested-pill">
+                  <span>{t("mail.agentSuggests", { address: stripFormatControls(address) })}</span>
+                  <button
+                    type="button"
+                    className="settings-btn"
+                    onClick={() => addSuggestion(address)}
+                  >
+                    {t("mail.agentSuggestsAdd")}
+                  </button>
+                  <UntestedTag id="mail.agentSuggestedRecipient" />
+                </span>
+              ))}
+            </div>
+          )}
           <label className="mail-field">
             <span className="mail-field-label">{t("mail.to")}</span>
             <textarea
-              className="mail-input mail-textarea"
+              className="mail-input mail-textarea mail-compose-to"
               rows={2}
               autoFocus
               spellCheck={false}
@@ -482,21 +582,46 @@ export function MailComposeDialog({
           </div>
           {staged.length > 0 && (
             <div className="mail-staged">
-              {staged.map((a) => (
-                <span key={a.staged_id} className="mail-staged-chip">
-                  {stripFormatControls(a.filename)}
-                  <span className="mail-staged-size">{formatSize(a.size)}</span>
-                  <button
-                    type="button"
-                    className="mail-staged-remove"
-                    title={t("mail.removeAttachment")}
-                    onClick={() => void doRemoveAttachment(a.staged_id)}
+              {staged.map((a) => {
+                // An agent's file names its source (project/relative path), so
+                // a `paper.pdf` from one project is not taken for another's.
+                const agent = a.origin === "agent";
+                return (
+                  <span
+                    key={a.staged_id}
+                    className={`mail-staged-chip${agent ? " agent" : ""}`}
+                    title={agent ? t("mail.agentAttachmentTitle") : undefined}
                   >
-                    ×
-                  </button>
-                </span>
-              ))}
+                    {agent && <span className="mail-agent-mark">{t("mail.agentAttachmentMark")}</span>}
+                    {stripFormatControls(agent ? (a.source ?? a.filename) : a.filename)}
+                    <span className="mail-staged-size">{formatSize(a.size)}</span>
+                    {agent && <UntestedTag id="mail.agentAttachmentChip" />}
+                    {agent && draftId && (
+                      <button
+                        type="button"
+                        className="mail-staged-preview"
+                        onClick={() => void togglePreview(a.staged_id)}
+                      >
+                        {preview?.stagedId === a.staged_id
+                          ? t("mail.attachmentHidePreview")
+                          : t("mail.attachmentPreview")}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="mail-staged-remove"
+                      title={t("mail.removeAttachment")}
+                      onClick={() => void doRemoveAttachment(a.staged_id)}
+                    >
+                      ×
+                    </button>
+                  </span>
+                );
+              })}
             </div>
+          )}
+          {preview && staged.some((a) => a.staged_id === preview.stagedId) && (
+            <AttachmentPreview blob={preview.blob} />
           )}
 
           {/* Offered only where it can actually be honoured: the keyring needs
@@ -537,7 +662,8 @@ export function MailComposeDialog({
           {error && <div className="project-dialog-error">{error}</div>}
 
           <div className="mail-dialog-actions">
-            <button type="button" className="settings-btn" onClick={onClose}>
+            {embedded && <UntestedTag id="mailComposeDialog.1" />}
+            <button type="button" className="settings-btn" onClick={onCancel ?? onClose}>
               {t("common.cancel")}
             </button>
             {draft && (
@@ -568,8 +694,60 @@ export function MailComposeDialog({
             </button>
           </div>
         </div>
+  );
+
+  if (embedded) {
+    return (
+      <div className="mail-compose-tab">
+        <div className="mail-compose-tab-form">{form}</div>
+      </div>
+    );
+  }
+
+  return createPortal(
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <div className="settings-dialog mail-compose-dialog" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="settings-title-row">
+          <h2>
+            {composeTitle(t, mode)} <UntestedTag id="mailComposeDialog.1" />
+          </h2>
+          <button type="button" className="dialog-close-btn" onClick={onClose}>
+            ×
+          </button>
+        </div>
+        {form}
       </div>
     </div>,
     document.body,
   );
+}
+
+/** The subject a composer opens with — "Re: …" / "Fwd: …" off the source
+ *  message, empty for a new mail. Also a reply or forward tab's label before
+ *  anything is typed. */
+export function composeSubject(
+  t: ReturnType<typeof useT>,
+  mode: ComposeMode,
+  header: MailHeader | undefined,
+): string {
+  const base = stripFormatControls(header?.subject ?? "");
+  return mode === "reply" || mode === "replyAll"
+    ? base.toLowerCase().startsWith("re:")
+      ? base
+      : `${t("mail.replyPrefix")}${base}`
+    : mode === "forward"
+      ? `${t("mail.forwardPrefix")}${base}`
+      : "";
+}
+
+/** The composer's name for what it is writing — the dialog's title and the
+ *  label of a composer tab that has no subject yet. */
+export function composeTitle(t: ReturnType<typeof useT>, mode: ComposeMode): string {
+  return mode === "reply"
+    ? t("mail.composeReply")
+    : mode === "replyAll"
+      ? t("mail.composeReplyAll")
+      : mode === "forward"
+        ? t("mail.composeForward")
+        : t("mail.composeNew");
 }

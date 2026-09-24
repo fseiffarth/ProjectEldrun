@@ -419,10 +419,10 @@ export function securityTone(security: SecurityState | null | undefined): Securi
 }
 
 /** The chip's glyph beside its word; `null` for "secure", which the chip
- *  draws as a lock. Words carry the meaning (Plan B §7.1 rule 7: icons alone
+ *  draws as a lock, and `"warning"` for "insecure", which it draws as a warning icon. Words carry the meaning (Plan B §7.1 rule 7: icons alone
  *  are a solved failure); this is only the ornament beside them. */
 export function securityGlyph(tone: SecurityTone): string | null {
-  return tone === "secure" ? null : tone === "insecure" ? "⚠\uFE0E" : "•";
+  return tone === "secure" ? null : tone === "insecure" ? "warning" : "•";
 }
 
 /**

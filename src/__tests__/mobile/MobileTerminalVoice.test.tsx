@@ -189,6 +189,23 @@ describe("Eldrun Mobile terminal dictation", () => {
     expect((FakeRecognition.instances[1] as LocalRecognition).processLocally).toBe(false);
   });
 
+  it("offers no on-device choice where the phone has no on-device model", async () => {
+    // Android's Chrome: the API is there, the model is not.
+    class RemoteOnlyRecognition extends FakeRecognition {
+      static available = vi.fn(() => Promise.resolve("unavailable" as const));
+      processLocally?: boolean;
+    }
+    Object.defineProperty(window, "webkitSpeechRecognition", { configurable: true, value: RemoteOnlyRecognition });
+    render(<Terminal tab={{ id: "opaque-agent", label: "Claude", kind: "agent", available: true, viewer_busy: false }} back={() => {}} />);
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "Reader" }));
+    const choice = screen.getByRole("menuitemcheckbox", { name: /phone's speech service/ });
+    expect(choice.getAttribute("aria-disabled")).toBe("true");
+    expect(choice.textContent).toContain("always dictates with the phone's speech service");
+    fireEvent.click(choice);
+    expect(localStorage.getItem("eldrun.mobile.voiceRemote")).toBeNull();
+  });
+
   it("does not send earlier dictation again when the phone re-reads its results", async () => {
     render(<Terminal tab={{ id: "opaque-agent", label: "Claude", kind: "agent", available: true, viewer_busy: false }} back={() => {}} />);
     await act(async () => {});

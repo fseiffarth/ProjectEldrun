@@ -250,7 +250,7 @@ pub fn fence_effective(
         .unwrap_or(global_default)
 }
 
-fn entry_directory(entry: &ProjectEntry) -> Option<PathBuf> {
+pub(crate) fn entry_directory(entry: &ProjectEntry) -> Option<PathBuf> {
     if let Some(dir) = entry.extra.get("directory").and_then(|v| v.as_str()) {
         if !dir.trim().is_empty() {
             return Some(PathBuf::from(dir.trim()));
@@ -263,7 +263,7 @@ fn entry_directory(entry: &ProjectEntry) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-fn entry_mirror(entry: &ProjectEntry) -> Option<PathBuf> {
+pub(crate) fn entry_mirror(entry: &ProjectEntry) -> Option<PathBuf> {
     entry
         .extra
         .get("mirror")
@@ -315,11 +315,133 @@ pub fn compute_fence_roots(
     Some(dedupe_paths(roots))
 }
 
+/// The roots a fenced `local_only` tab of project `id` works in, from lists —
+/// what `roots_for_scope(Some(id), true)` binds, for the mail `attach`
+/// same-roots rule (`services::mail_attach`). A remote project's own root is
+/// its local mirror (the explicit one, else the default under `state_dir`),
+/// never its `directory`, which names a path on another machine and, in a
+/// legacy entry, typically the user's home. Remote box members contribute
+/// their mirrors and not their `directory` strings either: the root fence's
+/// project view ([`root_project_read_only_paths`]) exposes neither, and this
+/// must not be wider than what the calling root tab can read.
+pub fn attach_roots(
+    boxes: &BoxesList,
+    projects: &ProjectsList,
+    id: &str,
+    state_dir: &Path,
+) -> Option<Vec<PathBuf>> {
+    if crate::commands::boxes::box_id_of_scope(id).is_some() {
+        return None;
+    }
+    let mut roots = compute_fence_roots(boxes, projects, id, true)?;
+    let mirror = |p: &ProjectEntry| {
+        entry_mirror(p)
+            .unwrap_or_else(|| crate::services::remote_sync::default_mirror_dir_in(state_dir, &p.id))
+    };
+    let project = projects.iter().find(|p| p.id == id)?;
+    if project.extra.contains_key("remote") {
+        roots[0] = mirror(project);
+    }
+    let remote_dirs: Vec<PathBuf> = projects
+        .iter()
+        .filter(|p| p.extra.contains_key("remote"))
+        .filter_map(entry_directory)
+        .collect();
+    let own = roots.remove(0);
+    roots.retain(|r| !remote_dirs.contains(r));
+    for b in boxes.iter().filter(|b| b.member_ids.iter().any(|m| m == id)) {
+        for m in &b.member_ids {
+            if let Some(p) = projects.iter().find(|p| &p.id == m && p.extra.contains_key("remote")) {
+                roots.push(mirror(p));
+            }
+        }
+    }
+    roots.insert(0, own);
+    Some(dedupe_paths(roots))
+}
+
 fn read_lists() -> (BoxesList, ProjectsList) {
     let boxes = storage::read_json(&storage::state_dir().join("boxes.json")).unwrap_or_default();
     let projects =
         storage::read_json(&storage::state_dir().join("projects.json")).unwrap_or_default();
     (boxes, projects)
+}
+
+/// The scope id `commands::terminal` hands the wrappers for a root-console
+/// spawn (`project_id` is `None`); a project id is a UUID, a box scope is
+/// `box:<id>`, so the literal collides with neither.
+pub const ROOT_SCOPE: &str = "root";
+
+/// `Settings::root_fence_projects_readable`: what a **root** agent's fence
+/// exposes read-only on top of `~/eldrun/root` — every local project's
+/// directory, every box folder, and every remote project's local mirror (the
+/// explicit one, else the default under the state dir, which the private-state
+/// mask keeps hidden). Pure, so the planner test drives it with lists.
+///
+/// Deliberately **not** routed through `roots_for_scope`: every root it
+/// returns becomes a read-write `--bind`. These go down the read-only channel
+/// (`extra_ro` on Linux, `readable` on macOS), and the masks are spliced after
+/// all binds, so the state dir and credential masks still win. Empty while
+/// the switch is off, and never consulted for a project scope.
+pub fn root_project_read_only_paths(
+    settings: &crate::schema::Settings,
+    projects: &ProjectsList,
+    boxes: &BoxesList,
+    state_dir: &Path,
+) -> Vec<String> {
+    if !settings.root_fence_projects_readable() {
+        return Vec::new();
+    }
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for p in projects {
+        if p.extra.contains_key("remote") {
+            paths.push(entry_mirror(p).unwrap_or_else(|| {
+                crate::services::remote_sync::default_mirror_dir_in(state_dir, &p.id)
+            }));
+        } else if let Some(dir) = entry_directory(p) {
+            paths.push(dir);
+        }
+    }
+    paths.extend(boxes.iter().filter_map(|b| b.folder.as_deref()).map(PathBuf::from));
+    dedupe_paths(paths)
+        .into_iter()
+        .filter(|p| p.is_absolute())
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect()
+}
+
+/// [`root_project_read_only_paths`] against the live state, for tab `tab`
+/// spawning in `scope_id`; empty for any project or box scope. Records the
+/// paths this argv binds ([`take_root_projects_granted`]), so the spawn path
+/// hands the tab's MCP session exactly what its fence got rather than a second
+/// read of a setting or a project list that may have changed in between.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn root_project_read_only_paths_for(tab: &str, scope_id: &str) -> Vec<String> {
+    let mut grants = root_project_grants().lock().unwrap_or_else(|p| p.into_inner());
+    grants.remove(tab);
+    if scope_id != ROOT_SCOPE {
+        return Vec::new();
+    }
+    let settings = settings();
+    let (boxes, projects) = read_lists();
+    let paths = root_project_read_only_paths(&settings, &projects, &boxes, &storage::state_dir());
+    if settings.root_fence_projects_readable() {
+        grants.insert(tab.to_string(), paths.iter().map(PathBuf::from).collect());
+    }
+    paths
+}
+
+fn root_project_grants() -> &'static Mutex<HashMap<String, Vec<PathBuf>>> {
+    static GRANTS: OnceLock<Mutex<HashMap<String, Vec<PathBuf>>>> = OnceLock::new();
+    GRANTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The project paths the fence just built for root tab `tab` binds read-only,
+/// consumed once by the spawn path; `None` when the switch was off. Also
+/// `None` on a platform with no fence wrapper (the spawn path treats an
+/// unfenced root agent separately).
+pub fn take_root_projects_granted(tab: &str) -> Option<Vec<PathBuf>> {
+    root_project_grants().lock().unwrap_or_else(|p| p.into_inner()).remove(tab)
 }
 
 /// State-backed roots used by spawn.  Unknown project/box scopes return `None`
@@ -473,12 +595,20 @@ fn normalize_lexically(path: &Path) -> PathBuf {
 /// `~/.local/bin` pointing at a payload under `~/.local/share/<tool>/`. The
 /// updater writes the new binary into `~/.local/share/claude/versions/` and
 /// swaps the `~/.local/bin/claude` link by rename (measured 2026-09-13: those
-/// two directories and nothing else), so both are handed back read-write —
-/// the `~/.local/share/<tool>` root rather than `versions/`, so a lock or
+/// two directories and nothing else). The `~/.local/share/<tool>` root comes
+/// back read-write here — the root rather than `versions/`, so a lock or
 /// staging file beside it is not refused either. An install that lives
 /// anywhere else (npm/nvm, a package manager) stays read-only: making a Node
 /// prefix's `bin/` writable would expose every global tool in it, and those
 /// installs update from a plain terminal tab anyway.
+///
+/// The launcher dir is **not** in this list (#861): `~/.local/bin` is on every
+/// PATH Eldrun and the user's shell build, so a writable one let a fenced
+/// agent plant `git` or `bwrap` for the host to run. The Linux fence gives the
+/// agent a private copy of it instead ([`native_launcher`],
+/// [`private_launcher_dir`]) and carries only the launcher link back
+/// ([`reconcile_launcher`]); Seatbelt cannot redirect a path, so on macOS the
+/// link swap is refused and the update lands on the next unfenced run.
 ///
 /// This is a deliberate widening of the fence (user, 2026-09-13): an agent
 /// that can update its own CLI can also replace it, and that binary is the one
@@ -491,7 +621,6 @@ pub(crate) fn updatable_install_dirs(
     home: &Path,
 ) -> Vec<String> {
     let hops = command_bind_paths(cmd, path_dirs, home, &[]);
-    let bin = home.join(".local/bin");
     let share = home.join(".local/share");
     let mut out: Vec<String> = Vec::new();
     for hop in &hops {
@@ -508,12 +637,185 @@ pub(crate) fn updatable_install_dirs(
             }
         }
     }
-    // Only a native-installer payload earns the launcher dir: a link in
-    // `~/.local/bin` that points somewhere else is left read-only.
-    if !out.is_empty() && hops.iter().any(|h| Path::new(h) == bin) {
-        out.insert(0, bin.to_string_lossy().into_owned());
-    }
     out
+}
+
+/// A symlink's target as an absolute, lexically clean path, resolved against
+/// `base` (the directory the link is seen in) when relative. `None` for
+/// anything that is not a symlink.
+#[cfg(any(target_os = "linux", all(unix, test)))]
+fn absolute_link_target(link: &Path, base: &Path) -> Option<PathBuf> {
+    if !link.symlink_metadata().ok()?.file_type().is_symlink() {
+        return None;
+    }
+    let target = std::fs::read_link(link).ok()?;
+    Some(normalize_lexically(&base.join(target)))
+}
+
+/// A native-installed CLI's launcher: the `~/.local/bin/<name>` link and the
+/// `~/.local/share/<tool>` root its payload lives in.
+#[cfg(any(target_os = "linux", all(unix, test)))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeLauncher {
+    /// `~/.local/bin/<name>` on the host.
+    pub link: PathBuf,
+    /// Where it points at spawn time, absolute.
+    pub target: PathBuf,
+    /// The writable `~/.local/share/<tool>` root that `target` is inside.
+    pub root: PathBuf,
+}
+
+/// The launcher link of `cmd` when it is a native install — the case
+/// [`updatable_install_dirs`] hands a writable payload root to. Pure over the
+/// filesystem.
+#[cfg(any(target_os = "linux", all(unix, test)))]
+pub(crate) fn native_launcher(
+    cmd: &str,
+    path_dirs: &[PathBuf],
+    home: &Path,
+) -> Option<NativeLauncher> {
+    let bin = home.join(".local/bin");
+    let link = if cmd.contains('/') {
+        PathBuf::from(cmd)
+    } else {
+        path_dirs
+            .iter()
+            .map(|dir| dir.join(cmd))
+            .find(|cand| cand.is_file())?
+    };
+    if link.parent()? != bin {
+        return None;
+    }
+    let target = absolute_link_target(&link, &bin)?;
+    let root = updatable_install_dirs(cmd, path_dirs, home)
+        .into_iter()
+        .map(PathBuf::from)
+        .find(|root| target.starts_with(root) && target != *root)?;
+    Some(NativeLauncher { link, target, root })
+}
+
+/// Where the fence shows the host's real `~/.local/bin`, read-only, for the
+/// private copy's links to reach (the private copy is mounted over the real
+/// path).
+#[cfg(any(target_os = "linux", all(unix, test)))]
+const HOST_BIN_MOUNT: &str = "/run/eldrun-host-local-bin";
+
+/// Build the fence's private `~/.local/bin` in `dir` (#861): every host entry
+/// as a link, so the agent's tools resolve as before, and the launcher as a
+/// link to its current payload — a directory the agent may write, for the
+/// updater's link swap, whose writes never reach the host. Host links are
+/// copied with their target made absolute; plain files are linked through the
+/// read-only [`HOST_BIN_MOUNT`] view. Returns the two mounts, in order.
+#[cfg(any(target_os = "linux", all(unix, test)))]
+pub(crate) fn private_launcher_dir(
+    launcher: &NativeLauncher,
+    dir: &Path,
+) -> std::io::Result<Vec<BindMount>> {
+    use std::os::unix::fs::symlink;
+    let bin = launcher.link.parent().unwrap_or(Path::new("/"));
+    std::fs::create_dir_all(dir)?;
+    let name = launcher.link.file_name();
+    for entry in std::fs::read_dir(bin)? {
+        let entry = entry?;
+        let file_name = entry.file_name();
+        let target = if Some(file_name.as_os_str()) == name {
+            launcher.target.clone()
+        } else if let Some(target) = absolute_link_target(&entry.path(), bin) {
+            target
+        } else {
+            Path::new(HOST_BIN_MOUNT).join(&file_name)
+        };
+        symlink(target, dir.join(&file_name))?;
+    }
+    Ok(vec![
+        BindMount {
+            src: bin.to_string_lossy().into_owned(),
+            dst: HOST_BIN_MOUNT.to_string(),
+            read_only: true,
+        },
+        BindMount {
+            src: dir.to_string_lossy().into_owned(),
+            dst: bin.to_string_lossy().into_owned(),
+            read_only: false,
+        },
+    ])
+}
+
+/// A fenced tab's private launcher, to carry an in-fence update back.
+#[cfg(any(target_os = "linux", all(unix, test)))]
+#[derive(Debug, Clone)]
+pub(crate) struct LauncherSync {
+    pub launcher: NativeLauncher,
+    /// The launcher link inside the private copy.
+    pub private_link: PathBuf,
+}
+
+/// After a fenced tab, carry the CLI's own self-update back to the host: the
+/// **one** launcher link, and only when the private copy now points at a
+/// different regular file inside the same `~/.local/share/<tool>` root and the
+/// host link still points where it did at spawn (nothing else updated it
+/// meanwhile). Replaced by rename, like the installer does. Nothing else in the
+/// private copy — a planted `git`, a repointed `uv` — is ever read back.
+/// Returns whether the host link was replaced.
+#[cfg(any(target_os = "linux", all(unix, test)))]
+pub(crate) fn reconcile_launcher(sync: &LauncherSync) -> bool {
+    let launcher = &sync.launcher;
+    let Some(bin) = launcher.link.parent() else {
+        return false;
+    };
+    // Relative targets were written as the fence saw them: in `~/.local/bin`.
+    let Some(new) = absolute_link_target(&sync.private_link, bin) else {
+        return false;
+    };
+    if new == launcher.target || !new.starts_with(&launcher.root) {
+        return false;
+    }
+    if absolute_link_target(&launcher.link, bin).as_ref() != Some(&launcher.target) {
+        return false;
+    }
+    // No link inside the root may lead the new target out of it.
+    let (Ok(real), Ok(root)) = (new.canonicalize(), launcher.root.canonicalize()) else {
+        return false;
+    };
+    if !real.starts_with(&root) || !std::fs::metadata(&real).is_ok_and(|m| m.is_file()) {
+        return false;
+    }
+    let Some(name) = launcher.link.file_name() else {
+        return false;
+    };
+    let tmp = bin.join(format!(
+        ".{}.eldrun-{}",
+        name.to_string_lossy(),
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&tmp);
+    if std::os::unix::fs::symlink(&new, &tmp).is_err() {
+        return false;
+    }
+    if std::fs::rename(&tmp, &launcher.link).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return false;
+    }
+    true
+}
+
+/// Private launchers of live fenced tabs, by tab id.
+#[cfg(target_os = "linux")]
+fn launcher_syncs() -> &'static Mutex<HashMap<String, LauncherSync>> {
+    static SYNCS: OnceLock<Mutex<HashMap<String, LauncherSync>>> = OnceLock::new();
+    SYNCS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Reconcile and forget a tab's private launcher, if it had one.
+#[cfg(target_os = "linux")]
+fn finish_launcher_sync(tab_id: &str) {
+    let sync = launcher_syncs()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(tab_id);
+    if let Some(sync) = sync {
+        reconcile_launcher(&sync);
+    }
 }
 
 /// PATH as the fenced command will see it: an explicit per-tab override wins,
@@ -565,7 +867,12 @@ pub fn bwrap_available() -> bool {
     {
         static AVAILABLE: Mutex<bool> = Mutex::new(false);
         probe_until_available(&AVAILABLE, || {
-            crate::paths::command_no_window("bwrap")
+            // Root-owned system copy only (#861): a `bwrap` planted in a
+            // user-writable PATH dir would be the fence itself. None: closed.
+            let Some(bwrap) = crate::paths::system_executable("bwrap") else {
+                return false;
+            };
+            crate::paths::command_no_window(bwrap)
                 .args([
                     "--ro-bind",
                     "/",
@@ -1000,6 +1307,7 @@ pub fn wrap_pty_options_bwrap(
     if !bwrap_available() {
         return Err(fence_unavailable_message());
     }
+    let bwrap = crate::paths::system_executable("bwrap").ok_or_else(fence_unavailable_message)?;
     let (mut mounts, symlinks) = agent_state_mounts(scope_id, roots);
     let support_mounts = mounts.clone();
     let protected = codex_content_paths(&paths::home_dir());
@@ -1009,10 +1317,14 @@ pub fn wrap_pty_options_bwrap(
     )?;
     mounts.extend(content_mounts);
     let mut extra_ro = configured_read_only_paths();
+    // A root agent's read-only view of the projects (a switch, default off):
+    // the same channel as the allowlist, so the state mask below still wins.
+    extra_ro.extend(root_project_read_only_paths_for(&opts.id, scope_id));
     let search_dirs = command_search_dirs(opts);
     // The agent's own install, read-write so it can update itself. These go
     // into `mounts`, which `bwrap_args` places after `extra_ro`, so they shadow
-    // the allowlist's read-only `~/.local/bin` (later mounts win).
+    // the allowlist's read-only copies (later mounts win) — and so does the
+    // private `~/.local/bin` below.
     let updatable = updatable_install_dirs(&opts.cmd, &search_dirs, &paths::home_dir());
     let mut visible = extra_ro.clone();
     visible.extend(updatable.iter().cloned());
@@ -1027,6 +1339,28 @@ pub fn wrap_pty_options_bwrap(
         dst: dir,
         read_only: false,
     }));
+    // Its launcher link: swapped in a private copy of `~/.local/bin`, never the
+    // host's (#861), and carried back when the tab ends. Without the copy the
+    // launcher dir stays read-only and only the link swap of an update fails.
+    let launcher = native_launcher(&opts.cmd, &search_dirs, &paths::home_dir());
+    if let Some(launcher) = launcher {
+        let dir = content_shadow.path().join("local-bin");
+        match private_launcher_dir(&launcher, &dir) {
+            Ok(private) => {
+                mounts.extend(private);
+                let private_link = dir.join(launcher.link.file_name().unwrap_or_default());
+                let previous = launcher_syncs()
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(opts.id.clone(), LauncherSync { launcher, private_link });
+                // A respawn of the same tab: its last run's update first.
+                if let Some(previous) = previous {
+                    reconcile_launcher(&previous);
+                }
+            }
+            Err(e) => eprintln!("[agent_fence] private launcher dir: {e}"),
+        }
+    }
     let mut args = bwrap_args(
         &paths::home_dir_string(),
         &opts.cwd,
@@ -1046,7 +1380,7 @@ pub fn wrap_pty_options_bwrap(
     );
     // Last: overlapping roots and allowlists must not reopen private stores.
     mask_private_state(&mut args, &storage::state_dir(), &support_mounts);
-    opts.cmd = "bwrap".to_string();
+    opts.cmd = bwrap.to_string_lossy().into_owned();
     opts.args = args;
     opts.env
         .insert("ELDRUN_AGENT_FENCE".to_string(), "1".to_string());
@@ -1183,6 +1517,11 @@ fn sandbox_exec_inputs(opts: &PtyOptions, roots: &[PathBuf], scope_id: &str) -> 
     ] {
         protected.push(format!("{home}/{rel}"));
     }
+    // Gemini's staged settings and MCP lists (#865): readable, never written.
+    for rel in crate::services::sandbox::GEMINI_STAGED {
+        readable.push(format!("{home}/{rel}"));
+        protected.push(format!("{home}/{rel}"));
+    }
     protected.push(state_dir.join("hooks").to_string_lossy().into_owned());
     protected.push(crate::services::agent_bin::bin_dir().to_string_lossy().into_owned());
     protected.extend(codex_content_paths(&paths::home_dir()));
@@ -1203,9 +1542,11 @@ fn sandbox_exec_inputs(opts: &PtyOptions, roots: &[PathBuf], scope_id: &str) -> 
         writable.push(dir.to_string_lossy().into_owned());
     }
     readable.extend(configured_read_only_paths());
+    readable.extend(root_project_read_only_paths_for(&opts.id, scope_id));
     let search_dirs = command_search_dirs(opts);
     // The agent's own install, writable so it can update itself — the same
-    // native-installer layout the Linux fence hands back read-write.
+    // payload root the Linux fence hands back read-write. The launcher dir is
+    // not (#861): Seatbelt cannot give a private copy, so the link swap fails.
     writable.extend(updatable_install_dirs(
         &opts.cmd,
         &search_dirs,
@@ -1276,13 +1617,16 @@ pub fn wrap_pty_options_sandbox_exec(
 
 pub fn box_root_arg(cmd: &str) -> Option<&'static str> {
     match basename(cmd) {
-        "claude" | "codex" => Some("--add-dir"),
+        "claude" => Some("--add-dir"),
         "gemini" => Some("--include-directories"),
         _ => None,
     }
 }
 
 /// Add agent-native working roots without duplicating an existing flag/value.
+/// Codex's `--add-dir` asks for extra writable roots and is ignored with a
+/// warning under read-only or managed permissions. Its mode belongs to Codex,
+/// so the outer fence supplies box access without adding that flag.
 pub fn add_box_root_args(opts: &mut PtyOptions, roots: &[PathBuf], own_dir: &Path) {
     if roots.len() <= 1 {
         return;
@@ -1451,6 +1795,9 @@ pub fn register_tab(tab_id: &str, scope_id: &str, content_shadow: Option<tempfil
 }
 
 pub fn on_tab_gone(tab_id: &str) {
+    // Before the tab's shadow (which holds the private launcher) is dropped.
+    #[cfg(target_os = "linux")]
+    finish_launcher_sync(tab_id);
     if let Some(tab) = fenced_tabs().lock().unwrap().remove(tab_id) {
         crate::services::sandbox::harvest_project_transcripts(&tab.scope_id);
     }
@@ -1468,6 +1815,45 @@ mod tests {
         assert!(!probe_until_available(&cache, || false));
         assert!(probe_until_available(&cache, || true));
         assert!(probe_until_available(&cache, || panic!("successful probe must be cached")));
+    }
+
+    /// `root_fence_projects_readable`: on, every project directory, box folder
+    /// and remote mirror reaches a root spawn's argv as `--ro-bind-try` and
+    /// never as a `--bind`; off, none of them appears; a project scope's roots
+    /// are the same either way. Unix paths: the fence exists on Linux/macOS only.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn the_root_fence_exposes_projects_read_only_only_when_switched_on() {
+        let projects: ProjectsList = serde_json::from_str(
+            r#"[{"id":"p1","name":"Alpha","status":"active","position":0,"local_file":"","directory":"/w/alpha"},
+                {"id":"p2","name":"Beta","status":"active","position":1,"local_file":"","remote":{"host":"h"},"mirror":"/w/beta-mirror"},
+                {"id":"p3","name":"Gamma","status":"active","position":2,"local_file":"","remote":{"host":"h"}}]"#,
+        )
+        .unwrap();
+        let boxes: BoxesList = serde_json::from_str(
+            r#"[{"id":"b1","name":"Box","member_ids":["p1"],"position":0,"folder":"/w/box"}]"#,
+        )
+        .unwrap();
+        let state = Path::new("/state");
+        let off = crate::schema::Settings::default();
+        assert!(root_project_read_only_paths(&off, &projects, &boxes, state).is_empty());
+        let on: crate::schema::Settings =
+            serde_json::from_str(r#"{"root_fence_projects_readable":true}"#).unwrap();
+        let paths = root_project_read_only_paths(&on, &projects, &boxes, state);
+        assert_eq!(
+            paths,
+            ["/w/alpha", "/w/beta-mirror", "/state/remote-projects/p3/mirror", "/w/box"],
+            "a remote project's mirror, never its remote directory string"
+        );
+        let args = bwrap_args("/home/u", "/home/u/eldrun/root", "claude", &[], &[PathBuf::from("/home/u/eldrun/root")], &paths, &[], &[]);
+        for p in &paths {
+            assert!(args.windows(3).any(|w| w[0] == "--ro-bind-try" && w[1] == *p && w[2] == *p), "{p} not read-only: {args:?}");
+            assert!(!args.windows(2).any(|w| (w[0] == "--bind" || w[0] == "--bind-try") && w[1] == *p), "{p} bound read-write");
+        }
+        let plain = bwrap_args("/home/u", "/home/u/eldrun/root", "claude", &[], &[PathBuf::from("/home/u/eldrun/root")], &[], &[], &[]);
+        assert!(!plain.iter().any(|a| a == "/w/alpha"));
+        // A project scope: the flag changes nothing about its roots.
+        assert_eq!(compute_fence_roots(&boxes, &projects, "p1", true), Some(vec![PathBuf::from("/w/alpha"), PathBuf::from("/w/box")]));
     }
 
     /// #158: the pin and the read-only control binds land after the root's
@@ -2009,19 +2395,24 @@ mod tests {
         std::os::unix::fs::symlink(pkg.join("codex.js"), bin.join("codex-link")).unwrap();
         let dirs = vec![bin.clone(), node_bin];
 
-        let bin_s = bin.to_string_lossy().into_owned();
-        let root_s = home
-            .join(".local/share/claude")
-            .to_string_lossy()
-            .into_owned();
-        // The launcher dir first, then the install root — not `versions/`.
-        assert_eq!(
-            updatable_install_dirs("claude", &dirs, &home),
-            vec![bin_s, root_s]
-        );
+        let root = home.join(".local/share/claude");
+        let root_s = root.to_string_lossy().into_owned();
+        // The install root — not `versions/`, and never the shared launcher
+        // dir (#861): that one is a private copy, see the next test.
+        assert_eq!(updatable_install_dirs("claude", &dirs, &home), vec![root_s]);
         assert!(updatable_install_dirs("codex", &dirs, &home).is_empty());
         assert!(updatable_install_dirs("codex-link", &dirs, &home).is_empty());
         assert!(updatable_install_dirs("no-such-agent", &dirs, &home).is_empty());
+        assert_eq!(
+            native_launcher("claude", &dirs, &home),
+            Some(NativeLauncher {
+                link: bin.join("claude"),
+                target: versions.join("2.1.270"),
+                root,
+            })
+        );
+        assert_eq!(native_launcher("codex", &dirs, &home), None);
+        assert_eq!(native_launcher("codex-link", &dirs, &home), None);
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -2029,7 +2420,7 @@ mod tests {
     fn later_rw_mount_shadows_the_allowlist_read_only_bin() {
         let bin = "/home/u/.local/bin".to_string();
         let mounts = vec![BindMount {
-            src: bin.clone(),
+            src: "/state/sandbox-stage/p/codex-content-x/local-bin".to_string(),
             dst: bin.clone(),
             read_only: false,
         }];
@@ -2050,11 +2441,99 @@ mod tests {
         let rw = out
             .iter()
             .enumerate()
-            .position(|(i, a)| a == "--bind" && out.get(i + 1) == Some(&bin))
+            .position(|(i, a)| a == "--bind" && out.get(i + 2) == Some(&bin))
             .expect("read-write bind");
         // bubblewrap applies mounts in order; the later read-write bind of the
-        // same path is the one the agent sees.
+        // same path (the private copy) is the one the agent sees.
         assert!(rw > ro, "{out:?}");
+    }
+
+    /// #861: a native install's fence binds the host's `~/.local/bin` only
+    /// read-only; the agent writes a private copy, where it can swap its
+    /// launcher link (the self-update) and plant anything else. At the end only
+    /// the launcher, repointed inside its own payload root, reaches the host.
+    #[cfg(unix)]
+    #[test]
+    fn a_fenced_update_carries_back_only_the_launcher_link() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let bin = home.join(".local/bin");
+        let versions = home.join(".local/share/claude/versions");
+        let aider = home.join(".local/share/uv/tools/aider/bin");
+        for dir in [&bin, &versions, &aider] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(versions.join("2.1.270"), "old").unwrap();
+        std::fs::write(aider.join("aider"), "").unwrap();
+        std::fs::write(bin.join("uv"), "").unwrap();
+        symlink(versions.join("2.1.270"), bin.join("claude")).unwrap();
+        symlink("../share/uv/tools/aider/bin/aider", bin.join("aider")).unwrap();
+        let dirs = vec![bin.clone()];
+        let launcher = native_launcher("claude", &dirs, &home).expect("native install");
+
+        // The fence argv: the host dir read-only (twice: the allowlist and the
+        // private copy's view), the copy read-write over it — never the host
+        // dir itself writable.
+        let private = tmp.path().join("shadow/local-bin");
+        let mut mounts = private_launcher_dir(&launcher, &private).unwrap();
+        mounts.extend(updatable_install_dirs("claude", &dirs, &home).into_iter().map(|dir| {
+            BindMount { src: dir.clone(), dst: dir, read_only: false }
+        }));
+        let bin_s = bin.to_string_lossy().into_owned();
+        let args = bwrap_args("/home/u", "/p", "claude", &[], &[], std::slice::from_ref(&bin_s), &mounts, &[]);
+        assert!(
+            !args.windows(2).any(|w| (w[0] == "--bind" || w[0] == "--bind-try") && w[1] == bin_s),
+            "host launcher dir bound writable: {args:?}"
+        );
+        assert!(args.windows(3).any(|w| w[0] == "--ro-bind" && w[1] == bin_s && w[2] == HOST_BIN_MOUNT));
+        assert!(args.windows(3).any(|w| w[0] == "--bind" && w[1] == private.to_string_lossy() && w[2] == bin_s));
+        // The copy resolves every host tool as before.
+        let link = |name: &str| std::fs::read_link(private.join(name)).unwrap();
+        assert_eq!(link("claude"), versions.join("2.1.270"));
+        assert_eq!(link("uv"), Path::new(HOST_BIN_MOUNT).join("uv"));
+        assert_eq!(link("aider"), aider.join("aider"));
+
+        // In the fence: plant helpers, and update the CLI the way its
+        // installer does (new payload, relative link swapped in by rename).
+        std::fs::write(private.join("git"), "#!/bin/sh\nevil\n").unwrap();
+        std::fs::write(private.join("bwrap"), "#!/bin/sh\nevil\n").unwrap();
+        std::fs::write(versions.join("2.1.280"), "new").unwrap();
+        symlink("../share/claude/versions/2.1.280", private.join(".claude.tmp")).unwrap();
+        std::fs::rename(private.join(".claude.tmp"), private.join("claude")).unwrap();
+        let sync = LauncherSync { launcher: launcher.clone(), private_link: private.join("claude") };
+        assert!(reconcile_launcher(&sync));
+        assert_eq!(std::fs::read_link(bin.join("claude")).unwrap(), versions.join("2.1.280"));
+        let mut names: Vec<String> = std::fs::read_dir(&bin)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["aider", "claude", "uv"], "nothing else reached the host");
+        // The host moved on since spawn: a second pass changes nothing.
+        assert!(!reconcile_launcher(&sync));
+
+        // Hostile repoints are never carried back.
+        std::fs::remove_file(bin.join("claude")).unwrap();
+        symlink(versions.join("2.1.270"), bin.join("claude")).unwrap();
+        symlink("/bin/sh", versions.join("escape")).unwrap();
+        for target in [
+            PathBuf::from("/bin/sh"),
+            aider.join("aider"),
+            versions.join("escape"),
+            versions.clone(),
+            versions.join("missing"),
+        ] {
+            std::fs::remove_file(private.join("claude")).unwrap();
+            symlink(&target, private.join("claude")).unwrap();
+            assert!(!reconcile_launcher(&sync), "{target:?} carried back");
+            assert_eq!(std::fs::read_link(bin.join("claude")).unwrap(), versions.join("2.1.270"));
+        }
+        // Nor is a plain file put where the link was.
+        std::fs::remove_file(private.join("claude")).unwrap();
+        std::fs::write(private.join("claude"), "evil").unwrap();
+        assert!(!reconcile_launcher(&sync));
+        assert_eq!(std::fs::read_link(bin.join("claude")).unwrap(), versions.join("2.1.270"));
     }
 
     #[test]
@@ -2098,7 +2577,7 @@ mod tests {
         add_box_root_args(&mut shell, &roots, Path::new("/p"));
         assert!(shell.args.is_empty());
         let mut one = opts("codex");
-        add_box_root_args(&mut one, &roots[..1], Path::new("/p"));
+        add_box_root_args(&mut one, &roots, Path::new("/p"));
         assert!(one.args.is_empty());
     }
 }

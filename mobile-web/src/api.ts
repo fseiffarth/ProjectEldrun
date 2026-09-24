@@ -171,7 +171,9 @@ export interface MobileCalendarInfo {
   color: string;
   visible: boolean;
   readonly: boolean;
-  source_url?: string;
+  /** A subscribed feed. Only the fact crosses; the feed URL, which routinely
+   * embeds a private token, stays on the desktop. */
+  subscribed?: boolean;
   caldav: boolean;
 }
 export interface MobileCalendarEventInput {
@@ -219,13 +221,21 @@ export class ApiError extends Error {
   constructor(public status: number, public code: string) { super(code); }
 }
 
-/** Set by the app root. A session can expire (12h) or vanish when the mobile
- * host restarts, and nothing anywhere inspected a mid-session 401 — the app
- * simply showed "Host unavailable" until the phone happened to lock. */
-let onUnauthorized: (() => void) | undefined;
+/** Set by the app root. A session slides out after a quiet quarter hour and
+ * vanishes when the mobile host restarts. The handler answers whether it
+ * renewed the session silently — the device key signs a fresh challenge, no
+ * PIN — in which case the request that met the 401 is sent once more; when it
+ * could not, the app has already moved to its lock screen. */
+let onUnauthorized: (() => Promise<boolean>) | undefined;
 
-export function setUnauthorizedHandler(handler: (() => void) | undefined): void {
+export function setUnauthorizedHandler(handler: (() => Promise<boolean>) | undefined): void {
   onUnauthorized = handler;
+}
+
+/** Renew the session the way a 401 would, for a caller that met the lapse
+ * elsewhere — the terminal socket's `session_expired` close. */
+export function recoverSession(): Promise<boolean> {
+  return onUnauthorized?.() ?? Promise.resolve(false);
 }
 
 /** A stalled socket on bad signal would otherwise hang a screen forever; the
@@ -249,7 +259,7 @@ function withTimeout(signal: AbortSignal | null | undefined, ms: number): AbortS
 /** `timeoutMs` overrides the default deadline for the one route that needs a
  * longer one (see `getAgentStatus`); everything else keeps `REQUEST_TIMEOUT`,
  * because a screen with no way back is worse than a failed request. */
-export async function api<T>(path: string, init?: RequestInit, timeoutMs = REQUEST_TIMEOUT): Promise<T> {
+export async function api<T>(path: string, init?: RequestInit, timeoutMs = REQUEST_TIMEOUT, retried = false): Promise<T> {
   let response: Response;
   try {
     response = await fetch(path, {
@@ -270,7 +280,8 @@ export async function api<T>(path: string, init?: RequestInit, timeoutMs = REQUE
     body = undefined;
   }
   if (response.status === 401 && !path.startsWith("/api/v1/auth/") && path !== "/api/v1/pair") {
-    onUnauthorized?.();
+    // Once: a 401 on the retry means the renewed session is refused too.
+    if (!retried && await onUnauthorized?.()) return api<T>(path, init, timeoutMs, true);
   }
   if (!response.ok) throw new ApiError(response.status, body?.error ?? "request_failed");
   // A truncated body on a 200 used to become `{}` and reach callers as `T`,
@@ -391,11 +402,28 @@ export async function getAgentStatus(tabId: string, refresh = false): Promise<Ag
 }
 
 /** One turn of an agent tab's stored conversation, as the desktop reads it
- * off the CLI's own transcript (`services::agent_transcript`). */
-export interface TranscriptEntry { kind: "prompt" | "answer"; text: string; at?: string; cut?: boolean }
+ * off the CLI's own transcript (`services::agent_transcript`). An `agent`
+ * entry is a subagent the agent spawned: `text` is what it was sent to do,
+ * `role` its kind, and `subagent` the handle that reads its own conversation
+ * (`getTranscript`) — absent until its CLI has recorded where that lives. */
+export interface TranscriptEntry {
+  kind: "prompt" | "answer" | "agent";
+  text: string;
+  at?: string;
+  cut?: boolean;
+  subagent?: string;
+  role?: string;
+  /** Phone-only, never on the wire: a prompt sent from here that the session
+   * has not recorded yet (`terminal/pendingPrompts`), by its id — and whether
+   * the link failed to deliver it, or is trying again. */
+  pending?: number;
+  failed?: boolean;
+  retrying?: boolean;
+}
 export interface SessionTranscript {
   available: boolean;
-  /** Why not, when unavailable: `unsupported`, `no_session`, `no_transcript`, `read_failed`. */
+  /** Why not, when unavailable: `unsupported`, `no_session`, `no_transcript`,
+   * `no_subagent`, `read_failed`. */
   reason?: string;
   /** Hand back on the next read to be answered `unchanged`. */
   version?: string;
@@ -421,11 +449,14 @@ export interface SessionUsage {
 /** `GET /api/v1/tabs/{id}/transcript` — the Focus view's stored-session feed.
  * `version` is what the last answer carried: while the transcript file has
  * not moved the desktop answers `unchanged` and no turns cross the link, which
- * is what makes polling it while the agent works affordable on cellular. */
-export async function getTranscript(tabId: string, version?: string, limit?: number, signal?: AbortSignal): Promise<SessionTranscript> {
+ * is what makes polling it while the agent works affordable on cellular.
+ * `subagent`, the handle on an `agent` entry, reads that subagent's own
+ * conversation instead. */
+export async function getTranscript(tabId: string, version?: string, limit?: number, signal?: AbortSignal, subagent?: string): Promise<SessionTranscript> {
   const query = new URLSearchParams();
   if (version) query.set("version", version);
   if (limit) query.set("limit", String(limit));
+  if (subagent) query.set("subagent", subagent);
   const suffix = query.size > 0 ? `?${query}` : "";
   const { transcript } = await api<{ transcript: SessionTranscript }>(
     `/api/v1/tabs/${encodeURIComponent(tabId)}/transcript${suffix}`,
@@ -545,7 +576,7 @@ export async function deleteOutboxFile(scope: OutboxScope, name: string): Promis
 
 /** POSTs a raw file to one of the desktop's drop boxes and returns the status
  * and JSON body, mapping a refusal to the desktop's wire code. */
-async function postFile<T>(url: string, file: Blob): Promise<[number, T | undefined]> {
+async function postFile<T>(url: string, file: Blob, retried = false): Promise<[number, T | undefined]> {
   let response: Response;
   try {
     response = await fetch(url, {
@@ -566,7 +597,7 @@ async function postFile<T>(url: string, file: Blob): Promise<[number, T | undefi
   } catch {
     body = undefined;
   }
-  if (response.status === 401) onUnauthorized?.();
+  if (response.status === 401 && !retried && await onUnauthorized?.()) return postFile<T>(url, file, true);
   if (!response.ok) throw new ApiError(response.status, body?.error ?? "request_failed");
   return [response.status, body];
 }
@@ -574,6 +605,18 @@ async function postFile<T>(url: string, file: Blob): Promise<[number, T | undefi
 export async function uploadToInbox(tabId: string, file: Blob, name: string): Promise<InboxAttachment> {
   const [status, body] = await postFile<{ attachment?: InboxAttachment }>(
     `/api/v1/tabs/${encodeURIComponent(tabId)}/inbox?name=${encodeURIComponent(name)}`,
+    file,
+  );
+  if (!body?.attachment?.reference) throw new ApiError(status, "malformed_response");
+  return body.attachment;
+}
+
+/** `POST /api/v1/projects/{id}/inbox` — the project screen's **＋ → Send a
+ * file**: the same drop box as `uploadToInbox`, named by the project because
+ * that screen has no tab to name. */
+export async function uploadToProjectInbox(projectId: string, file: Blob, name: string): Promise<InboxAttachment> {
+  const [status, body] = await postFile<{ attachment?: InboxAttachment }>(
+    `/api/v1/projects/${encodeURIComponent(projectId)}/inbox?name=${encodeURIComponent(name)}`,
     file,
   );
   if (!body?.attachment?.reference) throw new ApiError(status, "malformed_response");

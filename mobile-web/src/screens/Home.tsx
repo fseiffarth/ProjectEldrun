@@ -152,6 +152,12 @@ export function Home({ open, openTab, todo, mail }: {
   const [loaded, setLoaded] = useState(false);
   /** Null while the list is loading fine; otherwise why it is not. */
   const [offline, setOffline] = useState<UnavailableReason | null>(null);
+  /** Bumped to load the list again without a change of view or query: the
+   * page coming back into view, the phone coming back online, and a slow
+   * retry while the last load failed. After a silent re-login the reader
+   * lands back on this screen, and the list it was showing is whatever the
+   * dead link left — nothing else would ever ask for it again. */
+  const [reload, setReload] = useState(0);
   const [alerts, setAlerts] = useState<MobileAlerts | null>(null);
   /** The hand-arranged project order, this phone's own (`projectOrder.ts`). It
    * is read once: nothing else on the phone writes it, and re-reading it on
@@ -181,7 +187,28 @@ export function Home({ open, openTab, todo, mail }: {
       clearTimeout(timer);
       controller.abort();
     };
-  }, [view, query]);
+  }, [view, query, reload]);
+  useEffect(() => {
+    const again = () => setReload((count) => count + 1);
+    const onVisible = () => { if (document.visibilityState === "visible") again(); };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("pageshow", again);
+    window.addEventListener("online", again);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("pageshow", again);
+      window.removeEventListener("online", again);
+    };
+  }, []);
+  /** While the last load failed, try again on a slow clock — the project
+   * screen's own poll does this for its tab list (`Project.tsx`). */
+  useEffect(() => {
+    if (!offline) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") setReload((count) => count + 1);
+    }, 30_000);
+    return () => window.clearInterval(timer);
+  }, [offline]);
   useEffect(() => {
     // Alerts sit under the project list and are deliberately not part of the
     // agents mode, which shows agent tabs and nothing else; polling a feed
@@ -243,12 +270,13 @@ export function Home({ open, openTab, todo, mail }: {
         <strong>{describeUnavailable(offline).title}</strong>
         <span>{describeUnavailable(offline).hint}</span>
         <span>{rows.length ? "Showing the last list this session loaded." : "Project data is never loaded from cache."}</span>
+        {isUntested("mobile.home.recover") && <span className="untested">Untested</span>}
       </p>}
       {!loaded && !offline && <p className="projects-empty" role="status">Loading projects…</p>}
       {loaded && rows.length === 0 && <p className="projects-empty">{view === "search"
         ? query.trim() ? "No project by that name has Eldrun Mobile access." : "Type a project's name to find it."
         : "No project is active right now. Search finds any project with Eldrun Mobile access."}</p>}
-      {canReorder && <p className="reorder-hint">Drag <span aria-hidden="true">⠿</span> to arrange — this order is kept on this phone, so the Eldrun window's own project pills stay as they are. A project that has only just become active joins the end. {isUntested("mobile.home.reorder") && <span className="untested">Untested</span>}</p>}
+      {canReorder && <p className="reorder-hint">Drag <span aria-hidden="true">⠿</span> to arrange — this order is kept on this phone, so the Eldrun window's own project pills stay as they are. A project that has only just become active joins the end. {isUntested("mobile.home.reorder") && <span className="untested">{t("mobile.newTab.untested")}</span>}</p>}
       {/* A box row says it is one where a project row says its status: a box
           has no status of its own (listing it is what its switch means), and
           a "Paper" box beside a "Paper" project must be tellable apart.

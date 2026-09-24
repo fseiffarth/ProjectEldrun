@@ -1,6 +1,6 @@
 [package]
 name = "eldrun"
-version = "0.1.80"
+version = "0.1.85"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 default-run = "eldrun"
@@ -317,6 +317,13 @@ windows = { version = "0.61", features = [
 
 [target.'cfg(target_os = "macos")'.dependencies]
 plist = "1"
+# Native PDF printing (`commands/print_native.rs`): PDFKit's own print
+# operation, the one Preview runs. Same objc2 0.6 / 0.3 line tao already pulls
+# in, so only the PDFKit bindings are new.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSString"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPrintInfo", "NSPrintOperation", "NSResponder", "NSWindow"] }
+objc2-pdf-kit = { version = "0.3", default-features = false, features = ["std", "PDFDocument", "objc2-app-kit"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

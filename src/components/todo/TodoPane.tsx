@@ -11,6 +11,7 @@ import {
   applyPending,
   archivedColumnIds,
   boardColumns,
+  doneColumnId,
   fallbackColumnId,
   filterTasks,
 } from "../../lib/todoBoard";
@@ -121,8 +122,8 @@ export function TodoPane() {
     useTodoStore.getState().closeOverlay();
     const mail = useMailStore.getState();
     if (task.mail.folder_id) await mail.openFolder(task.mail.folder_id).catch(() => {});
-    await mail.selectMessage(task.mail.message_id).catch(() => {});
-    mail.openOverlay();
+    mail.openInbox();
+    mail.openMessage(task.mail.message_id);
   };
 
   return (
@@ -176,14 +177,18 @@ export function TodoPane() {
           ))}
         </select>
 
-        <label className="todo-toggle">
-          <input
-            type="checkbox"
-            checked={hideDone}
-            onChange={(e) => useTodoStore.getState().setHideDone(e.target.checked)}
-          />
-          {t("todoBoard.hideDone")}
-        </label>
+        {/* "Hide done" lives in the Done column's head; only a board with no
+            done column (coupling off) keeps it up here. */}
+        {doneColumnId(columns) === null && (
+          <label className="todo-toggle">
+            <input
+              type="checkbox"
+              checked={hideDone}
+              onChange={(e) => useTodoStore.getState().setHideDone(e.target.checked)}
+            />
+            {t("todoBoard.hideDone")}
+          </label>
+        )}
 
         {filtered && (
           <button

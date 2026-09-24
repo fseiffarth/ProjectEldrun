@@ -217,8 +217,8 @@ pub struct ExportPreview {
     pub tabs: usize,
     pub box_names: Vec<String>,
     pub suggested_file_name: String,
-    /// A machine token when this project cannot be exported at all (`"vm"`,
-    /// `"trash"`); the frontend words it. `None` means go ahead.
+    /// A machine token when this project cannot be exported at all (`"vm"`);
+    /// the frontend words it. `None` means go ahead.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocked: Option<String>,
 }
@@ -607,11 +607,6 @@ pub fn preview_project_export(project_id: String) -> Result<ExportPreview, Strin
 
 /// Why this project cannot be exported, as a machine token — or `None`.
 fn export_blocker(entry: &ProjectEntry) -> Option<String> {
-    if paths::is_trash_project_id(&entry.id) {
-        // The Trash workspace is created on demand on every installation; there
-        // is no second copy of it to move anywhere.
-        return Some("trash".to_string());
-    }
     if entry.extra.get("vm").is_some_and(|v| !v.is_null()) {
         // A VM project's working tree *is* its overlay disk under
         // `<state_dir>/vm/<id>` — typically tens of gigabytes, and useless
@@ -639,14 +634,10 @@ pub fn export_project_blocking(
         .clone();
 
     if let Some(reason) = export_blocker(&entry) {
-        return Err(match reason.as_str() {
-            "trash" => "The built-in Trash workspace exists on every installation and \
-                        cannot be exported."
-                .to_string(),
-            _ => "A project VM cannot be exported: its working tree is the VM's own disk \
-                  image. Copy files out of the VM into a plain project first."
-                .to_string(),
-        });
+        debug_assert_eq!(reason, "vm");
+        return Err("A project VM cannot be exported: its working tree is the VM's own disk \
+                    image. Copy files out of the VM into a plain project first."
+            .to_string());
     }
 
     let dest = PathBuf::from(&req.dest_path);
@@ -900,6 +891,35 @@ fn strip_session_fields(mut project: Value) -> Value {
         }
     }
     project
+}
+
+/// Remove every OpenVPN tunnel from an imported registry entry or `project.json`
+/// body — the primary's `remote` spec and each `compute_hosts` worker — together
+/// with that spec's `auto_connect`, which would otherwise bring the host up on
+/// launch expecting a tunnel that is no longer there. Returns whether anything
+/// was dropped. A tunnel runs elevated from a config file the bundle may have
+/// carried in itself (#868), so none travels: the user picks it again.
+fn drop_imported_openvpn(value: &mut Value) -> bool {
+    fn drop_from(spec: &mut Value) -> bool {
+        let Some(spec) = spec.as_object_mut() else {
+            return false;
+        };
+        if spec.remove("openvpn").is_none() {
+            return false;
+        }
+        spec.remove("auto_connect");
+        true
+    }
+    let Some(map) = value.as_object_mut() else {
+        return false;
+    };
+    let mut dropped = map.get_mut("remote").is_some_and(drop_from);
+    if let Some(hosts) = map.get_mut("compute_hosts").and_then(Value::as_array_mut) {
+        for host in hosts {
+            dropped |= drop_from(host);
+        }
+    }
+    dropped
 }
 
 fn absolutize(path: &Path) -> PathBuf {
@@ -1269,6 +1289,14 @@ pub fn import_project_export_blocking(
         rewrite(Some(old), new);
     }
 
+    // A tunnel the bundle names is not adopted (#868): its `.ovpn` may be a file
+    // the bundle itself shipped (the rewrite above even points it at the unpacked
+    // copy), and OpenVPN runs it as root. The user re-picks the config here.
+    let vpn_dropped = drop_imported_openvpn(&mut entry_value);
+    if drop_imported_openvpn(&mut project_value) || vpn_dropped {
+        notes.push("vpnDropped".to_string());
+    }
+
     let mut entry: ProjectEntry =
         serde_json::from_value(entry_value).map_err(|e| format!("bundle entry: {e}"))?;
     entry.id = id.clone();
@@ -1288,8 +1316,6 @@ pub fn import_project_export_blocking(
             entry.extra.remove("mirror");
         }
     }
-    // A bundle must never mint the Trash workspace, whatever it claims to be.
-    entry.extra.remove("eldrun_trash");
     entry.extra.remove("vm");
 
     let project_file = directory.join("project.json");
@@ -1444,6 +1470,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn imported_entries_drop_every_openvpn_tunnel() {
+        // #868: the bundle could ship its own `.ovpn`, which runs as root.
+        let mut entry = serde_json::json!({
+            "id": "p1",
+            "name": "P",
+            "remote": {
+                "host": "build.example", "remote_path": "/srv/p", "user": "alice",
+                "openvpn": {"config": "/old/mirror/evil.ovpn", "username": "u"},
+                "auto_connect": true, "key_auth": true
+            },
+            "compute_hosts": [
+                {"id": "w1", "host": "w1.example", "remote_path": "/w",
+                 "openvpn": {"config": "/old/mirror/w.ovpn"}, "auto_connect": true},
+                {"id": "w2", "host": "w2.example", "remote_path": "/w", "auto_connect": true}
+            ]
+        });
+        assert!(drop_imported_openvpn(&mut entry));
+        assert!(entry["remote"].get("openvpn").is_none());
+        assert!(entry["remote"].get("auto_connect").is_none());
+        assert!(entry["compute_hosts"][0].get("openvpn").is_none());
+        assert!(entry["compute_hosts"][0].get("auto_connect").is_none());
+        // Everything else round-trips untouched, including a worker without a tunnel.
+        assert_eq!(entry["remote"]["host"], "build.example");
+        assert_eq!(entry["remote"]["key_auth"], true);
+        assert_eq!(entry["compute_hosts"][1]["auto_connect"], true);
+        let spec: crate::schema::project::RemoteSpec =
+            serde_json::from_value(entry["remote"].clone()).unwrap();
+        assert!(spec.openvpn.is_none());
+        // Nothing to drop → reported as such (no note), and non-objects are fine.
+        assert!(!drop_imported_openvpn(&mut entry));
+        assert!(!drop_imported_openvpn(&mut serde_json::json!({"remote": null})));
+        assert!(!drop_imported_openvpn(&mut Value::Null));
+    }
+
+    #[test]
     fn class_is_sticky_under_git_and_vendor_dirs() {
         assert_eq!(class_of(".git", Class::Plain), Class::Git);
         assert_eq!(class_of("node_modules", Class::Plain), Class::Rebuildable);
@@ -1590,12 +1651,10 @@ mod tests {
         }
     }
 
-    /// Two projects cannot be moved by copying files: the Trash workspace,
-    /// which every installation makes for itself, and a VM project, whose tree
-    /// is a disk image that is not in the bundle.
+    /// A VM project cannot be moved by copying files: its tree is a disk image
+    /// that is not in the bundle.
     #[test]
-    fn the_two_unmovable_project_kinds_are_blocked_up_front() {
-        assert_eq!(export_blocker(&entry_with("eldrun-trash", &[])).as_deref(), Some("trash"));
+    fn a_vm_project_is_blocked_up_front() {
         assert_eq!(
             export_blocker(&entry_with("p1", &[("vm", serde_json::json!({ "cpus": 2 }))])).as_deref(),
             Some("vm")

@@ -904,18 +904,21 @@ pub async fn hpc_ws_pull_logs(
         .await
         .ok_or_else(|| "remote project is not connected".to_string())?;
     let entries = crate::services::sftp::list_dir_on(&sftp, &dir).await?;
-    let local_root = crate::services::remote_sync::mirror_dir(&project_id).join("logs");
-    std::fs::create_dir_all(&local_root).map_err(|e| e.to_string())?;
+    let mirror = crate::services::remote_sync::mirror_dir(&project_id);
     let mut copied = 0u32;
     for entry in entries {
-        if entry.is_dir {
+        // #863: the name is joined onto the mirror — one component only, and the
+        // write is confined (no `..`, no symlinked `logs/`, a planted file link is
+        // replaced rather than written through).
+        if entry.is_dir || !crate::services::sftp::is_single_component_name(&entry.name) {
             continue;
         }
         let remote = format!("{dir}/{}", entry.name);
         let Ok(bytes) = crate::services::sftp::read_file_on(&sftp, &remote).await else {
             continue;
         };
-        if std::fs::write(local_root.join(&entry.name), &bytes).is_ok() {
+        let rel = format!("logs/{}", entry.name);
+        if crate::services::remote_sync::write_mirror_file(&mirror, &rel, &bytes).is_ok() {
             copied += 1;
         }
     }

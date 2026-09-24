@@ -18,6 +18,10 @@ pub fn lock() -> MutexGuard<'static, ()> {
 // also replaces content; that content MUST participate in the precondition.
 pub const SYNC_FIELDS: &[&str] = &["caldav_etag", "caldav_href"];
 const CONFLICT: &str = "This entry changed since the agent looked at it";
+/// An automatic write (`destructive` level) that could not be stored for a
+/// reason other than a stale precondition: the store was unreadable, the disk
+/// full. Nothing landed; the proposal is `failed`, never `conflicted`.
+const FAILED: &str = "The change could not be stored (not a conflict); propose it again";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Row {
@@ -107,7 +111,7 @@ fn save(state: &Path, proposals: &[Proposal]) -> Result<(), String> {
         // Unknown future statuses are never silently evicted either.
         if matches!(
             p.status.as_str(),
-            "applied" | "rejected" | "conflicted" | "undone"
+            "applied" | "rejected" | "conflicted" | "undone" | "failed"
         ) {
             decided += 1;
             decided <= 200
@@ -121,34 +125,65 @@ fn save(state: &Path, proposals: &[Proposal]) -> Result<(), String> {
     }
     storage::write_json_atomic(&log_path(state), &keep).map_err(|e| e.to_string())
 }
+/// Whether every row of an automatic write already holds in `data`: its
+/// `post` is the current row (a delete: no row). What a proposal looks like
+/// when the write landed but the log's `applied` save did not follow.
+fn landed(data: &Value, p: &Proposal) -> bool {
+    p.rows.iter().all(|r| {
+        let current = row_at(data, &r.kind, &r.post["id"]);
+        if r.op == "delete" { current.is_none() } else { same(&Some(r.post.clone()), &current) }
+    })
+}
+
+/// The last replay `list` verified: the real file and the pending set it saw.
+/// A panel that polls re-reads the log, not the calendar per proposal.
+static LIST_SEEN: Mutex<Option<String>> = Mutex::new(None);
+
 pub fn list(stores: &Stores) -> Result<Vec<ReviewEntry>, String> {
     let _guard = lock();
     let mut proposals = load(stores.state)?;
-    let mut tabs = std::collections::HashSet::new();
-    for p in &proposals {
-        if p.status == "pending" {
-            tabs.insert(p.tab.clone());
-        }
-    }
-    let real = data_at(stores.calendar)?;
-    let mut changed = false;
-    for tab in tabs {
-        let mut data = real.clone();
-        for p in proposals
-            .iter_mut()
-            .filter(|p| p.tab == tab && p.status == "pending")
-        {
-            let mut candidate = data.clone();
-            if apply_rows(&mut candidate, &p.rows, &p.calendars).is_ok() {
-                data = candidate;
-            } else {
-                p.status = "conflicted".into();
-                changed = true;
+    let real_bytes = std::fs::read(stores.calendar).unwrap_or_default();
+    let pending: Vec<(&str, &str)> = proposals.iter().filter(|p| p.status == "pending").map(|p| (p.id.as_str(), p.created.as_str())).collect();
+    let signature = hash(serde_json::to_string(&json!([hash(&real_bytes), pending])).unwrap().as_bytes());
+    let verified = LIST_SEEN.lock().unwrap_or_else(|p| p.into_inner()).as_deref() == Some(signature.as_str());
+    if !verified {
+        let mut tabs = std::collections::HashSet::new();
+        for p in &proposals {
+            if p.status == "pending" {
+                tabs.insert(p.tab.clone());
             }
         }
-    }
-    if changed {
-        save(stores.state, &proposals)?;
+        let real = data_at(stores.calendar)?;
+        let mut changed = false;
+        for tab in tabs {
+            // One working copy per tab, mutated in place: a proposal is checked
+            // against a scratch clone only when the tab has more than one, and
+            // then the clone is of the copy, not of the whole store again.
+            let mut data = real.clone();
+            for p in proposals
+                .iter_mut()
+                .filter(|p| p.tab == tab && p.status == "pending")
+            {
+                if p.undo && landed(&data, p) {
+                    // An automatic write whose rows are already there: it was
+                    // applied and the log did not get to say so.
+                    p.status = "applied".into();
+                    changed = true;
+                    continue;
+                }
+                let mut candidate = data.clone();
+                if apply_rows(&mut candidate, &p.rows, &p.calendars).is_ok() {
+                    data = candidate;
+                } else {
+                    p.status = "conflicted".into();
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            save(stores.state, &proposals)?;
+        }
+        *LIST_SEEN.lock().unwrap_or_else(|p| p.into_inner()) = Some(signature);
     }
     Ok(proposals
         .into_iter()
@@ -367,6 +402,14 @@ fn capture(before: &Value, after: &Value, changes: &[Change]) -> Result<Vec<Row>
         for post in after[key].as_array().ok_or("Invalid calendar store")? {
             let pre = row_at(&cursor, kind, &post["id"]);
             if pre.as_ref() != Some(post) {
+                // A card the seeding merely filed into a column is not part of
+                // the write: the store derives that placement on every read
+                // once the board exists, so the proposal carries only the
+                // board row. It is also what keeps a first move on a big
+                // unplaced board inside the batch limit.
+                if kind == "task" && pre.as_ref().is_some_and(|pre| placement_backfill(pre, post)) {
+                    continue;
+                }
                 rows.push(Row {
                     kind: kind.into(),
                     op: "upsert".into(),
@@ -388,6 +431,14 @@ fn capture(before: &Value, after: &Value, changes: &[Change]) -> Result<Vec<Row>
     }
     Ok(rows)
 }
+/// `post` is `pre` with a column and rank filled in where there was none.
+fn placement_backfill(pre: &Value, post: &Value) -> bool {
+    let unplaced = pre["column"].as_str().is_none_or(str::is_empty);
+    let (Some(a), Some(b)) = (pre.as_object(), post.as_object()) else { return false };
+    unplaced && a.iter().all(|(k, v)| k == "column" || k == "rank" || b.get(k) == Some(v))
+        && b.iter().all(|(k, v)| k == "column" || k == "rank" || a.get(k) == Some(v))
+}
+
 fn calendar_context(before: &Value, after: &Value, rows: &[Row]) -> Result<Vec<Value>, String> {
     let mut calendars = Vec::new();
     for r in rows
@@ -433,9 +484,11 @@ pub fn call(
     }
     let _guard = lock();
     stores.check()?;
-    // A reader's taint is its class: every write it makes stages, additive ones
-    // included, and `off` cannot lower that.
-    let reader = stores.caller == root_mcp::Caller::Reader;
+    // A reader's taint is its class; a local-model tab's is latched by its
+    // first mail read. Either way every write stages, additive ones included,
+    // and `off` cannot lower that.
+    let reader = stores.caller == root_mcp::Caller::Reader
+        || stores.session.is_some_and(|s| s.has_read_mail());
     let scoped = !stores.access.calendars.all || !stores.access.projects.all;
     let level = if reader || scoped { "all".to_string() } else { stores.policy.review.clone() };
     if level == "off" && name != "proposals_list" {
@@ -502,9 +555,12 @@ pub fn call(
         let after = data_at(view.calendar)?;
         let rows = capture(&before, &after, &effects.changes)?;
         if !rows.is_empty() {
-            if rows.len() > security::MAX_ROWS || rows.iter().any(|r|
+            if rows.len() > security::MAX_ROWS {
+                return Err(format!("Change touches {} rows, more than the {} one proposal may hold; split it", rows.len(), security::MAX_ROWS));
+            }
+            if rows.iter().any(|r|
                 !stores.access.row(&r.kind, &r.post) || r.pre.as_ref().is_some_and(|pre| !stores.access.row(&r.kind, pre))) {
-                return Err("Change exceeds this session's scope or batch limit".into());
+                return Err("Change touches rows outside this session's access grant".into());
             }
             stores.check()?;
             let calendars = calendar_context(&before, &after, &rows)?;
@@ -531,24 +587,31 @@ pub fn call(
                     "mcp_session": stores.session.map(|s| &s.id),
                 })).unwrap(),
             };
-            proposals.push(p.clone());
-            save(stores.state, &proposals)?;
             effects.changes.clear();
             if automatic {
+                // Applied first, logged once: a log that says `pending` for a
+                // change that landed is the one state `list` cannot tell from
+                // a real pending row without this ordering (and it re-checks
+                // an `undo` row against the store for the crash in between).
                 match calendar::apply_change_at(stores.calendar, &p.rows, &p.calendars) {
                     Ok(changes) => {
                         effects.changes = changes;
                         p.status = "applied".into();
                     }
-                    Err(_) => {
-                        p.status = "conflicted".into();
+                    Err(e) if e == CONFLICT => p.status = "conflicted".into(),
+                    Err(e) => {
+                        p.status = "failed".into();
+                        p.extra.insert("error".into(), json!(e));
                     }
                 }
-                *proposals.last_mut().unwrap() = p.clone();
-                save(stores.state, &proposals)?;
-                if p.status == "conflicted" {
-                    return Err(CONFLICT.into());
-                }
+            }
+            proposals.push(p.clone());
+            save(stores.state, &proposals)?;
+            if p.status == "conflicted" {
+                return Err(CONFLICT.into());
+            }
+            if p.status == "failed" {
+                return Err(FAILED.into());
             }
             if !value.is_object() {
                 value = json!({"result": value});
@@ -575,7 +638,7 @@ pub fn call(
 
 fn check_proposal_access(p: &Proposal) -> Result<(), String> {
     let Some(value) = p.extra.get("mcp_access") else { return Ok(()) }; // pre-policy proposals
-    let original: Access = serde_json::from_value(value.clone()).map_err(|_| "Invalid proposal grant")?;
+    let original = Access::from_stored(value).map_err(|_| "Invalid proposal grant")?;
     let caller: root_mcp::Caller = serde_json::from_value(p.extra.get("mcp_caller").cloned().unwrap_or(Value::Null))
         .map_err(|_| "Invalid proposal caller")?;
     let current = root_mcp::sessions().into_iter().find(|s| Some(s.id.as_str()) == p.extra.get("mcp_session").and_then(Value::as_str));
@@ -709,6 +772,21 @@ pub fn apply_all(stores: &Stores, approvals: &[Approval]) -> Result<Vec<Change>,
         }
     }
     Ok(changes)
+}
+
+/// Remove every per-tab copy whose tab holds no token: at startup (nothing is
+/// live yet, so every copy a crash left goes) and on a clean quit. Copies are
+/// rebuilt from the log on the next call, so nothing is lost with them.
+pub fn sweep_sandboxes(state: &Path) {
+    let _guard = lock();
+    let Ok(entries) = std::fs::read_dir(state.join("root_mcp/sandboxes")) else { return };
+    let live: std::collections::HashSet<String> =
+        root_mcp::sessions().into_iter().map(|s| hash(s.tab.as_bytes())).collect();
+    for entry in entries.flatten() {
+        if !entry.file_name().to_str().is_some_and(|name| live.contains(name)) {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
 }
 
 pub fn cleanup_tab(state: &Path, tab: &str) {
@@ -1208,6 +1286,152 @@ mod tests {
         let (value, _) = call(&f.stores(), "root:a", "todo_add", &json!({"title":"Mine"})).unwrap();
         assert!(value.get("staged").is_none());
         assert!(!f.proposals().iter().any(|p| p.tab == "root:a"));
+    }
+
+    /// A local-model tab is tainted from its first mail read, not from spawn:
+    /// with review `off` it writes straight through until it reads, and every
+    /// write after stages with the mark.
+    #[test]
+    fn a_local_model_that_read_mail_stages_its_writes() {
+        let f = Fixture::new();
+        storage::write_json_atomic(&f.settings, &json!({"root_mcp_review":"off"})).unwrap();
+        let (_, session) = root_mcp::test_session(root_mcp::Caller::LocalModel);
+        let stores = Stores { caller: root_mcp::Caller::LocalModel, session: Some(&session), ..f.stores() };
+        let (value, _) = call(&stores, &session.identity.tab, "todo_add", &json!({"title":"Before"})).unwrap();
+        assert!(value.get("staged").is_none());
+        session.mark_read_mail();
+        let before = std::fs::read(&f.calendar).unwrap();
+        let (value, effects) = call(&stores, &session.identity.tab, "todo_add", &json!({"title":"From a mail"})).unwrap();
+        assert_eq!(value["staged"], true);
+        assert!(effects.changes.is_empty());
+        assert_eq!(std::fs::read(&f.calendar).unwrap(), before);
+        let p = f.proposals();
+        assert!(p.iter().any(|p| p.tab == session.identity.tab && p.tainted && p.status == "pending"));
+        root_mcp::revoke_tab(&session.identity.tab);
+    }
+
+    /// The taint is the tab's, not the spawn's: a tab that read mail in one
+    /// spawn starts its next spawn tainted, and its writes stage under `off`.
+    #[test]
+    fn a_tab_that_read_mail_stays_tainted_across_a_respawn() {
+        let f = Fixture::new();
+        f.mode("off");
+        let tab = "root:resumed-local";
+        let (_, first) = root_mcp::test_session_for_tab(root_mcp::Caller::LocalModel, tab, f.dir.path());
+        assert!(!first.has_read_mail());
+        let stores = Stores { caller: root_mcp::Caller::LocalModel, session: Some(&first), ..f.stores() };
+        assert!(call(&stores, tab, "todo_add", &json!({"title":"Plain"})).unwrap().0.get("staged").is_none());
+        // What the first mail read does: latch in memory and on disk.
+        first.mark_read_mail();
+        root_mcp::record_read_mail(f.dir.path(), tab);
+        // A respawn of the same tab (a `--resume`): a fresh token, the old taint.
+        let (_, second) = root_mcp::test_session_for_tab(root_mcp::Caller::LocalModel, tab, f.dir.path());
+        assert!(first.check().is_err(), "the old spawn's token is gone");
+        assert!(second.has_read_mail(), "seeded from the marker");
+        let stores = Stores { caller: root_mcp::Caller::LocalModel, session: Some(&second), ..f.stores() };
+        let (value, effects) = call(&stores, tab, "todo_add", &json!({"title":"From a mail"})).unwrap();
+        assert_eq!(value["staged"], true);
+        assert!(effects.changes.is_empty());
+        let p = f.proposals();
+        assert!(p.iter().any(|p| p.tab == tab && p.tainted && p.status == "pending"));
+        // Another tab is untouched by it.
+        let (_, other) = root_mcp::test_session_for_tab(root_mcp::Caller::LocalModel, "root:other", f.dir.path());
+        assert!(!other.has_read_mail());
+        root_mcp::revoke_tab(tab);
+        root_mcp::revoke_tab("root:other");
+    }
+
+    /// The first move on a board that has never been dragged on seeds the
+    /// columns, which files every unplaced card somewhere. That filing is the
+    /// store's own derivation, not the agent's write: the proposal carries the
+    /// moved card and the board row, whatever the board's size.
+    #[test]
+    fn a_first_move_on_a_big_unplaced_board_proposes_only_the_card_and_the_board() {
+        let f = Fixture::new();
+        f.mode("off");
+        let mut first = None;
+        for n in 0..(security::MAX_ROWS + 1) {
+            let card = f.call("setup", "todo_add", json!({"title": format!("card {n}")}));
+            first.get_or_insert(card["id"].as_str().unwrap().to_string());
+        }
+        let real = data_at(&f.calendar).unwrap();
+        assert!(real["task_columns"].as_array().is_none_or(Vec::is_empty), "no board yet");
+        assert_eq!(real["tasks"].as_array().unwrap().len(), security::MAX_ROWS + 1);
+        f.mode("all");
+        let id = first.unwrap();
+        let (value, effects) = call(&f.stores(), "root:a", "todo_move", &json!({"id": id, "column": "doing"})).unwrap();
+        assert_eq!(value["staged"], true, "{value}");
+        assert!(effects.changes.is_empty());
+        let p = f.proposals().pop().unwrap();
+        let kinds: Vec<(&str, &str)> = p.rows.iter().map(|r| (r.kind.as_str(), r.post["id"].as_str().unwrap_or(""))).collect();
+        assert_eq!(kinds, [("task", id.as_str()), ("board", "board")], "{kinds:?}");
+        assert_eq!(p.rows[0].post["column"], "doing");
+        f.approve(&p);
+        assert_eq!(f.proposals().pop().unwrap().status, "applied");
+        let real = data_at(&f.calendar).unwrap();
+        assert!(!real["task_columns"].as_array().unwrap().is_empty());
+        let moved = real["tasks"].as_array().unwrap().iter().find(|t| t["id"] == id).unwrap();
+        assert_eq!(moved["column"], "doing");
+        // A refusal for size names the size, one for scope names the scope.
+        let mut scoped = f.stores();
+        scoped.access.calendars = security::Scope { all: false, ids: vec!["nope".into()] };
+        let err = call(&scoped, "root:b", "todo_add", &json!({"title":"x"})).unwrap_err();
+        assert!(err.contains("access grant") && !err.contains("batch"), "{err}");
+    }
+
+    /// Under `destructive`, an additive write applies on its own — and when
+    /// the store cannot be written for a reason that is not a stale row, the
+    /// proposal is `failed`, with the error, never `conflicted`: the card must
+    /// not tell the user the entry changed when it did not.
+    #[cfg(unix)]
+    #[test]
+    fn an_automatic_write_that_cannot_be_stored_is_failed_not_conflicted() {
+        use std::os::unix::fs::PermissionsExt;
+        let f = Fixture::new();
+        f.mode("destructive");
+        // A first automatic write, so the log's directory exists and stays writable.
+        let (value, _) = call(&f.stores(), "root:a", "todo_add", &json!({"title":"Lands"})).unwrap();
+        assert_eq!((value["staged"].as_bool(), value["proposal_status"].as_str()), (Some(false), Some("applied")));
+        let dir = f.dir.path();
+        let writable = std::fs::metadata(dir).unwrap().permissions();
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let attempt = call(&f.stores(), "root:a", "todo_add", &json!({"title":"Cannot land"}));
+        std::fs::set_permissions(dir, writable).unwrap();
+        let Err(error) = attempt else { panic!("a read-only store must not apply") };
+        assert_eq!(error, FAILED);
+        assert_ne!(error, CONFLICT);
+        let p = f.proposals().pop().unwrap();
+        assert_eq!(p.status, "failed");
+        assert!(p.extra.get("error").and_then(Value::as_str).is_some_and(|e| !e.is_empty()));
+        assert!(!data_at(&f.calendar).unwrap().to_string().contains("Cannot land"));
+        // Decided, so it counts against no quota and Approve is not offered.
+        assert!(decide(&f.stores(), &p.id, &digest(&p), "apply").is_err());
+    }
+
+    /// An automatic write whose rows are already in the store is one whose
+    /// `applied` never reached the log (a crash between the two): `list`
+    /// reads it as applied rather than conflicting it against itself.
+    #[test]
+    fn a_landed_automatic_write_reads_as_applied() {
+        let f = Fixture::new();
+        f.mode("destructive");
+        call(&f.stores(), "root:a", "todo_add", &json!({"title":"Landed"})).unwrap();
+        let mut p = f.proposals().pop().unwrap();
+        assert_eq!((p.status.as_str(), p.undo), ("applied", true));
+        p.status = "pending".into();
+        save(f.dir.path(), &[p.clone()]).unwrap();
+        let listed = list(&f.stores()).unwrap();
+        assert_eq!(listed[0].proposal.status, "applied");
+        assert_eq!(f.proposals()[0].status, "applied", "and the log says so now");
+        // A stored grant with a field this build never heard of still approves.
+        let (value, _) = call(&f.stores(), "root:b", "todo_delete", &json!({"id": p.rows[0].post["id"]})).unwrap();
+        assert_eq!(value["staged"], true);
+        let mut q = f.proposals().pop().unwrap();
+        q.extra.get_mut("mcp_access").unwrap()["future_field"] = json!(1);
+        let mut all = f.proposals(); all.pop(); all.push(q.clone());
+        save(f.dir.path(), &all).unwrap();
+        f.approve(&f.proposals().pop().unwrap());
+        assert_eq!(f.proposals().pop().unwrap().status, "applied");
     }
 
     #[test]

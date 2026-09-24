@@ -27,6 +27,7 @@ import {
   followPrintJob,
   printSnapshot,
   JOB_APPEAR_TIMEOUT_MS,
+  type NativePdfPrint,
   type PrintProgress,
 } from "../window/printing";
 import type { PrintSnapshot } from "../../types/printing";
@@ -436,7 +437,7 @@ function tr(
   return translate(useI18nStore.getState().lang, key, params);
 }
 
-function clampScale(n: number): number {
+export function clampScale(n: number): number {
   if (!Number.isFinite(n)) return 100;
   return Math.min(400, Math.max(10, Math.round(n)));
 }
@@ -489,7 +490,16 @@ export function buildPrintDoc(bodyHtml: string, css: string, title = "Print"): s
  * (markdown, text, HTML) have no such elements; there the page controls are
  * disabled and the system dialog's own range field does the job.
  */
-export function printDocument(fullHtml: string): Promise<void> {
+/**
+ * A viewer that can print its document as ITSELF — the PDF viewer, whose sheets
+ * the preview can only show as images — passes this to {@link printDocument}.
+ * Print then hands it the preview's final sheets (print order, turns, selection)
+ * and options instead of printing the preview, so the arranging stays here and
+ * the printer gets the real document. `unsupported` → the preview prints itself.
+ */
+export type NativePrint = (sheets: PageList, opts: PrintOptions) => Promise<NativePdfPrint>;
+
+export function printDocument(fullHtml: string, native?: NativePrint): Promise<void> {
   return new Promise<void>((resolve) => {
     // ── Overlay chrome (reuses the app's shared modal classes) ──────────────
     const backdrop = document.createElement("div");
@@ -1005,8 +1015,8 @@ export function printDocument(fullHtml: string): Promise<void> {
     });
     document.addEventListener("keydown", onKeyDown);
 
-    printBtn.addEventListener("click", () => {
-      if (printBtn.disabled || !frameWin) return;
+    const printFrame = () => {
+      if (!frameWin) return;
       try {
         frameWin.focus();
         frameWin.print();
@@ -1015,6 +1025,38 @@ export function printDocument(fullHtml: string): Promise<void> {
         return;
       }
       void followJob();
+    };
+
+    /** A native print that failed says so where the user is looking. */
+    const showFailure = (e: unknown) => {
+      progressEl.hidden = false;
+      progressEl.dataset.phase = "failed";
+      const text = document.createElement("span");
+      text.className = "print-progress-text";
+      text.textContent = tr("print.failed", { msg: e instanceof Error ? e.message : String(e) });
+      progressEl.title = text.textContent;
+      progressEl.replaceChildren(text);
+    };
+
+    printBtn.addEventListener("click", () => {
+      if (printBtn.disabled || !frameWin) return;
+      if (!native || pageEls.length === 0) {
+        printFrame();
+        return;
+      }
+      printBtn.disabled = true;
+      native(printSequence(arrangement, opts), opts)
+        .then((outcome) => {
+          if (done) return;
+          if (outcome === "unsupported") printFrame();
+          else if (outcome === "sent") void followJob();
+        })
+        .catch((e) => {
+          if (!done) showFailure(e);
+        })
+        .finally(() => {
+          if (!done) printBtn.disabled = printSequence(arrangement, opts).length === 0;
+        });
     });
 
     iframe.onload = () => {
@@ -1228,8 +1270,13 @@ function checkField(
 }
 
 /** Convenience: build the document from a body + css and print it. */
-export function printHtmlBody(bodyHtml: string, css: string, title?: string): Promise<void> {
-  return printDocument(buildPrintDoc(bodyHtml, css, title));
+export function printHtmlBody(
+  bodyHtml: string,
+  css: string,
+  title?: string,
+  native?: NativePrint,
+): Promise<void> {
+  return printDocument(buildPrintDoc(bodyHtml, css, title), native);
 }
 
 /**
@@ -1237,13 +1284,25 @@ export function printHtmlBody(bodyHtml: string, css: string, title?: string): Pr
  * current order and with its turns applied — to PNG data URLs for printing, pulling
  * each sheet from its own already-open pdf.js document. So printing an edited PDF
  * prints what you see, without first having to save it. `scale` trades size for print
- * sharpness (~2× ≈ good on paper).
+ * sharpness; the default is {@link PDF_PRINT_SCALE}.
  */
+/**
+ * Print resolution for a PDF sheet, in dots per inch. The raster is the ONLY
+ * resolution the paper ever gets: WebKitGTK embeds the `<img>` in the print job
+ * pixel for pixel (measured with a headless print-to-PDF of an A4 page: a
+ * 1191×1684 raster came out as a 171 ppi image, a 2481×3508 one as 356 ppi —
+ * nothing resampled). The old 2× (144 dpi) therefore printed text visibly soft
+ * and stair-stepped; 300 dpi is ordinary laser resolution. An A4 sheet at this
+ * scale is 8.7 Mpx, inside the canvas limits below, and ~150 KB as a PNG.
+ */
+export const PDF_PRINT_DPI = 300;
+/** {@link PDF_PRINT_DPI} as a pdf.js viewport scale (one unit = 1/72 in). */
+export const PDF_PRINT_SCALE = PDF_PRINT_DPI / 72;
 /**
  * The ceiling on one rasterised sheet, in pixels. A canvas past the engine's
  * limit does not fail loudly — it comes back blank, and a blank sheet prints as
- * a blank sheet. An A4 page at 2× is 2.2 Mpx and nowhere near this; an A0/A1
- * drawing or a plotter page is (A1 at 2× is 32 Mpx), so those rasterise at
+ * a blank sheet. An A4 page at print scale is 8.7 Mpx and inside it; an A0/A1
+ * drawing or a plotter page is (A1 at 300 dpi is 70 Mpx), so those rasterise at
  * whatever scale fits instead. They are being fitted onto a much smaller sheet
  * anyway, so the resolution lost is resolution that would not have printed.
  */
@@ -1277,7 +1336,7 @@ export async function renderPdfPagesToImages(
     marks?: readonly { x: number; y: number; w: number; h: number }[];
   }[],
   docFor: (src: string) => PDFDocumentProxy | undefined,
-  scale = 2,
+  scale = PDF_PRINT_SCALE,
 ): Promise<string[]> {
   const urls: string[] = [];
   for (const ref of refs) {
@@ -1307,7 +1366,7 @@ export async function renderPdfPagesToImages(
     }
     urls.push(canvas.toDataURL("image/png"));
     // Give the backing store back before rasterising the next sheet. An A4 page at
-    // this scale is ~2 megapixels — 8 MB of pixels — and the canvas is only garbage
+    // print scale is ~9 megapixels — 35 MB of pixels — and the canvas is only garbage
     // once the collector gets to it, so printing a 200-page document otherwise held
     // every page's raster AND its data URL at the same time. The URL is already
     // taken; the pixels are finished with.

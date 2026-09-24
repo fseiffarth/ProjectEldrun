@@ -466,6 +466,7 @@ async fn reconcile_pass(
         crate::services::git_peer::load_state(project_id).enabled,
     );
 
+    let mirror_root = mirror_dir(project_id);
     let mut pulled = 0usize;
     let mut pushed = 0usize;
     let mut skipped = 0usize;
@@ -493,7 +494,7 @@ async fn reconcile_pass(
                     // must not hang this background task forever (which, sharing the
                     // session, would wedge every manual push too). A timeout abandons
                     // the pass; the pool keepalive then evicts a dead master.
-                    match run_bounded(remote_sync::pull_file(&sftp, &host_abs, hsize, &local_path))
+                    match run_bounded(remote_sync::pull_file(&sftp, &host_abs, hsize, &mirror_root, &rel))
                         .await
                     {
                         Ok((ls, lm)) => {

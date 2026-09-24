@@ -119,6 +119,85 @@ pub fn thread_model(db: &Path, thread_id: &str) -> Option<String> {
     clean_model_name(&model?)
 }
 
+/// A thread another thread spawned: one of Codex's subagents.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpawnedThread {
+    pub id: String,
+    /// What it was sent to do: its first message, else its title.
+    pub task: String,
+    /// The role it was spawned as, and the name Codex gave it.
+    pub role: Option<String>,
+    pub nickname: Option<String>,
+    /// When it was created, epoch ms.
+    pub created_ms: Option<i64>,
+    /// The rollout its row names — a path the caller checks before reading.
+    pub rollout_path: Option<String>,
+}
+
+/// The most spawned threads read for one parent, or one tree.
+const MAX_SPAWNED: i64 = 500;
+
+/// The threads `parent` spawned, oldest first, per the store at `db`: its
+/// `thread_spawn_edges`, each joined to its `threads` row. A store without
+/// the table (a release before subagents) has none.
+pub fn spawned_threads(db: &Path, parent: &str) -> Vec<SpawnedThread> {
+    query_spawned(
+        db,
+        "SELECT t.id, t.first_user_message, t.title, t.agent_role, t.agent_nickname,
+                t.created_at_ms, t.created_at, t.rollout_path
+           FROM thread_spawn_edges e JOIN threads t ON t.id = e.child_thread_id
+          WHERE e.parent_thread_id = ?1
+          ORDER BY coalesce(t.created_at_ms, t.created_at * 1000), t.id LIMIT ?2",
+        rusqlite::params![parent, MAX_SPAWNED],
+    )
+}
+
+/// Every thread under `root` — the threads it spawned, theirs, and so on to
+/// `depth` levels — per the store at `db`.
+pub fn descendant_threads(db: &Path, root: &str, depth: usize) -> Vec<SpawnedThread> {
+    query_spawned(
+        db,
+        "WITH RECURSIVE tree(id, depth) AS (
+             SELECT child_thread_id, 1 FROM thread_spawn_edges WHERE parent_thread_id = ?1
+             UNION
+             SELECT e.child_thread_id, tree.depth + 1
+               FROM thread_spawn_edges e JOIN tree ON e.parent_thread_id = tree.id
+              WHERE tree.depth < ?2)
+         SELECT t.id, t.first_user_message, t.title, t.agent_role, t.agent_nickname,
+                t.created_at_ms, t.created_at, t.rollout_path
+           FROM tree JOIN threads t ON t.id = tree.id LIMIT ?3",
+        rusqlite::params![root, depth as i64, MAX_SPAWNED],
+    )
+}
+
+fn query_spawned(db: &Path, sql: &str, params: impl rusqlite::Params) -> Vec<SpawnedThread> {
+    use rusqlite::{Connection, OpenFlags};
+
+    let Ok(conn) = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
+        return Vec::new();
+    };
+    let Ok(mut stmt) = conn.prepare(sql) else {
+        return Vec::new();
+    };
+    let text = |value: Option<String>| value.filter(|v| !v.trim().is_empty());
+    stmt.query_map(params, |row| {
+        let first: Option<String> = row.get(1)?;
+        let title: Option<String> = row.get(2)?;
+        let created_ms: Option<i64> = row.get(5)?;
+        let created_s: Option<i64> = row.get(6)?;
+        Ok(SpawnedThread {
+            id: row.get(0)?,
+            task: text(first).or(text(title)).unwrap_or_default(),
+            role: text(row.get(3)?),
+            nickname: text(row.get(4)?),
+            created_ms: created_ms.or(created_s.map(|s| s * 1000)),
+            rollout_path: text(row.get(7)?),
+        })
+    })
+    .map(|rows| rows.filter_map(Result::ok).collect())
+    .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

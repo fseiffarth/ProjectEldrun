@@ -22,6 +22,8 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `src/main.tsx` | React entry point. |
 | `src/crashReporter.ts` | Captures/forwards WebKitGTK renderer crashes to the backend. |
 | `src/lib/window/rendererWatchdog.ts` | Renderer memory watchdog: reloads a window whose webview renderer passes 4 GB. Per window (AppShell + DetachedApp); own renderer pid is probed, not asked; 10-min reload cooldown. Tests: `RendererWatchdog.test.ts`. |
+| `src/lib/window/dropClaim.ts` | Cross-window tab drops without desktop coordinates (native Wayland): the source broadcasts `DETACHED_DROP_PROBE` at release, the window that receives the pointer next answers `DETACHED_DROP_CLAIM` with the pane under it; main hosts popout-sourced probes in `CenterPanel`, `TabBar` consumes claims for its own. No claim → the tab stays. Tests: `DropClaim.test.ts`, `DetachedDropClaimHost.test.tsx`. |
+| `src/lib/window/unsavedWork.ts` | Per-heap registry of unsaved editor work; a popout answers the Wayland retire request (`detached-retire-request-<label>`) by flushing autosave and reporting clean/dirty. Tests: `DetachedRetire.test.ts`. |
 | `src/lib/window/strayFullscreen.ts` | Clears a stray OS fullscreen (it silently makes a popout unmovable). `isFullscreen()` can't be trusted, so it clears unconditionally; judgement in pure `mayClearStrayFullscreen`. |
 | `src/types/index.ts` | Shared TypeScript types. |
 
@@ -40,13 +42,15 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `ProjectSwitcher.tsx` | Thin composition root of the project bar: fixed `BoxScopeChip` segment, scrolling project strip, then + / search. Re-exports scaffold helpers. |
 | `ProjectSearch.tsx` *(in `projects/`)* | Inactive-project/box search box + results popover. |
 | `ProjectDialog.tsx` *(in `projects/`)* | New/Import project dialog: local folder, GitHub/GitLab clone or fork, SSH + OpenVPN + scaffold-fill sub-flows, and the project-container question (default on for imports, off for new); grouped fields, accessible requirements, pinned actions/operation feedback. |
-| `SettingsPanel.tsx` | Settings dialog + sub-panels, persistent category navigation (compact on narrow windows), Mobile deep links and main-scroll restoration. Built entirely out of `settingsUi.tsx` — do not hand-roll a row, a card or a header here. |
-| `settingsUi.tsx` | The settings design system (`SettingsNavigation/Header/Section/Card/SettingRow/ToggleRow/ToggleCard/SettingsList`, CSS under "Settings design system"). Every settings surface is built only from these. |
-| `HowToStart.tsx` | Welcome dialog: project-first shared onboarding steps, secondary learning links, pinned primary dismissal and shared modal focus. |
+| `SettingsPanel.tsx` | Settings dialog + sub-panels: five left-hand topic groups (`SETTINGS_GROUPS`), one page per entry (including VM prerequisites and root-tab QEMU install), a label-index search (`SEARCH_KEYS` — add a new control's label key or the search will not find it), Mobile deep links and per-page scroll restoration. Built entirely out of `settingsUi.tsx` — do not hand-roll a row, a card or a header here. |
+| `settingsUi.tsx` | The settings design system (`SettingsNavigation` (grouped rail + search box, dropdown on narrow windows)`/Header/Section/Card/SettingRow/ToggleRow/ToggleCard/SettingsList`, CSS under "Settings design system"). Every settings surface is built only from these. |
+| `HowToStart.tsx` | First-run intro wizard in the Settings navigation frame: step rail, Back/Skip/Next, ←/→, page remembered in localStorage; Welcome (`HOW_TO_START_STEPS`) and What-next pages inline. |
+| `intro/introData.ts` | Pure intro data: page order + remembered page, featured agent CLIs and sign-in commands, model recommendation by RAM/VRAM (mirrors `docs/help/local-models.md`). |
+| `intro/{Projects,Agents,LocalModels,AskEldrun}Page.tsx` + `intro/introUi.tsx` | Intro pages: live state + one-click actions via existing flows (`openProjectDialog`, `runInstallInTab`, Ollama commands, `root_mcp_status().help`, `help_search`); mounted only while shown. |
 | `ThemeCustomizer.tsx` | Theme Customizer: the whole palette as one editable token list (swatch, name, example, hex, reset) + corner style and saved presets; rendered instead of the Settings dialog. |
 | `UpdatesPanel.tsx` | Settings → Updates: check GitHub releases on mount (never in background), then download → install as separate steps. No path or URL crosses IPC. |
 | `layout/AgentContinueHost.tsx` + `stores/agents/agentContinue.ts` + `shared/usageReport.ts` | Auto-continue per agent tab: reads the CLI's own usage panel (`agent_usage`), submits `continue` a minute after the soonest rollover. Not a scheduler — writes nothing to `agent_tasks.json`. |
-| `mobile/MobileSettings.tsx` + `mobile/MobileBridgeHost.tsx` | Eldrun Mobile desktop surface (`docs/eldrun_mobile_agent_plan.md`): host/serve/pairing/device controls + the event bridge (agent catalog, tab creation, Alerts snapshot; `alert_resolve` goes through `lib/alertDone`). `mobileScope` is the one gate every handler passes — project, box, or root behind its switch + review gate (`docs/mobile_root_plan.md`). |
+| `mobile/MobileSettings.tsx` + `mobile/MobileBridgeHost.tsx` | Eldrun Mobile desktop surface (`docs/eldrun_mobile_agent_plan.md`): host/serve/pairing/device controls + the event bridge (agent catalog, tab creation, Alerts snapshot; `alert_resolve` goes through `lib/alertDone`). Phone schedule updates carry forward the stored desktop prefix commands. `mobileScope` is the one gate every handler passes — project, box, or root behind its switch + review gate (`docs/mobile_root_plan.md`). |
 | `mobile/MobileSetupGuide.tsx` | The six-step setup overlay behind the header's phone icon while Mobile is off (`HowToStart`'s chrome). Runs the `tailscale serve` command in a root terminal, and deep-links Settings to its Mobile section (`SETTINGS_ANCHORS`). |
 | `SidePanel.tsx` | File-tree overlay panel; thin host of the shared `files/ProjectFilesView`. Owns only panel chrome (📌 pin, resize, hidden-subwindows slot); also opens in the root scope (`~/eldrun/root`). |
 | `OverlayApprovals.tsx` | The console's ✓ Approvals pill + dropped panel in the mail / calendar / to-do overlay title bars: `RootReviewStrip domain=…` narrowed by tool family (`mail_*` + agent drafts, `calendar_*` + staged `.ics`, `todo_*`); local open state, not the store's `panel`. |
@@ -73,7 +77,8 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `projects/TerminalSignInToggle.tsx` | "Sign in in a terminal" per-connect switch (default off) on both connect dialogs: swaps password fields for an embedded login terminal. Never writes the global setting; not on Windows. |
 | `projects/CredentialPasteBar.tsx` | "Type it for me" bar above an embedded login terminal: pastes login name / saved password at the cursor. The secret never enters the frontend (`credential_paste_to_pty`). |
 | `projects/BigFolderExcludeDialog.tsx` | "These folders are giant — sync them?" asked once at remote setup (via `stores/bigFolders`), both sides' sizes, excluded by default; mounted once as `BigFolderDialogHost`. |
-| `projects/BoxScopeChip.tsx` | The scope chip at the head of the pill row: root terminal, Trash and boxes (#13/#41) in one dropdown, outside the scrolling strip. |
+| `projects/BoxScopeChip.tsx` | The scope chip at the head of the pill row (root terminal, every box, "All projects" in one dropdown) plus one coloured pill per box beside it (`MAX_BOX_PILLS`, drop targets, rename, Members checklist menu), outside the scrolling strip; dropdown checkboxes pick which boxes get a pill (`hide_pill`). Colour from `lib/theme/boxColor` (stored `color` wins over the id hash). |
+| `projects/BoxColorPicker.tsx` | Box pill menu Colour row: Automatic (id hash) + the tab palette + a native custom-colour chip; stores `#rrggbb` on the box. |
 | `projects/BoxEditorDialog.tsx` | The box editor (rename / full member checkbox list / confirmed Dissolve / container-VM trust notice), mounted once in `AppShell` (`BoxEditorHost`), driven by `stores/boxEditor`. |
 | `projects/ActivityCalendar.tsx` | Per-project activity calendar heatmap (unrelated to the calendar tab). |
 | `projects/scaffold.ts` | Pure helpers: name sanitize, SSH-address parse, scaffold/description fill prompts. |
@@ -88,24 +93,27 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `calendar/CalDavSyncHost.tsx` | Scheduled CalDAV sync (renders nothing), mounted once at the shell. Mail's rules: free with no account, first tick one interval away, `0` = never. |
 | `calendar/CalDavConflictDialog.tsx` | The one answer to a CalDAV 412, mounted at the shell: keep mine (conditional overwrite on fresh ETag), use the server's, or decide later. No merge. |
 | `calendar/IcsImportReviewDialog.tsx` | Shows what a picked `.ics` contains before import (`lib/calendar/icsSafety.ts`) and what Eldrun does about each finding; not raised for a clean file. Not a quarantine gate. |
-| `common/useFloatingFrame.tsx` | Move / resize / fill for the header overlays (mail, calendar, to-do): the root console's frame math and grips as a hook; frame per overlay in localStorage. |
-| `calendar/CalendarOverlay.tsx` | Calendar as a global app (`calendar_global_app`): header 🗓 overlay (`CalendarOverlayHost`) rendering the same `CalendarPane` a tab does. Twin of `MailOverlay`. |
+| `common/useFloatingFrame.tsx` | Move / resize / fill for the header overlays (mail, calendar, to-do, skills): the root console's frame math and grips as a hook; frame per overlay in localStorage. |
+| `calendar/CalendarOverlay.tsx` | Calendar as a global app (`calendar_global_app`): header 🗓 overlay (`CalendarOverlayHost`) rendering the same `CalendarPane` a tab does, in `MailOverlay`'s root-console chrome (glyph mark, one fixed tab, controls). |
 | `calendar/AlarmPopup.tsx` | In-app reminder popup (snooze/dismiss); mounted in `AppShell`. |
-| `todo/TodoOverlay.tsx` | Global to-do board overlay (`todo_board`), header ☑ (`TodoOverlayHost`), mounted last of the three overlay hosts (DOM order = z tie-break). No todo tab; not in popouts. |
+| `todo/TodoOverlay.tsx` | Global to-do board overlay (`todo_board`), header ☑ (`TodoOverlayHost`), mounted last of the three overlay hosts (DOM order = z tie-break); `MailOverlay`'s chrome with one fixed Board tab. No todo tab; not in popouts. |
 | `todo/TodoPane.tsx` | Filter bar + board + two rails. Renders `applyPending(tasks, pendingOrder)` (the drag's optimistic overlay), never the raw store. |
 | `todo/TodoBoard.tsx` | Board and owner of card drag: commit bound via `bindDragRelease` synchronously in pointerdown (WebKitGTK), capture on `documentElement`, `pointercancel` commits safely (no column → card stays). One backend write per drag (`todo_move_tasks`). |
-| `todo/TodoColumn.tsx` / `todo/TodoCard.tsx` | Column (dragged card rendered out of its list) and card (checkbox, inline title, chips, checklist, mail link). Adding a card opens the full card dialog, not an inline composer. |
+| `todo/TodoColumn.tsx` / `todo/TodoCard.tsx` | Column (dragged card rendered out of its list; folds to a strip, fold persisted in localStorage; the Done column carries "Hide done") and card (checkbox, inline title, chips, checklist, mail link). Adding a card opens the full card dialog, not an inline composer. |
 | `todo/TodoCardDialog.tsx` | Full card editor on an elevated backdrop, for adding (empty `task.id`) and editing. Checklist never drives `percent` (100% moves a card to Done). |
 | `todo/TodoMailRail.tsx` / `todo/TodoAgendaRail.tsx` | Urgent-mail rail (calls `mailPriorityPage` directly, never `openPriority`; `mail_client` gate checked before invoke) and today/tomorrow agenda rail. Both convert into a card through one builder. |
-| `mail/MailPane.tsx` | Embedded mail client (`mail_client` flag): folder rail (account-independent Important/Urgent + rules above, accounts/folders below) / header list / message view. |
-| `mail/MailOverlay.tsx` | The mail surface: header ✉ overlay (`MailOverlayHost`) rendering `MailPane`. One gate, `mail_client` (the mail tab and `mail_global_app` are retired). |
+| `mail/MailPane.tsx` | Embedded mail client (`mail_client` flag): header band (account-independent Important/Urgent + rules) / folder rail / full-width header list; no preview — a click opens the message in its own overlay tab (`openMessage`). Hosts the one account editor (store `accountDialog`). |
+| `mail/MailAccountMenu.tsx` | The mail window's account switcher: ▾ pill right of the title bar's ✉; rows open an inbox (`openAccountView`), ✎ per row edits, Add account last — both via store `openAccountDialog`. |
+| `mail/MailOverlay.tsx` | The mail surface: header ✉ overlay (`MailOverlayHost`) in the root console's subwindow chrome — fixed Inbox tab (`MailPane`) plus message and composer tabs (`stores/mail` `mailTabs`); stays mounted hidden while a composer is open so unsent text survives closing. One gate, `mail_client`. |
 | `mail/MailList.tsx` | Header list. Threat-model rules: addr-spec always shown beside display name; mail strings are plain text nodes. Column grid via shared `--mail-cols`, fixed widths except sender. |
+| `mail/MailAgentDraftList.tsx` | List behind the rail's "Drafted by agents" entry (below the selected account's folders, that account's drafts only): `mail-row` shape, click opens the composer, no send/delete/flag; a row names its attachment and suggested-recipient counts. Local `draftsOpen` in `MailPane`, not a store selection. |
 | `mail/MailMessageView.tsx` | Message pane: body in `<iframe sandbox="">` (never `allow-scripts`/`allow-same-origin`) with inline `<meta>` CSP; links are `data-lid` markers opened after a confirm naming the host; remote content blocked with no unblock control. |
 | `mail/MailEncryptionDialog.tsx` | Local mail-store encryption dialog (`docs/context/mail_encryption.md`): unlock / offer / status faces chosen by `MailEncryptionState`. Copy must not overstate what it protects. |
 | `mail/MailKeysDialog.tsx` | OpenPGP keyring. Fingerprint shown in full, grouped in fours, never truncated; "checked with owner" is reversible; export is public-only. |
 | `mail/MailAccountDialog.tsx` | Account editor. Save-password opt-in, default off, sends `true \| null` (never `false`, which clears). Uses shared `SavePasswordRow`; generic presets only. |
 | `mail/MailFiltersDialog.tsx` | Keyword filters filing arriving mail into Important/Urgent. States its limits on its face (local mark, snippet not body, arriving mail + explicit re-run, Sent/Drafts/Trash/Junk out of scope). |
-| `mail/MailComposeDialog.tsx` | Composer. Sign/Encrypt per message, default off, never remembered; missing-key check while writing. Attaching is backend-side (`mail_attach_pick`) — no filesystem path in the frontend. |
+| `mail/MailComposeDialog.tsx` | Composer (modal, or `embedded` as a mail-window tab body). Sign/Encrypt per message, default off, never remembered; missing-key check while writing. Attaching is backend-side (`mail_attach_pick`) — no filesystem path in the frontend. Seeds `staged` from an agent draft (agent chips show `source`, preview the outbox copy), offers `suggested_to` as pills, and Send stops when the saved set differs from the shown one. |
+| `mail/MailAttachmentPreview.tsx` | The one attachment preview (image / pdf.js canvases / text), shared by `MailMessageView` and the composer's staged chips (`mail_staged_preview`). |
 | `browser/BrowserPane.tsx` | In-app browser tab (`web_browser` flag): a DOM pane rendering sanitized reader mode (no in-pane native webview under WebKitGTK); real engine = separate hardened window. Mounting never touches the network. |
 | `browser/BrowserReaderView.tsx` | Reader body: `MailMessageView`'s containment (`<iframe sandbox="">`, imported mail CSP, `readerLooksUnsafe` tripwire). No `dangerouslySetInnerHTML` in this dir (`BrowserTripwire.test.ts`). |
 | `browser/BrowserAddressBar.tsx` | Address field as a security control: host at full weight and never truncated, userinfo flagged, punycode shown; `parseAddressInput` refuses non-http(s). |
@@ -114,8 +122,9 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `browser/BrowserBlockedNotice.tsx` / `browser/BrowserStartPage.tsx` | Refused navigation as a page state (full URL, no override); loopback/private addresses get a one-tab, one-session "Open anyway, once". Plus the start page / resume card. |
 | `browser/useBrowserEvents.ts` | Backend browser events installed once per window (refcount + generation counter). |
 | `browser/BrowserDownloadHost.tsx` | The one download-consent dialog mount per window (`AppShell` + `DetachedApp`); owns the event listeners. |
-| `skills/SkillsLibraryTab.tsx` / `skills/SkillsLibraryView.tsx` / `skills/SkillsOverlay.tsx` | Skills Library (`docs/skills_plan.md`): browse git-hosted skills, preview, copy into `.claude/skills/` or `~/.claude/skills/`. Install only from the preview panel. |
+| `skills/SkillsLibraryTab.tsx` / `skills/SkillsLibraryView.tsx` / `skills/SkillsOverlay.tsx` | Skills Library (`docs/skills_plan.md`): browse git-hosted skills, preview, copy into `.claude/skills/` or `~/.claude/skills/`. Install only from the preview panel. The overlay wears `MailOverlay`'s chrome (movable, one fixed tab). |
 | `printing/PrintManagerPane.tsx` | Native print manager tab: printers, queues, make default / pause / test page / cancel. Machine-scoped (no project props), singleton per scope; `visible` gates polling. |
+| `printing/PrinterNetworkDefaultsHost.tsx` | Shell-mounted, renders nothing: applies the saved per-network default printer on each network change (launch included). No timer until a default is saved. |
 | `header/Clock.tsx` | Header clock. |
 | `header/DevBuildIndicator.tsx` | Dev-build chip in the cluster: the background frozen-dev build's step/clock/estimate bar; hover menu opens a `tail -F` of its log, and in the frozen window offers "Relaunch now" onto a newer snapshot. Renders nothing in release builds. |
 | `header/StatusCluster.tsx` | Machine-state readouts (connection, battery, Mobile, OpenVPN, Machines, CPU/RAM/GPU) as one collapsible cluster: collapsed = one worst-state `ConnLamp`; persists `Settings.header_status_expanded`. |
@@ -164,7 +173,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `files/SetDefaultAppDialog.tsx` | Pick the default app for a file type. |
 | `embed/EmbedPane.tsx` | Hosts an embedded external app window. |
 | `embed/FileViewerPane.tsx` | In-app viewers (image, markdown, code, TeX/SyncTeX) + shared plumbing. Markdown follows local links and `#fragment`s (`stores/viewers/mdAnchor`); autocomplete ghost/visibility/acceptance UI delegates streaming/model/cache work to `lib/viewers/completion/ollamaCompletionProvider.ts`; code-editor key helpers (`applyIndent`, `applyLineComment`, `applyAutoIndent`, `detectIndentUnit`). |
-| `embed/MdGraphView.tsx` | Markdown relationship graph (`md_graph` flag): BFS rings of links from `lib/viewers/mdGraph.ts`; one bounded scope-confined read per look, never polled. |
+| `embed/MdGraphView.tsx` | Markdown relationship graph (`md_graph` flag): BFS rings from `lib/viewers/mdGraph.ts`, fitted zoom/pan canvas and markdown hover previews; one bounded scope-confined read per look, never polled. |
 | `embed/YamlTree.tsx` | YAML/JSON tree: renders rows but edits text (every action splices the draft), so edits are ordinary undoable changes. Pointer-drag reorder (HTML5 DnD is broken on WebKitGTK). |
 | `embed/BibCards.tsx` | BibTeX card view: one card per entry, filter over all fields, per-card fold (`ViewerState.bibCollapsed`); Source is the other half. |
 | `embed/YamlGrid.tsx` | Optional YAML/JSON card view ("Cards"): drill navigation — one main card, its level, its children; cards show scalar fields only. |
@@ -191,7 +200,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `common/mountPageStrip.tsx` | `createRoot` adapter letting the imperative print modal host `PageStrip`. |
 | `common/Dropdown.tsx`, `common/OrbitSpinner.tsx` | Shared primitives. |
 | `common/MenuShortcut.tsx` | The muted chord at a menu row's end ("Close   Ctrl+W"); resolves rebinds like `useChordHint`. Only on rows whose chord does the same thing. |
-| `common/icons/{Icon,FileIcon}.tsx` | The shared line-icon set (24-grid, 1.7 stroke, `currentColor`, `em`-sized) that replaces colour emoji in the chrome; `FileIcon` renders `fileIconKind()` for every file list. New icons go here, not as emoji. |
+| `common/icons/{Icon,FileIcon}.tsx` | The shared line-icon set (24-grid, 1.4 stroke, `currentColor`, `em`-sized) that replaces colour emoji in the chrome; `FileIcon` renders `fileIconKind()` for every file list. New icons go here, not as emoji — and not as typed symbols with the Unicode Emoji property (↗ ⬆ ⚠ ⚙ ✉ ☑ ▶ …), which a font fallback can hand to the colour-emoji font. |
 | `common/ConnLamp.tsx` | Red/orange/green SSH/OpenVPN status lamp (dialog + header). |
 | `common/TimeField.tsx` | Clock-entry field for the event dialog's start/end, drawn by Eldrun. Native `<input type="time">` is ruled out (engine-locale 12/24h face). |
 | `common/DateField.tsx` | The one date-entry field. Replaces `<input type="date">` (process-locale segment order; undismissable WebKitGTK popover). |
@@ -208,7 +217,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | File | Purpose |
 |------|---------|
 | `projects.ts` | Project list, active project, CRUD, `setActive`. Also owns scope restore: `restoreProjectScope` (one project's saved tabs into its own scope, no switch) and `restoreActiveProjectScopes` (every **active** pill at launch — active means its terminals were never stopped, so they resume without waiting for a click). |
-| `tabs.ts` | Tab/subwindow layout tree per scope; tab persistence policy. |
+| `tabs.ts` | Tab/subwindow layout tree per scope; tab persistence policy, including stable Vibe tab keys for exact backend resume. `setScope` syncs popouts, then `respawnDetachedForScope` rebuilds the scope's (Wayland retire). |
 | `boxes.ts` | Project boxes: N:M membership (`boxMembership`/`useBoxMembership`; `addToBox`/`removeFromBox`/`boxProjects` — no silent dissolve), the persisted `box:<id>` scope's restore + seed (`restoreBoxScope`), and the box-scope helpers (`boxFolderOfScope`, `boxMembersOfScope`). |
 | `settings.ts` | App settings (theme, default agent, git profile, shortcuts, etc.). |
 | `ollamaAutoload.ts` | Loads chosen Ollama models at start (`settings.ollama_autoload_models`). Suppressed by Energy Saver. |
@@ -226,7 +235,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `calendar/clipboard.ts` | The calendar clipboard (one copied entry, a snapshot). Module-level, so a copy pastes in another calendar tab and outlives the navigation. |
 | `todo.ts` | To-do board session state only (overlay flag, filters — never persisted, drag, optimistic overlay, mail cache, `collapsedSteps`, `focusTaskId`). |
 | `browser.ts` | In-app browser store (#61). Nothing reaches the network on its own (`load`/`openLive` only, both clicks), actions tolerate a rejected invoke, downloads refused by default. |
-| `mail.ts` | Global mail store. Every action tolerates a rejected invoke (lands in `error`); only `checkMail` reaches a server. Owns list order (`setSort` → `mail_headers`). |
+| `mail.ts` | Global mail store. Every action tolerates a rejected invoke (lands in `error`); `checkMail` and a debounced typed folder search can reach a server. Owns list order and the search coverage flags (`searchRemote`, `searchPartial`). |
 | `skills.ts` | One boolean: is the Skills Library overlay shown. Holds no catalog copy on purpose. |
 | `alarms.ts` | Reminder ticker: fires an OS notification + the in-app popup, exactly once each; a calendar with `alerts_off` is recorded as fired but never shown. |
 | `linkRouting.ts` | Routing of clicked links/URIs to viewers or external apps. |
@@ -265,6 +274,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `lib/viewers/pdfLoad.ts` | `loadPdf`: the only way to open a PDF with pdf.js (sets the worker). Destroys the loading task on failure — a rejected load otherwise leaks a Worker. |
 | `lib/viewers/tex/texPreview.ts` | TeX hover preview (frontend half): typesets a hovered formula via `tex_preview_snippet`; cache keyed by preamble + snippet text, not position. |
 | `lib/viewers/tex/beamer.ts` | Beamer mode for the TeX editor (pure): overlay-spec recognition, wrap/re-target (never nest), `insertPause`, `nextOverlayNumber`, `beamerEditRange`. |
+| `lib/projects/projectDialogEvent.ts` | `eldrun:open-project-dialog` — asks `ProjectSwitcher` to open its New / Import / Clone dialog (used by the intro). |
 | `lib/projects/fileViewSnapshots.ts` | Side panel's last-known data in module scope so a reveal's first frame is populated (the panel unmounts when closed). Tests need `clearFileViewSnapshots()`. |
 | `lib/viewers/python.ts` | Python editor intelligence (#87), pure: breakpoints snap to executable lines and remap on edit; go-to-definition is a lexical import-graph walk (only followable names underlined). |
 | `lib/browser.ts` | Typed invoke surface for the browser (`browser_*`); no component invokes directly (`BrowserTripwire.test.ts`), no wrapper takes a path. `READER_FRAME_CSP` is `MAIL_FRAME_CSP` imported. |
@@ -276,7 +286,8 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `lib/remote/hpc/hpcWorkspace.ts` | HPC workspaces (backend `commands::hpc_ws`): `ws*` invoke wrappers + shared pure helpers (`projectPathIn`, expiry labels/tones). Workspaces expire and get deleted. |
 | `lib/agents/skills.ts` | Typed invoke surface for the Skills Library (`skills_*`); no manifest, installed list is a disk read; install addressed by `SkillTarget`, never a path. |
 | `lib/agents/localDrivers.ts` | Typed invoke surface for local-model coding agents + model-update check. `listLocalDrivers(model)` hides agents a completion-only model (no tool calls) can't serve. |
-| `lib/window/printing.ts` | Typed invoke surface for the print manager (`print_*`): queues only, no wrapper takes a path; `printSnapshot` resolves rather than rejects. |
+| `lib/window/printing.ts` | Typed invoke surface for the print manager (`print_*`): queues only, no wrapper takes a path; `printSnapshot` resolves rather than rejects. `printPdfNative` takes PDF bytes for the system dialog. |
+| `lib/window/printerNetworkDefaults.ts` | Per-network default printer: `network_identity` wrapper and the one "same network" rule (`wlan:<ssid>`, `lan:<hashed gateway MAC>`, `lan`). |
 | `lib/terminal/pythonRun.ts` | Run/Debug a Python file by opening a terminal tab (inherits remote/container locality); debug = pdb with gutter breakpoints. Interpreter asked of backend (`python_interpreter_for`). |
 | `lib/agents/fastMode.ts` | Fast mode (`Settings.fast_mode`): the list of withdrawn costly display aids lives in this module's header (folder sizes, pill git dots, …). |
 | `lib/theme/themeTokens.ts` | Theme Customizer allow-list of overridable CSS color tokens (grouped; ids are i18n keys). `normalizeThemeVars` is the gate; `THEME_COLOR_RE` accepts `#rrggbb` and `#rrggbbaa`. |
@@ -294,6 +305,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `lib/viewers/table.ts` | CSV/TSV model + edit ops (pure): separator sniffed by parse rectangularity (`sniffDelimiter`); table is a view on the text (cells carry source spans). |
 | `lib/viewers/gif.ts` | Pure GIF decoder (LZW, interlace, disposal): full-canvas RGBA per frame (bounded by `maxPixelBytes`), delays stored as authored, <20 ms played as 100 ms. |
 | `lib/viewers/pageModel.ts` | Page-arrangement model (`PageRef{id,src,page,rot,marks?,notes?}`) for print preview and PDF rail: move/delete/rotate/duplicate/insert, pure. Marks/notes ride on the entry. |
+| `lib/viewers/pdfPrintLayout.ts` | `layoutPrintPdf`: the print preview's sheets (order, turns, selection, copies, paper, margins, scale, page numbers) rebuilt as a vector PDF from pdf-lib form XObjects, for `printPdfNative`. Geometry mirrors `buildOptionsCss`. |
 | `lib/viewers/pdfNotes.ts` | PDF remarks, pure half (sticky notes and highlights; `isHighlight` = has `quads`); `quadsAnchor` places a highlight's card. |
 | `lib/viewers/redact.ts` | PDF blackout marks, pure half: a mark is geometry in rotated big points, never the covered text; `snapToText` only grows a box. Burn-in is in `pdfDoc.ts`. |
 | `lib/usageRollup.ts` | Folds UTC day/hour buckets into today/week/month windows. Generic over the payload — shared by `NetworkTrafficPane` (bytes) and the recap (counters). |

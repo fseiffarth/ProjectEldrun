@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRendererWatchdog } from "../../lib/window/rendererWatchdog";
 import { emit, listen } from "@tauri-apps/api/event";
 import { detachedWindowVisible } from "../../lib/window/detachedVisibility";
+import { answerRetireRequests } from "../../lib/window/unsavedWork";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   useSettingsStore,
@@ -509,6 +510,20 @@ export function DetachedApp({ param }: Props) {
       clearInterval(id);
     };
   }, []);
+
+  // Native Wayland closes a popout whose scope was left, and the main window
+  // rebuilds it on return. Before it goes, the backend asks: settle what
+  // autosave would save, and say whether any unsaved work is left — which
+  // keeps the window alive (minimized) instead. Attaching the listener also
+  // announces this popout as able to answer (`detached_retire_ready`).
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    answerRetireRequests(label)
+      .then((fn) => { if (cancelled) fn(); else unlisten = fn; })
+      .catch(() => {});
+    return () => { cancelled = true; unlisten?.(); };
+  }, [label]);
 
   // Seed + edit listeners. The main window owns the source of truth and ships
   // the group's tabs + subtree; subsequent main-side edits re-seed.

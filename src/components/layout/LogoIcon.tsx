@@ -3,9 +3,11 @@ interface LogoIconProps {
 }
 
 /**
- * Eldrun logo — a circuit "tree of life" inside a ring, crowned by a gold spark.
+ * Eldrun logo — a circuit "tree of life" inside a ring, crowned by a gold
+ * compass star. Same geometry as `src/assets/logo.svg`.
  * Inlined (vs. an <img> src) so the ring/branch strokes can use `currentColor`
- * and stay legible across themes; the gold spark keeps its brand colour.
+ * and stay legible across themes; the hexagon nodes and the star keep their
+ * brand colours.
  */
 export function LogoIcon({ className }: LogoIconProps) {
   return (
@@ -24,36 +26,36 @@ export function LogoIcon({ className }: LogoIconProps) {
         strokeLinejoin="round"
         fill="none"
       >
-        {/* Ring, with a small opening at the bottom where the trunk passes through. */}
-        <path d="M 214 491 A 239 239 0 1 1 298 491" strokeWidth="10" />
+        {/* Ring + both outer legs as one stroke: each leg bends through an
+            r=20 fillet that meets the ring tangentially. The ring stays open
+            at the bottom, where the trunk passes through. */}
+        <path
+          d="M 165 190 L 165 238 L 233 306 L 233 470.74 A 20 20 0 0 1 209.07 490.35 A 239 239 0 1 1 302.93 490.35 A 20 20 0 0 1 279 470.74 L 279 306 L 347 238 L 347 190"
+          strokeWidth="13"
+        />
 
-        {/* Central trunk stem. */}
-        <path d="M 256 161 L 256 499" strokeWidth="10" />
+        {/* Central trunk stem, running out through the ring's opening. */}
+        <path d="M 256 161 L 256 499" strokeWidth="13" />
 
-        {/* Left-side branches + descending leg (authored), then mirrored. */}
-        <g id="eldrun-branches">
-          <path
-            d="M 165 176 L 165 238 L 233 306 L 233 440 L 222 483"
-            strokeWidth="10"
-          />
-          <path
-            d="M 98 235 L 98 289 L 134.1 325.1 M 155 343.7 L 233 405"
-            strokeWidth="10"
-          />
-          <circle cx="165" cy="162" r="14" strokeWidth="8" />
-          <circle cx="98" cy="221" r="14" strokeWidth="8" />
-          <circle cx="144" cy="335" r="14" strokeWidth="8" />
-        </g>
-        <use href="#eldrun-branches" transform="translate(512,0) scale(-1,1)" />
+        {/* The inner branches: vertical, then one straight 45° trace through
+            the middle node into the leg. */}
+        <path d="M 98 249 L 98 289 L 135.2 326.2 M 174.8 365.8 L 233 424" strokeWidth="13" />
+        <path d="M 414 249 L 414 289 L 376.8 326.2 M 337.2 365.8 L 279 424" strokeWidth="13" />
+
+        {/* Hexagon nodes, warm on the left and cool on the right; the middle
+            pair is turned 15° so its trace meets an edge square on. */}
+        <path d="M 195 162 L 180 187.98 L 150 187.98 L 135 162 L 150 136.02 L 180 136.02 Z" fill="#E7B369" strokeWidth="10" />
+        <path d="M 128 221 L 113 246.98 L 83 246.98 L 68 221 L 83 195.02 L 113 195.02 Z" fill="#ED946C" strokeWidth="10" />
+        <path d="M 183.98 353.76 L 162.76 374.98 L 133.79 367.21 L 126.02 338.24 L 147.24 317.02 L 176.21 324.79 Z" fill="#EB8182" strokeWidth="10" />
+        <path d="M 377 162 L 362 187.98 L 332 187.98 L 317 162 L 332 136.02 L 362 136.02 Z" fill="#72D0D0" strokeWidth="10" />
+        <path d="M 444 221 L 429 246.98 L 399 246.98 L 384 221 L 399 195.02 L 429 195.02 Z" fill="#5ABBE6" strokeWidth="10" />
+        <path d="M 385.98 338.24 L 378.21 367.21 L 349.24 374.98 L 328.02 353.76 L 335.79 324.79 L 364.76 317.02 Z" fill="#80A3F0" strokeWidth="10" />
       </g>
 
-      {/* Gold four-point spark above the trunk. */}
+      {/* Gold eight-point compass star above the trunk. */}
       <path
-        d="M 256 61
-           C 261 92 268 96 292 101
-           C 268 106 261 110 256 142
-           C 251 110 244 106 220 101
-           C 244 96 251 92 256 61 Z"
+        d="M 256 52 L 265 87 L 284 73 L 270 92 L 305 101 L 270 110 L 284 129 L 265 115
+           L 256 150 L 247 115 L 228 129 L 242 110 L 207 101 L 242 92 L 228 73 L 247 87 Z"
         fill="#C79A45"
       />
     </svg>

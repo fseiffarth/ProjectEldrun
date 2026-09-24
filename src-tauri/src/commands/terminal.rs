@@ -279,18 +279,6 @@ pub async fn pty_spawn(
     // every step below sees the enforced values.
     crate::services::sandbox::enforce_spawn_authority(&mut opts);
 
-    // Trash is an agent-only workspace. The project record cannot be weakened
-    // from its writable folder, and this spawn gate also refuses stale UI tabs
-    // or renderer-crafted shell commands before anything reaches the host.
-    if opts
-        .project_id
-        .as_deref()
-        .is_some_and(crate::paths::is_trash_project_id)
-        && !crate::services::sandbox::is_agent_cmd(&opts.cmd)
-    {
-        return Err("The Trash project accepts recognised agent CLIs only.".to_string());
-    }
-
     // VM-tier hard refusals (`docs/vm_projects_plan.md`): for a VM project the
     // remote→local fallback that exists elsewhere is not a perf surprise but
     // the untrusted agent stepping outside the boundary — so a local spawn is
@@ -476,6 +464,12 @@ pub async fn pty_spawn(
     if agent_spawn && !root_agent && reader_project.is_none() {
         crate::services::root_mcp::apply_schedule_to_spawn(&mut opts);
     }
+    // The read-only help server (`services::help_mcp`): every LOCAL agent tab,
+    // root or project, beside whatever the lines above handed out. Last, since
+    // it merges into the Vibe env the root/schedule wiring sets outright.
+    if agent_spawn {
+        crate::services::root_mcp::apply_help_to_spawn(&mut opts);
+    }
     let mut mcp_spawn_guard = agent_spawn
         .then(|| crate::services::root_mcp::SpawnTokenGuard::new(&opts));
 
@@ -645,6 +639,10 @@ pub async fn pty_spawn(
     // tmux server on the host while the command *inside* its session is
     // fenced.  A missing/blocked fence tool fails closed.
     let mut fenced_registration: Option<(String, String)> = None;
+    // What the root tab's MCP session records as its projects grant: the
+    // paths the fence argv bound when fenced, everything when the agent runs
+    // unfenced (it already reads everything).
+    let mut root_projects = crate::services::root_mcp::ProjectsGrant::All;
     #[cfg(target_os = "linux")]
     let mut fenced_content_shadow = None;
     #[cfg(not(target_os = "linux"))]
@@ -676,6 +674,10 @@ pub async fn pty_spawn(
                 crate::services::agent_fence::wrap_pty_options_sandbox_exec(
                     &mut opts, roots, &scope_id,
                 )?;
+                root_projects = match crate::services::agent_fence::take_root_projects_granted(&opts.id) {
+                    Some(paths) => crate::services::root_mcp::ProjectsGrant::Paths(paths),
+                    None => crate::services::root_mcp::ProjectsGrant::Hidden,
+                };
                 fenced_registration = Some((opts.id.clone(), scope_id));
             }
             crate::services::agent_fence::FenceDecision::Unavailable => {
@@ -685,6 +687,11 @@ pub async fn pty_spawn(
         }
     }
 
+    // Before the agent process exists, so no tool call can see the default.
+    if root_agent && root_projects != crate::services::root_mcp::ProjectsGrant::Hidden {
+        crate::services::root_mcp::mark_tab_projects_readable(&opts.id, root_projects);
+    }
+
     // Persistent LOCAL (tmux) sessions (TODO #85): a tab that resolved to a LOCAL
     // spawn — i.e. ssh/docker wrapping did NOT rewrite it — and carries a
     // `tmux_session` name is wrapped in a tmux session on this machine, so the run
@@ -692,14 +699,7 @@ pub async fn pty_spawn(
     // now `cmd == "ssh"` (its tmux is inside the remote command) and a container tab
     // is `cmd == "docker"`, so both are skipped. No-op on Windows / without tmux.
     #[cfg(unix)]
-    if opts.tmux_session.is_some()
-        && opts.cmd != "ssh"
-        && (opts.cmd != "docker"
-            || opts
-                .project_id
-                .as_deref()
-                .is_some_and(crate::paths::is_trash_project_id))
-    {
+    if opts.tmux_session.is_some() && opts.cmd != "ssh" && opts.cmd != "docker" {
         crate::services::tmux_local::wrap_pty_options_local(&mut opts);
     }
 
@@ -714,9 +714,14 @@ pub async fn pty_spawn(
         }
     }
 
-    let result = crate::terminal::spawn_pty(app, registry.inner().clone(), opts);
+    let mcp_token_handed_out = mcp_spawn_guard.as_ref().is_some_and(|g| g.holds_token());
+    let result = crate::terminal::spawn_pty(app.clone(), registry.inner().clone(), opts);
     if result.is_ok() {
         if let Some(guard) = mcp_spawn_guard.as_mut() { guard.keep(); }
+        if mcp_token_handed_out {
+            // The MCP session access fold lists live sessions; a new token is one.
+            let _ = tauri::Emitter::emit(&app, crate::commands::root_mcp::SESSIONS_EVENT, ());
+        }
         if let Some(claim) = resume_claim {
             claim.keep();
         }

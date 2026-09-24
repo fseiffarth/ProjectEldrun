@@ -46,6 +46,13 @@ function jsonResponse(status: number, body: unknown) {
 }
 
 const settle = () => act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 0)); });
+/** One finger down on the full-screen viewer's picture, moved, and lifted. */
+function drag(viewer: HTMLElement, from: { x: number; y: number }, to: { x: number; y: number }) {
+  const stage = viewer.querySelector(".outbox-viewer-stage")!;
+  fireEvent.pointerDown(stage, { pointerId: 1, button: 0, clientX: from.x, clientY: from.y });
+  fireEvent.pointerMove(stage, { pointerId: 1, clientX: to.x, clientY: to.y });
+  fireEvent.pointerUp(stage, { pointerId: 1, clientX: to.x, clientY: to.y });
+}
 
 function sidecarFetch(files: unknown[], transcript?: unknown) {
   return vi.fn((url: string) => {
@@ -99,6 +106,74 @@ describe("Eldrun Mobile keeps the files the agent sent out of the chat", () => {
 
     fireEvent.click(within(gallery).getByRole("button", { name: "Open run12.png" }));
     expect(screen.getByRole("dialog", { name: "run12.png" }).querySelector("img")?.getAttribute("src")).toBe("/api/v1/tabs/tab-7/outbox/run12.png");
+  });
+
+  it("steps through the gallery's pictures in the full-screen viewer, skipping the other kinds", async () => {
+    vi.stubGlobal("fetch", sidecarFetch([
+      { name: "c.png", kind: "image/png", size: 3_000, modified: 300 },
+      { name: "paper.pdf", kind: "application/pdf", size: 400, modified: 250 },
+      { name: "b.png", kind: "image/png", size: 2_000, modified: 200 },
+      { name: "a.jpg", kind: "image/jpeg", size: 1_000, modified: 100 },
+    ]));
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+
+    fireEvent.click(screen.getByRole("button", { name: "Files from the agent (4)" }));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Files from the agent" })).getByRole("button", { name: "Open c.png" }));
+    const shown = () => screen.getByRole("dialog", { name: /\.(png|jpg)$/ });
+    const src = () => shown().querySelector("img")?.getAttribute("src");
+
+    // The newest picture: nothing before it, the PDF not counted.
+    expect(shown().textContent).toContain("1 / 3");
+    expect(within(shown()).queryByRole("button", { name: "Previous picture" })).toBeNull();
+    fireEvent.click(within(shown()).getByRole("button", { name: "Next picture" }));
+    expect(src()).toBe("/api/v1/tabs/tab-7/outbox/b.png");
+    expect(shown().textContent).toContain("2 / 3");
+
+    // A swipe to the left is the next (older) one; the last has no Next.
+    drag(shown(), { x: 300, y: 400 }, { x: 120, y: 410 });
+    expect(src()).toBe("/api/v1/tabs/tab-7/outbox/a.jpg");
+    expect(within(shown()).queryByRole("button", { name: "Next picture" })).toBeNull();
+
+    // A mostly vertical drag is not a step.
+    drag(shown(), { x: 100, y: 100 }, { x: 170, y: 400 });
+    expect(src()).toBe("/api/v1/tabs/tab-7/outbox/a.jpg");
+
+    // The arrow keys step as well, and Escape still closes back to the grid.
+    fireEvent.keyDown(window, { key: "ArrowLeft" });
+    expect(src()).toBe("/api/v1/tabs/tab-7/outbox/b.png");
+    fireEvent.keyDown(window, { key: "Escape" });
+    screen.getByRole("dialog", { name: "Files from the agent" });
+  });
+
+  it("zooms a picture on a double tap, and a drag then pans it instead of stepping", async () => {
+    vi.stubGlobal("fetch", sidecarFetch([
+      { name: "b.png", kind: "image/png", size: 2_000, modified: 200 },
+      { name: "a.png", kind: "image/png", size: 1_000, modified: 100 },
+    ]));
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+
+    fireEvent.click(screen.getByRole("button", { name: "Files from the agent (2)" }));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Files from the agent" })).getByRole("button", { name: "Open b.png" }));
+    const shown = () => screen.getByRole("dialog", { name: "b.png" });
+    const img = () => shown().querySelector("img")!;
+    expect(img().style.transform).toBe("");
+
+    drag(shown(), { x: 200, y: 300 }, { x: 200, y: 300 });
+    drag(shown(), { x: 202, y: 301 }, { x: 202, y: 301 });
+    expect(img().style.transform).toContain("scale(2.5)");
+
+    // Zoomed in, a sideways drag moves the picture; it does not step.
+    drag(shown(), { x: 300, y: 400 }, { x: 120, y: 410 });
+    expect(img().getAttribute("src")).toBe("/api/v1/tabs/tab-7/outbox/b.png");
+
+    // A second double tap fits the picture again, and a swipe steps once more.
+    drag(shown(), { x: 200, y: 300 }, { x: 200, y: 300 });
+    drag(shown(), { x: 200, y: 300 }, { x: 200, y: 300 });
+    expect(img().style.transform).toBe("");
+    drag(shown(), { x: 300, y: 400 }, { x: 120, y: 410 });
+    screen.getByRole("dialog", { name: "a.png" });
   });
 
   it("saves any file from its tile, the picture that has no ⋯ included", async () => {

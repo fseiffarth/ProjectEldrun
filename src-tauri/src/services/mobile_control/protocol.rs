@@ -1,4 +1,7 @@
-use crate::schema::{agent_prompts::ProjectAgentPrompt, AgentScheduleRule, ScheduledAgentPrompt};
+use crate::schema::{
+    agent_prompts::ProjectAgentPrompt, AgentScheduleLastRun, AgentScheduleRule,
+    ScheduledAgentPrompt,
+};
 use serde::{Deserialize, Serialize};
 
 pub const MAX_CONTROL_MESSAGE: usize = 64 * 1024;
@@ -73,14 +76,63 @@ pub struct CreateTabRequest {
     pub idempotency_key: String,
 }
 
-/// Phone-editable schedule fields. Receipts are desktop-owned and therefore are
-/// not accepted in a mutation body.
+/// Phone-editable schedule fields. Receipts and prefix commands are desktop-owned
+/// and therefore are not accepted in a mutation body. The desktop bridge keeps
+/// existing prefix commands when applying a phone update.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MobileScheduleInput {
     pub enabled: bool,
     pub message: String,
     pub rule: AgentScheduleRule,
+}
+
+/// Only the schedule fields the phone uses. The stored row's prefix commands
+/// and agent session attribution stay in the desktop-control protocol.
+#[derive(Debug, Clone, Serialize)]
+pub struct MobileSchedule {
+    pub id: String,
+    pub enabled: bool,
+    pub message: String,
+    pub rule: AgentScheduleRule,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last: Option<AgentScheduleLastRun>,
+}
+
+impl From<ScheduledAgentPrompt> for MobileSchedule {
+    fn from(schedule: ScheduledAgentPrompt) -> Self {
+        Self {
+            id: schedule.id,
+            enabled: schedule.enabled,
+            message: schedule.message,
+            rule: schedule.rule,
+            last: schedule.last,
+        }
+    }
+}
+
+/// A collected prompt's public fields. Its target is a desktop schedule
+/// handle, never an id the browser API needs or accepts.
+#[derive(Debug, Clone, Serialize)]
+pub struct MobileCollectedPrompt {
+    pub id: String,
+    pub message: String,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+}
+
+impl From<ProjectAgentPrompt> for MobileCollectedPrompt {
+    fn from(prompt: ProjectAgentPrompt) -> Self {
+        Self {
+            id: prompt.id,
+            message: prompt.message,
+            created_at: prompt.created_at,
+            updated_at: prompt.updated_at,
+            tags: prompt.tags,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -328,8 +380,11 @@ pub struct MobileCalendarInfo {
     pub color: String,
     pub visible: bool,
     pub readonly: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_url: Option<String>,
+    /// A subscribed (ICS feed) calendar. Only the fact crosses: the feed URL
+    /// routinely embeds a private token, and the phone only ever asked whether
+    /// there was one.
+    #[serde(default)]
+    pub subscribed: bool,
     pub caldav: bool,
 }
 
@@ -739,10 +794,14 @@ pub enum DesktopRequest {
     /// the phone's Focus view. Addressed like `AgentStatus`. `version` is the
     /// fingerprint the phone last saw, answered `unchanged` while the file has
     /// not moved; `limit` is how many of the newest turns to carry.
+    /// `subagent` is the handle on one of its `agent` entries: that
+    /// subagent's conversation is read instead.
     AgentTranscript {
         request_id: String,
         project_id: String,
         tmux_session: String,
+        #[serde(default)]
+        subagent: Option<String>,
         #[serde(default)]
         version: Option<String>,
         #[serde(default)]
@@ -1163,12 +1222,17 @@ pub enum TerminalControl {
     Detached,
 }
 
-/// Server → client control frames. The phone needs three things it cannot infer
+/// Server → client control frames. The phone needs four things it cannot infer
 /// from the byte stream: the tmux window geometry it must adopt (otherwise tmux
 /// pans a narrow client across a wide window and silently crops every line),
 /// an explicit replay boundary (so a reattach replaces the screen instead of
-/// appending a second copy of it), and the reason a socket is closing (so a
-/// revoked device is told that, not "reconnecting…").
+/// appending a second copy of it), the reason a socket is closing (so a
+/// revoked device is told that, not "reconnecting…"), and an acknowledgement
+/// per input frame: `Ack { seq }` says the phone's `seq`-th binary frame on
+/// this socket has been written to the session's PTY. A half-open cellular
+/// link keeps a socket OPEN while every byte sent into it is lost; the phone
+/// marks a prompt whose frames were never acked as not delivered instead of
+/// showing it as sent forever.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TerminalEvent {
@@ -1176,6 +1240,7 @@ pub enum TerminalEvent {
     Window { cols: u16, rows: u16 },
     Replay,
     Closing { reason: String, retry: bool },
+    Ack { seq: u64 },
 }
 
 impl TerminalEvent {
@@ -1545,7 +1610,7 @@ mod tests {
                     color: "#7c6cff".into(),
                     visible: true,
                     readonly: false,
-                    source_url: None,
+                    subscribed: false,
                     caldav: false,
                 }],
                 events: vec![super::MobileCalendarEvent {
@@ -1576,6 +1641,28 @@ mod tests {
     /// The terminal control plane, byte for byte as `mobile-web/src/terminal/
     /// protocol.ts` shapes it: every frame the phone sends decodes, nothing it
     /// does not name is accepted, and every server frame survives a round trip.
+    #[test]
+    fn a_calendar_row_says_subscribed_and_never_carries_its_feed_url() {
+        let row = super::MobileCalendarInfo {
+            id: "opaque-calendar".into(),
+            name: "Holidays".into(),
+            color: "#00aa88".into(),
+            visible: true,
+            readonly: true,
+            subscribed: true,
+            caldav: false,
+        };
+        let json = serde_json::to_string(&row).expect("serialize");
+        assert!(json.contains("\"subscribed\":true"));
+        assert!(!json.contains("source_url"));
+        // A bridge that predates the flag still parses: the flag defaults off.
+        let older: super::MobileCalendarInfo = serde_json::from_str(
+            r##"{"id":"x","name":"Local","color":"#000","visible":true,"readonly":false,"caldav":false}"##,
+        )
+        .expect("older row");
+        assert!(!older.subscribed);
+    }
+
     #[test]
     fn terminal_frames_match_the_phones_wire_shapes_exactly() {
         use super::{TerminalControl, TerminalEvent};

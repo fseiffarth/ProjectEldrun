@@ -9,3 +9,23 @@
 # One entry per line: `<blob id> <path> — <what was checked>`. A blob id pins
 # the exact bytes, so an edited image needs a fresh look and a fresh line.
 # Get it with `git hash-object <file>` (or read it from the scan's report).
+093dab56436f1ea97ade68942a0bcae91f7a4c10 mobile-web/public/icons/apple-touch-icon.png — Eldrun icon regenerated from icon-source.svg (legs joined to ring, larger coloured nodes, heavier strokes); vector-only, no text
+82d5f244724125ebc69eec4455864d65feb1ec5d mobile-web/public/icons/icon-192.png — Eldrun icon regenerated from icon-source.svg (legs joined to ring, larger coloured nodes, heavier strokes); vector-only, no text
+2d662e16efe2a91954724c05a28f7320a6f9d9bf mobile-web/public/icons/icon-512.png — Eldrun icon regenerated from icon-source.svg (legs joined to ring, larger coloured nodes, heavier strokes); vector-only, no text
+ab6df67ca7fda1c2e6cf1c05643bce78468f2fa3 mobile-web/public/icons/icon-maskable-512.png — Eldrun icon regenerated from icon-source.svg (legs joined to ring, larger coloured nodes, heavier strokes); vector-only, no text
+84e83bdf72dc67744739411e9651e784ec2c8a11 src-tauri/icons/128x128.png — Eldrun icon regenerated from icon-source.svg (legs joined to ring, larger coloured nodes, heavier strokes); vector-only, no text
+f6f80862c851963593f9501ecb4f238135076ed9 src-tauri/icons/128x128@2x.png — Eldrun icon regenerated from icon-source.svg (legs joined to ring, larger coloured nodes, heavier strokes); vector-only, no text
+b819131a4559bf01968bb44f1e869646b1bc0751 src-tauri/icons/32x32.png — Eldrun icon regenerated from icon-source.svg (legs joined to ring, larger coloured nodes, heavier strokes); vector-only, no text
+2f8001b903ff8a5361871dbf7a3992b5890c6242 src-tauri/icons/icon.icns — Eldrun icon regenerated from icon-source.svg (legs joined to ring, larger coloured nodes, heavier strokes); vector-only, no text
+8cc38648f33a4a92f0d9953f8ba7d6936f85b14b src-tauri/icons/icon.ico — Eldrun icon regenerated from icon-source.svg (legs joined to ring, larger coloured nodes, heavier strokes); vector-only, no text
+21f33cabf0dfa5f301b48e893167d6a0f721a0ef mobile-web/public/icons/apple-touch-icon.png — Eldrun icon art regenerated (black background, hexagon nodes, compass star, legs joined to ring); vector-only, text only 'Eldrun' in installer art
+7bf715fa5cdab6027db0bd2511d71ffaacc357df mobile-web/public/icons/icon-192.png — Eldrun icon art regenerated (black background, hexagon nodes, compass star, legs joined to ring); vector-only, text only 'Eldrun' in installer art
+969643a1586f4a0372d15f3c7290a72d1ce07c4b mobile-web/public/icons/icon-512.png — Eldrun icon art regenerated (black background, hexagon nodes, compass star, legs joined to ring); vector-only, text only 'Eldrun' in installer art
+8847d0275dce493758c61a273b6ae4ee38f7508d mobile-web/public/icons/icon-maskable-512.png — Eldrun icon art regenerated (black background, hexagon nodes, compass star, legs joined to ring); vector-only, text only 'Eldrun' in installer art
+f3fa8a7ff4b2fd66721b1ee81ace1c0834fbcee4 src-tauri/icons/128x128.png — Eldrun icon art regenerated (black background, hexagon nodes, compass star, legs joined to ring); vector-only, text only 'Eldrun' in installer art
+b2f4d5a815434d484a0698ba52da936c608c4960 src-tauri/icons/128x128@2x.png — Eldrun icon art regenerated (black background, hexagon nodes, compass star, legs joined to ring); vector-only, text only 'Eldrun' in installer art
+152fa100605cbd847656c350c32d39cd06742891 src-tauri/icons/32x32.png — Eldrun icon art regenerated (black background, hexagon nodes, compass star, legs joined to ring); vector-only, text only 'Eldrun' in installer art
+70a25e5d3e2b363cf6812de13434b7c253efe837 src-tauri/icons/icon.icns — Eldrun icon art regenerated (black background, hexagon nodes, compass star, legs joined to ring); vector-only, text only 'Eldrun' in installer art
+91699d8763b86edd4a5c1acff6aa2c7c7aba69b0 src-tauri/icons/icon.ico — Eldrun icon art regenerated (black background, hexagon nodes, compass star, legs joined to ring); vector-only, text only 'Eldrun' in installer art
+36158cefef330343363ef1812c0c933a794dc836 src-tauri/icons/installer/header.bmp — Eldrun icon art regenerated (black background, hexagon nodes, compass star, legs joined to ring); vector-only, text only 'Eldrun' in installer art
+080f28ac984586e1eb936de27cb69b1282075115 src-tauri/icons/installer/sidebar.bmp — Eldrun icon art regenerated (black background, hexagon nodes, compass star, legs joined to ring); vector-only, text only 'Eldrun' in installer art

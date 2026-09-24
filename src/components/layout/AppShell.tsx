@@ -46,6 +46,7 @@ import { BrowserDownloadHost } from "../browser/BrowserDownloadHost";
 import { ExecTrustHost } from "../common/ExecTrustHost";
 import { CalendarOverlayHost } from "../calendar/CalendarOverlay";
 import { CalDavSyncHost } from "../calendar/CalDavSyncHost";
+import { PrinterNetworkDefaultsHost } from "../printing/PrinterNetworkDefaultsHost";
 import { AgentContinueHost } from "./AgentContinueHost";
 import { AgentCronHost } from "./AgentCronHost";
 import { AgentScheduleHost } from "./AgentScheduleHost";
@@ -135,9 +136,13 @@ const TodoOverlayHost = lazy(() =>
   import("../todo/TodoOverlay").then((m) => ({ default: m.TodoOverlayHost })),
 );
 
+// Mail also stays mounted while a composer tab is open, window closed or not:
+// an unfinished mail's text lives in its mounted composer, and unmounting the
+// host here would throw it away behind the host's own keep-alive.
 function LazyMailOverlayHost() {
   const open = useMailStore((s) => s.overlayOpen);
-  if (!open) return null;
+  const composing = useMailStore((s) => s.mailTabs.some((tab) => tab.kind === "compose"));
+  if (!open && !composing) return null;
   return (
     <Suspense fallback={null}>
       <MailOverlayHost />
@@ -1365,6 +1370,10 @@ export function AppShell() {
           calendar pane, so refreshing only while that pane is open would leave
           the calendar stale exactly where it is looked at. */}
       <CalDavSyncHost />
+      {/* The per-network default printer, applied on arriving at a network —
+          at the shell because the Print Manager that saves it is closed by then.
+          Starts no timer until a default is saved. */}
+      <PrinterNetworkDefaultsHost />
       {/* The agent warm-up cron (Manage CLIs → Scheduled warm-up). Renders
           nothing and starts no timer until an agent is scheduled — at the shell
           for `CalDavSyncHost`'s reason turned around: the panel that configures

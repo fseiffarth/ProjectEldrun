@@ -50,6 +50,7 @@ import { StarIcon } from "./StarIcon";
 import { RootReviewStrip } from "./RootReviewStrip";
 import { useRootReviewStore } from "../../stores/rootReview";
 import { useMailStore } from "../../stores/mail";
+import { MailIcon, WarningIcon } from "../common/icons/Icon";
 
 /** What the backend's `root-mcp-changed` event carries (`services::root_mcp::Change`). */
 type RootMcpChange = (
@@ -68,8 +69,14 @@ interface RootMcpStatus {
   tools: string[];
   /** At least one mail account is open to a contained reader agent. */
   mail_open?: boolean;
+  /** With `mail_open`: the widest per-account scope — a few marked messages,
+   *  or a whole account. */
+  mail_scope?: "marked" | "all";
   /** Root agents run fenced, so the staged-write review cannot be bypassed. */
   review_enforced?: boolean;
+  /** A root agent started now could read the projects (the fence switch is
+   *  on, or it runs unfenced) — what a mail draft's `attach` needs. */
+  projects_readable?: boolean;
 }
 
 /** A rect relative to the overlay's pane region. */
@@ -794,10 +801,13 @@ function RootOverlay() {
               title={`${agentsWithTools}${
                 toolsOn ? `\n${status?.tools.join(", ")}` : ""
               }\n${t("rootConsole.rightsInSettings")}\n${t("rootConsole.noPhone")}${
-                status?.mail_open ? `\n${t("rootConsole.mailOpen")}` : ""
+                status?.mail_open
+                  ? `\n${t(status.mail_scope === "all" ? "rootConsole.mailOpenAll" : "rootConsole.mailOpen")}`
+                  : ""
               }${reviewAdvisory ? `\n${t("rootConsole.reviewAdvisory")}` : ""}`}
             >
-              {t("rootConsole.rightsBadge")}{reviewAdvisory ? " ⚠" : ""}{status?.mail_open ? " ✉" : ""}
+              {t("rootConsole.rightsBadge")}{reviewAdvisory && <> <WarningIcon /></>}
+              {status?.mail_open && <> <MailIcon />{status.mail_scope === "all" && <MailIcon />}</>}
             </span>
             <button
               type="button"

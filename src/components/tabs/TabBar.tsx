@@ -54,7 +54,14 @@ import {
   type LocalityMenuState,
 } from "./TabLocalityBadges";
 import { texPdfPartner, useTexPdfCandidates } from "../../lib/viewers/tex/texPdfLink";
-import { startCursorPoll, desktopCursor, type PhysPoint } from "../../lib/window/coords";
+import {
+  startCursorPoll,
+  desktopCursor,
+  desktopCoordinatesSupported,
+  type PhysPoint,
+} from "../../lib/window/coords";
+import { newDropToken, probeDropTarget } from "../../lib/window/dropClaim";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { bindDragRelease, dragPlatform } from "../../lib/window/dragPlatform";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
@@ -67,7 +74,6 @@ import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import { MenuShortcut } from "../common/MenuShortcut";
 import { useT } from "../../lib/i18n";
 import { useChordHint } from "../../lib/shortcuts/shortcutHint";
-import { TRASH_PROJECT_ID } from "../../lib/projects/trashProject";
 import { AgentScheduleDialog } from "../agents/AgentScheduleDialog";
 import { scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agents/agentSchedules";
 import { nextScheduleOccurrence } from "../../lib/agents/agentSchedule";
@@ -164,7 +170,6 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // The 3D project-blob tab is a root-scope feature, offered only once at least
   // one project exists (it has nothing to show otherwise).
   const scope = useTabsStore((s) => s.scope);
-  const trashScope = scope === TRASH_PROJECT_ID;
   const hasProjects = useProjectsStore((s) => s.projects.length > 0);
   const showBlobItem = scope === "root" && hasProjects;
   const focusGroup = useTabsStore((s) => s.focusGroup);
@@ -607,6 +612,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
         { model },
       );
       focusGroup(groupId);
+      const sessionId = crypto.randomUUID();
       addTab({
         label: model,
         cmd: "vibe",
@@ -618,9 +624,10 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
         // display-only change here can no longer hand out a container escape.
         // `VIBE_ACTIVE_MODEL` carries the resolved alias, not necessarily the
         // name the user picked.
-        env: { VIBE_HOME: vibe_home, VIBE_ACTIVE_MODEL: alias, ELDRUN_LOCAL_MODEL: model },
+        env: { VIBE_HOME: vibe_home, VIBE_ACTIVE_MODEL: alias, ELDRUN_LOCAL_MODEL: model, ELDRUN_TAB_UID: sessionId },
         cwd: projectCwd,
         kind: "local_agent",
+        sessionId,
         hostBoundUid: await registerHostBoundTab(scope),
       });
     } catch {
@@ -881,6 +888,9 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
       // WebKitGTK only this handler ever fires, so clearing early is a harmless
       // no-op there. The later `end()` calls become redundant no-ops.)
       useDragStore.getState().end();
+      // The release instant, for the coordinate-free claim below (a claimant
+      // compares it with the pointer events it has seen).
+      const releasedAt = Date.now();
       // Final physical cursor at release (a fresh read; falls back to the last poll
       // reading if the IPC fails). Mirrors FileTree: the last poll tick can be up to
       // ~16 ms stale — or `null` if released before the first tick — which would
@@ -964,6 +974,32 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
         lastClient.x >= window.innerWidth ||
         lastClient.y >= window.innerHeight;
       if (outside) {
+        // No desktop geometry (native Wayland): `phys` is null, so the popout
+        // hit-test above could not run — but a popout may well be under the
+        // cursor. Ask the windows of this scope to claim the release
+        // (`lib/window/dropClaim`); the one that receives the pointer answers
+        // with the pane under it, and the tab docks there. No answer keeps the
+        // free-space rule: a new window.
+        if (!phys && !(await desktopCoordinatesSupported())) {
+          const claim = await probeDropTarget({
+            token: newDropToken(getCurrentWindow().label),
+            scope: useTabsStore.getState().scope,
+            sourceLabel: getCurrentWindow().label,
+            tabKey: tab.key,
+            label: tab.label,
+            releasedAt,
+          });
+          if (claim?.groupId) {
+            const claimScope = useTabsStore.getState().scope;
+            useTabsStore
+              .getState()
+              .dockTabIntoDetached(claimScope, claim.groupId, tab.key, claim.target ?? undefined);
+            reseedDetached(claimScope, claim.groupId, tab.key);
+            playDetachFlyOut(lastClient.x, lastClient.y, tab.label, d.previewW, d.previewH);
+            useDragStore.getState().end();
+            return;
+          }
+        }
         popToNewWindow();
         return;
       }
@@ -1450,7 +1486,6 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   installedBuiltins: enabledAgents,
                   installedCmds: installedCustom,
                   customAgents,
-                  allowCustom: !trashScope,
                   pick: handleAdd,
                   onAddCustom: () => {
                     setMenuPos(null);
@@ -1463,7 +1498,6 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                     installedBuiltins: enabledAgents,
                     installedCmds: installedCustom,
                     customAgents,
-                    allowCustom: !trashScope,
                     pick: handleAdd,
                     onAddCustom: () => {
                       setMenuPos(null);
@@ -1511,7 +1545,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
               // Only offer agents whose binary is actually installed: Mistral/vibe
               // (checked against `vibeForLocalModel`) and the drivers the backend
               // already marks `available` — and only once the model is on the GPU.
-              ...(!trashScope ? [localModelMenuGroup({
+              localModelMenuGroup({
                 localModel,
                 localModelOffInRoot,
                 localDrivers,
@@ -1520,8 +1554,8 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                 onVibe: (model) => void handleOllamaModel(model),
                 onLaunch: (id, label, model) => void handleLocalLaunch(id, label, model),
                 t,
-              })] : []),
-              ...(!trashScope ? [{
+              }),
+              {
                 label: t("newTabMenu.groupShell"),
                 entries: SHELL_ITEMS.filter((i) => i.kind === "shell").map((item) => ({
                   key: item.cmd || "shell",
@@ -1529,8 +1563,8 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   color: TAB_ACCENT[item.kind],
                   onPick: () => handleAdd(item),
                 })),
-              }] : []),
-              ...(!trashScope ? [{
+              },
+              {
                 label: t("newTabMenu.groupFiles"),
                 entries: SHELL_ITEMS.filter((i) => isFileTabKind(i.kind)).map((item) => ({
                   key: item.cmd,
@@ -1539,14 +1573,14 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   disabled: !projectCwd,
                   onPick: () => handleAdd(item),
                 })),
-              }] : []),
+              },
               // All three are offered in every scope. System Monitor is
               // whole-machine and Disk Usage picks its own scan root; Network
               // Traffic used to be withheld from root as "per-project", but its
               // project half is only the remote one — a root tab renders exactly
               // what a LOCAL project's does, this machine's interfaces and
               // sockets, which is the one place a machine-wide question belongs.
-              ...(!trashScope ? [{
+              {
                 label: t("newTabMenu.groupMonitoring"),
                 entries: [
                   {
@@ -1574,8 +1608,8 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                     onPick: handleAddNetwork,
                   },
                 ],
-              }] : []),
-              ...(!trashScope && showBlobItem
+              },
+              ...(showBlobItem
                 ? [{
                     label: t("newTabMenu.groupWorkspace"),
                     entries: [{
@@ -1587,7 +1621,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                     }],
                   }]
                 : []),
-              ...(!trashScope ? [{
+              {
                 label: t("printing.title"),
                 entries: [{
                   key: "printing",
@@ -1597,12 +1631,12 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   untested: "printing.title#3",
                   onPick: handleAddPrinting,
                 }],
-              }] : []),
+              },
               // Offered at the root scope too since the personal install scope
               // exists: the catalog is machine state and a skill can be
               // installed for every project here without one being open. See
               // `NewTabMenu`, which carries the same entry.
-              ...(!trashScope ? [{
+              {
                 label: t("skillsLibrary.title"),
                 entries: [{
                   key: "skillslibrary",
@@ -1612,10 +1646,10 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   untested: "skillsLibrary.title#2",
                   onPick: handleAddSkills,
                 }],
-              }] : []),
+              },
               // The prompt chart's columns are this scope's agent tabs, and the
               // root scope has those too. See `NewTabMenu` for the same entry.
-              ...(!trashScope ? [{
+              {
                 label: t("promptChart.heading"),
                 entries: [{
                   key: "promptchart",
@@ -1625,8 +1659,8 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   untested: "promptChart.heading#3",
                   onPick: handleAddPromptChart,
                 }],
-              }] : []),
-              ...(!trashScope && webBrowser
+              },
+              ...(webBrowser
                 ? [{
                     label: t("newTabMenu.browser"),
                     entries: [{

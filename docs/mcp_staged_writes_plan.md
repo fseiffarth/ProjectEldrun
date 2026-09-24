@@ -10,7 +10,8 @@ Status: calendar/board first cut implemented; live QA pending. Implementation
 and limits: [`context/root_console.md`](context/root_console.md#staged-writes).
 Per-tab tokens are shared with [`mail_mcp_plan.md`](mail_mcp_plan.md). Its newer
 reader-class design supersedes the read-taint latch below; mail draft integration
-and reader marking remain deferred until those tools exist. Calendar visibility
+and reader marking have shipped with those tools (`services::root_mcp_mail`,
+[`context/root_console.md`](context/root_console.md)). Calendar visibility
 scoping remains a separate read-gate feature. The sections below record the
 original design; the implementation also captures first-move board metadata and
 checks calendar routing/access as approval preconditions.

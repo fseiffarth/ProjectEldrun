@@ -17,7 +17,6 @@ import { lastTabReadAt, noteUserInput, useActivityStore } from "../../stores/act
 import { agentTabModelTag, useAgentModelsStore } from "../../stores/agents/agentModels";
 import { persistScopeLayout } from "../../stores/agents/agentSchedules";
 import { sendCollectedPrompt, useAgentPromptsStore, type ProjectAgentPrompt, type SentAgentPrompt } from "../../stores/agents/agentPrompts";
-import { isTrashProject } from "../../lib/projects/trashProject";
 import { isSessionCommand } from "../../lib/agents/prompt/chart";
 import { isTabColor } from "../../lib/theme/tabColors";
 import type { AgentUsageReport } from "../../lib/agents/agentUsage";
@@ -127,7 +126,7 @@ interface MobileCalendarEvent {
   status?: string;
   recurring: boolean;
 }
-interface MobileCalendarInfo { id: string; name: string; color: string; visible: boolean; readonly: boolean; source_url?: string; caldav: boolean }
+interface MobileCalendarInfo { id: string; name: string; color: string; visible: boolean; readonly: boolean; subscribed: boolean; caldav: boolean }
 interface MobileCalendar { month: string; week_start: 0 | 1; calendars: MobileCalendarInfo[]; events: MobileCalendarEvent[]; truncated: boolean }
 interface MobileCalendarEventInput { calendar_id: string; start: string; end: string; all_day: boolean; title: string; location: string; notes: string; conference: string; category: string; status: string }
 type CalendarAction =
@@ -156,6 +155,8 @@ type TodoAction =
   | { type: "column_rename"; column_id: string; name: string }
   | { type: "column_move"; column_id: string; delta: -1 | 1 }
   | { type: "column_delete"; column_id: string };
+/** `error` is a fixed code (`AgentUsageReport.code`), never the CLI's own
+ * words: its stderr names paths on this machine. */
 interface MobileAgentUsage { label: string; supported: boolean; raw?: string; error?: string; cached: boolean }
 interface MobileAgentTally { prompts: number; worked_s: number; decisions: number; done: number }
 interface MobileAgentStatus {
@@ -172,7 +173,7 @@ interface MobileAgentTranscript {
   reason?: string;
   version?: string;
   unchanged?: boolean;
-  entries: { kind: string; text: string; at?: string; cut?: boolean }[];
+  entries: { kind: string; text: string; at?: string; cut?: boolean; subagent?: string; role?: string }[];
   truncated: boolean;
   /** Codex's context and rate-limit figures, passed through untouched. */
   usage?: { contextLeft?: number; session?: { used: number; resetsAt?: number }; week?: { used: number; resetsAt?: number } };
@@ -213,7 +214,7 @@ type DesktopRequest =
   | { type: "prompts"; request_id: string; project_id: string }
   | { type: "prompt_mutate"; request_id: string; project_id: string; action: PromptMutation }
   | { type: "agent_status"; request_id: string; project_id: string; tmux_session: string; refresh: boolean }
-  | { type: "agent_transcript"; request_id: string; project_id: string; tmux_session: string; version?: string | null; limit?: number | null }
+  | { type: "agent_transcript"; request_id: string; project_id: string; tmux_session: string; subagent?: string | null; version?: string | null; limit?: number | null }
   | { type: "tab_seen"; request_id: string; project_id: string; tmux_session: string }
   | { type: "tab_input"; request_id: string; project_id: string; tmux_session: string }
   | { type: "tab_prompt"; request_id: string; project_id: string; tmux_session: string; message: string }
@@ -290,15 +291,14 @@ async function agentChoices(): Promise<CatalogChoice[]> {
 
 /** The one gate every bridge handler applies before it touches a project: the
  * per-project Mobile switch is on, and the project is none of the trust tiers
- * the sidecar deliberately never reaches (remote, sandboxed, VM). Trash is the
- * one sandboxed project that stays reachable, exactly as it is on the desktop. */
+ * the sidecar deliberately never reaches (remote, sandboxed, VM). */
 function mobileProject(projectId: string | undefined) {
   if (!projectId) return undefined;
   const project = useProjectsStore.getState().projects.find((entry) => entry.id === projectId);
   if (
     !project
     || project.remote
-    || (project.sandbox?.enabled && !isTrashProject(project))
+    || project.sandbox?.enabled
     || project.vm?.enabled
     || !project.eldrun_mobile_access
   ) {
@@ -325,7 +325,7 @@ interface MobileScope {
   /** The project.json a persist exports to; "" for a box, whose layout lives
    *  in the state dir only (the tab store's own rule for box scopes). */
   localFile: string;
-  /** The project behind a project scope, for the rules only Trash has. */
+  /** The project behind a project scope. */
   project?: ProjectEntry;
 }
 
@@ -624,7 +624,6 @@ async function create(request: CreateRequest, t: ReturnType<typeof useT>): Promi
   // The new tab must be in the *shown* scope to get a terminal at all, so the
   // desktop goes there first — the project's activation, or the box's open.
   await enterScope(scope);
-  const project = scope.project;
   const requestHash = await invoke<string>("mobile_opaque_id", {
     domain: "request",
     value: request.idempotency_key,
@@ -632,9 +631,6 @@ async function create(request: CreateRequest, t: ReturnType<typeof useT>): Promi
 
   let spec: Omit<TabEntry, "key">;
   if (request.kind === "shell") {
-    if (project && isTrashProject(project)) {
-      return { status: "error", code: "invalid_request", message: "Trash accepts agent tabs only" };
-    }
     if (request.agent_id || request.mode) {
       return { status: "error", code: "invalid_request", message: "Shell requests cannot name an agent or mode" };
     }
@@ -643,9 +639,6 @@ async function create(request: CreateRequest, t: ReturnType<typeof useT>): Promi
     const choices = await agentChoices();
     const choice = choices.find((entry) => entry.public.id === request.agent_id);
     if (!choice) return { status: "error", code: "unknown_agent", message: "Agent is unavailable" };
-    if (project && isTrashProject(project) && !AGENT_ITEMS.some((item) => item.cmd === choice.item.cmd)) {
-      return { status: "error", code: "unknown_agent", message: "Trash accepts built-in agent CLIs only" };
-    }
     if (request.mode && !choice.public.modes.includes(request.mode)) {
       return { status: "error", code: "unsupported_mode", message: "Agent mode is unavailable" };
     }
@@ -854,12 +847,25 @@ async function mutateSchedule(
       scheduleId: action.schedule_id,
     });
   } else {
+    // The phone edits only these three fields and never shows prefix commands.
+    // Keep commands the desktop composer attached to an existing rule; the
+    // desktop editor may still deliberately clear them by writing [].
+    const existing = action.type === "update"
+      ? (await invoke<ScheduledAgentPrompt[]>("agent_schedules_list", {
+        projectId,
+        scheduleTargetId: target,
+      })).find((schedule) => schedule.id === action.schedule_id)
+      : undefined;
+    if (action.type === "update" && !existing) {
+      return { status: "error", code: "schedule_not_found", message: "Schedule is unavailable" };
+    }
     await invoke("agent_schedule_upsert", {
       projectId,
       scheduleTargetId: target,
       schedule: {
         id: action.type === "create" ? crypto.randomUUID() : action.schedule_id,
         ...action.schedule,
+        ...(existing ? { preface: existing.preface ?? [] } : {}),
       },
     });
     void persistScopeLayout(projectId);
@@ -962,6 +968,7 @@ async function agentStatusFor(
       label: agentLabel(leaf),
       supported: false,
       error: String(error),
+      code: "cli_failed",
       cached: false,
     })),
     invoke<{ days: Record<string, Record<string, number>> }>("usage_summary", {
@@ -979,12 +986,22 @@ async function agentStatusFor(
       usage: {
         label: usage.label,
         supported: usage.supported,
-        raw: usage.raw,
-        error: usage.error,
+        // The panel goes as printed, unless the CLI printed a path of this
+        // machine into it — then the phone is told that, not the path.
+        raw: usage.raw && !namesLocalPath(usage.raw) ? usage.raw : undefined,
+        error: usage.raw && namesLocalPath(usage.raw)
+          ? "cli_output_withheld"
+          : usage.code ?? (usage.error ? "cli_error" : undefined),
         cached: usage.cached,
       },
     },
   };
+}
+
+/** Whether a CLI's text names a place on this machine — a home directory, a
+ * temp or system path, a Windows drive — which the phone must not be shown. */
+function namesLocalPath(text: string): boolean {
+  return /(^|[\s("'`])(?:~\/|\/(?:home|Users|tmp|var|etc|opt|usr|root|mnt|media|private)\/|[A-Za-z]:\\)/.test(text);
 }
 
 async function taskId(task: CalendarTask) {
@@ -1305,7 +1322,9 @@ async function calendarSnapshot(month: string): Promise<MobileCalendar> {
       color: boundedText(entry.color, 64).value,
       visible: entry.visible,
       readonly: entry.readonly,
-      source_url: entry.source_url ? boundedText(entry.source_url, 2_000).value : undefined,
+      // Only the fact: a feed URL routinely embeds a private token, and the
+      // phone only ever asked whether there was one.
+      subscribed: !!entry.source_url,
       caldav: !!entry.caldav_account_id,
     }))),
     truncated: occurrences.length > shown.length,
@@ -1614,7 +1633,7 @@ async function mailReply(
       ...(header.rfc_message_id ? { in_reply_to: header.rfc_message_id } : {}),
       staged: [],
     });
-    const result = await mailDraftSend(saved.id);
+    const result = await mailDraftSend(saved.id, saved.staged.map((a) => a.staged_id));
     if (result.error) {
       return { status: "error", code: "mail_reply_failed", message: boundedText(result.error, 400).value };
     }
@@ -1713,17 +1732,23 @@ async function attachDesktopImage(projectId: string, imageId: string): Promise<D
   }
 }
 
+/** The agents whose transcript `services::agent_transcript` reads; any other
+ * family answers `unsupported` there, and so does the short-circuit below. */
+const TRANSCRIPT_AGENTS = new Set(["claude", "codex", "opencode"]);
+
 /**
  * The phone's Focus view on an agent tab: the conversation as the agent's own
  * transcript records it, read by the backend (`agent_tab_transcript`,
  * `services::agent_transcript`) for the tab's launch id — the same resolution
  * the Agents view's model tag and last-prompt line use, live id first. A tab
  * with no session id (an agent Eldrun does not resume) has no transcript to
- * name, and says so rather than answering with somebody else's.
+ * name, and says so rather than answering with somebody else's. `subagent`
+ * is the handle on one of its `agent` entries, read instead.
  */
 async function agentTranscriptFor(
   projectId: string,
   tmuxSession: string,
+  subagent: string | null | undefined,
   version: string | null | undefined,
   limit: number | null | undefined,
 ): Promise<DesktopResponse> {
@@ -1734,15 +1759,25 @@ async function agentTranscriptFor(
   const tab = scheduleTargetTab(scope.id, tmuxSession);
   if (!tab) return { status: "error", code: "tab_not_found", message: "Agent tab is unavailable" };
   if (!tab.sessionId) {
-    return { status: "agent_transcript", transcript: { available: false, reason: "no_session", entries: [], truncated: false } };
+    // Two different answers for the phone: a family whose transcript is
+    // never read (the backend's `unsupported`, decided by the same list) hands
+    // Focus to the terminal; a tab that has no session id *yet* — every tab
+    // the phone just created, until the agent's hook records one — keeps
+    // Focus reading the screen until the session reads.
+    const reason = TRANSCRIPT_AGENTS.has(tab.cmd) ? "no_session" : "unsupported";
+    return { status: "agent_transcript", transcript: { available: false, reason, entries: [], truncated: false } };
   }
   const transcript = await invoke<MobileAgentTranscript>("agent_tab_transcript", {
     agent: tab.cmd,
     projectId: scope.id,
     // OpenCode records no session id Eldrun can follow; its session is the
-    // newest one of the folder the tab runs in.
+    // newest one of the folder the tab runs in — for a tab opened fresh rather
+    // than restored with `--continue`, the newest one begun since it launched,
+    // so a new tab is a new chat and not the folder's last conversation.
     tabDir: tab.cwd || scope.cwd,
+    since: tab.launchedAt && !tab.args?.includes("--continue") ? tab.launchedAt : null,
     sessionId: tab.sessionId,
+    subagent: subagent ?? null,
     version: version ?? null,
     limit: limit ?? null,
   }).catch((): MobileAgentTranscript => ({ available: false, reason: "read_failed", entries: [], truncated: false }));
@@ -1786,7 +1821,7 @@ async function handleRequest(
     case "prompts": return promptsFor(request.project_id);
     case "prompt_mutate": return mutatePrompt(request.project_id, request.action);
     case "agent_status": return agentStatusFor(request.project_id, request.tmux_session, request.refresh);
-    case "agent_transcript": return agentTranscriptFor(request.project_id, request.tmux_session, request.version, request.limit);
+    case "agent_transcript": return agentTranscriptFor(request.project_id, request.tmux_session, request.subagent, request.version, request.limit);
     case "tab_seen": return markTabSeen(request.project_id, request.tmux_session);
     case "tab_input": return markTabInput(request.project_id, request.tmux_session);
     case "tab_prompt": return recordTabPrompt(request.project_id, request.tmux_session, request.message);
@@ -1795,7 +1830,30 @@ async function handleRequest(
   }
 }
 
-let mutationQueue: Promise<unknown> = Promise.resolve();
+/** Desktop mutations run one at a time — but per domain, not on one chain.
+ * The sidecar starts each request's deadline as it emits it, so a slow mail
+ * reply (60 s budget) ahead of a tab create on one shared chain made the phone
+ * read "desktop unavailable" for the create and then watch the tab appear
+ * anyway. Tabs, the board and calendar, mail, and schedules/prompts each keep
+ * their own order; nothing in one waits on another. */
+const mutationQueues = new Map<string, Promise<unknown>>();
+
+function mutationDomain(type: DesktopRequest["type"]): string | null {
+  switch (type) {
+    case "create": case "activate": case "rename_tab": case "close_tab": case "color_tab": case "reorder_tab": return "tabs";
+    case "todo_mutate": case "alert_resolve": case "calendar_mutate": return "board";
+    case "mail_mark": case "mail_reply": return "mail";
+    case "schedule_mutate": case "prompt_mutate": return "schedules";
+    default: return null;
+  }
+}
+
+/** Queue `run` behind the last mutation of its domain (exported for tests). */
+export function enqueueMutation(domain: string, run: () => Promise<void>): Promise<void> {
+  const next = (mutationQueues.get(domain) ?? Promise.resolve()).then(run, run);
+  mutationQueues.set(domain, next);
+  return next;
+}
 
 export function MobileBridgeHost() {
   const t = useT();
@@ -1833,11 +1891,9 @@ export function MobileBridgeHost() {
           }).catch(() => {});
         }
       };
-      if (request.type === "create" || request.type === "activate" || request.type === "rename_tab" || request.type === "close_tab" || request.type === "color_tab" || request.type === "reorder_tab" || request.type === "todo_mutate" || request.type === "alert_resolve" || request.type === "calendar_mutate" || request.type === "schedule_mutate" || request.type === "prompt_mutate" || request.type === "mail_mark" || request.type === "mail_reply") {
-        mutationQueue = mutationQueue.then(run, run);
-      } else {
-        void run();
-      }
+      const domain = mutationDomain(request.type);
+      if (domain) void enqueueMutation(domain, run);
+      else void run();
     }).then((stop) => {
       if (disposed) stop();
       else unlisten = stop;

@@ -6,7 +6,6 @@ import { useBoxesStore } from "../../stores/boxes";
 import { ROOT_SCOPE, useTabsStore } from "../../stores/tabs";
 import { SettingsCard, SettingsList, ToggleRow } from "../layout/settingsUi";
 import { UntestedTag } from "../common/UntestedTag";
-import { isTrashProject } from "../../lib/projects/trashProject";
 import { IS_WINDOWS } from "../../lib/platform";
 import { runInstallInTab } from "../../lib/installCommand";
 import { translate, useI18nStore, useT } from "../../lib/i18n";
@@ -441,7 +440,7 @@ export function MobileSettings() {
     }
   };
 
-  const eligible = projects.filter((project) => !project.remote && (!project.sandbox?.enabled || isTrashProject(project)) && !project.vm?.enabled);
+  const eligible = projects.filter((project) => !project.remote && !project.sandbox?.enabled && !project.vm?.enabled);
   const normalizedProjectSearch = projectSearch.trim().toLocaleLowerCase();
   const matchingEligible = normalizedProjectSearch
     ? eligible.filter((project) => project.name.toLocaleLowerCase().includes(normalizedProjectSearch))
@@ -654,7 +653,6 @@ export function MobileSettings() {
             key={project.id}
             label={project.name}
             checked={project.eldrun_mobile_access ?? false}
-            disabled={isTrashProject(project)}
             onChange={(event) => {
               setError(null);
               void setProjectMobileAccess(project.id, event.target.checked).catch((reason) => setError(String(reason)));

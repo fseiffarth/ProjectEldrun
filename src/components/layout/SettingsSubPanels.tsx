@@ -11,7 +11,13 @@ import { Dropdown } from "../common/Dropdown";
 import { useSettingsStore } from "../../stores/settings";
 import { AgentScheduleMcpSettings } from "../agents/AgentScheduleMcpSettings";
 import { PLATFORM } from "../../lib/platform";
-import { runInstallInTab, type InstallShellKind } from "../../lib/installCommand";
+import {
+  NODE_DOWNLOAD_URL,
+  NODE_INSTALL,
+  runInstallInTab,
+  type InstallShellKind,
+  type NodeRuntimeStatus,
+} from "../../lib/installCommand";
 import {
   codexHookNeedsTrust,
   openCodexHooksTab,
@@ -557,36 +563,6 @@ interface AgentInfo {
   warmup: boolean;
 }
 
-/**
- * Per-OS command that installs Node.js (and with it `npm`). Most agent CLIs
- * install via `npm install -g …`, so when `npm` is missing the Manage Agents
- * panel offers this first. nvm installs Node without administrator rights and
- * works identically on Linux and macOS; Windows uses winget (present on Windows
- * 10/11) and runs in either PowerShell or Command Prompt.
- */
-const NODE_INSTALL: Record<
-  "windows" | "macos" | "linux",
-  { command: string; shellKey: TranslationKey; shellKind: InstallShellKind }
-> = {
-  linux: {
-    command:
-      'curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash && export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh" && nvm install --lts',
-    shellKey: "install.shellBash",
-    shellKind: "bash",
-  },
-  macos: {
-    command:
-      'curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash && export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh" && nvm install --lts',
-    shellKey: "install.shellBash",
-    shellKind: "bash",
-  },
-  windows: {
-    command: "winget install OpenJS.NodeJS.LTS",
-    shellKey: "install.shellPowerShellOrCmd",
-    shellKind: "default",
-  },
-};
-const NODE_DOWNLOAD_URL = "https://nodejs.org/en/download";
 
 /**
  * "Codex won't run our session hook" notice for the Manage Agents panel.
@@ -723,6 +699,14 @@ function AgentFenceCard() {
         />
       </label>
       <p className="settings-help">{t("settings.agentFenceCargoCredentialsHelp")}</p>
+      <label className="settings-toggle-card-row">
+        <span>{t("settings.rootFenceProjects")} <UntestedTag id="settings.rootFenceProjects" /></span>
+        <Toggle
+          checked={settings?.root_fence_projects_readable ?? false}
+          onChange={(e) => void updateSettings({ root_fence_projects_readable: e.target.checked })}
+        />
+      </label>
+      <p className="settings-help">{t("settings.rootFenceProjectsHelp")}</p>
       <label className="settings-help" htmlFor="agent-fence-paths">
         {t("settings.agentFencePaths")}
       </label>
@@ -753,14 +737,6 @@ function AgentFenceCard() {
   );
 }
 
-/** Backend `NodeRuntimeStatus` (`node_runtime_status`). */
-interface NodeRuntimeStatus {
-  npm: boolean;
-  /** `node --version`, e.g. `v22.22.1`; null when Node is absent. */
-  version: string | null;
-  min_major: number;
-  too_old: boolean;
-}
 
 /**
  * "Install Node/npm first" helper for the Manage Agents panel. Most agent CLIs

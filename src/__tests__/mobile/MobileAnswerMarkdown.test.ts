@@ -72,6 +72,30 @@ describe("Eldrun Mobile Focus holds a sent prompt in its place", () => {
     expect(shape(withPending(working, [sent]))).toEqual(["prompt:fix it", "answer:Done.", "prompt:also  the\ntests", "answer:On it."]);
   });
 
+  it("keeps Codex answers without timestamps below the prompt sent before them", () => {
+    const before = [prompt("first", "2026-09-18T10:00:00Z"), answer("First reply")];
+    const sent = pendingPrompt(1, "follow up", before);
+    const working = [...before, answer("Reply to follow up")];
+    expect(shape(withPending(working, [sent]))).toEqual([
+      "prompt:first", "answer:First reply", "prompt:follow up", "answer:Reply to follow up",
+    ]);
+  });
+
+  it("puts the first prompt of an empty Codex session before its answer", () => {
+    const sent = pendingPrompt(1, "start here", []);
+    expect(shape(withPending([answer("Starting now")], [sent]))).toEqual([
+      "prompt:start here", "answer:Starting now",
+    ]);
+  });
+
+  it("anchors to the earlier of two identical unstamped answers", () => {
+    const before = [prompt("first", "2026-09-18T10:00:00Z"), answer("Done.")];
+    const sent = pendingPrompt(1, "follow up", before);
+    expect(shape(withPending([...before, answer("Done.")], [sent]))).toEqual([
+      "prompt:first", "answer:Done.", "prompt:follow up", "answer:Done.",
+    ]);
+  });
+
   it("keeps its place and words when its record arrives later in the file, whitespace aside", () => {
     const before = [prompt("fix it", "2026-09-18T10:00:00Z"), answer("Checking.", "2026-09-18T10:01:00Z")];
     const sent = pendingPrompt(1, "also the tests", before);

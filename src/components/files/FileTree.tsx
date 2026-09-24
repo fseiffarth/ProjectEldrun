@@ -82,7 +82,7 @@ import { RenameDialog, containingFolderLabel } from "./RenameDialog";
 import { useDialogs } from "../common/PromptDialogs";
 import { Dropdown } from "../common/Dropdown";
 import { FileIcon } from "../common/icons/FileIcon";
-import { SearchIcon } from "../common/icons/Icon";
+import { ArrowDownIcon, ArrowUpIcon, PlayIcon, SearchIcon } from "../common/icons/Icon";
 import { useT, type TranslationKey } from "../../lib/i18n";
 
 // The context menu's Delete rows name their keyboard twin (handleTreeKeyDown).
@@ -3104,7 +3104,7 @@ export function FileTree({
       return;
     }
     const tab = {
-      label: `▶ ${entry.name}`,
+      label: `▶\uFE0E ${entry.name}`,
       cmd: interp,
       cwd: plan.cwd,
       kind: "shell" as const,
@@ -3371,7 +3371,7 @@ export function FileTree({
             void pushRelToHost(relPath, label, true);
           }}
         >
-          ⬆
+          <ArrowUpIcon />
         </button>
       );
     }
@@ -3410,7 +3410,7 @@ export function FileTree({
             : pushRelToHost(relPath, label, true));
         }}
       >
-        {remoteListing ? "⬇" : "⬆"}
+        {remoteListing ? <ArrowDownIcon /> : <ArrowUpIcon />}
       </button>
     );
   }
@@ -3986,7 +3986,7 @@ export function FileTree({
                               void (remoteListing ? syncEntryToLocal(e) : pushEntryToHost(e));
                             }}
                           >
-                            {thisBusy ? <span className="file-run-spinner" /> : remoteListing ? "⬇" : "⬆"}
+                            {thisBusy ? <span className="file-run-spinner" /> : remoteListing ? <ArrowDownIcon /> : <ArrowUpIcon />}
                           </button>
                         );
                       })()}
@@ -4015,7 +4015,7 @@ export function FileTree({
                               void pushEntryToHost(e);
                             }}
                           >
-                            {thisBusy ? <span className="file-run-spinner" /> : "⬆"}
+                            {thisBusy ? <span className="file-run-spinner" /> : <ArrowUpIcon />}
                           </button>
                         );
                       })()}
@@ -4087,7 +4087,7 @@ export function FileTree({
                   }}
                   disabled={runLocked}
                 >
-                  ▶
+                  <PlayIcon />
                 </button>
               )}
               {isCompiling && (

@@ -104,9 +104,15 @@ interface RemoteUsageStore {
   /** On-demand read of one host, awaited directly rather than round-tripped
    *  through the connect-time event. Best-effort: a failed probe (host down,
    *  credential gone) leaves whatever was cached, so a machine that can't be
-   *  reached simply shows no reading instead of tearing down the dialog. */
-  recheck: (target: UsageTarget) => Promise<void>;
+   *  reached simply shows no reading instead of tearing down the dialog.
+   *  `background` marks an unattended read (the Machines menu's utilization
+   *  sweep) so the backend refuses it on an HPC-tagged host; a read already in
+   *  flight for the same key is not stacked. */
+  recheck: (target: UsageTarget, opts?: { background?: boolean }) => Promise<void>;
 }
+
+/** Report keys with a probe in flight — one SSH login each, never two at once. */
+const inFlight = new Set<string>();
 
 export const useRemoteUsageStore = create<RemoteUsageStore>((set) => ({
   reports: {},
@@ -117,7 +123,10 @@ export const useRemoteUsageStore = create<RemoteUsageStore>((set) => ({
   open: () => set({ isOpen: true }),
   close: () => set({ isOpen: false }),
 
-  recheck: async (target) => {
+  recheck: async (target, opts) => {
+    if (inFlight.has(target.key)) return;
+    inFlight.add(target.key);
+    const bg = opts?.background ? { background: true } : {};
     try {
       const report =
         target.kind === "machine"
@@ -125,15 +134,19 @@ export const useRemoteUsageStore = create<RemoteUsageStore>((set) => ({
               user: target.user,
               host: target.host,
               port: target.port,
+              ...bg,
             })
           : await invoke<RemoteUsageReport>("remote_usage_check", {
               projectId: target.projectId,
               hostId: target.hostId,
+              ...bg,
             });
       set((s) => ({ reports: { ...s.reports, [target.key]: report } }));
     } catch {
       // Best-effort, like the connect-time probe — a failed recheck just
       // leaves the previous report (or none) in place.
+    } finally {
+      inFlight.delete(target.key);
     }
   },
 }));

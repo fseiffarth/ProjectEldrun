@@ -3,7 +3,6 @@ import {
   mailAccountDelete,
   mailAgentDrafts,
   mailAccountsList,
-  mailBody,
   mailFlag,
   mailFolders,
   mailHeaders,
@@ -13,7 +12,12 @@ import {
   mailPriorityCounts,
   mailPriorityPage,
   mailPrioritySet,
+  mailAgentMark,
+  mailAgentMarkFolder,
+  mailAgentMarkSender,
+  mailAgentMarks,
   mailPurge,
+  mailSearch,
   mailSync,
   mailSyncCancel,
   planMailDelete,
@@ -32,6 +36,38 @@ import type {
   MailSyncPhase,
 } from "../types/mail";
 
+/** The mail window's fixed first tab: folders, list and preview. */
+export const MAIL_INBOX_TAB = "inbox";
+
+export type MailComposeMode = "new" | "reply" | "replyAll" | "forward";
+
+/** A message opened in its own tab. The header is a snapshot: the tab fetches
+ *  its own body, so it survives the Inbox list moving on to another folder. */
+export interface MailMessageTab {
+  id: string;
+  kind: "message";
+  header: MailHeader;
+}
+
+/** An unfinished mail in its own tab — everything the composer is opened with. */
+export interface MailComposeTab {
+  id: string;
+  kind: "compose";
+  mode: MailComposeMode;
+  accountId: string;
+  source?: { header: MailHeader; body: MailBody | null };
+  toAddress?: string;
+  draft?: MailDraft;
+  /** The subject as last typed, for the tab's label. */
+  subject?: string;
+  /** Edited since it opened: closing it asks before the text is thrown away. */
+  dirty: boolean;
+}
+
+export type MailTab = MailMessageTab | MailComposeTab;
+
+let composeSeq = 0;
+
 /**
  * The mail client's store: accounts, folders, the header index page, the
  * selected message and its body — one global set, backed by
@@ -49,7 +85,7 @@ import type {
  *
  *  1. **Nothing here connects on its own.** `loadAccounts` and `openFolder` read
  *     the local index only; opening the overlay renders from it and shows a
- *     "Check mail" button. `checkMail` is the only action that reaches a server.
+ *     "Check mail" button. `checkMail` and a typed folder search can reach a server.
  *     It is called from a click — with exactly one exception, and that one is an
  *     opt-in: the header's mail button (`MailIndicator`) runs it on a timer once
  *     `mail_client` is on — off for everyone outside debug mode, which is what
@@ -131,6 +167,15 @@ interface MailStore {
    *  see `MailHeaderPage.scanned`. Cleared on every page that covered its whole
    *  scope, so a stale note can never outlive the search that produced it. */
   headerScanned?: number;
+  /**
+   * Whether a folder search reached the server. Its page still comes from the
+   * local index after backfill; every other page clears
+   * it, so the "downloaded mail only" note can never linger past the search
+   * that earned it.
+   */
+  searchRemote: boolean;
+  /** Online search found matches that the backend could not all backfill. */
+  searchPartial: boolean;
   headerOffset: number;
   query: string;
   /** What the list is ordered by, and in which direction. Kept here rather than
@@ -142,12 +187,15 @@ interface MailStore {
    *  for `sort`'s reason: on a paged list, filtering the page would hide the
    *  unread mail that sits on page three. */
   unreadOnly: boolean;
-
-  body: MailBody | null;
-  /** This body was fetched with remote references resolved (an explicit click). */
+  /** Only the messages marked for agents — the page a contained reader in
+   *  "marked" scope is served, so what the chip shows is exactly what such a
+   *  reader can reach. Backend-applied, for `unreadOnly`'s reason. */
+  agentOnly: boolean;
+  /** The selected account's messages marked for agents (ids in the local
+   *  index). Re-read after every mark and whenever the account changes. */
+  agentMarks: string[];
 
   loadingHeaders: boolean;
-  loadingBody: boolean;
   /** Per-account sync progress, keyed by account id. */
   sync: Record<string, MailSyncState>;
   /** The last thing that went wrong, shown as a dismissible strip. */
@@ -175,18 +223,50 @@ interface MailStore {
    *  would otherwise leave the dot a message behind. */
   noteArrival: (accountId: string, count: number) => void;
   openOverlay: () => void;
+  /** Open the overlay on its Inbox tab — for every "show me this in mail"
+   *  path (a message or folder was just selected for the Inbox to show). The
+   *  plain ✉ toggle uses `openOverlay`, which keeps whichever tab was last up. */
+  openInbox: () => void;
   closeOverlay: () => void;
+
+  /** The account editor on screen: `{ account: null }` adds one. In the store
+   *  because two surfaces open it — the title bar's accounts dropdown (✎ per
+   *  row, Add account last) and the pane's empty state — and `MailPane` hosts
+   *  the one dialog, so its after-save steps stay in one place. */
+  accountDialog: { account: MailAccount | null } | null;
+  openAccountDialog: (account: MailAccount | null) => void;
+  closeAccountDialog: () => void;
 
   /** Drafts an agent wrote through the root MCP (`origin` set) that the user
    *  has not yet sent, discarded or edited. Read by the pane's strip and by the
    *  root console's review strip; refreshed on `root-mcp-changed` kind `draft`. */
   agentDrafts: MailDraft[];
   loadAgentDrafts: () => Promise<void>;
-  /** The agent draft the pane should open in the composer next. */
-  pendingDraft: MailDraft | null;
-  /** Open the overlay on an agent draft's account with the composer on it —
-   *  never an "approve": the composer's Send stays the only way out. */
+  /** Open the overlay on an agent draft's account with the composer on it, in
+   *  its own tab — never an "approve": the composer's Send stays the only way
+   *  out. A draft already open in a tab is focused rather than opened twice. */
   openAgentDraft: (draft: MailDraft | null) => Promise<void>;
+
+  /** The mail window's tabs beyond the fixed Inbox tab: opened messages and
+   *  unfinished mails (new, reply, forward, an agent's draft). Session state
+   *  only — a composer's text lives in its mounted component, which the overlay
+   *  keeps alive while it is closed, so nothing here is persisted. */
+  mailTabs: MailTab[];
+  /** `MAIL_INBOX_TAB` or the id of one of `mailTabs`. */
+  activeMailTab: string;
+  setActiveMailTab: (id: string) => void;
+  /** Open a message in its own tab (or focus the tab it already has). */
+  openMessageTab: (header: MailHeader) => void;
+  /** Open a composer tab and focus it. Returns the tab id. */
+  openComposeTab: (spec: Omit<MailComposeTab, "id" | "kind" | "dirty">) => string;
+  /** A composer tab was edited: closing it now asks first. */
+  markComposeDirty: (id: string, subject?: string) => void;
+  /** A composer tab's draft was saved: nothing on screen is unsaved any more. */
+  markComposeClean: (id: string, subject?: string) => void;
+  closeMailTab: (id: string) => void;
+  /** Drop every composer tab — the `mail_client` flag went off, and the
+   *  composers holding their text are unmounting with the overlay. */
+  dropComposeTabs: () => void;
 
   /**
    * Open the overlay **on** a given account — the header dropdown's account rows.
@@ -230,7 +310,10 @@ interface MailStore {
   clearPriority: (priority: MailPriority) => Promise<void>;
   /** Re-read both badge counts (local). */
   refreshPriorityCounts: () => Promise<void>;
+  /** Search immediately, for explicit store actions and tests. */
   setQuery: (query: string) => Promise<void>;
+  /** Keep the typed value responsive, but debounce its server request. */
+  queueQuery: (query: string) => void;
   /**
    * Re-order the list. Re-reads page 1 rather than re-sorting what is on
    * screen: the order is the *store's*, over the whole folder, so "largest
@@ -243,6 +326,15 @@ interface MailStore {
    */
   setSort: (sort: MailSort, desc: boolean) => Promise<void>;
   setUnreadOnly: (unreadOnly: boolean) => Promise<void>;
+  setAgentOnly: (agentOnly: boolean) => Promise<void>;
+  /** Re-read `agentMarks` for the selected account. */
+  loadAgentMarks: () => Promise<void>;
+  /** Mark or unmark messages for a contained reader agent. Local only. */
+  setAgentMark: (headers: MailHeader[], marked: boolean) => Promise<void>;
+  /** Mark every message of `header`'s account from its sender address. */
+  markAgentSender: (header: MailHeader) => Promise<void>;
+  /** Mark every message of the selected folder. */
+  markAgentFolder: () => Promise<void>;
   /** Drop every narrowing at once — the search and the unread filter — in one
    *  read rather than one per control. */
   clearFilters: () => Promise<void>;
@@ -259,7 +351,12 @@ interface MailStore {
    */
   stepPage: (offset: number) => Promise<void>;
 
-  selectMessage: (messageId: string | null) => Promise<void>;
+  /**
+   * Open a message of the loaded page in its own mail-window tab — the Inbox
+   * has no preview pane, so this is what a click on a row does. Also the row
+   * the list marks as last opened. A message not in the page opens nothing.
+   */
+  openMessage: (messageId: string) => void;
   /** Tick exactly this row and nothing else, and anchor a later range on it. */
   checkOnly: (messageId: string) => void;
   /** Ctrl-click: add or remove one row, leaving the rest of the set alone. */
@@ -315,15 +412,29 @@ function defaultFolder(folders: MailFolder[]): MailFolder | undefined {
  * at once — and over an encrypted store a search scans until its bound, which
  * makes the *earlier*, shorter query the slow one often enough to matter. Every
  * other await in this store already guards against its own staleness
- * (`selectMessage` re-checks `selectedMessageId`); this is `loadPage`'s
+ * (a message tab's body read checks it is still mounted); this is `loadPage`'s
  * equivalent, and it has to be a counter rather than a re-read of the selection
- * because two reads for the *same* folder — one per keystroke — differ only in
+ * because two reads for the *same* folder — as a query changes — differ only in
  * which request they are.
  *
  * A superseded answer is dropped whole, `loadingHeaders` included: the newer
  * request is still running and owns the spinner.
  */
 let pageToken = 0;
+const SEARCH_DEBOUNCE_MS = 300;
+let queuedSearchTimer: ReturnType<typeof setTimeout> | null = null;
+let queuedSearch = false;
+
+function clearQueuedSearchTimer() {
+  if (queuedSearchTimer !== null) clearTimeout(queuedSearchTimer);
+  queuedSearchTimer = null;
+}
+
+function resumeQueuedSearch(get: () => MailStore) {
+  if (queuedSearch && get().overlayOpen && get().activeMailTab === MAIL_INBOX_TAB) {
+    void get().loadPage(0);
+  }
+}
 
 export const useMailStore = create<MailStore>((set, get) => ({
   accounts: [],
@@ -342,14 +453,15 @@ export const useMailStore = create<MailStore>((set, get) => ({
   headerTotal: 0,
   headerOffset: 0,
   query: "",
+  searchRemote: false,
+  searchPartial: false,
   sort: "date",
   sortDesc: true,
   unreadOnly: false,
-
-  body: null,
+  agentOnly: false,
+  agentMarks: [],
 
   loadingHeaders: false,
-  loadingBody: false,
   sync: {},
   error: null,
 
@@ -373,6 +485,7 @@ export const useMailStore = create<MailStore>((set, get) => ({
 
   openOverlay: () => {
     set({ overlayOpen: true, newCount: 0 });
+    resumeQueuedSearch(get);
     // Opening mail does not mark anything read, so the badge deliberately stays
     // — but the pane is about to show folder rows, and both should agree.
     void get().refreshUnread();
@@ -380,24 +493,111 @@ export const useMailStore = create<MailStore>((set, get) => ({
     // before anything is clicked.
     void get().refreshPriorityCounts();
   },
-  closeOverlay: () => set({ overlayOpen: false }),
+  openInbox: () => {
+    set({ activeMailTab: MAIL_INBOX_TAB });
+    get().openOverlay();
+  },
+  closeOverlay: () => {
+    clearQueuedSearchTimer();
+    set({ overlayOpen: false });
+  },
+
+  accountDialog: null,
+  openAccountDialog: (account) => set({ accountDialog: { account } }),
+  closeAccountDialog: () => set({ accountDialog: null }),
 
   agentDrafts: [],
-  pendingDraft: null,
   loadAgentDrafts: async () => {
     // A locked or never-opened store lists nothing; that is not an error here.
     const drafts = await mailAgentDrafts().catch(() => [] as MailDraft[]);
     set({ agentDrafts: Array.isArray(drafts) ? drafts : [] });
   },
   openAgentDraft: async (draft) => {
-    if (!draft) return set({ pendingDraft: null });
+    if (!draft) return;
     get().openOverlay();
+    const open = get().mailTabs.find((tab) => tab.kind === "compose" && tab.draft?.id === draft.id);
+    if (open) return get().setActiveMailTab(open.id);
     if (get().selectedAccountId !== draft.account_id) await get().selectAccount(draft.account_id);
-    set({ pendingDraft: draft });
+    // Asked again after the await: a second click on the same draft while the
+    // account loaded has opened its tab by now.
+    const opened = get().mailTabs.find((tab) => tab.kind === "compose" && tab.draft?.id === draft.id);
+    if (opened) return set({ activeMailTab: opened.id });
+    get().openComposeTab({ mode: "new", accountId: draft.account_id, draft });
+  },
+
+  mailTabs: [],
+  activeMailTab: MAIL_INBOX_TAB,
+  setActiveMailTab: (id) => {
+    set((s) => ({
+      activeMailTab: id === MAIL_INBOX_TAB || s.mailTabs.some((tab) => tab.id === id) ? id : MAIL_INBOX_TAB,
+    }));
+    if (get().activeMailTab !== MAIL_INBOX_TAB) clearQueuedSearchTimer();
+    else resumeQueuedSearch(get);
+  },
+  openMessageTab: (header) => {
+    clearQueuedSearchTimer();
+    const open = get().mailTabs.find((tab) => tab.kind === "message" && tab.header.id === header.id);
+    if (open) return set({ activeMailTab: open.id });
+    const id = `msg:${header.id}`;
+    set((s) => ({ mailTabs: [...s.mailTabs, { id, kind: "message", header }], activeMailTab: id }));
+  },
+  openComposeTab: (spec) => {
+    clearQueuedSearchTimer();
+    const id = `compose:${++composeSeq}`;
+    set((s) => ({
+      mailTabs: [...s.mailTabs, { ...spec, id, kind: "compose", dirty: false }],
+      activeMailTab: id,
+    }));
+    return id;
+  },
+  markComposeDirty: (id, subject) =>
+    set((s) => {
+      const tab = s.mailTabs.find((t) => t.id === id);
+      if (!tab || tab.kind !== "compose") return s;
+      if (tab.dirty && (subject === undefined || subject === tab.subject)) return s;
+      return {
+        mailTabs: s.mailTabs.map((t) =>
+          t.id === id && t.kind === "compose"
+            ? { ...t, dirty: true, ...(subject !== undefined ? { subject } : {}) }
+            : t,
+        ),
+      };
+    }),
+  markComposeClean: (id, subject) =>
+    set((s) => ({
+      mailTabs: s.mailTabs.map((t) =>
+        t.id === id && t.kind === "compose"
+          ? { ...t, dirty: false, ...(subject !== undefined ? { subject } : {}) }
+          : t,
+      ),
+    })),
+  dropComposeTabs: () => {
+    set((s) => {
+      if (!s.mailTabs.some((tab) => tab.kind === "compose")) return s;
+      const mailTabs = s.mailTabs.filter((tab) => tab.kind !== "compose");
+      const activeMailTab = mailTabs.some((tab) => tab.id === s.activeMailTab)
+        ? s.activeMailTab
+        : MAIL_INBOX_TAB;
+      return { mailTabs, activeMailTab };
+    });
+    resumeQueuedSearch(get);
+  },
+  closeMailTab: (id) => {
+    set((s) => {
+      const index = s.mailTabs.findIndex((tab) => tab.id === id);
+      if (index < 0) return s;
+      const mailTabs = s.mailTabs.filter((tab) => tab.id !== id);
+      // Closing the tab on screen lands on its left neighbour, the Inbox last —
+      // what closing a tab does in every other strip.
+      const activeMailTab =
+        s.activeMailTab === id ? (mailTabs[index - 1]?.id ?? MAIL_INBOX_TAB) : s.activeMailTab;
+      return { mailTabs, activeMailTab };
+    });
+    resumeQueuedSearch(get);
   },
 
   openAccountView: async (accountId) => {
-    get().openOverlay();
+    get().openInbox();
     // Re-selecting the account that is already showing one of its folders is a
     // no-op on purpose: `selectAccount` re-opens the inbox, so a second click on
     // the row you are already reading would throw away the folder you navigated
@@ -409,7 +609,7 @@ export const useMailStore = create<MailStore>((set, get) => ({
   },
 
   openPriorityView: async (priority) => {
-    get().openOverlay();
+    get().openInbox();
     await get().openPriority(priority);
   },
 
@@ -453,7 +653,7 @@ export const useMailStore = create<MailStore>((set, get) => ({
     if (keep && keep !== current) {
       await get().selectAccount(keep);
     } else if (!keep) {
-      set({ selectedAccountId: null, selectedFolderId: null, headers: [], body: null });
+      set({ selectedAccountId: null, selectedFolderId: null, headers: [] });
     } else {
       // Same account still selected, so nothing above refetched anything — but
       // an account edit can change what the *already-loaded* headers mean.
@@ -489,10 +689,12 @@ export const useMailStore = create<MailStore>((set, get) => ({
       headers: [],
       headerTotal: 0,
       headerOffset: 0,
-      body: null,
+      agentMarks: [],
+      agentOnly: false,
         });
     // Local read only — `refresh: false`. Opening an account must never dial out.
     await get().loadFolders(accountId, false);
+    void get().loadAgentMarks();
     const folder = defaultFolder(get().foldersByAccount[accountId] ?? []);
     if (folder) await get().openFolder(folder.id);
   },
@@ -512,7 +714,6 @@ export const useMailStore = create<MailStore>((set, get) => ({
       // Exclusive with the priority list — see `selectedPriority`.
       selectedPriority: null,
       selectedMessageId: null,
-      body: null,
           headerOffset: 0,
     });
     await get().loadPage(0);
@@ -528,8 +729,8 @@ export const useMailStore = create<MailStore>((set, get) => ({
       selectedPriority: priority,
       selectedFolderId: null,
       selectedMessageId: null,
-      body: null,
       headerOffset: 0,
+      agentOnly: false,
     });
     await get().loadPage(0);
   },
@@ -589,6 +790,39 @@ export const useMailStore = create<MailStore>((set, get) => ({
     await get().loadPage(0);
   },
 
+  queueQuery: (query) => {
+    clearQueuedSearchTimer();
+    // An older request may still be in flight. Its result must not repaint
+    // under the new text while the debounce timer is waiting.
+    pageToken += 1;
+    queuedSearch = true;
+    set({
+      query,
+      headerOffset: 0,
+      headers: [],
+      headerTotal: 0,
+      headerScanned: undefined,
+      searchRemote: false,
+      searchPartial: false,
+      checkedIds: [],
+      anchorId: null,
+      loadingHeaders: true,
+    });
+    const { overlayOpen, activeMailTab, selectedPriority, selectedFolderId } = get();
+    if (!overlayOpen || activeMailTab !== MAIL_INBOX_TAB) return;
+    // Clearing the box and local priority searches need no server delay.
+    if (!query.trim() || selectedPriority || !selectedFolderId) {
+      void get().loadPage(0);
+      return;
+    }
+    queuedSearchTimer = setTimeout(() => {
+      queuedSearchTimer = null;
+      if (queuedSearch && get().overlayOpen && get().activeMailTab === MAIL_INBOX_TAB) {
+        void get().loadPage(0);
+      }
+    }, SEARCH_DEBOUNCE_MS);
+  },
+
   setSort: async (sort, desc) => {
     set({ sort, sortDesc: desc, headerOffset: 0 });
     await get().loadPage(0);
@@ -599,16 +833,67 @@ export const useMailStore = create<MailStore>((set, get) => ({
     await get().loadPage(0);
   },
 
+  setAgentOnly: async (agentOnly) => {
+    set({ agentOnly, headerOffset: 0 });
+    await get().loadPage(0);
+  },
+
+  loadAgentMarks: async () => {
+    const accountId = get().selectedAccountId;
+    if (!accountId) {
+      set({ agentMarks: [] });
+      return;
+    }
+    const marks = await mailAgentMarks(accountId).catch(() => null);
+    // Still the same account? A slow answer for the previous one must not
+    // decorate this one's rows.
+    if (marks && get().selectedAccountId === accountId) set({ agentMarks: marks });
+  },
+
+  setAgentMark: async (headers, marked) => {
+    const ids = headers.map((h) => h.id);
+    // Patch on screen first, for `setPriority`'s reason: the write is local and
+    // the optimism is only about the IPC hop.
+    set((s) => ({
+      agentMarks: marked
+        ? [...new Set([...s.agentMarks, ...ids])]
+        : s.agentMarks.filter((id) => !ids.includes(id)),
+    }));
+    await mailAgentMark(ids, marked).catch((err) => set({ error: reason(err) }));
+    // Re-read rather than trust the patch: an unmark removes every copy of the
+    // same message, which the patch cannot know about.
+    await get().loadAgentMarks();
+    if (get().agentOnly) await get().loadPage(get().headerOffset);
+  },
+
+  markAgentSender: async (header) => {
+    await mailAgentMarkSender(header.account_id, header.from.address).catch((err) =>
+      set({ error: reason(err) }),
+    );
+    await get().loadAgentMarks();
+    if (get().agentOnly) await get().loadPage(get().headerOffset);
+  },
+
+  markAgentFolder: async () => {
+    const folderId = get().selectedFolderId;
+    if (!folderId) return;
+    await mailAgentMarkFolder(folderId).catch((err) => set({ error: reason(err) }));
+    await get().loadAgentMarks();
+    if (get().agentOnly) await get().loadPage(get().headerOffset);
+  },
+
   clearFilters: async () => {
-    set({ query: "", unreadOnly: false, headerOffset: 0 });
+    set({ query: "", unreadOnly: false, agentOnly: false, headerOffset: 0 });
     await get().loadPage(0);
   },
 
   loadPage: async (offset) => {
-    const { selectedFolderId, selectedPriority, query, sort, sortDesc, unreadOnly } = get();
+    clearQueuedSearchTimer();
+    queuedSearch = false;
+    const { selectedFolderId, selectedPriority, query, sort, sortDesc, unreadOnly, agentOnly } = get();
     if (!selectedFolderId && !selectedPriority) {
       pageToken += 1;
-      set({ headers: [], headerTotal: 0, headerScanned: undefined, loadingHeaders: false });
+      set({ headers: [], headerTotal: 0, headerScanned: undefined, searchRemote: false, searchPartial: false, loadingHeaders: false });
       return;
     }
     const token = ++pageToken;
@@ -618,25 +903,45 @@ export const useMailStore = create<MailStore>((set, get) => ({
     // and sort, so everything downstream — the list, the pager, the search box,
     // the list's sort headers — stays one code path that does not know which it
     // is showing.
+    //
+    // A folder search goes through `mailSearch` rather than `mailHeaders`: the
+    // sync keeps only the newest headers locally, so a local query can never
+    // match an old mail — the server is asked first and the page says whether
+    // it was reached (`searchRemote`). Priority lists stay local: they span
+    // every account and folder, and a per-folder server search has no single
+    // mailbox to ask.
+    const needle = query.trim() || null;
     const page = await (selectedPriority
       ? mailPriorityPage(
           selectedPriority,
           offset,
           MAIL_PAGE_SIZE,
-          query.trim() || null,
+          needle,
           sort,
           sortDesc,
           unreadOnly,
-        )
-      : mailHeaders(
-          selectedFolderId as string,
-          offset,
-          MAIL_PAGE_SIZE,
-          query.trim() || null,
-          sort,
-          sortDesc,
-          unreadOnly,
-        )
+        ).then((p) => ({ ...p, remote: false, partial: false }))
+      : needle
+        ? mailSearch(
+            selectedFolderId as string,
+            offset,
+            MAIL_PAGE_SIZE,
+            needle,
+            sort,
+            sortDesc,
+            unreadOnly,
+            agentOnly,
+          )
+        : mailHeaders(
+            selectedFolderId as string,
+            offset,
+            MAIL_PAGE_SIZE,
+            needle,
+            sort,
+            sortDesc,
+            unreadOnly,
+            agentOnly,
+          ).then((p) => ({ ...p, remote: false, partial: false }))
     ).catch((err) => {
       set({ error: reason(err) });
       return null;
@@ -657,6 +962,8 @@ export const useMailStore = create<MailStore>((set, get) => ({
             headers: page.items,
             headerTotal: page.total,
             headerScanned: page.scanned,
+            searchRemote: page.remote,
+            searchPartial: page.partial,
             headerOffset: offset,
           }
         : {}),
@@ -670,25 +977,12 @@ export const useMailStore = create<MailStore>((set, get) => ({
     await get().loadPage(Math.max(0, offset - left));
   },
 
-  selectMessage: async (messageId) => {
-    if (!messageId) {
-      set({ selectedMessageId: null, body: null });
-      return;
-    }
-    // Every message starts with remote content blocked, whatever the last one did.
-    set({ selectedMessageId: messageId, body: null, loadingBody: true });
-    const body = await mailBody(messageId, false).catch((err) => {
-      set({ error: reason(err) });
-      return null;
-    });
-    // A slower body for a message the user already navigated away from must not
-    // overwrite the one now on screen.
-    if (get().selectedMessageId !== messageId) return;
-    set({ loadingBody: false, body });
-    // Reading a message marks it seen locally and on the server; a failure there
-    // is not worth a banner, but the list must not lie about it either.
+  openMessage: (messageId) => {
+    set({ selectedMessageId: messageId });
+    // The tab reads its own body and marks the message seen once it has it
+    // (`MailOverlay`'s `MailMessageTabBody`).
     const header = get().headers.find((h) => h.id === messageId);
-    if (header && !header.seen) await get().setFlag(messageId, "seen", true);
+    if (header) get().openMessageTab(header);
   },
 
   checkOnly: (messageId) => set({ checkedIds: [messageId], anchorId: messageId }),
@@ -739,10 +1033,13 @@ export const useMailStore = create<MailStore>((set, get) => ({
         : mailPurge(group.messageIds)
       ).catch((err) => set({ error: reason(err) }));
     }
-    // The open message may be one of the ones just deleted, and a body left on
-    // screen over a row that no longer exists is the worst of both.
+    // A deleted message's own tab goes with it: a body left on screen for mail
+    // that no longer exists is the worst of both.
     if (get().selectedMessageId && wanted.has(get().selectedMessageId as string)) {
-      set({ selectedMessageId: null, body: null });
+      set({ selectedMessageId: null });
+    }
+    for (const tab of get().mailTabs) {
+      if (tab.kind === "message" && wanted.has(tab.header.id)) get().closeMailTab(tab.id);
     }
     // Rail badges, then the marked-mail badges (a deleted message leaves its
     // priority list too), then the page — which also clears the tick marks.
@@ -831,7 +1128,11 @@ export const useMailStore = create<MailStore>((set, get) => ({
     }));
     // The folder list's unread counts moved, and so did the open page.
     await get().loadFolders(accountId, false);
-    if (get().selectedAccountId === accountId) await get().loadPage(get().headerOffset);
+    if (get().selectedAccountId === accountId) {
+      await get().loadPage(get().headerOffset);
+      // A sync can adopt a moved copy of a marked message; the pills must know.
+      void get().loadAgentMarks();
+    }
     // A filter rule just moved mail into Important/Urgent. The rail badges are
     // the only place that shows it, so they have to be re-read here — otherwise
     // the one visible consequence of an automatic mark waits for the next thing

@@ -402,6 +402,123 @@ pub(crate) fn parse_airport_ssid(text: &str) -> Option<String> {
     (!ssid.is_empty()).then(|| ssid.to_string())
 }
 
+/// Which network this machine is on, in enough detail to tell two of them
+/// apart — what the print manager keys a per-network default printer by.
+///
+/// The fields are raw readings, not a key: the frontend builds the key (and the
+/// label, which it has to translate) from them, so the rule "what counts as the
+/// same network" lives in one place (`lib/window/printerNetworkDefaults.ts`).
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct NetworkIdentity {
+    /// `wlan` | `lan` | `disconnected`, as [`network_conn_type`] answers.
+    pub kind: String,
+    /// The Wi-Fi network's name. Empty on a wired link or when nothing could
+    /// name it.
+    pub ssid: String,
+    /// The default gateway's IPv4 address, shown in the label. Only read for a
+    /// wired link (Wi-Fi has its SSID) and only on Linux, where it comes from
+    /// `/proc` without a spawn; empty elsewhere.
+    pub gateway_ip: String,
+    /// A salted SHA-256 of the gateway's hardware address (16 hex chars), never
+    /// the MAC itself: it ends up as a settings key, and a settings file that is
+    /// synced or shared must not carry a hardware address that locates a site.
+    /// The MAC is what tells the office LAN from the home one — two routers can
+    /// share an IP, not a MAC.
+    pub gateway_id: String,
+}
+
+/// Async + `spawn_blocking` for [`network_conn_type`]'s reason. Called only by
+/// the per-network default-printer host, and only while at least one such
+/// default is saved, so a machine that never set one never pays the SSID spawn.
+#[tauri::command]
+pub async fn network_identity() -> NetworkIdentity {
+    tokio::task::spawn_blocking(network_identity_blocking)
+        .await
+        .unwrap_or_else(|_| NetworkIdentity {
+            kind: "disconnected".into(),
+            ..Default::default()
+        })
+}
+
+fn network_identity_blocking() -> NetworkIdentity {
+    let kind = network_conn_type_blocking();
+    let mut id = NetworkIdentity {
+        kind: kind.clone(),
+        ..Default::default()
+    };
+    match kind.as_str() {
+        "wlan" => id.ssid = wifi_ssid_blocking(),
+        "lan" if cfg!(target_os = "linux") => {
+            let route = std::fs::read_to_string("/proc/net/route").unwrap_or_default();
+            if let Some(ip) = parse_proc_default_gateway(&route) {
+                let arp = std::fs::read_to_string("/proc/net/arp").unwrap_or_default();
+                id.gateway_id = parse_proc_arp_mac(&arp, &ip)
+                    .map(|mac| gateway_id_of(&mac))
+                    .unwrap_or_default();
+                id.gateway_ip = ip;
+            }
+        }
+        _ => {}
+    }
+    id
+}
+
+/// The IPv4 default gateway from `/proc/net/route`: the lowest-metric row whose
+/// destination is `0.0.0.0` and which carries `RTF_GATEWAY`. The kernel prints
+/// the address as the native-endian integer of network-order bytes, so
+/// `to_ne_bytes` recovers the octets on either endianness.
+pub(crate) fn parse_proc_default_gateway(text: &str) -> Option<String> {
+    const RTF_UP: u32 = 0x1;
+    const RTF_GATEWAY: u32 = 0x2;
+    let mut best: Option<(u32, String)> = None;
+    for line in text.lines().skip(1) {
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if cols.len() < 7 || cols[1] != "00000000" {
+            continue;
+        }
+        let Ok(flags) = u32::from_str_radix(cols[3], 16) else {
+            continue;
+        };
+        if flags & (RTF_UP | RTF_GATEWAY) != RTF_UP | RTF_GATEWAY {
+            continue;
+        }
+        let (Ok(gw), Ok(metric)) = (u32::from_str_radix(cols[2], 16), cols[6].parse::<u32>()) else {
+            continue;
+        };
+        if gw == 0 {
+            continue;
+        }
+        let ip = std::net::Ipv4Addr::from(gw.to_ne_bytes()).to_string();
+        if best.as_ref().is_none_or(|(m, _)| metric < *m) {
+            best = Some((metric, ip));
+        }
+    }
+    best.map(|(_, ip)| ip)
+}
+
+/// The opaque id [`NetworkIdentity::gateway_id`] carries for a MAC.
+pub(crate) fn gateway_id_of(mac: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(format!("eldrun-gateway:{}", mac.to_ascii_lowercase()));
+    digest.iter().take(8).map(|b| format!("{b:02x}")).collect()
+}
+
+/// `ip`'s hardware address from `/proc/net/arp`, lower-cased. An incomplete
+/// entry (flags without `ATF_COM`) or the all-zero address is no answer — a
+/// neighbour the kernel has not resolved yet does not name a network.
+pub(crate) fn parse_proc_arp_mac(text: &str, ip: &str) -> Option<String> {
+    const ATF_COM: u32 = 0x2;
+    text.lines().skip(1).find_map(|line| {
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if cols.len() < 4 || cols[0] != ip {
+            return None;
+        }
+        let flags = u32::from_str_radix(cols[2].trim_start_matches("0x"), 16).ok()?;
+        let mac = cols[3].to_ascii_lowercase();
+        (flags & ATF_COM != 0 && mac != "00:00:00:00:00:00").then_some(mac)
+    })
+}
+
 pub(crate) fn detect_conn_type_linux(net_dir: &Path) -> String {
     let Ok(entries) = std::fs::read_dir(net_dir) else {
         return "disconnected".into();
@@ -483,6 +600,51 @@ mod tests {
         if wireless {
             fs::create_dir_all(iface_dir.join("wireless")).unwrap();
         }
+    }
+
+    #[test]
+    fn proc_route_picks_the_lowest_metric_default_gateway() {
+        // Documentation addresses only (RFC 5737 TEST-NET-1/-2).
+        let gw = |ip: [u8; 4]| format!("{:08X}", u32::from_ne_bytes(ip));
+        let route = format!(
+            "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n\
+             wlan0\t00000000\t{}\t0003\t0\t0\t600\t00000000\t0\t0\t0\n\
+             eth0\t00000000\t{}\t0003\t0\t0\t100\t00000000\t0\t0\t0\n\
+             eth0\t000200C0\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0\n",
+            gw([198, 51, 100, 1]),
+            gw([192, 0, 2, 1]),
+        );
+        assert_eq!(parse_proc_default_gateway(&route).as_deref(), Some("192.0.2.1"));
+        // A down route (no RTF_UP) or one without RTF_GATEWAY is not a gateway.
+        let down = format!(
+            "hdr\neth0\t00000000\t{}\t0002\t0\t0\t100\t00000000\t0\t0\t0\n",
+            gw([192, 0, 2, 1])
+        );
+        assert_eq!(parse_proc_default_gateway(&down), None);
+        assert_eq!(parse_proc_default_gateway(""), None);
+    }
+
+    #[test]
+    fn proc_arp_resolves_only_complete_entries() {
+        // Documentation IPs and a locally administered (02:…) MAC.
+        let arp = "IP address       HW type     Flags       HW address            Mask     Device\n\
+                   192.0.2.1        0x1         0x2         02:00:00:00:00:01     *        eth0\n\
+                   192.0.2.7        0x1         0x0         00:00:00:00:00:00     *        eth0\n";
+        assert_eq!(
+            parse_proc_arp_mac(arp, "192.0.2.1").as_deref(),
+            Some("02:00:00:00:00:01")
+        );
+        assert_eq!(parse_proc_arp_mac(arp, "192.0.2.7"), None);
+        assert_eq!(parse_proc_arp_mac(arp, "192.0.2.9"), None);
+    }
+
+    #[test]
+    fn gateway_id_is_opaque_stable_and_case_blind() {
+        let id = gateway_id_of("02:00:00:00:00:01");
+        assert_eq!(id.len(), 16);
+        assert!(!id.contains(':'));
+        assert_eq!(id, gateway_id_of("02:00:00:00:00:01".to_ascii_uppercase().as_str()));
+        assert_ne!(id, gateway_id_of("02:00:00:00:00:02"));
     }
 
     #[test]

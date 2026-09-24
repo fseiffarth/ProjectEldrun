@@ -1506,14 +1506,18 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     (`lib/viewers/mdGraph.ts` — markdown targets followed, every other file a
     leaf, unreadable md targets drawn as missing, capped at 120 nodes) and
     rendered as clickable SVG on concentric depth rings
-    (`components/embed/MdGraphView.tsx`). Clicking a node opens that file
-    through the same `openLinkedFile` routing a preview link uses. Reads ride
+    (`components/embed/MdGraphView.tsx`). Wheel zooms and dragging pans the
+    fitted graph; hovering over markdown shows its heading and excerpt from
+    the existing crawl. Clicking a node opens that file through the same
+    `openLinkedFile` routing a preview link uses. A new markdown tab opened
+    this way offers Back to graph, closing that tab on return. Reads ride
     the confined `read_file_text` with the pane's project scope; the crawl is
     one bounded pass per look, never a background poll.
     - [x] 🤖 Automated test (`src/__tests__/viewers/MdGraph.test.ts`)
     - [ ] 🖐️ Manual test — enable the flag, open `PROJECT.md` in a scaffolded
       project, switch to Graph: the scaffold files should ring the center;
-      click `README.md` to open it; delete a linked file and rebuild (↻) to
+      zoom with the wheel, drag to pan, hover over `README.md` for a preview,
+      click it and use Back to graph; delete a linked file and rebuild (↻) to
       see it dashed red.
       - [ ] ✅ Works on Linux (X11)
       - [ ] ❌ Doesn't work on Linux (X11)

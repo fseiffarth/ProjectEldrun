@@ -43,12 +43,12 @@ import {
   type ConnState,
   type HostConnState,
 } from "./remote/remoteStatus";
-import { BOX_SCOPE_PREFIX, useBoxesStore } from "./boxes";
+import { BOX_SCOPE_PREFIX, boxFolderOfScope, useBoxesStore } from "./boxes";
 import { useActivityStore, noteUserInput, type BusyKind } from "./activity";
 import { bumpUsage } from "./usage";
 import { useRemoteMachinesStore } from "./remote/remoteMachines";
 import { useBigFoldersStore } from "./bigFolders";
-import type { ProjectBox, ProjectEntry } from "../types";
+import { resolveProjectDirectory, type ProjectBox, type ProjectEntry } from "../types";
 import { isTabColor, type TabColor } from "../lib/theme/tabColors";
 
 /** Parsed `?detached=<scope>:<groupId>` query. */
@@ -834,6 +834,28 @@ export function projectInfoForScope(scope: string): DetachedRemoteInfo | undefin
 }
 
 /**
+ * The folder a tab opened from a popout's "+" menu starts in — the same one the
+ * main window's `CenterPanel` `newTabCwd` resolves: the box folder, else the
+ * project directory, both from the streamed project context. A tab's own cwd
+ * (the active tab's, then any) is only the fallback when the seed has none: a
+ * viewer tab's cwd is its FILE's folder, so a Claude tab opened beside
+ * `talk/main.pdf` used to start in `talk/` from a popout and in the project root
+ * from the main window.
+ */
+export function detachedNewTabCwd(
+  scope: string,
+  info: DetachedRemoteInfo | undefined,
+  groupTabCwds: (string | undefined)[],
+): string {
+  return (
+    (info?.box ? boxFolderOfScope(scope, [info.box]) : "") ||
+    resolveProjectDirectory(info?.project) ||
+    groupTabCwds.find(Boolean) ||
+    ""
+  );
+}
+
+/**
  * Re-seed one popout from the main store's current record. `landedKey` tags the
  * seed so the popout plays the drop-in landing for a freshly-docked tab. THE one
  * reseed path (#230): the tab-drop, file-drop, delete/rename-retarget and host
@@ -869,6 +891,7 @@ function persistScopeNow(scope: string): Promise<void> {
 /** Set while `shutdownDetachedWindows` destroys popouts on quit, so their
  *  `Destroyed` events are not mistaken for crashes and docked back. */
 let shuttingDown = false;
+const unexpectedWindowDeaths = new Map<string, number[]>();
 
 /** The `DetachedTabStatus` map for one popout's keys, from the main window's
  *  classified activity — the same three states `TabBar` derives per tab. Pure. */
@@ -1052,10 +1075,11 @@ export async function listenDetachedHost(): Promise<() => void> {
     }
   });
 
-  // #224: a popout that died with its record still standing — nothing in the
-  // store tore it down first — is docked back instead of leaving its tabs in a
-  // `detached:true` record with no window. Quit teardown destroys popouts with
-  // their records deliberately intact (they respawn next launch), hence the flag.
+  // A compositor can discard a popout during a monitor change. Reopen its
+  // existing detached record instead of silently docking it into the main
+  // window and persisting that as the new layout. Bound repeated deaths so a
+  // broken webview does eventually dock its tabs where they remain reachable.
+  // Quit teardown destroys popouts with their records intact, hence the flag.
   const unDestroyed = await listen<DetachedWindowDestroyedEnvelope>(
     DETACHED_WINDOW_DESTROYED,
     (ev) => {
@@ -1065,8 +1089,21 @@ export async function listenDetachedHost(): Promise<() => void> {
       for (const [scope, entries] of Object.entries(store.detachedGroupsByScope)) {
         const entry = entries?.find((d) => d.label === label);
         if (!entry) continue;
-        store.recoverDetachedGroup(scope, entry.id);
-        void persistScopeNow(scope);
+        // An inactive scope will recreate its popouts on the next setScope.
+        // Opening one now could expose a parked project's tabs on screen.
+        if (store.scope !== scope) return;
+        const now = Date.now();
+        const recent = (unexpectedWindowDeaths.get(label) ?? [])
+          .filter((time) => now - time < 60_000);
+        recent.push(now);
+        if (recent.length <= 2) {
+          unexpectedWindowDeaths.set(label, recent);
+          store.respawnDetachedForScope(scope);
+        } else {
+          unexpectedWindowDeaths.delete(label);
+          store.recoverDetachedGroup(scope, entry.id);
+          void persistScopeNow(scope);
+        }
         return;
       }
     },

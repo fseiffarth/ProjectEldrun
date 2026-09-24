@@ -1,25 +1,48 @@
-![Eldrun logo](src/assets/logo-white.svg)
+![Eldrun logo](src/assets/logo-wordmark.svg)
 
-# Eldrun
-
-See [STATUS.md](STATUS.md) for what has been live-verified and
-[ROADMAP.md](ROADMAP.md) for remaining work.
-
-**A project-centric desktop layer that swaps your entire working context — windows, files, apps, Git state, layout, and AI agent terminals — as a single unit when you switch projects, and runs any of those projects on a remote machine or HPC cluster as if it were sitting on your laptop.**
+# You open projects not applications
 
 [![CI](https://github.com/fseiffarth/ProjectEldrun/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/fseiffarth/ProjectEldrun/actions/workflows/ci-cd.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-yellow.svg)](#license)
 [![Release](https://img.shields.io/github/v/release/fseiffarth/ProjectEldrun)](https://github.com/fseiffarth/ProjectEldrun/releases)
+![Status: Alpha](https://img.shields.io/badge/status-alpha-orange)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri)
 
+## Introduction
 
-> **You don't open applications — you open projects.**
-> **And you don't move to the machine your work runs on — the project takes it
-> with you.**
-> **And whichever agent you run, you answer it from your phone.**
+Eldrun is a project-centric desktop layer that swaps your entire working context — windows, files, apps, Git state, layout, and especially AI agent terminals — as a single unit when you switch projects.
 
-Eldrun stands on **three pillars**.
+| **Who should try Eldrun** | **Who should look elsewhere** |
+| --- | --- |
+| You work across several projects and want each one to bring back its own desktop, files, apps, and agent sessions. | Your main need is an autonomous agent platform that dispatches, supervises, and recovers multi-day work without your involvement. |
+| You work on multiple remote machines or an HPC cluster over SSH and want easy reconnection and simple distribution of tasks across machines. | You want Eldrun to manage the agent workflow. Eldrun is a project workspace and control cockpit, not an autonomous agent scheduler. |
+| You want to monitor or answer your agents from your phone independently of developer apps. | |
+| You need structure and control and are tired of switching between your agent tabs. You use many different models (claude, openai, meta, google, ...) in parallel. | |
+
+## Get started
+
+1. **Install.** Grab a package from the
+   [latest release](https://github.com/fseiffarth/ProjectEldrun/releases/latest)
+   (see [Download](#download)) or [build from source](#building-from-source).
+   Nothing else is required; [optional tools](#optional-tools) unlock single
+   features.
+2. **Add a project.** Click **+** in the project bar. **New project** creates
+   `~/eldrun/projects/<name>/` with Git and agent docs (`AGENTS.md`,
+   `CLAUDE.md`, `GEMINI.md`) already in place; **Import project** registers an
+   existing folder in place, or copies or moves it.
+3. **Start working.** Opening a project gives you a tab running your default
+   agent. Set that command in **Settings**; any new tab can pick another
+   installed agent CLI or a plain shell.
+4. **Switch projects.** Click another project pill: its windows, tabs, files,
+   and layout come back, and the previous project's desktop is parked until you
+   return.
+5. **Go further when you need it.** Point a project at an
+   [SSH host or HPC cluster](#remote-machines--hpc-clusters-the-second-differentiator),
+   or opt a project into [Eldrun Mobile](#every-agent-from-your-phone-the-third-differentiator)
+   (**Settings**, needs Tailscale) to answer your agents from your phone.
+
+## Three pillars
 
 **One project = one desktop.** Eldrun is a project-centric desktop layer, not
 just an app that launches or embeds other apps: projects own their windows and
@@ -73,6 +96,9 @@ and Windows/macOS are CI-built with real-hardware checks still pending
 [Current limits](#current-limits) ·
 [Vision](#vision) ·
 [License](#license)
+
+See [STATUS.md](STATUS.md) for what has been live-verified and
+[ROADMAP.md](ROADMAP.md) for remaining work.
 
 ## At a glance
 
@@ -329,8 +355,7 @@ does not have to ship a phone app for the agent you are running.
   composer, voice input), a to-do board, Alerts with Done actions, opt-in mail
   flag/reply actions, last-tab restore, an offline app shell, and a local lock.
   Project boxes are selectable scopes too. Access is granted **per project**;
-  remote and VM projects are excluded, as are containerized ones — with the Trash workspace as the single
-  deliberate exception.
+  remote, VM and containerized projects are excluded.
 - A desktop header control shows host status; Settings carries the opt-in, the
   security-health readout, and one-click terminal setup.
 
@@ -442,8 +467,8 @@ with availability and model capability checks.
 
 - **Project creation and import**: the `+` button creates a new git-backed
   project or imports an existing directory (keep in place, copy, or move).
-- **Project switcher**: the header's scope picker selects projects, boxes, Root,
-  and Trash. Project pills show activity and pending decisions; hover to inspect
+- **Project switcher**: the header's scope picker selects projects, boxes, and
+  Root. Project pills show activity and pending decisions; hover to inspect
   the path, Git state, today's active time, and live CPU%.
 - **Project boxes (meta-project grouping)**: temporarily join two or more
   projects into a *box* — its own pill in the switcher — for side-by-side file
@@ -470,7 +495,7 @@ with availability and model capability checks.
   the chosen provider's CLI — `gh` or `glab` — installed, with authentication
   from the CLI or a saved token under Settings → Git hosting.
 
-### Isolation tiers: container, VM, and the Trash workspace
+### Isolation tiers: container and VM
 
 A project's tabs run in one of four trust tiers, and the tier is a property of
 the project rather than a different way of working.
@@ -490,11 +515,6 @@ the project rather than a different way of working.
   port, and from there is an ordinary remote project — with **no shared
   filesystem**, an inverted sync posture, and an egress switch. *(Implemented;
   never live-booted.)*
-- **Trash** — a permanent, built-in workspace pill for disposable agents you
-  don't want anywhere near a real project. It is created and repaired on every
-  project-list save, so ordinary project operations cannot archive or weaken it,
-  and it is containerized for **all** tabs (not just agents), so a stale shell
-  in it can never become a host escape.
 
 Local agent tabs also have a default-on **agent fence**: bubblewrap on Linux
 and `sandbox-exec` on macOS, with writable access limited to allowed project

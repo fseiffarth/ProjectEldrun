@@ -1,6 +1,9 @@
 # Eldrun MCP Control Server — plan
 
-*Plan only. Nothing here is implemented. Produced 2026-08-03.*
+*Plan only. Nothing here is implemented. Produced 2026-08-03.* The **root
+console's MCP** (`docs/context/root_console.md`) is the shipped, HTTP,
+write-capable surface — a different server with a different threat model; this
+document is the *control* server that was not built.
 
 The request: **an MCP server for Eldrun**, so that an agent (Claude Code in a
 terminal, or any MCP client) can drive the app itself — *open a new tab of
@@ -200,7 +203,8 @@ container/remote reachability (PTY-less tier + its own review, §2); MCP
 *resources* (exposing
 project files as resources is a path-disclosure surface with no demonstrated
 need); HTTP/SSE transport; a write-capable calendar/mail tool surface
-(different threat model entirely).
+(different threat model entirely — since shipped as the root console's MCP,
+`docs/context/root_console.md`, not as part of this server).
 
 ## 5. Testing
 

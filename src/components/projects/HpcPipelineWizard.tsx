@@ -72,7 +72,7 @@ import {
   type ScratchCandidate,
 } from "../../lib/remote/hpc/hpcWorkspace";
 import { useT, type TranslationKey } from "../../lib/i18n";
-import { UploadIcon } from "../common/icons/Icon";
+import { GearIcon, UploadIcon } from "../common/icons/Icon";
 
 type Step = "login" | "project" | "workspace" | "data" | "run" | "watch";
 
@@ -468,7 +468,7 @@ function HpcPipelineWizard({ onClose }: { onClose: () => void }) {
         {step === "watch" && (
           <>
             <p>
-              {t("hpcWizard.watchPre")} <strong>⚙</strong> {t("hpcWizard.watchMid")}{" "}
+              {t("hpcWizard.watchPre")} <GearIcon /> {t("hpcWizard.watchMid")}{" "}
               <em>{t("hpcWizard.watchWatchWord")}</em> {t("hpcWizard.watchAnd")}{" "}
               <em>{t("hpcWizard.watchCancelWord")}</em>.
             </p>

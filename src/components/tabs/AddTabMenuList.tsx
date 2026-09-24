@@ -4,6 +4,7 @@ import { MenuShortcut } from "../common/MenuShortcut";
 import type { ChordDescriptor, ShortcutAction } from "../../lib/shortcuts/shortcuts";
 import { isUntested, type UntestedId } from "../../lib/untested";
 import { useT } from "../../lib/i18n";
+import { WarningIcon } from "../common/icons/Icon";
 
 /** One pickable row in the add-tab menu. */
 export interface AddMenuEntry {
@@ -264,7 +265,7 @@ export function AddTabMenuList({ groups }: { groups: AddMenuGroup[] }) {
               {e.label}
               {e.caution && (
                 <span className="tab-new-menu-caution" title={e.caution} aria-label={e.caution}>
-                  ⚠
+                  <WarningIcon />
                 </span>
               )}
               {e.untested && <UntestedTag id={e.untested} />}
@@ -302,7 +303,7 @@ export function AddTabMenuList({ groups }: { groups: AddMenuGroup[] }) {
                 {e.label}
                 {e.caution && (
                   <span className="tab-new-menu-caution" title={e.caution} aria-label={e.caution}>
-                    ⚠
+                    <WarningIcon />
                   </span>
                 )}
                 {e.untested && <UntestedTag id={e.untested} />}

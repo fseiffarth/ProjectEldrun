@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { MIN_NEW_PIN, configureLocalUnlock, localUnlockBiometricEnabled, localUnlockPinLength, maybeEnrollBiometric, platformBiometricAvailable, unlockLocal, unlockLocalBiometric, validPin } from "../localLock";
+import { localFailureText } from "../connection";
+import { isUntested } from "../../../src/lib/untested";
 
 export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked: () => void }) {
   const [pin, setPin] = useState("");
@@ -28,7 +30,7 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
     attempt.current += 1;
     setBiometricBusy(true);
     setError("");
-    void unlockLocalBiometric().then(onUnlocked).catch((reason) => setError(String(reason))).finally(() => setBiometricBusy(false));
+    void unlockLocalBiometric().then(onUnlocked).catch((reason) => setError(localFailureText(reason))).finally(() => setBiometricBusy(false));
   };
   useEffect(() => {
     // Fingerprint is the default unlock: raise the OS sheet as the screen opens,
@@ -69,7 +71,7 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
         ? Promise.reject(new Error("The PIN entries do not match."))
         : configureLocalUnlock(pin)
       : unlockLocal(pin).then(maybeEnrollBiometric);
-    void action.then(onUnlocked).catch((reason) => setError(String(reason))).finally(() => setBusy(false));
+    void action.then(onUnlocked).catch((reason) => setError(localFailureText(reason))).finally(() => setBusy(false));
   };
   useEffect(() => {
     const currentAttempt = ++attempt.current;
@@ -87,7 +89,7 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
       void unlockLocal(pin).then(maybeEnrollBiometric).then(() => {
         if (currentAttempt === attempt.current) onUnlocked();
       }).catch((reason) => {
-        if (currentAttempt === attempt.current) setError(String(reason));
+        if (currentAttempt === attempt.current) setError(localFailureText(reason));
       }).finally(() => {
         if (currentAttempt === attempt.current) setBusy(false);
       });
@@ -95,7 +97,7 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
     return () => window.clearTimeout(timer);
   }, [onUnlocked, pin, pinLength, setup]);
   return <main className="pair screen local-unlock">
-    <div className="brand"><span className="spark">✦</span><h1>{setup ? "Secure Eldrun Mobile" : "Eldrun Mobile locked"}</h1></div>
+    <div className="brand"><span className="spark">✦</span><h1>{setup ? "Secure Eldrun Mobile" : "Eldrun Mobile locked"}{!setup && isUntested("mobile.link.silentResume") && <small className="untested"> Untested</small>}</h1></div>
     {setup ? <>
       <p>{biometricAvailable === false
         ? "This browser offers no fingerprint or Face ID unlock — browsers built on the system WebView (DuckDuckGo among them) do not support it. The app PIN will be your only unlock here; keep the phone’s own screen lock enabled, or pair again in Chrome or Safari to use a fingerprint."

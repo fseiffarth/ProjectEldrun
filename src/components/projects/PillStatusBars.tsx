@@ -170,7 +170,7 @@ function itemsForScope(
  * that showed nothing while an agent worked in it could only be read as "nothing
  * is running there". One component is what keeps the surfaces from drifting into
  * two different answers to the same question — the scope chip, which stands for
- * root, Trash and every box at once, is the other one, via
+ * root and every box at once, is the other one, via
  * `ScopeSetStatusBars`.
  *
  * The SELECTED scope keeps its bars: the strip is a tally of what the scope is

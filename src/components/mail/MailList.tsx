@@ -7,6 +7,10 @@ import { UntestedTag } from "../common/UntestedTag";
 import type { MailHeader, MailPriority, MailSort } from "../../types/mail";
 import { PaperclipIcon } from "../common/icons/Icon";
 
+/** One frozen instance, so a list without marks does not re-render on a new
+ *  empty set each time. */
+const EMPTY_MARKS: ReadonlySet<string> = new Set();
+
 /**
  * The header list — the middle pane.
  *
@@ -58,7 +62,8 @@ export interface MailListProps {
   /** The rows ticked for a bulk action (`stores/mail`'s `checkedIds`). */
   checkedIds: string[];
   loading: boolean;
-  onSelect: (id: string) => void;
+  /** A plain click or Enter: open the message in its own mail-window tab. */
+  onOpen: (id: string) => void;
   /**
    * A row was picked for the bulk selection. `only` replaces the set (a plain
    * click, and a right-click on a row outside it), `toggle` adds or removes one
@@ -125,7 +130,32 @@ export interface MailListProps {
    * is the one thing a search must never produce.
    */
   scanned?: number;
+  /**
+   * Whether the search behind this page reached the server (`stores/mail`'s
+   * `searchRemote`). While a query is active the list says which scope the
+   * answer covers. `searchPartial` names server matches that could not all be
+   * loaded; `searchRemote` distinguishes a server search from a local fallback.
+   * Absent reads as local-only.
+   */
+  searchRemote?: boolean;
+  /** Some server matches could not be loaded, including matches past the cap. */
+  searchPartial?: boolean;
   onPage: (offset: number) => void;
+  /**
+   * Marks for agents (`docs/mail_mcp_plan.md` §1, "Marked mails only"). A mark
+   * shares one message with a contained reader agent; it is local and never an
+   * IMAP flag. `agentShareable` answers whether a row's account is open to a
+   * reader at all — without it the group is not offered, since a mark on a
+   * closed account would do nothing and look like it did. `onAgentOnly` is
+   * passed only while the selected account is open, and brings the chip.
+   */
+  agentMarks?: ReadonlySet<string>;
+  agentShareable?: (header: MailHeader) => boolean;
+  onAgentMark?: (headers: MailHeader[], marked: boolean) => void;
+  onAgentMarkSender?: (header: MailHeader) => void;
+  onAgentMarkFolder?: () => void;
+  agentOnly?: boolean;
+  onAgentOnly?: (agentOnly: boolean) => void;
   /**
    * Everything that *narrows* the list, in one bar on the list itself: the
    * search and the unread filter. They used to sit at the far end of the pane's
@@ -160,7 +190,7 @@ function MailListImpl({
   selectedId,
   checkedIds,
   loading,
-  onSelect,
+  onOpen,
   onCheck,
   onClearChecks,
   onDelete,
@@ -176,12 +206,21 @@ function MailListImpl({
   pageSize,
   total,
   scanned,
+  searchRemote = false,
+  searchPartial = false,
   onPage,
   query,
   unreadOnly,
   onQuery,
   onUnreadOnly,
   onClearFilters,
+  agentMarks = EMPTY_MARKS,
+  agentShareable = () => false,
+  onAgentMark,
+  onAgentMarkSender,
+  onAgentMarkFolder,
+  agentOnly = false,
+  onAgentOnly,
 }: MailListProps) {
   const t = useT();
   const lang = useI18nStore((s) => s.lang);
@@ -189,7 +228,7 @@ function MailListImpl({
   // `offset > 0` as well: under the unread filter the set shrinks as it is
   // read, so a later page can be reached whose re-read total fits on one page —
   // and a pager that vanished there would leave no way back to "Newer".
-  const filtered = unreadOnly || query.trim() !== "";
+  const filtered = unreadOnly || agentOnly || query.trim() !== "";
   const hasPaging = total > pageSize || offset > 0;
   // A pager step lands on the top of the new page. The buttons sit under the
   // rows, so without this "Older" opens the next hundred scrolled to their end.
@@ -264,7 +303,7 @@ function MailListImpl({
   };
 
   return (
-    <div className="mail-list">
+    <div className="mail-list mail-list-full">
       <div className="mail-list-filter" role="search">
         <input
           className="mail-input mail-search"
@@ -282,8 +321,20 @@ function MailListImpl({
         >
           {t("mail.unreadOnly")}
         </button>
+        {onAgentOnly && (
+          <button
+            type="button"
+            className={`settings-btn sm untested${agentOnly ? " primary" : ""}`}
+            aria-pressed={agentOnly}
+            title={t("mail.agentOnlyTitle")}
+            onClick={() => onAgentOnly(!agentOnly)}
+          >
+            {t("mail.agentOnly")}
+            <UntestedTag id="mailList.11" />
+          </button>
+        )}
         {/* Only while something is narrowing the list: the way back to the whole
-            folder in one click, whichever of the two is hiding mail. */}
+            folder in one click, whichever of the filters is hiding mail. */}
         {filtered && (
           <button
             type="button"
@@ -381,17 +432,17 @@ function MailListImpl({
                 onCheck(h, "toggle", order);
                 return;
               }
-              // A plain click is both: open this message, and make it the whole
-              // selection — so the ticks never survive as an invisible set that
-              // the next right-click would act on.
+              // A plain click is both: open this message in its tab, and make it
+              // the whole selection — so the ticks never survive as an invisible
+              // set that the next right-click would act on.
               onCheck(h, "only", order);
-              onSelect(h.id);
+              onOpen(h.id);
             }}
             onKeyDown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault();
                 onCheck(h, "only", order);
-                onSelect(h.id);
+                onOpen(h.id);
                 return;
               }
               if (e.key === "Delete") {
@@ -499,6 +550,14 @@ function MailListImpl({
                   {h.priority === "urgent" ? "!!" : "!"}
                 </span>
               )}
+              {/* Shared with a reader agent: shown for the priority mark's
+                  reason — the row is the one place the user sees that the
+                  share holds, and that it is gone once withdrawn. */}
+              {agentMarks.has(h.id) && agentShareable(h) && (
+                <span className="mail-row-agent" title={t("mail.sharedWithAgents")}>
+                  ⚿
+                </span>
+              )}
               {stripFormatControls(h.subject) || t("mail.noSubject")}
             </div>
             {h.preview && (
@@ -520,6 +579,16 @@ function MailListImpl({
       {scanned !== undefined && (
         <div className="mail-note mail-list-scan-note">
           {t("mail.searchScanned", { count: scanned })}
+        </div>
+      )}
+      {/* While a query is narrowing the list: which scope the answer covers.
+          A folder search asks the whole mailbox on the server first — but only
+          when it can reach one, so a local-only answer has to say so rather
+          than read as the whole folder. */}
+      {query.trim() !== "" && !loading && (
+        <div className="mail-note mail-list-scan-note untested">
+          {t(!searchRemote ? "mail.searchLocal" : searchPartial ? "mail.searchPartial" : "mail.searchRemote")}
+          <UntestedTag id="mailList.12" />
         </div>
       )}
       {hasPaging && (
@@ -600,6 +669,66 @@ function MailListImpl({
                     moved. */}
                 <div className="context-menu-note">{t("mail.priorityIsLocal")}</div>
               </div>
+              {/* Sharing with a contained reader agent — only for rows whose
+                  account is open to one (see `agentShareable`). "Share" and
+                  "Stop sharing" follow the priority rows' shape: the state the
+                  targets already have is a disabled row, not a hidden one. The
+                  bulk forms are one step wider each, so the reach of a click is
+                  always named on the row that makes it. */}
+              {onAgentMark && menu.targets.every(agentShareable) && (
+                <div className="context-menu-group">
+                  <button
+                    className="untested"
+                    disabled={menu.targets.every((h) => agentMarks.has(h.id))}
+                    onClick={() => {
+                      onAgentMark(menu.targets, true);
+                      setMenu(null);
+                    }}
+                  >
+                    {t("mail.shareWithAgents")}
+                    <UntestedTag id="mailList.7" />
+                  </button>
+                  {menu.targets.some((h) => agentMarks.has(h.id)) && (
+                    <button
+                      className="untested"
+                      onClick={() => {
+                        onAgentMark(menu.targets, false);
+                        setMenu(null);
+                      }}
+                    >
+                      {t("mail.stopSharingWithAgents")}
+                      <UntestedTag id="mailList.8" />
+                    </button>
+                  )}
+                  {menu.targets.length === 1 && onAgentMarkSender && (
+                    <button
+                      className="untested"
+                      onClick={() => {
+                        onAgentMarkSender(menu.header);
+                        setMenu(null);
+                      }}
+                    >
+                      {t("mail.shareAllFromSender", {
+                        address: stripFormatControls(menu.header.from.address),
+                      })}
+                      <UntestedTag id="mailList.9" />
+                    </button>
+                  )}
+                  {onAgentMarkFolder && (
+                    <button
+                      className="untested"
+                      onClick={() => {
+                        onAgentMarkFolder();
+                        setMenu(null);
+                      }}
+                    >
+                      {t("mail.shareWholeFolder")}
+                      <UntestedTag id="mailList.10" />
+                    </button>
+                  )}
+                  <div className="context-menu-note">{t("mail.shareWithAgentsNote")}</div>
+                </div>
+              )}
               {/* Its own group, below the divider: everything above files a
                   message and leaves it where it is, while this one moves it off
                   the folder — or off the server. */}

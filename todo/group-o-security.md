@@ -872,3 +872,135 @@ intent. What is left is listed here.
       public key compiled in, refusing an unsigned or mismatched file. The
       maintainer generates the key pair; only the public half enters the repo.
     - [ ] 🤖 Automated test — a tampered staged file is refused.
+
+### Threat-model re-evaluation follow-ups (2026-09-24)
+
+Found by the four-way re-read of `docs/threat_model.md` (its "Open gaps"
+table). Code-read findings; only #862 was reproduced (scratch repo, git 2.53).
+
+861. **A fenced agent can plant binaries Eldrun runs on the host.**
+    `updatable_install_dirs` (`services/agent_fence.rs`) binds `~/.local/bin`
+    and `~/.local/share/<tool>` read-write for a native-installed CLI, and
+    `paths::effective_path` prepends `~/.local/bin` to every child's PATH. A
+    planted `~/.local/bin/git` runs at the next file-tree poll, unfenced; a
+    planted `bwrap` unfences later tabs. Keep the CLI self-update working
+    without handing the agent the shared launcher dir, and resolve Eldrun's
+    own `git`/`bwrap`/`tmux`/`ssh` so a user-writable dir can't shadow them.
+    - **Fixed 2026-09-24 (not live).** Private per-tab `~/.local/bin` bound over
+      the host's; `reconcile_launcher` carries back only the launcher link into
+      its share root. `paths::system_executable` / `helper_program`: bwrap only
+      from root-owned dirs (fail closed), git/tmux/ssh/rsync prefer them.
+      macOS fence: launcher dir read-only, so `claude update` there can't swap
+      the link — **your call** whether that matters.
+    - [x] 🤖 Automated test — the fence argv binds no user-shared bin dir
+      read-write; internal tool resolution ignores a planted `~/.local/bin/git`.
+    - [ ] 🖐️ Manual test — fenced native Claude: `touch ~/.local/bin/git`
+      fails; `claude update` still works.
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
+
+862. **Planted hooks run through Eldrun's hooks-live git calls.**
+    `hardened_git_command_in` leaves hooks live; diff, stage, file diff,
+    commit-message generation and the merge-state probe rewrite the index and
+    fire `post-index-change`. A fenced agent can *create* `.git/commondir`
+    (git_guard can't cover a file that doesn't exist) to redirect hooks, and
+    plant `MERGE_HEAD` so opening Git history reaches it. Hooks off by default
+    in the hardened helper, on only for the verbs `exec_trust` gates; treat a
+    `commondir` inside a main `.git` as hostile. Widens #158's residual.
+    - **Fixed 2026-09-24 (not live).** Hooks off on every Eldrun git call but
+      the `exec_trust`-gated verbs (`run_git_hooked`/`hooked_git_command_in`);
+      `GIT_COMMON_DIR` pinned to a main `.git`. Eldrun's stage/checkout/fetch
+      no longer run your own `post-*` hooks.
+    - [x] 🤖 Automated test — a `commondir`-redirected `post-index-change` does
+      not run on diff/stage/merge-state.
+    - [ ] 🖐️ Manual test — after the plant, open the Git panel, diff a file,
+      stage it: no hook output.
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
+
+863. **SFTP entry names escape the mirror.** `sftp.rs` drops only `""`, `.`,
+    `..`; `remote_sync::join_rel`/`mirror_local_path` join the rest unconfined
+    and `replace_local_atomic` writes there — a hostile remote account returns
+    `../../.config/autostart/x.desktop`, auto-sync writes it. Also: parents are
+    followed, so a directory symlink planted in the mirror redirects a pull.
+    Names must be one component; the local path is confined to the mirror;
+    parents must not be symlinks.
+    - **Fixed 2026-09-24 (not live).** `sftp::is_single_component_name`;
+      `remote_sync::confined_mirror_path`/`confined_mirror_dir`/
+      `write_mirror_file`; rsync destination, local delete and
+      `hpc_ws_pull_logs` confined too. Residual: check-then-write, no `openat`
+      walk; a push can read through a symlinked mirror dir.
+    - [x] 🤖 Automated test — traversal names and a symlinked parent are refused.
+
+864. **Secrets in world-readable argv.** `tmux_local.rs` passes MCP tokens as
+    `tmux -e K=V`; `sandbox.rs` passes agent API keys as `docker exec -e K=V`.
+    `/proc/*/cmdline` is 0444. Move them off argv (tmux environment over the
+    socket; `docker exec -e NAME` inheriting the value). Fix the comment that
+    says argv is same-uid only.
+    - **Fixed 2026-09-24 (not live) for tmux ≥ 3.2** via `update-environment`
+      slots 8630–8632 (also stops a tab inheriting another tab's token); docker
+      `-e NAME` + client env. tmux < 3.2 still carries tokens on argv.
+    - [x] 🤖 Automated test — no spawned argv item contains a token value.
+
+865. **`~/.gemini` is read-write in every fence** (`sandbox.rs`). An
+    `mcpServers` command or hook planted there runs at the next unfenced
+    Gemini/Antigravity start. Narrow to the credential files, config shadowed
+    read-only, as for Claude/Codex. Check OpenCode's `~/.local/share/opencode`.
+    - **Fixed 2026-09-24 (not live).** Gemini/Antigravity config staged per
+      spawn, instructions/hooks/extensions read-only, IDE/agy executables
+      unmounted. **Open:** OpenCode `snapshot/` (shadow git dirs) stays
+      writable and `bin/` is only protected once it exists — needs a per-scope
+      private store like `prepare_codex_state` (210 MB db: **your call**).
+    - [x] 🤖 Automated test — fence argv mounts no Gemini config file writable.
+
+866. **Format runs project-chosen programs ungated.** `rustfmt` is rustup's
+    proxy in the project dir, so `rust-toolchain.toml` `path = "./tc"` runs the
+    repo's own binary; a `.prettierrc` holding only a module name loads that
+    module without `exec_trust`.
+    - **Fixed 2026-09-24 (not live).** `RUSTUP_TOOLCHAIN` pinned to `rustup
+      default` unless the toolchain file is a plain channel; a string-only
+      `.prettierrc` asks.
+    - [x] 🤖 Automated test — both cases ask (or are refused) before running.
+
+867. **TeX hover preview relies on the distribution's shell-escape default.**
+    Previews (on by default) run the file's preamble in the project; nothing
+    passes `-no-shell-escape`. With `shell_escape = t` in `texmf.cnf`,
+    `\write18` runs on hover. Pass `-no-shell-escape` (previews always; builds
+    unless a trusted option says otherwise), set `openout_any=p`.
+    - **Fixed 2026-09-24 (not live).** `-no-shell-escape` on every run incl.
+      format dumps; previews run with `openout_any=p`.
+    - [x] 🤖 Automated test — `engine_args` carries `-no-shell-escape`.
+
+868. **OpenVPN runs config scripts as root.** No `--script-security 1`, so a
+    `.ovpn`'s `up`/`down` run under `pkexec`; an imported bundle can name its
+    own config; root writes `--writepid` into user-writable `<state>/openvpn/`.
+    - **Fixed 2026-09-24 (not live).** `--script-security 1` after `--config`
+      on every connect path, with a clear error when a config needs a script;
+      `prepare_root_pidfile` refuses planted symlinks; imports drop every
+      OpenVPN tunnel (`transfer.note.vpnDropped`). **Open:** `plugin` and
+      `log`/`status`/`cd` directives still act as root; same-user symlink race
+      during the polkit prompt. Configs relying on `update-resolv-conf` now
+      fail — **your call** on an opt-in.
+    - [x] 🤖 Automated test — argv always carries `--script-security 1`;
+      imported entries drop `remote.openvpn`.
+
+869. **Hardening batch (not vulnerabilities today).** ODT `unzipSync` and
+    `extract_archive` get size/entry caps (zip bomb kills the main window);
+    pdf.js `isEvalSupported:false` (the worker is outside the CSP); state dir
+    0700 and `storage::write_json` 0600; pin GitHub actions by SHA; CSP
+    `base-uri 'none'; form-action 'none'`, drop `script-src blob:` if unused;
+    agent API keys only to agent tabs; CalDAV stops sending credentials to
+    server-named cross-origin/plain-http hrefs; phone PWA prototype hardening;
+    audit the fence's shared network namespace (X11/abstract sockets).

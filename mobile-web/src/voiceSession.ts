@@ -72,10 +72,11 @@ interface MicMeter {
 }
 
 /**
- * One capture feeding both the level meter and the recognizer. Only where the
- * recognizer takes a track (`start(track)`, shipped with Chromium's on-device
- * API, which `available` stands for): a second capture beside the
- * recognizer's own starves one of the two on Android.
+ * One capture feeding both the level meter and the recognizer. Only for the
+ * on-device recognizer (`start(track)` shipped with Chromium's on-device API):
+ * the phone's speech service handed a track hears nothing on Android — it
+ * listens, never errs, and returns no words — and a second capture beside the
+ * recognizer's own starves one of the two there.
  */
 async function openMicMeter(scope: Window, onLevel: (level: number) => void): Promise<MicMeter | undefined> {
   const audioWindow = scope as AudioWindow;
@@ -233,7 +234,7 @@ export function startDictation(
   };
 
   armIdle();
-  if (Recognition.available) {
+  if (config.local && Recognition.available) {
     void openMicMeter(scope, handlers.onLevel).then((opened) => {
       if (over) { opened?.close(); return; }
       meter = opened;

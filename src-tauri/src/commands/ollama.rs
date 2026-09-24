@@ -3503,6 +3503,8 @@ pub async fn prepare_local_agent(model: String) -> Result<LocalAgentPrep, String
     cfg.push_str(&ollama_model_block(&model, &alias));
 
     std::fs::write(&config_path, cfg).map_err(|e| format!("write vibe_local config: {e}"))?;
+    crate::services::agent_session::register_vibe_hook_in(&vibe_home)
+        .map_err(|e| format!("register vibe session hook: {e}"))?;
 
     Ok(LocalAgentPrep {
         vibe_home: vibe_home.to_string_lossy().into_owned(),

@@ -31,7 +31,8 @@ use super::{
     limits,
     protocol::{
         clean_tab_color, CalendarAction, CreateTabRequest, DesktopRequest, DesktopResponse,
-        MailMarkAction, MobilePromptInput, MobileScheduleInput, PromptMutation, ScheduleMutation,
+        MailMarkAction, MobileCollectedPrompt, MobilePromptInput, MobileSchedule,
+        MobileScheduleInput, PromptMutation, ScheduleMutation,
         TabPlace, TodoAction, MAX_CONTROL_MESSAGE, MAX_INPUT_FRAME, MAX_MAIL_REPLY_BYTES,
         MAX_TAB_LABEL, TERMINAL_PROTOCOL,
     },
@@ -162,7 +163,8 @@ fn authenticate(
         .auth
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .authenticate(token)
+        // Every authenticated request slides the session (`auth::SESSION_IDLE`).
+        .touch(token)
         .ok_or_else(|| api_error(StatusCode::UNAUTHORIZED, "authentication_required"))
 }
 
@@ -1581,7 +1583,10 @@ fn schedule_desktop_error(
         }) => (
             StatusCode::OK,
             Json(json!({
-                "schedules": schedules,
+                "schedules": schedules
+                    .into_iter()
+                    .map(MobileSchedule::from)
+                    .collect::<Vec<_>>(),
                 "time_zone": time_zone,
                 "next_runs": next_runs,
             })),
@@ -1709,12 +1714,14 @@ async fn agent_status(
 }
 
 /// `?version=` is the fingerprint the phone last saw; `?limit=` how many of
-/// the newest turns it wants. Anything else is refused.
+/// the newest turns it wants; `?subagent=` the handle on an `agent` entry,
+/// whose conversation is read instead. Anything else is refused.
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct TranscriptQuery {
     version: Option<String>,
     limit: Option<usize>,
+    subagent: Option<String>,
 }
 
 /// `GET /api/v1/tabs/{tab_id}/transcript` — the stored conversation behind
@@ -1731,6 +1738,14 @@ async fn agent_transcript(
     if let Err(error) = authenticate(&headers, &state) {
         return error;
     }
+    // A handle is a digest the desktop minted; anything else is not one.
+    if query
+        .subagent
+        .as_deref()
+        .is_some_and(|token| !crate::services::agent_transcript::is_subagent_token(token))
+    {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_subagent");
+    }
     let (project_id, tmux_session) = match agent_tab_target(&state, &tab_id) {
         Ok(target) => target,
         Err(error) => return error,
@@ -1743,6 +1758,7 @@ async fn agent_transcript(
             request_id,
             project_id,
             tmux_session,
+            subagent: query.subagent,
             version: query.version,
             limit: query.limit,
         },
@@ -1867,6 +1883,10 @@ fn prompt_desktop_error(
 ) -> (StatusCode, Json<serde_json::Value>) {
     match response {
         Ok(DesktopResponse::Prompts { prompts }) => {
+            let prompts = prompts
+                .into_iter()
+                .map(MobileCollectedPrompt::from)
+                .collect::<Vec<_>>();
             (StatusCode::OK, Json(json!({ "prompts": prompts })))
         }
         Ok(DesktopResponse::Error { code, .. }) => api_error(
@@ -2224,9 +2244,42 @@ async fn inbox_upload(
     };
     let root = project.root.clone();
     drop(catalog);
+    store_in_project_inbox(root, query.name, body).await
+}
+
+/// `POST /api/v1/projects/{project_id}/inbox` — the project screen's
+/// **＋ → Send a file**: the same drop box as `inbox_upload`, named by the
+/// project, because that screen has no tab to name — a project whose tabs are
+/// all closed can still be sent a document for the next session.
+async fn project_inbox_upload(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(project_id): Path<String>,
+    Query(query): Query<InboxQuery>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    if !exact_origin(&headers, &state) {
+        return api_error(StatusCode::FORBIDDEN, "invalid_origin");
+    }
+    match project_drop_box_root(&state, &project_id) {
+        Ok(root) => store_in_project_inbox(root, query.name, body).await,
+        Err(error) => error,
+    }
+}
+
+/// One project-inbox write, answered with the stored name, the project-relative
+/// reference and the size — never the root it was written under.
+async fn store_in_project_inbox(
+    root: PathBuf,
+    name: String,
+    body: Bytes,
+) -> (StatusCode, Json<serde_json::Value>) {
     // The write is synchronous filesystem work of up to MAX_INBOX_FILE bytes;
     // keep it off the connection executor.
-    let stored = tokio::task::spawn_blocking(move || inbox::store(&root, &query.name, &body))
+    let stored = tokio::task::spawn_blocking(move || inbox::store(&root, &name, &body))
         .await
         .unwrap_or_else(|error| Err(inbox::InboxError::Io(error.to_string())));
     match stored {
@@ -2414,11 +2467,11 @@ fn outbox_root(
     Ok(project.root.clone())
 }
 
-/// The same root by the project itself, for the project screen's shelf. The
-/// outbox belongs to the project, not to one of its sessions: a project whose
-/// tabs are all closed — or one that never had an agent tab — still has the
-/// files the desktop sent, and the screen that lists them has no tab to name.
-fn project_outbox_root(
+/// The same root by the project itself, for the project screen's outbox and
+/// its ＋ → Send a file. Both drop boxes belong to the project, not to one of
+/// its sessions: a project whose tabs are all closed — or one that never had
+/// an agent tab — still has them, and that screen has no tab to name.
+fn project_drop_box_root(
     state: &HostState,
     project_id: &str,
 ) -> Result<PathBuf, (StatusCode, Json<serde_json::Value>)> {
@@ -2468,7 +2521,7 @@ async fn project_outbox_list(
     if let Err(error) = authenticate(&headers, &state) {
         return error;
     }
-    match project_outbox_root(&state, &project_id) {
+    match project_drop_box_root(&state, &project_id) {
         Ok(root) => outbox_listing(root).await,
         Err(error) => error,
     }
@@ -2519,7 +2572,7 @@ async fn project_outbox_file(
     if let Err(error) = authenticate(&headers, &state) {
         return error.into_response();
     }
-    let root = match project_outbox_root(&state, &project_id) {
+    let root = match project_drop_box_root(&state, &project_id) {
         Ok(root) => root,
         Err(error) => return error.into_response(),
     };
@@ -2566,7 +2619,7 @@ async fn project_outbox_delete(
     if !exact_origin(&headers, &state) {
         return api_error(StatusCode::FORBIDDEN, "invalid_origin");
     }
-    match project_outbox_root(&state, &project_id) {
+    match project_drop_box_root(&state, &project_id) {
         Ok(root) => outbox_removal(root, name).await,
         Err(error) => error,
     }
@@ -2741,6 +2794,10 @@ fn router(state: HostState) -> Router {
         .route(
             "/api/v1/tabs/{tab_id}/inbox",
             post(inbox_upload).layer(DefaultBodyLimit::max(inbox::MAX_INBOX_FILE)),
+        )
+        .route(
+            "/api/v1/projects/{project_id}/inbox",
+            post(project_inbox_upload).layer(DefaultBodyLimit::max(inbox::MAX_INBOX_FILE)),
         )
         .route(
             "/api/v1/inbox",
@@ -3200,6 +3257,7 @@ mod tests {
             "/api/v1/calendar",
             "/api/v1/tabs/anything/schedules",
             "/api/v1/tabs/anything/inbox",
+            "/api/v1/projects/anything/inbox",
             "/api/v1/inbox",
             "/api/v1/tabs/anything/desktop-images",
             "/api/v1/tabs/anything/prompt",
@@ -3250,6 +3308,68 @@ mod tests {
         assert!(!body.contains(RAW_PROJECT));
         assert!(!body.contains(&host.root.to_string_lossy().to_string()));
         assert!(!body.contains("scheduleTargetId"));
+    }
+
+    #[test]
+    fn successful_schedule_response_exposes_only_phone_fields() {
+        use crate::schema::{AgentScheduleLastRun, AgentScheduleResult, AgentScheduleRule};
+
+        let (status, Json(body)) = schedule_desktop_error(Ok(DesktopResponse::Schedules {
+            schedules: vec![crate::schema::ScheduledAgentPrompt {
+                id: "schedule-1".into(),
+                enabled: true,
+                message: "Review".into(),
+                rule: AgentScheduleRule::Daily { time: "09:00".into() },
+                preface: vec!["/clear".into()],
+                last: Some(AgentScheduleLastRun {
+                    occurrence: "2026-09-24T09:00".into(),
+                    result: AgentScheduleResult::Delivered,
+                    at: "2026-09-24T09:01:00Z".into(),
+                }),
+                origin: Some(crate::schema::agent_tasks::ScheduleOrigin {
+                    by: crate::schema::agent_tasks::ScheduleAuthor::Agent,
+                    session: "raw-session-id".into(),
+                    at: "2026-09-23T08:00:00Z".into(),
+                    from_delivery: None,
+                }),
+            }],
+            time_zone: "Europe/Berlin".into(),
+            next_runs: Default::default(),
+        }));
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["schedules"], serde_json::json!([{
+            "id": "schedule-1",
+            "enabled": true,
+            "message": "Review",
+            "rule": { "type": "daily", "time": "09:00" },
+            "last": {
+                "occurrence": "2026-09-24T09:00",
+                "result": "delivered",
+                "at": "2026-09-24T09:01:00Z",
+            },
+        }]));
+    }
+
+    #[test]
+    fn successful_prompt_response_omits_internal_target() {
+        let (status, Json(body)) = prompt_desktop_error(Ok(DesktopResponse::Prompts {
+            prompts: vec![crate::schema::agent_prompts::ProjectAgentPrompt {
+                id: "prompt-1".into(),
+                message: "Review".into(),
+                created_at: "2026-09-23T08:00:00Z".into(),
+                updated_at: "2026-09-24T08:00:00Z".into(),
+                tags: vec!["review".into()],
+                target: Some("raw-schedule-target-id".into()),
+            }],
+        }));
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["prompts"], serde_json::json!([{
+            "id": "prompt-1",
+            "message": "Review",
+            "created_at": "2026-09-23T08:00:00Z",
+            "updated_at": "2026-09-24T08:00:00Z",
+            "tags": ["review"],
+        }]));
     }
 
     #[tokio::test]
@@ -4360,6 +4480,57 @@ mod tests {
         let (status, ..) = host.send(request).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert!(!host.root.join(inbox::INBOX_DIR).exists(), "a refused upload wrote to disk");
+    }
+
+    #[tokio::test]
+    async fn a_file_sent_from_the_project_screen_lands_in_that_projects_inbox() {
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(61)).await.0;
+        let (_, _, projects_body) = host.send(get_as("/api/v1/projects", &cookie)).await;
+        let project_id = json(&projects_body)["projects"][0]["id"]
+            .as_str()
+            .expect("opaque project id")
+            .to_string();
+        let send = |project: &str, origin: &str, bytes: Vec<u8>| {
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/projects/{project}/inbox?name=notes.pdf"))
+                .header(header::ORIGIN, origin)
+                .header(header::COOKIE, cookie_pair(&cookie))
+                .body(Body::from(bytes))
+                .expect("request")
+        };
+
+        // Wrong origin: refused before anything is written.
+        let (status, ..) = host
+            .send(send(&project_id, "https://elsewhere.example", b"x".to_vec()))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(!host.root.join(inbox::INBOX_DIR).exists(), "a refused upload wrote to disk");
+
+        let (status, _, body) = host.send(send("not-a-project", ORIGIN, b"x".to_vec())).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "answered: {body}");
+
+        // Larger than a control message: the route carries the inbox's limit.
+        let bytes = vec![0xEF; MAX_CONTROL_MESSAGE * 4];
+        let (status, _, body) = host.send(send(&project_id, ORIGIN, bytes.clone())).await;
+        assert_eq!(status, StatusCode::CREATED, "answered: {body}");
+        let reference = json(&body)["attachment"]["reference"]
+            .as_str()
+            .expect("reference")
+            .to_string();
+        assert!(reference.starts_with(".eldrun/inbox/"), "{reference}");
+        assert!(reference.ends_with("-notes.pdf"), "{reference}");
+        assert!(
+            !body.contains(&host.root.to_string_lossy().to_string()),
+            "a filesystem path leaked: {body}"
+        );
+        assert_eq!(std::fs::read(host.root.join(&reference)).unwrap(), bytes);
+
+        let (status, ..) = host
+            .send(send(&project_id, ORIGIN, vec![0; inbox::MAX_INBOX_FILE + 1]))
+            .await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     #[tokio::test]

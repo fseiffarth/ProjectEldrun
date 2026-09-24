@@ -522,12 +522,29 @@ pub struct RawEntry {
     pub modified_secs: Option<u64>,
 }
 
+/// Whether a `readdir` name is exactly ONE path component the local side may
+/// join onto a destination directory (#863). A real SFTP server never returns a
+/// name holding a separator, but a hostile remote *account* can answer with its
+/// own `sftp` (a forced command) and hand back `../../.config/autostart/x.desktop`
+/// — which every walker joins onto the mirror. So: not blank, not `.`/`..`, no
+/// `/`, no `\` (a separator on a Windows client), no NUL. Pure, unit-tested.
+pub fn is_single_component_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.contains('\0')
+}
+
 /// List one remote directory on an open session WITHOUT following symlinks — the
 /// listing the recursive sync walker uses. Unlike [`list_dir_on`] (which follows
 /// symlinks so a symlink-to-dir is navigable in the picker), every entry reports
 /// its own lstat-style type, so the walker can skip symlinks/special files (G3)
-/// and recurse only into real directories. `.`/`..`/blank names are dropped; no
-/// sorting (the walker doesn't need it).
+/// and recurse only into real directories. Anything that is not a single path
+/// component ([`is_single_component_name`]: `.`/`..`/blank, or a name carrying a
+/// separator or NUL) is dropped — the walker joins these onto the local mirror.
+/// No sorting (the walker doesn't need it).
 pub async fn list_dir_raw_on(sftp: &Sftp, path: &str) -> Result<Vec<RawEntry>, String> {
     let path = path.trim();
     if !path.is_empty() {
@@ -545,7 +562,7 @@ pub async fn list_dir_raw_on(sftp: &Sftp, path: &str) -> Result<Vec<RawEntry>, S
     while let Some(item) = rd.next().await {
         let entry = item.map_err(|e| format!("sftp read_dir failed: {e}"))?;
         let name = entry.filename().to_string_lossy().into_owned();
-        if name.is_empty() || name == "." || name == ".." {
+        if !is_single_component_name(&name) {
             continue;
         }
         let meta = entry.metadata();
@@ -641,13 +658,23 @@ async fn read_entries(
     Ok(out)
 }
 
-/// Drop `.`/`..`/blank names, then sort dirs-first and case-insensitively by
-/// name — the exact ordering the old `parse_ls_output` produced, so the browser
-/// UI is unchanged. Pure, so it is unit-tested without a live host.
+/// Drop `.`/`..`/blank names, and names holding `/` or NUL (no POSIX server can
+/// have one; a hostile fake `sftp` can — #863, callers join names onto local
+/// paths), then sort dirs-first and case-insensitively by name — the exact
+/// ordering the old `parse_ls_output` produced, so the browser UI is unchanged.
+/// `\` is kept here: it is a legal Linux file name byte and this is the picker's
+/// listing; callers that write locally check [`is_single_component_name`].
+/// Pure, so it is unit-tested without a live host.
 pub(crate) fn finalize_entries(entries: Vec<Entry>) -> Vec<Entry> {
     let mut entries: Vec<Entry> = entries
         .into_iter()
-        .filter(|e| !e.name.is_empty() && e.name != "." && e.name != "..")
+        .filter(|e| {
+            !e.name.is_empty()
+                && e.name != "."
+                && e.name != ".."
+                && !e.name.contains('/')
+                && !e.name.contains('\0')
+        })
         .collect();
     entries.sort_by(|a, b| {
         b.is_dir
@@ -1137,6 +1164,41 @@ mod tests {
         let raw = vec![e(".", true), e("..", true), e("", false), e("real", true)];
         let names: Vec<_> = finalize_entries(raw).into_iter().map(|e| e.name).collect();
         assert_eq!(names, vec!["real"]);
+    }
+
+    #[test]
+    fn finalize_drops_names_carrying_a_separator_or_nul() {
+        // #863: a fake `sftp` can answer a readdir with a traversal "name".
+        let raw = vec![
+            e("../../.config/autostart/x.desktop", false),
+            e("a/b", true),
+            e("nul\0byte", false),
+            e("back\\slash", false),
+            e("real", false),
+        ];
+        let names: Vec<_> = finalize_entries(raw).into_iter().map(|e| e.name).collect();
+        assert_eq!(names, vec!["back\\slash", "real"]);
+    }
+
+    #[test]
+    fn single_component_names_refuse_traversal_and_separators() {
+        for bad in [
+            "",
+            ".",
+            "..",
+            "../x",
+            "../../.config/autostart/x.desktop",
+            "/etc/passwd",
+            "a/b",
+            "..\\x",
+            "a\\b",
+            "nul\0byte",
+        ] {
+            assert!(!is_single_component_name(bad), "{bad:?} must be refused");
+        }
+        for good in ["a.txt", ".hidden", "..double-dot-prefix", "with space", "é"] {
+            assert!(is_single_component_name(good), "{good:?} must pass");
+        }
     }
 
     #[test]

@@ -27,6 +27,9 @@ export interface MdGraphNode {
   kind: "md" | "file" | "missing";
   /** BFS depth from the start document (0 = the document itself). */
   depth: number;
+  /** Preview text gathered during the existing markdown crawl, with no extra reads. */
+  heading?: string;
+  excerpt?: string;
 }
 
 export interface MdGraphEdge {
@@ -47,6 +50,33 @@ const MD_EXT_RE = /\.(md|markdown|mdown|mkd)$/i;
 
 export function isMdPath(path: string): boolean {
   return MD_EXT_RE.test(path);
+}
+
+function describeMarkdown(source: string): Pick<MdGraphNode, "heading" | "excerpt"> {
+  let heading: string | undefined;
+  let excerpt: string | undefined;
+  let fenced = false;
+  let frontmatter = source.startsWith("---\n");
+  for (const [index, raw] of source.split("\n").entries()) {
+    const line = raw.trim();
+    if (frontmatter) {
+      if (index > 0 && (line === "---" || line === "...")) frontmatter = false;
+      continue;
+    }
+    if (/^(```|~~~)/.test(line)) { fenced = !fenced; continue; }
+    if (fenced || !line || line.startsWith("<!--")) continue;
+    const match = line.match(/^#{1,6}\s+(.+?)\s*#*$/);
+    if (match) {
+      heading ??= match[1];
+      continue;
+    }
+    if (!excerpt && !/^(?:>|[-*+]\s|\d+\.\s|!\[)/.test(line)) {
+      excerpt = line.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").replace(/[*_`]/g, "");
+      if (excerpt.length > 180) excerpt = `${excerpt.slice(0, 179)}…`;
+    }
+    if (heading && excerpt) break;
+  }
+  return { heading, excerpt };
 }
 
 /**
@@ -131,6 +161,7 @@ export async function buildMdGraph(
       if (cur !== start) node.kind = "missing";
       continue;
     }
+    Object.assign(node, describeMarkdown(text));
     const baseDir = dirname(cur) || "/";
     for (const target of extractLocalLinkTargets(text)) {
       const abs = resolvePath(baseDir, target);

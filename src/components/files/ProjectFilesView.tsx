@@ -15,7 +15,6 @@ import { RunHostPicker } from "../tabs/TabLocalityBadges";
 import { ProjectFilesSettingsDialog, useProjectFileFilters } from "./ProjectFilesSettings";
 import { useImportDrop } from "./importDrop";
 import { logoutRemote, useProjectsStore } from "../../stores/projects";
-import { isTrashProject } from "../../lib/projects/trashProject";
 import { GIT_STATE_COLOR } from "../../lib/theme/gitColors";
 import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import { useSyncStore, amberPaths, localNewPaths } from "../../stores/remote/sync";
@@ -78,7 +77,7 @@ import { useT, type TranslationKey } from "../../lib/i18n";
 import { useExperimental } from "../../lib/experimental";
 import { useProjectRemarksStore } from "../../stores/projectRemarks";
 import { RemarksPane } from "./RemarksPane";
-import { CommentIcon, InboxIcon, SearchIcon, TrashIcon, WindowIcon } from "../common/icons/Icon";
+import { ArrowDownIcon, ArrowUpIcon, CheckIcon, CommentIcon, GearIcon, InboxIcon, SearchIcon, TrashIcon, WindowIcon } from "../common/icons/Icon";
 
 /** How long the pointer must rest on a session row before its stats card opens
  *  (TODO #85) — same value and rationale as `FileTree`'s `TOOLTIP_DWELL_MS`:
@@ -452,8 +451,7 @@ export function ProjectFilesView({
     && !!project
     && !project.remote
     && !project.sandbox?.enabled
-    && !project.vm?.enabled
-    && !isTrashProject(project);
+    && !project.vm?.enabled;
   const [mobileHostConnected, setMobileHostConnected] = useState(false);
   const [mobileAccessBusy, setMobileAccessBusy] = useState(false);
   const [mobileAccessError, setMobileAccessError] = useState<string | null>(null);
@@ -1583,7 +1581,7 @@ export function ProjectFilesView({
             onClick={() => setView(view === "jobs" ? "files" : "jobs")}
             title={t("projectFilesView.slurmJobsTitle", { count: jobRows.length })}
           >
-            ⚙ {jobRows.length > 0 && <span className="side-panel-orange-count">{jobRows.length}</span>}
+            <GearIcon /> {jobRows.length > 0 && <span className="side-panel-orange-count">{jobRows.length}</span>}
           </button>
         )}
         {!activeBox && remarksEnabled && projectId && (
@@ -1635,7 +1633,7 @@ export function ProjectFilesView({
             }}
             title={t("projectFilesView.importTitle")}
           >
-            ⬇
+            <ArrowDownIcon />
           </button>
         )}
         {importMenu && (
@@ -1700,7 +1698,7 @@ export function ProjectFilesView({
             onClick={() => setShowSettings(true)}
             title={t("projectFilesView.projectSettingsTitle")}
           >
-            ⚙
+            <GearIcon />
           </button>
         )}
       </div>
@@ -1811,7 +1809,7 @@ export function ProjectFilesView({
                   <div className="git-action git-action--commit">
                     <button className="git-action-btn git-action-btn--commit" disabled={gitBusy} onClick={handleCommitOpen} title={t("projectFilesView.commitStagedTitle", { count: gitStatus.staged })}>
                       <span data-testid="commit-bar" className="git-step-dot" style={{ background: GIT_STATE_COLOR.staged }} />
-                      <span className="git-btn-glyph">✔</span><span className="git-btn-label">{t("projectFilesView.commit", { count: gitStatus.staged })}</span>
+                      <span className="git-btn-glyph"><CheckIcon /></span><span className="git-btn-label">{t("projectFilesView.commit", { count: gitStatus.staged })}</span>
                     </button>
                     <button className="git-action-toggle" disabled={gitBusy} aria-label={t("projectFilesView.showStagedFiles")} aria-expanded={openTree === "commit"} title={t("projectFilesView.showStagedFiles")} onClick={() => setOpenTree((prev) => (prev === "commit" ? null : "commit"))}>
                       {openTree === "commit" ? "▾" : "▴"}
@@ -1822,7 +1820,7 @@ export function ProjectFilesView({
                   <div className="git-action git-action--push">
                     <button className="git-action-btn git-action-btn--push" disabled={gitBusy} onClick={handlePush} title={t(unpushedCommits.length === 1 ? "projectFilesView.pushCommitOneTitle" : "projectFilesView.pushCommitManyTitle", { count: unpushedCommits.length })}>
                       <span data-testid="push-bar" className="git-step-dot" style={{ background: GIT_STATE_COLOR.unpushed }} />
-                      <span className="git-btn-glyph">⬆</span><span className="git-btn-label">{t("projectFilesView.push", { count: unpushedCommits.length })}</span>
+                      <span className="git-btn-glyph"><ArrowUpIcon /></span><span className="git-btn-label">{t("projectFilesView.push", { count: unpushedCommits.length })}</span>
                     </button>
                     <button className="git-action-toggle" disabled={gitBusy} aria-label={t("projectFilesView.showUnpushedFiles")} aria-expanded={openTree === "push"} title={t("projectFilesView.showUnpushedFiles")} onClick={() => setOpenTree((prev) => (prev === "push" ? null : "push"))}>
                       {openTree === "push" ? "▾" : "▴"}
@@ -1838,7 +1836,7 @@ export function ProjectFilesView({
                     onClick={() => setPullRequest((n) => n + 1)}
                     title={t("projectFilesView.pullTitle", { count: gitStatus.behind ?? 0 })}
                   >
-                    <span className="git-btn-glyph">⬇</span><span className="git-btn-label">{t("projectFilesView.pull", { count: gitStatus.behind ?? 0 })}</span>
+                    <span className="git-btn-glyph"><ArrowDownIcon /></span><span className="git-btn-label">{t("projectFilesView.pull", { count: gitStatus.behind ?? 0 })}</span>
                   </button>
                 )}
                 {treeScope && projectDir && <GitChangeTree projectDir={projectDir} scope={treeScope} />}
@@ -1894,7 +1892,7 @@ export function ProjectFilesView({
                       })();
                     }}
                   >
-                    ⬇
+                    <ArrowDownIcon />
                   </button>
                   <button
                     type="button"
@@ -1921,7 +1919,7 @@ export function ProjectFilesView({
                       })();
                     }}
                   >
-                    ⬆
+                    <ArrowUpIcon />
                   </button>
                 </div>
               </div>
@@ -2043,7 +2041,7 @@ export function ProjectFilesView({
                       })();
                     }}
                   >
-                    ⬇
+                    <ArrowDownIcon />
                   </button>
                   <button
                     type="button"
@@ -2066,7 +2064,7 @@ export function ProjectFilesView({
                       })();
                     }}
                   >
-                    ⬆
+                    <ArrowUpIcon />
                   </button>
                   {deleteSide && (
                     <button
@@ -2152,7 +2150,7 @@ export function ProjectFilesView({
                           })();
                         }}
                       >
-                        ⬆
+                        <ArrowUpIcon />
                       </button>
                     </div>
                   </div>
@@ -2205,7 +2203,7 @@ export function ProjectFilesView({
                             })();
                           }}
                         >
-                          ⬆
+                          <ArrowUpIcon />
                         </button>
                       </div>
                     </div>

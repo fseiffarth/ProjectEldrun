@@ -2,20 +2,22 @@ import { useState } from "react";
 
 import { useT } from "../../../src/lib/i18n";
 import { outboxFileUrl, type OutboxFile, type OutboxScope } from "../api";
+import { shareAs, useOutboxShare } from "../outboxShare";
 import { ageLabel, sizeLabel } from "../terminal/fileLabels";
 
 /**
  * The files themselves: a thumbnail for every picture, a card for everything
- * else, newest first — the one arrangement they are shown in, whether that is
- * the session's gallery sheet (`OutboxGallery`) or the shelf under the project
- * screen's tab cards. Both read the same project outbox through their own
- * scope, so one grid serves both rather than two that drift apart.
+ * else, newest first — the arrangement the gallery sheet (`OutboxGallery`)
+ * shows them in, opened from the Focus screen or the project screen, each
+ * reading the same project outbox through its own scope.
  *
  * A kind the browser neither shows nor reads is saved, not opened: the tile is
  * a download link, and no viewer is offered for bytes it would only garble.
  *
  * Every tile carries Save, whatever its kind: what the desktop sent is usually
  * sent to be kept, and a thumbnail carries no ⋯ to reach the file sheet with.
+ * Share stands beside it wherever the phone's share sheet takes the file —
+ * passing a plot on to Signal or WhatsApp should not mean opening it first.
  *
  * Delete is on the tile as well, behind a confirm that replaces the row rather
  * than a dialog over it — a thumb reaching the ✕ of a picture it wanted to keep
@@ -40,6 +42,7 @@ export function OutboxGrid({ scope, files, onOpen, onDetails, onDelete }: {
   const [asking, setAsking] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
+  const sharing = useOutboxShare(scope);
   const remove = async (file: OutboxFile) => {
     setDeleting(file.name);
     setFailed(null);
@@ -80,6 +83,12 @@ export function OutboxGrid({ scope, files, onOpen, onDetails, onDelete }: {
               was to open it full screen first and find Save there. The link is
               the same `?download=1` byte stream the sheet's Save uses. */}
           <a className="outbox-save" href={outboxFileUrl(scope, file.name, true)} download={file.name} aria-label={t("mobile.outbox.saveFile", { name: file.name })}><span aria-hidden="true">⤓</span>{t("mobile.outbox.save")}</a>
+          {shareAs(file) && <button
+            className="outbox-save"
+            disabled={sharing.busy === file.name}
+            onClick={() => void sharing.share(file)}
+            aria-label={t(sharing.ready === file.name ? "mobile.outbox.shareReadyFile" : "mobile.outbox.shareFile", { name: file.name })}
+          ><span aria-hidden="true">↗</span>{t(sharing.ready === file.name ? "mobile.outbox.shareReady" : "mobile.outbox.share")}</button>}
           {!isImage && <button className="outbox-details" onClick={() => onDetails(file)} aria-label={t("mobile.outbox.actions", { name: file.name })}>⋯</button>}
           {onDelete && (asking === file.name
             ? <span className="outbox-confirm" role="group" aria-label={t("mobile.outbox.deleteAsk", { name: file.name })}>
@@ -89,6 +98,7 @@ export function OutboxGrid({ scope, files, onOpen, onDetails, onDelete }: {
             : <button className="outbox-delete" onClick={() => { setFailed(null); setAsking(file.name); }} aria-label={t("mobile.outbox.delete", { name: file.name })} title={t("mobile.outbox.deleteYes")}><span aria-hidden="true">🗑</span></button>)}
         </div>
         {failed === file.name && <span className="outbox-entry-error" role="alert">{t("mobile.outbox.deleteError")}</span>}
+        {sharing.failed === file.name && <span className="outbox-entry-error" role="alert">{t("mobile.outbox.shareError")}</span>}
       </div>;
     })}
   </div>;

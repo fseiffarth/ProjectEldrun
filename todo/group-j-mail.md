@@ -877,6 +877,46 @@ no-MDC OpenPGP refused — is deliberately not re-listed here.*
       `root_mcp_review::a_readers_writes_always_stage_and_carry_the_mark`,
       `vm::netdev_reader_adds_the_mcp_guestfwd_beside_the_proxys`,
       `MailAgentDrafts.test.tsx`, `RootOverlay.test.tsx`.
+    - [x] **Three-state per-account switch** (2026-09-23, 🧪 untested live):
+      Off / *Marked messages only* / *Whole account* in the account dialog
+      (`MailAiPrefs.agent_scope`, unset = marked). Marks are local rows
+      (`agent_marks`, store id + keyed `Message-ID` digest, never an IMAP
+      keyword), set from the list's right-click group (one, by sender, whole
+      folder), the open message's button, shown as ⚿ on the row and behind the
+      *Shared* chip. A reader in marked scope gets the marked set everywhere —
+      search, folder counts, thread, `reply_to_message_id`; an unmarked id
+      answers like an invented one. Badge: ✉ marked, ✉✉ whole account. Tests:
+      `root_mcp_mail::tests::{marked_only_*, unmarking_between_*, an_unset_scope_*}`,
+      `mail_store::tests::an_agent_mark_*`, `MailAgentScope.test.tsx`.
+      **Live QA:** turn an account on → it lands on *marked*, `mail_accounts_list`
+      shows `scope: marked`, search empty, folder counts zero; share one message
+      from the menu → search finds it, `mail_read` reads it, the thread shows it
+      alone, it stays unread; stop sharing → the next `mail_read` is "unknown
+      message"; in another client no new IMAP keyword; switch to *whole
+      account* → the rest appears; back → only the mark.
+    - [x] **Local-model tabs read shared mails** (user, 2026-09-23, 🧪 untested
+      live): Settings → Root console and MCPs → *Local models may read the
+      mails you share* (`Settings.root_mcp_mail_local_read`, absent = off).
+      A Vibe local-model tab (MCP chip) gets the four read tools over the
+      **marked messages only**, whatever the account's scope, of accounts with
+      `agent_access` on (drafts still need no consent); refused with
+      `LOCAL_READ_REMOTE` while `ollama_host` is not loopback. Its first read
+      latches `Session::has_read_mail`: every later calendar/board write
+      stages with the taint mark even at review `off`, and its drafts carry
+      origin `reader`. Cloud root tabs still never read (`Policy::reads_mail`).
+      Tests: `root_mcp_mail::tests::{a_local_model_reads_marked_mails_only,
+      local_reads_need_the_switch_*}`,
+      `root_mcp_review::tests::a_local_model_that_read_mail_stages_its_writes`,
+      `root_mcp_security::tests::only_readers_and_opted_in_local_models_read_mail`,
+      `RootMcpMailLocalReadSetting.test.tsx`.
+      **Live QA:** mail tools on, the new switch on, one account on *marked*,
+      share one message; open a local-model tab (MCP chip) → "what's in my
+      shared mail" lists that message only and reads it (it stays unread); an
+      unshared message id is "unknown message"; a Claude root tab still lists no
+      read tool. Ask it to reply → the draft has the sender as `to` and the
+      *mail-reading agent* banner. Ask it to add a board card → a proposal with
+      the reader mark, even with review `off`. Point `ollama_host` at another
+      machine → reads refused.
     - **Needs a rebuild + restart** (backend). The reader half also needs the
       VM tier's first live boot.
     - **Live QA, root tab:** a root Claude tab lists the draft tools and no read

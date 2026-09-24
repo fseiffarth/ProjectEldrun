@@ -17,7 +17,10 @@ Local tmux launcher scripts omit schedule secrets just as they omit root secrets
 Close, natural exit, failed spawn and session revocation invalidate the token.
 
 The three tools are `schedule_prompt`, `list_my_schedules`, `cancel_schedule`.
-Arguments are strict and contain no scope selectors. Agent messages have invisible
+Arguments are strict, every schema field carries a description, and they contain
+no scope selectors. Weekdays are numbered 1 = Monday … 7 = Sunday, the numbering
+`ScheduledAgentPrompt` persists and the schedule dialog uses — deliberately not
+the calendar tools' 0 = Sunday, and the schema and `CONTRACT` say so. Agent messages have invisible
 controls removed and whitespace collapsed; leading `/`, `!`, `#`, `$` and `@`
 are refused. Agent rows cannot carry a preface. Cancellation cannot touch a user
 row or an outstanding delivery claim. User-authored messages are listed only as
@@ -25,8 +28,13 @@ row or an outstanding delivery claim. User-authored messages are listed only as
 category, never the prompt or arbitrary arguments.
 
 Writes use the existing agent-task transaction lock. Limits are four pending
-agent rows, one recurring row (always staged), five minutes' lead, twelve create
-calls per rolling session-hour, and six agent deliveries per target/local day.
+agent rows, one recurring row (always staged), five minutes' lead (a daily or
+weekday rule whose next occurrence is inside the lead starts at the one after,
+a one-time schedule inside it is refused), twelve create calls per rolling
+session-hour, and six agent deliveries per target/local day. `schedule_mcp::admit`
+validates the arguments and takes the hourly slot *before* any work — the
+`after_usage_reset` usage probe included — so a malformed or over-budget call
+spawns nothing and costs nothing.
 The backend reserves delivery budget atomically with the claim, before input can
 be written; unresolved crash claims conservatively consume budget. Failed and
 missed receipts do not. The compact `agent_deliveries` journal survives rule
@@ -57,7 +65,12 @@ compatibility note, not a state migration or version bump.
 
 Unfenced processes sharing the desktop uid can read each other's environment or
 edit local state directly. Per-token scoping is not a containment boundary against
-that access. The delivery permission mode remains entirely the agent CLI's own.
+that access. Inside the tab the token is inherited: the CLI reads it from its
+environment by name, so every process the agent starts (hooks, package scripts,
+builds) holds it and can call `/mcp/schedule` as the tab, fenced or not — an audit
+row is the tab's, not necessarily the agent's own call
+(`docs/context/root_console.md`, *Known limit, inherited*). The delivery
+permission mode remains entirely the agent CLI's own.
 
 ## User-run live QA
 

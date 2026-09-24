@@ -96,9 +96,7 @@ the window's × runs `local_tmux_kill_eldrun_sessions` before `destroy()`, and
 `RunEvent::Exit` runs the same `tmux_local::kill_eldrun_sessions` as the net for
 exits that never reach frontend code (the dev launcher's Ctrl+C: SIGTERM/SIGINT
 are routed into `app.exit()` on Unix). Only a crash leaves local sessions
-behind, and those are what the next launch reattaches. The Trash workspace's
-sessions used to be exempt so a phone could keep working after the desktop
-quit; the Mobile host now stops with the app too, so they go with the rest.
+behind, and those are what the next launch reattaches.
 Disconnecting a remote
 machine is deliberately different: `remote_disconnect` and
 `remote_disconnect_all_hosts` end *every* tmux session on each currently

@@ -15,6 +15,19 @@ export function shortModelName(id: string): string {
 }
 
 /**
+ * A Claude tag in the words Claude's own status line uses: `opus-4-1` →
+ * `Opus 4.1`, `fable-5` → `Fable 5`. The transcript's id and the `/model`
+ * confirmation both arrive as that slug (`shortModelName`), while the screen
+ * says `Opus 4.1` — without this the same tab's tag changed case with the
+ * source it was read from. A slug of any other shape is left as it is.
+ */
+export function claudeModelLabel(tag: string): string {
+  const match = /^([a-z]+)((?:-\d+)+)$/.exec(tag);
+  if (!match) return tag;
+  return `${match[1][0].toUpperCase()}${match[1].slice(1)} ${match[2].slice(1).replace(/-/g, ".")}`;
+}
+
+/**
  * The model an agent session is *showing* — the one it prints under its own
  * input box, read off the pane's screen with the parser the phone's Focus
  * status line uses (`mobile-web/src/terminal/statusLine`), so the tag beside a

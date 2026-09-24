@@ -68,6 +68,7 @@ import { PromptDraftBoard, type DraftBoardHandle } from "./PromptDraftBoard";
 import { draftSequence } from "../../lib/agents/prompt/drafts";
 import { AGENT_ITEMS, EMPTY_CUSTOM_AGENTS } from "../tabs/newTabItems";
 import { useAddTabMenuData } from "../tabs/useAddTabMenuData";
+import { ArrowLeftIcon, ArrowRightIcon } from "../common/icons/Icon";
 
 const EMPTY_PROMPTS: ProjectAgentPrompt[] = [];
 const EMPTY_HISTORY: SentAgentPrompt[] = [];
@@ -1045,9 +1046,9 @@ export function PromptChart({ scope, active, tabs, stateOf }: Props) {
                   ))}
                 </div>
                 <div className="agent-prompt-chart-nav">
-                  <button className="settings-btn sm" type="button" aria-label={t("promptChart.prev")} title={t("promptChart.prev")} onClick={() => setAnchor((value) => shiftAnchor(view, value, -1))}>◀</button>
+                  <button className="settings-btn sm" type="button" aria-label={t("promptChart.prev")} title={t("promptChart.prev")} onClick={() => setAnchor((value) => shiftAnchor(view, value, -1))}><ArrowLeftIcon /></button>
                   <button className="settings-btn sm" type="button" onClick={() => setAnchor(view === "hour" ? hourAnchor(new Date()) : todayStr())}>{t("promptChart.today")}</button>
-                  <button className="settings-btn sm" type="button" aria-label={t("promptChart.next")} title={t("promptChart.next")} onClick={() => setAnchor((value) => shiftAnchor(view, value, 1))}>▶</button>
+                  <button className="settings-btn sm" type="button" aria-label={t("promptChart.next")} title={t("promptChart.next")} onClick={() => setAnchor((value) => shiftAnchor(view, value, 1))}><ArrowRightIcon /></button>
                   <strong className="agent-prompt-chart-range" data-testid="prompt-chart-range">{rangeLabel}</strong>
                 </div>
                 {/* Lifts are view state: putting them back writes nothing. */}

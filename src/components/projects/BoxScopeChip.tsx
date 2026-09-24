@@ -1,19 +1,34 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import type { ProjectBox } from "../../types";
-import { BOX_SCOPE_PREFIX } from "../../stores/boxes";
+import { BOX_SCOPE_PREFIX, useBoxesStore } from "../../stores/boxes";
 import { ROOT_SCOPE } from "../../stores/tabs";
+import { useProjectsStore } from "../../stores/projects";
 import { useBoxEditorStore } from "../../stores/boxEditor";
 import { usePillDragStore } from "../../stores/drag/pillDrag";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
+import { boxColor } from "../../lib/theme/boxColor";
 import { useT } from "../../lib/i18n";
 import { StarIcon } from "../layout/StarIcon";
-import { TrashProjectIcon } from "./TrashProjectIcon";
 import { ScopeSetStatusBars } from "./PillStatusBars";
 import { MenuShortcut } from "../common/MenuShortcut";
+import { UntestedTag } from "../common/UntestedTag";
+import { BoxColorPicker } from "./BoxColorPicker";
+import { CheckboxIcon, SquareIcon } from "../common/icons/Icon";
 
 /** This chip's entry in the shared header hover-menu id (stores/headerHoverMenu). */
 const SCOPE_MENU_ID = "box-scope-chip";
+
+/**
+ * How many boxes stand on the row as pills of their own. Boxes are few by
+ * nature (a handful of joinings, not a project list), so nearly every user
+ * sees all of theirs; past this the rest stay one hover away in the chip's
+ * dropdown, and the chip says how many it is holding.
+ */
+export const MAX_BOX_PILLS = 6;
+
+/** Member rows a box pill's context menu lists before deferring to the editor. */
+const MAX_MENU_MEMBER_ROWS = 12;
 
 interface Props {
   boxes: ProjectBox[];
@@ -27,60 +42,36 @@ interface Props {
    *  the box's own pill, driven off `scope` exactly as every project pill
    *  beside it is. */
   active?: boolean;
-  /** A project pill's pointer-drag is over the selected box's pill (see
-   *  ProjectPill's `startPillDrag`, which hit-tests `data-box-id` across the
-   *  whole pills region — the pill sits outside the scrolling strip). */
-  forcedDragOver?: boolean;
-  /** The built-in Trash workspace, when it exists (it always should). */
-  trash?: { id: string; name: string } | null;
   /** The root terminal's scope is the current one. */
   rootActive?: boolean;
-  /** The Trash workspace's scope is the current one. */
-  trashActive?: boolean;
   onSelectRoot: () => void;
-  onSelectTrash: () => void;
   /** Keyboard-steering station digits, while steering mode is active. */
   rootStation?: number;
-  trashStation?: number;
 }
 
 /**
- * The scope chip: ONE control at the head of the pill row standing for every
- * scope that is *not* a project pill — the root terminal, the Trash workspace,
- * and the boxes — left of the scrolling project strip.
+ * The scope chip and the box pills: the row's fixed leading segment, left of
+ * the scrolling project strip.
  *
- * It started as the boxes control (#13/#41), replacing the per-box pills that
- * used to sit *among* the projects: boxes and projects were two different kinds
- * of thing wearing one shape in one row, and under the overlay model a box's
- * members were on screen twice at once. The chip ended that — its dropdown is
- * the only place boxes are listed, and picking one **slices the strip** to that
- * box's members.
+ * The chip is ONE control standing for the built-in root scope plus the full
+ * boxes list, "All projects", and the doors into the box editor. It names Root
+ * when that is the current scope, and otherwise just shows the box mark.
  *
- * The selected box then gets a **pill of its own** immediately right of the
- * chip, rather than being worn on the chip's own face (user, 2026-09-04). The
- * two jobs had been folded into one control: the chip was both the list you
- * open to go somewhere and the thing that says where you are, so re-entering
- * the box you are already looking at meant opening a menu to pick the row
- * already marked current. Splitting them gives the box a standing, clickable
- * destination — a tab in the row, like the projects beside it — while the
- * dropdown stays exactly what it was. This is not the old per-box pills coming
- * back: only the ONE selected box is ever on the row, in the fixed leading
- * segment, so boxes still cost the scrolling strip no width.
- *
- * Root and Trash then joined it, for the same reason and by the same argument:
- * they are built-in scopes, not projects, and each was spending a permanent
- * pill's worth of header on a destination visited by name rather than by
- * pointing. Folding them in leaves the leading segment as a single control that
- * answers "where am I" — Root · Trash · a box · or nothing, meaning an ordinary
- * project — and gives the whole row back to the projects.
+ * Right of it, **every box stands as a pill of its own** (2026-09-22). The
+ * previous model put only the *selected* box there and kept the rest in the
+ * dropdown, which made switching between boxes a hover, a wait and a click
+ * each way and left the other boxes invisible until the menu was open. Boxes
+ * are few, so a pill each costs the strip little: one click enters a box, the
+ * pill is a standing drop target for "add this project to that box", and its
+ * colour is the colour its members wear as a swatch on their own pills — the
+ * same box reads the same everywhere. Past `MAX_BOX_PILLS` the rest stay in
+ * the dropdown and the chip counts them.
  *
  * The slice is a *view*, not the scope: clicking a member switches to that
- * project (dropping the chip's `active` accent) while the strip stays put, so
- * hopping between a box's projects never reshuffles the row under the pointer.
- * "All projects" is always in the menu, so a slice can never trap anyone away
- * from a project it doesn't list — and picking Root or Trash lifts the slice
- * outright, since neither is inside any box and a strip left filtered by a box
- * nobody is in reads as a strip that has lost projects.
+ * project (the box pill keeps `is-selected` but drops `active`) while the
+ * strip stays put, so hopping between a box's projects never reshuffles the
+ * row under the pointer. "All projects" is always in the menu, so a slice can
+ * never trap anyone away from a project it doesn't list.
  */
 export function BoxScopeChip({
   boxes,
@@ -89,31 +80,28 @@ export function BoxScopeChip({
   onRename,
   onDelete,
   active,
-  forcedDragOver,
-  trash,
   rootActive,
-  trashActive,
   onSelectRoot,
-  onSelectTrash,
   rootStation,
-  trashStation,
 }: Props) {
   const t = useT();
   // Hover-opened through the SHARED header menu id, like the + menu and the
   // cluster menus beside it: one id means opening another header menu closes
   // this one in the same frame instead of both riding out their own 250 ms
-  // closing grace. Click still reveals (a click also fires mouseenter, so a
-  // toggle here would open on enter and shut again on the click).
+  // closing grace. A click on the chip itself is "All projects" (the menu's
+  // own row), so hover and focus are what reveal the list.
   const menuOpen = useHeaderHoverMenuStore((s) => s.openId === SCOPE_MENU_ID);
   const openMenu = useHeaderHoverMenuStore((s) => s.open);
   const closeMenu = useHeaderHoverMenuStore((s) => s.close);
   const closeTimer = useRef<number | undefined>(undefined);
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
-  const [renaming, setRenaming] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; boxId: string } | null>(
+    null,
+  );
+  const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const chipRef = useRef<HTMLDivElement>(null);
-  const pillRef = useRef<HTMLDivElement>(null);
+  const pillsRef = useRef<HTMLDivElement>(null);
   const sprung = useRef(false);
 
   const reveal = () => {
@@ -130,32 +118,34 @@ export function BoxScopeChip({
   };
   useEffect(() => () => window.clearTimeout(closeTimer.current), []);
 
-  const selected = selectedId ? (boxes.find((b) => b.id === selectedId) ?? null) : null;
+  // The boxes in row order, and the ones that get a pill: the first
+  // MAX_BOX_PILLS by position that the user has not hidden from the row (the
+  // dropdown's per-row checkbox) — always including the selected box, which
+  // takes the last slot when it would otherwise be off the row, so the box
+  // being looked at is never the one without a pill.
+  const ordered = useMemo(() => [...boxes].sort((a, b) => a.position - b.position), [boxes]);
+  const shown = useMemo(() => {
+    const head = ordered.filter((b) => !b.hide_pill).slice(0, MAX_BOX_PILLS);
+    if (!selectedId || head.some((b) => b.id === selectedId)) return head;
+    const selected = ordered.find((b) => b.id === selectedId);
+    if (!selected) return head;
+    // A hidden box being looked at joins the row in its own place, not last.
+    const withSelected = head.length < MAX_BOX_PILLS ? head : head.slice(0, MAX_BOX_PILLS - 1);
+    return ordered.filter((b) => b === selected || withSelected.includes(b));
+  }, [ordered, selectedId]);
+  const overflow = ordered.length - shown.length;
 
-  // What the chip NAMES right now — only the built-in scopes. A selected box
-  // no longer folds into the chip's face: it gets a pill of its own beside it
-  // (below), so the chip is the picker and the pill is the box.
-  const naming: "root" | "trash" | null = rootActive
-    ? "root"
-    : trashActive && trash
-      ? "trash"
-      : null;
+  // What the chip NAMES right now — only the built-in root scope; every box
+  // has a pill of its own beside the chip.
+  const naming: "root" | null = rootActive ? "root" : null;
 
-  // The chip itself carries NO status strip (user, 2026-09-07): it is the
-  // shortest control on the row — an icon, a word and a caret — and a band of
-  // bars across its bottom edge was more than it had room for. What it used to
-  // tally is still on screen in the two places that do have the room: the
-  // selected box's own pill beside it, and the dropdown rows, which are the
-  // only enumeration of the boxes and say WHICH one wants something.
-
-  // Spring-loaded during a pill drag (the PDF page rail's bargain): the strip
-  // may be sliced, so the project being dragged is usually not one of the
-  // box's own — and with the list folded away the only reachable target would
-  // be the box already on screen. A drag in flight therefore opens the list and
-  // every box row becomes its own drop target; it folds back unless the user
-  // had opened it themselves.
+  // Spring-loaded during a pill drag, but only while some boxes have NO pill
+  // on the row: with every box standing beside the chip as its own drop
+  // target, the list would only cover the header for nothing. When boxes do
+  // overflow, a drag in flight opens the list so every row becomes a target;
+  // it folds back unless the user had opened it themselves.
   const pillDrag = usePillDragStore((s) => s.drag);
-  const dragging = !!pillDrag;
+  const dragging = !!pillDrag && overflow > 0;
   useEffect(() => {
     if (dragging) {
       if (!menuOpen) sprung.current = true;
@@ -192,16 +182,16 @@ export function BoxScopeChip({
     };
   }, [menuOpen]);
 
-  // A press outside the chip and its portaled list, or Escape, closes both it
-  // and the box context menu — the hover grace alone can't catch a pointer that
-  // jumps straight out of the header.
+  // A press outside the chip, the box pills and the portaled list, or Escape,
+  // closes both the list and the box context menu — the hover grace alone
+  // can't catch a pointer that jumps straight out of the header.
   useEffect(() => {
     if (!menuOpen && !contextMenu) return;
     const onPointer = (e: PointerEvent) => {
       if (chipRef.current?.contains(e.target as Node)) return;
-      // The box pill hosts the rename input and the box context menu, so a
-      // press inside it must not fold either away under the pointer.
-      if (pillRef.current?.contains(e.target as Node)) return;
+      // The box pills host the rename input, so a press inside them must not
+      // fold it away under the pointer.
+      if (pillsRef.current?.contains(e.target as Node)) return;
       if ((e.target as HTMLElement).closest?.(".box-chip-menu")) return;
       dismiss();
       setContextMenu(null);
@@ -221,6 +211,31 @@ export function BoxScopeChip({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [menuOpen, contextMenu]);
 
+  // The box the context menu is open for, if it still exists (a dissolve from
+  // elsewhere closes the menu with it).
+  const menuBox = contextMenu ? (boxes.find((b) => b.id === contextMenu.boxId) ?? null) : null;
+  useEffect(() => {
+    if (contextMenu && !menuBox) setContextMenu(null);
+  }, [contextMenu, menuBox]);
+
+  // The projects a box pill's menu offers as members: every open project.
+  // Members first, so a long list shows what the box holds before what it could.
+  const projects = useProjectsStore((s) => s.projects);
+  const memberRows = useMemo(() => {
+    if (!menuBox) return [];
+    const members = new Set(menuBox.member_ids);
+    const open = projects
+      .filter((p) => p.status !== "inactive")
+      .sort((a, b) => a.position - b.position);
+    return [...open.filter((p) => members.has(p.id)), ...open.filter((p) => !members.has(p.id))]
+      .slice(0, MAX_MENU_MEMBER_ROWS)
+      .map((p) => ({ id: p.id, name: p.name, member: members.has(p.id) }));
+  }, [menuBox, projects]);
+  const memberRowsTruncated =
+    !!menuBox &&
+    projects.filter((p) => p.status !== "inactive").length >
+      MAX_MENU_MEMBER_ROWS;
+
   const pick = (boxId: string | null) => {
     dismiss();
     onSelect(boxId);
@@ -228,30 +243,34 @@ export function BoxScopeChip({
 
   const commitRename = () => {
     const next = renameValue.trim();
-    if (selected && next && next !== selected.name) onRename(selected.id, next);
-    setRenaming(false);
+    const box = renamingId ? boxes.find((b) => b.id === renamingId) : null;
+    if (box && next && next !== box.name) onRename(box.id, next);
+    setRenamingId(null);
   };
 
   const chipTitle = () => {
     if (naming === "root") return t("header.rootProject");
-    if (naming === "trash") return t("pill.trashProjectTitle");
     return t("boxChip.pickerTitle");
   };
 
   const chipLabel = () => {
     if (naming === "root") return t("boxChip.rootLabel");
-    if (naming === "trash") return trash?.name ?? "";
     return null;
   };
 
-  const station = naming === "root" ? rootStation : naming === "trash" ? trashStation : undefined;
+  const station = naming === "root" ? rootStation : undefined;
+
+  const memberCountTitle = (b: ProjectBox) =>
+    t(b.member_ids.length === 1 ? "boxPill.memberCountOne" : "boxPill.memberCountMany", {
+      count: b.member_ids.length,
+    });
 
   return (
     <>
       <div
         ref={chipRef}
-        className={`box-chip${rootActive || trashActive ? " active" : ""}${
-          naming || selected ? " filtering" : ""
+        className={`box-chip${rootActive ? " active" : ""}${
+          naming ? " filtering" : ""
         }`}
         onMouseEnter={reveal}
         onMouseLeave={scheduleClose}
@@ -260,22 +279,31 @@ export function BoxScopeChip({
           type="button"
           className="box-chip-main"
           title={chipTitle()}
+          // Same as the menu's "All projects" row: drop the box slice.
           onClick={(e) => {
             e.stopPropagation();
-            reveal();
+            pick(null);
           }}
           onFocus={reveal}
         >
           {naming === "root" ? (
             <StarIcon className="box-chip-star" />
-          ) : naming === "trash" ? (
-            <TrashProjectIcon className="box-chip-trash-icon" />
           ) : (
             <span className="box-chip-icon" aria-hidden>
               ▣
             </span>
           )}
           {chipLabel() && <span className="box-chip-label">{chipLabel()}</span>}
+          {/* How many boxes have no pill on the row — whatever the chip is
+              naming, since those boxes are reachable only through its list. */}
+          {overflow > 0 && (
+            <span
+              className="box-chip-overflow"
+              title={t("boxChip.moreBoxesTitle", { count: overflow })}
+            >
+              {t("boxChip.moreBoxes", { count: overflow })}
+            </span>
+          )}
           <span className="box-chip-caret" aria-hidden>
             ▾
           </span>
@@ -289,73 +317,73 @@ export function BoxScopeChip({
         )}
       </div>
 
-      {/* The selected box's own pill, right of the chip. The chip picks a box;
-          the pill IS that box — it names it, counts its members, wears its own
-          status strip, takes the drop of a project dragged "into the box I am
-          looking at", and one click enters its scope without going back through
-          a menu. Deliberately the chip's own box (`.box-chip`, minus the caret)
-          rather than a shape of its own, so the leading segment stays one run.
-          It is NOT a second copy of the boxes list: only the selected box is
-          ever here, and every other box stays one hover of the chip away. */}
-      {selected && (
-        <div
-          ref={pillRef}
-          // The assign-to-box drop target. Only the SELECTED box is addressable
-          // by a drag — dropping onto the pill means "into the box I am looking
-          // at"; every other box is a row in the sprung-open chip list, or one
-          // right-click away on the pill itself.
-          data-box-id={selected.id}
-          className={`box-chip box-scope-pill filtering${active ? " active" : ""}${
-            forcedDragOver ? " drag-over" : ""
-          }`}
-          onContextMenu={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            dismiss();
-            const bottom = pillRef.current?.getBoundingClientRect().bottom ?? e.clientY;
-            setContextMenu({ x: e.clientX, y: bottom });
-          }}
-        >
-          {renaming ? (
-            <input
-              className="project-box-rename-input"
-              autoFocus
-              value={renameValue}
-              onChange={(e) => setRenameValue(e.target.value)}
-              onBlur={commitRename}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") commitRename();
-                if (e.key === "Escape") setRenaming(false);
-              }}
-            />
-          ) : (
-            <button
-              type="button"
-              className="box-chip-main"
-              title={t("boxScopePill.title", { name: selected.name })}
-              onClick={(e) => {
-                e.stopPropagation();
-                onSelect(selected.id);
-              }}
-            >
-              <span className="box-chip-icon" aria-hidden>
-                ▣
-              </span>
-              <span className="box-chip-label">{selected.name}</span>
-              <span
-                className="project-box-member-count"
-                title={t(
-                  selected.member_ids.length === 1
-                    ? "boxPill.memberCountOne"
-                    : "boxPill.memberCountMany",
-                  { count: selected.member_ids.length },
-                )}
+      {/* The box pills, right of the chip: one per box (up to MAX_BOX_PILLS),
+          in the boxes' own order. Each names its box in the box's colour,
+          wears the box's own status strip, takes the drop of a project
+          dragged onto it, hosts the rename input and the box's context menu,
+          and enters the box's scope on one click. Deliberately the chip's own
+          box (`.box-chip`, minus the caret) rather than a shape of its own,
+          so the leading segment stays one run. */}
+      {shown.length > 0 && (
+        <div ref={pillsRef} className="box-pill-row">
+          {shown.map((b) => {
+            const isSelected = b.id === selectedId;
+            const isActive = isSelected && !!active;
+            const color = boxColor(b);
+            return (
+              <div
+                key={b.id}
+                // The assign-to-box drop target: ProjectPill's hit-test sweeps
+                // `[data-box-id]` across the document, so every pill here is a
+                // target in its own right — no menu has to open first.
+                data-box-id={b.id}
+                className={`box-chip box-scope-pill${isSelected ? " is-selected filtering" : ""}${
+                  isActive ? " active" : ""
+                }${pillDrag?.overBoxId === b.id ? " drag-over" : ""}`}
+                style={{ "--box-color": color } as CSSProperties}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  dismiss();
+                  const bottom = (e.currentTarget as HTMLElement).getBoundingClientRect().bottom;
+                  setContextMenu({ x: e.clientX, y: bottom || e.clientY, boxId: b.id });
+                }}
               >
-                {selected.member_ids.length}
-              </span>
-            </button>
-          )}
-          <ScopeSetStatusBars scopes={[`${BOX_SCOPE_PREFIX}${selected.id}`]} />
+                {renamingId === b.id ? (
+                  <input
+                    className="project-box-rename-input"
+                    autoFocus
+                    value={renameValue}
+                    onChange={(e) => setRenameValue(e.target.value)}
+                    onBlur={commitRename}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") commitRename();
+                      if (e.key === "Escape") setRenamingId(null);
+                    }}
+                  />
+                ) : (
+                  <button
+                    type="button"
+                    className="box-chip-main"
+                    title={t("boxScopePill.title", {
+                      name: b.name,
+                      members: memberCountTitle(b),
+                    })}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onSelect(b.id);
+                    }}
+                  >
+                    {/* The members' swatch, not the ▣ glyph: the pill and
+                        its members' project pills wear the same mark. */}
+                    <span className="project-pill-box-swatch" aria-hidden />
+                    <span className="box-chip-label">{b.name}</span>
+                  </button>
+                )}
+                <ScopeSetStatusBars scopes={[`${BOX_SCOPE_PREFIX}${b.id}`]} />
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -372,9 +400,8 @@ export function BoxScopeChip({
             onMouseEnter={reveal}
             onMouseLeave={scheduleClose}
           >
-            {/* The built-in scopes, ahead of the boxes and of "All projects":
-                they are destinations, not slices, and picking either lifts the
-                slice (neither is in any box). */}
+            {/* The built-in root scope, ahead of the boxes and of "All
+                projects": it is a destination, not a slice. */}
             <button
               className={rootActive ? "is-current" : undefined}
               title={t("header.rootProject")}
@@ -395,27 +422,6 @@ export function BoxScopeChip({
               )}
               <MenuShortcut chord="rootConsole" />
             </button>
-            {trash && (
-              <button
-                className={trashActive ? "is-current" : undefined}
-                title={t("pill.trashProjectTitle")}
-                onClick={() => {
-                  dismiss();
-                  onSelectTrash();
-                }}
-              >
-                <TrashProjectIcon className="box-chip-menu-trash-icon" />
-                <span className="box-chip-menu-name">{trash.name}</span>
-                <ScopeSetStatusBars
-                  scopes={[trash.id]}
-                  interactive={false}
-                  className="inline"
-                />
-                {trashStation != null && (
-                  <span className="box-chip-menu-count">{trashStation}</span>
-                )}
-              </button>
-            )}
             <div className="box-chip-menu-sep" />
             <button
               className={selectedId === null ? "is-current" : undefined}
@@ -423,40 +429,56 @@ export function BoxScopeChip({
             >
               {t("boxChip.allProjects")}
             </button>
-            {boxes.length > 0 && <div className="box-chip-menu-sep" />}
-            {boxes.map((b) => (
-              <button
-                key={b.id}
-                // A drop target in its own right while a pill drag is in
-                // flight (see the spring-loaded open above); ProjectPill's
-                // hit-test sweeps `[data-box-id]` across the document, so a
-                // portaled row counts exactly as the chip does.
-                data-box-id={b.id}
-                className={`${b.id === selectedId ? "is-current" : ""}${
-                  pillDrag?.overBoxId === b.id ? " drag-over" : ""
-                }`.trim()}
-                onClick={() => pick(b.id)}
-                title={t(
-                  b.member_ids.length === 1 ? "boxPill.memberCountOne" : "boxPill.memberCountMany",
-                  { count: b.member_ids.length },
-                )}
-              >
-                <span className="box-chip-menu-icon" aria-hidden>
-                  ▣
-                </span>
-                <span className="box-chip-menu-name">{b.name}</span>
-                {/* The list is the only place boxes are enumerated, so it is
-                    also the only place that can say WHICH box wants something
-                    once the chip has folded back to one. Inert bars: the row is
-                    already a button, and picking the box is the way in from
-                    here. */}
-                <ScopeSetStatusBars
-                  scopes={[`${BOX_SCOPE_PREFIX}${b.id}`]}
-                  interactive={false}
-                  className="inline"
-                />
-                <span className="box-chip-menu-count">{b.member_ids.length}</span>
-              </button>
+            {ordered.length > 0 && <div className="box-chip-menu-sep" />}
+            {ordered.length > 0 && (
+              <div className="box-chip-menu-label">
+                {t("boxChip.onRowLabel")} <UntestedTag id="boxChip.onRowLabel" />
+              </div>
+            )}
+            {ordered.map((b) => (
+              <div key={b.id} className="box-chip-menu-row">
+                {/* Whether the box stands on the row as a pill. Its own button
+                    beside the row's, so toggling never enters the box, and the
+                    menu stays open across toggles like the members checklist. */}
+                <button
+                  type="button"
+                  className="box-chip-menu-pin"
+                  aria-pressed={!b.hide_pill}
+                  title={t(b.hide_pill ? "boxChip.showPillTitle" : "boxChip.hidePillTitle", {
+                    name: b.name,
+                  })}
+                  onClick={() => void useBoxesStore.getState().setBoxPillHidden(b.id, !b.hide_pill)}
+                >
+                  {b.hide_pill ? <SquareIcon /> : <CheckboxIcon />}
+                </button>
+                <button
+                  // A drop target in its own right while a pill drag is in
+                  // flight (see the spring-loaded open above); ProjectPill's
+                  // hit-test sweeps `[data-box-id]` across the document, so a
+                  // portaled row counts exactly as a pill does.
+                  data-box-id={b.id}
+                  className={`${b.id === selectedId ? "is-current" : ""}${
+                    pillDrag?.overBoxId === b.id ? " drag-over" : ""
+                  }`.trim()}
+                  onClick={() => pick(b.id)}
+                  title={memberCountTitle(b)}
+                >
+                  <span
+                    className="project-pill-box-swatch"
+                    style={{ background: boxColor(b) }}
+                    aria-hidden
+                  />
+                  <span className="box-chip-menu-name">{b.name}</span>
+                  {/* Inert bars: the row is already a button, and picking the
+                      box is the way in from here. */}
+                  <ScopeSetStatusBars
+                    scopes={[`${BOX_SCOPE_PREFIX}${b.id}`]}
+                    interactive={false}
+                    className="inline"
+                  />
+                  <span className="box-chip-menu-count">{b.member_ids.length}</span>
+                </button>
+              </div>
             ))}
             <div className="box-chip-menu-sep" />
             <button
@@ -480,17 +502,17 @@ export function BoxScopeChip({
         )}
 
       {contextMenu &&
-        selected &&
+        menuBox &&
         createPortal(
           <div
-            className="context-menu"
+            className="context-menu box-pill-menu"
             style={{ left: contextMenu.x, top: contextMenu.y }}
             onPointerDown={(e) => e.stopPropagation()}
           >
             <button
               onClick={() => {
                 setContextMenu(null);
-                onSelect(selected.id);
+                onSelect(menuBox.id);
               }}
             >
               {t("boxPill.openBox")}
@@ -498,16 +520,58 @@ export function BoxScopeChip({
             <button
               onClick={() => {
                 setContextMenu(null);
-                setRenameValue(selected.name);
-                setRenaming(true);
+                setRenameValue(menuBox.name);
+                setRenamingId(menuBox.id);
               }}
             >
               {t("common.rename")}
             </button>
+            <BoxColorPicker
+              box={menuBox}
+              onPick={(color) => void useBoxesStore.getState().setBoxColor(menuBox.id, color)}
+            />
+
+            {/* Members, right on the box: a checkbox row per open project,
+                toggling membership on the spot. The menu STAYS open across
+                toggles — adding three projects is three clicks, not three
+                right-clicks — and closes on Escape or a press elsewhere. */}
+            <div className="context-menu-group">
+              <div className="context-menu-group-label">
+                {t("boxPill.membersGroup")} <UntestedTag id="boxPill.membersGroup" />
+              </div>
+              {memberRows.map((row) => (
+                <button
+                  key={row.id}
+                  className="context-menu-check"
+                  data-member-id={row.id}
+                  onClick={() => {
+                    const store = useBoxesStore.getState();
+                    if (row.member) void store.removeFromBox(row.id, menuBox.id);
+                    else void store.addToBox(row.id, menuBox.id);
+                  }}
+                  title={t(row.member ? "boxPill.removeMemberTitle" : "boxPill.addMemberTitle", {
+                    name: row.name,
+                    box: menuBox.name,
+                  })}
+                >
+                  <span className="context-menu-checkmark" aria-hidden>
+                    {row.member ? <CheckboxIcon /> : <SquareIcon />}
+                  </span>
+                  {row.name}
+                </button>
+              ))}
+              {memberRows.length === 0 && (
+                <div className="context-menu-note">{t("boxEditor.noProjects")}</div>
+              )}
+              {memberRowsTruncated && (
+                <div className="context-menu-note">{t("boxPill.moreInEditor")}</div>
+              )}
+            </div>
+
             <button
               onClick={() => {
                 setContextMenu(null);
-                useBoxEditorStore.getState().openEditor(selected.id);
+                useBoxEditorStore.getState().openEditor(menuBox.id);
               }}
             >
               {t("boxPill.editBoxEllipsis")}
@@ -516,7 +580,7 @@ export function BoxScopeChip({
               className="danger"
               onClick={() => {
                 setContextMenu(null);
-                onDelete(selected.id);
+                onDelete(menuBox.id);
               }}
             >
               {t("boxPill.deleteBox")}

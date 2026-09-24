@@ -641,8 +641,10 @@
 
 /* Send-to-project dialog (file-tree right-click → copy into another project).
    Reuses the folder-picker chrome; these are the few bits it adds. */
+.send-to-project-dialog .settings-help {
+  margin: 0;
+}
 .send-to-project-source {
-  margin: 4px 0 8px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -650,6 +652,9 @@
 .send-to-project-item:disabled {
   opacity: 0.5;
   cursor: var(--cur-default, default);
+}
+.send-to-project-item:disabled:hover {
+  background: transparent;
 }
 .send-to-project-tag {
   flex-shrink: 0;

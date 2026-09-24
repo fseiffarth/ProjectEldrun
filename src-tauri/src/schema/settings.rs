@@ -177,6 +177,11 @@ pub struct Settings {
     pub root_mcp: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule_mcp: Option<bool>,
+    /// The read-only help server (`services::help_mcp`) handed to every local
+    /// agent tab. **Absent means on**; a stored `false` stops new tabs getting
+    /// it and makes `/mcp/help` refuse the tabs that already hold a token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub help_mcp: Option<bool>,
     /// Root-agent write review: absent/unknown = all, or destructive / off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_mcp_review: Option<String>,
@@ -196,6 +201,22 @@ pub struct Settings {
     /// Subordinate to `root_mcp`, and above every per-account `agent_access`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_mcp_mail: Option<bool>,
+    /// Root console: keep the **mail** tools to local-model tabs. Absent means
+    /// off. On, a cloud agent CLI (Claude, Codex, …) is neither listed nor
+    /// served a mail tool, and a contained reader — always a cloud CLI — is
+    /// served nothing; a local-model tab keeps its draft tools. The rest of the
+    /// tools are untouched: that is `root_mcp_local_only`'s job. Read per
+    /// request, like the switches above. Subordinate to `root_mcp_mail`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_mcp_mail_local_only: Option<bool>,
+    /// Root console: a **local-model tab** may read the mails you shared with
+    /// agents (`MailAiPrefs::agent_access` on the account, then a per-message
+    /// mark) — marked messages only, whatever the account's scope, and only
+    /// while `ollama_host` is loopback. Absent means off: a root tab then
+    /// writes drafts and reads nothing. Read per request. Subordinate to
+    /// `root_mcp_mail`. Design: `docs/mail_mcp_plan.md` §"Local-model reads".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_mcp_mail_local_read: Option<bool>,
     /// Side panel: the opt-in **Alerts** group in the file viewer — urgent
     /// mail, the calendar entries about to start, and the to-do cards whose due
     /// date is here or past, in one time-ordered strip.
@@ -414,6 +435,12 @@ pub struct Settings {
     /// paths. Default false; independent of agent login and resume credentials.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_fence_cargo_credentials: Option<bool>,
+    /// Let a fenced **root** agent read every project (local directories, box
+    /// folders, remote mirrors) read-only. Default off: one poisoned project can
+    /// then reach the others through an agent with open network access.
+    /// Project scopes are untouched (`agent_fence::root_project_read_only_paths`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_fence_projects_readable: Option<bool>,
     /// Prefix chips offered by the side panel's per-tab agent composer, keyed by
     /// agent command (`claude`, `codex`, …). Each entry is one of that CLI's own
     /// slash commands, submitted ahead of the prompt. Unset falls back to the
@@ -737,6 +764,12 @@ pub struct Settings {
     /// itself either way (see `stores/headerStatus`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub header_status_expanded: Option<bool>,
+    /// Default printer per network, keyed by the network key the frontend
+    /// derives (`wlan:<ssid>`, `lan:<hashed gateway mac>`, `lan`). When the machine
+    /// joins a keyed network, the print manager's host makes that printer the
+    /// user's default. Unset/empty → nothing is ever switched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub printer_network_defaults: Option<HashMap<String, PrinterNetworkDefault>>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }
@@ -786,6 +819,19 @@ pub struct ChordDescriptor {
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_false(b: &bool) -> bool {
     !*b
+}
+
+/// One entry in `settings["printer_network_defaults"]`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PrinterNetworkDefault {
+    #[serde(default)]
+    pub printer: String,
+    /// The network's name as it was shown when the default was saved (an SSID,
+    /// a gateway address), so the list stays readable while off that network.
+    #[serde(default)]
+    pub label: String,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
 }
 
 /// One per-type entry in `settings["viewer_prefs"]` (#48).
@@ -863,6 +909,12 @@ impl Settings {
         self.agent_fence.unwrap_or(true)
     }
 
+    /// Whether the root fence exposes every project read-only. Off unless
+    /// written: it is a widening, and the mail `attach` argument depends on it.
+    pub fn root_fence_projects_readable(&self) -> bool {
+        self.root_fence_projects_readable.unwrap_or(false)
+    }
+
     /// The configured read-only toolchain/config allowlist, or the documented
     /// defaults when the key has never been written.
     pub fn agent_fence_paths(&self) -> Vec<String> {
@@ -907,6 +959,11 @@ impl Settings {
         self.root_mcp.unwrap_or(true)
     }
 
+    /// Whether the help MCP is handed to agent tabs. On unless switched off.
+    pub fn help_mcp(&self) -> bool {
+        self.help_mcp.unwrap_or(true)
+    }
+
     /// The agent CLIs [`Self::root_mcp_agents`] names, with its `root_agents`
     /// fallback applied.
     pub fn root_mcp_agent_list(&self) -> Vec<String> {
@@ -919,6 +976,16 @@ impl Settings {
     /// Whether the root MCP endpoint serves its mail tools. Off unless set.
     pub fn root_mcp_mail(&self) -> bool {
         self.root_mcp_mail.unwrap_or(false)
+    }
+
+    /// Whether the root MCP mail tools are kept to local-model tabs. Off unless set.
+    pub fn root_mcp_mail_local_only(&self) -> bool {
+        self.root_mcp_mail_local_only.unwrap_or(false)
+    }
+
+    /// Whether a local-model tab may read the marked mails. Off unless set.
+    pub fn root_mcp_mail_local_read(&self) -> bool {
+        self.root_mcp_mail_local_read.unwrap_or(false)
     }
 
     /// Whether the root MCP tools are kept to local-model tabs. Off unless set.
@@ -1069,6 +1136,43 @@ mod tests {
         assert_eq!(back.fast_mode, Some(true));
     }
 
+    /// Local-model mail reads are absent by default (off), a real field the MCP
+    /// policy can read, and an explicit `false` survives a round trip.
+    #[test]
+    fn root_mcp_mail_local_read_defaults_absent_and_is_a_real_field() {
+        let raw = serde_json::to_string(&Settings::default()).unwrap();
+        assert!(!raw.contains("root_mcp_mail_local_read"), "{raw}");
+        assert!(!Settings::default().root_mcp_mail_local_read());
+        for (body, want) in [(r#"{"root_mcp_mail_local_read":true}"#, true), (r#"{"root_mcp_mail_local_read":false}"#, false)] {
+            let s: Settings = serde_json::from_str(body).expect("parse");
+            assert!(s.extra.is_empty(), "fell through to `extra`: {:?}", s.extra.keys().collect::<Vec<_>>());
+            assert_eq!(s.root_mcp_mail_local_read(), want);
+            let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).expect("round trip");
+            assert_eq!(back.root_mcp_mail_local_read, Some(want));
+        }
+    }
+
+    /// The mail tools' local-only companion is absent by default (reads off),
+    /// a real field rather than an `extra` passenger — so the MCP policy can
+    /// read it — and an explicit `false` survives a round trip as `false`.
+    #[test]
+    fn root_mcp_mail_local_only_defaults_absent_and_is_a_real_field() {
+        let raw = serde_json::to_string(&Settings::default()).unwrap();
+        assert!(!raw.contains("root_mcp_mail_local_only"), "{raw}");
+        assert!(!Settings::default().root_mcp_mail_local_only());
+
+        for (body, want) in [(r#"{"root_mcp_mail_local_only":true}"#, true), (r#"{"root_mcp_mail_local_only":false}"#, false)] {
+            let s: Settings = serde_json::from_str(body).expect("parse");
+            assert!(s.extra.is_empty(), "fell through to `extra`: {:?}", s.extra.keys().collect::<Vec<_>>());
+            assert_eq!(s.root_mcp_mail_local_only(), want);
+            let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).expect("round trip");
+            assert_eq!(back.root_mcp_mail_local_only, Some(want));
+        }
+        // Independent of the endpoint-wide switch and of mail itself.
+        let s: Settings = serde_json::from_str(r#"{"root_mcp_mail_local_only":true}"#).unwrap();
+        assert!(!s.root_mcp_local_only() && !s.root_mcp_mail());
+    }
+
     /// The global Mail AI master switch (Group Q) is **absent by default** — a
     /// fresh `settings.json` omits it, so nobody inherits a feature that runs a
     /// model over their mail without turning it on. It is a real named field (not
@@ -1099,6 +1203,11 @@ mod tests {
         let publishing: Settings = serde_json::from_str(r#"{"agent_fence_cargo_credentials":true}"#).unwrap();
         assert_eq!(publishing.agent_fence_cargo_credentials, Some(true));
         assert_eq!(serde_json::to_value(&publishing).unwrap()["agent_fence_cargo_credentials"], true);
+        // The root fence's project view: off unless written, and it round-trips.
+        assert!(!defaults.root_fence_projects_readable());
+        assert!(serde_json::to_value(&defaults).unwrap().get("root_fence_projects_readable").is_none());
+        let reading: Settings = serde_json::from_str(r#"{"root_fence_projects_readable":true}"#).unwrap();
+        assert!(reading.root_fence_projects_readable());
         assert_eq!(
             defaults.agent_fence_paths(),
             super::DEFAULT_AGENT_FENCE_PATHS

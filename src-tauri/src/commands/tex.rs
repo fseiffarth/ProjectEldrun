@@ -53,8 +53,9 @@ pub struct TexCompileResult {
     pub log: String,
     /// True when the build log shows shell-escape (`\write18`) ran unrestricted
     /// or actually executed an external command. We never pass `-shell-escape`
-    /// ourselves, so this only trips when a system `texmf.cnf` / `latexmkrc`
-    /// turned it on behind our back — surfaced as a warning in the UI.
+    /// and always pass [`NO_SHELL_ESCAPE`], which outranks a system `texmf.cnf`;
+    /// so this only trips when a (trust-gated) `latexmkrc` rewrote the engine
+    /// command behind our back — surfaced as a warning in the UI.
     pub shell_escape: bool,
     /// `latexmk`'s own account of why it exited non-zero, when it did: the
     /// `Collected error summary` block and its `Latexmk: …` cause lines, with
@@ -297,7 +298,31 @@ fn latexmk_flag(engine: Option<&str>) -> &'static str {
 /// `compile_args_never_enable_shell_escape` / `filter_extra_flags_strips_shell_escape`.
 fn flag_enables_shell_escape(arg: &str) -> bool {
     let a = arg.to_ascii_lowercase();
+    // The two spellings that turn it *off* are the one exception.
+    if matches!(a.trim_start_matches('-'), "no-shell-escape" | "disable-write18") {
+        return false;
+    }
     a.contains("shell-escape") || a.contains("shellescape") || a.contains("write18")
+}
+
+/// Passed on every engine run Eldrun makes — builds (through latexmk, which
+/// forwards it to the engine in `%O`, the cached-preamble override included),
+/// format dumps and hover previews (#867). Without it the distribution's
+/// `shell_escape` setting decides, and a `texmf.cnf` (or a `shell_escape=t`
+/// in the environment) with it on would let a document's `\write18` run on
+/// Build, or on merely hovering a formula. Nothing in Eldrun turns shell-escape
+/// on — [`filter_extra_flags`] drops every enabling flag — so there is no
+/// trusted opt-in for this to yield to. Last before the file name, so it is the
+/// engine's final word even after the user's extra flags.
+const NO_SHELL_ESCAPE: &str = "-no-shell-escape";
+
+/// Environment for a hover preview's engine runs (#867): kpathsea's paranoid
+/// output mode — no `\openout` to an absolute path, a parent directory or a dot
+/// file. A preview runs the document's preamble on hover, with the document's
+/// folder as its working directory; it has no business writing anywhere but its
+/// scratch output directory, which `-output-directory` still reaches.
+fn preview_env() -> Vec<(String, String)> {
+    vec![("openout_any".to_string(), "p".to_string())]
 }
 
 /// Filter user-supplied extra flags down to ones that can NEVER enable
@@ -354,6 +379,7 @@ fn latexmk_args(
     for f in extra {
         args.push(f.clone());
     }
+    args.push(NO_SHELL_ESCAPE.to_string());
     args.push(file_name.to_string());
     args
 }
@@ -376,6 +402,7 @@ fn engine_args(file_name: &str, out_dir: Option<&str>, extra: &[String]) -> Vec<
     for f in extra {
         args.push(f.clone());
     }
+    args.push(NO_SHELL_ESCAPE.to_string());
     args.push(file_name.to_string());
     args
 }
@@ -729,6 +756,7 @@ fn ensure_doc_fmt(dir: &Path, src: &Path, head: &str) -> Option<String> {
     let args = vec![
         "-ini".to_string(),
         "-interaction=nonstopmode".to_string(),
+        NO_SHELL_ESCAPE.to_string(),
         format!("-output-directory={}", scratch.display()),
         format!("-jobname={key}"),
         "&pdflatex".to_string(),
@@ -1470,6 +1498,7 @@ fn ensure_preview_fmt(
     let args = vec![
         "-ini".to_string(),
         "-interaction=nonstopmode".to_string(),
+        NO_SHELL_ESCAPE.to_string(),
         format!("-output-directory={out_arg}"),
         format!("-jobname={key}"),
         format!("&{engine}"),
@@ -1477,7 +1506,7 @@ fn ensure_preview_fmt(
         tex.to_string_lossy().into_owned(),
     ];
     // A spawn failure is the machine's problem, not this preamble's: no marker.
-    let built = run_in_within(cwd, engine, &args, PREVIEW_TIMEOUT).ok()?;
+    let built = run_in_within_env(cwd, engine, &args, PREVIEW_TIMEOUT, &preview_env()).ok()?;
     let out_fmt = scratch.join(format!("{key}.fmt"));
     if built.ok && out_fmt.is_file() && fs::rename(&out_fmt, &fmt).is_ok() {
         return Some(fmt);
@@ -1570,7 +1599,7 @@ fn preview_snippet_blocking(
         if let Some(f) = fmt {
             args.insert(0, format!("-fmt={}", f.display()));
         }
-        let out = run_in_within(&cwd, &eng, &args, PREVIEW_TIMEOUT)?;
+        let out = run_in_within_env(&cwd, &eng, &args, PREVIEW_TIMEOUT, &preview_env())?;
         Ok(out.text)
     };
 
@@ -2510,6 +2539,72 @@ Count:2
         // `compile_tex` (see `compile_args_never_enable_shell_escape`).
         let args = engine_args("/scratch/eldrun-preview.tex", Some("/scratch"), &[]);
         assert!(!args.iter().any(|a| flag_enables_shell_escape(a)));
+        // …and turns it off outright, whatever the distribution's default (#867).
+        assert!(args.iter().any(|a| a == NO_SHELL_ESCAPE), "{args:?}");
+        assert!(preview_env().iter().any(|(k, v)| k == "openout_any" && v == "p"));
+    }
+
+    /// #867 end to end, where a TeX engine is installed: `shell_escape=t` in the
+    /// environment stands in for a distribution that enables it in `texmf.cnf`.
+    /// A preamble's `\write18` must not run on hover, nor its `\openout` escape
+    /// the scratch dir.
+    #[cfg(unix)]
+    #[test]
+    fn a_hover_preview_runs_no_shell_command_even_where_the_default_allows_it() {
+        let Some(eng) = ["pdflatex", "lualatex", "xelatex"]
+            .into_iter()
+            .find(|e| crate::paths::resolve_executable(e).is_some())
+        else {
+            eprintln!("no TeX engine on PATH — skipping");
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let doc = tmp.path().canonicalize().unwrap().join("doc");
+        let out = tmp.path().canonicalize().unwrap().join("out");
+        fs::create_dir_all(&doc).unwrap();
+        fs::create_dir_all(&out).unwrap();
+        let pwned = tmp.path().join("pwned");
+        let escaped = tmp.path().join("escaped.tex");
+        let tex = out.join("p.tex");
+        fs::write(
+            &tex,
+            format!(
+                "\\documentclass{{article}}\\immediate\\write18{{touch {}}}\n\
+                 \\begin{{document}}x\\end{{document}}\n",
+                pwned.display()
+            ),
+        )
+        .unwrap();
+        let args = engine_args(&tex.to_string_lossy(), Some(&out.to_string_lossy()), &[]);
+        let mut envs = preview_env();
+        envs.push(("shell_escape".to_string(), "t".to_string()));
+        // Without the flag the plant must fire, or this test proves nothing.
+        let bare: Vec<&String> = args.iter().filter(|a| *a != NO_SHELL_ESCAPE).collect();
+        let _ = run_in_within_env(&doc, eng, &bare, PREVIEW_TIMEOUT, &envs);
+        if !pwned.exists() {
+            eprintln!("{eng} ignores shell_escape=t here — skipping");
+            return;
+        }
+        fs::remove_file(&pwned).unwrap();
+        let _ = fs::remove_file(out.join("p.pdf"));
+        let run = run_in_within_env(&doc, eng, &args, PREVIEW_TIMEOUT, &envs).expect("engine ran");
+        assert!(out.join("p.pdf").is_file(), "the preview itself must still typeset: {}", run.text);
+        assert!(!pwned.exists(), "\\write18 ran through a preview");
+
+        // An `\openout` aimed outside the scratch dir is refused (TeX makes that
+        // fatal, so this preview fails — the right answer for such a preamble).
+        fs::write(
+            &tex,
+            format!(
+                "\\documentclass{{article}}\\immediate\\openout5={}\n\
+                 \\immediate\\write5{{x}}\\immediate\\closeout5\n\
+                 \\begin{{document}}x\\end{{document}}\n",
+                escaped.display()
+            ),
+        )
+        .unwrap();
+        let _ = run_in_within_env(&doc, eng, &args, PREVIEW_TIMEOUT, &preview_env());
+        assert!(!escaped.exists(), "\\openout wrote outside the preview's output dir");
     }
 
     #[test]
@@ -2825,6 +2920,18 @@ Count:2
             !direct.iter().any(|a| flag_enables_shell_escape(a)),
             "direct engine args enable shell-escape: {direct:?}",
         );
+
+        // #867: both builders turn it off outright rather than trust the
+        // distribution's default — last, after the user's (filtered) flags,
+        // and with the file name still the final argument.
+        let extra = vec!["-synctex=0".to_string()];
+        let mk = latexmk_args(None, "doc.tex", Some("build"), &extra, Some("doc-pdflatex-0a-12"));
+        let direct = engine_args("doc.tex", Some("build"), &extra);
+        for args in [&mk, &direct] {
+            assert_eq!(args[args.len() - 2..], [NO_SHELL_ESCAPE, "doc.tex"], "{args:?}");
+        }
+        assert!(!flag_enables_shell_escape("-no-shell-escape"));
+        assert!(!flag_enables_shell_escape("--disable-write18"));
     }
 
     #[test]

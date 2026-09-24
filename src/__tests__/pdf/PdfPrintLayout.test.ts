@@ -1,0 +1,89 @@
+/**
+ * `layoutPrintPdf` — the print preview's sheets rebuilt as a real PDF. Pinned:
+ * the output is the preview's job (order, selection, copies, paper), and a
+ * turned page lands inside its box, not off the paper.
+ */
+import { describe, it, expect } from "vitest";
+import { PDFDocument, degrees } from "pdf-lib";
+import { layoutPrintPdf, turnedOrigin } from "../../lib/viewers/pdfPrintLayout";
+import { PAGED_PRINT_OPTIONS, type PrintOptions } from "../../lib/viewers/print";
+
+const A4_PT: [number, number] = [595.28, 841.89];
+
+/** A source whose pages are told apart by width: page n is 100·n pt wide. */
+async function source(rotateFirst = 0): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  for (let n = 1; n <= 3; n++) {
+    const page = doc.addPage([100 * n, 400]);
+    page.drawRectangle({ x: 10, y: 10, width: 20, height: 20 });
+    if (n === 1 && rotateFirst) page.setRotation(degrees(rotateFirst));
+  }
+  return doc.save();
+}
+
+const opts = (over: Partial<PrintOptions> = {}): PrintOptions => ({ ...PAGED_PRINT_OPTIONS, ...over });
+
+describe("layoutPrintPdf", () => {
+  it("prints the preview's sheets, in its order, on its paper", async () => {
+    const out = await PDFDocument.load(
+      await layoutPrintPdf(await source(), [{ page: 3, rot: 0 }, { page: 1, rot: 0 }], opts()),
+    );
+    expect(out.getPageCount()).toBe(2);
+    for (const page of out.getPages()) {
+      const { width, height } = page.getSize();
+      expect(width).toBeCloseTo(A4_PT[0], 0);
+      expect(height).toBeCloseTo(A4_PT[1], 0);
+    }
+  });
+
+  it("repeats the whole job per copy, collated", async () => {
+    const out = await PDFDocument.load(
+      await layoutPrintPdf(await source(), [{ page: 2, rot: 0 }, { page: 1, rot: 0 }], opts({ copies: 3 })),
+    );
+    expect(out.getPageCount()).toBe(6);
+  });
+
+  it("lays landscape paper out landscape", async () => {
+    const out = await PDFDocument.load(
+      await layoutPrintPdf(await source(), [{ page: 1, rot: 0 }], opts({ orientation: "landscape" })),
+    );
+    const { width, height } = out.getPage(0).getSize();
+    expect(width).toBeGreaterThan(height);
+  });
+
+  it("refuses an empty job rather than printing a blank one", async () => {
+    await expect(layoutPrintPdf(await source(), [], opts())).rejects.toThrow();
+  });
+
+  it("keeps the page vector: a form XObject, not an image", async () => {
+    const bytes = await layoutPrintPdf(await source(90), [{ page: 1, rot: 90 }], opts({ pageNumbers: true }));
+    const text = new TextDecoder("latin1").decode(bytes);
+    expect(text).toContain("/Subtype /Form");
+    expect(text).not.toContain("/Subtype /Image");
+  });
+});
+
+describe("turnedOrigin", () => {
+  // Rotate the page's corners the way pdf-lib does (counter-clockwise by
+  // −turn about the origin) and check they fill exactly the target box.
+  const corners = (turn: number, bx: number, by: number, w: number, h: number) => {
+    const { x, y } = turnedOrigin(turn, bx, by, w, h);
+    const a = (-turn * Math.PI) / 180;
+    const pts = [
+      [0, 0],
+      [w, 0],
+      [0, h],
+      [w, h],
+    ].map(([u, v]) => [x + u * Math.cos(a) - v * Math.sin(a), y + u * Math.sin(a) + v * Math.cos(a)]);
+    const xs = pts.map((p) => p[0]);
+    const ys = pts.map((p) => p[1]);
+    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+  };
+
+  it.each([0, 90, 180, 270])("a %i° turn lands on the box", (turn) => {
+    const [w, h] = [30, 50];
+    const [bw, bh] = turn % 180 ? [h, w] : [w, h];
+    const box = corners(turn, 7, 11, w, h);
+    [7, 11, 7 + bw, 11 + bh].forEach((v, i) => expect(box[i]).toBeCloseTo(v, 6));
+  });
+});

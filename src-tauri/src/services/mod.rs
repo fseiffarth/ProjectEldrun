@@ -10,6 +10,7 @@ pub mod agent_transcript;
 pub mod agent_bin;
 pub mod agent_tasks;
 pub mod schedule_mcp;
+pub mod help_mcp;
 pub mod schedule_usage;
 // One agent CLI's own usage panel (Claude's `/usage`), read in print mode
 // without a tab: recipe table, envelope parsing, and the short-lived cache
@@ -70,6 +71,9 @@ pub mod local_loss;
 // Local-model mail assistant (Group Q, #203–#208): the loopback-only /api/chat
 // helper, prompt builders and defensive JSON parsers. AI never touches the net.
 pub mod mail_ai;
+// A root agent's `attach` on a mail draft: project files resolved under the
+// same-roots rule and read without following a link (`docs/mail_mcp_attachments_plan.md`).
+pub mod mail_attach;
 pub mod mail_authres;
 pub mod mail_crypt;
 pub mod mail_crypto;

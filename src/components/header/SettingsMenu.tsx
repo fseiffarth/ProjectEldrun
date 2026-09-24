@@ -8,7 +8,8 @@ import { SettingsGlyph } from "./HeaderGlyphs";
 const MENU_ID = "settings";
 
 /**
- * The header's ⚙ — app settings, help, the tours and the lessons.
+ * The header's ⚙ — app settings, help, the tours, the lessons and the update
+ * check (Settings → Updates, which checks on open).
  *
  * It used to be the *project switcher's* leading button, which put three
  * controls belonging to one widget on both sides of a scrolling strip (⚙ left
@@ -92,6 +93,9 @@ export function SettingsMenu() {
           </button>
           <button role="menuitem" onClick={() => fire("eldrun:open-lessons")}>
             {t("settings.lessons")}
+          </button>
+          <button role="menuitem" onClick={() => fire("eldrun:open-settings", "updates")}>
+            {t("settings.checkForUpdates")}
           </button>
           <UntestedTag id="desktop.headerMenus" />
         </div>

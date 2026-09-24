@@ -12,6 +12,7 @@ import {
 import { useExperimental } from "../../lib/experimental";
 import { selectUrgentMail, taskFromMail } from "../../lib/todoBoard";
 import { useT } from "../../lib/i18n";
+import { MailIcon } from "../common/icons/Icon";
 
 interface Props {
   tasks: CalendarTask[];
@@ -69,12 +70,11 @@ export function TodoMailRail({ tasks, defaultCalendarId, intakeColumnId }: Props
     // z-index, so leaving this one up would stack a board over the mailbox.
     useTodoStore.getState().closeOverlay();
     const mail = useMailStore.getState();
-    // Awaited in this order on purpose: `selectMessage` resolves its header out
-    // of the loaded page, so selecting before the page lands renders a body with
-    // no envelope.
+    // Awaited in this order on purpose: `openMessage` resolves its header out
+    // of the loaded page, so opening before the page lands opens nothing.
     await mail.openPriority(header.priority ?? "urgent").catch(() => {});
-    await mail.selectMessage(header.id).catch(() => {});
-    mail.openOverlay();
+    mail.openInbox();
+    mail.openMessage(header.id);
   };
 
   // The card's shape is `lib/todoBoard`'s, shared with the agenda rail's own
@@ -155,7 +155,7 @@ export function TodoMailRail({ tasks, defaultCalendarId, intakeColumnId }: Props
                   onClick={() => void openInMail(header)}
                   title={t("todoMail.open")}
                 >
-                  ✉
+                  <MailIcon />
                 </button>
               </span>
             </li>

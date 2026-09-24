@@ -43,8 +43,94 @@ pub fn resolve_agent_session(opts: PtyOptions) -> PtyOptions {
     match opts.cmd.as_str() {
         "claude" => resolve_claude_session(opts),
         "codex" => resolve_codex_session(opts),
+        "vibe" => resolve_vibe_session(opts),
         _ => opts,
     }
+}
+
+/// Vibe chooses its own session ID. Its post-agent hook records that ID under
+/// Eldrun's stable tab key, including after an in-app `/resume` or `/branch`.
+/// Old tabs without a hook record retain their project-scoped `--continue`.
+fn resolve_vibe_session(opts: PtyOptions) -> PtyOptions {
+    let remote = !opts.local_only && opts.project_id.as_deref()
+        .is_some_and(|id| crate::services::remote::remote_target_for(id).is_some());
+    if remote {
+        return opts;
+    }
+    let home = vibe_home_for(&opts);
+    if let Err(e) = register_vibe_hook_in(&home) {
+        eprintln!("agent_session: register vibe hook: {e}");
+    }
+    let project_id = opts.project_id.clone();
+    resolve_vibe_session_impl(opts, &home, |uid| {
+        read_live_session_for(project_id.as_deref(), uid)
+    })
+}
+
+fn vibe_home_for(opts: &PtyOptions) -> PathBuf {
+    let default = std::env::var_os("VIBE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| paths::home_dir().join(".vibe"));
+    let Some(candidate) = opts.env.get("VIBE_HOME").map(PathBuf::from) else {
+        return default;
+    };
+    // The renderer supplies env. Only Eldrun's dedicated local-model homes may
+    // select another session store; never read an arbitrary renderer path.
+    let local_root = paths::home_dir().join(".local/share/eldrun/vibe_local");
+    let Ok(child) = candidate.strip_prefix(&local_root) else {
+        return default;
+    };
+    if child.components().count() == 1
+        && child.components().all(|c| matches!(c, std::path::Component::Normal(_)))
+    {
+        candidate
+    } else {
+        default
+    }
+}
+
+fn resolve_vibe_session_impl<F>(mut opts: PtyOptions, home: &std::path::Path, live_lookup: F) -> PtyOptions
+where
+    F: Fn(&str) -> Option<String>,
+{
+    opts.env.insert(TAB_AGENT_ENV.to_string(), "vibe".to_string());
+    let Some(uid) = opts.env.get("ELDRUN_TAB_UID") else {
+        return opts;
+    };
+    if !is_uuid_shaped(uid) {
+        return opts;
+    }
+    if let Some(id) = live_lookup(uid).filter(|id| vibe_session_exists(home, id)) {
+        opts.args = vec!["--resume".to_string(), id];
+    }
+    opts
+}
+
+fn vibe_session_exists(home: &std::path::Path, id: &str) -> bool {
+    if !is_uuid_shaped(id) {
+        return false;
+    }
+    let sessions = home.join("logs/session");
+    // Vibe 2.25 uses the unified store; older installations use timestamped
+    // session folders. The metadata is read only to validate an exact ID match.
+    if sessions.join("unified").join(id).join("CURRENT").is_file() {
+        return true;
+    }
+    let Ok(entries) = std::fs::read_dir(sessions) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let path = entry.path();
+        if !path.is_dir() || !entry.file_name().to_string_lossy().starts_with("session_") {
+            return false;
+        }
+        let Ok(raw) = std::fs::read_to_string(path.join("meta.json")) else {
+            return false;
+        };
+        serde_json::from_str::<serde_json::Value>(&raw).ok()
+            .and_then(|meta| meta.get("session_id").and_then(serde_json::Value::as_str).map(str::to_string))
+            .is_some_and(|saved| saved == id)
+    })
 }
 
 /// Resolve a Codex tab's session args. Unlike Claude, Codex mints its own session
@@ -1429,7 +1515,39 @@ pub fn install_session_start_hook() -> std::io::Result<()> {
     if let Err(e) = register_codex_hook() {
         eprintln!("agent_session: register codex hook: {e}");
     }
+    let vibe_home = std::env::var_os("VIBE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| paths::home_dir().join(".vibe"));
+    if vibe_home.is_dir() {
+        if let Err(e) = register_vibe_hook_in(&vibe_home) {
+            eprintln!("agent_session: register vibe hook: {e}");
+        }
+    }
     Ok(())
+}
+
+/// Vibe's user hook runs after each completed turn and reports the live ID.
+/// Local-model homes have their own hooks.toml, so preparation calls this too.
+pub fn register_vibe_hook_in(home: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(home)?;
+    let path = home.join("hooks.toml");
+    let mut content = match std::fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e),
+    };
+    if content.lines().any(|line| line.trim() == "name = \"eldrun-session\"") {
+        return Ok(());
+    }
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    let cmd = serde_json::to_string(&hook_command()).map_err(std::io::Error::other)?;
+    content.push_str(&format!(
+        "\n# Eldrun: remember the live Vibe session for this tab.\n\
+         [[hooks]]\nname = \"eldrun-session\"\ntype = \"post_agent\"\ncommand = {cmd}\ntimeout = 10.0\n"
+    ));
+    std::fs::write(path, content)
 }
 
 fn write_hook_script() -> std::io::Result<()> {
@@ -1499,7 +1617,11 @@ pub(crate) fn container_hook_command() -> String {
 /// conversation. A Claude tab's session id is its launch key and stays that id
 /// until `/clear` or `/resume` rolls it (the `source` field says which), and
 /// `Stop` never introduces an id, so a session id that is neither the key nor
-/// the current record is accepted only from a `clear`/`resume` start. A Codex
+/// the current record is accepted only from a `clear`/`resume` start — and only
+/// with Claude's own transcript for it (`…/<session_id>.jsonl`): a Codex run
+/// from the tab's shell fires the same `clear` start after its own `/clear`,
+/// with a null `transcript_path` or a `rollout-…` one, and took the Claude
+/// tab's record over, so the phone read that Codex's rollout (2026-09-24). A Codex
 /// tab (`ELDRUN_TAB_AGENT=codex`) mints its own ids, so its record is free-form
 /// — except that a Claude fired inside it (`CLAUDECODE` is set by Claude for its
 /// children, never by Codex) is refused outright.
@@ -1527,8 +1649,10 @@ fn posix_hook_script_body(live_dir: &str) -> String {
          sid=$(printf '%s' \"$input\" | sed -n 's/.*\"session_id\"[[:space:]]*:[[:space:]]*\"\\([0-9a-fA-F-]*\\)\".*/\\1/p')\n\
          mode=$(printf '%s' \"$input\" | sed -n 's/.*\"permission_mode\"[[:space:]]*:[[:space:]]*\"\\([a-zA-Z]*\\)\".*/\\1/p')\n\
          src=$(printf '%s' \"$input\" | sed -n 's/.*\"source\"[[:space:]]*:[[:space:]]*\"\\([a-zA-Z]*\\)\".*/\\1/p')\n\
-         event=$(printf '%s' \"$input\" | sed -n 's/.*\"hook_event_name\"[[:space:]]*:[[:space:]]*\"\\([a-zA-Z]*\\)\".*/\\1/p')\n\
+         event=$(printf '%s' \"$input\" | sed -n 's/.*\"hook_event_name\"[[:space:]]*:[[:space:]]*\"\\([a-zA-Z_]*\\)\".*/\\1/p')\n\
          ntype=$(printf '%s' \"$input\" | sed -n 's/.*\"notification_type\"[[:space:]]*:[[:space:]]*\"\\([a-zA-Z_]*\\)\".*/\\1/p')\n\
+         tpath=$(printf '%s' \"$input\" | sed -n 's/.*\"transcript_path\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p')\n\
+         tnull=$(printf '%s' \"$input\" | sed -n 's/.*\"transcript_path\"[[:space:]]*:[[:space:]]*null.*/null/p')\n\
          [ -n \"$sid\" ] || exit 0\n\
          dir=\"{live_dir}\"\n\
          mkdir -p \"$dir\" 2>/dev/null || exit 0\n\
@@ -1536,12 +1660,21 @@ fn posix_hook_script_body(live_dir: &str) -> String {
          # Only the tab's own session may move the records: a nested CLI under the\n\
          # tab inherits ELDRUN_TAB_UID and fires this hook too.\n\
          case \"$ELDRUN_TAB_AGENT\" in\n\
+         \x20 vibe) [ \"$event\" = post_agent ] || exit 0\n\
+         \x20   parent=$(printf '%s' \"$input\" | sed -n 's/.*\"parent_session_id\"[[:space:]]*:[[:space:]]*\\([^,}}]*\\).*/\\1/p')\n\
+         \x20   [ \"$parent\" = null ] || exit 0\n\
+         \x20   printf '%s' \"$sid\" > \"$dir/$ELDRUN_TAB_UID\"\n\
+         \x20   exit 0 ;;\n\
          \x20 codex) [ -z \"$CLAUDECODE\" ] || exit 0\n\
          \x20   # Codex mints its own ids, so a start is free-form; every later event\n\
          \x20   # must come from the session the tab already recorded.\n\
          \x20   if [ \"$event\" != SessionStart ] && [ -n \"$cur\" ] && [ \"$sid\" != \"$cur\" ]; then exit 0; fi ;;\n\
          \x20 *) if [ \"$sid\" != \"$ELDRUN_TAB_UID\" ] && [ \"$sid\" != \"$cur\" ]; then\n\
          \x20      case \"$src\" in clear|resume) ;; *) exit 0 ;; esac\n\
+         \x20      # Claude names the new transcript after its session; a Codex run under\n\
+         \x20      # the tab sends null (a /clear, no rollout yet) or a rollout-… file.\n\
+         \x20      [ \"$tnull\" = null ] && exit 0\n\
+         \x20      case \"$tpath\" in \"\"|*/\"$sid\".jsonl) ;; *) exit 0 ;; esac\n\
          \x20    fi ;;\n\
          esac\n\
          if [ \"$event\" = SessionStart ] && [ \"$ELDRUN_TAB_AGENT\" = claude ] && [ -n \"$ELDRUN_PROJECT_DIR\" ]; then\n\
@@ -1599,7 +1732,7 @@ fn hook_script_body(live_dir: &str) -> String {
          $m = [regex]::Match($payload, '\"session_id\"\\s*:\\s*\"([0-9A-Fa-f-]+)\"')\r\n\
          $mm = [regex]::Match($payload, '\"permission_mode\"\\s*:\\s*\"([A-Za-z]+)\"')\r\n\
          $ms = [regex]::Match($payload, '\"source\"\\s*:\\s*\"([A-Za-z]+)\"')\r\n\
-         $me = [regex]::Match($payload, '\"hook_event_name\"\\s*:\\s*\"([A-Za-z]+)\"')\r\n\
+         $me = [regex]::Match($payload, '\"hook_event_name\"\\s*:\\s*\"([A-Za-z_]+)\"')\r\n\
          $mn = [regex]::Match($payload, '\"notification_type\"\\s*:\\s*\"([A-Za-z_]+)\"')\r\n\
          if (-not $m.Success) {{ exit 0 }}\r\n\
          $sid = $m.Groups[1].Value\r\n\
@@ -1612,6 +1745,11 @@ fn hook_script_body(live_dir: &str) -> String {
          $rec = Join-Path $dir $uid\r\n\
          $cur = ''\r\n\
          if (Test-Path $rec) {{ $cur = [IO.File]::ReadAllText($rec).Trim() }}\r\n\
+         if ($env:ELDRUN_TAB_AGENT -eq 'vibe') {{\r\n\
+         \x20 if (($event -ne 'post_agent') -or ($payload -notmatch '\"parent_session_id\"\\s*:\\s*null')) {{ exit 0 }}\r\n\
+         \x20 [IO.File]::WriteAllText($rec, $sid)\r\n\
+         \x20 exit 0\r\n\
+         }}\r\n\
          # Only the tab's own session may move the records: a nested CLI under the\r\n\
          # tab inherits ELDRUN_TAB_UID and fires this hook too.\r\n\
          if ($env:ELDRUN_TAB_AGENT -eq 'codex') {{\r\n\
@@ -1623,6 +1761,11 @@ fn hook_script_body(live_dir: &str) -> String {
          \x20 $src = ''\r\n\
          \x20 if ($ms.Success) {{ $src = $ms.Groups[1].Value }}\r\n\
          \x20 if (($src -ne 'clear') -and ($src -ne 'resume')) {{ exit 0 }}\r\n\
+         \x20 # Claude names the new transcript after its session; a Codex run under\r\n\
+         \x20 # the tab sends null (a /clear, no rollout yet) or a rollout-... file.\r\n\
+         \x20 if ($payload -match '\"transcript_path\"\\s*:\\s*null') {{ exit 0 }}\r\n\
+         \x20 $mt = [regex]::Match($payload, '\"transcript_path\"\\s*:\\s*\"([^\"]*)\"')\r\n\
+         \x20 if ($mt.Success -and ($mt.Groups[1].Value -notmatch ('[\\\\/]' + [regex]::Escape($sid) + '\\.jsonl$'))) {{ exit 0 }}\r\n\
          }}\r\n\
          if ($env:ELDRUN_TAB_AGENT -eq 'claude' -and $env:ELDRUN_PROJECT_DIR -and $event -eq 'SessionStart') {{ Write-Output 'To put a file in front of the user on their phone, run `eldrun-send <file>` (local and container tabs).' }}\r\n\
          # The turn state, from the events the agent fires as it works (see the\r\n\
@@ -1863,6 +2006,70 @@ mod tests {
             host_bound_uid: None,
             schedule_target_id: None,
         }
+    }
+
+    #[test]
+    fn vibe_resumes_its_own_recorded_session_and_preserves_legacy_fallback() {
+        let home = unique_tmp("eldrun-vibe-resume");
+        let sessions = home.join("logs/session");
+        let uid = "11111111-2222-4333-8444-555555555555";
+        let own = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+        let other = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+        std::fs::create_dir_all(sessions.join("unified").join(own)).unwrap();
+        std::fs::write(sessions.join("unified").join(own).join("CURRENT"), "1").unwrap();
+        let legacy = sessions.join("session_20260923_120000_ffffffff");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("meta.json"), format!("{{\"session_id\":\"{other}\"}}")).unwrap();
+
+        let mut opts = opts_with_args(&["--continue"]);
+        opts.cmd = "vibe".into();
+        opts.env.insert("ELDRUN_TAB_UID".into(), uid.into());
+        let exact = resolve_vibe_session_impl(opts.clone(), &home, |_| Some(own.into()));
+        assert_eq!(exact.args, ["--resume", own]);
+        assert_eq!(exact.env.get(TAB_AGENT_ENV).map(String::as_str), Some("vibe"));
+        let legacy_exact = resolve_vibe_session_impl(opts.clone(), &home, |_| Some(other.into()));
+        assert_eq!(legacy_exact.args, ["--resume", other]);
+        let missing = resolve_vibe_session_impl(opts, &home, |_| Some("cccccccc-dddd-4eee-8fff-000000000000".into()));
+        assert_eq!(missing.args, ["--continue"]);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn vibe_hook_registration_preserves_existing_hooks_and_is_idempotent() {
+        let home = unique_tmp("eldrun-vibe-hooks");
+        std::fs::create_dir_all(&home).unwrap();
+        let hooks = home.join("hooks.toml");
+        std::fs::write(&hooks, "[[hooks]]\nname = \"mine\"\ntype = \"post_agent\"\ncommand = \"true\"\n").unwrap();
+        register_vibe_hook_in(&home).unwrap();
+        let once = std::fs::read_to_string(&hooks).unwrap();
+        register_vibe_hook_in(&home).unwrap();
+        assert_eq!(std::fs::read_to_string(&hooks).unwrap(), once);
+        assert!(once.contains("name = \"mine\""));
+        assert_eq!(once.matches("name = \"eldrun-session\"").count(), 1);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn vibe_hook_records_only_top_level_post_agent() {
+        let home = unique_tmp("eldrun-vibe-hook-run");
+        let live = home.join("live");
+        std::fs::create_dir_all(&live).unwrap();
+        let script = home.join("hook.sh");
+        std::fs::write(&script, posix_hook_script_body(&live.to_string_lossy())).unwrap();
+        let uid = "11111111-2222-4333-8444-555555555555";
+        let own = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+        let nested = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+        let payload = |id: &str, parent: &str, event: &str| format!(
+            "{{\"hook_event_name\":\"{event}\",\"session_id\":\"{id}\",\"parent_session_id\":{parent}}}"
+        );
+        assert_eq!(run_hook(&script, &live, uid, Some("vibe"), false,
+            &payload(nested, "null", "post_tool")).0, None);
+        assert_eq!(run_hook(&script, &live, uid, Some("vibe"), false,
+            &payload(nested, &format!("\"{own}\""), "post_agent")).0, None);
+        assert_eq!(run_hook(&script, &live, uid, Some("vibe"), false,
+            &payload(own, "null", "post_agent")).0.as_deref(), Some(own));
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     /// Temp Claude `projects` root containing a persisted log for each given uuid.
@@ -2387,6 +2594,28 @@ mod tests {
         let (rec, _) = run_hook(&script, &live, uid, claude, true, &start(nested, "resume"));
         assert_eq!(rec.as_deref(), Some(nested));
         assert_eq!(source().as_deref(), Some("resume"));
+
+        // A Codex started from the tab's shell fires the same `clear` start
+        // after its own `/clear` — with no rollout yet (null) or a rollout file,
+        // never Claude's `<session_id>.jsonl`. It must not take the record.
+        let codex_nested = "01a0d043-b4df-7e63-9813-002da0a652e9";
+        let codex_start = |path: &str| {
+            format!(r#"{{"session_id":"{codex_nested}","transcript_path":{path},"cwd":"/p","hook_event_name":"SessionStart","model":"m","permission_mode":"default","source":"clear"}}"#)
+        };
+        let (rec, _) = run_hook(&script, &live, uid, claude, true, &codex_start("null"));
+        assert_eq!(rec.as_deref(), Some(nested));
+        let rollout = format!(r#""/h/.codex/sessions/2026/09/23/rollout-2026-09-23T23-54-53-{codex_nested}.jsonl""#);
+        let (rec, _) = run_hook(&script, &live, uid, claude, true, &codex_start(&rollout));
+        assert_eq!(rec.as_deref(), Some(nested));
+        assert_eq!(source().as_deref(), Some("resume"));
+        // Claude's own `/clear` names its transcript after the new session.
+        let claude_clear = format!(
+            r#"{{"session_id":"{cleared}","transcript_path":"/h/.claude/projects/-p/{cleared}.jsonl","hook_event_name":"SessionStart","source":"clear"}}"#
+        );
+        let (rec, _) = run_hook(&script, &live, uid, claude, true, &claude_clear);
+        assert_eq!(rec.as_deref(), Some(cleared));
+        let (rec, _) = run_hook(&script, &live, uid, claude, true, &start(nested, "resume"));
+        assert_eq!(rec.as_deref(), Some(nested));
 
         // No agent marker (an older launch): the strict rule applies.
         let (rec, _) = run_hook(&script, &live, uid, None, true, &start(cleared, "startup"));

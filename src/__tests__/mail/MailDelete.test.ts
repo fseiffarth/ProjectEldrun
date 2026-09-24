@@ -239,10 +239,13 @@ describe("deleteMessages", () => {
     });
   });
 
-  it("closes the open message when it was one of them", async () => {
-    useMailStore.setState({ selectedMessageId: "m1", body: null });
+  it("closes the open message and its tab when it was one of them", async () => {
+    const h = useMailStore.getState().headers.find((x) => x.id === "m1")!;
+    useMailStore.getState().openMessageTab(h);
+    useMailStore.setState({ selectedMessageId: "m1" });
     await useMailStore.getState().deleteMessages(["m1"]);
     expect(useMailStore.getState().selectedMessageId).toBeNull();
+    expect(useMailStore.getState().mailTabs).toHaveLength(0);
   });
 
   it("leaves another open message alone", async () => {

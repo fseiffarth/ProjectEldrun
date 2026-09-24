@@ -158,6 +158,10 @@ export interface Settings {
    * Machines, CPU/RAM/GPU) expanded into the bar? Unset means collapsed to a
    * single summary lamp; anything non-nominal shows itself regardless. */
   header_status_expanded?: boolean;
+  /** Default printer per network, keyed by `networkKey()` in
+   *  `lib/window/printerNetworkDefaults`. Joining a keyed network makes that
+   *  printer the user's default. Unset/empty → nothing is ever switched. */
+  printer_network_defaults?: Record<string, { printer: string; label: string }>;
   git_profile_url?: string;
   git_token?: string;
   color_scheme?: string;
@@ -246,6 +250,9 @@ export interface Settings {
    *  root agents no endpoint and refuses the ones already holding the token. */
   root_mcp?: boolean;
   schedule_mcp?: boolean;
+  /** The read-only "Ask Eldrun" help MCP (`eldrun-help`) in local agent tabs.
+   *  **Default true** — absent means on. Switched in the intro wizard. */
+  help_mcp?: boolean;
   root_mcp_review?: "all" | "destructive" | "off";
   /** Root console: serve the MCP tools to local-model tabs only. Absent means
    *  off. On, cloud agent CLIs get no endpoint and running ones are refused. */
@@ -254,6 +261,13 @@ export interface Settings {
    *  switched on separately from `root_mcp`, and above every per-account
    *  `agent_access`. */
   root_mcp_mail?: boolean;
+  /** Root console: keep the mail tools to local-model tabs. Absent means off.
+   *  On, cloud agent CLIs are neither listed nor served a mail tool and a
+   *  contained reader is refused; the rest of the tools are untouched. */
+  root_mcp_mail_local_only?: boolean;
+  /** Root console: a local-model tab may read the mails shared with agents —
+   *  marked messages only, and only while Ollama is loopback. Absent means off. */
+  root_mcp_mail_local_read?: boolean;
   /** Side panel: the **Alerts** group in the file viewer — urgent mail, the
    *  calendar entries about to start, and the to-do cards whose due date is here
    *  or past, merged into one time-ordered strip. **Default true.**
@@ -400,9 +414,9 @@ export interface Settings {
    *  catch-all — no Rust field needed. Unset/empty = nothing hidden. */
   disabled_agents?: string[];
   /** The scheduled agent warm-up (Manage CLIs → Scheduled warm-up): at each
-   *  configured local time, one short message is sent to that agent in the Trash
-   *  project, so its usage window starts *then* rather than whenever the first
-   *  real prompt happens to be typed. A global time list with per-agent
+   *  configured local time, one short message is sent to that agent (in its
+   *  one-shot print mode), so its usage window starts *then* rather than
+   *  whenever the first real prompt happens to be typed. A global time list with per-agent
    *  participation and per-agent overrides; read through `lib/agents/agentCron.ts`,
    *  which is also where the semantics of every field live. Round-trips through
    *  the backend settings `extra` catch-all — no Rust field needed, since
@@ -520,6 +534,10 @@ export interface Settings {
   agent_fence_paths?: string[];
   /** Opt-in access to Cargo registry credential files in exposed toolchains. */
   agent_fence_cargo_credentials?: boolean;
+  /** A fenced root-console agent sees every project, box folder and remote
+   *  mirror read-only (default off: a widening). The mail `attach` argument
+   *  needs it; recorded per root tab at spawn. */
+  root_fence_projects_readable?: boolean;
   /** When true (the default), the usage recap opens by itself on the first launch
    *  of each day. Turning it off stops the popup, not the counting — the recap
    *  stays reachable from Settings. */
@@ -1095,8 +1113,6 @@ export interface ProjectEntry {
   categories?: string[];
   /** Explicit trusted-state opt-in for phone/tablet terminal access. */
   eldrun_mobile_access?: boolean;
-  /** Built-in permanent workspace for disposable, strictly-contained agents. */
-  eldrun_trash?: boolean;
   [key: string]: unknown;
 }
 
@@ -1162,7 +1178,7 @@ export interface ExportPreview {
   tabs: number;
   boxNames: string[];
   suggestedFileName: string;
-  /** Machine token (`"vm"` / `"trash"`) when this project cannot be exported. */
+  /** Machine token (`"vm"`) when this project cannot be exported. */
   blocked?: string;
 }
 
@@ -1282,6 +1298,12 @@ export interface ProjectBox {
   /** Eldrun Mobile reach (#31aa): the box's `box:<id>` scope is listed on a
    *  paired phone. Off/absent by default, like a project's switch. */
   eldrun_mobile_access?: boolean;
+  /** User-picked colour (`#rrggbb`); absent = hashed from the id
+   *  (`lib/theme/boxColor`). Rides the Rust struct's flattened `extra`. */
+  color?: string;
+  /** The box has no pill of its own on the header row — only a row in the
+   *  scope chip's list. Absent = shown. Rides `extra` too. */
+  hide_pill?: boolean;
 }
 
 /**

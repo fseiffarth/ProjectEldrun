@@ -1,5 +1,6 @@
 import { PreviewImages } from "./previewImages";
 import { DraftSaver } from "./draftSaver";
+import { registerUnsavedWork } from "../../lib/window/unsavedWork";
 import { lineStarts, indexedLine } from "./lineIndex";
 import { Suspense, createContext, lazy, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -266,7 +267,7 @@ import { isBibPath } from "../../lib/viewers/tex/bib";
 import { hasCards } from "../../lib/viewers/yamlGrid";
 import { useI18nStore, useT, type TranslationKey } from "../../lib/i18n";
 import { defaultSpellLanguage, dictionaryLabel } from "../../lib/spellDictionaries";
-import { BoltIcon, BugIcon, CommentIcon, LinkIcon, PlayIcon, UploadIcon } from "../common/icons/Icon";
+import { ArrowUpRightIcon, BoltIcon, BugIcon, CommentIcon, GearIcon, LinkIcon, PlayIcon, UploadIcon, WarningIcon } from "../common/icons/Icon";
 
 // The five heavyweight leaf viewers are code-split (§5.1 startup size): a
 // static import here would parse pdfjs-dist + pdf-lib + fontkit (PdfView,
@@ -853,7 +854,7 @@ function SyncResolveHeaderButton({ path, projectId }: { path: string; projectId:
 export function openLinkedFile(
   linkingTabKey: string | undefined,
   linkingFileDir: string,
-  resolved: { path: string; viewer: InternalViewer; label: string },
+  resolved: { path: string; viewer: InternalViewer; label: string; mdGraphOriginKey?: string },
 ) {
   const store = useTabsStore.getState();
   const sameFile = (t: TabEntry) =>
@@ -865,6 +866,7 @@ export function openLinkedFile(
     kind: "embed" as const,
     embedPath: resolved.path,
     viewer: resolved.viewer,
+    ...(resolved.mdGraphOriginKey ? { mdGraphOriginKey: resolved.mdGraphOriginKey } : {}),
   };
   // A linking tab of ANOTHER scope — a viewer in the root console, floating over
   // a project — opens its link beside itself, in its own scope's focused
@@ -1174,7 +1176,7 @@ export function ViewerHeader({
         title={t("pdfViewer.openExternalTitle")}
         aria-label={t("pdfViewer.openExternalTitle")}
       >
-        ↗
+        <ArrowUpRightIcon />
       </button>
     </div>
   );
@@ -1461,8 +1463,14 @@ export function useEditableFile(path: string, enabled = true) {
     saver.onStatus = (busy, error) => {
       if (active) { setSaving(busy); setSaveError(error); }
     };
+    // A popout closed by a Wayland scope-out asks this before it goes.
+    const unregister = registerUnsavedWork({
+      dirty: () => saver.dirty,
+      flush: () => saver.flushIfAutosave(),
+    });
     return () => {
       active = false;
+      unregister();
       saver.dispose();
     };
   }, [saver, path, scope]);
@@ -5864,6 +5872,107 @@ function RenderedPreview({
   );
 }
 
+/** Rendered SVG preview with Ctrl/⌘+wheel zoom toward the cursor (plain wheel
+ *  scrolls; double-click resets to 100%). A sandboxed iframe would swallow the
+ *  wheel, so the SVG is drawn as an `<img>` from an `image/svg+xml` Blob URL
+ *  instead — just as inert: an image-context SVG runs no script and loads no
+ *  external resource. Scale 1 is the SVG's intrinsic size (the viewport width
+ *  when it declares none). */
+function SvgPreview({ content, fileName }: { content: string; fileName: string }) {
+  const t = useT();
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    const u = URL.createObjectURL(new Blob([content], { type: "image/svg+xml" }));
+    setUrl(u);
+    return () => URL.revokeObjectURL(u);
+  }, [content]);
+  const [baseWidth, setBaseWidth] = useState<number | null>(null);
+  const [scale, setScale] = useState(1);
+  const scaleRef = useRef(scale);
+  scaleRef.current = scale;
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const imgRef = useRef<HTMLImageElement | null>(null);
+  // The point under the cursor, as a fraction of the image, plus where the
+  // cursor sits in the viewport. Applied once the new size has laid out so that
+  // point stays put. A fraction (not a scroll offset) survives several wheel
+  // ticks landing before one render: each reads the still-displayed layout.
+  const pendingAnchor = useRef<{ fx: number; fy: number; ax: number; ay: number } | null>(null);
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    const img = imgRef.current;
+    const a = pendingAnchor.current;
+    pendingAnchor.current = null;
+    if (!el || !img || !a) return;
+    const r = el.getBoundingClientRect();
+    const ir = img.getBoundingClientRect();
+    const left = ir.left - r.left + el.scrollLeft;
+    const top = ir.top - r.top + el.scrollTop;
+    el.scrollLeft = left + a.fx * ir.width - a.ax;
+    el.scrollTop = top + a.fy * ir.height - a.ay;
+  }, [scale]);
+  const wheelRef = useZoomModifierWheel((e) => {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    e.preventDefault();
+    const el = scrollRef.current;
+    const img = imgRef.current;
+    if (!el || !img || e.deltaY === 0) return;
+    const prev = scaleRef.current;
+    const next = clampScale(prev * (e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP));
+    if (next === prev) return;
+    const r = el.getBoundingClientRect();
+    const ir = img.getBoundingClientRect();
+    if (ir.width <= 0 || ir.height <= 0) return;
+    const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
+    pendingAnchor.current = {
+      fx: clamp01((e.clientX - ir.left) / ir.width),
+      fy: clamp01((e.clientY - ir.top) / ir.height),
+      ax: e.clientX - r.left,
+      ay: e.clientY - r.top,
+    };
+    scaleRef.current = next;
+    setScale(next);
+  });
+  const setScroller = useCallback(
+    (el: HTMLDivElement | null) => {
+      scrollRef.current = el;
+      wheelRef(el);
+    },
+    [wheelRef],
+  );
+  return (
+    <div
+      ref={setScroller}
+      onDoubleClick={() => setScale(1)}
+      style={{ width: "100%", height: "100%", overflow: "auto", background: "#fff" }}
+    >
+      {/* Centred while smaller than the pane; grows to scroll once larger. Auto
+          margins (not align/justify) so an oversized image never overflows
+          past the unreachable top/left edge. */}
+      <div style={{ display: "flex", width: "max-content", minWidth: "100%", minHeight: "100%" }}>
+      {url && (
+        <img
+          ref={imgRef}
+          src={url}
+          alt={t("fileViewer.previewOf", { file: fileName })}
+          draggable={false}
+          onLoad={(e) => {
+            const w = e.currentTarget.naturalWidth || scrollRef.current?.clientWidth || 300;
+            setBaseWidth(w);
+          }}
+          style={{
+            display: "block",
+            margin: "auto",
+            maxWidth: "none",
+            height: "auto",
+            width: baseWidth != null ? baseWidth * scale : undefined,
+          }}
+        />
+      )}
+      </div>
+    </div>
+  );
+}
+
 /** Markdown editing toolbar (#md-toolbar): inline/structural formatting plus a
  *  generated table of contents, applied through the editor's imperative API so
  *  each action is one undo step. Buttons `preventDefault` on mousedown so the
@@ -7643,7 +7752,11 @@ function TextView({
             />
           ) : (
             // Preview reflects the live draft, so it tracks unsaved edits.
-            <RenderedPreview kind={previewKind!} content={draft} fileName={fileName} />
+            previewKind === "svg" ? (
+              <SvgPreview content={draft} fileName={fileName} />
+            ) : (
+              <RenderedPreview kind={previewKind!} content={draft} fileName={fileName} />
+            )
           )
         ) : compareOpen ? (
           <CompareView
@@ -7705,6 +7818,9 @@ function TextView({
  *  contents at one moment, and the file can change. */
 const remoteImagesAllowed = new Set<string>();
 
+// A graph source can restore its mode when a linked markdown tab returns to it.
+const mdGraphShow = new Map<string, () => void>();
+
 function MarkdownView({
   path,
   onOpenExternally,
@@ -7728,6 +7844,11 @@ function MarkdownView({
   // withdrew falls back to the preview rather than stranding a blank pane.
   const graphEnabled = useExperimental("md_graph");
   const [mode, setMode] = useState<"preview" | "edit" | "graph">("preview");
+  useEffect(() => {
+    if (!tabKey) return;
+    mdGraphShow.set(tabKey, () => setMode("graph"));
+    return () => { mdGraphShow.delete(tabKey); };
+  }, [tabKey]);
   useEffect(() => {
     if (!graphEnabled && mode === "graph") setMode("preview");
   }, [graphEnabled, mode]);
@@ -7765,6 +7886,8 @@ function MarkdownView({
   // Register the preview scroller only while in preview mode, so it never fights
   // CodeEditor for the same group id (edit mode links via the textarea instead).
   const reportPreviewSync = useScrollSync(mode === "preview" ? groupId : null, bodyScrollRef);
+  const graphOrigin = tabKey ? findTabByKey(useTabsStore.getState(), tabKey)?.mdGraphOriginKey : undefined;
+  const canReturnToGraph = graphEnabled && graphOrigin && findTabByKey(useTabsStore.getState(), graphOrigin);
 
   // After the preview HTML is committed to the DOM, run the mermaid/KaTeX
   // enrichment pass (Dev A): it finds the mermaid code blocks and math
@@ -8055,6 +8178,23 @@ function MarkdownView({
   return (
     <div className="file-viewer">
       <ViewerHeader onOpenExternally={onOpenExternally}>
+        {canReturnToGraph && (
+          <button
+            className="md-graph-back"
+            disabled={isDirty || saving}
+            title={t(isDirty || saving ? "mdGraph.backSaveFirst" : "mdGraph.back")}
+            onClick={() => {
+              if (!tabKey || !graphOrigin) return;
+              mdGraphShow.get(graphOrigin)?.();
+              const store = useTabsStore.getState();
+              store.setActive(graphOrigin);
+              store.removeTab(tabKey);
+            }}
+          >
+            ← {t("mdGraph.back")}
+            <UntestedTag id="mdGraph.back" />
+          </button>
+        )}
         <div className="file-viewer-modes">
           <button
             className={`file-viewer-mode${mode === "preview" ? " active" : ""}`}
@@ -8129,13 +8269,15 @@ function MarkdownView({
         {mode === "graph" ? (
           <MdGraphView
             path={path}
-            onOpen={(target) =>
+            onOpen={(target) => {
+              const viewer = viewerForPath(target);
               openLinkedFile(tabKey, dirname(path), {
                 path: target,
-                viewer: viewerForPath(target),
+                viewer,
                 label: basename(target),
-              })
-            }
+                mdGraphOriginKey: viewer === "markdown" ? tabKey : undefined,
+              });
+            }}
           />
         ) : mode === "edit" && compareOpen ? (
           <CompareView
@@ -9813,7 +9955,7 @@ function TexView({
           aria-pressed={showOptions}
           title={t("fileViewer.compilerOptionsTitle")}
         >
-          {t("fileViewer.optionsBtn")}
+          {t("fileViewer.optionsBtn")} <GearIcon />
         </button>
         <button
           className={`file-viewer-tex-preview-toggle${hoverPref.on ? " active" : ""}`}
@@ -9841,7 +9983,7 @@ function TexView({
             onClick={() => openPdf(pdfPath)}
             title={t("fileViewer.openCompiledPdfTitle")}
           >
-            {t("fileViewer.openPdfBtn")}
+            {t("fileViewer.openPdfBtn")} <ArrowUpRightIcon />
           </button>
         )}
         <button
@@ -9945,7 +10087,7 @@ function TexView({
       )}
       {shellEscape && (
         <div className="file-viewer-tex-shell-warning" role="alert">
-          {t("fileViewer.shellEscapeWarnPre")}<code>\write18</code>{t("fileViewer.shellEscapeWarnMid")}{" "}
+          <WarningIcon /> {t("fileViewer.shellEscapeWarnPre")}<code>\write18</code>{t("fileViewer.shellEscapeWarnMid")}{" "}
           <code>texmf.cnf</code> {t("fileViewer.shellEscapeWarnOr")} <code>latexmkrc</code>{" "}
           {t("fileViewer.shellEscapeWarnPost")} <code>.tex</code> {t("fileViewer.shellEscapeWarnEnd")}
         </div>
@@ -9954,7 +10096,7 @@ function TexView({
       {compileError && (
         <div className="file-viewer-tex-error-card" role="alert">
           <div className="file-viewer-tex-error-head">
-            <span className="file-viewer-tex-error-icon" aria-hidden="true">⚠</span>
+            <span className="file-viewer-tex-error-icon" aria-hidden="true"><WarningIcon /></span>
             <span className="file-viewer-tex-error-title">
               {t("fileViewer.compileErrorTitle")}
             </span>

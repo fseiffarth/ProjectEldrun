@@ -5,6 +5,7 @@ import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
 import { useDialogs } from "../common/PromptDialogs";
 import { openLinkedFile } from "../embed/FileViewerPane";
+import { WarningIcon } from "../common/icons/Icon";
 
 /** Mirrors `commands::git_pull::PullPreview`. */
 interface PullPreview {
@@ -179,7 +180,7 @@ export function GitPullPanel({
                 >
                   <span className={`git-pull-status git-pull-status--${f.status}`}>{f.status}</span>
                   <span className="git-pull-path">{f.path}</span>
-                  {f.both && <span className="git-pull-both" aria-label={t("gitPull.bothLabel")}>⚠</span>}
+                  {f.both && <span className="git-pull-both" aria-label={t("gitPull.bothLabel")}><WarningIcon /></span>}
                 </button>
               </li>
             ))}

@@ -7,6 +7,7 @@ import { desktopOwnsSuperKey, probeSuperKeyOwnership } from "../lib/shortcuts/su
 import { allGroups, findGroup, useTabsStore } from "../stores/tabs";
 import { closeTabWithConfirm } from "../lib/remote/closeRemoteTab";
 import { useProjectsStore } from "../stores/projects";
+import { BOX_SCOPE_PREFIX, useBoxesStore } from "../stores/boxes";
 import { useSettingsStore, stepZoom } from "../stores/settings";
 import { useSubwindowNavStore } from "../stores/subwindowNav";
 import {
@@ -381,6 +382,18 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
         return;
       }
 
+      // Cycle to the next / previous box (the box pills' row order).
+      if (is("cycleBox")) {
+        e.preventDefault();
+        cycleBox(1);
+        return;
+      }
+      if (is("cycleBoxBack")) {
+        e.preventDefault();
+        cycleBox(-1);
+        return;
+      }
+
       // Open the shortcut cheat sheet. This hook only fires the door event
       // (the header-menu pattern); the overlay host owns the dialog.
       if (is("shortcutHelp")) {
@@ -576,4 +589,27 @@ function cycleProject(delta: 1 | -1) {
   const idx = stations.indexOf(ps.activeId);
   const next = stations[(idx + delta + stations.length) % stations.length];
   if (next !== ps.activeId) void ps.setActive(next);
+}
+
+/**
+ * Walk the boxes in row order — the order their pills stand in beside the
+ * scope chip — and open the next / previous one (`openBox`, which moves the
+ * tab scope into the box; the switcher follows the scope into the slice).
+ * From outside any box the first step lands on the first box (walking back:
+ * the last), so the chord is also the way INTO the boxes from a project.
+ */
+export function cycleBox(delta: 1 | -1) {
+  const store = useBoxesStore.getState();
+  const boxes = [...store.boxes].sort((a, b) => a.position - b.position);
+  if (boxes.length === 0) return;
+  const scope = useTabsStore.getState().scope;
+  const current = scope.startsWith(BOX_SCOPE_PREFIX)
+    ? scope.slice(BOX_SCOPE_PREFIX.length)
+    : null;
+  const idx = current ? boxes.findIndex((b) => b.id === current) : -1;
+  const next =
+    idx < 0
+      ? boxes[delta > 0 ? 0 : boxes.length - 1]
+      : boxes[(idx + delta + boxes.length) % boxes.length];
+  if (next.id !== current) void store.openBox(next.id);
 }

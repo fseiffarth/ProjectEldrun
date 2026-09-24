@@ -596,6 +596,11 @@ export interface TabEntry {
   // the static RESUMABLE_AGENTS map (see isResumableAgentTab / loadFromLayout).
   // Persisted, since args are rebuilt from scratch on restore.
   resumeArgs?: string[];
+  // Epoch ms this tab was opened in this run (addTab / duplicate). Never
+  // persisted: a restored tab relaunches on its continue flag instead, and it
+  // is only missing there. Tells a fresh OpenCode tab's own session from the
+  // folder's older ones (`services::opencode_store`).
+  launchedAt?: number;
   // Absolute path of the script this terminal tab was launched to run (Python
   // Run/Debug, or a foreground shell-script run). Lets the activity store pulse
   // the file's run button while the tab is producing output. Busy-gated on read,
@@ -613,6 +618,8 @@ export interface TabEntry {
   // of any external default app. These embeds re-render from `embedPath` on
   // relaunch (see isRestorableEmbedTab). See FileViewerPane.
   viewer?: InternalViewer;
+  /** Session-only return path for a new markdown tab opened from a link graph. */
+  mdGraphOriginKey?: string;
   // For in-app `viewer` embeds: the reader's last scroll/zoom/pan, so reopening
   // the file (or restarting) restores the position instead of jumping to the top
   // (see ViewerState). Written by the viewer panes, persisted in project.json.
@@ -1447,6 +1454,13 @@ interface TabsStore {
   // Never invokes the backend: the window is already gone, and the two
   // dock paths' `attach_subwindow` is idempotent anyway.
   recoverDetachedGroup: (scope: string, groupId: string) => void;
+  // #42: ask the backend for every popout of `scope` — called by `setScope`
+  // right after the scope sync. A live popout makes each call a no-op (X11,
+  // Windows, macOS park by hiding, so theirs always are); native Wayland closes
+  // an inactive scope's popouts and keeps their records, so this is where they
+  // come back, at their saved size. A rebuild docks the record back only after
+  // bounded retries have failed (`recoverDetachedGroup`).
+  respawnDetachedForScope: (scope: string) => void;
   // #42: WM-close of a popout closes its tabs for good instead of docking them
   // back: kills each tab's PTY (the popout's panes are NOT mounted in the main
   // window and the detached viewer is attach-only, so nothing else tears them
@@ -2289,8 +2303,17 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     // so this is the one call that covers all of them. Never from a popout's own
     // heap (`getDetachedWindowContext`): its store mirrors ONE group and its idea
     // of "the scope" must not drive which windows the main window shows.
+    //
+    // Then the incoming scope's popouts are asked for (after the sync, so a
+    // Wayland retire of the same label is already known to the backend, which
+    // waits it out) — unless the scope moved on meanwhile: its own setScope
+    // asks for its own.
     if (prev !== scope && !getDetachedWindowContext()) {
-      void invoke("sync_detached_scope", { scope }).catch(() => {});
+      void invoke("sync_detached_scope", { scope })
+        .catch(() => {})
+        .then(() => {
+          if (get().scope === scope) get().respawnDetachedForScope(scope);
+        });
     }
     set((s) => {
       const tabs = s.tabsByScope[scope] ?? [];
@@ -2411,6 +2434,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       ...withTmuxSession(withRunHostDefault(scope, tab), scope),
       key,
       scope,
+      launchedAt: Date.now(),
     };
     if (!opts?.seeded) countTabOpen(scope, entry);
     set((s) => {
@@ -2457,6 +2481,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         get().scope,
       ),
       key: nextKeyValue,
+      launchedAt: Date.now(),
     };
     countTabOpen(get().scope, entry);
     set((s) => {
@@ -3367,21 +3392,9 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       // Spawn the detached OS window. The store mutation + IPC live in one
       // action so they can't drift. `bounds` (when restoring a popout on
       // restart) reopens it at its prior place/size. A backend failure (#224)
-      // must NOT leave the group recorded as detached — there is no window to
-      // dock it back from, and the record would persist `detached:true` and
-      // repeat the failure at every launch — so the record is re-docked into the
-      // layout it just left.
-      const b = opts?.bounds;
-      invoke("detach_subwindow", {
-        projectId: scope,
-        groupId,
-        x: b?.x ?? null,
-        y: b?.y ?? null,
-        width: b?.w ?? null,
-        height: b?.h ?? null,
-      }).catch(() => {
-        get().recoverDetachedGroup(scope, groupId);
-      });
+      // retries while the display/retire state settles. If every attempt fails,
+      // the group is re-docked so its tabs remain reachable.
+      void openDetachedWindow(scope, groupId);
     }
     return label;
   },
@@ -3430,14 +3443,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       };
     });
 
-    invoke("detach_subwindow", {
-      projectId: scope,
-      groupId,
-      x: bounds.x,
-      y: bounds.y,
-      width: bounds.w,
-      height: bounds.h,
-    }).catch(() => {});
+    void openDetachedWindow(scope, groupId);
     return label;
   },
 
@@ -3473,14 +3479,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       };
     });
 
-    invoke("detach_subwindow", {
-      projectId: scope,
-      groupId,
-      x: bounds.x,
-      y: bounds.y,
-      width: bounds.w,
-      height: bounds.h,
-    }).catch(() => {});
+    void openDetachedWindow(scope, groupId);
     return label;
   },
 
@@ -3840,14 +3839,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       };
     });
 
-    invoke("detach_subwindow", {
-      projectId: scope,
-      groupId,
-      x: bounds.x,
-      y: bounds.y,
-      width: bounds.w,
-      height: bounds.h,
-    }).catch(() => {});
+    void openDetachedWindow(scope, groupId);
     return label;
   },
 
@@ -3889,14 +3881,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       };
     });
 
-    invoke("detach_subwindow", {
-      projectId: scope,
-      groupId,
-      x: bounds.x,
-      y: bounds.y,
-      width: bounds.w,
-      height: bounds.h,
-    }).catch(() => {});
+    void openDetachedWindow(scope, groupId);
     return label;
   },
 
@@ -4311,6 +4296,13 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     }
   },
 
+  respawnDetachedForScope: (scope) => {
+    if (getDetachedWindowContext()) return;
+    for (const entry of get().detachedGroupsByScope[scope] ?? []) {
+      void openDetachedWindow(scope, entry.id);
+    }
+  },
+
   dropDetachedGroup: (scope, groupId, opts) => {
     const entries = get().detachedGroupsByScope[scope] ?? [];
     const entry = entries.find((d) => d.id === groupId);
@@ -4648,7 +4640,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       // from the durable sessionId, just as `buildStaticTabSpec` does for a new
       // tab; it is not a user-configurable environment override.
       const env = { ...(t.env ?? {}) };
-      if (t.cmd === "codex" && t.sessionId) {
+      if ((t.cmd === "codex" || t.cmd === "vibe") && t.sessionId) {
         env.ELDRUN_TAB_UID = t.sessionId;
       }
       return {
@@ -4931,6 +4923,46 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
   },
 }));
 
+// A detached window can fail to build briefly while a display is being removed,
+// or while Wayland is still retiring its previous window under the same label.
+// Keep its layout detached through those failures. Only an exhausted retry may
+// dock it back, so a transient OS event cannot rewrite the saved window layout.
+const openingDetachedWindows = new Map<string, Promise<void>>();
+const detachedOpenDelays = [0, 300, 900, 1800];
+
+function openDetachedWindow(scope: string, groupId: string): Promise<void> {
+  const label = `detached-${scope}-${groupId}`;
+  const pending = openingDetachedWindows.get(label);
+  if (pending) return pending;
+  const task = (async () => {
+    for (const delay of detachedOpenDelays) {
+      if (delay) await new Promise<void>((resolve) => setTimeout(resolve, delay));
+      const entry = (useTabsStore.getState().detachedGroupsByScope[scope] ?? [])
+        .find((d) => d.id === groupId);
+      if (!entry) return;
+      const b = entry.bounds;
+      try {
+        await invoke("detach_subwindow", {
+          projectId: scope,
+          groupId,
+          x: b?.x ?? null,
+          y: b?.y ?? null,
+          width: b?.w ?? null,
+          height: b?.h ?? null,
+        });
+        return;
+      } catch {
+        // The next attempt uses the latest bounds, including a monitor move.
+      }
+    }
+    useTabsStore.getState().recoverDetachedGroup(scope, groupId);
+  })().finally(() => {
+    openingDetachedWindows.delete(label);
+  });
+  openingDetachedWindows.set(label, task);
+  return task;
+}
+
 /**
  * Hydrate a scope from its saved tab session on disk — THE one implementation
  * of "read `load_tab_session`, filter to restorable tabs, `loadFromLayout`".
@@ -5131,10 +5163,11 @@ export function isPtyTabKind(kind: TabKind): boolean {
  * Agents whose prior session can be resumed, mapping `cmd` → the launch args to
  * relaunch with that session. Two resume styles are wired:
  *
- *  - id-based: Claude (`--resume <id>`) and Codex (`codex resume`, args injected
- *    by the backend) resume a *specific* captured session.
+ *  - id-based: Claude (`--resume <id>`), Codex (`codex resume`) and Vibe
+ *    (`--resume <id>`) resume a captured session; the backend injects the
+ *    latter two from their per-tab hook records.
  *  - cwd "continue last": Qwen, OpenCode, Copilot, Cursor, Gemini, Grok,
- *    Google Antigravity and Mistral/vibe have no caller-supplied launch id, so
+ *    Google Antigravity have no caller-supplied launch id, so
  *    Eldrun re-launches with their "continue the most recent session" flag.
  *    Because each agent tab
  *    launches in the project directory, that most-recent session IS the tab's
@@ -5172,9 +5205,8 @@ export const RESUMABLE_AGENTS: Record<string, (id: string) => string[]> = {
   gemini: () => ["--resume", "latest"],
   // Antigravity CLI: `-c`/`--continue` resumes the most recent conversation.
   agy: () => ["--continue"],
-  // Mistral/vibe: `-c/--continue` resumes the most recent saved session. (Its
-  // `--resume [id]` with no id would open an interactive picker, which hangs a
-  // restore — so `--continue` is the non-interactive path.)
+  // Vibe mints its own ID. The backend replaces this legacy fallback with
+  // `--resume <live-id>` once its post-agent hook has recorded a turn.
   vibe: () => ["--continue"],
 };
 

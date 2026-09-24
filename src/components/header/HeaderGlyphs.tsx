@@ -3,8 +3,8 @@
  * replace came from whichever fallback font had the code point, so each had
  * its own stroke weight (most of them heavy) and its own ink box. These share
  * one hand with the status cluster's phone (`MobileIndicator`): a 16-unit grid,
- * outlines only, rounded corners and caps. Stroke is 1.15 units because they
- * render at 20px, which lands them on the phone's ~1.4px line. Every glyph's
+ * outlines only, rounded corners and caps. Stroke is 0.95 units because they
+ * render at 20px, which lands them on the phone's ~1.2px line. Every glyph's
  * outline runs from y=2 to y=14, so they all stand the same height in the bar
  * — keep that when redrawing one.
  */
@@ -13,7 +13,7 @@ import type { ReactNode } from "react";
 
 const STROKE = {
   stroke: "currentColor",
-  strokeWidth: 1.15,
+  strokeWidth: 0.95,
   strokeLinecap: "round",
   strokeLinejoin: "round",
 } as const;
@@ -97,6 +97,17 @@ export function SettingsGlyph({ className }: { className: string }) {
         {...STROKE}
       />
       <circle cx="8" cy="8" r="1.9" {...STROKE} />
+    </Glyph>
+  );
+}
+
+/** An open book — the Skills Library (`skills/SkillsOverlay`), opened from the
+ *  Models & agents menu, whose entry carries no icon of its own to reuse. */
+export function SkillsGlyph({ className }: { className: string }) {
+  return (
+    <Glyph className={className}>
+      <path d="M8 3.8C6.5 2.6 4.5 2 2 2v10.2c2.5 0 4.5.6 6 1.8 1.5-1.2 3.5-1.8 6-1.8V2c-2.5 0-4.5.6-6 1.8Z" {...STROKE} />
+      <path d="M8 3.8V14" {...STROKE} />
     </Glyph>
   );
 }

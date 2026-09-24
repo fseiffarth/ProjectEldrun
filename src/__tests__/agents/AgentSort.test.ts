@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { isAgentSort, sortAgentTabs } from "../../../shared/agentSort";
-import { shortModelName } from "../../lib/agents/agentModel";
+import { claudeModelLabel, shortModelName } from "../../lib/agents/agentModel";
 
 interface Row { id: string; decision?: boolean; working?: boolean; workingAt?: number; doneAt?: number }
 const keys = (row: Row) => ({ decision: row.decision, working: !!row.working, workingAt: row.workingAt, doneAt: row.doneAt });
@@ -58,5 +58,12 @@ describe("model tag", () => {
     expect(shortModelName("claude-fable-5-1")).toBe("fable-5-1");
     expect(shortModelName("gpt-5-codex")).toBe("gpt-5-codex");
     expect(shortModelName("  o3 ")).toBe("o3");
+  });
+
+  it("puts a Claude slug in the words Claude's status line uses", () => {
+    expect(claudeModelLabel("opus-4-1")).toBe("Opus 4.1");
+    expect(claudeModelLabel("fable-5")).toBe("Fable 5");
+    expect(claudeModelLabel("gpt-5-codex")).toBe("gpt-5-codex");
+    expect(claudeModelLabel("Opus 4.1")).toBe("Opus 4.1");
   });
 });
