@@ -28,8 +28,8 @@ import { UntestedTag } from "../common/UntestedTag";
  * cluster member there.
  *
  * As a cluster member a running or queued build reports `attention` and a
- * failed one `alert`, so both escalate out of a folded cluster — watching the
- * build is the point of the chip. Idle reports `ok` and folds away.
+ * failed one `alert`, so a folded cluster's summary lamp turns amber / red.
+ * Idle reports `ok`.
  */
 
 type BuildState = "idle" | "waiting" | "building";

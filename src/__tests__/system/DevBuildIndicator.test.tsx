@@ -72,7 +72,7 @@ describe("DevBuildIndicator", () => {
     expect(useHeaderStatusStore.getState().reports.devBuild).toBeUndefined();
   });
 
-  it("shows the running step and escalates out of the fold", async () => {
+  it("shows the running step and reports attention", async () => {
     answer({
       ...idle,
       state: "building",

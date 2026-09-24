@@ -271,8 +271,8 @@ export function MobileIndicator() {
         : t("mobile.indStoppedTitle");
 
   // "Checking" is every poll of an ordinary healthy host, so only a real error
-  // escalates out of a collapsed header. Not set up is `off`: present, dormant,
-  // and never a reason to break a collapsed cluster open.
+  // reddens a collapsed header's summary lamp. Not set up is `off`: present,
+  // dormant, and never a colour on that lamp.
   useHeaderStatusReport(
     "mobile",
     !visible

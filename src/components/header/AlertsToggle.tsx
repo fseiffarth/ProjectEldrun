@@ -21,8 +21,7 @@ import { BellIcon } from "../common/BellIcon";
  * were folded in the first place: at rest it has nothing to say, and a bar full
  * of permanently lit controls is paid for by the project strip. As a cluster
  * member it reports `ok` while armed and `off` while switched off — dormant, not
- * a problem, so it never escalates itself out of the fold and never reddens the
- * summary lamp. Folded away, it is one click behind the cluster's own toggle.
+ * a problem, so it never colours the summary lamp. Folded away, it is one click behind the cluster's own toggle.
  *
  * It wears its neighbours' chrome exactly — `.global-apps-menu-btn` inside a
  * `.global-apps-menu`, with `.alerts-toggle-btn` joined to the ✉/🗓/☑ rule sets

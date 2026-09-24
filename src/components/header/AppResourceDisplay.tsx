@@ -73,8 +73,8 @@ export function AppResourceDisplay() {
     };
   }, [anyShown, quiesce]);
 
-  // Never escalates. A build pegs the CPU for minutes at a time, so toning this
-  // `attention` would pop the readout in and out of a collapsed header for the
+  // Never tones up. A build pegs the CPU for minutes at a time, so toning this
+  // `attention` would turn a collapsed header's summary lamp amber for the
   // whole of an ordinary compile — the one member whose "hot" is routine. It
   // reports `off` purely to be *counted* as a member of the cluster (and to put
   // its numbers in the collapsed tooltip, which is where they are still useful).
