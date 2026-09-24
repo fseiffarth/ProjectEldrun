@@ -3,6 +3,7 @@ import {
   AGENT_FENCE_DEFAULT_PATHS,
   agentFenceInstallCommand,
   agentFenceLabelKey,
+  agentFenceMarkLevel,
   agentFenceReasonKey,
   parseAgentFencePaths,
 } from "../../lib/agents/agentFence";
@@ -76,5 +77,23 @@ describe("agent fence settings paths", () => {
       "~/.gitconfig",
       "~/.config/git",
     ]);
+  });
+});
+
+describe("agent fence pill marker", () => {
+  it("shows nothing for an unprobed or fully fenced project", () => {
+    expect(agentFenceMarkLevel(undefined)).toBeNull();
+    expect(agentFenceMarkLevel({ policy_off: false, live_unfenced: 0 })).toBeNull();
+  });
+
+  it("warns about the policy when nothing unfenced is running", () => {
+    expect(agentFenceMarkLevel({ policy_off: true, live_unfenced: 0 })).toBe("off");
+  });
+
+  it("puts live unfenced tabs first, whatever the policy says", () => {
+    // The fence switched on after the tabs started: the policy is fine, the
+    // running agents are not.
+    expect(agentFenceMarkLevel({ policy_off: false, live_unfenced: 2 })).toBe("live");
+    expect(agentFenceMarkLevel({ policy_off: true, live_unfenced: 1 })).toBe("live");
   });
 });

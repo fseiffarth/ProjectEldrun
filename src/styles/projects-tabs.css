@@ -295,6 +295,17 @@
   color: var(--text-primary);
 }
 
+/* Agent-fence marker: the VM glyph's box. `is-live` = agents running outside
+   the fence right now, in the warning colour; `is-off` = only the policy for
+   new tabs, left muted. */
+.pill-fence-glyph.is-live {
+  color: var(--warning);
+}
+
+.pill-fence-live-note {
+  color: var(--warning);
+}
+
 /* ── Box scope chip ─────────────────────────────────────────────────── */
 /* The ONE boxes control (components/projects/BoxScopeChip.tsx), pinned beside
    the root pill and outside the scrolling strip. Deliberately the .root-pill

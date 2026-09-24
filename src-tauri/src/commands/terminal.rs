@@ -639,6 +639,19 @@ pub async fn pty_spawn(
     // tmux server on the host while the command *inside* its session is
     // fenced.  A missing/blocked fence tool fails closed.
     let mut fenced_registration: Option<(String, String)> = None;
+    // Every agent tab that runs on the host, fenced or not, for the pill's
+    // live check (`agent_fence::live_unfenced_by_scope`). Taken before the
+    // fence and tmux rewrites replace `cmd`.
+    let host_agent_tab = (fence_roots.is_some()
+        && !opts.sandbox
+        && opts.cmd != "ssh"
+        && opts.cmd != "docker")
+        .then(|| crate::services::agent_fence::HostAgentTab {
+            scope_id: opts.project_id.clone().unwrap_or_else(|| "root".to_string()),
+            agent_cmd: opts.cmd.clone(),
+            tmux_session: opts.tmux_session.clone(),
+        });
+    let spawned_tab_id = opts.id.clone();
     // What the root tab's MCP session records as its projects grant: the
     // paths the fence argv bound when fenced, everything when the agent runs
     // unfenced (it already reads everything).
@@ -728,6 +741,10 @@ pub async fn pty_spawn(
         if let Some((tab_id, scope_id)) = fenced_registration {
             crate::services::agent_fence::register_tab(&tab_id, &scope_id, fenced_content_shadow);
         }
+        match host_agent_tab {
+            Some(tab) => crate::services::agent_fence::track_host_agent_tab(&spawned_tab_id, tab),
+            None => crate::services::agent_fence::untrack_host_agent_tab(&spawned_tab_id),
+        }
     }
     result.map(|()| PtySpawned { named })
 }
@@ -738,6 +755,26 @@ pub async fn pty_spawn(
 #[tauri::command]
 pub fn agent_fence_status(project_id: String) -> crate::services::agent_fence::AgentFenceStatus {
     crate::services::agent_fence::status_for_scope(&project_id)
+}
+
+/// The project pills' fence markers, one call for every pill: whether new
+/// agent tabs start unfenced by choice, and how many live ones run outside the
+/// fence right now — measured from the agent processes, not from what their
+/// spawn decided (see `agent_fence::HostAgentTab`).
+#[tauri::command]
+pub async fn agent_fence_marks(
+    registry: State<'_, RegistryState>,
+    project_ids: Vec<String>,
+) -> Result<std::collections::HashMap<String, crate::services::agent_fence::AgentFenceMark>, String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let live = crate::services::agent_fence::live_unfenced_by_scope(|id| {
+            registry.lock().unwrap().pid(id)
+        });
+        crate::services::agent_fence::marks_for_scopes(&project_ids, &live)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// List the tmux sessions running on the **local** machine (TODO #85), for a local

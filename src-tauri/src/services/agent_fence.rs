@@ -1892,6 +1892,216 @@ pub fn on_tab_gone(tab_id: &str) {
     if let Some(tab) = fenced_tabs().lock().unwrap().remove(tab_id) {
         crate::services::sandbox::harvest_project_transcripts(&tab.scope_id);
     }
+    untrack_host_agent_tab(tab_id);
+}
+
+/// A local agent tab whose agent runs on the host — not in a container, not on
+/// a remote — tracked whatever the spawn decided about the fence. The decision
+/// is not the answer: a respawn onto a surviving local tmux session
+/// (`new-session -A`) reattaches the process already running there, so a tab
+/// started before the fence was switched on stays unfenced through every
+/// relaunch. [`live_unfenced_by_scope`] asks the process itself.
+#[derive(Debug, Clone)]
+pub struct HostAgentTab {
+    pub scope_id: String,
+    /// The agent command before any wrapping, matched against the processes
+    /// under the tab.
+    pub agent_cmd: String,
+    pub tmux_session: Option<String>,
+}
+
+fn host_agent_tabs() -> &'static Mutex<HashMap<String, HostAgentTab>> {
+    static TABS: OnceLock<Mutex<HashMap<String, HostAgentTab>>> = OnceLock::new();
+    TABS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub fn track_host_agent_tab(tab_id: &str, tab: HostAgentTab) {
+    host_agent_tabs().lock().unwrap().insert(tab_id.to_string(), tab);
+}
+
+/// A respawn under the same id that no longer runs an agent on the host (it
+/// moved into a container, or became a shell) must stop being counted.
+pub fn untrack_host_agent_tab(tab_id: &str) {
+    host_agent_tabs().lock().unwrap().remove(tab_id);
+}
+
+/// What one tab's agent process turned out to be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveFence {
+    Fenced,
+    Unfenced,
+    /// No process of the agent under the tab: it exited, or it has not
+    /// started yet. Not counted either way.
+    Idle,
+}
+
+/// One process under a tab's root, reduced to what [`classify_live`] reads.
+#[derive(Debug, Clone)]
+pub struct ProcView {
+    pub argv0: String,
+    pub argv1: Option<String>,
+    /// Whether it runs in Eldrun's own mount namespace. bubblewrap always
+    /// unshares it, so a fenced agent never does.
+    pub host_ns: bool,
+}
+
+/// Interpreters that run an agent as their first argument (`node …/bin/gemini`).
+const AGENT_INTERPRETERS: &[&str] = &["node", "bun", "deno", "python", "python3", "sh", "bash"];
+
+fn runs_agent(agent: &str, proc_: &ProcView) -> bool {
+    let first = basename(&proc_.argv0);
+    first == agent
+        || (AGENT_INTERPRETERS.contains(&first)
+            && proc_.argv1.as_deref().is_some_and(|a| basename(a) == agent))
+}
+
+/// Judge a tab by its **agent** process, not by the tree around it: the fence's
+/// own `bwrap` parent sits in the host namespace, and an unfenced agent may
+/// start sandboxed children of its own (Codex does), which sit outside it.
+/// Any copy of the agent in the host namespace makes the tab unfenced.
+pub fn classify_live(agent_cmd: &str, procs: &[ProcView]) -> LiveFence {
+    let agent = basename(agent_cmd);
+    let mut found = false;
+    for proc_ in procs.iter().filter(|p| runs_agent(agent, p)) {
+        if proc_.host_ns {
+            return LiveFence::Unfenced;
+        }
+        found = true;
+    }
+    if found {
+        LiveFence::Fenced
+    } else {
+        LiveFence::Idle
+    }
+}
+
+/// Parse `tmux list-panes -a -F '#{session_name}\t#{pane_pid}'`. A session
+/// with several panes keeps its first, which is the one Eldrun created.
+pub fn parse_tmux_pane_pids(out: &str) -> HashMap<String, u32> {
+    let mut panes = HashMap::new();
+    for line in out.lines() {
+        if let Some((session, pid)) = line.split_once('\t') {
+            if let Ok(pid) = pid.trim().parse() {
+                panes.entry(session.to_string()).or_insert(pid);
+            }
+        }
+    }
+    panes
+}
+
+/// Per scope, how many live host agent tabs run outside the fence right now.
+/// `pid_of` answers the registry's leader pid for a tab id, and `None` for a
+/// tab that is no longer live. Linux only: elsewhere there is no namespace to
+/// read, and an empty answer is "unknown", never "all fenced" — the pill still
+/// shows a scope whose policy is off.
+#[cfg(target_os = "linux")]
+pub fn live_unfenced_by_scope(pid_of: impl Fn(&str) -> Option<u32>) -> HashMap<String, u32> {
+    let tabs: Vec<(String, HostAgentTab)> = host_agent_tabs()
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(id, tab)| (id.clone(), tab.clone()))
+        .collect();
+    let mut counts = HashMap::new();
+    if tabs.is_empty() {
+        return counts;
+    }
+    // A tmux tab's registry pid is the tmux *client*; its agent lives under
+    // the server's pane.
+    let panes = if tabs.iter().any(|(_, t)| t.tmux_session.is_some()) {
+        paths::command_no_window("tmux")
+            .args(["list-panes", "-a", "-F", "#{session_name}\t#{pane_pid}"])
+            .output()
+            .ok()
+            .map(|o| parse_tmux_pane_pids(&String::from_utf8_lossy(&o.stdout)))
+            .unwrap_or_default()
+    } else {
+        HashMap::new()
+    };
+    let Ok(own_ns) = std::fs::read_link("/proc/self/ns/mnt") else {
+        return counts;
+    };
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (pid, ppid) in crate::sysstat::parent_map() {
+        children.entry(ppid).or_default().push(pid);
+    }
+    for (tab_id, tab) in tabs {
+        let Some(leader) = pid_of(&tab_id) else {
+            continue;
+        };
+        let root = tab
+            .tmux_session
+            .as_deref()
+            .and_then(|s| panes.get(s).copied())
+            .unwrap_or(leader);
+        let mut procs = Vec::new();
+        let mut queue = vec![root];
+        let mut seen = HashSet::new();
+        while let Some(pid) = queue.pop() {
+            if !seen.insert(pid) {
+                continue;
+            }
+            if let Some(view) = proc_view(pid, &own_ns) {
+                procs.push(view);
+            }
+            if let Some(kids) = children.get(&pid) {
+                queue.extend(kids);
+            }
+        }
+        if classify_live(&tab.agent_cmd, &procs) == LiveFence::Unfenced {
+            *counts.entry(tab.scope_id).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn live_unfenced_by_scope(_pid_of: impl Fn(&str) -> Option<u32>) -> HashMap<String, u32> {
+    HashMap::new()
+}
+
+#[cfg(target_os = "linux")]
+fn proc_view(pid: u32, own_ns: &Path) -> Option<ProcView> {
+    let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    let mut argv = raw
+        .split(|b| *b == 0)
+        .map(|a| String::from_utf8_lossy(a).into_owned());
+    let argv0 = argv.next().filter(|a| !a.is_empty())?;
+    let ns = std::fs::read_link(format!("/proc/{pid}/ns/mnt")).ok()?;
+    Some(ProcView {
+        argv0,
+        argv1: argv.next(),
+        host_ns: ns == own_ns,
+    })
+}
+
+/// The project pill's fence marker: the policy for new tabs, and what the
+/// running ones actually are.
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentFenceMark {
+    /// New local agent tabs of this project start unfenced because the fence
+    /// is switched off — not because the project is remote, containerized, or
+    /// on a platform the fence does not cover.
+    pub policy_off: bool,
+    /// Live agent tabs whose agent process runs outside the fence right now.
+    pub live_unfenced: u32,
+}
+
+pub fn marks_for_scopes(
+    scope_ids: &[String],
+    live_unfenced: &HashMap<String, u32>,
+) -> HashMap<String, AgentFenceMark> {
+    scope_ids
+        .iter()
+        .map(|id| {
+            let status = status_for_scope(id);
+            let mark = AgentFenceMark {
+                policy_off: !status.enforced && status.reason == "off",
+                live_unfenced: live_unfenced.get(id).copied().unwrap_or(0),
+            };
+            (id.clone(), mark)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1899,6 +2109,66 @@ mod tests {
     use super::*;
     use crate::schema::boxes::ProjectBox;
     use serde_json::{json, Value};
+
+    fn proc_(argv0: &str, argv1: Option<&str>, host_ns: bool) -> ProcView {
+        ProcView {
+            argv0: argv0.to_string(),
+            argv1: argv1.map(str::to_string),
+            host_ns,
+        }
+    }
+
+    #[test]
+    fn a_host_namespace_agent_is_unfenced() {
+        // The shape of a tab started while the fence was off: tmux's pane shell
+        // runs the agent directly.
+        let procs = [
+            proc_("bash", Some("-c"), true),
+            proc_("claude", Some("--session-id"), true),
+        ];
+        assert_eq!(classify_live("claude", &procs), LiveFence::Unfenced);
+    }
+
+    #[test]
+    fn a_fenced_agent_is_judged_by_itself_not_by_its_bwrap_parent() {
+        let procs = [
+            proc_("bash", Some("-c"), true),
+            proc_("bwrap", Some("--ro-bind"), true),
+            proc_("bwrap", Some("--ro-bind"), false),
+            proc_("/home/u/.local/bin/claude", Some("--resume"), false),
+        ];
+        assert_eq!(classify_live("claude", &procs), LiveFence::Fenced);
+    }
+
+    #[test]
+    fn an_unfenced_agents_own_sandboxed_child_does_not_make_it_fenced() {
+        let procs = [
+            proc_("codex", None, true),
+            proc_("codex", Some("--sandbox-child"), false),
+        ];
+        assert_eq!(classify_live("codex", &procs), LiveFence::Unfenced);
+    }
+
+    #[test]
+    fn an_interpreter_run_agent_is_recognised() {
+        let procs = [proc_("node", Some("/home/u/.nvm/bin/gemini"), true)];
+        assert_eq!(classify_live("/usr/bin/gemini", &procs), LiveFence::Unfenced);
+    }
+
+    #[test]
+    fn a_tab_whose_agent_exited_counts_neither_way() {
+        // The pane falls back to a login shell once the agent quits.
+        let procs = [proc_("-bash", None, true), proc_("vim", Some("notes"), true)];
+        assert_eq!(classify_live("claude", &procs), LiveFence::Idle);
+        assert_eq!(classify_live("claude", &[]), LiveFence::Idle);
+    }
+
+    #[test]
+    fn tmux_pane_pids_parse_and_keep_the_first_pane() {
+        let panes = parse_tmux_pane_pids("eldrun-a--agent-1\t100\neldrun-a--agent-1\t200\nbad line\nx\tnope\n");
+        assert_eq!(panes.get("eldrun-a--agent-1"), Some(&100));
+        assert_eq!(panes.len(), 1);
+    }
 
     #[test]
     fn an_unavailable_tool_is_retried_and_success_is_cached() {

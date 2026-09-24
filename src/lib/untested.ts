@@ -373,6 +373,7 @@ export const UNTESTED = {
   "projectPill.13": { area: "projects", what: "ProjectPill · VM settings…" },
   "projectPill.14": { area: "projects", what: "ProjectPill · — not enforced: {reason}" },
   "projectPill.15": { area: "projects", what: "ProjectPill · Install bubblewrap…" },
+  "pill.agentFenceMark": { area: "projects", what: "ProjectPill · open-lock glyph and menu note for unfenced agent tabs (policy off, or live tabs started before the fence)" },
   "projectPill.16": { area: "projects", what: "ProjectPill · Remote machines…" },
   "projectPill.17": { area: "projects", what: "ProjectPill · Restore layout saved in the folder…" },
   "projectPill.2": { area: "projects", what: "ProjectPill · Categories…" },

@@ -23,6 +23,7 @@ import { IS_LINUX, IS_WINDOWS } from "../../lib/platform";
 import { runInstallInTab, containerBuildShell, PROVIDER_CLI_INSTALL, providerAuthLoginCmd } from "../../lib/installCommand";
 import { PythonInterpreterWindow } from "./PythonInterpreterWindow";
 import { useGitDirtyStore } from "../../stores/gitDirty";
+import { useAgentFenceMarksStore } from "../../stores/agentFenceMarks";
 import { providerName, gitTypeLabel } from "./projectTypeTags";
 import { GitTokenScopes, tokenPageUrl } from "../common/GitTokenScopes";
 import { ProjectHoverCard, projectDescription, useProjectHoverCard } from "./ProjectHoverCard";
@@ -50,10 +51,11 @@ import { useBoxesStore } from "../../stores/boxes";
 import { boxColor } from "../../lib/theme/boxColor";
 import { bindDragRelease, dragPlatform } from "../../lib/window/dragPlatform";
 import { useT } from "../../lib/i18n";
-import { CheckboxIcon, PauseIcon, SquareIcon } from "../common/icons/Icon";
+import { CheckboxIcon, PauseIcon, SquareIcon, UnlockIcon } from "../common/icons/Icon";
 import {
   agentFenceInstallCommand,
   agentFenceLabelKey,
+  agentFenceMarkLevel,
   agentFenceReasonKey,
   type AgentFenceStatus,
 } from "../../lib/agents/agentFence";
@@ -1481,6 +1483,8 @@ export function ProjectPill({
 
   const timerPaused = useTimerStore((s) => s.paused);
   const gitDirty = useGitDirtyStore((s) => s.byId[project.id]);
+  const fenceMark = useAgentFenceMarksStore((s) => s.byId[project.id]);
+  const fenceMarkLevel = agentFenceMarkLevel(fenceMark);
   const updateProjectDescription = useProjectsStore((s) => s.updateProjectDescription);
   const renameProject = useProjectsStore((s) => s.renameProject);
   const renameProjectFolder = useProjectsStore((s) => s.renameProjectFolder);
@@ -1816,7 +1820,7 @@ export function ProjectPill({
   const startPillDrag = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
     const pressed = e.target as HTMLElement;
-    if (pressed.closest(".pill-close-btn, .header-conn-lamps")) return;
+    if (pressed.closest(".pill-close-btn, .header-conn-lamps, .pill-fence-glyph")) return;
     // Ctrl/Cmd-click toggles the multi-selection (3b): no drag, no activation —
     // the whole gesture is the selection toggle. The suppressed native click
     // never reaches pill-main's onClick, so nothing else fires.
@@ -2367,6 +2371,12 @@ export function ProjectPill({
                   </span>
                 )}
               <UntestedTag id="projectPill.14" />
+              {fenceMark && fenceMark.live_unfenced > 0 && (
+                <span className="pill-fence-live-note">
+                  {t("pill.agentFenceLiveUnfenced", { count: fenceMark.live_unfenced })}
+                  <UntestedTag id="pill.agentFenceMark" />
+                </span>
+              )}
             </button>
             <button
               className="untested"
@@ -2867,6 +2877,28 @@ export function ProjectPill({
             }}
           >
             {vmRunning ? "▣" : "▢"}
+          </button>
+        )}
+        {/* Agent-fence marker: amber while agents of this project run outside
+            the fence right now (measured, so a tab started before the fence
+            was switched on counts), muted when only new tabs would. Opens the
+            pill menu, whose fence row says the same and flips the policy. */}
+        {fenceMarkLevel && (
+          <button
+            className={`pill-vm-glyph pill-fence-glyph is-${fenceMarkLevel}`}
+            title={
+              fenceMarkLevel === "live"
+                ? t(
+                    fenceMark!.policy_off
+                      ? "pill.agentFenceGlyphLiveOff"
+                      : "pill.agentFenceGlyphLive",
+                    { count: fenceMark!.live_unfenced },
+                  )
+                : t("pill.agentFenceGlyphOff")
+            }
+            onClick={handleContextMenu}
+          >
+            <UnlockIcon size={12} />
           </button>
         )}
         {project.remote && <RemoteConnMenu project={project} compact />}

@@ -1820,6 +1820,7 @@ pub fn run() {
             // Terminal
             commands::terminal::pty_spawn,
             commands::terminal::agent_fence_status,
+            commands::terminal::agent_fence_marks,
             commands::terminal::register_host_bound_tab,
             commands::terminal::pty_write,
             commands::terminal::pty_resize,

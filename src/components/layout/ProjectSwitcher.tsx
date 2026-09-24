@@ -20,6 +20,7 @@ import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { ROOT_SCOPE, useTabsStore } from "../../stores/tabs";
 import { useRootOverlayStore } from "../../stores/rootOverlay";
 import { useGitDirtyStore } from "../../stores/gitDirty";
+import { useAgentFenceMarksStore } from "../../stores/agentFenceMarks";
 import { projectStations, useKeyboardSteeringStore } from "../../stores/keyboardSteering";
 import { useQuiesce, saverInterval } from "../../stores/power";
 import { useFastMode } from "../../lib/agents/fastMode";
@@ -194,6 +195,28 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
     return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gitDotSignature, quiesce, fastMode]);
+
+  // Per-pill agent-fence markers: one `agent_fence_marks` call for every local
+  // pill. Remote (and VM) projects are left out — their agents run on the far
+  // host, where the local fence means nothing. Unlike the git dots this stays
+  // on in fast mode: it is a warning about what agents can reach, not an aid.
+  const fenceMarkSignature = useMemo(
+    () =>
+      activeProjects
+        .filter((p) => !p.remote)
+        .map((p) => p.id)
+        .join("|"),
+    [activeProjects],
+  );
+  useEffect(() => {
+    if (!fenceMarkSignature) return;
+    const ids = fenceMarkSignature.split("|");
+    const refresh = useAgentFenceMarksStore.getState().refresh;
+    const run = () => void refresh(ids);
+    run();
+    const id = window.setInterval(run, saverInterval(15000, quiesce));
+    return () => window.clearInterval(id);
+  }, [fenceMarkSignature, quiesce]);
 
   // Which box's slice the strip is showing (`null` = every active project).
   // A *view*, deliberately not the scope: clicking a member switches to that

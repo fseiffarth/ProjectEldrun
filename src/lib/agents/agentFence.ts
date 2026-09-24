@@ -80,3 +80,24 @@ export function agentFenceReasonKey(reason: string): AgentFenceReasonKey | null 
   };
   return keys[reason] ?? null;
 }
+
+/** The project pill's fence marker (`agent_fence_marks`): the policy for new
+ *  tabs, and how many live agent tabs run outside the fence right now —
+ *  measured from the agent processes, so a tab started before the fence was
+ *  switched on still counts. */
+export interface AgentFenceMark {
+  policy_off: boolean;
+  live_unfenced: number;
+}
+
+/** Which marker the pill shows. `live` outranks `off`: running agents with the
+ *  run of the home folder are the thing to act on; a policy with nothing
+ *  running under it is only a warning about the next tab. */
+export type AgentFenceMarkLevel = "live" | "off";
+
+export function agentFenceMarkLevel(mark: AgentFenceMark | undefined): AgentFenceMarkLevel | null {
+  if (!mark) return null;
+  if (mark.live_unfenced > 0) return "live";
+  if (mark.policy_off) return "off";
+  return null;
+}
