@@ -30,6 +30,18 @@ describe("the mail window's tabs", () => {
     expect(activeMailTab).toBe("msg:m1");
   });
 
+  it("opening a listed message gives it a tab; an unlisted one opens nothing", () => {
+    useMailStore.setState({ headers: [header("m1")], selectedMessageId: null });
+    const s = useMailStore.getState();
+    s.openMessage("m9");
+    expect(useMailStore.getState().mailTabs).toHaveLength(0);
+    s.openMessage("m1");
+    const { mailTabs, activeMailTab, selectedMessageId } = useMailStore.getState();
+    expect(mailTabs.map((t) => t.id)).toEqual(["msg:m1"]);
+    expect(activeMailTab).toBe("msg:m1");
+    expect(selectedMessageId).toBe("m1");
+  });
+
   it("closing the tab on screen lands on its left neighbour, the Inbox last", () => {
     const s = useMailStore.getState();
     s.openMessageTab(header("m1"));

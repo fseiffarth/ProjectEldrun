@@ -14,14 +14,23 @@ import {
   mailFormalizeReply,
   mailPgpAvailable,
   mailPgpRecipientsReady,
+  mailStagedPreview,
   stripFormatControls,
   useMailAiFeature,
 } from "../../lib/mail";
 import { useI18nStore, useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
-import type { MailAccount, MailBody, MailDraft, MailHeader, StagedAttachment } from "../../types/mail";
+import type {
+  MailAccount,
+  MailBody,
+  MailDraft,
+  MailHeader,
+  MailPreviewBlob,
+  StagedAttachment,
+} from "../../types/mail";
 import type { MailComposeMode } from "../../stores/mail";
 import { WarningIcon } from "../common/icons/Icon";
+import { AttachmentPreview } from "./MailAttachmentPreview";
 
 /**
  * The composer.
@@ -149,7 +158,11 @@ export function MailComposeDialog({
     ),
   );
   const [draftId, setDraftId] = useState(draft?.id ?? "");
-  const [staged, setStaged] = useState<StagedAttachment[]>([]);
+  // Seeded from the draft: an agent's draft may already carry files it
+  // attached by project and path, and Send attaches the store's set — a file
+  // the composer did not show would go out unseen.
+  const [staged, setStaged] = useState<StagedAttachment[]>(draft?.staged ?? []);
+  const [preview, setPreview] = useState<{ stagedId: string; blob: MailPreviewBlob } | null>(null);
   const [busy, setBusy] = useState<"" | "attach" | "save" | "send">("");
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
@@ -278,17 +291,43 @@ export function MailComposeDialog({
     };
   }
 
-  /** Persist the draft so it HAS an id — `mail_attach_pick` and `mail_draft_send`
-   *  are both keyed by one. Returns the id, or `""` when the save failed. */
-  async function ensureDraft(): Promise<string> {
+  /** Persist the draft. The backend answers with the staged set it holds,
+   *  which becomes what is on screen. `null` when the save failed. */
+  async function saveDraft(): Promise<MailDraft | null> {
     const saved = await mailDraftSave(buildDraft()).catch((err) => {
       setError(typeof err === "string" ? err : String(err));
       return null;
     });
-    if (!saved) return "";
+    if (!saved) return null;
     setDraftId(saved.id);
     setStaged(saved.staged ?? staged);
-    return saved.id;
+    return saved;
+  }
+
+  /** Persist the draft so it HAS an id — `mail_attach_pick` and `mail_draft_send`
+   *  are both keyed by one. Returns the id, or `""` when the save failed. */
+  async function ensureDraft(): Promise<string> {
+    return (await saveDraft())?.id ?? "";
+  }
+
+  // An agent's suggested recipients not yet in To — each a pill the user adds
+  // with a click. Never copied into To on their own.
+  const suggestions = (draft?.suggested_to ?? []).filter(
+    (a) => !parseRecipients(to).some((r) => r.toLowerCase() === a.toLowerCase()),
+  );
+  function addSuggestion(address: string) {
+    setTo((prev) => (prev.trim() ? `${prev.trimEnd()}\n${address}` : address));
+  }
+
+  async function togglePreview(stagedId: string) {
+    if (preview?.stagedId === stagedId) {
+      setPreview(null);
+      return;
+    }
+    if (!draftId) return;
+    const blob = await mailStagedPreview(draftId, stagedId).catch(() => null);
+    if (blob) setPreview({ stagedId, blob });
+    else setStatus(t("mail.previewUnavailable"));
   }
 
   async function doAttach() {
@@ -315,6 +354,7 @@ export function MailComposeDialog({
   async function doRemoveAttachment(stagedId: string) {
     if (draftId) await mailAttachRemove(draftId, stagedId).catch(() => {});
     setStaged((s) => s.filter((a) => a.staged_id !== stagedId));
+    if (preview?.stagedId === stagedId) setPreview(null);
   }
 
   async function doSaveDraft() {
@@ -354,12 +394,23 @@ export function MailComposeDialog({
     setBusy("send");
     setError("");
     setStatus("");
-    const id = await ensureDraft();
-    if (!id) {
+    // What the user is looking at, captured before the save. The save hands
+    // back the store's set; if that differs (a file staged or dropped behind
+    // the composer's back), stop here and show it rather than send it. The
+    // backend holds Send to the same ids.
+    const shown = staged.map((a) => a.staged_id).sort();
+    const saved = await saveDraft();
+    if (!saved) {
       setBusy("");
       return;
     }
-    const result = await mailDraftSend(id, { sign, encrypt }).catch((err) => {
+    const kept = (saved.staged ?? []).map((a) => a.staged_id).sort();
+    if (shown.length !== kept.length || shown.some((id, i) => id !== kept[i])) {
+      setBusy("");
+      setError(t("mail.attachmentsChangedBeforeSend"));
+      return;
+    }
+    const result = await mailDraftSend(saved.id, kept, { sign, encrypt }).catch((err) => {
       setError(typeof err === "string" ? err : String(err));
       return null;
     });
@@ -368,7 +419,13 @@ export function MailComposeDialog({
     if (result.error) {
       // Phase 3 sends directly and surfaces the failure — there is no retrying
       // outbox yet, so the message stays on screen rather than vanishing.
-      setError(`${t("mail.sendFailed")} ${result.error}`);
+      // The backend's half of the reviewed-set binding (`mail_draft_send`
+      // refuses a set that differs from `stagedIds`) says the same as ours.
+      setError(
+        result.error.includes("attachments changed")
+          ? t("mail.attachmentsChangedBeforeSend")
+          : `${t("mail.sendFailed")} ${result.error}`,
+      );
       return;
     }
     setStatus(t("mail.sent"));
@@ -396,13 +453,33 @@ export function MailComposeDialog({
             <label className="mail-field">
               <span className="mail-field-label">{t("mail.from")}</span>
               <select className="mail-input" value={from} onChange={(e) => setFrom(e.target.value)}>
+                {/* Several accounts often share one label (the owner's name),
+                    so the address rides along here. Display only — the value
+                    is the account id and the sent From: is untouched. */}
                 {accounts.map((a) => (
                   <option key={a.id} value={a.id}>
-                    {a.label || a.address}
+                    {a.label && a.label !== a.address ? `${a.label} <${a.address}>` : a.address}
                   </option>
                 ))}
               </select>
             </label>
+          )}
+          {suggestions.length > 0 && (
+            <div className="mail-suggested">
+              {suggestions.map((address) => (
+                <span key={address} className="mail-suggested-pill">
+                  <span>{t("mail.agentSuggests", { address: stripFormatControls(address) })}</span>
+                  <button
+                    type="button"
+                    className="settings-btn"
+                    onClick={() => addSuggestion(address)}
+                  >
+                    {t("mail.agentSuggestsAdd")}
+                  </button>
+                  <UntestedTag id="mail.agentSuggestedRecipient" />
+                </span>
+              ))}
+            </div>
           )}
           <label className="mail-field">
             <span className="mail-field-label">{t("mail.to")}</span>
@@ -505,21 +582,46 @@ export function MailComposeDialog({
           </div>
           {staged.length > 0 && (
             <div className="mail-staged">
-              {staged.map((a) => (
-                <span key={a.staged_id} className="mail-staged-chip">
-                  {stripFormatControls(a.filename)}
-                  <span className="mail-staged-size">{formatSize(a.size)}</span>
-                  <button
-                    type="button"
-                    className="mail-staged-remove"
-                    title={t("mail.removeAttachment")}
-                    onClick={() => void doRemoveAttachment(a.staged_id)}
+              {staged.map((a) => {
+                // An agent's file names its source (project/relative path), so
+                // a `paper.pdf` from one project is not taken for another's.
+                const agent = a.origin === "agent";
+                return (
+                  <span
+                    key={a.staged_id}
+                    className={`mail-staged-chip${agent ? " agent" : ""}`}
+                    title={agent ? t("mail.agentAttachmentTitle") : undefined}
                   >
-                    ×
-                  </button>
-                </span>
-              ))}
+                    {agent && <span className="mail-agent-mark">{t("mail.agentAttachmentMark")}</span>}
+                    {stripFormatControls(agent ? (a.source ?? a.filename) : a.filename)}
+                    <span className="mail-staged-size">{formatSize(a.size)}</span>
+                    {agent && <UntestedTag id="mail.agentAttachmentChip" />}
+                    {agent && draftId && (
+                      <button
+                        type="button"
+                        className="mail-staged-preview"
+                        onClick={() => void togglePreview(a.staged_id)}
+                      >
+                        {preview?.stagedId === a.staged_id
+                          ? t("mail.attachmentHidePreview")
+                          : t("mail.attachmentPreview")}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="mail-staged-remove"
+                      title={t("mail.removeAttachment")}
+                      onClick={() => void doRemoveAttachment(a.staged_id)}
+                    >
+                      ×
+                    </button>
+                  </span>
+                );
+              })}
             </div>
+          )}
+          {preview && staged.some((a) => a.staged_id === preview.stagedId) && (
+            <AttachmentPreview blob={preview.blob} />
           )}
 
           {/* Offered only where it can actually be honoured: the keyring needs

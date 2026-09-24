@@ -24,7 +24,6 @@ import {
   mailCryptoNoteKey,
   mailCryptoTone,
   openMailLink,
-  previewIsPdf,
   stripFormatControls,
 } from "../../lib/mail";
 import { useI18nStore, useT } from "../../lib/i18n";
@@ -33,7 +32,7 @@ import { useProjectsStore } from "../../stores/projects";
 import { useUse24h } from "../../lib/timeFormat";
 import { UntestedTag } from "../common/UntestedTag";
 import { MailAiMessageActions, MailAiProvenance } from "./MailAiMessageActions";
-import { MailPdfPreview } from "./MailPdfPreview";
+import { AttachmentPreview } from "./MailAttachmentPreview";
 import type {
   MailAttachmentMeta,
   MailAuthResults,
@@ -75,9 +74,6 @@ export interface MailMessageViewProps {
   onReply: (mode: "reply" | "replyAll" | "forward") => void;
   /** Open the composer pre-addressed to a `mailto:` link's recipient. */
   onComposeTo: (address: string) => void;
-  /** Give this message a mail-window tab of its own. Only the Inbox preview
-   *  passes it — a message already in its own tab has nowhere further to go. */
-  onOpenInTab?: () => void;
 }
 
 export function MailMessageView({
@@ -86,7 +82,6 @@ export function MailMessageView({
   loading,
   onReply,
   onComposeTo,
-  onOpenInTab,
 }: MailMessageViewProps) {
   const t = useT();
   const lang = useI18nStore((s) => s.lang);
@@ -172,16 +167,6 @@ export function MailMessageView({
           <button type="button" className="settings-btn" onClick={() => onReply("forward")}>
             {t("mail.composeForward")}
           </button>
-          {onOpenInTab && (
-            <button
-              type="button"
-              className="settings-btn"
-              title={t("mail.openInTabHint")}
-              onClick={onOpenInTab}
-            >
-              {t("mail.openInTab")}
-            </button>
-          )}
           {agentShareable && (
             <button
               type="button"
@@ -833,46 +818,5 @@ function AttachmentSaveDialog({
       </div>
     </div>,
     document.body,
-  );
-}
-
-/** In-pane preview of bounded bytes. Images render from a `data:` URI; a PDF is
- *  drawn page by page onto canvases (`MailPdfPreview` — no text layer, no
- *  links); anything textual renders as escaped text in a `<pre>`; everything
- *  else says so rather than offering a way out of the app. */
-function AttachmentPreview({ blob }: { blob: MailPreviewBlob }) {
-  const t = useT();
-  const isPdf = previewIsPdf(blob);
-  const isImage = !isPdf && blob.mime.startsWith("image/") && blob.mime !== "image/svg+xml";
-  const isText = !isPdf && (blob.mime.startsWith("text/") || blob.mime === "application/json");
-
-  let text = "";
-  if (isText) {
-    try {
-      text = new TextDecoder().decode(
-        Uint8Array.from(atob(blob.bytes_b64), (c) => c.charCodeAt(0)),
-      );
-    } catch {
-      text = "";
-    }
-  }
-
-  return (
-    <div className="mail-attachment-preview">
-      {isImage && (
-        <img
-          className="mail-attachment-image"
-          src={`data:${blob.mime};base64,${blob.bytes_b64}`}
-          alt=""
-        />
-      )}
-      {isPdf && <MailPdfPreview bytesB64={blob.bytes_b64} truncated={blob.truncated} />}
-      {isText && <pre className="mail-attachment-text">{text}</pre>}
-      {!isImage && !isText && !isPdf && (
-        <div className="mail-note">{t("mail.previewUnavailable")}</div>
-      )}
-      {/* A cut-off PDF already says it is too large; "shortened" would be false comfort. */}
-      {blob.truncated && !isPdf && <div className="mail-note">{t("mail.previewTruncated")}</div>}
-    </div>
   );
 }

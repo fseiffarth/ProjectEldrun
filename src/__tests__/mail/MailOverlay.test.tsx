@@ -44,6 +44,7 @@ beforeEach(() => {
     mailTabs: [],
     activeMailTab: MAIL_INBOX_TAB,
     overlayOpen: false,
+    accountDialog: null,
   });
 });
 afterEach(cleanup);
@@ -146,9 +147,49 @@ describe("the mail window", () => {
     expect(screen.getByTestId("mail-pane").dataset.visible).toBe("true");
   });
 
-  it("names itself in the title bar", () => {
+  it("names the account right of the ✉, as a dropdown", () => {
     act(() => useMailStore.getState().openOverlay());
     render(<MailOverlayHost />);
-    expect(document.querySelector(".mail-overlay-label")?.textContent).toBe("Mail");
+    const mark = document.querySelector(".mail-overlay-mark")!;
+    const trigger = mark.querySelector<HTMLButtonElement>(".mail-account-trigger")!;
+    expect(mark.querySelector(".mail-overlay-glyph")?.nextElementSibling).toBe(trigger);
+    expect(trigger.textContent).toContain("Me");
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("lists every account with a ✎ each, and Add account last", () => {
+    const work = { id: "a2", label: "Work", address: "me@work.example" } as MailAccount;
+    act(() => {
+      useMailStore.setState({ accounts: [account, work] });
+      useMailStore.getState().openOverlay();
+    });
+    render(<MailOverlayHost />);
+    fireEvent.click(document.querySelector(".mail-account-trigger")!);
+    const menu = document.querySelector(".mail-account-menu")!;
+    const rows = [...menu.querySelectorAll(".mail-account-menu-row")];
+    expect(rows.map((r) => r.querySelector(".mail-menu-name")?.textContent)).toEqual(["Me", "Work"]);
+    const items = [...menu.querySelectorAll("button.tab-new-menu-item")];
+    expect(items[items.length - 1]?.textContent).toBe("Add account");
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit Work" }));
+    expect(useMailStore.getState().accountDialog).toEqual({ account: work });
+    expect(document.querySelector(".mail-account-menu")).toBeNull();
+
+    fireEvent.click(document.querySelector(".mail-account-trigger")!);
+    fireEvent.click(screen.getByText("Add account"));
+    expect(useMailStore.getState().accountDialog).toEqual({ account: null });
+  });
+
+  it("a row opens that account's inbox", () => {
+    const work = { id: "a2", label: "Work", address: "me@work.example" } as MailAccount;
+    act(() => {
+      useMailStore.setState({ accounts: [account, work] });
+      useMailStore.getState().openOverlay();
+    });
+    render(<MailOverlayHost />);
+    fireEvent.click(document.querySelector(".mail-account-trigger")!);
+    fireEvent.click(screen.getByTitle("Open me@work.example"));
+    expect(useMailStore.getState().selectedAccountId).toBe("a2");
+    expect(useMailStore.getState().activeMailTab).toBe(MAIL_INBOX_TAB);
   });
 });

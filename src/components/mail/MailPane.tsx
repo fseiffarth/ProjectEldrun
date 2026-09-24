@@ -1,15 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { MAIL_PAGE_SIZE, unreadTotal, useMailStore } from "../../stores/mail";
+import { MAIL_PAGE_SIZE, useMailStore } from "../../stores/mail";
 import { useSettingsStore } from "../../stores/settings";
 import { onMailSync, mailAiAllowed, planMailDelete } from "../../lib/mail";
 import { useT } from "../../lib/i18n";
 import { Toggle } from "../common/Toggle";
 import { UntestedTag } from "../common/UntestedTag";
-import { stripFormatControls } from "../../lib/textSafety";
 import { useDialogs } from "../common/PromptDialogs";
-import type { MailAccount, MailHeader, MailPriority, MailSort } from "../../types/mail";
+import type { MailDraft, MailHeader, MailPriority, MailSort } from "../../types/mail";
 import { MailList, type MailCheckMode } from "./MailList";
-import { MailMessageView } from "./MailMessageView";
+import { MailAgentDraftList } from "./MailAgentDraftList";
 import { MailAccountDialog } from "./MailAccountDialog";
 import { MailEncryptionDialog } from "./MailEncryptionDialog";
 import { MailFiltersDialog } from "./MailFiltersDialog";
@@ -22,7 +21,8 @@ import type { MailEncryptionState } from "../../types/mail";
 import { KeyIcon, LockIcon, SparkleIcon, UnlockIcon } from "../common/icons/Icon";
 
 /**
- * The mail client: folder rail / header list / message view.
+ * The mail client's Inbox tab: folder rail / full-width header list. A message
+ * opens in a tab of its own (`MailOverlay`), never in a preview pane here.
  *
  * **There is no mail *tab*.** This pane has exactly one host — `MailOverlayHost`,
  * behind the header's ✉ button. It was a tab too, once, and the tab was the half
@@ -77,14 +77,18 @@ export function MailPane({ visible }: MailPaneProps) {
   const unreadOnly = useMailStore((s) => s.unreadOnly);
   const agentOnly = useMailStore((s) => s.agentOnly);
   const agentMarks = useMailStore((s) => s.agentMarks);
-  const body = useMailStore((s) => s.body);
   const loadingHeaders = useMailStore((s) => s.loadingHeaders);
-  const loadingBody = useMailStore((s) => s.loadingBody);
   const sync = useMailStore((s) => s.sync);
   const error = useMailStore((s) => s.error);
 
-  const [accountDialog, setAccountDialog] = useState<{ account: MailAccount | null } | null>(null);
+  // Opened from the title bar's accounts dropdown or the empty state below;
+  // hosted here so the after-save steps (reload, Mail AI offer) live once.
+  const accountDialog = useMailStore((s) => s.accountDialog);
   const agentDrafts = useMailStore((s) => s.agentDrafts);
+  // The rail's "Drafted by agents" entry is open in place of a folder. Local,
+  // not the store's folder/priority selection: those drive paging, search and
+  // sync reads a draft list has none of.
+  const [draftsOpen, setDraftsOpen] = useState(false);
   // The local store's encryption. Read once when the pane first becomes visible
   // rather than on mount: the read *opens the store* (that is what resolves the
   // unlock), and a pane that is mounted-but-hidden must not be the thing that
@@ -165,9 +169,20 @@ export function MailPane({ visible }: MailPaneProps) {
   }, []);
 
   const folders = selectedAccountId ? (foldersByAccount[selectedAccountId] ?? []) : [];
+  const accountDrafts = useMemo(
+    () => agentDrafts.filter((d) => d.account_id === selectedAccountId),
+    [agentDrafts, selectedAccountId],
+  );
+  const openDraft = useCallback((d: MailDraft) => {
+    void useMailStore.getState().openAgentDraft(d);
+  }, []);
+  // Any other list chosen from outside the rail (the header dropdown, a
+  // notification) leaves the drafts too.
+  useEffect(() => {
+    setDraftsOpen(false);
+  }, [selectedAccountId, selectedFolderId, selectedPriority]);
   const selectedAccount = accounts.find((a) => a.id === selectedAccountId) ?? null;
   const aiAccount = aiAccountId ? (accounts.find((a) => a.id === aiAccountId) ?? null) : null;
-  const selectedHeader = headers.find((h) => h.id === selectedMessageId);
   const syncState = selectedAccountId ? sync[selectedAccountId] : undefined;
   const syncing = syncState?.phase === "start" || syncState?.phase === "folder" || syncState?.phase === "headers";
 
@@ -224,16 +239,9 @@ export function MailPane({ visible }: MailPaneProps) {
     (h: MailHeader) => void useMailStore.getState().setFlag(h.id, "seen", !h.seen),
     [],
   );
-  const selectMessage = useCallback(
-    (id: string) => void useMailStore.getState().selectMessage(id),
-    [],
-  );
-  // A double-click (or the preview's "Open in tab") gives the message a tab of
-  // its own in the mail window, beside this Inbox tab.
-  const openMessageTab = useCallback((id: string) => {
-    const header = useMailStore.getState().headers.find((h) => h.id === id);
-    if (header) useMailStore.getState().openMessageTab(header);
-  }, []);
+  // No preview pane: opening a message gives it a tab of its own in the mail
+  // window, beside this Inbox tab, and the list keeps the full width.
+  const openMessage = useCallback((id: string) => useMailStore.getState().openMessage(id), []);
   const checkRow = useCallback((h: MailHeader, mode: MailCheckMode, order: string[]) => {
     const store = useMailStore.getState();
     if (mode === "toggle") store.toggleChecked(h.id);
@@ -358,87 +366,23 @@ export function MailPane({ visible }: MailPaneProps) {
        and leave the pane painted on top of its sibling. Same shape as
        `CalendarPane`. */
     <div className="mail-pane" style={{ display: visible === false ? "none" : undefined }}>
-      {/* ── The header band: everything that is not about one folder ───────
-          Two rows, above the action row on purpose. What sits here is *which
-          mailbox am I looking at* (the accounts) and *the two lists that belong
-          to none of them* (Important/Urgent, plus the keyword rules that fill
-          them) — questions you answer before you press Check mail, not while
-          reading a folder. Below it the toolbar acts on that selection, and the
-          rail is then free to be one thing only: this account's folders.
-
-          Horizontal rather than a rail column because both groups are
-          *switchers* with few entries and no hierarchy; stacked in the rail they
-          were read as a tree, which is what made two cross-account lists look
-          like they belonged to the first account underneath them. Side by side
-          rather than stacked for the same reason one more time: one above the
-          other still reads as an order, and neither of these two comes first.
-          Accounts left (where reading starts, and what the toolbar below acts
-          on), the cross-account lists right, with a divider between them. */}
+      {/* ── The header band: the two lists that belong to no account ──────
+          Important/Urgent plus the keyword rules that fill them, above the
+          action row on purpose: which list you are reading is a question you
+          answer before you press Check mail, not while reading a folder. The
+          accounts are not here — they are the title bar's dropdown right of
+          the ✉ (`MailAccountMenu`), so the band holds only what spans every
+          account and the rail below is one thing only: that account's
+          folders. A row of chips rather than a rail column because stacked in
+          the rail they read as a tree, which made cross-account lists look
+          like they belonged to the account underneath them. */}
       <div className="mail-headerband">
-        <div className="mail-headerband-group">
-          <span className="mail-headerband-label">{t("mail.accounts")}</span>
-          {accounts.map((a) => (
-            <button
-              key={a.id}
-              type="button"
-              /* Lit only while a *folder* of it is on screen. The account
-                 selection itself survives a priority list — the rail below
-                 still needs an account to list folders for, and leaving the
-                 list has to put you back where you were — but the chip is a
-                 claim about what you are *reading*, and a cross-account list
-                 is not this account's mail. The header dropdown
-                 (`MailIndicator`) already draws its account rows by exactly
-                 this rule; this is that rule, not a second one. */
-              className={`mail-account-chip${
-                a.id === selectedAccountId && !selectedPriority ? " selected" : ""
-              }`}
-              title={a.address}
-              onClick={() => void useMailStore.getState().selectAccount(a.id)}
-              onDoubleClick={() => setAccountDialog({ account: a })}
-            >
-              {/* The two names are not interchangeable: `display_name` is this
-                  machine's own nickname for the mailbox and belongs on the
-                  badge, `label` is the *sending* identity (the From: a
-                  recipient reads) and is only the fallback here. The folders
-                  heading below deliberately stays on `label` — the rail names
-                  the account you send as, and giving it the nickname too would
-                  make the nickname the only name in the pane. */}
-              <span className="mail-chip-name">{a.display_name || a.label || a.address}</span>
-              {unreadTotal(foldersByAccount[a.id]) > 0 && (
-                <span className="mail-rail-badge">{unreadTotal(foldersByAccount[a.id])}</span>
-              )}
-            </button>
-          ))}
-          <button
-            type="button"
-            className="settings-btn sm"
-            onClick={() => setAccountDialog({ account: null })}
-          >
-            {t("mail.addAccount")}
-          </button>
-          {selectedAccountId && (
-            <button
-              type="button"
-              className="settings-btn sm"
-              onClick={() =>
-                setAccountDialog({
-                  account: accounts.find((a) => a.id === selectedAccountId) ?? null,
-                })
-              }
-            >
-              {t("mail.editAccount")}
-            </button>
-          )}
-        </div>
-
-        <div className="mail-headerband-spacer" />
-
         {/* Rendered unconditionally, never only when something is marked: an
             empty Important list is where the feature is discovered, and a group
             that appears after you have already used it cannot teach it. The
             scope label is what keeps this group from reading as a property of
-            the account selected to its left. */}
-        <div className="mail-headerband-group mail-headerband-group-global">
+            the account picked in the title bar. */}
+        <div className="mail-headerband-group">
           <span className="mail-headerband-label">
             {t("mail.priority")}
             <span className="mail-headerband-scope">{t("mail.priorityAllAccounts")}</span>
@@ -446,19 +390,19 @@ export function MailPane({ visible }: MailPaneProps) {
           <button
             type="button"
             className={`mail-priority-chip important${
-              selectedPriority === "important" ? " selected" : ""
+              selectedPriority === "important" && !draftsOpen ? " selected" : ""
             }`}
-            onClick={() => void useMailStore.getState().openPriority("important")}
+            onClick={() => {
+              setDraftsOpen(false);
+              void useMailStore.getState().openPriority("important");
+            }}
           >
             <span className="mail-rail-priority-mark" aria-hidden="true">
               !
             </span>
-            {/* The label goes in the same span an account chip's does. A bare
-                text node here was the whole bug: it cannot shrink or ellipsize,
-                so on a tight row the chip's content ran past its own padding
-                and the count sat outside the pill. The account chips never did
-                that because their name has always been wrapped — so this copies
-                what already works rather than inventing a second answer. */}
+            {/* The label in its own span: a bare text node cannot shrink or
+                ellipsize, so on a tight row the chip's content ran past its own
+                padding and the count sat outside the pill. */}
             <span className="mail-chip-name">{t("mail.important")}</span>
             {priorityCounts.important > 0 && (
               <span
@@ -481,9 +425,12 @@ export function MailPane({ visible }: MailPaneProps) {
           <button
             type="button"
             className={`mail-priority-chip urgent${
-              selectedPriority === "urgent" ? " selected" : ""
+              selectedPriority === "urgent" && !draftsOpen ? " selected" : ""
             }`}
-            onClick={() => void useMailStore.getState().openPriority("urgent")}
+            onClick={() => {
+              setDraftsOpen(false);
+              void useMailStore.getState().openPriority("urgent");
+            }}
           >
             <span className="mail-rail-priority-mark" aria-hidden="true">
               !!
@@ -646,33 +593,6 @@ export function MailPane({ visible }: MailPaneProps) {
             store's `sort`/`sortDesc` down and handing the answer back. */}
       </div>
 
-      {agentDrafts.length > 0 && (
-        <div className="mail-agent-drafts" aria-label={t("mail.agentDrafts")}>
-          <span className="mail-agent-drafts-title">
-            {t("mail.agentDrafts")} <UntestedTag id="mail.agentDrafts" />
-          </span>
-          {agentDrafts.map((d) => (
-            <button
-              key={d.id}
-              type="button"
-              className="mail-agent-draft-row"
-              title={t(d.origin === "reader" ? "mail.agentDraftReaderBanner" : "mail.agentDraftBanner")}
-              onClick={() => void useMailStore.getState().openAgentDraft(d)}
-            >
-              <span className={`mail-agent-mark${d.origin === "reader" ? " reader" : ""}`}>
-                {t(d.origin === "reader" ? "mail.agentMarkReader" : "mail.agentMark")}
-              </span>
-              <span className="mail-agent-draft-subject">
-                {stripFormatControls(d.subject) || t("mail.noSubject")}
-              </span>
-              <span className="mail-agent-draft-account">
-                {accounts.find((a) => a.id === d.account_id)?.address ?? ""}
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
-
       {error && (
         <div className="mail-error-strip">
           <span>{error}</span>
@@ -732,13 +652,42 @@ export function MailPane({ visible }: MailPaneProps) {
             <button
               key={f.id}
               type="button"
-              className={`mail-rail-folder${f.id === selectedFolderId ? " selected" : ""}`}
-              onClick={() => void useMailStore.getState().openFolder(f.id)}
+              className={`mail-rail-folder${
+                f.id === selectedFolderId && !draftsOpen ? " selected" : ""
+              }`}
+              onClick={() => {
+                setDraftsOpen(false);
+                void useMailStore.getState().openFolder(f.id);
+              }}
             >
               <span className="mail-rail-folder-name">{f.name}</span>
               {f.unread > 0 && <span className="mail-rail-badge">{f.unread}</span>}
             </button>
           ))}
+          {/* Drafts an agent wrote for this account: a section of its own at
+              the foot of the rail, divided off and in its own colour, since they
+              sit in no server folder and nobody here wrote them. Selecting it
+              lists them the way a folder lists messages; a draft opens in the
+              composer, never sends. Only the selected account's — the rail is
+              that account's, and another account's draft listed here would read
+              as this mailbox's. Every draft, orphans included, is also a row in
+              the title bar's ✓ Approvals panel. */}
+          {(accountDrafts.length > 0 || draftsOpen) && (
+            <div className="mail-rail-agent-section">
+              <div className="mail-rail-title">{t("mail.agentSection")}</div>
+              <button
+                type="button"
+                className={`mail-rail-folder mail-rail-agent-drafts${draftsOpen ? " selected" : ""}`}
+                onClick={() => setDraftsOpen(true)}
+              >
+                <span className="mail-rail-folder-name">{t("mail.agentDrafts")}</span>
+                <UntestedTag id="mail.agentDrafts" />
+                {accountDrafts.length > 0 && (
+                  <span className="mail-rail-badge">{accountDrafts.length}</span>
+                )}
+              </button>
+            </div>
+          )}
         </div>
 
         {accountsLoaded && accounts.length === 0 ? (
@@ -748,11 +697,14 @@ export function MailPane({ visible }: MailPaneProps) {
             <button
               type="button"
               className="settings-btn primary"
-              onClick={() => setAccountDialog({ account: null })}
+              onClick={() => useMailStore.getState().openAccountDialog(null)}
             >
               {t("mail.addAccount")}
             </button>
           </div>
+        ) : (
+          draftsOpen ? (
+          <MailAgentDraftList drafts={accountDrafts} onOpen={openDraft} />
         ) : (
           <>
             <MailList
@@ -760,8 +712,7 @@ export function MailPane({ visible }: MailPaneProps) {
               selectedId={selectedMessageId}
               checkedIds={checkedIds}
               loading={loadingHeaders}
-              onSelect={selectMessage}
-              onOpen={openMessageTab}
+              onOpen={openMessage}
               onCheck={checkRow}
               onClearChecks={clearChecks}
               onDelete={deleteRows}
@@ -796,32 +747,8 @@ export function MailPane({ visible }: MailPaneProps) {
               agentOnly={agentOnly}
               {...(selectedAccountShareable && selectedFolderId ? { onAgentOnly: setAgentOnly } : {})}
             />
-            <MailMessageView
-              header={selectedHeader}
-              body={body}
-              loading={loadingBody}
-              onReply={(mode) =>
-                selectedHeader &&
-                useMailStore.getState().openComposeTab({
-                  mode,
-                  accountId: selectedHeader.account_id,
-                  source: { header: selectedHeader, body },
-                })
-              }
-              onComposeTo={(address) =>
-                selectedAccountId &&
-                useMailStore
-                  .getState()
-                  .openComposeTab({ mode: "new", accountId: selectedAccountId, toAddress: address })
-              }
-              onOpenInTab={
-                selectedHeader
-                  ? () => useMailStore.getState().openMessageTab(selectedHeader)
-                  : undefined
-              }
-            />
           </>
-        )}
+        ))}
       </div>
 
       {filtersDialog && (
@@ -856,14 +783,14 @@ export function MailPane({ visible }: MailPaneProps) {
       {accountDialog && (
         <MailAccountDialog
           account={accountDialog.account}
-          onClose={() => setAccountDialog(null)}
+          onClose={() => useMailStore.getState().closeAccountDialog()}
           onSaved={(id) => {
             // Creating a new account? Offer its Mail AI (local) settings right
             // away — the toggles are per account, so a fresh mailbox starts with
             // none set, and the moment to ask is now rather than never. Only when
             // the whole feature is switched on; otherwise there is nothing to set.
             const isNew = accountDialog.account === null;
-            setAccountDialog(null);
+            useMailStore.getState().closeAccountDialog();
             // Saved settings are what a paused background check waits for.
             useMailStore.getState().clearSyncState(id);
             void useMailStore
@@ -874,7 +801,7 @@ export function MailPane({ visible }: MailPaneProps) {
               });
           }}
           onDelete={(id) => {
-            setAccountDialog(null);
+            useMailStore.getState().closeAccountDialog();
             void useMailStore.getState().removeAccount(id);
           }}
         />

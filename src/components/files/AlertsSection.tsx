@@ -180,10 +180,10 @@ export function AlertsSection({ onClose }: AlertsSectionProps) {
   /**
    * Hand the row off to the surface that owns it.
    *
-   * Mail lands *on the message*: the priority page is opened and the message
-   * selected before the overlay goes up, which is `TodoMailRail`'s order and for
-   * its reason — selecting resolves the header out of the loaded page, so a
-   * selection made before the page lands renders a body with no envelope.
+   * Mail lands *on the message*: the priority page is loaded before the message
+   * gets its tab, which is `TodoMailRail`'s order and for its reason — opening
+   * resolves the header out of the loaded page, so one made before the page
+   * lands opens nothing.
    *
    * The calendar has no per-event focus request in `stores/calendar/calendar`, so an
    * event row opens the calendar overlay plainly rather than inventing one. A
@@ -195,8 +195,8 @@ export function AlertsSection({ onClose }: AlertsSectionProps) {
     if (item.kind === "mail") {
       const mail = useMailStore.getState();
       await mail.openPriority(item.source.mailPriority ?? "urgent").catch(() => {});
-      if (item.source.mailId) await mail.selectMessage(item.source.mailId).catch(() => {});
       mail.openInbox();
+      if (item.source.mailId) mail.openMessage(item.source.mailId);
       return;
     }
     if (item.kind === "event") {

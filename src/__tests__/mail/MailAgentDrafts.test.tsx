@@ -7,6 +7,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => invoke(
 
 import { MailComposeDialog } from "../../components/mail/MailComposeDialog";
 import { RootReviewStrip } from "../../components/layout/RootReviewStrip";
+import { MailAgentDraftList } from "../../components/mail/MailAgentDraftList";
 import { useRootReviewStore } from "../../stores/rootReview";
 import { useMailStore } from "../../stores/mail";
 
@@ -99,5 +100,24 @@ describe("drafts an agent wrote", () => {
     invoke.mockRejectedValueOnce("mail is locked");
     await useMailStore.getState().loadAgentDrafts();
     expect(useMailStore.getState().agentDrafts).toEqual([]);
+  });
+
+  it("the rail entry lists the account's drafts and a click opens the composer", () => {
+    const onOpen = vi.fn();
+    const d = draft({ to: ["bob@friends.example"], subject: "Offer‮" });
+    render(<MailAgentDraftList drafts={[d]} onOpen={onOpen} />);
+    expect(screen.getByText("bob@friends.example")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Send/ })).toBeNull();
+    fireEvent.click(screen.getByText("Offer").closest(".mail-row")!);
+    expect(onOpen).toHaveBeenCalledWith(d);
+  });
+
+  it("an empty list says so; a draft without recipients says that, not blank", () => {
+    render(<MailAgentDraftList drafts={[]} onOpen={vi.fn()} />);
+    expect(screen.getByText("No agent drafts for this account.")).toBeTruthy();
+    cleanup();
+    render(<MailAgentDraftList drafts={[draft({ body_text: "<b>Dear</b>" })]} onOpen={vi.fn()} />);
+    expect(screen.getByText("(no recipient)")).toBeTruthy();
+    expect(screen.getByText("<b>Dear</b>")).toBeTruthy();
   });
 });

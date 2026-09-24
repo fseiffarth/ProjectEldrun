@@ -53,20 +53,20 @@ function header(over: Partial<MailHeader> & { id: string }): MailHeader {
 const HEADERS = ["m1", "m2", "m3"].map((id) => header({ id }));
 
 interface Calls {
-  selected: string[];
+  opened: string[];
   checks: Array<{ id: string; mode: MailCheckMode }>;
   deleted: string[][];
 }
 
 function renderList(over: { checkedIds?: string[]; purged?: number; query?: string; searchRemote?: boolean; searchPartial?: boolean } = {}) {
-  const calls: Calls = { selected: [], checks: [], deleted: [] };
+  const calls: Calls = { opened: [], checks: [], deleted: [] };
   render(
     <MailList
       headers={HEADERS}
       selectedId={null}
       checkedIds={over.checkedIds ?? []}
       loading={false}
-      onSelect={(id) => calls.selected.push(id)}
+      onOpen={(id) => calls.opened.push(id)}
       onCheck={(h, mode) => calls.checks.push({ id: h.id, mode })}
       onClearChecks={() => {}}
       onDelete={(rows) => calls.deleted.push(rows.map((h) => h.id))}
@@ -113,7 +113,7 @@ describe("clicking a row", () => {
   it("opens the message and makes it the whole selection", async () => {
     const calls = renderList();
     await userEvent.click(row("m2"));
-    expect(calls.selected).toEqual(["m2"]);
+    expect(calls.opened).toEqual(["m2"]);
     expect(calls.checks).toEqual([{ id: "m2", mode: "only" }]);
   });
 
@@ -123,14 +123,14 @@ describe("clicking a row", () => {
   it("ctrl-click picks the row and opens nothing", () => {
     const calls = renderList();
     fireEvent.click(row("m2"), { ctrlKey: true });
-    expect(calls.selected).toEqual([]);
+    expect(calls.opened).toEqual([]);
     expect(calls.checks).toEqual([{ id: "m2", mode: "toggle" }]);
   });
 
   it("shift-click asks for a range and opens nothing", () => {
     const calls = renderList();
     fireEvent.click(row("m3"), { shiftKey: true });
-    expect(calls.selected).toEqual([]);
+    expect(calls.opened).toEqual([]);
     expect(calls.checks).toEqual([{ id: "m3", mode: "range" }]);
   });
 });
@@ -139,7 +139,7 @@ describe("right-clicking a row", () => {
   it("does not open the message", async () => {
     const calls = renderList();
     await userEvent.pointer({ keys: "[MouseRight]", target: row("m2") });
-    expect(calls.selected).toEqual([]);
+    expect(calls.opened).toEqual([]);
     // Ticked instead, so the menu visibly names what it will act on.
     expect(calls.checks).toEqual([{ id: "m2", mode: "only" }]);
   });
@@ -148,7 +148,7 @@ describe("right-clicking a row", () => {
     const calls = renderList({ checkedIds: ["m1", "m2"] });
     await userEvent.pointer({ keys: "[MouseRight]", target: row("m2") });
     expect(calls.checks).toEqual([]);
-    expect(calls.selected).toEqual([]);
+    expect(calls.opened).toEqual([]);
   });
 
   it("names one subject for one row", async () => {
@@ -228,7 +228,7 @@ describe("the row's ✕", () => {
     const calls = renderList();
     await userEvent.click(deleteBtn("m2"));
     expect(calls.deleted).toEqual([["m2"]]);
-    expect(calls.selected).toEqual([]);
+    expect(calls.opened).toEqual([]);
     expect(calls.checks).toEqual([]);
   });
 

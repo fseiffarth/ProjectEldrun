@@ -62,9 +62,8 @@ export interface MailListProps {
   /** The rows ticked for a bulk action (`stores/mail`'s `checkedIds`). */
   checkedIds: string[];
   loading: boolean;
-  onSelect: (id: string) => void;
-  /** Double-click: open the message in its own mail-window tab. */
-  onOpen?: (id: string) => void;
+  /** A plain click or Enter: open the message in its own mail-window tab. */
+  onOpen: (id: string) => void;
   /**
    * A row was picked for the bulk selection. `only` replaces the set (a plain
    * click, and a right-click on a row outside it), `toggle` adds or removes one
@@ -191,7 +190,6 @@ function MailListImpl({
   selectedId,
   checkedIds,
   loading,
-  onSelect,
   onOpen,
   onCheck,
   onClearChecks,
@@ -305,7 +303,7 @@ function MailListImpl({
   };
 
   return (
-    <div className="mail-list">
+    <div className="mail-list mail-list-full">
       <div className="mail-list-filter" role="search">
         <input
           className="mail-input mail-search"
@@ -419,10 +417,6 @@ function MailListImpl({
             role="button"
             tabIndex={0}
             title={t("mail.selectHint")}
-            onDoubleClick={(e) => {
-              if (!onOpen || e.shiftKey || e.ctrlKey || e.metaKey) return;
-              onOpen(h.id);
-            }}
             onClick={(e) => {
               // A modified click picks rows and deliberately opens nothing:
               // building a selection of ten messages must not fetch ten bodies
@@ -438,17 +432,17 @@ function MailListImpl({
                 onCheck(h, "toggle", order);
                 return;
               }
-              // A plain click is both: open this message, and make it the whole
-              // selection — so the ticks never survive as an invisible set that
-              // the next right-click would act on.
+              // A plain click is both: open this message in its tab, and make it
+              // the whole selection — so the ticks never survive as an invisible
+              // set that the next right-click would act on.
               onCheck(h, "only", order);
-              onSelect(h.id);
+              onOpen(h.id);
             }}
             onKeyDown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault();
                 onCheck(h, "only", order);
-                onSelect(h.id);
+                onOpen(h.id);
                 return;
               }
               if (e.key === "Delete") {

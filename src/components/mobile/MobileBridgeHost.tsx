@@ -1620,7 +1620,7 @@ async function mailReply(
       ...(header.rfc_message_id ? { in_reply_to: header.rfc_message_id } : {}),
       staged: [],
     });
-    const result = await mailDraftSend(saved.id);
+    const result = await mailDraftSend(saved.id, saved.staged.map((a) => a.staged_id));
     if (result.error) {
       return { status: "error", code: "mail_reply_failed", message: boundedText(result.error, 400).value };
     }

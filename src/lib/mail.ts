@@ -639,10 +639,14 @@ export function mailDraftDiscard(draftId: string): Promise<void> {
  */
 export function mailDraftSend(
   draftId: string,
+  /** The attachment set the user was shown. The backend refuses the send when
+   *  the store's set differs — the reviewed set is exactly what is sent. */
+  stagedIds: string[],
   opts: { sign?: boolean; encrypt?: boolean } = {},
 ): Promise<MailSendResult> {
   return invoke<MailSendResult>("mail_draft_send", {
     draftId,
+    stagedIds,
     sign: opts.sign ?? false,
     encrypt: opts.encrypt ?? false,
   });
@@ -719,6 +723,12 @@ export function mailAttachmentPreview(
   partId: string,
 ): Promise<MailPreviewBlob> {
   return invoke<MailPreviewBlob>("mail_attachment_preview", { messageId, partId });
+}
+
+/** Bounded bytes of a file staged on a draft — the sealed outbox copy, which
+ *  is what a send attaches — for the composer's review. */
+export function mailStagedPreview(draftId: string, stagedId: string): Promise<MailPreviewBlob> {
+  return invoke<MailPreviewBlob>("mail_staged_preview", { draftId, stagedId });
 }
 
 // ── Events ───────────────────────────────────────────────────────────────────

@@ -3,7 +3,6 @@ import {
   mailAccountDelete,
   mailAgentDrafts,
   mailAccountsList,
-  mailBody,
   mailFlag,
   mailFolders,
   mailHeaders,
@@ -196,11 +195,7 @@ interface MailStore {
    *  index). Re-read after every mark and whenever the account changes. */
   agentMarks: string[];
 
-  body: MailBody | null;
-  /** This body was fetched with remote references resolved (an explicit click). */
-
   loadingHeaders: boolean;
-  loadingBody: boolean;
   /** Per-account sync progress, keyed by account id. */
   sync: Record<string, MailSyncState>;
   /** The last thing that went wrong, shown as a dismissible strip. */
@@ -233,6 +228,14 @@ interface MailStore {
    *  plain ✉ toggle uses `openOverlay`, which keeps whichever tab was last up. */
   openInbox: () => void;
   closeOverlay: () => void;
+
+  /** The account editor on screen: `{ account: null }` adds one. In the store
+   *  because two surfaces open it — the title bar's accounts dropdown (✎ per
+   *  row, Add account last) and the pane's empty state — and `MailPane` hosts
+   *  the one dialog, so its after-save steps stay in one place. */
+  accountDialog: { account: MailAccount | null } | null;
+  openAccountDialog: (account: MailAccount | null) => void;
+  closeAccountDialog: () => void;
 
   /** Drafts an agent wrote through the root MCP (`origin` set) that the user
    *  has not yet sent, discarded or edited. Read by the pane's strip and by the
@@ -348,7 +351,12 @@ interface MailStore {
    */
   stepPage: (offset: number) => Promise<void>;
 
-  selectMessage: (messageId: string | null) => Promise<void>;
+  /**
+   * Open a message of the loaded page in its own mail-window tab — the Inbox
+   * has no preview pane, so this is what a click on a row does. Also the row
+   * the list marks as last opened. A message not in the page opens nothing.
+   */
+  openMessage: (messageId: string) => void;
   /** Tick exactly this row and nothing else, and anchor a later range on it. */
   checkOnly: (messageId: string) => void;
   /** Ctrl-click: add or remove one row, leaving the rest of the set alone. */
@@ -404,7 +412,7 @@ function defaultFolder(folders: MailFolder[]): MailFolder | undefined {
  * at once — and over an encrypted store a search scans until its bound, which
  * makes the *earlier*, shorter query the slow one often enough to matter. Every
  * other await in this store already guards against its own staleness
- * (`selectMessage` re-checks `selectedMessageId`); this is `loadPage`'s
+ * (a message tab's body read checks it is still mounted); this is `loadPage`'s
  * equivalent, and it has to be a counter rather than a re-read of the selection
  * because two reads for the *same* folder — as a query changes — differ only in
  * which request they are.
@@ -453,10 +461,7 @@ export const useMailStore = create<MailStore>((set, get) => ({
   agentOnly: false,
   agentMarks: [],
 
-  body: null,
-
   loadingHeaders: false,
-  loadingBody: false,
   sync: {},
   error: null,
 
@@ -496,6 +501,10 @@ export const useMailStore = create<MailStore>((set, get) => ({
     clearQueuedSearchTimer();
     set({ overlayOpen: false });
   },
+
+  accountDialog: null,
+  openAccountDialog: (account) => set({ accountDialog: { account } }),
+  closeAccountDialog: () => set({ accountDialog: null }),
 
   agentDrafts: [],
   loadAgentDrafts: async () => {
@@ -644,7 +653,7 @@ export const useMailStore = create<MailStore>((set, get) => ({
     if (keep && keep !== current) {
       await get().selectAccount(keep);
     } else if (!keep) {
-      set({ selectedAccountId: null, selectedFolderId: null, headers: [], body: null });
+      set({ selectedAccountId: null, selectedFolderId: null, headers: [] });
     } else {
       // Same account still selected, so nothing above refetched anything — but
       // an account edit can change what the *already-loaded* headers mean.
@@ -680,7 +689,6 @@ export const useMailStore = create<MailStore>((set, get) => ({
       headers: [],
       headerTotal: 0,
       headerOffset: 0,
-      body: null,
       agentMarks: [],
       agentOnly: false,
         });
@@ -706,7 +714,6 @@ export const useMailStore = create<MailStore>((set, get) => ({
       // Exclusive with the priority list — see `selectedPriority`.
       selectedPriority: null,
       selectedMessageId: null,
-      body: null,
           headerOffset: 0,
     });
     await get().loadPage(0);
@@ -722,7 +729,6 @@ export const useMailStore = create<MailStore>((set, get) => ({
       selectedPriority: priority,
       selectedFolderId: null,
       selectedMessageId: null,
-      body: null,
       headerOffset: 0,
       agentOnly: false,
     });
@@ -971,25 +977,12 @@ export const useMailStore = create<MailStore>((set, get) => ({
     await get().loadPage(Math.max(0, offset - left));
   },
 
-  selectMessage: async (messageId) => {
-    if (!messageId) {
-      set({ selectedMessageId: null, body: null });
-      return;
-    }
-    // Every message starts with remote content blocked, whatever the last one did.
-    set({ selectedMessageId: messageId, body: null, loadingBody: true });
-    const body = await mailBody(messageId, false).catch((err) => {
-      set({ error: reason(err) });
-      return null;
-    });
-    // A slower body for a message the user already navigated away from must not
-    // overwrite the one now on screen.
-    if (get().selectedMessageId !== messageId) return;
-    set({ loadingBody: false, body });
-    // Reading a message marks it seen locally and on the server; a failure there
-    // is not worth a banner, but the list must not lie about it either.
+  openMessage: (messageId) => {
+    set({ selectedMessageId: messageId });
+    // The tab reads its own body and marks the message seen once it has it
+    // (`MailOverlay`'s `MailMessageTabBody`).
     const header = get().headers.find((h) => h.id === messageId);
-    if (header && !header.seen) await get().setFlag(messageId, "seen", true);
+    if (header) get().openMessageTab(header);
   },
 
   checkOnly: (messageId) => set({ checkedIds: [messageId], anchorId: messageId }),
@@ -1040,10 +1033,13 @@ export const useMailStore = create<MailStore>((set, get) => ({
         : mailPurge(group.messageIds)
       ).catch((err) => set({ error: reason(err) }));
     }
-    // The open message may be one of the ones just deleted, and a body left on
-    // screen over a row that no longer exists is the worst of both.
+    // A deleted message's own tab goes with it: a body left on screen for mail
+    // that no longer exists is the worst of both.
     if (get().selectedMessageId && wanted.has(get().selectedMessageId as string)) {
-      set({ selectedMessageId: null, body: null });
+      set({ selectedMessageId: null });
+    }
+    for (const tab of get().mailTabs) {
+      if (tab.kind === "message" && wanted.has(tab.header.id)) get().closeMailTab(tab.id);
     }
     // Rail badges, then the marked-mail badges (a deleted message leaves its
     // priority list too), then the page — which also clears the tick marks.

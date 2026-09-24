@@ -15,6 +15,7 @@ import { useFloatingFrame } from "../common/useFloatingFrame";
 import { useDialogs } from "../common/PromptDialogs";
 import { MailGlyph } from "../header/HeaderGlyphs";
 import { OverlayApprovals } from "../layout/OverlayApprovals";
+import { MailAccountMenu } from "./MailAccountMenu";
 import { MailPane } from "./MailPane";
 import { MailMessageView } from "./MailMessageView";
 import { MailComposeDialog, composeSubject, composeTitle } from "./MailComposeDialog";
@@ -25,9 +26,9 @@ import { MailComposeDialog, composeSubject, composeTitle } from "./MailComposeDi
  *
  * It wears the root console's chrome, not a dialog's: one floating subwindow
  * (`.root-overlay.subwindow`) whose title bar is a tab strip. The first tab is
- * the Inbox — `MailPane`, folders / list / preview — and never closes; every
- * message opened on its own (double-click a row, or "Open in tab") and every
- * unfinished mail (new, reply, forward, an agent's draft) gets a tab after it.
+ * the Inbox — `MailPane`, folders / full-width list — and never closes; every
+ * message opened (a click on a row) and every unfinished mail (new, reply,
+ * forward, an agent's draft) gets a tab after it.
  * The tabs are the mail store's (`mailTabs`), so the header's ✉ and the root
  * console's review strip can open one too.
  *
@@ -153,7 +154,7 @@ function MailOverlay({ open }: { open: boolean }) {
 
   return (
     <div
-      className="modal-backdrop root-overlay-backdrop mail-overlay-backdrop"
+      className="modal-backdrop root-overlay-backdrop app-overlay-backdrop mail-overlay-backdrop"
       // Hidden, not unmounted, while composers wait (see the module header).
       style={open ? undefined : { display: "none" }}
       onMouseDown={(e) => {
@@ -174,9 +175,11 @@ function MailOverlay({ open }: { open: boolean }) {
         {/* The root console's bar: mark, tab strip, "+", controls. The bar is
             the move handle; tabs and buttons keep their own press. */}
         <div {...barRest} className={`tab-bar root-overlay-bar ${barRest.className}`}>
-          <div className="root-overlay-mark mail-overlay-mark" title={moveHint}>
+          <div className="root-overlay-mark app-overlay-mark mail-overlay-mark" title={moveHint}>
             <MailGlyph className="mail-overlay-glyph" />
-            <span className="mail-overlay-label">{t("mail.overlayTitle")}</span>
+            {/* The account switcher sits where the other overlays put their
+                name: which mailbox this is *is* the window's title. */}
+            <MailAccountMenu />
             <UntestedTag id="mail.overlayTitle" />
           </div>
           <div className="tab-strip mail-tab-strip" role="tablist">
@@ -331,9 +334,9 @@ function MailOverlay({ open }: { open: boolean }) {
 }
 
 /**
- * One message in its own tab. It reads its own body — the store's `body` is the
- * Inbox preview's and follows the list — and takes flag changes from the list's
- * copy of the header while that is still loaded.
+ * One message in its own tab — the only place a message is read; the Inbox has
+ * no preview pane. It reads its own body, so it survives the list moving on, and
+ * takes flag changes from the list's copy of the header while that is loaded.
  */
 function MailMessageTabBody({ tab }: { tab: MailMessageTab }) {
   const listed = useMailStore((s) => s.headers.find((h) => h.id === tab.header.id));
@@ -348,9 +351,16 @@ function MailMessageTabBody({ tab }: { tab: MailMessageTab }) {
     let live = true;
     setLoading(true);
     setError("");
+    // Every message starts with remote content blocked.
     mailBody(tab.header.id, false)
       .then((b) => {
-        if (live) setBody(b);
+        if (!live) return;
+        setBody(b);
+        // Reading a message marks it seen, locally and on the server — the
+        // list's copy when it has one, since the snapshot may be stale.
+        const store = useMailStore.getState();
+        const current = store.headers.find((h) => h.id === tab.header.id) ?? tab.header;
+        if (!current.seen) void store.setFlag(tab.header.id, "seen", true);
       })
       .catch((err) => {
         if (live) setError(typeof err === "string" ? err : String(err));
@@ -361,7 +371,8 @@ function MailMessageTabBody({ tab }: { tab: MailMessageTab }) {
     return () => {
       live = false;
     };
-  }, [tab.header.id]);
+    // The tab's header snapshot is set once when the tab opens, never replaced.
+  }, [tab.header]);
 
   return (
     <div className="mail-message-tab">

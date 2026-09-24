@@ -564,6 +564,12 @@ export interface StagedAttachment {
   filename: string;
   mime: string;
   size: number;
+  /** `"agent"` for a file a root agent attached by project and path; absent
+   *  for the user's own pick (and for every row from before the field). */
+  origin?: string;
+  /** An agent file's `<project name>/<relative path>` — the chip's text, so a
+   *  `paper.pdf` from one project is not taken for another's. */
+  source?: string;
 }
 
 export interface MailDraft {
@@ -581,6 +587,9 @@ export interface MailDraft {
    *  `"reader"` (a contained reader, which reads mail from outside). A save
    *  from the composer clears it. */
   origin?: string;
+  /** Addresses a root agent suggested. Never in `to` and never read by a send:
+   *  the composer offers each as a pill the user adds with a click. */
+  suggested_to?: string[];
 }
 
 export interface MailSendResult {

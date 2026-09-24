@@ -70,12 +70,11 @@ export function TodoMailRail({ tasks, defaultCalendarId, intakeColumnId }: Props
     // z-index, so leaving this one up would stack a board over the mailbox.
     useTodoStore.getState().closeOverlay();
     const mail = useMailStore.getState();
-    // Awaited in this order on purpose: `selectMessage` resolves its header out
-    // of the loaded page, so selecting before the page lands renders a body with
-    // no envelope.
+    // Awaited in this order on purpose: `openMessage` resolves its header out
+    // of the loaded page, so opening before the page lands opens nothing.
     await mail.openPriority(header.priority ?? "urgent").catch(() => {});
-    await mail.selectMessage(header.id).catch(() => {});
     mail.openInbox();
+    mail.openMessage(header.id);
   };
 
   // The card's shape is `lib/todoBoard`'s, shared with the agenda rail's own

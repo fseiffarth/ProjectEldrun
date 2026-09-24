@@ -245,6 +245,34 @@ svg.alerts-toggle-icon {
   border-color: color-mix(in srgb, var(--accent) 45%, transparent);
   font-weight: 600;
 }
+/* The mail window's accounts dropdown (mail/MailAccountMenu): the header
+   menu's rows, each with a ✎ beside it — the machines menu's row action —
+   so the row itself stays "open this inbox" and editing is its own target. */
+.mail-account-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 240px;
+  color: var(--text-primary);
+}
+.mail-account-trigger-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+}
+.mail-account-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.mail-account-menu-row > .tab-new-menu-item {
+  flex: 1;
+  min-width: 0;
+}
+.mail-account-menu-add {
+  color: var(--accent);
+}
 /* The rail's treatment, so Important and Urgent are recognisable as the same two
    lists in both places: the `!`/`!!` mark, a heading that says the lists are
    every account's, and rows carrying more weight than the account rows under
@@ -417,13 +445,13 @@ svg.alerts-toggle-icon {
   opacity: 0.5;
 }
 
-/* The calendar, board and skills overlays ride the shared
-   `.project-dialog.dialog-framed` chrome (accent top rail, accent-washed
-   `.settings-title-row` band, `.dialog-close-btn`); mail wears the root
-   console's subwindow chrome instead (its tabs, below). All that is left here is
-   their size — exactly the split `.sysmon-dialog` makes, and for the same
-   reason: a whole pane hosted in a window needs a definite height, because the
-   pane fills it and scrolls its own regions. */
+/* The header overlays — mail, calendar, board, skills — all wear the root
+   console's subwindow chrome (`.root-overlay.subwindow`, its `.tab-bar` with a
+   glyph mark, a tab strip and the console's controls); the tabs' shared parts
+   are below. All that is left here is their size — exactly the split
+   `.sysmon-dialog` makes, and for the same reason: a whole pane hosted in a
+   window needs a definite height, because the pane fills it and scrolls its own
+   regions. */
 /* ONE size for all three, deliberately. They are opened from three buttons a few
    pixels apart in the same header and are switched between constantly, so a
    window that jumps and resizes on every switch is the thing you notice instead
@@ -452,19 +480,6 @@ svg.alerts-toggle-icon {
 .floating-frame-bar button {
   cursor: var(--cur-pointer, pointer);
 }
-/* The fill button is the root console's `.subwindow-hide` ⤢; in a dialog title
-   row it sits in the flow (no sticky pin, no auto margin — the h2 already takes
-   the slack) and on the band's own wash rather than a panel-coloured square.
-   Not in a root-console bar (mail): there it stands beside the console's own ×
-   and must look exactly like it, as it does in RootOverlay. */
-.floating-frame-bar:not(.root-overlay-bar) .floating-frame-fill {
-  position: static;
-  margin-left: 0;
-  background: none;
-}
-.floating-frame-bar:not(.root-overlay-bar) .floating-frame-fill:hover {
-  background: var(--pill-hover-bg);
-}
 .floating-frame.framing,
 .floating-frame.framing .floating-frame-bar {
   /* A drag must not select the title on the way past. */
@@ -481,8 +496,16 @@ svg.alerts-toggle-icon {
      here would be a second one around them. */
   overflow: hidden;
 }
-/* The window's title already names this surface — the skills dialog's band, and
-   the "Mail" label beside the mail window's tab strip — so the pane's own
+/* The body is the root console's `.subwindow-body`, a flex *row*: the hosted
+   pane must take the width, or it shrinks to its toolbar's. */
+.calendar-overlay-body > *,
+.todo-overlay-body > *,
+.skills-overlay-body > * {
+  flex: 1;
+  min-width: 0;
+}
+/* The window's title already names this surface — the label beside the
+   window's tab strip — so the pane's own
    toolbar title would say it twice, one line apart. The calendar needs no
    equivalent: `.cal-toolbar-title` is the visible date range, not the app's
    name, so it says something the band does not. */
@@ -491,14 +514,15 @@ svg.alerts-toggle-icon {
   display: none;
 }
 
-/* ── The mail window's tabs (mail/MailOverlay) ─────────────────────────────
-   The overlay wears the root console's chrome (`.root-overlay.subwindow`, its
-   `.tab-bar` / `.tab-strip` / `.tab`), so only what mail adds is here: the
-   Inbox / message / unsent-mail panes stacked in the body, and the composer
-   laid out as a page rather than a dialog. Centred like the old dialog was, not
-   hung from the top like the console — the mail size above is nearly the
-   viewport's, and the console's 7vh drop would push it off the bottom. */
-.mail-overlay-backdrop {
+/* ── The header overlays' tabs (mail/MailOverlay and its three siblings) ─────
+   The overlays wear the root console's chrome (`.root-overlay.subwindow`, its
+   `.tab-bar` / `.tab-strip` / `.tab`), so only what they add is here: the
+   shared backdrop, mark and label, then mail's Inbox / message / unsent-mail
+   panes stacked in the body and the composer laid out as a page rather than a
+   dialog. Centred, not hung from the top like the console — the size above is
+   nearly the viewport's, and the console's 7vh drop would push it off the
+   bottom. */
+.app-overlay-backdrop {
   align-items: center;
   padding-top: 0;
 }
@@ -511,10 +535,10 @@ svg.alerts-toggle-icon {
 }
 /* The window's name beside its glyph: small and muted, a subwindow's label
    rather than a heading — the tabs after it are what the eye is for. */
-.mail-overlay-mark {
+.app-overlay-mark {
   gap: 6px;
 }
-.mail-overlay-label {
+.app-overlay-label {
   font-size: 11px;
   font-weight: 600;
   color: var(--text-secondary);
@@ -694,9 +718,13 @@ svg.alerts-toggle-icon {
   box-shadow: 0 0 0 2px var(--bg-header-solid);
 }
 
+/* `flex: 1` because its host is the overlay's `.subwindow-body`, a flex *row*:
+   without it the pane would shrink to its toolbar's width. */
 .todo-pane {
   display: flex;
   flex-direction: column;
+  flex: 1;
+  min-width: 0;
   height: 100%;
   min-height: 0;
   color: var(--text-primary);
@@ -1717,12 +1745,12 @@ handle — it swallows the pointer before the card ever sees it. */
 }
 
 /* ── The header band ───────────────────────────────────────────────────────
-   Above the action row: which mailbox am I looking at (accounts), and the two
-   lists that belong to none of them (Important/Urgent + the rules that fill
-   them). Both are switchers with few entries and no hierarchy, so they are rows
-   of chips rather than a rail column — stacked in the rail they were read as a
-   tree, which is exactly what made the cross-account lists look like they
-   belonged to the account underneath them.
+   Above the action row: the two lists that belong to no account
+   (Important/Urgent + the rules that fill them); the accounts are the title
+   bar's dropdown. A switcher with few entries and no hierarchy, so a row of
+   chips rather than a rail column — stacked in the rail it was read as a tree,
+   which is exactly what made the cross-account lists look like they belonged
+   to the account underneath them.
 
    Modern here means quiet: one soft surface, pill controls, colour used only to
    mean something (selection, and the two marks). Transitions are on colour and
@@ -1741,28 +1769,14 @@ handle — it swallows the pointer before the card ever sees it. */
   );
   border-bottom: 1px solid var(--border-subtle);
 }
-/* Two groups on one line — accounts left, the cross-account lists right. Each
-   keeps its own chips together under its own label, so the band has two centres
-   of gravity rather than one long undifferentiated row of pills. */
+/* The cross-account lists under their label. The accounts left the band for
+   the title bar's dropdown (`.mail-account-menu`). */
 .mail-headerband-group {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   min-height: 26px;
-}
-/* Takes the slack so the right-hand group sits at the right edge — and collapses
-   to nothing when the band wraps, where "pushed right" would only strand the
-   group on a line of its own. */
-.mail-headerband-spacer {
-  flex: 1 1 12px;
-}
-/* The divider belongs to the right-hand group rather than to the spacer: when
-   the band wraps, the two groups end up on separate lines and a floating rule
-   between them would be a stray mark. */
-.mail-headerband-group-global {
-  padding-left: 10px;
-  border-left: 1px solid var(--border-subtle);
 }
 .mail-headerband-label {
   flex: 0 0 auto;
@@ -1783,19 +1797,15 @@ handle — it swallows the pointer before the card ever sees it. */
   opacity: 0.8;
 }
 
-/* One pill shape for both groups, so "switch" always looks the same. */
-.mail-account-chip,
+/* The priority chips' pill. */
 .mail-priority-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   max-width: 260px;
-  /* One box for both kinds. They sit on the same line, so a chip whose content
-     happens to be a pixel taller (the priority ones carry a 13px mark and a
-     heavier label) draws an outline that no longer lines up with its
-     neighbours — which reads as a misdrawn border rather than as a font
-     difference. Fixing the height, and letting the mark inherit the line box
-     instead of setting its own, makes every outline in the band identical. */
+  /* A fixed height, and a mark that inherits the line box instead of setting
+     its own: a chip a pixel taller than its neighbour reads as a misdrawn
+     border rather than as a font difference. */
   box-sizing: border-box;
   min-height: 26px;
   padding: 3px 11px;
@@ -1811,19 +1821,10 @@ handle — it swallows the pointer before the card ever sees it. */
     border-color var(--transition),
     color var(--transition);
 }
-.mail-account-chip:hover {
-  border-color: var(--accent);
-}
-.mail-account-chip.selected {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 20%, transparent);
-  font-weight: 600;
-}
-/* Both chip kinds' labels. This is the rule that keeps a badge inside its pill:
-   the label is the one part allowed to shrink, so the chip's content can never
-   be wider than the chip. The priority chips used to put their label in as a
-   bare text node, which cannot shrink — and the count ended up outside the
-   border. Same span, same behaviour, one rule. */
+/* A chip's label. This is the rule that keeps a badge inside its pill: the
+   label is the one part allowed to shrink, so the chip's content can never be
+   wider than the chip. A bare text node cannot shrink — and the count ended up
+   outside the border. */
 .mail-chip-name {
   min-width: 0;
   overflow: hidden;
@@ -1869,8 +1870,9 @@ handle — it swallows the pointer before the card ever sees it. */
   background: color-mix(in srgb, var(--danger) 24%, transparent);
 }
 
-/* Three panes: rail, list, message. The list is fixed-ish so the message pane
-   takes the slack; both scroll independently. */
+/* Rail + list. The Inbox's header list has no preview beside it (a message
+   opens in its own tab) and takes the slack; the agent-draft view keeps a
+   fixed list with its preview. Each scrolls independently. */
 .mail-body-row {
   flex: 1;
   min-height: 0;
@@ -1998,6 +2000,12 @@ handle — it swallows the pointer before the card ever sees it. */
      The subject/preview lines are indented by exactly this, so they hang under
      the sender rather than under the stars. */
   --mail-row-indent: 64px;
+}
+
+.mail-list.mail-list-full {
+  flex: 1 1 auto;
+  min-width: 0;
+  border-right: 0;
 }
 
 /* The header row: the sort controls, each above the column it orders. It is
@@ -3465,48 +3473,92 @@ handle — it swallows the pointer before the card ever sees it. */
 .mail-staged-remove:hover {
   color: var(--danger);
 }
-
-/* ── Drafts an agent wrote (root MCP) ──────────────────────────────────────
-   A strip of rows above the list: each opens the composer, never sends. The
-   mark is a pill; the reader's is the warning tone — that draft carries text
-   shaped by mail from outside. */
-.mail-agent-drafts {
+/* A file a root agent attached by project and path: the agent mark and its
+   source path, bordered in the agent tone so it never reads as the user's own
+   pick. Its Preview shows the sealed outbox copy — what Send attaches. */
+.mail-staged-chip.agent {
+  border-color: color-mix(in srgb, var(--info) 55%, transparent);
+}
+.mail-staged-preview {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  cursor: var(--cur-pointer, pointer);
+  padding: 0 2px;
+  font-size: 11px;
+}
+.mail-staged-preview:hover {
+  text-decoration: underline;
+}
+/* An agent's suggested recipient: a pill above To, added only by its button. */
+.mail-suggested {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
   gap: 6px;
-  padding: 6px 10px;
-  font-size: 12px;
-  border-bottom: 1px solid var(--border-subtle);
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
-.mail-agent-drafts-title {
-  color: var(--text-secondary);
-}
-.mail-agent-draft-row {
+.mail-suggested-pill {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  max-width: 100%;
-  padding: 2px 8px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 6px;
-  background: var(--bg-primary);
+  padding: 2px 4px 2px 9px;
+  border-radius: 999px;
+  border: 1px dashed color-mix(in srgb, var(--info) 60%, transparent);
+  font-size: 12px;
+}
+
+/* ── Drafts an agent wrote (root MCP) ──────────────────────────────────────
+   The rail's "Drafted by agents" entry lists them in the folder list's rows
+   (`MailAgentDraftList`); each opens the composer, never sends. The mark is a
+   pill; the reader's is the warning tone — that draft carries text shaped by
+   mail from outside. No column grid: a draft has no star, clip, size or date. */
+.mail-rail-agent-drafts > .untested-tag {
+  flex: 0 0 auto;
+}
+/* Pinned to the rail's foot (`margin-top: auto` in the flex column) behind a
+   divider, and in `--info` rather than the accent the folders are selected in:
+   nobody here wrote these and they sit in no server folder, so the entry must
+   not read as one more folder of the account. */
+.mail-rail-agent-section {
+  margin-top: auto;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.mail-rail-agent-section .mail-rail-title {
+  margin-top: 2px;
+  color: var(--info);
+}
+.mail-rail-agent-drafts {
+  color: var(--info);
+}
+.mail-rail-agent-drafts:hover {
+  background: color-mix(in srgb, var(--info) 12%, transparent);
+}
+.mail-rail-agent-drafts.selected {
+  background: color-mix(in srgb, var(--info) 22%, transparent);
   color: var(--text-primary);
-  font: inherit;
-  cursor: var(--cur-pointer, pointer);
 }
-.mail-agent-draft-row:hover {
-  border-color: var(--accent);
+.mail-rail-agent-drafts .mail-rail-badge {
+  background: var(--info);
 }
-.mail-agent-draft-subject {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 28em;
+.mail-agent-draft-row-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
 }
-.mail-agent-draft-account {
-  color: var(--text-secondary);
+.mail-agent-draft-row-top .mail-agent-mark {
+  flex: 0 0 auto;
+}
+.mail-agent-draft-row-top .mail-row-from {
+  flex: 1;
+  min-width: 0;
+}
+.mail-agent-draft-list .mail-row-subject,
+.mail-agent-draft-list .mail-row-preview {
+  padding-left: 0;
 }
 .mail-agent-mark {
   padding: 0 6px;
