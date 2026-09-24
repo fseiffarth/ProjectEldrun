@@ -1476,7 +1476,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
 
-- [~] **31x — Mobile Focus: the agent's pictures reach the phone** (2026-09-05;
+- [~] **31bd — Mobile Focus: the agent's pictures reach the phone** (2026-09-05;
   ✅ code-complete, automated tests passing — `outbox.rs` unit tests, the
   sidecar route test, `MobileTerminalOutbox.test.tsx`; ⚠️ needs live QA on a
   phone, and a rebuild + restart first: the sidecar gained two routes and the
@@ -1698,7 +1698,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ❌ Doesn't work on Windows
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
-- [~] **31ab — Close a tab from the phone** (2026-09-05; ✅ code-complete and
+- [~] **31be — Close a tab from the phone** (2026-09-05; ✅ code-complete and
   automated tests passing, ⚠️ phone QA pending — and a rebuild + restart first:
   the sidecar route, the desktop bridge and the embedded PWA all changed). The
   phone could open tabs and never put one away, so a week of sofa sessions
@@ -1755,7 +1755,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
 
-- [~] **31u — Mobile status chip: the session's state and the agent's own usage**
+- [~] **31bf — Mobile status chip: the session's state and the agent's own usage**
   (2026-09-02; ✅ code-complete and automated tests passing, ⚠️ phone QA
   pending — and a rebuild + restart first, since the phone serves the bundle
   baked into the binary). A **Status** chip joins ＋ / model / mode / ◷ Schedule
@@ -1892,7 +1892,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ❌ Doesn't work on Windows
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
-- [~] **31t — Mail writes from the phone: mark read/star and reply-only**
+- [~] **31bg — Mail writes from the phone: mark read/star and reply-only**
   (2026-09-03; ✅ code-complete and automated tests passing, ⚠️ phone QA
   pending). Mail was the one companion surface with no write at all, and the
   reason was the outbound threat model, not the architecture. Two writes now
@@ -1918,7 +1918,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       arrive at the sender.
     - [ ] 🖐️ Manual test — flip a switch off while the phone has the message
       open; tap the control; expect the "Switched off in Eldrun" explanation.
-- [x] **31s — The phone's `done` tag clears when the tab is read** (2026-09-02;
+- [x] **31bh — The phone's `done` tag clears when the tab is read** (2026-09-02;
   ✅ verified live on the phone 2026-09-20). The
   `done` pill on the project screen is the desktop's own attention flag, and
   nothing on the phone ever retired it: opening the tab, reading the finished

@@ -337,7 +337,7 @@ Acceptance: mark-read on the phone shows read in the desktop client after its
 next sync tick; gate off → no buttons and a refused request; the flag write
 failing server-side surfaces the error string, never a silently stale list.
 
-### E.3 What landed (2026-09-03, code-complete, phone QA pending — 31t)
+### E.3 What landed (2026-09-03, code-complete, phone QA pending — 31bg)
 
 The design above, with three deliberate deviations and one addition:
 
