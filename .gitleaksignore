@@ -28,3 +28,5 @@ b74a3124594fd0376a2c699cfed9b910a929edde:src-tauri/src/services/ssh_common.rs:pr
 b74a3124594fd0376a2c699cfed9b910a929edde:src-tauri/src/services/ssh_common.rs:private-key:1985
 # tests/test_remote_repo.py: fake GitHub-token fixture in a settings test
 8eb58b5cea1411a5a5748d2c54585a78a859dfb3:tests/test_remote_repo.py:generic-api-key:329
+# src-tauri/src/services/agent_transcript.rs: test fixture (malformed subagent handles that must be refused); rewritten since
+963c3477b973921c19380e06995762219d8623f2:src-tauri/src/services/agent_transcript.rs:generic-api-key:1170

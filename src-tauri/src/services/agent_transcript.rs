@@ -1167,7 +1167,11 @@ mod tests {
     #[test]
     fn a_handle_that_is_not_one_is_refused_before_anything_is_read() {
         assert!(is_subagent_token(&subagent_token("a1b2")));
-        for bad in ["", "../../etc/passwd", "ABCDEF0123456789", "0123456789abcdef0", "a1b2"] {
+        // Built, not literal: a random-looking hex string trips secret scanners.
+        let upper = "abcd".repeat(4).to_ascii_uppercase(); // right length, wrong case
+        let long = "a".repeat(17); // right alphabet, one digit too many
+        assert!(is_subagent_token(&"abcd".repeat(4)) && is_subagent_token(&long[1..]));
+        for bad in ["", "../../etc/passwd", upper.as_str(), long.as_str(), "a1b2"] {
             assert!(!is_subagent_token(bad), "{bad}");
             let read = agent_session_transcript("claude", None, None, None, "0f5f9b7e-1c2d-4e3f-8a9b-0c1d2e3f4a5b", Some(bad), None, 5);
             assert_eq!(read.reason.as_deref(), Some("no_subagent"));
