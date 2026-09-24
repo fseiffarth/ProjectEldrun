@@ -219,13 +219,21 @@ export class ApiError extends Error {
   constructor(public status: number, public code: string) { super(code); }
 }
 
-/** Set by the app root. A session can expire (12h) or vanish when the mobile
- * host restarts, and nothing anywhere inspected a mid-session 401 — the app
- * simply showed "Host unavailable" until the phone happened to lock. */
-let onUnauthorized: (() => void) | undefined;
+/** Set by the app root. A session slides out after a quiet quarter hour and
+ * vanishes when the mobile host restarts. The handler answers whether it
+ * renewed the session silently — the device key signs a fresh challenge, no
+ * PIN — in which case the request that met the 401 is sent once more; when it
+ * could not, the app has already moved to its lock screen. */
+let onUnauthorized: (() => Promise<boolean>) | undefined;
 
-export function setUnauthorizedHandler(handler: (() => void) | undefined): void {
+export function setUnauthorizedHandler(handler: (() => Promise<boolean>) | undefined): void {
   onUnauthorized = handler;
+}
+
+/** Renew the session the way a 401 would, for a caller that met the lapse
+ * elsewhere — the terminal socket's `session_expired` close. */
+export function recoverSession(): Promise<boolean> {
+  return onUnauthorized?.() ?? Promise.resolve(false);
 }
 
 /** A stalled socket on bad signal would otherwise hang a screen forever; the
@@ -249,7 +257,7 @@ function withTimeout(signal: AbortSignal | null | undefined, ms: number): AbortS
 /** `timeoutMs` overrides the default deadline for the one route that needs a
  * longer one (see `getAgentStatus`); everything else keeps `REQUEST_TIMEOUT`,
  * because a screen with no way back is worse than a failed request. */
-export async function api<T>(path: string, init?: RequestInit, timeoutMs = REQUEST_TIMEOUT): Promise<T> {
+export async function api<T>(path: string, init?: RequestInit, timeoutMs = REQUEST_TIMEOUT, retried = false): Promise<T> {
   let response: Response;
   try {
     response = await fetch(path, {
@@ -270,7 +278,8 @@ export async function api<T>(path: string, init?: RequestInit, timeoutMs = REQUE
     body = undefined;
   }
   if (response.status === 401 && !path.startsWith("/api/v1/auth/") && path !== "/api/v1/pair") {
-    onUnauthorized?.();
+    // Once: a 401 on the retry means the renewed session is refused too.
+    if (!retried && await onUnauthorized?.()) return api<T>(path, init, timeoutMs, true);
   }
   if (!response.ok) throw new ApiError(response.status, body?.error ?? "request_failed");
   // A truncated body on a 200 used to become `{}` and reach callers as `T`,
@@ -559,7 +568,7 @@ export async function deleteOutboxFile(scope: OutboxScope, name: string): Promis
 
 /** POSTs a raw file to one of the desktop's drop boxes and returns the status
  * and JSON body, mapping a refusal to the desktop's wire code. */
-async function postFile<T>(url: string, file: Blob): Promise<[number, T | undefined]> {
+async function postFile<T>(url: string, file: Blob, retried = false): Promise<[number, T | undefined]> {
   let response: Response;
   try {
     response = await fetch(url, {
@@ -580,7 +589,7 @@ async function postFile<T>(url: string, file: Blob): Promise<[number, T | undefi
   } catch {
     body = undefined;
   }
-  if (response.status === 401) onUnauthorized?.();
+  if (response.status === 401 && !retried && await onUnauthorized?.()) return postFile<T>(url, file, true);
   if (!response.ok) throw new ApiError(response.status, body?.error ?? "request_failed");
   return [response.status, body];
 }

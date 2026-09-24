@@ -32,7 +32,15 @@ const PAIR_CODE_ATTEMPTS: u8 = 5;
 /// so the live count is bounded by the device list.
 const MAX_RATE_BUCKETS: usize = 64;
 const CHALLENGE_TTL: u64 = 60;
-const SESSION_TTL: u64 = 12 * 60 * 60;
+/// A session slides: every authenticated request (`touch`) pushes its expiry
+/// this far out again. Sessions never touch disk, so a sidecar restart still
+/// invalidates every one of them — the phone re-logs in with its device key
+/// when that happens. What this window closes is the gap the idle lock cannot:
+/// an app the OS killed sends no `DELETE /auth/session`, and a fixed 12 h
+/// token then outlived the phone's own lock by hours.
+pub const SESSION_IDLE: u64 = 15 * 60;
+/// The absolute cap on one login, however active the phone stays.
+pub const SESSION_MAX: u64 = 12 * 60 * 60;
 
 fn now() -> u64 {
     SystemTime::now()
@@ -103,7 +111,14 @@ struct Challenge {
 #[derive(Clone)]
 struct Session {
     device_id: String,
+    created_at: u64,
     expires_at: u64,
+}
+
+/// Where a session touched at `t` expires: the idle window from now, never
+/// past the cap counted from its login.
+fn session_deadline(created_at: u64, t: u64) -> u64 {
+    (t + SESSION_IDLE).min(created_at + SESSION_MAX)
 }
 
 pub struct AuthStore {
@@ -336,11 +351,13 @@ impl AuthStore {
             .map_err(|_| "invalid_signature")?;
         device.last_seen_at = Some(now());
         let token = random_id::<32>()?;
-        let expires_at = now() + SESSION_TTL;
+        let created_at = now();
+        let expires_at = session_deadline(created_at, created_at);
         self.sessions.insert(
             token.clone(),
             Session {
                 device_id: device_id.into(),
+                created_at,
                 expires_at,
             },
         );
@@ -349,6 +366,8 @@ impl AuthStore {
         Ok((token, expires_at))
     }
 
+    /// The device behind a live session token, without extending it. The PTY
+    /// bridge's periodic re-check uses this: a tick is not the phone speaking.
     pub fn authenticate(&mut self, token: &str) -> Option<String> {
         let session = self.sessions.get(token)?.clone();
         if session.expires_at < now() {
@@ -356,6 +375,19 @@ impl AuthStore {
             return None;
         }
         Some(session.device_id)
+    }
+
+    /// `authenticate`, and the session slides: every authenticated HTTP request
+    /// and every frame the phone sends over its terminal socket lands here.
+    pub fn touch(&mut self, token: &str) -> Option<String> {
+        let t = now();
+        let session = self.sessions.get_mut(token)?;
+        if session.expires_at < t {
+            self.sessions.remove(token);
+            return None;
+        }
+        session.expires_at = session_deadline(session.created_at, t);
+        Some(session.device_id.clone())
     }
 
     pub fn logout(&mut self, token: &str) {
@@ -552,6 +584,45 @@ mod tests {
         let reopened = AuthStore::open(dir.path(), "https://desk.example.ts.net".into())
             .expect("reopen after rotation");
         assert_eq!(reopened.host_key(), after.as_slice());
+    }
+
+    fn paired_login(auth: &mut AuthStore) -> (String, String) {
+        let signing = SigningKey::random(&mut OsRng);
+        let public = signing.verifying_key().to_public_key_der().expect("SPKI");
+        let public = Base64UrlUnpadded::encode_string(public.as_bytes());
+        let (code, _) = auth.create_pairing_code().expect("pairing code");
+        let device = auth.pair(&code, "Phone", &public).expect("paired");
+        let (nonce, payload, _) = auth.challenge(&device).expect("challenge");
+        let signature: Signature = signing.sign(payload.as_bytes());
+        let signature = Base64UrlUnpadded::encode_string(&signature.to_bytes());
+        let (token, _) = auth.login(&device, &nonce, &signature).expect("login");
+        (device, token)
+    }
+
+    #[test]
+    fn a_session_slides_with_every_touch_and_stops_at_the_cap() {
+        let (_dir, mut auth) = store();
+        let (device, token) = paired_login(&mut auth);
+        let t = now();
+        // A fresh login expires one idle window out, not twelve hours.
+        let first = auth.sessions[&token].expires_at;
+        assert!(first >= t + SESSION_IDLE - 1 && first <= t + SESSION_IDLE + 1);
+        // Pretend the phone has been quiet for most of the window, then speaks.
+        auth.sessions.get_mut(&token).unwrap().expires_at = t + 30;
+        assert_eq!(auth.touch(&token).as_deref(), Some(device.as_str()));
+        assert!(auth.sessions[&token].expires_at >= t + SESSION_IDLE - 1);
+        // A plain check does not slide it.
+        auth.sessions.get_mut(&token).unwrap().expires_at = t + 30;
+        assert_eq!(auth.authenticate(&token).as_deref(), Some(device.as_str()));
+        assert_eq!(auth.sessions[&token].expires_at, t + 30);
+        // Near the cap a touch cannot push past it.
+        auth.sessions.get_mut(&token).unwrap().created_at = t - SESSION_MAX + 60;
+        auth.touch(&token).expect("still live");
+        assert_eq!(auth.sessions[&token].expires_at, t + 60);
+        // Past its deadline the token is gone, touched or not.
+        auth.sessions.get_mut(&token).unwrap().expires_at = t - 1;
+        assert!(auth.touch(&token).is_none());
+        assert!(auth.authenticate(&token).is_none());
     }
 
     #[test]

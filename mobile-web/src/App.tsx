@@ -42,36 +42,31 @@ const TABS: { id: Tab; icon: string; label: string }[] = [
   { id: "calendar", icon: SECTION_GLYPH.calendar, label: "Calendar" },
   { id: "mail", icon: SECTION_GLYPH.mail, label: "Mail" },
 ];
-const UNLOCKED_SESSION = "eldrun-mobile-local-unlocked";
 /**
  * How long Eldrun Mobile may go untouched before the local lock closes the
  * session. Long enough to outlast a reload, a trip to another app, and reading a
  * screenful of terminal output without touching the glass; short enough that a
  * phone whose own screen saver has taken over is locked here too — the web
  * offers no screen-off signal of its own, so idle time is the stand-in.
+ *
+ * It is also the line a silent re-login is allowed to cross: a 401 met while
+ * the reader was active this recently — the sidecar restarted, or the session
+ * slid out during a long read — is renewed with the device key and the request
+ * sent again, with no PIN screen in between. Past it the app locks, as it
+ * would have on its own.
  */
 const LOCK_AFTER_IDLE_MS = 180_000;
 /** What counts as someone being there. Streamed terminal output does not. */
 const ACTIVITY_EVENTS = ["pointerdown", "keydown", "input", "touchstart", "touchmove", "wheel", "scroll"] as const;
 
-function hasUnlockedSession(): boolean {
-  return sessionStorage.getItem(UNLOCKED_SESSION) === "1";
-}
-
-function rememberUnlockedSession(): void {
-  sessionStorage.setItem(UNLOCKED_SESSION, "1");
-}
-
-function forgetUnlockedSession(): void {
-  sessionStorage.removeItem(UNLOCKED_SESSION);
-}
-
 /**
  * The launch curtain, and the same one the desktop app draws while its settings
  * and project reads are in flight (`AppShell`'s `StartupSplash`): the Eldrun
  * mark inside two counter-rotating orbit rings. It stood in as a `✦` glyph,
- * which is the one screen a phone reliably sees on every cold open — the PWA is
- * unlocked and re-authenticated from scratch every time it is brought back.
+ * which is the one screen a phone reliably sees on every cold open — every cold
+ * open asks for the PIN or fingerprint first, and re-authenticates from scratch
+ * after it; a reload while the reader is active is the one return that skips
+ * the lock, because the timer that would have locked died with the page.
  *
  * Deliberately no minimum display time, unlike the desktop's: this is shown
  * while a real round trip to the sidecar is outstanding, so a fast answer
@@ -116,6 +111,11 @@ export function App() {
   useEffect(() => {
     authRef.current = auth;
   }, [auth]);
+  /** When the reader last touched the glass — the idle lock's clock, and the
+   * silent re-login's test of whether anyone is still here. */
+  const lastActive = useRef(Date.now());
+  /** One renewal at a time: every request that met the same 401 waits on it. */
+  const renewing = useRef<Promise<boolean> | null>(null);
   // Everything the tab bar navigates between, back at its starting point. Used
   // on every lock and on a dropped session, so a re-entry never lands on a
   // stale board or a detached terminal.
@@ -134,7 +134,6 @@ export function App() {
     setAuth("loading");
     void resumeAuth().then(async (result) => {
       if (result.kind === "paired") {
-        rememberUnlockedSession();
         const restored = await restoreLastPlace();
         reset();
         if (restored) {
@@ -148,7 +147,6 @@ export function App() {
           }
         }
       } else if (result.kind === "unpaired") {
-        forgetUnlockedSession();
         forgetLastPlace();
       } else {
         fail(result.reason, result.detail);
@@ -162,18 +160,20 @@ export function App() {
     setAuth("loading");
     void Promise.all([hasPairedDevice(), hasLocalUnlock()]).then(([paired, locked]) => {
       if (!paired) {
-        forgetUnlockedSession();
         forgetLastPlace();
         setAuth("unpaired");
-      } else if (locked && hasUnlockedSession()) {
-        resume();
       } else {
+        // A cold open always asks. A sessionStorage flag used to let a page
+        // the browser restored skip the lock, which an app the OS had killed
+        // and reopened also carried — so whoever picked the phone up next
+        // walked straight in. `restoreLastPlace` still returns the reader to
+        // their tab once they have unlocked.
         setAuth(locked ? "locked" : "setup");
       }
     // Both reads above are the phone's own key store, never the network, so a
     // rejection here is a blocked browser store rather than an absent host.
     }).catch(() => fail("storage_blocked"));
-  }, [resume, fail]);
+  }, [fail]);
   useEffect(() => begin(), [begin]);
 
   // Where the reader is standing, kept in the phone's own storage so the next
@@ -189,11 +189,35 @@ export function App() {
   }, [auth, tab, projectView, terminal]);
 
   useEffect(() => {
+    // A 401 mid-session: the sidecar restarted (its sessions live in memory,
+    // by design), or the sliding session ran out. With the reader still
+    // active, renew it silently — the device key signs a fresh challenge —
+    // and tell `api()` to send the request again. A device the desktop no
+    // longer knows is sent to pair rather than around this loop; anything
+    // else that fails, or a reader who has been away, meets the lock screen.
     setUnauthorizedHandler(() => {
-      if (authRef.current !== "paired") return;
-      forgetUnlockedSession();
-      reset();
-      setAuth("locked");
+      if (authRef.current !== "paired") return Promise.resolve(false);
+      if (Date.now() - lastActive.current >= LOCK_AFTER_IDLE_MS) {
+        reset();
+        setAuth("locked");
+        return Promise.resolve(false);
+      }
+      renewing.current ??= resumeAuth().then((result) => {
+        if (result.kind === "paired") return true;
+        reset();
+        if (result.kind === "unpaired") {
+          forgetLastPlace();
+          setAuth("unpaired");
+        } else {
+          setAuth("locked");
+        }
+        return false;
+      }, () => {
+        reset();
+        setAuth("locked");
+        return false;
+      }).finally(() => { renewing.current = null; });
+      return renewing.current;
     });
     return () => setUnauthorizedHandler(undefined);
   }, [reset]);
@@ -204,7 +228,6 @@ export function App() {
       // Detach terminal UI and remove its opaque route. The server receives a
       // best-effort logout; the next local unlock always performs the signed
       // challenge login anew.
-      forgetUnlockedSession();
       // The stored place holds nothing but a section name and opaque,
       // server-revalidated ids, so it can safely outlive the lock. Clearing it
       // here made `restoreLastPlace` dead on a phone: backgrounding is the
@@ -222,7 +245,7 @@ export function App() {
     // until its own screen saver takes it and the app left behind in the
     // background. A reload is covered for free: the timer dies with the page, so
     // the deferred lock never runs and the restored session resumes.
-    let lastActive = Date.now();
+    lastActive.current = Date.now();
     let timer = 0;
     const arm = () => {
       window.clearTimeout(timer);
@@ -230,21 +253,21 @@ export function App() {
         // Re-armed against the wall clock rather than trusted to have slept the
         // right amount: a backgrounded page is throttled and then frozen
         // outright, so a fired timer proves nothing about elapsed time.
-        if (Date.now() - lastActive >= LOCK_AFTER_IDLE_MS) lock();
+        if (Date.now() - lastActive.current >= LOCK_AFTER_IDLE_MS) lock();
         else arm();
-      }, Math.max(1_000, LOCK_AFTER_IDLE_MS - (Date.now() - lastActive)));
+      }, Math.max(1_000, LOCK_AFTER_IDLE_MS - (Date.now() - lastActive.current)));
     };
     const noteActivity = () => {
-      const previous = lastActive;
-      lastActive = Date.now();
+      const previous = lastActive.current;
+      lastActive.current = Date.now();
       // A scroll is hundreds of events; re-arming on each would be hundreds of
       // timer resets a second. The deadline only has to move when it has drifted
       // far enough to matter — the timer above re-arms itself when it fires early.
-      if (lastActive - previous >= 5_000) arm();
+      if (lastActive.current - previous >= 5_000) arm();
     };
     const onVisibility = () => {
       if (document.visibilityState !== "visible") return;
-      if (Date.now() - lastActive >= LOCK_AFTER_IDLE_MS) lock();
+      if (Date.now() - lastActive.current >= LOCK_AFTER_IDLE_MS) lock();
       else arm();
     };
     arm();

@@ -162,7 +162,8 @@ fn authenticate(
         .auth
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .authenticate(token)
+        // Every authenticated request slides the session (`auth::SESSION_IDLE`).
+        .touch(token)
         .ok_or_else(|| api_error(StatusCode::UNAUTHORIZED, "authentication_required"))
 }
 

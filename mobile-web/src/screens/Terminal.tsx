@@ -19,6 +19,7 @@ import {
   listOutbox,
   MAX_INBOX_FILE,
   outboxFileUrl,
+  recoverSession,
   reportSentPrompt,
   uploadToInbox,
   type DesktopImage,
@@ -1049,8 +1050,17 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
         ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
       }
     };
+    /** The desktop said the session lapsed (`session_expired`): the next
+     * connect renews it first — the device key signs a fresh challenge, no
+     * PIN — since the upgrade would only meet a 401 otherwise. */
+    let relogin = false;
     const connect = () => {
       if (stopped) return;
+      if (relogin) {
+        relogin = false;
+        void recoverSession().finally(() => { if (!stopped) connect(); });
+        return;
+      }
       const next = new WebSocket(`${scheme}://${location.host}/api/v1/tabs/${tab.id}/terminal`, TERMINAL_PROTOCOL);
       ws = next;
       next.binaryType = "arraybuffer";
@@ -1158,6 +1168,8 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
             stopped = true;
             clearTimeout(reconnectTimer);
           }
+          // The session lapsed, not the tab: renew it and come back.
+          if (control.reason === "session_expired") relogin = true;
           setStoppedReason(describeFailure(control.reason));
         }
       };

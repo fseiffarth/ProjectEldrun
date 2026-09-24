@@ -413,6 +413,11 @@ pub async fn attach(
     let mut last_client_message = std::time::Instant::now();
     // When this viewer's typing was last reported to the desktop.
     let mut last_input_report: Option<std::time::Instant> = None;
+    // The phone spoke: its session slides (`auth::SESSION_IDLE`). Every frame
+    // it sends, not the tick — a tick is the sidecar checking, not the phone.
+    let touch = |auth: &Arc<Mutex<AuthStore>>| {
+        auth.lock().unwrap_or_else(PoisonError::into_inner).touch(&token);
+    };
     let result: Result<(), String> = loop {
         tokio::select! {
             _ = authorization_tick.tick() => {
@@ -431,7 +436,12 @@ pub async fn attach(
                         let mut auth = auth.lock().unwrap_or_else(PoisonError::into_inner);
                         (auth.authenticate(&token).is_some(), auth.host_key().to_vec())
                     };
-                    let still_allowed = authorized && catalog.lock().unwrap_or_else(PoisonError::into_inner).load(&state_dir, &key).ok()
+                    // Two different facts, told apart on the wire: a session
+                    // that ran out (a sidecar restart, the idle window) is the
+                    // phone's to renew silently and come back; a tab the
+                    // catalog no longer grants is not.
+                    if !authorized { break Err("session_expired".into()); }
+                    let still_allowed = catalog.lock().unwrap_or_else(PoisonError::into_inner).load(&state_dir, &key).ok()
                         .and_then(|catalog| catalog.tab(&tab_id).map(|(_, tab)| tab.public.available && tab.tmux_name == tmux_name))
                         .unwrap_or(false);
                     if !still_allowed { break Err("access_revoked".into()); }
@@ -456,6 +466,7 @@ pub async fn attach(
             incoming = ws_rx.next() => match incoming {
                 Some(Ok(Message::Binary(bytes))) => {
                     last_client_message = std::time::Instant::now();
+                    touch(&auth);
                     if bytes.len() > MAX_INPUT_FRAME { break Err("input_frame_too_large".into()); }
                     if writer.write_all(&bytes).is_err() || writer.flush().is_err() { break Ok(()); }
                     // After the write, so a frame that never reached the PTY is
@@ -467,6 +478,7 @@ pub async fn attach(
                 }
                 Some(Ok(Message::Text(text))) => {
                     last_client_message = std::time::Instant::now();
+                    touch(&auth);
                     // `break`, never `?`: returning here would skip the cleanup
                     // that PtySession::drop performs.
                     let Ok(control) = serde_json::from_str::<TerminalControl>(&text) else {
@@ -493,8 +505,9 @@ pub async fn attach(
     // close and was rendered as "reconnecting…" forever, including revocation.
     if let Err(reason) = &result {
         // `replaced` means another viewer took over; that client must not fight
-        // its way back in a reconnect loop.
-        let retry = reason == "idle_timeout";
+        // its way back in a reconnect loop. `session_expired` retries through
+        // the phone's silent re-login.
+        let retry = reason == "idle_timeout" || reason == "session_expired";
         let frame = TerminalEvent::Closing {
             reason: reason.clone(),
             retry,
