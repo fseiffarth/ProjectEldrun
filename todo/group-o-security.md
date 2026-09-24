@@ -1061,3 +1061,84 @@ table). Code-read findings; only #862 was reproduced (scratch repo, git 2.53).
       - [ ] ❌ Doesn't work on Windows
       - [ ] ✅ Works on macOS
       - [ ] ❌ Doesn't work on macOS
+
+### Safe for everyone — non-expert users (2026-09-24)
+
+Plan: `docs/safe_for_everyone_plan.md`. Goal: every "⚠️ yours" row in
+`docs/threat_model.md` becomes a safe default, something Eldrun handles, or a
+warning the user can't miss, so that a typical engineer or a teacher can use
+Eldrun. None of these is started.
+
+2321. **Can a fenced agent type into host windows?** The fence shares the host
+    network namespace; `DISPLAY` is not scrubbed and the abstract X11 socket is
+    reachable. With `SI:localuser:$USER` (GNOME's default) a same-uid client
+    may connect without a cookie and use XTEST. Audit it under real bubblewrap
+    on an X11 session. If it works: scrub `DISPLAY`/`XAUTHORITY` and block the
+    abstract socket (`--unshare-net` + loopback proxy to the agent's API hosts,
+    reusing the VM proxy allowlist). Splits the "shared network namespace"
+    line out of #869. **Your call:** `--unshare-net` in Standard only, or
+    everywhere.
+
+2322. **tmux < 3.2 still leaks tokens to other users.** Refuse token-carrying
+    tabs on an old tmux (or spawn them without tmux) instead of putting the
+    token on world-readable argv. Residual of #864.
+
+2323. **One webview script reaches all 630 commands.** Declare app commands
+    in `build.rs` (`tauri_build::Attributes::app_manifest`) and grant them per
+    window in named sets (`terminal`, `git-write`, `mail-send`, `fs-write`,
+    `update-install`, …): `main` keeps what it uses, `detached-*` only its tab
+    kind's sets, `present-*` read-only viewer commands, `browser-*` nothing.
+    Pin each window's grants in a test beside `tests/capability_scope.rs`.
+
+2324. **Safety profiles and a Safety panel.** `settings.safety_profile`:
+    `standard` (new installs) | `developer` (existing installs, today's
+    defaults) | `expert`. Standard: fence required, root console can't read
+    projects, schedule MCP off, auto-sync off, VPN import off, phone pairing
+    hidden, trust prompts per #2325. A profile sets defaults and visibility
+    only; it never overrides an explicit user choice. Safety panel: every
+    "⚠️ yours" row as on/off with a one-line risk and a link to its setting.
+    **Your call:** offer Standard once to existing installs, or not.
+
+2325. **Trust prompts a non-expert can answer.** `exec_trust` dialogs default
+    to "Don't run", say in words what would run, and in Standard run the
+    approved program in the project container when one exists. Remembered
+    answers are listed in the Safety panel and can be revoked.
+
+2326. **Red badge for unfenced + bypass mode.** When an unfenced tab's CLI has
+    a bypass/auto-approve mode (recorded by the session hook), badge the tab.
+    Display only — Eldrun still never picks or changes the mode.
+
+2327. **Agents on Windows run with the user's full rights.** No fence exists
+    there (`platform_fenceable()`). **Your call:** (a) in Standard, agent tabs
+    run in the project container (Docker Desktop/WSL2), with a one-click
+    install when missing; or (b) Standard asks once to accept "agents on this
+    computer run with your full rights".
+
+2328. **Warn about a planted `.git/commondir`.** Eldrun's own git ignores it
+    (#862), but the user's own terminal git follows it. Detect a `commondir`
+    inside a main `.git` and offer to remove it.
+
+2329. **Updates: check in the background, sign offline.** The update check runs
+    only when the Updates panel opens (`UpdatesPanel.tsx`). Check once a day
+    (not when headless connections are off), badge quietly, badge clearly for
+    a release marked security. Never install on its own. Move the release
+    signing key off GitHub (hardware key or offline step), so a CI compromise
+    can't sign. **Your call:** where the key lives, who can sign.
+
+2330. **Warn about an outdated WebKitGTK / GStreamer.** Linux only (WebView2
+    updates itself, macOS WebKit comes with the OS). On startup compare
+    against a version floor kept in the binary; the warning names the
+    package-manager command.
+
+2331. **Hostile-input test suite.** `tests/hostile/`: repos with planted git
+    config, hooks, `commondir`, `gitdir:` files, `latexmkrc`,
+    `rust-toolchain.toml`, `.prettierrc`; hostile mails, PDFs, ODTs, zip
+    bombs, SVGs, notebooks. Each case asserts that opening or viewing it runs
+    nothing and writes nothing outside scratch. CI on Linux, Windows, macOS.
+
+2332. **Fuzz the parsers.** `cargo fuzz` targets for mail parsing, iCalendar,
+    WebDAV XML, the git-config sanitizer and SFTP name confinement.
+
+2333. **Disclosure policy and an outside audit.** Add `SECURITY.md` (how to
+    report, scope, link to the threat model); reproducible release builds; an
+    external audit or pentest before telling non-experts Eldrun is safe.
