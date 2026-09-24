@@ -62,6 +62,7 @@ import {
   DETACHED_DOCK,
   DETACHED_CLOSE,
   DETACHED_HIDE,
+  DETACHED_WINDOW_DESTROYED,
   detachedSeedEvent,
   type DetachedSeed,
 } from "../../stores/detached";
@@ -339,6 +340,23 @@ describe("detached host (#42)", () => {
       "save_tab_layout",
       expect.objectContaining({ localFile: "/p/project.json" }),
     );
+  });
+
+  it("reopens a popout lost during a monitor change without docking its tabs", async () => {
+    const { label, bKey } = detachSecond();
+    await listenDetachedHost();
+    invokeMock.mockClear();
+
+    handlers.get(DETACHED_WINDOW_DESTROYED)!({ payload: { label } });
+    await Promise.resolve();
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      "detach_subwindow",
+      expect.objectContaining({ projectId: "p" }),
+    );
+    expect(useTabsStore.getState().detachedGroupsByScope.p).toHaveLength(1);
+    expect((useTabsStore.getState().layout as GroupNode).tabKeys).not.toContain(bKey);
+    expect(invokeMock).not.toHaveBeenCalledWith("save_tab_layout", expect.anything());
   });
 
   it("app-quit teardown persists each detached scope and destroys its popout (no discard)", async () => {

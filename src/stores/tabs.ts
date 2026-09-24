@@ -1458,8 +1458,8 @@ interface TabsStore {
   // right after the scope sync. A live popout makes each call a no-op (X11,
   // Windows, macOS park by hiding, so theirs always are); native Wayland closes
   // an inactive scope's popouts and keeps their records, so this is where they
-  // come back, at their saved size. A failed rebuild docks the record back
-  // (`recoverDetachedGroup`), as a failed detach always has.
+  // come back, at their saved size. A rebuild docks the record back only after
+  // bounded retries have failed (`recoverDetachedGroup`).
   respawnDetachedForScope: (scope: string) => void;
   // #42: WM-close of a popout closes its tabs for good instead of docking them
   // back: kills each tab's PTY (the popout's panes are NOT mounted in the main
@@ -3392,21 +3392,9 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       // Spawn the detached OS window. The store mutation + IPC live in one
       // action so they can't drift. `bounds` (when restoring a popout on
       // restart) reopens it at its prior place/size. A backend failure (#224)
-      // must NOT leave the group recorded as detached — there is no window to
-      // dock it back from, and the record would persist `detached:true` and
-      // repeat the failure at every launch — so the record is re-docked into the
-      // layout it just left.
-      const b = opts?.bounds;
-      invoke("detach_subwindow", {
-        projectId: scope,
-        groupId,
-        x: b?.x ?? null,
-        y: b?.y ?? null,
-        width: b?.w ?? null,
-        height: b?.h ?? null,
-      }).catch(() => {
-        get().recoverDetachedGroup(scope, groupId);
-      });
+      // retries while the display/retire state settles. If every attempt fails,
+      // the group is re-docked so its tabs remain reachable.
+      void openDetachedWindow(scope, groupId);
     }
     return label;
   },
@@ -3455,14 +3443,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       };
     });
 
-    invoke("detach_subwindow", {
-      projectId: scope,
-      groupId,
-      x: bounds.x,
-      y: bounds.y,
-      width: bounds.w,
-      height: bounds.h,
-    }).catch(() => {});
+    void openDetachedWindow(scope, groupId);
     return label;
   },
 
@@ -3498,14 +3479,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       };
     });
 
-    invoke("detach_subwindow", {
-      projectId: scope,
-      groupId,
-      x: bounds.x,
-      y: bounds.y,
-      width: bounds.w,
-      height: bounds.h,
-    }).catch(() => {});
+    void openDetachedWindow(scope, groupId);
     return label;
   },
 
@@ -3865,14 +3839,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       };
     });
 
-    invoke("detach_subwindow", {
-      projectId: scope,
-      groupId,
-      x: bounds.x,
-      y: bounds.y,
-      width: bounds.w,
-      height: bounds.h,
-    }).catch(() => {});
+    void openDetachedWindow(scope, groupId);
     return label;
   },
 
@@ -3914,14 +3881,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       };
     });
 
-    invoke("detach_subwindow", {
-      projectId: scope,
-      groupId,
-      x: bounds.x,
-      y: bounds.y,
-      width: bounds.w,
-      height: bounds.h,
-    }).catch(() => {});
+    void openDetachedWindow(scope, groupId);
     return label;
   },
 
@@ -4339,17 +4299,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
   respawnDetachedForScope: (scope) => {
     if (getDetachedWindowContext()) return;
     for (const entry of get().detachedGroupsByScope[scope] ?? []) {
-      const b = entry.bounds;
-      invoke("detach_subwindow", {
-        projectId: scope,
-        groupId: entry.id,
-        x: b?.x ?? null,
-        y: b?.y ?? null,
-        width: b?.w ?? null,
-        height: b?.h ?? null,
-      }).catch(() => {
-        get().recoverDetachedGroup(scope, entry.id);
-      });
+      void openDetachedWindow(scope, entry.id);
     }
   },
 
@@ -4972,6 +4922,46 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     await get().persistScope(get().scope, localFile);
   },
 }));
+
+// A detached window can fail to build briefly while a display is being removed,
+// or while Wayland is still retiring its previous window under the same label.
+// Keep its layout detached through those failures. Only an exhausted retry may
+// dock it back, so a transient OS event cannot rewrite the saved window layout.
+const openingDetachedWindows = new Map<string, Promise<void>>();
+const detachedOpenDelays = [0, 300, 900, 1800];
+
+function openDetachedWindow(scope: string, groupId: string): Promise<void> {
+  const label = `detached-${scope}-${groupId}`;
+  const pending = openingDetachedWindows.get(label);
+  if (pending) return pending;
+  const task = (async () => {
+    for (const delay of detachedOpenDelays) {
+      if (delay) await new Promise<void>((resolve) => setTimeout(resolve, delay));
+      const entry = (useTabsStore.getState().detachedGroupsByScope[scope] ?? [])
+        .find((d) => d.id === groupId);
+      if (!entry) return;
+      const b = entry.bounds;
+      try {
+        await invoke("detach_subwindow", {
+          projectId: scope,
+          groupId,
+          x: b?.x ?? null,
+          y: b?.y ?? null,
+          width: b?.w ?? null,
+          height: b?.h ?? null,
+        });
+        return;
+      } catch {
+        // The next attempt uses the latest bounds, including a monitor move.
+      }
+    }
+    useTabsStore.getState().recoverDetachedGroup(scope, groupId);
+  })().finally(() => {
+    openingDetachedWindows.delete(label);
+  });
+  openingDetachedWindows.set(label, task);
+  return task;
+}
 
 /**
  * Hydrate a scope from its saved tab session on disk — THE one implementation

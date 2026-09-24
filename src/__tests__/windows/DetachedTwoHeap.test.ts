@@ -366,7 +366,7 @@ describe("Group B — two heaps, one protocol", () => {
   });
 
   // ── #224: a popout's death, and a detach that never opened ──────────────
-  it("a popout destroyed behind the store's back docks its tabs back", async () => {
+  it("a popout destroyed behind the store's back reopens separately", async () => {
     const { main, b, label } = await setup();
 
     // `xkill`, a renderer crash, the seed timeout: the window is gone and the
@@ -376,8 +376,9 @@ describe("Group B — two heaps, one protocol", () => {
     shared.live.delete(label);
     await bus.emit("detached-window-destroyed", { label });
 
-    expect(main.tabs.useTabsStore.getState().detachedGroupsByScope["p"]).toHaveLength(0);
-    expect(main.tabs.orderedTabKeys(main.tabs.useTabsStore.getState().layout)).toContain(b.key);
+    expect(main.tabs.useTabsStore.getState().detachedGroupsByScope["p"]).toHaveLength(1);
+    expect(main.tabs.orderedTabKeys(main.tabs.useTabsStore.getState().layout)).not.toContain(b.key);
+    expect(shared.calls.some((c) => c.cmd === "detach_subwindow")).toBe(true);
   });
 
   it("a popout a Wayland scope-out retired comes back from its kept record", async () => {
@@ -406,14 +407,15 @@ describe("Group B — two heaps, one protocol", () => {
     await view.requestSeed();
     expect(main.tabs.orderedTabKeys(view.subtree)).toEqual([b.key]);
 
-    // A real crash after that still docks the tabs back (#224).
+    // A real crash after that reopens the detached window from its record.
     shared.live.delete(label);
     await bus.emit("detached-window-destroyed", { label });
-    expect(store.getState().detachedGroupsByScope["p"]).toHaveLength(0);
-    expect(main.tabs.orderedTabKeys(store.getState().layout)).toContain(b.key);
+    expect(store.getState().detachedGroupsByScope["p"]).toHaveLength(1);
+    expect(main.tabs.orderedTabKeys(store.getState().layout)).not.toContain(b.key);
+    await waitFor(() => expect(detachCalls()).toHaveLength(2));
   });
 
-  it("a detach whose window fails to open leaves the group in the layout", async () => {
+  it("a detach whose window fails to open docks after bounded retries", async () => {
     const main = await loadHeap();
     resetTabs(main, "p");
     main.tabs.useTabsStore.getState().addTab(shell("a"));
@@ -423,13 +425,19 @@ describe("Group B — two heaps, one protocol", () => {
     const root = main.tabs.useTabsStore.getState().layout as { children: Array<{ id: string }> };
     shared.fail.add("detach_subwindow");
 
-    main.tabs.useTabsStore.getState().detachGroup(root.children[1].id);
-    await Promise.resolve();
-    await Promise.resolve();
+    vi.useFakeTimers();
+    try {
+      main.tabs.useTabsStore.getState().detachGroup(root.children[1].id);
+      await Promise.resolve();
+      expect(main.tabs.useTabsStore.getState().detachedGroupsByScope["p"]).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(3000);
 
-    // The record used to survive a failed build, with no window behind it.
-    expect(main.tabs.useTabsStore.getState().detachedGroupsByScope["p"] ?? []).toHaveLength(0);
-    expect(main.tabs.orderedTabKeys(main.tabs.useTabsStore.getState().layout)).toContain(b.key);
+      // A permanent failure still leaves the tabs reachable in the main layout.
+      expect(main.tabs.useTabsStore.getState().detachedGroupsByScope["p"] ?? []).toHaveLength(0);
+      expect(main.tabs.orderedTabKeys(main.tabs.useTabsStore.getState().layout)).toContain(b.key);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // ── #228: emptying a scope takes its popouts with it ────────────────────

@@ -157,12 +157,20 @@ describe("popouts come back with their scope", () => {
     invokeMock.mockImplementation((...a: unknown[]) =>
       a[0] === "detach_subwindow" ? Promise.reject(new Error("no")) : Promise.resolve(undefined),
     );
-    useTabsStore.getState().setScope("B");
-    await flush();
-    const s = useTabsStore.getState();
-    expect(s.detachedGroupsByScope.B).toEqual([]);
-    expect(JSON.stringify(s.layoutByScope.B)).toContain("b1");
-    // The scope that was left keeps its record untouched.
-    expect(s.detachedGroupsByScope.A).toHaveLength(1);
+    vi.useFakeTimers();
+    try {
+      useTabsStore.getState().setScope("B");
+      await flush();
+      expect(useTabsStore.getState().detachedGroupsByScope.B).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(3000);
+      const s = useTabsStore.getState();
+      expect(detachCalls()).toHaveLength(4);
+      expect(s.detachedGroupsByScope.B).toEqual([]);
+      expect(JSON.stringify(s.layoutByScope.B)).toContain("b1");
+      // The scope that was left keeps its record untouched.
+      expect(s.detachedGroupsByScope.A).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

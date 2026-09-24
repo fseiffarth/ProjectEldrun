@@ -891,6 +891,7 @@ function persistScopeNow(scope: string): Promise<void> {
 /** Set while `shutdownDetachedWindows` destroys popouts on quit, so their
  *  `Destroyed` events are not mistaken for crashes and docked back. */
 let shuttingDown = false;
+const unexpectedWindowDeaths = new Map<string, number[]>();
 
 /** The `DetachedTabStatus` map for one popout's keys, from the main window's
  *  classified activity — the same three states `TabBar` derives per tab. Pure. */
@@ -1074,10 +1075,11 @@ export async function listenDetachedHost(): Promise<() => void> {
     }
   });
 
-  // #224: a popout that died with its record still standing — nothing in the
-  // store tore it down first — is docked back instead of leaving its tabs in a
-  // `detached:true` record with no window. Quit teardown destroys popouts with
-  // their records deliberately intact (they respawn next launch), hence the flag.
+  // A compositor can discard a popout during a monitor change. Reopen its
+  // existing detached record instead of silently docking it into the main
+  // window and persisting that as the new layout. Bound repeated deaths so a
+  // broken webview does eventually dock its tabs where they remain reachable.
+  // Quit teardown destroys popouts with their records intact, hence the flag.
   const unDestroyed = await listen<DetachedWindowDestroyedEnvelope>(
     DETACHED_WINDOW_DESTROYED,
     (ev) => {
@@ -1087,8 +1089,21 @@ export async function listenDetachedHost(): Promise<() => void> {
       for (const [scope, entries] of Object.entries(store.detachedGroupsByScope)) {
         const entry = entries?.find((d) => d.label === label);
         if (!entry) continue;
-        store.recoverDetachedGroup(scope, entry.id);
-        void persistScopeNow(scope);
+        // An inactive scope will recreate its popouts on the next setScope.
+        // Opening one now could expose a parked project's tabs on screen.
+        if (store.scope !== scope) return;
+        const now = Date.now();
+        const recent = (unexpectedWindowDeaths.get(label) ?? [])
+          .filter((time) => now - time < 60_000);
+        recent.push(now);
+        if (recent.length <= 2) {
+          unexpectedWindowDeaths.set(label, recent);
+          store.respawnDetachedForScope(scope);
+        } else {
+          unexpectedWindowDeaths.delete(label);
+          store.recoverDetachedGroup(scope, entry.id);
+          void persistScopeNow(scope);
+        }
         return;
       }
     },
