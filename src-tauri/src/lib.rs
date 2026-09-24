@@ -1027,6 +1027,9 @@ pub fn run() {
     #[cfg(target_os = "linux")]
     services::webkit_a11y::install();
 
+    // First, so nothing below creates the state dir with the umask's mode.
+    storage::ensure_private_state_dir();
+
     // Before the logger appends this run's `=== STARTED … ===` line, so the cap
     // is enforced against what previous runs left rather than a moment later.
     services::state_gc::cap_crash_log();
