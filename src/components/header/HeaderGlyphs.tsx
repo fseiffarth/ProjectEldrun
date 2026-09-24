@@ -100,3 +100,14 @@ export function SettingsGlyph({ className }: { className: string }) {
     </Glyph>
   );
 }
+
+/** An open book — the Skills Library (`skills/SkillsOverlay`), opened from the
+ *  Models & agents menu, whose entry carries no icon of its own to reuse. */
+export function SkillsGlyph({ className }: { className: string }) {
+  return (
+    <Glyph className={className}>
+      <path d="M8 3.8C6.5 2.6 4.5 2 2 2v10.2c2.5 0 4.5.6 6 1.8 1.5-1.2 3.5-1.8 6-1.8V2c-2.5 0-4.5.6-6 1.8Z" {...STROKE} />
+      <path d="M8 3.8V14" {...STROKE} />
+    </Glyph>
+  );
+}

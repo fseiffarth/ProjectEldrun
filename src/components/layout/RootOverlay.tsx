@@ -74,6 +74,9 @@ interface RootMcpStatus {
   mail_scope?: "marked" | "all";
   /** Root agents run fenced, so the staged-write review cannot be bypassed. */
   review_enforced?: boolean;
+  /** A root agent started now could read the projects (the fence switch is
+   *  on, or it runs unfenced) — what a mail draft's `attach` needs. */
+  projects_readable?: boolean;
 }
 
 /** A rect relative to the overlay's pane region. */
