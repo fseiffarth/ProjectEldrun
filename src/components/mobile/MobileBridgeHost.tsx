@@ -1817,7 +1817,30 @@ async function handleRequest(
   }
 }
 
-let mutationQueue: Promise<unknown> = Promise.resolve();
+/** Desktop mutations run one at a time — but per domain, not on one chain.
+ * The sidecar starts each request's deadline as it emits it, so a slow mail
+ * reply (60 s budget) ahead of a tab create on one shared chain made the phone
+ * read "desktop unavailable" for the create and then watch the tab appear
+ * anyway. Tabs, the board and calendar, mail, and schedules/prompts each keep
+ * their own order; nothing in one waits on another. */
+const mutationQueues = new Map<string, Promise<unknown>>();
+
+function mutationDomain(type: DesktopRequest["type"]): string | null {
+  switch (type) {
+    case "create": case "activate": case "rename_tab": case "close_tab": case "color_tab": case "reorder_tab": return "tabs";
+    case "todo_mutate": case "alert_resolve": case "calendar_mutate": return "board";
+    case "mail_mark": case "mail_reply": return "mail";
+    case "schedule_mutate": case "prompt_mutate": return "schedules";
+    default: return null;
+  }
+}
+
+/** Queue `run` behind the last mutation of its domain (exported for tests). */
+export function enqueueMutation(domain: string, run: () => Promise<void>): Promise<void> {
+  const next = (mutationQueues.get(domain) ?? Promise.resolve()).then(run, run);
+  mutationQueues.set(domain, next);
+  return next;
+}
 
 export function MobileBridgeHost() {
   const t = useT();
@@ -1855,11 +1878,9 @@ export function MobileBridgeHost() {
           }).catch(() => {});
         }
       };
-      if (request.type === "create" || request.type === "activate" || request.type === "rename_tab" || request.type === "close_tab" || request.type === "color_tab" || request.type === "reorder_tab" || request.type === "todo_mutate" || request.type === "alert_resolve" || request.type === "calendar_mutate" || request.type === "schedule_mutate" || request.type === "prompt_mutate" || request.type === "mail_mark" || request.type === "mail_reply") {
-        mutationQueue = mutationQueue.then(run, run);
-      } else {
-        void run();
-      }
+      const domain = mutationDomain(request.type);
+      if (domain) void enqueueMutation(domain, run);
+      else void run();
     }).then((stop) => {
       if (disposed) stop();
       else unlisten = stop;
