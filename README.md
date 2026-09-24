@@ -20,7 +20,29 @@ Eldrun is a project-centric desktop layer that swaps your entire working context
 | You want to monitor or answer your agents from your phone independently of developer apps. | |
 | You need structure and control and are tired of switching between your agent tabs. You use many different models (claude, openai, meta, google, ...) in parallel. | |
 
-Eldrun stands on **three pillars**.
+## Get started
+
+1. **Install.** Grab a package from the
+   [latest release](https://github.com/fseiffarth/ProjectEldrun/releases/latest)
+   (see [Download](#download)) or [build from source](#building-from-source).
+   Nothing else is required; [optional tools](#optional-tools) unlock single
+   features.
+2. **Add a project.** Click **+** in the project bar. **New project** creates
+   `~/eldrun/projects/<name>/` with Git and agent docs (`AGENTS.md`,
+   `CLAUDE.md`, `GEMINI.md`) already in place; **Import project** registers an
+   existing folder in place, or copies or moves it.
+3. **Start working.** Opening a project gives you a tab running your default
+   agent. Set that command in **Settings**; any new tab can pick another
+   installed agent CLI or a plain shell.
+4. **Switch projects.** Click another project pill: its windows, tabs, files,
+   and layout come back, and the previous project's desktop is parked until you
+   return.
+5. **Go further when you need it.** Point a project at an
+   [SSH host or HPC cluster](#remote-machines--hpc-clusters-the-second-differentiator),
+   or opt a project into [Eldrun Mobile](#every-agent-from-your-phone-the-third-differentiator)
+   (**Settings**, needs Tailscale) to answer your agents from your phone.
+
+## Three pillars
 
 **One project = one desktop.** Eldrun is a project-centric desktop layer, not
 just an app that launches or embeds other apps: projects own their windows and

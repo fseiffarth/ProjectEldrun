@@ -26,6 +26,7 @@ import { useFastMode } from "../../lib/agents/fastMode";
 import { resolveProjectDirectory, type ProjectBox, type ProjectEntry } from "../../types";
 import { boxColor } from "../../lib/theme/boxColor";
 import { useT } from "../../lib/i18n";
+import { OPEN_PROJECT_DIALOG_EVENT } from "../../lib/projects/projectDialogEvent";
 
 // Re-exported for tests and any external callers that imported these scaffold
 // helpers from ProjectSwitcher before the dialog was extracted (the public
@@ -115,6 +116,21 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
     window.addEventListener("eldrun:open-settings", onOpenSettings);
     return () => window.removeEventListener("eldrun:open-settings", onOpenSettings);
   }, []);
+
+  // The intro wizard's New / Import / Clone buttons open the very dialogs the
+  // + menu opens — this bar owns them, so they arrive as a window event (the
+  // `eldrun:open-settings` pattern above) rather than a second copy.
+  useEffect(() => {
+    const onOpenProjectDialog = (e: Event) => {
+      const kind = (e as CustomEvent).detail;
+      if (kind === "new" || kind === "import" || kind === "clone") {
+        closeHeaderMenu(ADD_MENU_ID);
+        setDialog(kind);
+      }
+    };
+    window.addEventListener(OPEN_PROJECT_DIALOG_EVENT, onOpenProjectDialog);
+    return () => window.removeEventListener(OPEN_PROJECT_DIALOG_EVENT, onOpenProjectDialog);
+  }, [closeHeaderMenu]);
 
   const activeProjects = useMemo(() => {
     return projects

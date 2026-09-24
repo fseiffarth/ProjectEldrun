@@ -250,6 +250,9 @@ export interface Settings {
    *  root agents no endpoint and refuses the ones already holding the token. */
   root_mcp?: boolean;
   schedule_mcp?: boolean;
+  /** The read-only "Ask Eldrun" help MCP (`eldrun-help`) in local agent tabs.
+   *  **Default true** — absent means on. Switched in the intro wizard. */
+  help_mcp?: boolean;
   root_mcp_review?: "all" | "destructive" | "off";
   /** Root console: serve the MCP tools to local-model tabs only. Absent means
    *  off. On, cloud agent CLIs get no endpoint and running ones are refused. */
@@ -531,6 +534,10 @@ export interface Settings {
   agent_fence_paths?: string[];
   /** Opt-in access to Cargo registry credential files in exposed toolchains. */
   agent_fence_cargo_credentials?: boolean;
+  /** A fenced root-console agent sees every project, box folder and remote
+   *  mirror read-only (default off: a widening). The mail `attach` argument
+   *  needs it; recorded per root tab at spawn. */
+  root_fence_projects_readable?: boolean;
   /** When true (the default), the usage recap opens by itself on the first launch
    *  of each day. Turning it off stops the popup, not the counting — the recap
    *  stays reachable from Settings. */

@@ -91,6 +91,109 @@
   border-color: var(--accent) !important;
 }
 
+/* The intro wizard (HowToStart): the Settings dialog's navigation frame
+   (.settings-with-navigation + .settings-navigation rail), narrower, and a
+   fixed height so turning a page never resizes the dialog under the cursor.
+   Explicit colour: the dialog must not inherit `body`'s (none → black). */
+.settings-dialog.intro-dialog {
+  width: min(860px, calc(100vw - 32px));
+  height: min(660px, calc(100vh - 96px));
+  color: var(--text-primary);
+}
+.intro-rail-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.intro-rail .how-to-start-num {
+  width: 18px;
+  height: 18px;
+  font-size: 11px;
+}
+.intro-rail .settings-btn:not([aria-current]) .how-to-start-num {
+  background: var(--control-bg);
+  color: var(--text-secondary);
+  border: 1px solid var(--control-border);
+}
+.intro-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.intro-skip {
+  margin-left: auto;
+}
+.intro-skip + .how-to-start-got-it {
+  margin-left: 0;
+}
+.intro-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+.intro-choice-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.intro-choice-row .settings-btn[aria-pressed="true"] {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.intro-step-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+.intro-step-done .how-to-start-num {
+  background: var(--success);
+}
+.intro-compare {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 8px;
+}
+.intro-prereq {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.intro-examples,
+.intro-hits {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.intro-examples .settings-btn {
+  white-space: normal;
+  text-align: left;
+}
+.intro-ask-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.intro-ask-form input {
+  flex: 1;
+  min-width: 0;
+}
+.intro-ask-form .settings-link-row {
+  padding-top: 0;
+}
+.intro-toggle-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-primary);
+}
+
 /* Contextual hint coachmark/banner. z-index 90: above the header (80) so it can
    point at chrome, but below true modals (.modal-backdrop, 100) so a dialog is
    never pierced by a stray hint. Portaled to body (see HintBubble). */
