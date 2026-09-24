@@ -1,7 +1,7 @@
 {
   "name": "eldrun",
   "private": true,
-  "version": "0.1.84",
+  "version": "0.1.85",
   "license": "MIT OR Apache-2.0",
   "type": "module",
   "scripts": {
