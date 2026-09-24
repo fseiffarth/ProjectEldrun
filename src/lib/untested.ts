@@ -296,6 +296,7 @@ export const UNTESTED = {
   "mobile.focus.workingFacts": { area: "mobile", what: "Terminal · Reader elapsed time and tokens while the agent works", tested: "2026-09-23" },
   "mobile.model.effort": { area: "mobile", what: "Terminal · Antigravity effort step in the model sheet", tested: "2026-09-23" },
   "mobile.home.reorder": { area: "mobile", what: "Home · Drag to reorder the project list" },
+  "mobile.home.recover": { area: "mobile", what: "Home · The project list loads again on its own after a failed load (page shown again, back online, slow retry)" },
   "mobile.link.ack": { area: "mobile", what: "Terminal · A prompt the link lost keeps its bubble, says Not delivered, and Resend delivers it once" },
   "mobile.link.failureText": { area: "mobile", what: "Terminal · Every close reason and error reads as a sentence, never a code (session_expired, desktop_unavailable, …)" },
   "mobile.link.offlineShell": { area: "mobile", what: "App · Opened with the desktop closed, the phone shows Eldrun's own splash rather than the proxy's 502 page" },
