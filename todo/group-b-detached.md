@@ -1,5 +1,18 @@
 ## Group B — Detached Windows: Parity & Cross-Window Correctness
 
+- [ ] 🖐️ **Wayland popout respawns on its own screen (2026-09-25).** A popout
+  closed by a project switch (no unsaved work) came back on the pointer's
+  screen, while one kept minimized for unsaved work kept its screen — so one
+  project's popouts "worked" and another's didn't. The retire now records the
+  popout's monitor (GDK's output for its surface); the respawn is shown
+  fullscreen on that monitor and dropped out of fullscreen at once, which is
+  where Mutter then places it, and gets its size back. Check: two projects,
+  each with a popout on the second screen and the main window on the first;
+  switch back and forth; also a popout with an unsaved edit. Expect a brief
+  fullscreen flash on the right screen, then the popout at its size there.
+  Not run live (`subwindow.rs` `present_on_monitor`).
+  - [ ] ✅ Works on Linux (Wayland)
+  - [ ] ❌ Doesn't work on Linux (Wayland)
 - [ ] **GNOME Wayland monitor retention (2026-09-17): live verification.**
   Scope switches now minimize popouts and present their existing surfaces on
   return. Hiding destroyed GTK's Wayland toplevel and lost GNOME's monitor

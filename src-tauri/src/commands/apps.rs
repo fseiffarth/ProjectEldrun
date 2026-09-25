@@ -68,12 +68,17 @@ pub struct TrackedWindow {
 /// placement, so no per-monitor scale conversion is needed on re-apply.
 /// Transient (not persisted): the *restart* path restores popouts from the
 /// frontend's saved bounds instead.
+///
+/// Native Wayland has no position to capture, so a retired popout records the
+/// screen it was on instead (`monitor`, GDK's own logical rect for it) and is
+/// rebuilt onto that screen when its scope returns.
 #[derive(Debug, Clone, Copy)]
 pub struct DetachedBounds {
     pub x: i32,
     pub y: i32,
     pub w: u32,
     pub h: u32,
+    pub monitor: Option<crate::services::window_state::MonitorRect>,
 }
 
 /// Called with the changed row's `project_id` whenever the registry mutates

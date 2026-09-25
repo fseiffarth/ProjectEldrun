@@ -33,6 +33,7 @@ use crate::commands::apps::{
     TrackedWindow, WindowRegistry, WindowRegistryState, ORIGIN_DETACHED_SUBWINDOW,
 };
 use crate::commands::workspace::WorkspaceStateArc;
+use crate::services::window_state::MonitorRect;
 
 /// Stable Tauri window label for a detached group. One window per (project,
 /// group); the label is also how `attach_subwindow` finds the window to close.
@@ -283,15 +284,15 @@ pub async fn detach_subwindow(
     // store's rect is unreliable (a Wayland popout never learns its position, so
     // its bounds stream rarely flushes), which is why the backend's own capture
     // wins on Wayland. Elsewhere it is only the fallback for a caller with none.
-    let saved_size = win_registry
-        .lock()
-        .unwrap()
-        .detached_bounds
-        .get(&label)
-        .map(|b| (f64::from(b.w), f64::from(b.h)));
+    let saved = win_registry.lock().unwrap().detached_bounds.get(&label).copied();
+    let saved_size = saved.map(|b| (f64::from(b.w), f64::from(b.h)));
     // A Wayland respawn (the scope just came back) must not take the focus
     // the user is typing into in the main window.
     let respawn = saved_size.is_some() && !window_positions_readable();
+    // ...and goes back onto the screen it was retired from. It is built hidden
+    // so it can be told that screen before GNOME first places it
+    // (`present_on_monitor`).
+    let respawn_monitor = saved.and_then(|b| b.monitor).filter(|_| respawn);
     let (width, height) = match saved_size {
         Some((w, h)) if !window_positions_readable() || detached_size(width, height).is_none() => {
             (Some(w), Some(h))
@@ -326,6 +327,9 @@ pub async fn detach_subwindow(
     builder = builder.inner_size(900.0, 640.0);
     if respawn {
         builder = builder.focused(false);
+    }
+    if respawn_monitor.is_some() {
+        builder = builder.visible(false);
     }
     let win = match builder.build() {
         Ok(win) => win,
@@ -412,22 +416,30 @@ pub async fn detach_subwindow(
         return Ok(label);
     }
 
-    // Force the detached webview's first paint shortly after creation, deferred on
-    // a thread so the webview has mounted. The window stays mapped throughout, so
-    // the X11 id resolved above remains valid.
-    //
-    // - Linux/WebKitGTK: a freshly-created second webview presents an unpainted
-    //   (BLACK) GL surface until a real OS-level size change forces the compositor
-    //   to allocate and paint it — the main window only avoids this because its
-    //   startup fullscreen transition is itself such a resize. The borderless
-    //   detached window gets no such resize, so nudge its size by 1px and back.
-    // - Windows/WebView2: the same window instead presents a blank WHITE surface
-    //   and the resize nudge is unreliable (rapid +1/-1 resizes coalesce without a
-    //   repaint). The window was built HIDDEN above; show()+set_focus() here
-    //   toggles WebView2's visibility, which forces the first composite. The resize
-    //   nudge is kept as a belt-and-suspenders kick.
-    let nudge_app = app.clone();
-    let nudge_label = label.clone();
+    match respawn_monitor {
+        Some(monitor) => present_on_monitor(&app, &label, monitor, fitted.1),
+        None => spawn_first_paint_nudge(app, label.clone()),
+    }
+
+    Ok(label)
+}
+
+/// Force a fresh popout's first paint shortly after creation, deferred on a
+/// thread so the webview has mounted. The window stays mapped throughout, so
+/// the X11 id `detach_subwindow` resolved remains valid.
+///
+/// - Linux/WebKitGTK: a freshly-created second webview presents an unpainted
+///   (BLACK) GL surface until a real OS-level size change forces the compositor
+///   to allocate and paint it — the main window only avoids this because its
+///   startup fullscreen transition is itself such a resize. The borderless
+///   detached window gets no such resize, so nudge its size by 1px and back.
+/// - Windows/WebView2: the same window instead presents a blank WHITE surface
+///   and the resize nudge is unreliable (rapid +1/-1 resizes coalesce without a
+///   repaint). The window was built HIDDEN; show()+set_focus() here
+///   toggles WebView2's visibility, which forces the first composite. The resize
+///   nudge is kept as a belt-and-suspenders kick.
+fn spawn_first_paint_nudge(app: AppHandle, label: String) {
+    let (nudge_app, nudge_label) = (app, label);
     std::thread::spawn(move || {
         // Marshal every window op onto the main (UI) thread. Tauri window methods
         // are `Send` so they compile from a worker thread, but on Windows calling
@@ -464,8 +476,161 @@ pub async fn detach_subwindow(
         std::thread::sleep(std::time::Duration::from_millis(50));
         kick(nudge_app, nudge_label, false);
     });
+}
 
-    Ok(label)
+/// The logical rect GDK gives a monitor: how a popout's screen is remembered
+/// across a Wayland retire and found again on the respawn.
+#[cfg(target_os = "linux")]
+fn gdk_monitor_rect(m: &gtk::gdk::Monitor) -> MonitorRect {
+    use gtk::gdk::prelude::MonitorExt;
+    let g = m.geometry();
+    MonitorRect {
+        x: g.x(),
+        y: g.y(),
+        w: g.width().max(0) as u32,
+        h: g.height().max(0) as u32,
+    }
+}
+
+/// The screen GDK says `win` is on. On Wayland that is the output its surface
+/// last entered — the one thing a client there knows about where it is.
+/// Main thread (GTK).
+#[cfg(target_os = "linux")]
+fn gdk_monitor_of(win: &tauri::WebviewWindow) -> Option<MonitorRect> {
+    use gtk::prelude::*;
+    let gdk_win = win.gtk_window().ok()?.window()?;
+    gdk_win
+        .display()
+        .monitor_at_window(&gdk_win)
+        .map(|m| gdk_monitor_rect(&m))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn gdk_monitor_of(_win: &tauri::WebviewWindow) -> Option<MonitorRect> {
+    None
+}
+
+/// Where a [`present_on_monitor`] popout is in its fullscreen round trip.
+#[cfg(any(target_os = "linux", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MonitorHop {
+    /// Asked to go fullscreen on its screen; GTK has not confirmed it yet.
+    Entering,
+    /// Fullscreen there, asked to leave it again.
+    Leaving,
+    /// Back to a normal window (or given up on): nothing more to do.
+    Done,
+}
+
+#[cfg(any(target_os = "linux", test))]
+#[derive(Debug, PartialEq, Eq)]
+enum HopAction {
+    Nothing,
+    Unfullscreen,
+    RestoreSize,
+}
+
+/// One GTK window-state report during the round trip. Pure, so the order the
+/// reports arrive in is unit-tested without a compositor.
+#[cfg(any(target_os = "linux", test))]
+fn monitor_hop_step(hop: MonitorHop, fullscreen: bool) -> (MonitorHop, HopAction) {
+    match (hop, fullscreen) {
+        (MonitorHop::Entering, true) => (MonitorHop::Leaving, HopAction::Unfullscreen),
+        (MonitorHop::Leaving, false) => (MonitorHop::Done, HopAction::RestoreSize),
+        (hop, _) => (hop, HopAction::Nothing),
+    }
+}
+
+/// How long the round trip may take before the popout is simply dropped out of
+/// fullscreen and resized (a compositor that never confirms the fullscreen).
+#[cfg(target_os = "linux")]
+const MONITOR_HOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Show a hidden Wayland respawn on the screen it was retired from, at `size`.
+///
+/// A Wayland client cannot place its window, and GNOME puts every new one on
+/// the screen under the pointer — the main window's, right after the project
+/// switch that brought the popout back. The one output a client may name is
+/// the one it wants to be fullscreen ON (`gtk_window_fullscreen_on_monitor`,
+/// as the presenter does). Mutter places a window that was fullscreen from its
+/// first frame only when it leaves fullscreen, and places it then on the
+/// screen it is on (`unfullscreen_window` → `meta_window_place`, no longer
+/// "showing for the first time"). So the popout is shown fullscreen on its
+/// screen, dropped out of fullscreen as soon as GTK reports it, then given its
+/// size back. That round trip is a real OS resize, which is also what paints
+/// WebKitGTK's first frame, so no nudge. A screen that is gone → a plain show
+/// wherever the compositor puts it.
+#[cfg(target_os = "linux")]
+fn present_on_monitor(app: &AppHandle, label: &str, monitor: MonitorRect, size: Option<Size>) {
+    let on_main = app.clone();
+    let label = label.to_string();
+    let _ = app.run_on_main_thread(move || {
+        use gtk::prelude::*;
+        let Some(win) = on_main.get_webview_window(&label) else {
+            return;
+        };
+        let index = gtk::gdk::Display::default().and_then(|d| {
+            (0..d.n_monitors())
+                .find(|&i| d.monitor(i).is_some_and(|m| gdk_monitor_rect(&m) == monitor))
+        });
+        let (Some(index), Ok(gtk_win), Some(screen)) =
+            (index, win.gtk_window(), gtk::gdk::Screen::default())
+        else {
+            let _ = win.show();
+            spawn_first_paint_nudge(on_main.clone(), label);
+            return;
+        };
+        let restore = {
+            let win = win.clone();
+            move || {
+                if let Some(size) = size {
+                    let _ = win.set_size(size);
+                }
+            }
+        };
+        let hop = std::sync::Arc::new(std::sync::Mutex::new(MonitorHop::Entering));
+        let (on_event, restore_on_event) = (hop.clone(), restore.clone());
+        gtk_win.connect_window_state_event(move |w, ev| {
+            let fullscreen = ev
+                .new_window_state()
+                .contains(gtk::gdk::WindowState::FULLSCREEN);
+            let action = {
+                let mut hop = on_event.lock().unwrap();
+                let (next, action) = monitor_hop_step(*hop, fullscreen);
+                *hop = next;
+                action
+            };
+            match action {
+                HopAction::Unfullscreen => w.unfullscreen(),
+                HopAction::RestoreSize => restore_on_event(),
+                HopAction::Nothing => {}
+            }
+            gtk::glib::Propagation::Proceed
+        });
+        gtk_win.fullscreen_on_monitor(&screen, index);
+        let _ = win.show();
+
+        let fallback = on_main.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(MONITOR_HOP_TIMEOUT);
+            let on_main = fallback.clone();
+            let _ = fallback.run_on_main_thread(move || {
+                let prev = std::mem::replace(&mut *hop.lock().unwrap(), MonitorHop::Done);
+                if prev == MonitorHop::Done {
+                    return;
+                }
+                if let Some(Ok(gtk_win)) = on_main.get_webview_window(&label).map(|w| w.gtk_window()) {
+                    gtk_win.unfullscreen();
+                }
+                restore();
+            });
+        });
+    });
+}
+
+#[cfg(not(target_os = "linux"))]
+fn present_on_monitor(app: &AppHandle, label: &str, _monitor: MonitorRect, _size: Option<Size>) {
+    spawn_first_paint_nudge(app.clone(), label.to_string());
 }
 
 /// The position/size to actually apply to a respawning popout: the caller's
@@ -632,6 +797,7 @@ pub fn hide_detached_windows(
                         y: pos.y,
                         w: size.width,
                         h: size.height,
+                        monitor: None,
                     },
                 );
             }
@@ -955,13 +1121,20 @@ fn close_retiring_window(app: &AppHandle, label: &str) {
             return;
         };
         if let Ok(size) = win.inner_size() {
-            reg.lock().unwrap().detached_bounds.insert(
+            // The screen it is on, so the respawn lands there again rather
+            // than wherever GNOME puts new windows (the pointer's screen). A
+            // surface that never entered an output keeps the last one known.
+            let mut reg = reg.lock().unwrap();
+            let monitor = gdk_monitor_of(&win)
+                .or_else(|| reg.detached_bounds.get(&label).and_then(|b| b.monitor));
+            reg.detached_bounds.insert(
                 label.clone(),
                 crate::commands::apps::DetachedBounds {
                     x: 0,
                     y: 0,
                     w: size.width,
                     h: size.height,
+                    monitor,
                 },
             );
         }
@@ -1469,9 +1642,31 @@ mod tests {
     }
 
     #[test]
+    fn a_monitor_hop_leaves_fullscreen_once_then_restores_the_size_once() {
+        use HopAction::*;
+        use MonitorHop::*;
+        // Reports before the fullscreen lands change nothing.
+        assert_eq!(monitor_hop_step(Entering, false), (Entering, Nothing));
+        assert_eq!(monitor_hop_step(Entering, true), (Leaving, Unfullscreen));
+        // A repeated fullscreen report does not ask twice.
+        assert_eq!(monitor_hop_step(Leaving, true), (Leaving, Nothing));
+        assert_eq!(monitor_hop_step(Leaving, false), (Done, RestoreSize));
+        // Afterwards the popout is an ordinary window: a later fullscreen is
+        // someone's own, never undone here.
+        assert_eq!(monitor_hop_step(Done, true), (Done, Nothing));
+        assert_eq!(monitor_hop_step(Done, false), (Done, Nothing));
+    }
+
+    #[test]
     fn a_retired_popout_keeps_its_size_and_a_crashed_one_is_reported() {
         let mut reg = WindowRegistry::default();
-        let bounds = crate::commands::apps::DetachedBounds { x: 0, y: 0, w: 700, h: 500 };
+        let bounds = crate::commands::apps::DetachedBounds {
+            x: 0,
+            y: 0,
+            w: 700,
+            h: 500,
+            monitor: None,
+        };
         for label in ["detached-p1-g-1", "detached-p1-g-2"] {
             reserve_detached_seq(&mut reg, label);
             reg.windows.insert(label.to_string(), tracked(label, Some(7)));
