@@ -74,6 +74,21 @@
       live-id store), `terminal/mod.rs` (`resolve_claude_session`), `lib.rs`
       (install at startup). Hook script: `~/.local/share/eldrun/hooks/`; live ids:
       `~/.local/share/eldrun/live_sessions/`.*
+      - [ ] 🖐️ **39c-relaunch — A Claude that relaunched itself before its first
+        prompt keeps its tab.** Open a new Claude tab, accept the "flicker-free
+        rendering" upsell (or run `/tui fullscreen`) before sending anything, then
+        prompt: the phone's Reader shows the conversation, the tab's working /
+        done marks light, and after an Eldrun restart the tab resumes that
+        conversation. (Claude 2.1.282 comes back under a fresh session id; the
+        hook now follows it while the launch id has no transcript — 2026-09-25.)
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS
     - [x] **39d — Generalize to other agents.** Codex, Gemini and Mistral/vibe done.
       - [x] **Codex.** ✅ Done. Codex mints its own session id (no launch-time
         `--session-id`), but it has a Claude-style `SessionStart` hook and resumes

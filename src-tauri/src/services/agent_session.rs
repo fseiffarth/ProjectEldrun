@@ -2873,9 +2873,10 @@ mod tests {
         let other = "44444444-4444-4444-8444-444444444444";
         let (rec, _) = run_hook(&script, &live, other, claude, true, &start(again, &own(again)));
         assert_eq!(rec.as_deref(), Some(again));
-        std::fs::write(path(other), "{}").unwrap();
-        let (rec, _) = run_hook(&script, &live, "55555555-5555-4555-8555-555555555555", claude, true, &start(fresh, &own(fresh)));
-        assert!(rec.is_none());
+        // …and a launch id that did write one keeps the record where it is.
+        std::fs::write(path(again), "{}").unwrap();
+        let (rec, _) = run_hook(&script, &live, other, claude, true, &start(fresh, &own(fresh)));
+        assert_eq!(rec.as_deref(), Some(again));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

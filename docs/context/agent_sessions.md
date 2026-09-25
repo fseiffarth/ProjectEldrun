@@ -168,6 +168,16 @@ env var the resolver sets, `ELDRUN_TAB_AGENT`:
   neither the key nor the current record is accepted only from a `SessionStart`
   whose `source` is `clear` or `resume`; a nested `-p` run's `startup` and its
   `Stop` are refused, and the mode is written only alongside an accepted id.
+  One `startup` is let through: Claude 2.1.282 relaunches itself to switch
+  its renderer (the fullscreen upsell dialog, `/tui`) or to update, and a
+  session that has no transcript yet comes back under a fresh id with
+  `--session-id` dropped. Before this exception the record stayed on a launch
+  id that never wrote a file, so the phone's Reader showed an empty session
+  and the tab's turn state never lit (2026-09-25). The tab's own session is
+  the one whose transcript is missing beside the new one, so a plain start
+  is followed exactly when `<transcript dir>/<current record>.jsonl` does not
+  exist; a CLI nested under the tab was started by a session that has been
+  prompted, whose file is there.
 - **Codex** (`codex`): Codex mints its ids, so its record is free-form — except
   that a Claude fired inside a Codex tab is refused outright (`CLAUDECODE` is
   set by Claude for its children, never by Codex). The rollout binder also
