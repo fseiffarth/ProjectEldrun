@@ -18,10 +18,19 @@ function preview(text: string): string {
   return line.length > 90 ? `${line.slice(0, 89)}…` : line;
 }
 
+/** The part of the message the reader has marked in the select view, or
+ * "" when the selection is empty or lies outside it. */
+function selectedIn(host: HTMLElement | null): string {
+  const selection = window.getSelection();
+  if (!host || !selection || selection.isCollapsed || selection.rangeCount === 0) return "";
+  const range = selection.getRangeAt(0);
+  return host.contains(range.commonAncestorContainer) ? selection.toString() : "";
+}
+
 /**
- * What can be done with one chat message: copy it, or have the phone read it
- * aloud. A prompt and an answer offer the same two — the reader's own words
- * are read back as readily as the agent's.
+ * What can be done with one chat message: copy it, pick part of it to copy,
+ * or have the phone read it aloud. A prompt and an answer offer the same —
+ * the reader's own words are read back as readily as the agent's.
  *
  * It is a sheet rather than buttons beside the bubble: the chat is the whole
  * screen on a phone, and two controls per message crowd it. The bubble holds
@@ -31,6 +40,18 @@ function MessageMenu({ id, text, onClose }: { id: string; text: string; onClose:
   const t = useT();
   const speaking = useSyncExternalStore(subscribeSpeech, currentSpeechId) === id;
   const [note, setNote] = useState<{ text: string; error?: boolean } | null>(null);
+  // Select text: the bubble itself cannot be selected — its hold is this
+  // menu — so the message is laid out again here as plain text the phone's
+  // own selection handles work on, and Copy takes what they mark.
+  const [selecting, setSelecting] = useState(false);
+  const [picked, setPicked] = useState(false);
+  const selectHost = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!selecting) return;
+    const track = () => setPicked(selectedIn(selectHost.current) !== "");
+    document.addEventListener("selectionchange", track);
+    return () => document.removeEventListener("selectionchange", track);
+  }, [selecting]);
   // A copy says so and then gets out of the way; a failed one stays to be read.
   useEffect(() => {
     if (!note || note.error) return;
@@ -38,8 +59,9 @@ function MessageMenu({ id, text, onClose }: { id: string; text: string; onClose:
     return () => window.clearTimeout(timer);
   }, [note, onClose]);
   const copy = async () => {
+    const part = selecting ? selectedIn(selectHost.current) : "";
     try {
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(part || text);
       setNote({ text: t("mobile.focus.copied") });
     } catch {
       setNote({ text: t("mobile.focus.copyFailed"), error: true });
@@ -60,12 +82,30 @@ function MessageMenu({ id, text, onClose }: { id: string; text: string; onClose:
         <h2>{title} {isUntested("mobile.focus.messageMenu") && <small>{t("mobile.focus.untested")}</small>}</h2>
         <span className="sheet-close" aria-hidden="true" />
       </header>
+      {selecting ? <>
+        <p className={note?.error ? "sheet-note error" : "sheet-note"} role={note ? "status" : undefined}>{note ? note.text : <>{t("mobile.focus.selectHint")}{isUntested("mobile.focus.selectText") && <> · {t("mobile.focus.untested")}</>}</>}</p>
+        <div ref={selectHost} className="message-select-text" data-testid="message-select-text">{text}</div>
+        <ul className="option-list">
+          <li>
+            <button onPointerDown={(event) => event.preventDefault()} onClick={copy}>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V6a2 2 0 0 1 2-2h8" /></svg>
+              <span><strong>{t(picked ? "mobile.focus.copySelection" : "mobile.focus.copyMessage")}</strong></span>
+            </button>
+          </li>
+        </ul>
+      </> : <>
       <p className={note?.error ? "sheet-note error" : "sheet-note"} role={note ? "status" : undefined}>{note ? note.text : preview(text)}</p>
       <ul className="option-list">
         <li>
           <button onClick={copy}>
             <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V6a2 2 0 0 1 2-2h8" /></svg>
             <span><strong>{t("mobile.focus.copyMessage")}</strong></span>
+          </button>
+        </li>
+        <li>
+          <button onClick={() => setSelecting(true)}>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h9M5 17h6M15 14v7M13 14h4M13 21h4" /></svg>
+            <span><strong>{t("mobile.focus.selectText")}</strong>{isUntested("mobile.focus.selectText") && <small>{t("mobile.focus.untested")}</small>}</span>
           </button>
         </li>
         {speechOutputSupported() && <li>
@@ -77,6 +117,7 @@ function MessageMenu({ id, text, onClose }: { id: string; text: string; onClose:
           </button>
         </li>}
       </ul>
+      </>}
     </section>
   </div>;
 }

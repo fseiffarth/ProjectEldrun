@@ -197,6 +197,35 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith("add a clear button");
   });
 
+  it("lets a message's text be selected in part and copies only what is marked", async () => {
+    localStorage.setItem("eldrun.mobile.view.claude-code", "focus");
+    vi.stubGlobal("fetch", sidecarFetch(() => STORED));
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+
+    const answers = screen.getByTestId("session-transcript").querySelectorAll(".readable-turn.agent.answer");
+    fireEvent.contextMenu(answers[1] as HTMLElement);
+    const sheet = () => within(screen.getByRole("dialog", { name: "Message" }));
+    fireEvent.click(sheet().getByRole("button", { name: /^Select text/ }));
+    const text = screen.getByTestId("message-select-text");
+    expect(text.textContent).toBe("Done: the **✕** empties the draft. See [the docs](https://example.com).");
+    // Nothing marked yet: Copy still takes the whole message.
+    sheet().getByRole("button", { name: "Copy message" });
+
+    const range = document.createRange();
+    range.setStart(text.firstChild as Text, 6);
+    range.setEnd(text.firstChild as Text, 9);
+    act(() => {
+      window.getSelection()?.removeAllRanges();
+      window.getSelection()?.addRange(range);
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    fireEvent.click(sheet().getByRole("button", { name: "Copy selection" }));
+    await settle();
+    expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith("the");
+    window.getSelection()?.removeAllRanges();
+  });
+
   it("pins the prompt the scroll position is reading the answer to, and a tap returns to it", async () => {
     localStorage.setItem("eldrun.mobile.view.claude-code", "focus");
     vi.stubGlobal("fetch", sidecarFetch(() => ({
