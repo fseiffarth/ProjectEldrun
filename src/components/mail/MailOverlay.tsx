@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   MAIL_INBOX_TAB,
-  inboxUnread as countInboxUnread,
+  accountInboxUnread,
   useMailStore,
   type MailComposeTab,
   type MailMessageTab,
@@ -68,8 +68,11 @@ function MailOverlay({ open }: { open: boolean }) {
   const active = useMailStore((s) => s.activeMailTab);
   const accounts = useMailStore((s) => s.accounts);
   const selectedAccountId = useMailStore((s) => s.selectedAccountId);
-  // The header ✉'s own number, on the tab it opens.
-  const inboxUnread = useMailStore((s) => countInboxUnread(s.foldersByAccount));
+  // The shown account's inbox only — the tab is that one mailbox, not the
+  // header ✉'s every-account total.
+  const inboxUnread = useMailStore((s) =>
+    s.selectedAccountId ? accountInboxUnread(s.foldersByAccount[s.selectedAccountId]) : 0,
+  );
   // Moves, resizes and fills like the root console; remembered per overlay.
   const { frameRef, frameStyle, frameClass, barProps, grips, fillButton } =
     useFloatingFrame("eldrun.mailOverlayFrame");
