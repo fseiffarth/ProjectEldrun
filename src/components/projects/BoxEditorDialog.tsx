@@ -6,6 +6,7 @@ import { useBoxesStore } from "../../stores/boxes";
 import { useBoxEditorStore } from "../../stores/boxEditor";
 import { usePillSelectionStore } from "../../stores/drag/pillSelection";
 import { UntestedTag } from "../common/UntestedTag";
+import { Dropdown } from "../common/Dropdown";
 import { useT } from "../../lib/i18n";
 
 /**
@@ -121,18 +122,15 @@ export function BoxEditorDialog({ onClose }: { onClose: () => void }) {
         <div className="dialog-scroll">
           <label>
             {t("boxEditor.boxLabel")}
-            <select
-              className="box-editor-target"
+            <Dropdown
+              className="dropdown-block box-editor-target"
               value={target}
-              onChange={(e) => setTarget(e.target.value)}
-            >
-              <option value="">{t("boxEditor.newBoxOption")}</option>
-              {boxes.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.name}
-                </option>
-              ))}
-            </select>
+              onChange={setTarget}
+              options={[
+                { value: "", label: t("boxEditor.newBoxOption") },
+                ...boxes.map((b) => ({ value: b.id, label: b.name })),
+              ]}
+            />
           </label>
 
           <label>

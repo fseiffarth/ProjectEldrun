@@ -675,24 +675,52 @@
   width: min(440px, 92vw);
 }
 
+/* The member list reads as one inset field: the control surface and border of
+   the inputs above it, rows that highlight like menu items. */
 .box-editor .box-editor-members {
   max-height: 40vh;
   overflow-y: auto;
-  border: 1px solid var(--border-color, color-mix(in srgb, var(--text-primary) 18%, transparent));
-  border-radius: 6px;
-  padding: 4px 6px;
-  margin: 6px 0 10px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  padding: 4px;
+  margin-top: -6px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
 
-.box-editor .box-editor-member-row {
-  display: flex;
+/* A checkbox row, not a stacked field: undo `.project-dialog label`'s column
+   and `.project-dialog input`'s 34px text-field box on the checkbox. */
+.box-editor label.box-editor-member-row {
+  flex-direction: row;
   align-items: center;
   gap: 8px;
-  padding: 2px 4px;
+  min-height: 28px;
+  padding: 0 8px;
+  color: var(--text-primary);
+  font-size: 13px;
   cursor: var(--cur-pointer, pointer);
+}
+
+.box-editor label.box-editor-member-row:hover {
+  background: var(--control-hover-bg);
+}
+
+.box-editor .box-editor-member-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  margin: 0;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+}
+
+.box-editor .box-editor-member-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .box-editor .box-editor-empty {
@@ -705,7 +733,6 @@
   opacity: 0.85;
   border-left: 2px solid var(--accent);
   padding: 4px 8px;
-  margin-bottom: 10px;
 }
 
 .box-editor .box-editor-dissolve {
@@ -2894,7 +2921,6 @@ button:has(> .menu-shortcut) {
 .agent-schedule-attribution .agent-schedule-pill { color: var(--accent); border: 1px dashed currentColor; }
 .agent-prompt-card[data-agent-authored="true"] { border-style: dashed; }
 
-/* ── Agent-tab state, painted on the row ─────────────────────────────────
 /* ── Agent push requests (`services::git_push_mcp`) ─────────────────────────
    One card per request, in the git bar and the Agents view: what would be
    pushed, Push / Dismiss while pending, the outcome afterwards. */
@@ -2918,6 +2944,7 @@ button:has(> .menu-shortcut) {
 .git-push-mcp-level { display: flex; flex-direction: column; gap: 4px; align-items: stretch; }
 .git-push-mcp-protected { font-size: var(--text-xs); min-width: 14em; }
 
+/* ── Agent-tab state, painted on the row ─────────────────────────────────
    What an AGENT TAB is doing, in the tab ring's own palette (`--status-*`, see
    themes.css) and its stroke style: the row in the Agents view and the border
    around the tab it names are the same statement, and a row that said "needs a

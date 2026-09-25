@@ -1731,9 +1731,17 @@ label.settings-toggle-card-row {
   height: 34px;
   border: 1px solid var(--control-border);
   border-radius: var(--radius-sm);
-  background: var(--control-bg);
+  /* background-color, not the shorthand: the shorthand would wipe the caret the
+     base `select` rule (shell.css) paints as background-image. */
+  background-color: var(--control-bg);
   color: var(--text-primary);
   padding: 0 8px;
+}
+
+/* Keep the caret's lane clear on a native select (the base rule's padding). */
+.project-dialog select,
+.menu-form select {
+  padding-right: 28px;
 }
 
 /* Menu-form fields stretch to the popover width (their labels are flex columns,
