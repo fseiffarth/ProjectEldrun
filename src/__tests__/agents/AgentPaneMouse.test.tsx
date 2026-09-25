@@ -80,12 +80,13 @@ vi.mock("@xterm/xterm", () => ({
     buffer = { active: { length: 0, getLine: () => null } };
     attachCustomKeyEventHandler(h: (e: KeyboardEvent) => boolean) { termSpy.keyHandler = h; }
     getSelection() { return termSpy.selection; }
+    getSelectionPosition() { return undefined; }
     focus() { termSpy.focus(); }
     paste(text: string) { termSpy.paste(text); }
     dispose() {}
     options = {};
     get modes() { return { mouseTrackingMode: termSpy.mouseTrackingMode }; }
-    parser = { registerOscHandler: () => ({ dispose() {} }) };
+    parser = { registerOscHandler: () => ({ dispose() {} }), registerCsiHandler: () => ({ dispose() {} }) };
   },
 }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} dispose() {} } }));
@@ -156,7 +157,7 @@ describe("agent pane mouse gestures", () => {
     });
     await agentPane("p:copy");
     await drag("one\ntwo\nthree");
-    // Flushed by the release, not the 60 ms debounce.
+    // Copied inside the release itself, while it still counts as a user gesture.
     expect(writeText).toHaveBeenCalledWith("one\ntwo\nthree");
     // Under an agent TUI the highlight is repainted away within milliseconds,
     // so the copy has to announce itself — in the same toast OSC 52 uses.

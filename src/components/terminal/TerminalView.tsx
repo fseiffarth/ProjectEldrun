@@ -29,6 +29,7 @@ import { registerTerminal, unregisterTerminal } from "../../lib/terminal/termina
 import { clearPtyInput, writePtyInput } from "../../lib/terminal/terminalInput";
 import { registerScheduledAgentInput } from "../../lib/agents/scheduledAgentInput";
 import { zoomChord } from "../../lib/shortcuts/zoomChord";
+import { copyableSelection, installMouseModeGuard } from "../../lib/terminal/terminalSelection";
 import "@xterm/xterm/css/xterm.css";
 
 // Hoisted to module scope: keystroke input fires this on every key, so we reuse
@@ -856,24 +857,25 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       if (!focusedRef.current) return true;
       const text = decodeOsc52Clipboard(data);
       if (text === null) return true;
-      navigator.clipboard?.writeText(text).catch(() => {});
-      useProjectsStore.setState({ switchToast: clipboardNoticeRef.current });
+      // Through the backend, not `navigator.clipboard`: this write comes with PTY
+      // output, not from a click or key, so the webview refuses it (see
+      // `copy_text_to_clipboard`). Announced only once the backend took it.
+      invoke("copy_text_to_clipboard", { text })
+        .then(() => useProjectsStore.setState({ switchToast: clipboardNoticeRef.current }))
+        .catch(() => {});
       return true;
     });
 
     // Copy-on-select: a mouse-made selection (drag, double/triple-click) copies
     // itself to the clipboard with no chord needed, matching most native
-    // terminals. Debounced so a drag firing onSelectionChange on every cell it
-    // crosses doesn't issue a clipboard write per event — only once ~60ms after
-    // the selection settles. Ctrl+Shift+C below stays as the explicit fallback
-    // (e.g. a selection made without the mouse never fires this).
+    // terminals. xterm fires `onSelectionChange` once, from inside its own
+    // mouseup handler, so the copy is made right there — while the release still
+    // counts as the user gesture the webview's clipboard API requires. (A timer
+    // after the release only worked while WebKit carried the gesture over into
+    // it.) Ctrl+Shift+C below stays as the explicit fallback.
     //
-    // The text is captured when the selection changes, not read back when the
-    // timer fires: an agent pane repaints under its own selection constantly, and
-    // a repaint that clears the highlight inside those 60ms would otherwise leave
-    // the drag having copied nothing at all. Releasing the button flushes the
-    // pending copy immediately (see `onDocMouseUp`), so a select-then-paste-
-    // elsewhere never races the debounce.
+    // The copied text rejoins the rows tmux and the agent CLIs wrapped
+    // (`copyableSelection`); an Alt-drag column selection is copied as drawn.
     // Every copy the user makes — drag, Shift+drag, Ctrl+Shift+C — goes through
     // here so each one is announced in the same transient toast the OSC 52 path
     // uses, and only once the clipboard actually took it.
@@ -885,25 +887,14 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         })
         .catch(() => {});
     };
-    let selectionCopyTimer: ReturnType<typeof setTimeout> | null = null;
-    let pendingSelection = "";
-    const flushSelectionCopy = () => {
-      if (selectionCopyTimer) {
-        clearTimeout(selectionCopyTimer);
-        selectionCopyTimer = null;
-      }
-      if (!pendingSelection) return;
-      const text = pendingSelection;
-      pendingSelection = "";
-      copyToClipboard(text);
-    };
+    let columnSelect = false;
     term.onSelectionChange(() => {
-      const sel = term.getSelection();
-      if (!sel) return;
-      pendingSelection = sel;
-      if (selectionCopyTimer) clearTimeout(selectionCopyTimer);
-      selectionCopyTimer = setTimeout(flushSelectionCopy, 60);
+      const sel = copyableSelection(term, columnSelect);
+      if (sel) copyToClipboard(sel);
     });
+    // Mouse-mode escapes from the program would otherwise wipe a selection —
+    // mid-drag included — whenever they arrive (see `installMouseModeGuard`).
+    const mouseModeGuard = installMouseModeGuard(term);
 
     // Paste the OS clipboard into the running program. `term.paste` rather than a
     // raw `writePtyInput`: it normalizes newlines to CR and — when the program
@@ -993,7 +984,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       // next to pasteClipboard's (the "pastes twice" report).
       if (e.code === "KeyC") {
         e.preventDefault();
-        const sel = term.getSelection();
+        const sel = copyableSelection(term, columnSelect);
         if (sel) copyToClipboard(sel);
         return false;
       }
@@ -1400,15 +1391,21 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       if (typeof size === "number") applyFontSize(size, false);
     };
 
-    // The two agent-pane mouse gestures (see `agentMouseDownAction`): a
-    // double-click pastes, and a plain drag selects even while the TUI holds the
-    // mouse. Bound on the CONTAINER in the capture phase, which is the only place
+    // The pane mouse gestures (see `agentMouseDownAction`): a plain drag selects
+    // even while the program holds the mouse — in every pane, since each local tab
+    // sits in a `mouse on` tmux — and in agent panes a double-click pastes. Bound on the CONTAINER in the capture phase, which is the only place
     // that runs before xterm's own listeners — they sit on the terminal element
     // it creates *inside* this container — so a "paste" press can be taken away
     // from the selection service entirely and a "select" press can be handed to it
     // wearing the modifier it looks for.
     const onMouseDownCapture = (e: MouseEvent) => {
-      const action = agentMouseDownAction(e, term.modes.mouseTrackingMode !== "none");
+      const action = agentMouseDownAction(e, term.modes.mouseTrackingMode !== "none", zoomable);
+      if (e.button === 0 && action !== "paste") {
+        // Read before the "select" branch below re-defines a modifier on the
+        // event: Alt is what makes xterm draw a column selection.
+        columnSelect = e.altKey;
+        mouseModeGuard.beginDrag();
+      }
       if (action === "paste") {
         e.preventDefault();
         e.stopPropagation();
@@ -1422,24 +1419,25 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       }
     };
     // On the document, not the container: a drag that ends outside the pane (the
-    // usual way to grab the last line) releases there, and its copy should not
-    // wait out the debounce either.
-    const onDocMouseUp = () => flushSelectionCopy();
+    // usual way to grab the last line) releases there. A lost window focus ends
+    // it too, so a release the webview never saw cannot hold mouse modes back.
+    const onDocMouseUp = () => mouseModeGuard.endDrag();
     // Every pane, not just agent ones: whichever program grabbed the mouse owns
     // the right-click (see `suppressNativeContextMenu`). The element is captured
-    // here so the cleanup detaches from the node it attached to.
+    // here so the cleanup detaches both listeners from the node it attached to.
     const contextMenuTarget = containerRef.current;
     const onContextMenu = (e: MouseEvent) => {
       if (suppressNativeContextMenu(e, term.modes.mouseTrackingMode !== "none")) e.preventDefault();
     };
     contextMenuTarget?.addEventListener("contextmenu", onContextMenu);
 
+    contextMenuTarget?.addEventListener("mousedown", onMouseDownCapture, true);
     if (zoomable) {
       containerRef.current?.addEventListener("wheel", onWheel, { passive: false });
-      containerRef.current?.addEventListener("mousedown", onMouseDownCapture, true);
       window.addEventListener(AGENT_ZOOM_EVENT, onZoomEvent);
     }
     document.addEventListener("mouseup", onDocMouseUp);
+    window.addEventListener("blur", onDocMouseUp);
 
     return () => {
       cancelled = true;
@@ -1450,16 +1448,17 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       unregisterScheduled?.();
       if (openWatchTimer.current) clearTimeout(openWatchTimer.current);
       if (silentStartTimer.current) clearTimeout(silentStartTimer.current);
-      if (selectionCopyTimer) clearTimeout(selectionCopyTimer);
       oscHandler.dispose();
+      mouseModeGuard.dispose();
       window.removeEventListener("resize", doFit);
       contextMenuTarget?.removeEventListener("contextmenu", onContextMenu);
+      contextMenuTarget?.removeEventListener("mousedown", onMouseDownCapture, true);
       if (zoomable) {
         containerRef.current?.removeEventListener("wheel", onWheel);
-        containerRef.current?.removeEventListener("mousedown", onMouseDownCapture, true);
         window.removeEventListener(AGENT_ZOOM_EVENT, onZoomEvent);
       }
       document.removeEventListener("mouseup", onDocMouseUp);
+      window.removeEventListener("blur", onDocMouseUp);
       ro.disconnect();
       doFitRef.current = null;
       applyRendererRef.current = null;

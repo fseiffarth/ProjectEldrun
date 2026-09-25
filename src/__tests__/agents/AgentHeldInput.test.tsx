@@ -70,7 +70,7 @@ vi.mock("@xterm/xterm", () => ({
     focus() {}
     dispose() {}
     options = {};
-    parser = { registerOscHandler: () => ({ dispose() {} }) };
+    parser = { registerOscHandler: () => ({ dispose() {} }), registerCsiHandler: () => ({ dispose() {} }) };
   },
 }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} dispose() {} } }));

@@ -1773,6 +1773,7 @@ pub fn run() {
             commands::clipboard::clipboard_has_image,
             commands::clipboard::save_clipboard_image,
             commands::clipboard::copy_png_bytes_to_clipboard,
+            commands::clipboard::copy_text_to_clipboard,
             commands::screenshot::capture_screenshot,
             commands::screenshot::read_pending_screenshot,
             commands::screenshot::save_pending_screenshot,

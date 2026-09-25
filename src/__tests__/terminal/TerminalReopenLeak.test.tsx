@@ -85,7 +85,7 @@ vi.mock("@xterm/xterm", () => ({
       return "";
     }
     focus() {}
-    parser = { registerOscHandler: () => ({ dispose() {} }) };
+    parser = { registerOscHandler: () => ({ dispose() {} }), registerCsiHandler: () => ({ dispose() {} }) };
   },
 }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} dispose() {} } }));

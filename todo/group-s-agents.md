@@ -2010,3 +2010,44 @@ unchanged; the new agents are additive.
         (no auto-install on a remote spawn) or in the phone's Focus parsers
         (`docs/mobile_focus_cli_survey.md`), and only Droid passes the mobile
         `discovery::resumable` gate.
+
+2334. **Terminal copy survives a busy agent and rejoins wrapped lines.** "Copying
+    from terminal is always a big mess" / "copying in agent tabs wasn't very
+    stable" (user, 2026-09-25). Four causes, all fixed:
+    - xterm clears the selection — and drops a drag in progress — on every
+      "mouse tracking on" escape, even one that changes nothing; agents and tmux
+      send these while they work. `installMouseModeGuard`
+      (`lib/terminal/terminalSelection.ts`) drops no-op ones and holds a real
+      change back until the button is up.
+    - The copy ran on a 60 ms timer after the release, outside the click
+      WebKit's clipboard API needs; it now runs inside the release.
+    - Shell tabs sit in a `mouse on` tmux, so a plain drag went to tmux's
+      copy-mode, not the clipboard; every pane now forces xterm's own
+      selection (agent panes already did; a shell tab's double-click still
+      selects a word, and Ctrl+click still reaches the program).
+    - OSC 52 copies (tmux copy-mode, a CLI's copy command) arrive with PTY
+      output, which the webview refuses — silently, yet the toast said
+      "copied". They now go through the backend `copy_text_to_clipboard`
+      (arboard), and the toast waits for it.
+    The copied text rejoins wrapped rows (`copyableSelection`): a row filled to
+    the last column joins as-is, a TUI word wrap with a space; blank rows, list
+    items, `⏺`/`⎿` markers and box frames keep their breaks; an Alt-drag
+    column selection is copied as drawn. Built 2026-09-25, **not live-tested**;
+    the OSC 52 half needs a backend rebuild.
+    - [x] 🤖 Automated test — `TerminalSelection` (row joins; the guard against a
+      real xterm, including the repeated-mode bug itself), `TerminalControl`
+      (shell panes force the selection), `commands::clipboard` (text size cap).
+    - [ ] 🖐️ Manual test — in a Claude tab, drag across a long paragraph while
+      the agent is still writing: the highlight does not vanish mid-drag, and a
+      paste elsewhere is one line per paragraph. In a shell tab,
+      `python3 -c "print('x'*300)"`, drag, paste: one line of 300 x's.
+      `printf '\e]52;c;%s\a' "$(printf hello | base64)"` in a focused shell
+      tab shows the toast and pastes `hello`.
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
