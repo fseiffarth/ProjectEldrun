@@ -133,6 +133,30 @@ pub(crate) fn write_replacing(path: &Path, bytes: &[u8]) -> io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
+/// Give `dst` the exec bits of `src`. The copy is written as bytes, so without
+/// this a hook or status-line script lands non-executable and every hook call
+/// fails with `Permission denied`. Also repairs a copy whose bytes already
+/// match. `dst` was just checked or written as a plain file; a symlink there
+/// is left alone rather than followed.
+#[cfg(unix)]
+fn copy_exec_bits(src: &Path, dst: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(want) = std::fs::metadata(src).map(|m| m.permissions().mode() & 0o111) else {
+        return;
+    };
+    let Ok(meta) = std::fs::symlink_metadata(dst) else { return };
+    if !meta.is_file() {
+        return;
+    }
+    let mode = meta.permissions().mode();
+    if mode & 0o111 != want {
+        let _ = std::fs::set_permissions(dst, std::fs::Permissions::from_mode((mode & !0o111) | want));
+    }
+}
+
+#[cfg(not(unix))]
+fn copy_exec_bits(_src: &Path, _dst: &Path) {}
+
 /// Read a home file, never through a symlink.
 pub(crate) fn read_plain(path: &Path) -> Option<Vec<u8>> {
     let meta = std::fs::symlink_metadata(path).ok()?;
@@ -163,7 +187,8 @@ pub fn apply_to_home(state_dir: &Path, home: &Path) -> io::Result<()> {
             eprintln!("agent_global: skip {rel}: not a plain path in {}", home.display());
             continue;
         };
-        let Ok(bytes) = std::fs::read(layer.join(rel)) else { continue };
+        let src = layer.join(rel);
+        let Ok(bytes) = std::fs::read(&src) else { continue };
         let current = read_plain(&dst);
         if current.as_deref() != Some(bytes.as_slice()) {
             if let Some(own) = current.filter(|_| !previous.files.contains(rel)) {
@@ -175,6 +200,7 @@ pub fn apply_to_home(state_dir: &Path, home: &Path) -> io::Result<()> {
             }
             write_replacing(&dst, &bytes)?;
         }
+        copy_exec_bits(&src, &dst);
         placed.push(rel.clone());
     }
     for rel in previous.files.iter().filter(|r| !files.contains(r)) {
@@ -883,6 +909,28 @@ mod tests {
         apply_to_home(&state, &home).unwrap();
         assert!(!home.join(".claude/skills/a/SKILL.md").exists());
         assert!(home.join(".claude/CLAUDE.md").is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hook_script_stays_executable_in_the_home() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("state");
+        let home = tmp.path().join("home");
+        let script = global_dir_in(&state).join(".claude/statusline-mode-hook.sh");
+        write(&script, "#!/bin/sh\n");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write(&global_dir_in(&state).join(".claude/CLAUDE.md"), "global");
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o111;
+        apply_to_home(&state, &home).unwrap();
+        let dst = home.join(".claude/statusline-mode-hook.sh");
+        assert_eq!(mode(&dst), 0o111);
+        assert_eq!(mode(&home.join(".claude/CLAUDE.md")), 0);
+        // A copy an earlier spawn left non-executable, bytes unchanged, is repaired.
+        std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o644)).unwrap();
+        apply_to_home(&state, &home).unwrap();
+        assert_eq!(mode(&dst), 0o111);
     }
 
     #[cfg(unix)]
