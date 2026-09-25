@@ -56,70 +56,165 @@ mode; changing a running session's mode is untouched.
 
 ## The local-agent filesystem fence
 
-`services::agent_fence` is the third axis. On Linux, a locally-running agent
-that is not already in a project container is launched under an outer
-`bubblewrap` boundary. The host root remains visible read-only so compilers and
-system tools still work, while `$HOME`, `/tmp`, and `/run` are replaced with
-private filesystems. That hides SSH keys, unrelated hosting/cloud credentials,
-the keyring
-and D-Bus sockets, the Docker socket, and other projects. The owning project is
-then mounted read-write. If it belongs to project boxes, every box folder and
-member root is added read-write; membership in several boxes produces the union.
-A `box:<id>` tab receives that box's roots directly. Claude also receives
-`--add-dir` and Gemini receives `--include-directories`, so their own working-dir
-checks agree with the OS boundary. Codex receives no automatic `--add-dir`:
-that flag requests extra writable roots, and Codex warns and ignores it when
-its own effective permissions are read-only or managed. Codex's permission
-mode remains its own; the outer fence still exposes the box roots.
-A root-console agent's fence is `~/eldrun/root` read-write and, only with
-`root_fence_projects_readable` on (default off), every project, box folder and
-remote mirror read-only through the allowlist's channel — a widening, since one
-poisoned project can then reach the others through an agent with open network.
+`services::agent_fence` is the third axis, and since 2026-09-25 (#2335) it is
+the **only mode** a local agent runs in: there is no per-project or global
+"off" any more. On Linux, a locally-running agent that is not already in a
+project container is launched under an outer `bubblewrap` boundary. The host
+root remains visible read-only so compilers and system tools still work;
+`/tmp`, `/run` and `~/.cache` are private; and `$HOME` is not the user's home
+at all but the scope's **Eldrun-owned agent home**
+(`services::agent_home`, `<state_dir>/agent-homes/<project_key(scope)>/`),
+bound over the home path. The owning project is mounted read-write. If it
+belongs to project boxes, every box folder and member root is added
+read-write; membership in several boxes produces the union. A `box:<id>` tab
+receives that box's roots directly. Claude also receives `--add-dir` and
+Gemini receives `--include-directories`, so their own working-dir checks
+agree with the OS boundary. Codex receives no automatic `--add-dir`: that
+flag requests extra writable roots, and Codex warns and ignores it when its
+own effective permissions are read-only or managed. A root-console agent's
+fence is `~/eldrun/root` read-write and, only with
+`root_fence_projects_readable` on (default off), every project, box folder
+and remote mirror read-only through the allowlist's channel — a widening,
+since one poisoned project can then reach the others through an agent with
+open network.
 
-The fence is on by default globally. A project can inherit, force it off, or
-force it on; changing either setting affects a tab only when that tab respawns.
-Box scopes have no override and inherit the global setting. Missing or unusable
-`bubblewrap` fails closed: the agent does not start, and the UI offers the
-interactive `sudo apt install bubblewrap` command in a terminal tab. The user can
-instead turn the project override off explicitly. The configured
-`agent_fence_paths` allowlist restores selected toolchain/config paths read-only
-inside the empty home; credentials are deliberately absent from its defaults.
-Independently of that list, the fence also follows the agent binary's own
-symlink chain on the host and binds every directory hop under `$HOME`
-read-only (`command_bind_paths`): the native Claude installer leaves
-`~/.local/bin/claude` pointing into `~/.local/share/claude/versions/`, and with
-only `~/.local/bin` restored the link dangles inside the sandbox and bubblewrap
-fails with `execvp claude: No such file or directory`. Allowlisting the binary's
-home is therefore never required, only a way to expose more of an install dir.
-The one part of that chain handed back **read-write** is the agent's own
-native-installer layout (`updatable_install_dirs`): a launcher link in
-`~/.local/bin` pointing at a payload under `~/.local/share/<tool>/` — so
-`claude update`, and Claude's background auto-update, work from a fenced tab
-instead of failing on a read-only `versions/` every session (user,
-2026-09-13). The updater writes the new binary into `versions/` and swaps the
-link by rename, so exactly `~/.local/bin` and `~/.local/share/<tool>` open up;
-an npm/nvm or package-managed install stays read-only, because a Node prefix's
-`bin/` holds every global tool. This is a deliberate widening: an agent that
-can update its CLI can replace it, and that binary is the one the user runs
-everywhere. Login state gets the same treatment: `~/.claude.json` (oauthAccount +
-onboarding) is staged as a per-project **copy** with its cross-project
-`projects` map filtered to the box's own roots — without it every fenced tab
-demanded a fresh login, and mounting the host original writable would hand a
-boxed agent every project's history plus a place to write `allowedTools` for
-uncontained sessions. The same staged mount goes into project containers.
+**Why a home per scope, not per CLI, and not the user's.** Everything a CLI
+keeps under `$HOME` — its config with MCP servers and hooks, its skills and
+plugins, its transcripts and session stores, its folder-trust answers — now
+lives in the scope's home. Every CLI of a scope shares the same writable
+roots, so one home per scope adds no authority; but an agent in project A
+must not be able to plant an MCP server, hook or skill that runs in project
+B or in the root console (which holds the root MCP token) — the threat-model
+gap 7 class — so the homes are per scope and other scopes' homes are
+unreachable (the state dir is masked inside the fence; on macOS the whole
+`agent-homes/` tree is denied and only the own home re-allowed). The user's
+own `~/.claude`, `~/.codex`, `~/.gemini` and the rest are never mounted, so
+the whole apparatus that used to protect them — the per-entry deny lists,
+the staged shadow copies of hook-registration files, the credential mirror,
+the per-project transcript stage and its harvest — is gone. Eldrun registers
+its session hooks in each home's `settings.json` / `config.toml` /
+`hooks.toml` at every spawn, so it no longer edits another app's config. What
+Eldrun reads back out of a home (transcripts, Codex's SQLite, Copilot's
+config) is agent-written and treated as attacker-controlled, as before.
 
-Inside the fence those staged copies are **symlinked** into place rather than
-mounted over their real paths. `rename(2)` onto a mount point fails with
-`EBUSY`, and every one of these agents rewrites its config by writing a sibling
-temp file and renaming it over the original — with `~/.codex/config.toml`
-bind-mounted, Codex failed with `failed to persist config` the first time it
-tried to record a newly trusted project, and the same applies to Claude's
-`settings.json`. So the scope's staging dir is bound once at
-`/run/eldrun-agent-config` and each shadowed path is a link into it: an
-in-place rewrite still lands in the throwaway copy, and a rename simply
-replaces the link with a plain file in the home tmpfs. Neither reaches the host
-original, which is the whole point of the shadow. Project containers still bind
-the copies file by file and keep that limitation.
+A home is seeded once: the scope's existing Eldrun-kept Codex store and
+Copilot home move in, the Claude transcripts of the scope's own roots are
+**copied** from the user's `~/.claude/projects` (so every tab open before the
+change still resumes; the user's copy stays), and `.claude.json` gets its
+identity keys plus the `projects` entries under the roots. Instructions,
+skills, hooks and MCP entries of the user's home are not seeded per scope.
+Forgetting or deleting a project deletes its home.
+
+**The Eldrun-wide layer.** Per-scope homes meant the user's own CLAUDE.md,
+RTK hook and Codex MCP servers reached no agent; the user asked for "one
+global Eldrun" instead, and chose a layer over one shared home (2026-09-25),
+because a shared home would give back exactly the gap-7 path above.
+`services::agent_global` keeps a home-shaped tree at
+`<state_dir>/agent-global/` that the user fills (Settings → Global agent
+config: one-click import from `~/.claude`, `~/.codex`, `~/.gemini` without
+logins, transcripts, folder trust or Eldrun's own hooks; or "Open folder").
+At every spawn, before Eldrun's hooks are registered, its plain files are
+copied over the home's (a scope file replaced the first time is kept in
+`.eldrun-global-backup/`) and its fragments of the files the CLIs write
+themselves (`.claude/settings.json`, `.claude.json`, `.codex/config.toml`,
+`.gemini/settings.json`) are merged: objects recurse, arrays gain elements,
+scalars take the layer's value. A per-home manifest records what was placed
+and merged, so the next spawn first takes exactly that back out — a key the
+user drops from the layer leaves every home, while a model a tab picked
+stays. The layer is never mounted into a fence (it is in the masked state
+dir, and in `private_state_paths` for Seatbelt), so a fenced agent can edit
+only its own scope's copy, and the next spawn restores it. The writes go by
+rename and refuse a symlinked directory inside the home: the home is
+agent-writable and the merge runs unfenced.
+
+**One login per CLI.** Credential files would otherwise have to be entered
+once per scope (Cursor asked at every new tab; a login made inside a fenced
+tab used to die with the tmpfs). `services::agent_auth` keeps each CLI's
+login file once, in `<state_dir>/agent-auth/<cli>/`, and every home carries
+a **hard link** to it at the CLI's own path — not a bind mount (a rename
+onto a mount point is `EBUSY`, and several CLIs rotate tokens by rename) and
+not a symlink (Claude opens its store `O_NOFOLLOW`). A rotation by rename
+gives the scope a new inode; the keeper (every 20 s, and at every spawn and
+tab end) copies the new bytes into the store's inode in place and relinks,
+so every other scope's running tab sees the refresh too. Which paths are
+shared is the registry's `auth_paths` column (`commands::agents`, Linux
+survey 2026-09-25): only files that hold a credential and can never name a
+command. A config that mixes both (Continue's `config.yaml`, Crush's
+`crush.json`, Aider's `.env`), a login in a database beside other state
+(Kiro, Kilo, OpenClaw) or one in the keyring stays per scope. Directories
+that hold nothing but a login (Kimi, CodeBuddy) are bound from the store.
+Where a file names an account (Codex's `account_id`; Claude's via the
+`.claude.json` identity the store also keeps), the store records it at first
+adoption and a later file naming another account is **not** adopted — the
+tab keeps its own login, Settings shows the refusal, and switching accounts
+is Sign out then log in again (the same rule `copilot_auth` had). The fence
+also sets the per-CLI "keep your login in a file" variables
+(`GEMINI_FORCE_FILE_STORAGE`, `FACTORY_DISABLE_KEYRING`, …), since the
+keyring is not reachable inside it. Settings → Agent fence → Agent logins
+imports a login this computer already holds (the one safe direction) and
+signs out. An older Eldrun's Claude mirror (`agent-creds/`) is adopted into
+the store at startup.
+
+**Eldrun-owned installs.** A CLI installed through Manage CLIs goes into
+`<state_dir>/agents/install` (`services::agent_install`: the installer's
+`HOME` plus the npm, bun, uv and pip prefixes), its launcher dirs go on every
+tab's PATH ahead of host copies, the tree is read-only in every fence and
+the CLI's updater is switched off where it has a switch (Claude's
+`DISABLE_AUTOUPDATER`); updates run by installing again. A CLI the user
+installed on the host is still detected and keeps the self-update path that
+used to be the fence's widening: its `~/.local/share/<tool>` read-write and a
+private per-tab `~/.local/bin` copy whose launcher link alone is carried back
+(#861) — until it is reinstalled through Eldrun. Whether each vendor's
+installer honours the prefixes is not verified per installer.
+
+**Shell tabs.** They are still the user's terminals and are never fenced —
+but a CLI typed into one now reaches the same fence: `<state_dir>/bin` holds
+one shim per registry CLI at the front of every tab's PATH
+(`services::agent_bin`), a script that execs `eldrun --agent-shim <cli>`
+(`services::agent_shim`), which builds the calling tab's fence from
+`ELDRUN_SCOPE` — same scope home, same shared logins — and execs into it.
+Inside a fence the shim steps aside to the real CLI. There is no bypass flag;
+running the binary by absolute path is the user's own shell, real home, none
+of Eldrun's logins. `paths::resolve_executable` never returns a shim, so
+version probes and the fence's own install binding see the real CLI.
+
+**macOS and Windows.** Seatbelt cannot redirect a path, so a fenced Mac agent
+gets `HOME=<scope home>` by environment with `GIT_CONFIG_GLOBAL`, `CARGO_HOME`,
+`RUSTUP_HOME` and `DOCKER_CONFIG` passed through to the user's (only when
+present and unset), the user's home hidden as before and the whole
+`agent-homes/` tree denied except the own home. Windows has no fence; its
+agent tabs still use the same Eldrun-owned homes and shared logins through
+`HOME`/`USERPROFILE`, with the user's full rights, accepted once
+(`agent_fence_platform_accepted`). Neither is compiled or run here.
+
+**The Host session.** For work that is not a project's — repairing Firefox,
+the printer, the machine — a fence cannot serve (bubblewrap sets
+no-new-privs, so `sudo`/`pkexec` fail). The root console's `+` menu has a
+"Host session — unfenced" group: an agent with the user's full rights, warned
+in the entry, a red HOST badge on the tab, never a project default, never
+startable from the phone (its create path has no such flag). It runs in its
+own home, `<state_dir>/agent-homes/host`, which no fence ever mounts, so
+nothing fenced can plant config it runs; it shares the logins (credential
+files only). After a restart it comes back **paused** — a "Resume unfenced"
+card, never an automatic respawn (`TabEntry.hostSessionPaused`). The CLI's
+own permission prompts apply; Eldrun injects no mode. The decision is
+`FenceDecision::NotApplicable { reason: "host session" }`, honoured only with
+no `project_id`.
+
+The configured `agent_fence_paths` allowlist restores selected toolchain and
+config paths of the user's home read-only inside the agent home; credentials
+are deliberately absent from its defaults. Independently of that list, the
+fence follows the agent binary's own symlink chain on the host and binds
+every directory hop under the user's home read-only (`command_bind_paths`):
+the native Claude installer leaves `~/.local/bin/claude` pointing into
+`~/.local/share/claude/versions/`, and with only `~/.local/bin` restored the
+link dangles inside the sandbox and bubblewrap fails with `execvp claude: No
+such file or directory`. Copilot signs in through the keyring, which the
+fence hides; `services::copilot_auth` holds the sign-in in Eldrun's own
+keyring entry and hands it to each fenced Copilot as `COPILOT_GITHUB_TOKEN`
+(its `~/.copilot` of the scope home gets Copilot's `storeTokenPlaintext`, the
+keeper moves a `/login` token out of the file within seconds). A harvested
+token replaces a stored one only once GitHub rejects the stored one.
 
 Composition is explicit:
 
@@ -157,7 +252,8 @@ Composition is explicit:
   tokens block writes but not reads, and hidden reads are the point. The
   candidate for a real Windows fence is the Linux fence unchanged inside
   WSL2 — see todo #2327 (c) for what must be verified first.
-- Shell/script tabs are the user's terminals and are never fenced.
+- Shell/script tabs are the user's terminals and are never fenced; a
+  registry CLI typed into one runs through the shim, fenced (above).
 - A persistent (tmux) agent tab keeps an **unfenced** login shell after the
   agent exits, on the same terminal. Where the kernel still honours `TIOCSTI`
   (Linux before 6.2 or with `dev.tty.legacy_tiocsti=1`, macOS), a fenced agent
@@ -199,16 +295,11 @@ read/write denials, including canonical aliases. The global
 allowed paths when publishing needs registry tokens. It does not filter
 inherited environment variables or touch agent login credentials.
 
-Codex's `skills`, `plugins`, and `shell_snapshots` no longer expose writable host
-content to fenced tabs. Linux seeds fresh **per-tab writable copies** of skills
-and plugins, relocating internal links and copying external targets independently, and starts shell snapshots empty so Codex can regenerate them normally.
-These copies are temporary: changes are private to that tab. Shared `auth.json`,
-session rollouts, the durable per-scope databases, credential refresh, and native
-CLI self-updates retain their existing paths. macOS cannot redirect these
-folders and instead denies writes to the shared executable content; skill/plugin
-updates there need live verification. This does not turn the fence into project
-confidentiality: other Claude transcripts remain readable, Codex's rollout store
-remains shared, and readable host trees outside the hidden directories can still
+Every CLI's `skills`, `plugins`, hooks and shell snapshots are simply files
+in the scope's own home now: an agent may rewrite them, and the rewrite runs
+in that scope's fence and nowhere else. This does not turn the fence into
+project confidentiality: the scope's own transcripts are readable to every
+CLI of the scope, and readable host trees outside the hidden home can still
 be visible.
 
 The boundary is filesystem-only: network access is shared. A nested bubblewrap
@@ -222,6 +313,23 @@ resume state, immutable hook scripts and `<state_dir>/bin` commands (including
 config, and per-root Claude transcript permissions. That keeps the hook-repointing
 and cross-project transcript protections identical across the two containment
 mechanisms.
+
+What the Linux fence does and does not stop (code read 2026-09-25, not tested
+live). **Network:** `bwrap_args` has no `--unshare-net`, so a fenced agent
+reaches loopback services (Vite, Ollama, CUPS, Eldrun's MCP server, which
+relies on its bearer tokens), the LAN, the internet and cloud metadata. That is
+intended. **Home:** the scope's agent home, never the user's; `~/.cache` a tmpfs.
+**Host processes:** `--unshare-pid` plus a fresh `--proc` mean
+`/proc/1` is the fence's own bwrap. Host PIDs are absent, so there is no
+`/proc/<host-pid>/root` to walk into. **Inherited descriptors:** none cross.
+`portable-pty` closes every fd above 2 before exec (`close_random_fds`), Rust
+opens files close-on-exec, and tmux closes stray fds in the panes it spawns.
+**Environment:** not filtered (no `--clearenv`). An API key exported in the
+shell that launched Eldrun reaches every fenced agent. **Display:** `DISPLAY`
+is kept, and the abstract X11 socket is reachable through the shared network
+namespace. Hiding `/tmp/.X11-unix` does not close it (#2321). On a Wayland
+session only Xwayland clients are exposed, because the Wayland socket under
+`/run/user` is hidden.
 
 **A layout written before the toggle was removed still carries its `agentMode`,
 and `loadFromLayout` ignores it.** No migration strips the field: the frontend

@@ -277,6 +277,8 @@ fn supplemental_path_dirs_for(
 /// commonly miss per-user package directories on every supported OS.
 pub fn extra_path_dirs() -> Vec<PathBuf> {
     let mut dirs = vec![crate::services::agent_bin::bin_dir()];
+    // CLIs Eldrun installed itself, ahead of any host copy of the same name.
+    dirs.extend(crate::services::agent_install::bin_dirs());
     dirs.extend(supplemental_path_dirs_for(
         OsKind::current(),
         &home_dir(),
@@ -376,8 +378,11 @@ pub fn effective_path() -> Option<std::ffi::OsString> {
     std::env::join_paths(&paths).ok()
 }
 
+/// Where an off-PATH launch looks: the extra dirs minus the agent shims,
+/// which are never the CLI itself (see `resolve_executable`).
 fn launch_search_dirs() -> Vec<PathBuf> {
-    extra_path_dirs()
+    let shims = crate::services::agent_bin::bin_dir();
+    extra_path_dirs().into_iter().filter(|d| *d != shims).collect()
 }
 
 /// Pure resolver: the first existing `bin` across `dirs`, trying each of `exts`
@@ -452,8 +457,12 @@ fn resolve_executable_in_dirs(
 /// Windows resolution follows PATHEXT, including script shims.
 pub fn resolve_executable(bin: &str) -> Option<PathBuf> {
     let current = std::env::var_os("PATH").unwrap_or_default();
-    let mut dirs = extra_path_dirs();
-    dirs.extend(std::env::split_paths(&current));
+    // Never the agent shims in `<state_dir>/bin`: a resolver wants the CLI
+    // itself (to probe its version, to bind its install into a fence), and
+    // the shim is only a door back to it for shell tabs.
+    let shims = crate::services::agent_bin::bin_dir();
+    let mut dirs: Vec<PathBuf> = extra_path_dirs().into_iter().filter(|d| *d != shims).collect();
+    dirs.extend(std::env::split_paths(&current).filter(|d| *d != shims));
     resolve_executable_in_dirs(
         OsKind::current(),
         &dirs,

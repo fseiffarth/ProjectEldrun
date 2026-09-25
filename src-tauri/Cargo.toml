@@ -47,6 +47,9 @@ tauri-plugin-drag = "2"
 base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Merge the Eldrun-wide agent config layer into Codex's config.toml without
+# losing its comments or layout (`services::agent_global`).
+toml_edit = "0.25"
 chrono = "0.4"
 chrono-tz = "0.10"
 regex = "1"

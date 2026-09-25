@@ -54,26 +54,13 @@ export function parseAgentFencePaths(value: string): string[] {
     .filter((path, index, all) => path !== "" && all.indexOf(path) === index);
 }
 
-export type AgentFenceLabelKey =
-  | "pill.agentFenceInherit"
-  | "pill.agentFenceOn"
-  | "pill.agentFenceOff";
-
-export function agentFenceLabelKey(value: boolean | undefined): AgentFenceLabelKey {
-  return value === undefined
-    ? "pill.agentFenceInherit"
-    : value
-      ? "pill.agentFenceOn"
-      : "pill.agentFenceOff";
-}
-
 export type AgentFenceReasonKey =
   | "pill.agentFenceReasonRemote"
   | "pill.agentFenceReasonMacos"
   | "pill.agentFenceReasonWindows"
   | "pill.agentFenceReasonPlatform"
   | "pill.agentFenceReasonContainer"
-  | "pill.agentFenceReasonOff"
+  | "pill.agentFenceReasonHostSession"
   | "pill.agentFenceReasonBwrap"
   | "pill.agentFenceReasonSeatbelt"
   | "pill.agentFenceReasonUnknown";
@@ -85,7 +72,7 @@ export function agentFenceReasonKey(reason: string): AgentFenceReasonKey | null 
     Windows: "pill.agentFenceReasonWindows",
     "this platform": "pill.agentFenceReasonPlatform",
     container: "pill.agentFenceReasonContainer",
-    off: "pill.agentFenceReasonOff",
+    "host session": "pill.agentFenceReasonHostSession",
     "bubblewrap unavailable": "pill.agentFenceReasonBwrap",
     "sandbox-exec unavailable": "pill.agentFenceReasonSeatbelt",
     "unknown project or box": "pill.agentFenceReasonUnknown",
@@ -93,23 +80,17 @@ export function agentFenceReasonKey(reason: string): AgentFenceReasonKey | null 
   return keys[reason] ?? null;
 }
 
-/** The project pill's fence marker (`agent_fence_marks`): the policy for new
- *  tabs, and how many live agent tabs run outside the fence right now —
- *  measured from the agent processes, so a tab started before the fence was
- *  switched on still counts. */
+/** The project pill's fence marker (`agent_fence_marks`): how many live agent
+ *  tabs run outside the fence right now — measured from the agent processes,
+ *  so a tab started before the fence became the only mode (and kept alive by
+ *  a tmux reattach) still counts. The fence has no "off" any more. */
 export interface AgentFenceMark {
-  policy_off: boolean;
   live_unfenced: number;
 }
 
-/** Which marker the pill shows. `live` outranks `off`: running agents with the
- *  run of the home folder are the thing to act on; a policy with nothing
- *  running under it is only a warning about the next tab. */
-export type AgentFenceMarkLevel = "live" | "off";
+export type AgentFenceMarkLevel = "live";
 
 export function agentFenceMarkLevel(mark: AgentFenceMark | undefined): AgentFenceMarkLevel | null {
   if (!mark) return null;
-  if (mark.live_unfenced > 0) return "live";
-  if (mark.policy_off) return "off";
-  return null;
+  return mark.live_unfenced > 0 ? "live" : null;
 }

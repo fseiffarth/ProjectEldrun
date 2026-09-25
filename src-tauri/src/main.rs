@@ -1,6 +1,16 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    // `eldrun --agent-shim <cli> [args…]`: the shell-tab shim
+    // (`services::agent_shim`) — builds the calling tab's fence and execs it.
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--agent-shim")) {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        let Some((cli, rest)) = args.split_first() else {
+            eprintln!("agent shim: usage: eldrun --agent-shim <cli> [args…]");
+            std::process::exit(2);
+        };
+        std::process::exit(eldrun_lib::services::agent_shim::run(cli, rest));
+    }
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--mobile-host")) {
         let state_dir = eldrun_lib::storage::state_dir();
         let runtime = tokio::runtime::Builder::new_multi_thread()

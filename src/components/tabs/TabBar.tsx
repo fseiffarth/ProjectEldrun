@@ -1302,6 +1302,11 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             ) : (
               <span className="tab-label">{tab.label}</span>
             )}
+            {tab.hostSession && (
+              <span className="tab-host-session" title={t("tab.hostSessionBadgeTitle")}>
+                {t("tab.hostSessionBadge")}
+              </span>
+            )}
             {(tab.kind === "agent" || tab.kind === "local_agent") && tab.scheduleTargetId && (() => {
               const enabled = (schedulesByTarget[scheduleCacheKey(scope, tab.scheduleTargetId)] ?? [])
                 .filter((schedule) => schedule.enabled);

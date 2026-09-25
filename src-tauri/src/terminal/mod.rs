@@ -630,6 +630,12 @@ pub struct PtyOptions {
     pub project_id: Option<String>,
     #[serde(default)]
     pub schedule_target_id: Option<String>,
+    /// The root console's **Host session**: an agent that runs unfenced, with
+    /// the user's full rights, in Eldrun's `host` agent home
+    /// (`docs/context/agent_authority.md`). Honoured only with no
+    /// `project_id`; a project tab that sets it is fenced like any other.
+    #[serde(default)]
+    pub host_session: bool,
     /// Which of the project's remote hosts this tab runs on
     /// (`docs/multi_host_remote_plan.md`): `None`/`"primary"` = the primary remote
     /// (`Project.remote`), any other id = an extra "worker" host from

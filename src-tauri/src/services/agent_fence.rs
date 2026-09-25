@@ -2,13 +2,17 @@
 //!
 //! The project container remains the stronger, opt-in boundary.  For ordinary
 //! local agent tabs this module wraps the agent in the OS's unprivileged
-//! sandbox: `bubblewrap` on Linux (the host root is read-only, `$HOME`, `/tmp`,
-//! and `/run` are private, and only the owning project plus every box it
-//! belongs to is mounted read-write) and `sandbox-exec` on macOS (a Seatbelt
-//! profile that denies writes outside the same roots and hides the rest of
-//! `$HOME` — see [`sandbox_exec_profile`] for what it can and cannot mirror).
-//! Shell tabs, remote-host tabs, containerized tabs, and Windows hosts are
-//! deliberately left alone and reported honestly by [`status_for_scope`].
+//! sandbox: `bubblewrap` on Linux (the host root is read-only, the scope's
+//! Eldrun-owned agent home (`services::agent_home`) is bound over `$HOME`,
+//! `/tmp`, `/run` and `~/.cache` are private, and only the owning project plus
+//! every box it belongs to is mounted read-write) and `sandbox-exec` on macOS
+//! (a Seatbelt profile that denies writes outside the same roots and hides the
+//! user's `$HOME` — see [`sandbox_exec_profile`] for what it can and cannot
+//! mirror). The fence is the only mode: there is no per-project or global
+//! "off". Remote-host tabs, containerized tabs and the explicit Host session
+//! are not fenced and reported honestly by [`status_for_scope`]; Windows has no
+//! fence and says so. A CLI typed into a shell tab reaches the same fence
+//! through the shims in `agent_bin` (`--agent-shim`).
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -93,15 +97,15 @@ pub fn fence_unavailable_message() -> String {
     let tool = fence_tool_name();
     if cfg!(target_os = "macos") {
         return format!(
-            "Agent fence: {tool} is unavailable on this Mac, so this agent was not started. Turn the Agent fence off for this project."
+            "Agent fence: {tool} is unavailable on this Mac, so this agent was not started. Open the project in a container, or use a Host session from the root console."
         );
     }
     match fence_install_cmd() {
         Some(cmd) => format!(
-            "Agent fence: {tool} is unavailable, so this agent was not started. Install it with `{cmd}`, or turn the Agent fence off for this project."
+            "Agent fence: {tool} is unavailable, so this agent was not started. Install it with `{cmd}`."
         ),
         None => format!(
-            "Agent fence: {tool} is unavailable, so this agent was not started. Install the {tool} package with your distribution's package manager, or turn the Agent fence off for this project."
+            "Agent fence: {tool} is unavailable, so this agent was not started. Install the {tool} package with your distribution's package manager."
         ),
     }
 }
@@ -169,30 +173,6 @@ pub(crate) struct BindMount {
     pub read_only: bool,
 }
 
-/// A symlink created inside the fence, pointing at a staged shadow copy.
-#[cfg(any(target_os = "linux", target_os = "macos", test))]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct FenceSymlink {
-    pub target: String,
-    pub link: String,
-}
-
-/// Where this scope's staging dir (the writable config shadows) is mounted
-/// inside the fence.
-///
-/// The shadows are reached *through* this directory and symlinked into place
-/// rather than bind-mounted onto their real paths, because `rename(2)` fails
-/// with `EBUSY` when the destination is a mount point — and every agent that
-/// rewrites its own config writes a sibling temp file and renames it over the
-/// original. Codex surfaced that as `failed to persist config at
-/// ~/.codex/config.toml` the first time it tried to record a newly trusted
-/// project. A symlink into a bound *directory* is safe for either style of
-/// writer: an in-place rewrite still lands in the throwaway copy, and a rename
-/// simply replaces the symlink with a plain file in the home tmpfs. Neither
-/// reaches the host original, which is the whole point of the shadow.
-#[cfg(any(target_os = "linux", target_os = "macos", test))]
-pub(crate) const STAGE_MOUNT: &str = "/run/eldrun-agent-config";
-
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentFenceStatus {
     pub enforced: bool,
@@ -218,16 +198,20 @@ pub fn is_agent(opts: &PtyOptions) -> bool {
         || crate::services::sandbox::HOST_BOUND_LOCAL_AGENT_CMDS.contains(&basename(&opts.cmd))
 }
 
+/// The reason a Host session's decision carries (`docs/context/agent_authority.md`).
+pub const HOST_SESSION_REASON: &str = "host session";
+
 /// Pure decision matrix.  Root resolution and remote detection are passed in so
 /// the policy is testable without touching the state directory. `fenceable` is
 /// [`platform_fenceable`], `platform_ok` is [`platform_accepted`] (only read
 /// when there is no fence to build) and `tool_ok` is [`bwrap_available`] (the
-/// fence tool probe, whichever tool that is on this OS).
+/// fence tool probe, whichever tool that is on this OS). There is no "off":
+/// the fence is the only mode a local agent runs in, and the one unfenced
+/// spawn is the explicit Host session of the root console.
 pub fn decide(
     opts: &PtyOptions,
     roots: Vec<PathBuf>,
     remote_run: bool,
-    policy_on: bool,
     fenceable: bool,
     platform_ok: bool,
     tool_ok: bool,
@@ -245,43 +229,24 @@ pub fn decide(
             reason: "remote host",
         };
     }
+    if opts.host_session && opts.project_id.is_none() {
+        return FenceDecision::NotApplicable {
+            reason: HOST_SESSION_REASON,
+        };
+    }
     if !fenceable {
-        // A fence switched off for the project is still a choice the user made
-        // knowing what the fence is; a platform without one gets the same
-        // choice, made once for the machine rather than assumed.
+        // A platform without a fence gets the choice, made once for the
+        // machine rather than assumed.
         return if platform_ok {
             FenceDecision::NotApplicable { reason: "platform" }
         } else {
             FenceDecision::PlatformUnaccepted
         };
     }
-    if !policy_on {
-        return FenceDecision::NotApplicable { reason: "off" };
-    }
     if !tool_ok {
         return FenceDecision::Unavailable;
     }
     FenceDecision::Fenced { roots }
-}
-
-/// Per-project override beats the global default.  Box scopes have no project
-/// record and therefore always use the global value.
-pub fn fence_effective(
-    list: &[ProjectEntry],
-    project_id: Option<&str>,
-    global_default: bool,
-) -> bool {
-    let Some(id) = project_id else {
-        return global_default;
-    };
-    if crate::commands::boxes::box_id_of_scope(id).is_some() {
-        return global_default;
-    }
-    list.iter()
-        .find(|p| p.id == id)
-        .and_then(|p| p.extra.get("agent_fence"))
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(global_default)
 }
 
 pub(crate) fn entry_directory(entry: &ProjectEntry) -> Option<PathBuf> {
@@ -508,14 +473,11 @@ fn settings() -> crate::schema::Settings {
     storage::read_json(&storage::state_dir().join("settings.json")).unwrap_or_default()
 }
 
-pub fn policy_for_scope(projects: &[ProjectEntry], scope_id: Option<&str>) -> bool {
-    let settings = settings();
-    fence_effective(projects, scope_id, settings.agent_fence())
-}
-
-pub fn policy_enabled(scope_id: Option<&str>) -> bool {
-    let (_, projects) = read_lists();
-    policy_for_scope(&projects, scope_id)
+/// Whether a local agent started now runs fenced on this machine: a fence
+/// exists here and its tool works. What `root_mcp_status`'s `review_enforced`
+/// and the phone's root access ask.
+pub fn enforced_here() -> bool {
+    platform_fenceable() && bwrap_available()
 }
 
 pub fn configured_read_only_paths() -> Vec<String> {
@@ -648,6 +610,9 @@ fn normalize_lexically(path: &Path) -> PathBuf {
 /// that can update its own CLI can also replace it, and that binary is the one
 /// the user runs everywhere. Pure over the filesystem, like
 /// [`command_bind_paths`].
+///
+/// Also recognised: a CLI whose updater leaves the launcher alone and drops
+/// the new release into a payload dir of its own ([`SELF_UPDATE_PAYLOADS`]).
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
 pub(crate) fn updatable_install_dirs(
     cmd: &str,
@@ -657,6 +622,13 @@ pub(crate) fn updatable_install_dirs(
     let hops = command_bind_paths(cmd, path_dirs, home, &[]);
     let share = home.join(".local/share");
     let mut out: Vec<String> = Vec::new();
+    let name = Path::new(cmd).file_name().and_then(|n| n.to_str());
+    for (agent, rel) in SELF_UPDATE_PAYLOADS {
+        let dir = home.join(rel);
+        if name == Some(*agent) && dir.is_dir() {
+            out.push(dir.to_string_lossy().into_owned());
+        }
+    }
     for hop in &hops {
         let hop = Path::new(hop);
         if let Ok(rest) = hop.strip_prefix(&share) {
@@ -673,6 +645,20 @@ pub(crate) fn updatable_install_dirs(
     }
     out
 }
+
+/// CLIs that update by downloading a release into a payload dir under `$HOME`
+/// and loading the newest one found there on the next start, keyed by command
+/// name, dir relative to `$HOME`. In the fence `$HOME` is a tmpfs, so without
+/// this the download died with the tab and every restart said "downloaded,
+/// restart to update" again.
+///
+/// Copilot CLI: its launcher (the standalone binary, or the one npm's loader
+/// spawns) runs the highest `pkg/{linux-x64,universal}/<version>/index.js` and
+/// its auto-update downloads there (read out of the 0.0.393 launcher,
+/// 2026-09-25).
+/// Mounted only when the host already has the dir — Eldrun never creates it.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+const SELF_UPDATE_PAYLOADS: &[(&str, &str)] = &[("copilot", ".copilot/pkg")];
 
 /// A symlink's target as an absolute, lexically clean path, resolved against
 /// `base` (the directory the link is seen in) when relative. `None` for
@@ -862,7 +848,9 @@ fn command_search_dirs(opts: &PtyOptions) -> Vec<PathBuf> {
         .map(std::ffi::OsString::from)
         .or_else(paths::effective_path)
         .unwrap_or_default();
-    std::env::split_paths(&path).collect()
+    // The shell-tab shims are not the CLI; the real install is what gets bound.
+    let shims = crate::services::agent_bin::bin_dir();
+    std::env::split_paths(&path).filter(|d| *d != shims).collect()
 }
 
 /// Cache successful probes only: installing/unblocking the tool must let the
@@ -934,17 +922,6 @@ fn mount_pair(pair: &str, read_only: bool) -> Option<BindMount> {
         src: src.to_string(),
         dst: dst.to_string(),
         read_only,
-    })
-}
-
-/// Turn a `(staged copy, real path)` pair into the symlink that puts the copy
-/// at the real path — see [`STAGE_MOUNT`] for why it is a link, not a mount.
-#[cfg(any(target_os = "linux", target_os = "macos", test))]
-fn staged_symlink(src: &str, dst: &str) -> Option<FenceSymlink> {
-    let leaf = Path::new(src).file_name()?.to_string_lossy().into_owned();
-    Some(FenceSymlink {
-        target: format!("{STAGE_MOUNT}/{leaf}"),
-        link: dst.to_string(),
     })
 }
 
@@ -1057,92 +1034,28 @@ pub(crate) fn local_model_home(
     (one && real_dir).then_some(candidate)
 }
 
+/// The support mounts every fenced tab gets on top of its scope home
+/// (`services::agent_home`, bound over `$HOME`): the scope's own live-session
+/// slice at the canonical path the hook script writes, the hook scripts and
+/// Eldrun's commands read-only, the spawn's own local-model home, and the
+/// shared login directories (`services::agent_auth`) bound from their store
+/// over the home's path. Everything else an agent keeps — config, transcripts,
+/// session stores — is simply in the home.
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn agent_state_mounts(
     scope_id: &str,
-    roots: &[PathBuf],
+    scope_home: &Path,
     env: &std::collections::HashMap<String, String>,
-) -> (Vec<BindMount>, Vec<FenceSymlink>) {
-    let home = paths::home_dir_string();
+) -> Vec<BindMount> {
     let state_dir = storage::state_dir();
     let live_root = crate::services::agent_session::live_sessions_dir();
     let live_own = crate::services::agent_session::project_live_sessions_dir(scope_id);
-    let stage = crate::services::sandbox::stage_dir(scope_id);
     let _ = std::fs::create_dir_all(&live_own);
-    let _ = std::fs::create_dir_all(&stage);
-
-    let (home_rw, home_ro) = crate::services::sandbox::agent_home_mounts(
-        &home,
-        &live_own.to_string_lossy(),
-        &live_root.to_string_lossy(),
-        cfg!(target_os = "linux"),
-    );
-    let mut mounts: Vec<BindMount> = Vec::new();
-    // A directory mount lets SQLite replace its WAL/SHM files normally. On
-    // macOS Seatbelt cannot substitute paths, so it continues using the real
-    // host directory under its deny/allow profile instead.
-    #[cfg(target_os = "linux")]
-    mounts.push(BindMount {
-        src: crate::services::sandbox::prepare_codex_state(&home, scope_id)
-            .to_string_lossy()
-            .into_owned(),
-        dst: format!("{home}/.codex"),
+    let mut mounts = vec![BindMount {
+        src: live_own.to_string_lossy().into_owned(),
+        dst: live_root.to_string_lossy().into_owned(),
         read_only: false,
-    });
-    mounts.extend(
-        home_rw
-        .into_iter()
-        .filter_map(|m| mount_pair(&m, false)),
-    );
-    // Hook/statusline scripts and global instruction files: readable, never
-    // writable — a write there escapes the fence into an uncontained session.
-    mounts.extend(home_ro.into_iter().filter_map(|m| mount_pair(&m, true)));
-    // One writable mount of the whole staging dir; the shadows below are
-    // symlinked into it rather than mounted over their real paths.
-    mounts.push(BindMount {
-        src: stage.to_string_lossy().into_owned(),
-        dst: STAGE_MOUNT.to_string(),
-        read_only: false,
-    });
-    let mut symlinks: Vec<FenceSymlink> =
-        crate::services::sandbox::staged_config_mounts(&home, &stage)
-            .iter()
-            .filter_map(|(src, dst)| staged_symlink(src, dst))
-            .collect();
-    let roots_as_strings: Vec<String> = roots
-        .iter()
-        .map(|p| p.to_string_lossy().into_owned())
-        .collect();
-    // Without `~/.claude.json` (oauthAccount, onboarding) every fenced tab
-    // demands a fresh login; see `staged_claude_json_mount` for why it is a
-    // filtered copy rather than the host original.
-    for (src, dst) in
-        crate::services::sandbox::staged_claude_json_mounts(&home, &stage, &roots_as_strings)
-    {
-        symlinks.extend(staged_symlink(&src, &dst));
-    }
-    // Claude's credential file: a stable-inode mirror mounted at the real
-    // path (on macOS the real path itself, kept writable). A mount, not a
-    // symlink into the stage — Claude opens it `O_NOFOLLOW`; and a mirror, not
-    // the host file — a file bind mount pins an inode and Claude rotates the
-    // file by rename, which is how long-lived tabs came to read a stale token.
-    // See `sandbox::claude_credential_mounts`.
-    mounts.extend(
-        crate::services::sandbox::claude_credential_mounts(&home)
-            .into_iter()
-            .map(|(src, dst)| BindMount {
-                src,
-                dst,
-                read_only: false,
-            }),
-    );
-    let (tx_rw, tx_ro) = crate::services::sandbox::claude_transcript_mounts(
-        &home,
-        &roots_as_strings,
-        &crate::services::sandbox::claude_projects_stage(scope_id),
-    );
-    mounts.extend(tx_rw.into_iter().filter_map(|m| mount_pair(&m, false)));
-    mounts.extend(tx_ro.into_iter().filter_map(|m| mount_pair(&m, true)));
+    }];
     mounts.extend(
         crate::services::sandbox::ro_mounts_for_hooks(&state_dir.join("hooks"))
             .into_iter()
@@ -1153,98 +1066,17 @@ fn agent_state_mounts(
     let _ = std::fs::create_dir_all(&bin);
     let bin = bin.to_string_lossy().into_owned();
     mounts.push(BindMount { src: bin.clone(), dst: bin, read_only: true });
-    (mounts, symlinks)
-}
-
-/// Executable/instruction content must not be writable in the host's Codex
-/// home. Auth, session rollouts and the resume databases are deliberately not
-/// in this list. Linux substitutes writable copies; Seatbelt denies writes.
-#[cfg(any(target_os = "linux", target_os = "macos", test))]
-const CODEX_PRIVATE_CONTENT: &[&str] = &["skills", "plugins", "shell_snapshots"];
-
-#[cfg(any(target_os = "linux", target_os = "macos", test))]
-fn codex_content_paths(home: &Path) -> Vec<String> {
-    let paths = CODEX_PRIVATE_CONTENT.iter().flat_map(|name| {
-        let path = home.join(".codex").join(name);
-        let canonical = path.canonicalize().ok();
-        std::iter::once(path).chain(canonical)
-    });
-    dedupe_paths(paths).into_iter().map(|p| p.to_string_lossy().into_owned()).collect()
-}
-
-/// Copy into a fresh destination, never one already writable by an agent.
-/// Internal links are relocated within the copy (including directory cycles);
-/// external links are materialized so they cannot write back into host content.
-#[cfg(any(target_os = "linux", all(unix, test)))]
-fn copy_private_content(src: &Path, dst: &Path) -> std::io::Result<()> {
-    fn copy(src: &Path, dst: &Path, source_root: &Path, dest_root: &Path, ancestors: &mut Vec<PathBuf>) -> std::io::Result<()> {
-        let canonical = match src.canonicalize() {
-            Ok(path) => path,
-            // A dangling optional plugin link must not prevent agent startup.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound
-                && src.symlink_metadata()?.file_type().is_symlink() => return Ok(()),
-            Err(e) => return Err(e),
+    // The agent sees its home at the user's home path; a login dir kept in
+    // the store is bound there, over the same relative path.
+    let home = paths::home_dir();
+    for (src, dst) in crate::services::agent_auth::dir_binds_in(&state_dir, scope_home) {
+        let dst = match Path::new(&dst).strip_prefix(scope_home) {
+            Ok(rel) => home.join(rel).to_string_lossy().into_owned(),
+            Err(_) => dst,
         };
-        #[cfg(unix)]
-        if dst != dest_root && src.symlink_metadata()?.file_type().is_symlink() {
-            if let Ok(relative) = canonical.strip_prefix(source_root) {
-                let target = dest_root.join(relative);
-                let parent = dst.parent().unwrap();
-                let common = parent.components().zip(target.components()).take_while(|(a, b)| a == b).count();
-                let mut link = PathBuf::new();
-                for _ in parent.components().skip(common) {
-                    link.push("..");
-                }
-                link.extend(target.components().skip(common));
-                if link.as_os_str().is_empty() { link.push("."); }
-                return std::os::unix::fs::symlink(link, dst);
-            }
-        }
-        if ancestors.contains(&canonical) || ancestors.len() >= 64 {
-            return Err(std::io::Error::other("external cycle or excessive depth in Codex content"));
-        }
-        let metadata = std::fs::metadata(&canonical)?;
-        if metadata.is_dir() {
-            ancestors.push(canonical.clone());
-            std::fs::create_dir_all(dst)?;
-            for entry in std::fs::read_dir(&canonical)? {
-                let entry = entry?;
-                copy(&entry.path(), &dst.join(entry.file_name()), source_root, dest_root, ancestors)?;
-            }
-            ancestors.pop();
-        } else if metadata.is_file() {
-            std::fs::copy(&canonical, dst)?;
-        }
-        Ok(())
+        mounts.push(BindMount { src, dst, read_only: false });
     }
-    copy(src, dst, &src.canonicalize()?, dst, &mut Vec::new())
-}
-
-/// Fresh per-spawn shadows keep startup writes and plugin/skill updates local.
-/// Snapshots are regenerated by Codex; never copy another session's shell env.
-/// Staging is discarded by Eldrun's existing startup stage cleanup.
-#[cfg(any(target_os = "linux", all(unix, test)))]
-fn private_codex_content(home: &Path, stage: &Path) -> Result<(tempfile::TempDir, Vec<BindMount>), String> {
-    let shadow = tempfile::Builder::new().prefix("codex-content-").tempdir_in(stage)
-        .map_err(|e| format!("Agent fence: create Codex content shadows: {e}"))?;
-    let mut mounts = Vec::new();
-    for name in CODEX_PRIVATE_CONTENT {
-        let source = home.join(".codex").join(name);
-        let dest = shadow.path().join(name);
-        if *name != "shell_snapshots" && source.exists() {
-            copy_private_content(&source, &dest)
-                .map_err(|e| format!("Agent fence: copy Codex {name}: {e}"))?;
-        } else {
-            std::fs::create_dir_all(&dest)
-                .map_err(|e| format!("Agent fence: create Codex {name}: {e}"))?;
-        }
-        mounts.push(BindMount {
-            src: dest.to_string_lossy().into_owned(),
-            dst: source.to_string_lossy().into_owned(),
-            read_only: false,
-        });
-    }
-    Ok((shadow, mounts))
+    mounts
 }
 
 /// Both Cargo credential spellings, including an explicit CARGO_HOME and
@@ -1308,20 +1140,21 @@ fn guard_git_control(args: &mut Vec<String>, guard: crate::services::git_guard::
 }
 
 /// Pure bubblewrap argv builder.  Later mounts intentionally shadow earlier
-/// ones: the empty home hides secrets, selected state/config is restored, and
-/// project/box roots finally become read-write.  `symlinks` come last of the
-/// filesystem setup, after the mount that holds what they point at.
+/// ones: the scope home (or, with no `home_src`, an empty tmpfs) replaces the
+/// user's home and hides everything in it, selected toolchain paths and
+/// Eldrun's support dirs are restored, and project/box roots finally become
+/// read-write. `~/.cache` is a tmpfs over the home either way.
 #[cfg(any(target_os = "linux", test))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn bwrap_args(
     home: &str,
+    home_src: Option<&str>,
     cwd: &str,
     cmd: &str,
     cmd_args: &[String],
     roots: &[PathBuf],
     extra_ro: &[String],
     mounts: &[BindMount],
-    symlinks: &[FenceSymlink],
 ) -> Vec<String> {
     let mut args = vec![
         "--ro-bind".into(),
@@ -1338,9 +1171,12 @@ pub(crate) fn bwrap_args(
         "--ro-bind-try".into(),
         "/run/systemd/resolve".into(),
         "/run/systemd/resolve".into(),
-        "--tmpfs".into(),
-        home.into(),
     ];
+    match home_src {
+        Some(src) => args.extend(["--bind".into(), src.into(), home.into()]),
+        None => args.extend(["--tmpfs".into(), home.into()]),
+    }
+    args.extend(["--tmpfs".into(), format!("{home}/.cache")]);
     for path in extra_ro {
         args.extend(["--ro-bind-try".into(), path.clone(), path.clone()]);
     }
@@ -1352,9 +1188,6 @@ pub(crate) fn bwrap_args(
         });
         args.push(mount.src.clone());
         args.push(mount.dst.clone());
-    }
-    for link in symlinks {
-        args.extend(["--symlink".into(), link.target.clone(), link.link.clone()]);
     }
     for root in roots {
         let root = root.to_string_lossy().into_owned();
@@ -1380,7 +1213,8 @@ pub(crate) fn private_state_paths(state_dir: &Path) -> Vec<PathBuf> {
     if let Ok(real) = state_dir.canonicalize() { paths.push(real); }
     // A private store may itself be a symlink outside the state tree.
     for name in ["calendar.json", "projects.json", "settings.json", "boxes.json", "root_mcp", "mail",
-        "time_summary.json", "usage_stats.json", "remote-projects", "sessions"] {
+        "time_summary.json", "usage_stats.json", "remote-projects", "sessions",
+        crate::services::agent_global::GLOBAL_DIR] {
         paths.push(state_dir.join(name));
         if let Ok(real) = state_dir.join(name).canonicalize() { paths.push(real); }
     }
@@ -1418,37 +1252,48 @@ pub fn wrap_pty_options_bwrap(
     opts: &mut PtyOptions,
     roots: &[PathBuf],
     scope_id: &str,
+    scope_home: &Path,
 ) -> Result<tempfile::TempDir, String> {
     if !bwrap_available() {
         return Err(fence_unavailable_message());
     }
     let bwrap = crate::paths::system_executable("bwrap").ok_or_else(fence_unavailable_message)?;
-    let (mut mounts, symlinks) = agent_state_mounts(scope_id, roots, &opts.env);
+    // Before `opts.cmd` becomes bwrap below.
+    let agent_cmd = opts.cmd.clone();
+    let copilot = basename(&agent_cmd) == "copilot";
+    let mut mounts = agent_state_mounts(scope_id, scope_home, &opts.env);
     let support_mounts = mounts.clone();
-    let protected = codex_content_paths(&paths::home_dir());
-    mounts.retain(|m| !protected.contains(&m.dst));
-    let (content_shadow, content_mounts) = private_codex_content(
-        &paths::home_dir(), &crate::services::sandbox::stage_dir(scope_id),
-    )?;
-    mounts.extend(content_mounts);
+    let stage = crate::services::sandbox::stage_dir(scope_id);
+    std::fs::create_dir_all(&stage).map_err(|e| format!("Agent fence: {e}"))?;
+    // Holds the private launcher dir of a host-installed CLI for the tab's
+    // life; dropped with the tab.
+    let tab_dir = tempfile::Builder::new()
+        .prefix("tab-")
+        .tempdir_in(&stage)
+        .map_err(|e| format!("Agent fence: create tab dir: {e}"))?;
     let mut extra_ro = configured_read_only_paths();
     // A root agent's read-only view of the projects (a switch, default off):
     // the same channel as the allowlist, so the state mask below still wins.
     extra_ro.extend(root_project_read_only_paths_for(&opts.id, scope_id));
     let search_dirs = command_search_dirs(opts);
-    // The agent's own install, read-write so it can update itself. These go
-    // into `mounts`, which `bwrap_args` places after `extra_ro`, so they shadow
-    // the allowlist's read-only copies (later mounts win) — and so does the
-    // private `~/.local/bin` below.
-    let updatable = updatable_install_dirs(&opts.cmd, &search_dirs, &paths::home_dir());
+    // A CLI Eldrun installed itself (`agent_install`) is read-only in the
+    // fence and updates outside it; a CLI installed on the host keeps the
+    // self-update path below until the user reinstalls it.
+    let eldrun_owned = crate::services::agent_install::owns_command(&agent_cmd, &search_dirs);
+    let updatable = if eldrun_owned {
+        Vec::new()
+    } else {
+        updatable_install_dirs(&agent_cmd, &search_dirs, &paths::home_dir())
+    };
     let mut visible = extra_ro.clone();
     visible.extend(updatable.iter().cloned());
     extra_ro.extend(command_bind_paths(
-        &opts.cmd,
+        &agent_cmd,
         &search_dirs,
         &paths::home_dir(),
         &visible,
     ));
+    extra_ro.extend(crate::services::agent_install::fence_read_only_paths());
     mounts.extend(updatable.into_iter().map(|dir| BindMount {
         src: dir.clone(),
         dst: dir,
@@ -1457,9 +1302,13 @@ pub fn wrap_pty_options_bwrap(
     // Its launcher link: swapped in a private copy of `~/.local/bin`, never the
     // host's (#861), and carried back when the tab ends. Without the copy the
     // launcher dir stays read-only and only the link swap of an update fails.
-    let launcher = native_launcher(&opts.cmd, &search_dirs, &paths::home_dir());
+    let launcher = if eldrun_owned {
+        None
+    } else {
+        native_launcher(&agent_cmd, &search_dirs, &paths::home_dir())
+    };
     if let Some(launcher) = launcher {
-        let dir = content_shadow.path().join("local-bin");
+        let dir = tab_dir.path().join("local-bin");
         match private_launcher_dir(&launcher, &dir) {
             Ok(private) => {
                 mounts.extend(private);
@@ -1478,13 +1327,13 @@ pub fn wrap_pty_options_bwrap(
     }
     let mut args = bwrap_args(
         &paths::home_dir_string(),
+        Some(&scope_home.to_string_lossy()),
         &opts.cwd,
         &opts.cmd,
         &opts.args,
         roots,
         &extra_ro,
         &mounts,
-        &symlinks,
     );
     // Final masks follow every allowlist/project bind, so none re-exposes a
     // token. Missing files need no mask (their parent is read-only/hidden).
@@ -1499,9 +1348,15 @@ pub fn wrap_pty_options_bwrap(
     opts.args = args;
     opts.env
         .insert("ELDRUN_AGENT_FENCE".to_string(), "1".to_string());
-    // The caller keeps the sources until tab teardown, or drops them on a
-    // failed spawn. No accumulation of plugin copies between closed tabs.
-    Ok(content_shadow)
+    // Keep the CLI's login in its file: the keyring is not reachable here.
+    crate::services::agent_auth::apply_fence_env(&agent_cmd, &mut opts.env);
+    crate::services::agent_install::apply_fence_env(&agent_cmd, &mut opts.env);
+    // The fence hides the keyring Copilot signs in through; Eldrun holds the
+    // sign-in for it instead (`copilot_auth`).
+    if copilot {
+        crate::services::copilot_auth::inject_env(&mut opts.env);
+    }
+    Ok(tab_dir)
 }
 
 /// Everything the macOS profile needs to know, resolved by
@@ -1524,6 +1379,32 @@ pub(crate) struct SeatbeltInputs {
     pub protected: Vec<String>,
     /// Final read/write denials, after all broad toolchain/root grants.
     pub hidden: Vec<String>,
+    /// The scope's own agent home, allowed last: it sits inside the hidden
+    /// `agent-homes/` tree, which keeps every other scope's home unreadable.
+    pub own_home: Option<String>,
+}
+
+/// `HOME` and the pass-throughs a fence that cannot redirect a path sets
+/// (macOS Seatbelt, Windows): the agent's home is the scope home, while git's
+/// global config and the toolchain homes stay the user's, read-only where the
+/// platform can say so. Only variables the user has not set themselves.
+pub fn home_env(scope_home: &Path, user_home: &Path) -> Vec<(String, String)> {
+    let mut env = vec![("HOME".to_string(), scope_home.to_string_lossy().into_owned())];
+    if cfg!(windows) {
+        env.push(("USERPROFILE".to_string(), scope_home.to_string_lossy().into_owned()));
+    }
+    for (var, rel) in [
+        ("GIT_CONFIG_GLOBAL", ".gitconfig"),
+        ("CARGO_HOME", ".cargo"),
+        ("RUSTUP_HOME", ".rustup"),
+        ("DOCKER_CONFIG", ".docker"),
+    ] {
+        let path = user_home.join(rel);
+        if path.exists() && std::env::var_os(var).is_none() {
+            env.push((var.to_string(), path.to_string_lossy().into_owned()));
+        }
+    }
+    env
 }
 
 /// Quote a path for the Seatbelt profile language: a Scheme string literal.
@@ -1598,44 +1479,31 @@ pub(crate) fn sandbox_exec_profile(inputs: &SeatbeltInputs) -> String {
     for path in &inputs.hidden {
         p.push_str(&format!("(deny file-read* file-write* (subpath {}))\n", sbpl_string(path)));
     }
+    if let Some(home) = &inputs.own_home {
+        p.push_str(&format!("(allow file-read* file-write* (subpath {}))\n", sbpl_string(home)));
+    }
     p
 }
 
 /// Resolve the profile inputs for a scope from the same mount planners the
 /// bubblewrap fence uses, so the two fences agree on what an agent may touch.
 #[cfg(target_os = "macos")]
-fn sandbox_exec_inputs(opts: &PtyOptions, roots: &[PathBuf], scope_id: &str) -> SeatbeltInputs {
+fn sandbox_exec_inputs(opts: &PtyOptions, roots: &[PathBuf], scope_id: &str, scope_home: &Path) -> SeatbeltInputs {
     let home = paths::home_dir_string();
     let state_dir = storage::state_dir();
-    let (mounts, _symlinks) = agent_state_mounts(scope_id, roots, &opts.env);
+    let mounts = agent_state_mounts(scope_id, scope_home, &opts.env);
     let mut writable: Vec<String> = Vec::new();
     let mut readable: Vec<String> = Vec::new();
     let mut protected: Vec<String> = Vec::new();
     for mount in &mounts {
-        // On Linux the staged copies are mounted at STAGE_MOUNT and symlinked
-        // over the originals; here the originals themselves stay in place, so
-        // the stage dir is irrelevant and the originals are protected below.
-        if mount.dst == STAGE_MOUNT {
-            continue;
-        }
+        // Seatbelt cannot substitute a path: the agent reaches the store dirs
+        // through the symlinks `agent_auth` puts in its home, so the sources
+        // are what needs allowing.
         if mount.read_only {
-            readable.push(mount.dst.clone());
+            readable.push(mount.src.clone());
         } else {
-            writable.push(mount.dst.clone());
+            writable.push(mount.src.clone());
         }
-    }
-    // The hook-registration files the Linux fence shadows: read-only here.
-    for rel in [
-        ".claude/settings.json",
-        ".claude/settings.local.json",
-        ".codex/config.toml",
-    ] {
-        protected.push(format!("{home}/{rel}"));
-    }
-    // Gemini's staged settings and MCP lists (#865): readable, never written.
-    for rel in crate::services::sandbox::GEMINI_STAGED {
-        readable.push(format!("{home}/{rel}"));
-        protected.push(format!("{home}/{rel}"));
     }
     protected.push(state_dir.join("hooks").to_string_lossy().into_owned());
     // A local-model home is writable, its control files are not (gap 7):
@@ -1649,16 +1517,6 @@ fn sandbox_exec_inputs(opts: &PtyOptions, roots: &[PathBuf], scope_id: &str) -> 
         );
     }
     protected.push(crate::services::agent_bin::bin_dir().to_string_lossy().into_owned());
-    protected.extend(codex_content_paths(&paths::home_dir()));
-    // Claude's identity/onboarding file: readable and writable so a fenced tab
-    // is not a fresh install (see `staged_claude_json_mounts` for why Linux
-    // stages a filtered copy instead — Seatbelt cannot substitute a file).
-    for name in [".claude.json", ".claude/.claude.json"] {
-        let path = format!("{home}/{name}");
-        if Path::new(&path).is_file() {
-            writable.push(path);
-        }
-    }
     // Temp dirs: macOS gives each user a private one under /var/folders.
     for tmp in ["/private/tmp", "/tmp", "/private/var/folders", "/var/folders"] {
         writable.push(tmp.to_string());
@@ -1668,15 +1526,19 @@ fn sandbox_exec_inputs(opts: &PtyOptions, roots: &[PathBuf], scope_id: &str) -> 
     }
     readable.extend(configured_read_only_paths());
     readable.extend(root_project_read_only_paths_for(&opts.id, scope_id));
+    readable.extend(crate::services::agent_install::fence_read_only_paths());
     let search_dirs = command_search_dirs(opts);
+    let eldrun_owned = crate::services::agent_install::owns_command(&opts.cmd, &search_dirs);
     // The agent's own install, writable so it can update itself — the same
     // payload root the Linux fence hands back read-write. The launcher dir is
     // not (#861): Seatbelt cannot give a private copy, so the link swap fails.
-    writable.extend(updatable_install_dirs(
-        &opts.cmd,
-        &search_dirs,
-        &paths::home_dir(),
-    ));
+    if !eldrun_owned {
+        writable.extend(updatable_install_dirs(
+            &opts.cmd,
+            &search_dirs,
+            &paths::home_dir(),
+        ));
+    }
     let visible = readable.clone();
     readable.extend(command_bind_paths(
         &opts.cmd,
@@ -1684,6 +1546,7 @@ fn sandbox_exec_inputs(opts: &PtyOptions, roots: &[PathBuf], scope_id: &str) -> 
         &paths::home_dir(),
         &visible,
     ));
+    let homes_root = crate::services::agent_home::homes_root_in(&state_dir);
     SeatbeltInputs {
         home,
         roots: roots.iter().map(|r| r.to_string_lossy().into_owned()).collect(),
@@ -1696,7 +1559,8 @@ fn sandbox_exec_inputs(opts: &PtyOptions, roots: &[PathBuf], scope_id: &str) -> 
                 // tool mount through a final deny of the whole state directory.
                 p != &state_dir && state_dir.canonicalize().as_ref().ok() != Some(p)
             }).map(|p| p.to_string_lossy().into_owned())
-        ).collect(),
+        ).chain(std::iter::once(homes_root.to_string_lossy().into_owned())).collect(),
+        own_home: Some(scope_home.to_string_lossy().into_owned()),
     }
 }
 
@@ -1709,6 +1573,7 @@ pub fn wrap_pty_options_sandbox_exec(
     opts: &mut PtyOptions,
     roots: &[PathBuf],
     scope_id: &str,
+    scope_home: &Path,
 ) -> Result<(), String> {
     if !bwrap_available() {
         return Err(
@@ -1716,7 +1581,7 @@ pub fn wrap_pty_options_sandbox_exec(
                 .to_string(),
         );
     }
-    let inputs = sandbox_exec_inputs(opts, roots, scope_id);
+    let inputs = sandbox_exec_inputs(opts, roots, scope_id, scope_home);
     let profile = sandbox_exec_profile(&inputs);
     let stage = crate::services::sandbox::stage_dir(scope_id);
     std::fs::create_dir_all(&stage).map_err(|e| format!("Agent fence: {e}"))?;
@@ -1733,10 +1598,18 @@ pub fn wrap_pty_options_sandbox_exec(
         resolved.to_string_lossy().into_owned(),
     ];
     args.extend(opts.args.iter().cloned());
+    let agent_cmd = opts.cmd.clone();
     opts.cmd = "/usr/bin/sandbox-exec".to_string();
     opts.args = args;
     opts.env
         .insert("ELDRUN_AGENT_FENCE".to_string(), "1".to_string());
+    // Seatbelt cannot redirect a path: the agent's home is the scope home by
+    // environment, with the user's git config and toolchains passed through.
+    for (k, v) in home_env(scope_home, &paths::home_dir()) {
+        opts.env.entry(k).or_insert(v);
+    }
+    crate::services::agent_auth::apply_fence_env(&agent_cmd, &mut opts.env);
+    crate::services::agent_install::apply_fence_env(&agent_cmd, &mut opts.env);
     Ok(())
 }
 
@@ -1781,7 +1654,6 @@ fn platform_reason() -> &'static str {
 }
 
 pub fn status_for_scope(scope_id: &str) -> AgentFenceStatus {
-    let (_, projects) = read_lists();
     let mut opts = PtyOptions {
         id: "agent-fence-status".to_string(),
         cmd: "claude".to_string(),
@@ -1799,6 +1671,7 @@ pub fn status_for_scope(scope_id: &str) -> AgentFenceStatus {
         tmux_attach: None,
         host_bound_uid: None,
         schedule_target_id: None,
+        host_session: false,
     };
     crate::services::sandbox::enforce_spawn_authority(&mut opts);
     let remote_run =
@@ -1823,7 +1696,6 @@ pub fn status_for_scope(scope_id: &str) -> AgentFenceStatus {
         &opts,
         roots,
         remote_run,
-        policy_for_scope(&projects, Some(scope_id)),
         platform_fenceable(),
         platform_accepted(),
         available,
@@ -1846,62 +1718,10 @@ pub fn status_for_scope(scope_id: &str) -> AgentFenceStatus {
     }
 }
 
-/// Whether a Claude tab spawned with these options reads the staged, filtered
-/// `.claude.json` copy instead of the host file — the question
-/// `sandbox::claude_folder_trusted` needs answered, because Eldrun's recorded
-/// trust reaches Claude only through that copy. Mirrors `pty_spawn`: the same
-/// spawn-authority resolution, then containerized (always staged) or the Linux
-/// fence (macOS Seatbelt cannot substitute a file, so a fenced tab there uses
-/// the host file).
-pub fn claude_config_staged(scope_id: Option<&str>, sandbox: bool, local_only: bool) -> bool {
-    let mut opts = PtyOptions {
-        id: "claude-trust-probe".to_string(),
-        cmd: "claude".to_string(),
-        args: Vec::new(),
-        env: HashMap::new(),
-        cwd: String::new(),
-        cols: 80,
-        rows: 24,
-        local_only,
-        sandbox,
-        agent: true,
-        project_id: scope_id.map(str::to_string),
-        remote_host_id: None,
-        tmux_session: None,
-        tmux_attach: None,
-        host_bound_uid: None,
-        schedule_target_id: None,
-    };
-    crate::services::sandbox::enforce_spawn_authority(&mut opts);
-    let remote_run = !opts.local_only
-        && scope_id.is_some_and(|id| crate::services::remote::remote_target_for(id).is_some());
-    if opts.sandbox && !opts.local_only {
-        return true;
-    }
-    if !cfg!(target_os = "linux") {
-        return false;
-    }
-    let Some(roots) = roots_for_scope(scope_id, opts.local_only) else {
-        return false;
-    };
-    matches!(
-        decide(
-            &opts,
-            roots,
-            remote_run,
-            policy_enabled(scope_id),
-            platform_fenceable(),
-            platform_accepted(),
-            bwrap_available(),
-        ),
-        FenceDecision::Fenced { .. }
-    )
-}
-
 struct FencedTab {
     scope_id: String,
-    // Dropped after transcript harvest at teardown.
-    _content_shadow: Option<tempfile::TempDir>,
+    // The tab's private launcher dir (a host-installed CLI); dropped with it.
+    _tab_dir: Option<tempfile::TempDir>,
 }
 
 fn fenced_tabs() -> &'static Mutex<HashMap<String, FencedTab>> {
@@ -1909,17 +1729,14 @@ fn fenced_tabs() -> &'static Mutex<HashMap<String, FencedTab>> {
     TABS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub fn register_tab(tab_id: &str, scope_id: &str, content_shadow: Option<tempfile::TempDir>) {
-    if let Some(old) = fenced_tabs()
+pub fn register_tab(tab_id: &str, scope_id: &str, tab_dir: Option<tempfile::TempDir>) {
+    fenced_tabs()
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .insert(tab_id.to_string(), FencedTab {
             scope_id: scope_id.to_string(),
-            _content_shadow: content_shadow,
-        })
-    {
-        crate::services::sandbox::harvest_project_transcripts(&old.scope_id);
-    }
+            _tab_dir: tab_dir,
+        });
 }
 
 /// The scope a fenced tab was spawned into, or `None` for a tab that runs
@@ -1951,12 +1768,12 @@ pub fn one_shot_command(scope_id: &str, cmd: &str, args: &[String], cwd: &Path) 
     let home = paths::home_dir();
     let mut argv = bwrap_args(
         &paths::home_dir_string(),
+        None,
         &cwd.to_string_lossy(),
         cmd,
         args,
         &roots,
         &extra_ro,
-        &[],
         &[],
     );
     let cargo_home = std::env::var_os("CARGO_HOME").map(PathBuf::from);
@@ -1976,13 +1793,21 @@ pub fn one_shot_command(_scope_id: &str, _cmd: &str, _args: &[String], _cwd: &Pa
 }
 
 pub fn on_tab_gone(tab_id: &str) {
-    // Before the tab's shadow (which holds the private launcher) is dropped.
+    // Before the tab's dir (which holds the private launcher) is dropped.
     #[cfg(target_os = "linux")]
     finish_launcher_sync(tab_id);
-    if let Some(tab) = fenced_tabs().lock().unwrap().remove(tab_id) {
-        crate::services::sandbox::harvest_project_transcripts(&tab.scope_id);
-    }
+    let was_fenced = fenced_tabs()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(tab_id)
+        .is_some();
     untrack_host_agent_tab(tab_id);
+    // A tab's end is when a login it made lands in its home: carry it to the
+    // other scopes now rather than at the keeper's next tick. Off-thread —
+    // this runs on the PTY's teardown path.
+    if was_fenced {
+        std::thread::spawn(crate::services::agent_auth::reconcile_now);
+    }
 }
 
 /// A local agent tab whose agent runs on the host — not in a container, not on
@@ -2165,15 +1990,12 @@ fn proc_view(pid: u32, own_ns: &Path) -> Option<ProcView> {
     })
 }
 
-/// The project pill's fence marker: the policy for new tabs, and what the
-/// running ones actually are.
+/// The project pill's fence marker: what the running tabs actually are.
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentFenceMark {
-    /// New local agent tabs of this project start unfenced because the fence
-    /// is switched off — not because the project is remote, containerized, or
-    /// on a platform the fence does not cover.
-    pub policy_off: bool,
-    /// Live agent tabs whose agent process runs outside the fence right now.
+    /// Live agent tabs whose agent process runs outside the fence right now
+    /// (started before the fence became the only mode, and kept alive by a
+    /// tmux reattach).
     pub live_unfenced: u32,
 }
 
@@ -2184,9 +2006,7 @@ pub fn marks_for_scopes(
     scope_ids
         .iter()
         .map(|id| {
-            let status = status_for_scope(id);
             let mark = AgentFenceMark {
-                policy_off: !status.enforced && status.reason == "off",
                 live_unfenced: live_unfenced.get(id).copied().unwrap_or(0),
             };
             (id.clone(), mark)
@@ -2296,12 +2116,12 @@ mod tests {
             ["/w/alpha", "/w/beta-mirror", "/state/remote-projects/p3/mirror", "/w/box"],
             "a remote project's mirror, never its remote directory string"
         );
-        let args = bwrap_args("/home/u", "/home/u/eldrun/root", "claude", &[], &[PathBuf::from("/home/u/eldrun/root")], &paths, &[], &[]);
+        let args = bwrap_args("/home/u", None, "/home/u/eldrun/root", "claude", &[], &[PathBuf::from("/home/u/eldrun/root")], &paths, &[]);
         for p in &paths {
             assert!(args.windows(3).any(|w| w[0] == "--ro-bind-try" && w[1] == *p && w[2] == *p), "{p} not read-only: {args:?}");
             assert!(!args.windows(2).any(|w| (w[0] == "--bind" || w[0] == "--bind-try") && w[1] == *p), "{p} bound read-write");
         }
-        let plain = bwrap_args("/home/u", "/home/u/eldrun/root", "claude", &[], &[PathBuf::from("/home/u/eldrun/root")], &[], &[], &[]);
+        let plain = bwrap_args("/home/u", None, "/home/u/eldrun/root", "claude", &[], &[PathBuf::from("/home/u/eldrun/root")], &[], &[]);
         assert!(!plain.iter().any(|a| a == "/w/alpha"));
         // A project scope: the flag changes nothing about its roots.
         assert_eq!(compute_fence_roots(&boxes, &projects, "p1", true), Some(vec![PathBuf::from("/w/alpha"), PathBuf::from("/w/box")]));
@@ -2312,7 +2132,7 @@ mod tests {
     /// and before `--`, pin first so the read-only binds sit inside it.
     #[test]
     fn git_control_files_are_rebound_read_only_after_the_root_grant() {
-        let mut args = bwrap_args("/home/u", "/p", "claude", &[], &[PathBuf::from("/p")], &[], &[], &[]);
+        let mut args = bwrap_args("/home/u", None, "/p", "claude", &[], &[PathBuf::from("/p")], &[], &[]);
         guard_git_control(
             &mut args,
             crate::services::git_guard::GuardPaths {
@@ -2346,7 +2166,7 @@ mod tests {
         // Joined per component: a literal "custom-cargo/credentials.toml" keeps its `/`
         // on Windows, where the function under test produces a `\` path.
         assert!(hidden.contains(&home.path().join("custom-cargo").join("credentials.toml").to_string_lossy().into_owned()));
-        let mut args = bwrap_args("/home/u", "/p", "codex", &[], &[home.path().to_owned()], &[], &[], &[]);
+        let mut args = bwrap_args("/home/u", None, "/p", "codex", &[], &[home.path().to_owned()], &[], &[]);
         mask_cargo_credentials(&mut args, hidden.clone());
         let grant = args.iter().position(|a| a == "--bind-try").unwrap();
         for name in ["credentials", "credentials.toml"] {
@@ -2376,90 +2196,6 @@ mod tests {
         std::os::unix::fs::symlink(&target, home.path().join(".cargo/credentials.toml")).unwrap();
         let paths = cargo_credential_paths(home.path(), None, home.path(), false);
         assert!(paths.contains(&target.canonicalize().unwrap().to_string_lossy().into_owned()));
-    }
-
-    #[test]
-    fn seatbelt_protects_codex_content_after_broad_home_grants() {
-        let paths = codex_content_paths(Path::new("/Users/fixture"));
-        let profile = sandbox_exec_profile(&SeatbeltInputs {
-            home: "/Users/fixture".into(),
-            writable: vec!["/Users/fixture/.codex".into()],
-            protected: paths.clone(),
-            ..Default::default()
-        });
-        let grant = profile.find("(allow file-write* (subpath \"/Users/fixture/.codex\"))").unwrap();
-        for path in paths {
-            let deny = format!("(deny file-write* (subpath {}))", sbpl_string(&path));
-            assert!(profile.find(&deny).unwrap() > grant);
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn codex_content_shadows_are_writable_without_changing_login_or_resume_mounts() {
-        let home = tempfile::tempdir().unwrap();
-        let stage = tempfile::tempdir().unwrap();
-        let codex = home.path().join(".codex");
-        for dir in ["skills/example", "plugins/example", "shell_snapshots", "sessions"] {
-            std::fs::create_dir_all(codex.join(dir)).unwrap();
-        }
-        for file in ["skills/example/SKILL.md", "plugins/example/tool.sh", "shell_snapshots/host.sh", "auth.json", "sessions/resume.jsonl"] {
-            std::fs::write(codex.join(file), "host fixture").unwrap();
-        }
-        let (shadow, mounts) = private_codex_content(home.path(), stage.path()).unwrap();
-        for file in ["skills/example/SKILL.md", "plugins/example/tool.sh"] {
-            std::fs::write(shadow.path().join(file), "tab change").unwrap();
-            assert_eq!(std::fs::read_to_string(codex.join(file)).unwrap(), "host fixture");
-        }
-        assert!(!shadow.path().join("shell_snapshots/host.sh").exists());
-        std::fs::write(shadow.path().join("shell_snapshots/tab.sh"), "tab snapshot").unwrap();
-        assert!(!codex.join("shell_snapshots/tab.sh").exists());
-        let (rw, _) = crate::services::sandbox::agent_home_mounts(
-            &home.path().to_string_lossy(), "/live/own", "/live", true,
-        );
-        for name in ["auth.json", "sessions"] {
-            let path = codex.join(name).to_string_lossy().into_owned();
-            assert!(rw.contains(&format!("{path}:{path}")));
-            assert!(!mounts.iter().any(|m| m.dst == path));
-        }
-        // Another new tab receives fresh host content, never a previous tab's edits.
-        let (next, _) = private_codex_content(home.path(), stage.path()).unwrap();
-        assert_eq!(std::fs::read_to_string(next.path().join("skills/example/SKILL.md")).unwrap(), "host fixture");
-        let path = shadow.path().to_owned();
-        drop(shadow);
-        assert!(!path.exists());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn private_content_relocates_internal_links_and_materializes_external_links() {
-        let source = tempfile::tempdir().unwrap();
-        let dest = tempfile::tempdir().unwrap();
-        let script = source.path().join("tool.sh");
-        std::fs::write(&script, "host script").unwrap();
-        std::os::unix::fs::symlink(&script, source.path().join("linked.sh")).unwrap();
-        std::os::unix::fs::symlink(source.path(), source.path().join("loop")).unwrap();
-        let external = tempfile::tempdir().unwrap();
-        std::fs::write(external.path().join("external.sh"), "external script").unwrap();
-        std::os::unix::fs::symlink(external.path().join("external.sh"), source.path().join("external.sh")).unwrap();
-        std::os::unix::fs::symlink("missing-optional", source.path().join("dangling")).unwrap();
-        copy_private_content(source.path(), &dest.path().join("copy")).unwrap();
-        let copy = dest.path().join("copy/linked.sh");
-        // Compared canonical-to-canonical: macOS temp dirs live under `/var`, a
-        // symlink to `/private/var`, so a resolved path never starts with the raw one.
-        let dest_root = dest.path().canonicalize().unwrap();
-        assert!(copy.canonicalize().unwrap().starts_with(&dest_root));
-        assert!(dest.path().join("copy/loop").canonicalize().unwrap().starts_with(&dest_root));
-        std::fs::write(copy, "private edit").unwrap();
-        assert_eq!(std::fs::read_to_string(script).unwrap(), "host script");
-        let external_copy = dest.path().join("copy/external.sh");
-        assert!(!external_copy.symlink_metadata().unwrap().file_type().is_symlink());
-        std::fs::write(external_copy, "private external edit").unwrap();
-        assert_eq!(std::fs::read_to_string(external.path().join("external.sh")).unwrap(), "external script");
-        let alias = dest.path().join("source-link");
-        std::os::unix::fs::symlink(source.path(), &alias).unwrap();
-        copy_private_content(&alias, &dest.path().join("linked-root-copy")).unwrap();
-        assert!(dest.path().join("linked-root-copy/tool.sh").is_file());
     }
 
     #[test]
@@ -2509,6 +2245,7 @@ mod tests {
             tmux_attach: None,
             host_bound_uid: None,
             schedule_target_id: None,
+            host_session: false,
         }
     }
 
@@ -2524,6 +2261,7 @@ mod tests {
                 "/Users/a/.local/share/eldrun/hooks".into(),
             ],
             hidden: Vec::new(),
+            own_home: None,
         };
         let profile = sandbox_exec_profile(&inputs);
         let lines: Vec<&str> = profile.lines().collect();
@@ -2593,19 +2331,19 @@ mod tests {
     fn decision_matrix() {
         let roots = vec![PathBuf::from("/p")];
         assert_eq!(
-            decide(&opts("bash"), roots.clone(), false, true, true, true, true),
+            decide(&opts("bash"), roots.clone(), false, true, true, true),
             FenceDecision::NotApplicable { reason: "shell" }
         );
         let mut container = opts("claude");
         container.sandbox = true;
         assert_eq!(
-            decide(&container, roots.clone(), false, true, true, true, true),
+            decide(&container, roots.clone(), false, true, true, true),
             FenceDecision::NotApplicable {
                 reason: "container"
             }
         );
         assert_eq!(
-            decide(&opts("claude"), roots.clone(), true, true, true, true, true),
+            decide(&opts("claude"), roots.clone(), true, true, true, true),
             FenceDecision::NotApplicable {
                 reason: "remote host"
             }
@@ -2613,48 +2351,41 @@ mod tests {
         let mut local_mirror = opts("claude");
         local_mirror.local_only = true;
         assert!(matches!(
-            decide(
-                &local_mirror,
-                vec![PathBuf::from("/mirror/p")],
-                false,
-                true,
-                true,
-                true,
-                true
-            ),
+            decide(&local_mirror, vec![PathBuf::from("/mirror/p")], false, true, true, true),
             FenceDecision::Fenced { roots }
                 if roots == vec![PathBuf::from("/mirror/p")]
         ));
+        // The fence has no "off": the one unfenced local agent is the root
+        // console's explicit Host session, and only there.
+        let mut host = opts("claude");
+        host.host_session = true;
+        assert!(matches!(
+            decide(&host, roots.clone(), false, true, true, true),
+            FenceDecision::Fenced { .. }
+        ));
+        host.project_id = None;
         assert_eq!(
-            decide(&opts("claude"), roots.clone(), false, false, true, true, true),
-            FenceDecision::NotApplicable { reason: "off" }
+            decide(&host, roots.clone(), false, true, true, true),
+            FenceDecision::NotApplicable { reason: HOST_SESSION_REASON }
         );
         assert!(matches!(
-            decide(&opts("claude"), roots.clone(), false, true, true, true, false),
+            decide(&opts("claude"), roots.clone(), false, true, true, false),
             FenceDecision::Unavailable
         ));
         // No fence on this platform: refused until accepted once, then plain
         // "not applicable" — whatever the policy or the (irrelevant) tool says.
         assert_eq!(
-            decide(&opts("claude"), roots.clone(), false, true, false, false, false),
-            FenceDecision::PlatformUnaccepted
-        );
-        assert_eq!(
-            decide(&opts("claude"), roots.clone(), false, false, false, false, false),
-            FenceDecision::PlatformUnaccepted
-        );
-        assert_eq!(
-            decide(&opts("claude"), roots.clone(), false, true, false, true, false),
+            decide(&opts("claude"), roots.clone(), false, false, true, false),
             FenceDecision::NotApplicable { reason: "platform" }
         );
         // Shells, containers and remote runs never ask: nothing of the user's
         // machine is at stake that isn't already.
         assert_eq!(
-            decide(&opts("bash"), roots.clone(), false, true, false, false, false),
+            decide(&opts("bash"), roots.clone(), false, false, false, false),
             FenceDecision::NotApplicable { reason: "shell" }
         );
         assert_eq!(
-            decide(&opts("claude"), roots.clone(), true, true, false, false, false),
+            decide(&opts("claude"), roots.clone(), true, false, false, false),
             FenceDecision::NotApplicable {
                 reason: "remote host"
             }
@@ -2663,24 +2394,9 @@ mod tests {
         let mut custom = opts("my-agent-wrapper");
         custom.agent = true;
         assert!(matches!(
-            decide(&custom, roots, false, true, true, true, true),
+            decide(&custom, roots, false, true, true, true),
             FenceDecision::Fenced { .. }
         ));
-    }
-
-    #[test]
-    fn fence_override_precedence() {
-        let mut off = project("off", "/off");
-        off.extra.insert("agent_fence".into(), json!(false));
-        let mut on = project("on", "/on");
-        on.extra.insert("agent_fence".into(), json!(true));
-        let inherit = project("inherit", "/inherit");
-        let list = vec![off, on, inherit];
-        assert!(!fence_effective(&list, Some("off"), true));
-        assert!(fence_effective(&list, Some("on"), false));
-        assert!(fence_effective(&list, Some("inherit"), true));
-        assert!(!fence_effective(&list, Some("inherit"), false));
-        assert!(fence_effective(&list, Some("box:b"), true));
     }
 
     #[test]
@@ -2730,62 +2446,42 @@ mod tests {
     fn bwrap_argv_orders_home_mounts_roots_and_command() {
         let roots = vec![PathBuf::from("/home/u/work/p")];
         let mounts = vec![BindMount {
-            src: "/stage/p".into(),
-            dst: STAGE_MOUNT.into(),
+            src: "/state/live_sessions/p".into(),
+            dst: "/state/live_sessions".into(),
             read_only: false,
-        }];
-        let symlinks = vec![FenceSymlink {
-            target: format!("{STAGE_MOUNT}/home_u_.codex_config.toml"),
-            link: "/home/u/.codex/config.toml".into(),
         }];
         let out = bwrap_args(
             "/home/u",
+            Some("/state/agent-homes/p"),
             "/home/u/work/p",
             "codex",
             &["resume".into(), "abc".into()],
             &roots,
             &["/home/u/.cargo".into()],
             &mounts,
-            &symlinks,
         );
-        let home_tmpfs = out
+        // The scope home replaces the user's home, and its cache is a tmpfs.
+        let home = out
+            .windows(3)
+            .position(|p| p == ["--bind", "/state/agent-homes/p", "/home/u"])
+            .unwrap();
+        let cache = out
             .windows(2)
-            .position(|p| p == ["--tmpfs", "/home/u"])
+            .position(|p| p == ["--tmpfs", "/home/u/.cache"])
             .unwrap();
+        assert!(!out.windows(2).any(|p| p == ["--tmpfs", "/home/u"]));
         let cargo = out.iter().position(|p| p == "/home/u/.cargo").unwrap();
-        let stage = out.iter().position(|p| p == STAGE_MOUNT).unwrap();
-        let config = out
-            .iter()
-            .position(|p| p == "/home/u/.codex/config.toml")
-            .unwrap();
+        let live = out.iter().position(|p| p == "/state/live_sessions").unwrap();
         let root = out.iter().rposition(|p| p == "/home/u/work/p").unwrap();
-        // The staging dir must be mounted before the links into it are made.
-        assert!(home_tmpfs < cargo && cargo < stage && stage < config && config < root);
-        // And the config path is a symlink, never a mount destination: a
-        // rename onto a mount point is EBUSY (see `STAGE_MOUNT`).
-        assert_eq!(out[config - 2], "--symlink");
-        assert!(!out.iter().any(|p| p == "--new-session"));
+        assert!(home < cache && cache < cargo && cargo < live && live < root);
+        assert!(!out.iter().any(|p| p == "--new-session" || p == "--symlink"));
         let separator = out.iter().position(|p| p == "--").unwrap();
         assert_eq!(&out[separator + 1..], &["codex", "resume", "abc"]);
         assert_eq!(out[separator - 2], "--chdir");
         assert_eq!(out[separator - 1], "/home/u/work/p");
-    }
-
-    #[test]
-    fn staged_shadow_becomes_a_link_into_the_stage_mount() {
-        let link = staged_symlink(
-            "/state/sandbox-stage/p1/home_u_.codex_config.toml",
-            "/home/u/.codex/config.toml",
-        )
-        .unwrap();
-        assert_eq!(
-            link,
-            FenceSymlink {
-                target: format!("{STAGE_MOUNT}/home_u_.codex_config.toml"),
-                link: "/home/u/.codex/config.toml".into(),
-            }
-        );
-        assert!(staged_symlink("/", "/home/u/.codex/config.toml").is_none());
+        // Without a scope home (a one-shot command) the home is an empty tmpfs.
+        let one_shot = bwrap_args("/home/u", None, "/p", "sh", &[], &roots, &[], &[]);
+        assert!(one_shot.windows(2).any(|p| p == ["--tmpfs", "/home/u"]));
     }
 
     #[cfg(unix)]
@@ -2896,6 +2592,32 @@ mod tests {
     }
 
     #[test]
+    fn copilot_gets_its_update_payload_dir_only_when_the_host_has_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let bin = home.join(".local/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        // The standalone install: a plain binary, not a link into ~/.local/share.
+        std::fs::write(bin.join("copilot"), "").unwrap();
+        std::fs::write(bin.join("codex"), "").unwrap();
+        let dirs = vec![bin.clone()];
+
+        // Never created by Eldrun: no dir on the host, nothing mounted.
+        assert!(updatable_install_dirs("copilot", &dirs, &home).is_empty());
+
+        let pkg = home.join(".copilot/pkg");
+        std::fs::create_dir_all(&pkg).unwrap();
+        let pkg_s = pkg.to_string_lossy().into_owned();
+        assert_eq!(updatable_install_dirs("copilot", &dirs, &home), vec![pkg_s.clone()]);
+        let by_path = bin.join("copilot").to_string_lossy().into_owned();
+        assert_eq!(updatable_install_dirs(&by_path, &dirs, &home), vec![pkg_s]);
+        // Only Copilot's own tab: another agent never reaches its payload.
+        assert!(updatable_install_dirs("codex", &dirs, &home).is_empty());
+        // No launcher link to carry back.
+        assert_eq!(native_launcher("copilot", &dirs, &home), None);
+    }
+
+    #[test]
     fn later_rw_mount_shadows_the_allowlist_read_only_bin() {
         let bin = "/home/u/.local/bin".to_string();
         let mounts = vec![BindMount {
@@ -2905,13 +2627,13 @@ mod tests {
         }];
         let out = bwrap_args(
             "/home/u",
+            None,
             "/p",
             "claude",
             &[],
             &[],
             std::slice::from_ref(&bin),
             &mounts,
-            &[],
         );
         let ro = out
             .iter()
@@ -2960,7 +2682,7 @@ mod tests {
             BindMount { src: dir.clone(), dst: dir, read_only: false }
         }));
         let bin_s = bin.to_string_lossy().into_owned();
-        let args = bwrap_args("/home/u", "/p", "claude", &[], &[], std::slice::from_ref(&bin_s), &mounts, &[]);
+        let args = bwrap_args("/home/u", None, "/p", "claude", &[], &[], std::slice::from_ref(&bin_s), &mounts);
         assert!(
             !args.windows(2).any(|w| (w[0] == "--bind" || w[0] == "--bind-try") && w[1] == bin_s),
             "host launcher dir bound writable: {args:?}"

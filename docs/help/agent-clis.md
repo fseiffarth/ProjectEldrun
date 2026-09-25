@@ -69,9 +69,17 @@ panel links the vendor's install docs. Detailed guides: `claude-code`,
 
 ## Sign in
 
-Eldrun never handles agent logins. Open the agent's tab; on first start the
-CLI asks you to sign in (usually a browser approval) and remembers it. If no
-browser opens, copy the sign-in link the CLI prints into your browser.
+Open the agent's tab; on first start the CLI asks you to sign in (usually a
+browser approval). If no browser opens, copy the sign-in link the CLI prints
+into your browser. You sign in **once per CLI**: agents run in Eldrun's own
+per-project homes, and Eldrun shares each CLI's login file across all of
+them, so every other project's tab of that CLI is signed in too. If this
+computer already holds a login for the CLI, Settings → Agent fence → **Agent
+logins** → *Import from this computer* copies just that file into Eldrun
+(never config, skills or MCP entries). **Sign out** there forgets it
+everywhere. A CLI that keeps its login in the system keyring or a database
+(Kiro, Kilo, OpenClaw, Copilot) signs in once per project instead — Copilot's
+case is described under the fence below.
 
 ## Open an agent tab
 
@@ -95,19 +103,52 @@ recent conversation. Others start fresh.
 Plan mode, auto-accept, sandbox or approval policies are set inside each
 agent's own CLI. Eldrun adds no mode flag and has no mode toggle.
 
-## The Linux agent fence
+## The agent fence and agent homes
 
-On Linux, local agent tabs run inside a bubblewrap filesystem fence by
-default: the project is writable, your home folder (SSH keys, other
-credentials, other projects) is hidden. If `bwrap` is missing the agent does
+Every local agent tab runs inside a filesystem fence (bubblewrap on Linux,
+Seatbelt on macOS): the project is writable, your own home folder (SSH keys,
+other credentials, other projects) is hidden, and the agent's `$HOME` is a
+home Eldrun keeps for that project, box or the root console under its state
+directory. Each of those homes holds the agent's own config, transcripts and
+session stores. Deleting a project deletes its agent home.
+
+What you want in every project — your `CLAUDE.md`, `AGENTS.md` or
+`GEMINI.md`, skills, slash commands, hook scripts (an RTK hook, a status
+line), MCP servers — goes in the **global agent config**: Settings → Agent
+fence → Global agent config. *Import from this computer* copies it from your
+own `~/.claude`, `~/.codex` and `~/.gemini` (never logins, history or folder
+trust); *Open folder* lets you edit it. Every agent tab gets a fresh copy
+when it starts, merged into the settings files the CLI writes itself, so a
+model you picked in one project stays picked there. Agents cannot change
+the global config; what an agent changes in its own project's home stays in
+that project and is reset where it overlaps the global config. There is no off switch; if `bwrap` is missing the agent does
 not start, and Eldrun offers `sudo apt install bubblewrap` in a terminal tab.
-A project can switch the fence off explicitly.
+
+Typing a CLI's name (`claude`, `cursor-agent`, …) into a shell tab runs it in
+the same fence as an agent tab of that project. Running the binary by its
+absolute path is your own shell, your real home, and none of Eldrun's logins.
+
+For work that is not a project's — repairing the browser, the printer, this
+machine — the root console's `+` menu has a **Host session** group: the agent
+runs unfenced, with your full rights (`sudo` works), in Eldrun's own `host`
+home, sharing the logins. Its tab carries a red HOST badge, it is never
+started from the phone, and after a restart it comes back paused until you
+press *Resume unfenced*.
 
 Windows has no fence: an agent there runs with your full rights — other
 projects, saved passwords, SSH keys, your browser profile. Eldrun says so
 before the first agent tab starts and asks you to accept that once; declining
 starts nothing. For a real boundary on Windows, open the project in a
 container.
+
+The fence hides the system keyring, so Copilot can't store its login there.
+Eldrun does it instead: run `/login` once in any fenced Copilot tab, and
+every fenced Copilot tab started after that is signed in. Eldrun keeps the
+sign-in in its own keyring entry, never as plain text. Settings → Agent
+fence shows the account and has **Sign out**, which you need before
+switching to a different account. The same rule holds for every shared
+login: a tab that signs in as a different account than the one Eldrun holds
+is not adopted until you sign out first.
 
 ## Custom agents and skills
 

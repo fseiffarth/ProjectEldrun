@@ -528,8 +528,8 @@ export interface Settings {
    *  so the running session can be monitored/steered from the Claude app/web. Only
    *  Claude supports this flag; other agents ignore the setting. */
   agent_remote_control?: boolean;
-  /** Default-on filesystem fence: bubblewrap on Linux, Seatbelt on macOS.
-   * Remote-host and Windows tabs are not fenced. Applies on spawn. */
+  /** Round-trip only: the fence used to be switchable. It is the only mode
+   *  now (`services::agent_fence`); the backend never reads this. */
   agent_fence?: boolean;
   /** Extra host toolchain/config paths exposed read-only inside the fence.
    * Unset uses the backend defaults; an explicit empty list exposes none. */
@@ -1117,8 +1117,8 @@ export interface ProjectEntry {
    *  tabs; absent inherits the global setting (`settings.agent_remote_control`,
    *  default ON). Set from the pill's "Remote control" menu item. */
   remote_control?: boolean;
-  /** Per-project override of the global default-on agent filesystem fence.
-   * Absent inherits `settings.agent_fence`. */
+  /** Round-trip only: the per-project fence override of older versions. The
+   *  fence is the only mode now and this is never read. */
   agent_fence?: boolean;
   /** Which machine shells launched from this project run on — the persisted
    *  `RunHostPicker` choice (a `TabLocation`: "local" | "remote" | "host:<id>").

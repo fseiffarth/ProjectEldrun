@@ -39,7 +39,6 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
 
-use crate::paths;
 use crate::services::agent_transcript::{
     agent_entry, insert_by_time, subagent_token, transcript_entry, AgentTranscript, TranscriptEntry, MAX_SUBAGENT_DEPTH,
 };
@@ -49,14 +48,15 @@ use crate::services::prompt_blame::epoch_ms_to_iso;
 /// fell before them is announced as `truncated`.
 const MESSAGE_TAIL: i64 = 2000;
 
-/// OpenCode's database: `$XDG_DATA_HOME/opencode/opencode.db`, else under
-/// `~/.local/share` — where its `xdg-basedir` puts it on every OS.
-pub fn db_path() -> PathBuf {
-    let data = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .filter(|dir| dir.is_absolute())
-        .unwrap_or_else(|| paths::home_dir().join(".local").join("share"));
-    data.join("opencode").join("opencode.db")
+/// The scope's OpenCode database: `.local/share/opencode/opencode.db` of its
+/// Eldrun-owned agent home — where OpenCode's `xdg-basedir` puts it under the
+/// `$HOME` the tab runs with.
+pub fn db_path_for(scope_id: Option<&str>) -> PathBuf {
+    crate::services::agent_home::scope_home(scope_id)
+        .join(".local")
+        .join("share")
+        .join("opencode")
+        .join("opencode.db")
 }
 
 /// The conversation of the newest top-level, unarchived session OpenCode ran

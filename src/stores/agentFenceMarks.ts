@@ -11,7 +11,7 @@ interface AgentFenceMarksStore {
 }
 
 function sameMark(a: AgentFenceMark | undefined, b: AgentFenceMark | undefined): boolean {
-  return a?.policy_off === b?.policy_off && a?.live_unfenced === b?.live_unfenced;
+  return a?.live_unfenced === b?.live_unfenced;
 }
 
 export const useAgentFenceMarksStore = create<AgentFenceMarksStore>((set) => ({

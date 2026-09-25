@@ -291,15 +291,15 @@ fn codex_transcript(
             .into_iter()
             .find(|child| subagent_token(&child.id) == token)
     })?;
-    let rollout = codex_rollout(&child)?;
+    let rollout = codex_rollout(project_id, &child)?;
     let spawns = Spawns::Codex { stores: &stores, thread: &child.id };
     read_transcript_in(&rollout, TranscriptKind::Codex, &spawns, false, version, limit)
 }
 
 /// A spawned thread's rollout: the path its row names, taken only when it is
-/// a file under `~/.codex/sessions` whose name ends in the thread's id.
-fn codex_rollout(thread: &crate::services::codex_store::SpawnedThread) -> Option<PathBuf> {
-    let root = std::fs::canonicalize(crate::paths::home_dir().join(".codex").join("sessions")).ok()?;
+/// a file under the scope's `.codex/sessions` whose name ends in the thread's id.
+fn codex_rollout(project_id: Option<&str>, thread: &crate::services::codex_store::SpawnedThread) -> Option<PathBuf> {
+    let root = std::fs::canonicalize(agent_session::codex_sessions_root(project_id)).ok()?;
     let path = std::fs::canonicalize(thread.rollout_path.as_deref()?).ok()?;
     let named = path
         .file_name()
@@ -364,7 +364,7 @@ fn opencode_transcript(
     if project_id.is_some_and(|id| crate::services::remote::remote_target_for(id).is_some()) {
         return AgentTranscript::unavailable("unsupported");
     }
-    let db = crate::services::opencode_store::db_path();
+    let db = crate::services::opencode_store::db_path_for(project_id);
     if !db.is_file() {
         return AgentTranscript::unavailable("no_transcript");
     }

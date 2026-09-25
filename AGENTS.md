@@ -90,8 +90,8 @@ tool is unavailable, say so — never skip silently.
 - Install flows are one-click open-a-tab-and-run, never copy-it-yourself.
 - Box agent docs: edit only outside the
   `<!-- eldrun:box-links:start/end -->` generated blocks.
-- Eldrun never edits another app's paths or config (the agent-session hooks
-  are the one exception).
+- Eldrun never edits another app's paths or config. (The agent-session hooks
+  go into Eldrun's own agent homes, so they are no longer an exception.)
 
 ## Invariants
 
@@ -112,7 +112,19 @@ Security / data loss:
   `services::exec_trust`; what runs or where comes from `projects.json`, never
   the in-folder `project.json`.
 - `services::agent_fence` fails closed: missing/unusable bubblewrap never
-  falls back to launching unfenced.
+  falls back to launching unfenced. The fence is the only mode (no per-project
+  or global "off"); the one unfenced local agent is the root console's explicit
+  Host session (`PtyOptions.host_session`, its own `agent-homes/host`). A CLI
+  typed into a shell tab runs through the `agent_bin` shim, fenced.
+- Agents live only in Eldrun: every local agent tab's `$HOME` is its scope's
+  `<state_dir>/agent-homes/<key>` (`services::agent_home`), never the user's.
+  Logins are shared per CLI through `services::agent_auth` (credential files
+  only, hard-linked into every home); config, skills, hooks and MCP entries
+  are per scope. What the user wants everywhere lives in the Eldrun-wide layer
+  `<state_dir>/agent-global` (`services::agent_global`), copied/merged into
+  each home at every spawn and never mounted into a fence — no agent may be
+  able to write it. Eldrun registers its session hooks in those homes, not in
+  the user's own CLI config.
 - `services::mobile_control`: raw project ids, paths, commands, tmux targets
   never cross the browser API.
 - Terminal `kill`/`kill_all` reap the whole child subtree.

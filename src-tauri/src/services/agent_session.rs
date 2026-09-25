@@ -68,9 +68,7 @@ fn resolve_vibe_session(opts: PtyOptions) -> PtyOptions {
 }
 
 fn vibe_home_for(opts: &PtyOptions) -> PathBuf {
-    let default = std::env::var_os("VIBE_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| paths::home_dir().join(".vibe"));
+    let default = crate::services::agent_home::scope_home(opts.project_id.as_deref()).join(".vibe");
     let Some(candidate) = opts.env.get("VIBE_HOME").map(PathBuf::from) else {
         return default;
     };
@@ -249,18 +247,12 @@ fn codex_session_log(root: &std::path::Path, uuid: &str) -> Option<PathBuf> {
 ///    id (nothing is lost, and `--resume` would exit with "No conversation
 ///    found"). This also safely downgrades a restore that asked for `--resume`.
 fn resolve_claude_session(opts: PtyOptions) -> PtyOptions {
-    let projects = paths::home_dir().join(".claude").join("projects");
     let project_id = opts.project_id.clone();
-    // A fenced/contained agent writes a transcript for a cwd that had no host
-    // dir yet into the project's stage, which is harvested into `projects` only
-    // when the tab goes away — so a respawn while a sibling tab of the same
-    // project is still up has to look there too. Reusing a `--session-id`
-    // Claude already has a log for is a hard error ("already in use"), so a
-    // missed log is a dead tab, not a fresh one.
-    let mut roots: Vec<PathBuf> = vec![projects];
-    if let Some(pid) = project_id.as_deref() {
-        roots.push(crate::services::sandbox::claude_projects_stage(pid));
-    }
+    // Every local tab's Claude lives in the scope's agent home
+    // (`services::agent_home`), so that is where its logs are. Reusing a
+    // `--session-id` Claude already has a log for is a hard error ("already
+    // in use"), so a missed log is a dead tab, not a fresh one.
+    let roots = claude_projects_roots(project_id.as_deref());
     let root_refs: Vec<&std::path::Path> = roots.iter().map(|p| p.as_path()).collect();
     resolve_claude_session_in(
         opts,
@@ -368,6 +360,20 @@ where
         }
     }
     opts
+}
+
+/// Where a scope's Claude keeps its transcripts: `<scope home>/.claude/projects`.
+pub(crate) fn claude_projects_roots(project_id: Option<&str>) -> Vec<PathBuf> {
+    vec![crate::services::agent_home::scope_home(project_id)
+        .join(".claude")
+        .join("projects")]
+}
+
+/// Where a scope's Codex keeps its rollouts: `<scope home>/.codex/sessions`.
+pub(crate) fn codex_sessions_root(project_id: Option<&str>) -> PathBuf {
+    crate::services::agent_home::scope_home(project_id)
+        .join(".codex")
+        .join("sessions")
 }
 
 /// Whether Claude has a persisted session log for `uuid` under `projects`
@@ -507,10 +513,7 @@ pub(crate) fn read_agent_transcript_from<T>(
     let live = read_live_session_for(project_id, launch_id);
     match cmd {
         "claude" => {
-            let mut roots: Vec<PathBuf> = vec![paths::home_dir().join(".claude").join("projects")];
-            if let Some(pid) = project_id {
-                roots.push(crate::services::sandbox::claude_projects_stage(pid));
-            }
+            let roots = claude_projects_roots(project_id);
             claude_transcript_ids(live, launch_id, fall_back_to_launch).iter().find_map(|id| {
                 roots
                     .iter()
@@ -520,7 +523,7 @@ pub(crate) fn read_agent_transcript_from<T>(
         }
         "codex" => {
             let live = live?;
-            let root = paths::home_dir().join(".codex").join("sessions");
+            let root = codex_sessions_root(project_id);
             codex_session_log(&root, &live)
                 .and_then(|path| read_file(&path, TranscriptKind::Codex))
                 .or_else(|| {
@@ -1378,15 +1381,32 @@ pub enum CodexHookState {
     Enabled,
 }
 
-/// Classify Eldrun's hook in the user's Codex config.
+/// Classify Eldrun's hook across the Eldrun-owned agent homes: the least
+/// trusted state any home that has run Codex is in (a `sessions/` dir), since
+/// Codex asks for the trust approval per config file. `NoCodex` when no home
+/// has run it yet.
 pub fn codex_hook_state() -> CodexHookState {
-    let codex_dir = paths::home_dir().join(".codex");
-    if !codex_dir.is_dir() {
-        return CodexHookState::NoCodex;
+    let mut worst: Option<CodexHookState> = None;
+    for home in crate::services::agent_home::existing_homes_in(&storage::state_dir()) {
+        let codex_dir = home.join(".codex");
+        if !codex_dir.join("sessions").is_dir() {
+            continue;
+        }
+        let config = codex_dir.join("config.toml");
+        let src = std::fs::read_to_string(&config).unwrap_or_default();
+        let state = codex_hook_state_in(&src, &config.to_string_lossy(), &hook_command());
+        let rank = |s: CodexHookState| match s {
+            CodexHookState::Enabled => 0,
+            CodexHookState::NoCodex => 1,
+            CodexHookState::Disabled => 2,
+            CodexHookState::NotRegistered => 3,
+            CodexHookState::Untrusted => 4,
+        };
+        if worst.is_none_or(|w| rank(state) > rank(w)) {
+            worst = Some(state);
+        }
     }
-    let config = codex_dir.join("config.toml");
-    let src = std::fs::read_to_string(&config).unwrap_or_default();
-    codex_hook_state_in(&src, &config.to_string_lossy(), &hook_command())
+    worst.unwrap_or(CodexHookState::NoCodex)
 }
 
 /// Testable core of [`codex_hook_state`].
@@ -1502,22 +1522,26 @@ pub fn codex_binder_enabled() -> bool {
 /// The shared script keys by `$ELDRUN_TAB_UID` and reads `session_id` from the
 /// hook's stdin JSON — both CLIs use that schema.
 pub fn install_session_start_hook() -> std::io::Result<()> {
-    write_hook_script()?;
-    register_hook_in_settings(&paths::home_dir().join(".claude").join("settings.json"))?;
-    // Codex stores config as TOML and only installs hooks where `~/.codex` exists.
-    // Best-effort: a Codex failure must not stop the Claude hook from installing.
-    if let Err(e) = register_codex_hook() {
-        eprintln!("agent_session: register codex hook: {e}");
+    write_hook_script()
+}
+
+/// Register the hooks in one Eldrun-owned agent home (`services::agent_home`):
+/// Claude's `settings.json`, Codex's `config.toml`, Vibe's `hooks.toml`. Each
+/// is idempotent and keeps whatever else the file holds. Never a file in the
+/// user's own home. Best effort, logged.
+pub fn register_hooks_in_home(home: &std::path::Path) {
+    if let Err(e) = register_hook_in_settings(&home.join(".claude").join("settings.json")) {
+        eprintln!("agent_session: register claude hook in {}: {e}", home.display());
     }
-    let vibe_home = std::env::var_os("VIBE_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| paths::home_dir().join(".vibe"));
-    if vibe_home.is_dir() {
-        if let Err(e) = register_vibe_hook_in(&vibe_home) {
-            eprintln!("agent_session: register vibe hook: {e}");
+    let codex = home.join(".codex");
+    if std::fs::create_dir_all(&codex).is_ok() {
+        if let Err(e) = register_codex_hook_in(&codex.join("config.toml")) {
+            eprintln!("agent_session: register codex hook in {}: {e}", home.display());
         }
     }
-    Ok(())
+    if let Err(e) = register_vibe_hook_in(&home.join(".vibe")) {
+        eprintln!("agent_session: register vibe hook in {}: {e}", home.display());
+    }
 }
 
 /// Vibe's user hook runs after each completed turn and reports the live ID.
@@ -1595,8 +1619,10 @@ fn write_hook_script() -> std::io::Result<()> {
     }
     // Windows: the project container is Linux, so beside the registered
     // PowerShell hook write the POSIX twin the staged in-container configs
-    // point at (`sandbox::rewrite_hook_for_container`), with the live-sessions
-    // dir spelled the way the container sees the bind mount.
+    // point at, with the live-sessions dir spelled the way the container sees
+    // the bind mount. Since the agent homes (#2335) the registration files
+    // carry the host's PowerShell command only, so a container on a Windows
+    // host records no live session — a known residual (`todo/group-s-agents.md`).
     #[cfg(windows)]
     {
         let container_live = crate::services::sandbox::container_path(&live_dir.to_string_lossy());
@@ -1615,17 +1641,6 @@ fn container_hook_script_path() -> PathBuf {
     storage::state_dir()
         .join("hooks")
         .join("eldrun_session_start.sh")
-}
-
-/// The hook `command` a Linux container on a Windows host runs: the POSIX twin
-/// at the hooks dir's container-side path. Read-only inside the container like
-/// the rest of the hooks dir.
-#[cfg(windows)]
-pub(crate) fn container_hook_command() -> String {
-    let script = crate::services::sandbox::container_path(
-        &container_hook_script_path().to_string_lossy(),
-    );
-    format!("sh '{script}'")
 }
 
 /// POSIX-sh hook body. Reads the hook JSON on stdin and records, per tab key:
@@ -1894,27 +1909,18 @@ fn register_hook_in_settings(settings_path: &std::path::Path) -> std::io::Result
     Ok(())
 }
 
-/// Register our `SessionStart` hook in Codex's `~/.codex/config.toml`. Only acts
-/// when `~/.codex` exists (Codex is in use). Codex config is TOML with no parser
-/// dependency here, so we **text-append** an array-of-tables block rather than
-/// reparse/reserialize the user's file (which would drop comments and reorder
-/// their many `[projects.*]` tables). `[[hooks.SessionStart]]` is a top-level
-/// array-of-tables, so appending at EOF is always valid regardless of preceding
-/// content. Idempotent: skipped once our script path is present.
+/// Register our `SessionStart` hook in a Codex `config.toml`. Codex config is
+/// TOML with no parser dependency here, so we **text-append** an array-of-tables
+/// block rather than reparse/reserialize the file (which would drop comments
+/// and reorder its many `[projects.*]` tables). `[[hooks.SessionStart]]` is a
+/// top-level array-of-tables, so appending at EOF is always valid regardless
+/// of preceding content. Idempotent: skipped once our script path is present.
 ///
 /// NOTE: user-level Codex hooks require a one-time trust approval (`/hooks` in
 /// Codex) before they run, so resume tracking through *this* path is inert until
 /// the user trusts it — see [`codex_hook_state`], which detects that, and
 /// [`crate::services::codex_bind`], the hook-free fallback that keeps Codex tabs
 /// resumable meanwhile.
-fn register_codex_hook() -> std::io::Result<()> {
-    let codex_dir = paths::home_dir().join(".codex");
-    if !codex_dir.is_dir() {
-        return Ok(());
-    }
-    register_codex_hook_in(&codex_dir.join("config.toml"))
-}
-
 /// The events registered with Codex: [`HOOK_EVENTS`] minus `Notification`,
 /// which Codex 0.154 does not offer (its approval wait is read off its screen).
 pub const CODEX_HOOK_EVENTS: [&str; 5] = [
@@ -2033,6 +2039,7 @@ mod tests {
             tmux_attach: None,
             host_bound_uid: None,
             schedule_target_id: None,
+            host_session: false,
         }
     }
 
@@ -2528,7 +2535,6 @@ mod tests {
         let twin = posix_hook_script_body("/c/Users/x/AppData/Roaming/eldrun/live_sessions");
         assert!(twin.starts_with("#!/bin/sh"));
         assert!(twin.contains("/c/Users/x/AppData/Roaming/eldrun/live_sessions"));
-        assert!(container_hook_command().starts_with("sh '/"));
     }
 
     /// Run the POSIX hook body as the agents would: `sh <script>` with the tab

@@ -32,7 +32,15 @@ pub mod agent_fence;
 // fenced/contained tab in place of `~/.claude/.credentials.json`, kept in step
 // with the host file by in-place writes — a file bind mount pins an inode, and
 // Claude rotates that file by rename.
-pub mod agent_creds;
+pub mod agent_auth;
+pub mod agent_global;
+pub mod agent_home;
+pub mod agent_install;
+pub mod agent_shim;
+// Copilot CLI sign-in for fenced tabs: Eldrun keeps the token in its own
+// keyring entry (the fence hides the keyring) and hands it to each fenced
+// Copilot as COPILOT_GITHUB_TOKEN.
+pub mod copilot_auth;
 // "Check for a new Eldrun" against the GitHub releases page: version compare,
 // per-platform asset pick, staged download, per-platform install.
 pub mod app_update;

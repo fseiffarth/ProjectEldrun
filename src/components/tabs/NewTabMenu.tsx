@@ -12,11 +12,13 @@ import {
 } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
 import { useProjectsStore } from "../../stores/projects";
-import { PROJECT_FILES_TAB_CMD } from "../../stores/tabs";
+import { PROJECT_FILES_TAB_CMD, ROOT_SCOPE } from "../../stores/tabs";
 import {
+  AGENT_ITEMS,
   SHELL_ITEMS,
   TAB_ACCENT,
   agentMenuEntries,
+  buildStaticTabSpec,
   compactAgentMenuEntries,
   isFileTabKind,
   itemLabel,
@@ -216,6 +218,32 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
               compactAgentBins,
             ),
           },
+          // The root console's Host session (`docs/context/agent_authority.md`):
+          // an agent with the user's full rights, for work that is not any
+          // project's — repairing the machine. Root scope only, never a default.
+          ...(scope === ROOT_SCOPE && enabledAgents
+            ? [{
+                label: t("newTabMenu.groupHostSession"),
+                entries: AGENT_ITEMS.filter((item) => enabledAgents.has(item.cmd)).map((item) => ({
+                  key: `host:${item.cmd}`,
+                  label: t("newTabMenu.hostSessionEntry", { label: item.label }),
+                  dot: "⚠",
+                  color: "var(--danger)",
+                  untested: "newTabMenu.hostSession" as const,
+                  onPick: () => {
+                    const spec = buildStaticTabSpec(item, projectCwd, "", t);
+                    pickFixed({
+                      ...spec,
+                      label: t("newTabMenu.hostSessionLabel", { label: item.label }),
+                      // No `/rename`: the rename is typed blind and a fresh
+                      // unfenced home may open on Claude's trust question.
+                      initialInput: undefined,
+                      hostSession: true,
+                    });
+                  },
+                })),
+              }]
+            : []),
           ...(boxMembers.length > 0
             ? [{
                 label: t("newTabMenu.groupBoxMembers"),

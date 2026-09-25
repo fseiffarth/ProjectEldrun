@@ -18,38 +18,25 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::paths;
 use crate::services::agent_session::clean_model_name;
 
-/// The store Codex is writing now, or `None` when there is none to read.
-///
-/// Codex bumps the file's suffix when it breaks the schema (`state_5.sqlite`
-/// today), leaving the older ones in place, so the highest number is the live
-/// one. A plain `state.sqlite` counts as zero, below every numbered store.
-pub fn state_db() -> Option<PathBuf> {
-    state_db_in(&paths::home_dir().join(".codex"))
+/// The store the scope's Codex is writing now (`<scope home>/.codex`), or
+/// `None` when there is none to read. Codex bumps the file's suffix when it
+/// breaks the schema (`state_5.sqlite` today), leaving the older ones in
+/// place, so the highest number is the live one. A plain `state.sqlite`
+/// counts as zero, below every numbered store.
+pub fn state_db_for(scope_id: Option<&str>) -> Option<PathBuf> {
+    state_db_in(&crate::services::agent_home::scope_home(scope_id).join(".codex"))
 }
 
-/// Stores that can own a tab's thread, scope-local first and the host store as
-/// a compatibility fallback. Fenced/containerized Codex uses the first one so
-/// SQLite can manage its WAL files under a writable directory mount; native
-/// Codex sessions continue to use the second.
+/// The stores that can own a scope's threads: its own agent home's. Kept as a
+/// list so a caller reads them the way it did when a host store was a
+/// fallback too.
 pub fn state_dbs(scope_id: Option<&str>) -> Vec<PathBuf> {
-    let mut stores = Vec::new();
-    if let Some(id) = scope_id {
-        if let Some(db) = state_db_in(&crate::services::sandbox::codex_state_dir(id)) {
-            stores.push(db);
-        }
-    }
-    if let Some(host) = state_db() {
-        if !stores.contains(&host) {
-            stores.push(host);
-        }
-    }
-    stores
+    state_db_for(scope_id).into_iter().collect()
 }
 
-/// Testable core of [`state_db`] against an explicit `~/.codex`.
+/// Testable core of [`state_db_for`] against an explicit `.codex` dir.
 pub(crate) fn state_db_in(dir: &Path) -> Option<PathBuf> {
     let mut best: Option<(u32, PathBuf)> = None;
     for entry in std::fs::read_dir(dir).ok()?.flatten() {

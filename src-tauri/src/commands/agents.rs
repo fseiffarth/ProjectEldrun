@@ -31,6 +31,21 @@ struct AgentSpec {
     extra_paths: &'static [&'static str],
     /// Docs URL shown when automatic install isn't possible.
     docs: &'static str,
+    /// Where this CLI keeps its sign-in under `$HOME` (Linux survey
+    /// 2026-09-25): shared across every Eldrun agent home by
+    /// `services::agent_auth`. Only files that hold a credential and can
+    /// never name a command — a config that mixes both (Continue's
+    /// `config.yaml`, Crush's `crush.json`, Aider's `.env`) stays per scope,
+    /// as does a login kept in a database beside other state (Kiro, Kilo,
+    /// OpenClaw) or in the keyring (Copilot: `services::copilot_auth`).
+    auth_paths: &'static [AuthPath],
+}
+
+use crate::services::agent_auth::{dir as auth_dir, file as auth_file, AuthPath};
+
+/// The registry's login paths, for `services::agent_auth`.
+pub fn auth_registry() -> Vec<(&'static str, &'static [AuthPath])> {
+    AGENTS.iter().map(|a| (a.id, a.auth_paths)).collect()
 }
 
 /// The shell a Windows install command must be run in, derived from the command
@@ -89,6 +104,7 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd_windows: Some("irm https://claude.ai/install.ps1 | iex"),
         extra_paths: &[".local/bin/claude"],
         docs: "https://docs.anthropic.com/en/docs/claude-code/setup",
+        auth_paths: &[auth_file(".claude/.credentials.json")],
     },
     AgentSpec {
         id: "codex",
@@ -98,6 +114,7 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd_windows: Some("irm https://chatgpt.com/codex/install.ps1 | iex"),
         extra_paths: &[".local/bin/codex"],
         docs: "https://github.com/openai/codex",
+        auth_paths: &[auth_file(".codex/auth.json")],
     },
     AgentSpec {
         id: "antigravity",
@@ -107,6 +124,7 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd_windows: Some("irm https://antigravity.google/cli/install.ps1 | iex"),
         extra_paths: &[".local/bin/agy", "AppData/Local/agy/bin/agy"],
         docs: "https://antigravity.google/docs/cli/install/",
+        auth_paths: &[auth_file(".gemini/antigravity-cli/antigravity-oauth-token")],
     },
     AgentSpec {
         id: "gemini",
@@ -116,6 +134,7 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd_windows: Some("npm install -g @google/gemini-cli"),
         extra_paths: &[".local/bin/gemini"],
         docs: "https://github.com/google-gemini/gemini-cli",
+        auth_paths: &[auth_file(".gemini/oauth_creds.json")],
     },
     AgentSpec {
         id: "kiro",
@@ -130,6 +149,7 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd_windows: None,
         extra_paths: &[".local/bin/kiro-cli"],
         docs: "https://kiro.dev/docs/cli/installation/",
+        auth_paths: &[],
     },
     AgentSpec {
         id: "cline",
@@ -139,6 +159,7 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd_windows: Some("npm install -g cline"),
         extra_paths: &[],
         docs: "https://docs.cline.bot/getting-started/installing-cline",
+        auth_paths: &[auth_file(".cline/data/settings/providers.json")],
     },
     AgentSpec {
         id: "vibe",
@@ -149,6 +170,7 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd_windows: None,
         extra_paths: &[".local/bin/vibe", ".cargo/bin/vibe"],
         docs: "https://docs.mistral.ai/getting-started/quickstarts/vibe-code/install-cli",
+        auth_paths: &[auth_file(".vibe/.env")],
     },
     AgentSpec {
         id: "aider",
@@ -165,6 +187,7 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd_windows: Some("irm https://aider.chat/install.ps1 | iex"),
         extra_paths: &[".local/bin/aider"],
         docs: "https://aider.chat/docs/install.html",
+        auth_paths: &[auth_file(".aider/oauth-keys.env")],
     },
     AgentSpec {
         id: "opencode",
@@ -174,6 +197,7 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd_windows: Some("npm install -g opencode-ai"),
         extra_paths: &[".opencode/bin/opencode", ".local/bin/opencode"],
         docs: "https://opencode.ai/docs/",
+        auth_paths: &[auth_file(".local/share/opencode/auth.json")],
     },
     AgentSpec {
         id: "cursor-agent",
@@ -184,6 +208,7 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd_windows: None,
         extra_paths: &[".local/bin/cursor-agent"],
         docs: "https://cursor.com/docs/cli/installation",
+        auth_paths: &[auth_file(".config/cursor/auth.json")],
     },
     AgentSpec {
         id: "copilot",
@@ -193,6 +218,7 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd_windows: Some("npm install -g @github/copilot"),
         extra_paths: &[".local/bin/copilot"],
         docs: "https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli",
+        auth_paths: &[],
     },
     AgentSpec {
         id: "droid",
@@ -202,6 +228,7 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd_windows: Some("irm https://app.factory.ai/cli/windows | iex"),
         extra_paths: &[".local/bin/droid"],
         docs: "https://docs.factory.ai/cli/getting-started/overview",
+        auth_paths: &[auth_file(".factory/auth.v2.json")],
     },
     AgentSpec {
         id: "grok",
@@ -215,6 +242,7 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd_windows: Some("npm install -g @xai-official/grok"),
         extra_paths: &[".grok/bin/grok"],
         docs: "https://docs.x.ai/build/overview",
+        auth_paths: &[auth_file(".grok/auth.json")],
     },
     AgentSpec {
         id: "qwen",
@@ -224,6 +252,7 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd_windows: Some("npm install -g @qwen-code/qwen-code"),
         extra_paths: &[".local/bin/qwen"],
         docs: "https://github.com/QwenLM/qwen-code",
+        auth_paths: &[auth_file(".qwen/oauth_creds.json")],
     },
     AgentSpec {
         id: "openclaw",
@@ -241,6 +270,7 @@ const AGENTS: &[AgentSpec] = &[
         ),
         extra_paths: &[".openclaw/bin/openclaw", ".local/bin/openclaw"],
         docs: "https://docs.openclaw.ai",
+        auth_paths: &[],
     },
     AgentSpec {
         id: "auggie",
@@ -250,6 +280,7 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd_windows: Some("npm install -g @augmentcode/auggie"),
         extra_paths: &[],
         docs: "https://docs.augmentcode.com/cli/overview",
+        auth_paths: &[auth_file(".augment/session.json")],
     },
     AgentSpec {
         id: "kilo",
@@ -259,6 +290,7 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd_windows: Some("npm install -g @kilocode/cli"),
         extra_paths: &[".kilo/bin/kilo"],
         docs: "https://kilo.ai/docs/code-with-ai/platforms/cli",
+        auth_paths: &[],
     },
     AgentSpec {
         id: "continue",
@@ -270,6 +302,7 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd_windows: Some("npm install -g @continuedev/cli"),
         extra_paths: &[],
         docs: "https://docs.continue.dev/cli/quickstart",
+        auth_paths: &[],
     },
     AgentSpec {
         id: "junie",
@@ -279,6 +312,7 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd_windows: Some("npm install -g @jetbrains/junie-cli"),
         extra_paths: &[".local/bin/junie"],
         docs: "https://junie.jetbrains.com/docs/junie-cli.html",
+        auth_paths: &[auth_file(".junie/secure_credentials.json")],
     },
     AgentSpec {
         id: "codebuddy",
@@ -288,6 +322,7 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd_windows: Some("npm install -g @tencent-ai/codebuddy-code"),
         extra_paths: &[],
         docs: "https://www.codebuddy.ai/docs/cli/README",
+        auth_paths: &[auth_dir(".local/share/CodeBuddyExtension/Data/Public/auth")],
     },
     AgentSpec {
         id: "goose",
@@ -297,6 +332,7 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd_windows: None,
         extra_paths: &[".local/bin/goose"],
         docs: "https://github.com/aaif-goose/goose",
+        auth_paths: &[auth_file(".config/goose/secrets.yaml")],
     },
     AgentSpec {
         id: "pi",
@@ -306,6 +342,7 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd_windows: Some("npm install -g @mariozechner/pi-coding-agent"),
         extra_paths: &[],
         docs: "https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent",
+        auth_paths: &[auth_file(".pi/agent/auth.json")],
     },
     AgentSpec {
         id: "plandex",
@@ -315,6 +352,7 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd_windows: None,
         extra_paths: &[],
         docs: "https://docs.plandex.ai/docs/cli-reference/",
+        auth_paths: &[auth_file(".plandex-home-v2/auth.json")],
     },
     AgentSpec {
         id: "swe-agent",
@@ -324,6 +362,7 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd_windows: Some("pip install swe-agent"),
         extra_paths: &[".local/bin/sweagent"],
         docs: "https://swe-agent.com/latest/installation/source/",
+        auth_paths: &[],
     },
     AgentSpec {
         id: "mini-swe-agent",
@@ -333,6 +372,7 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd_windows: Some("pip install mini-swe-agent"),
         extra_paths: &[".local/bin/mini"],
         docs: "https://mini-swe-agent.com/latest/quickstart/",
+        auth_paths: &[auth_file(".config/mini-swe-agent/.env")],
     },
     AgentSpec {
         id: "crush",
@@ -342,6 +382,7 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd_windows: Some("npm install -g @charmland/crush"),
         extra_paths: &[],
         docs: "https://github.com/charmbracelet/crush",
+        auth_paths: &[],
     },
     AgentSpec {
         id: "amp",
@@ -351,6 +392,7 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd_windows: Some("npm install -g @ampcode/cli"),
         extra_paths: &[],
         docs: "https://ampcode.com/",
+        auth_paths: &[auth_file(".local/share/amp/secrets.json")],
     },
     AgentSpec {
         id: "kimi",
@@ -364,6 +406,7 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd_windows: Some("Invoke-RestMethod https://code.kimi.com/kimi-code/install.ps1 | Invoke-Expression"),
         extra_paths: &[".kimi-code/bin/kimi", ".local/bin/kimi"],
         docs: "https://code.kimi.com/kimi-code",
+        auth_paths: &[auth_dir(".kimi-code/credentials")],
     },
     AgentSpec {
         id: "qoder",
@@ -373,6 +416,7 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd_windows: Some("irm https://qoder.com/install.ps1 | iex"),
         extra_paths: &[".local/bin/qoder"],
         docs: "https://docs.qoder.com/cli/installation",
+        auth_paths: &[auth_file(".qoder/.auth")],
     },
     AgentSpec {
         id: "muse",
@@ -382,6 +426,7 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd_windows: None,
         extra_paths: &[".local/bin/muse"],
         docs: "https://dev.meta.ai",
+        auth_paths: &[auth_file(".config/muse/auth.json")],
     },
 ];
 
@@ -563,8 +608,9 @@ fn resolve_spec_path(spec: &AgentSpec) -> Option<std::path::PathBuf> {
     if let Some(path) = crate::paths::resolve_executable(spec.bin) {
         return Some(path);
     }
-    let home = crate::paths::home_dir();
-    spec.extra_paths.iter().find_map(|rel| {
+    // Eldrun's own install home first, then the user's.
+    let homes = [crate::services::agent_install::install_root(), crate::paths::home_dir()];
+    homes.iter().find_map(|home| spec.extra_paths.iter().find_map(|rel| {
         let base = home.join(rel);
         if base.exists() {
             return Some(base);
@@ -580,7 +626,7 @@ fn resolve_spec_path(spec: &AgentSpec) -> Option<std::path::PathBuf> {
             }
         }
         None
-    })
+    }))
 }
 
 /// True when an agent's binary is reachable on `PATH` or in one of its
@@ -782,8 +828,25 @@ fn installer_command(spec: &AgentSpec) -> Result<std::process::Command, String> 
         }
         let mut c = crate::paths::command_no_window("sh");
         c.arg("-c").arg(format!("{} 2>&1", spec.install_cmd));
+        // Into Eldrun's own install home, never the user's
+        // (`services::agent_install`).
+        let root = crate::services::agent_install::install_root();
+        std::fs::create_dir_all(&root).map_err(|e| format!("create {}: {e}", root.display()))?;
+        c.envs(crate::services::agent_install::install_env());
+        c.env("PATH", agent_install_path());
         Ok(c)
     }
+}
+
+/// PATH for an installer: the install home's launcher dirs first, so a
+/// second installer of the same vendor finds the first's tools there.
+#[cfg(not(windows))]
+fn agent_install_path() -> std::ffi::OsString {
+    let mut dirs = crate::services::agent_install::bin_dirs_in(&crate::storage::state_dir());
+    if let Some(path) = crate::paths::effective_path() {
+        dirs.extend(std::env::split_paths(&path));
+    }
+    std::env::join_paths(dirs).unwrap_or_default()
 }
 
 /// The command string to suggest re-running manually when the installer fails,
@@ -1508,6 +1571,7 @@ async fn probe_agent_version(spec: &'static AgentSpec) -> Result<String, String>
 
     let mut cmd = tokio::process::Command::from(crate::paths::command_no_window(&path));
     cmd.args(&argv)
+        .envs(versions::version_env(spec.id).iter().copied())
         .current_dir(&cwd)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -1670,9 +1734,11 @@ pub async fn dismiss_agent_version(agent: String, version: String) -> Result<(),
 /// default — `No, exit` — so an agent tab opened in an untrusted folder killed
 /// itself on launch. Answering the question is the user's alone; Eldrun only
 /// asks whether the question is coming, and stays quiet when it is.
-/// Off the main thread: the host `~/.claude.json` carries every project's
-/// prompt history and grows into the megabytes, and this is asked once per new
-/// Claude tab — parsing it inline would jank the window at launch.
+/// Off the main thread: a `.claude.json` carries a scope's prompt history
+/// and grows into the megabytes, and this is asked once per new Claude tab —
+/// parsing it inline would jank the window at launch. `sandbox` and
+/// `local_only` are accepted for older callers; the answer is the scope
+/// home's either way (`services::agent_home`).
 #[tauri::command]
 pub async fn claude_folder_trusted(
     cwd: String,
@@ -1680,18 +1746,69 @@ pub async fn claude_folder_trusted(
     sandbox: Option<bool>,
     local_only: Option<bool>,
 ) -> bool {
+    let _ = (sandbox, local_only);
     tauri::async_runtime::spawn_blocking(move || {
-        // Recorded trust counts only for a spawn that reads the staged copy it
-        // is applied to; an unfenced tab reads the host file alone.
-        let staged = crate::services::agent_fence::claude_config_staged(
-            project_id.as_deref(),
-            sandbox.unwrap_or(false),
-            local_only.unwrap_or(false),
-        );
-        crate::services::sandbox::claude_folder_trusted(&cwd, staged)
+        crate::services::sandbox::claude_folder_trusted(&cwd, project_id.as_deref())
     })
     .await
     .unwrap_or(false)
+}
+
+/// Every CLI's shared login as the Manage CLIs panel shows it
+/// (`services::agent_auth`). Never a token.
+#[tauri::command]
+pub async fn agent_logins() -> Vec<crate::services::agent_auth::LoginStatus> {
+    tauri::async_runtime::spawn_blocking(crate::services::agent_auth::status)
+        .await
+        .unwrap_or_default()
+}
+
+/// Copy this computer's login files for `id` into Eldrun's store — the one
+/// safe direction — and link them into every agent home. Returns how many
+/// files were taken.
+#[tauri::command]
+pub async fn agent_login_import(id: String) -> Result<usize, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::services::agent_auth::import_from_user_home(&id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Forget the shared login of `id` everywhere.
+#[tauri::command]
+pub async fn agent_login_sign_out(id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || crate::services::agent_auth::sign_out(&id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// The Eldrun-wide agent config layer (`services::agent_global`): where it is
+/// and how many files it holds.
+#[tauri::command]
+pub async fn agent_global_status() -> Result<crate::services::agent_global::LayerStatus, String> {
+    tauri::async_runtime::spawn_blocking(crate::services::agent_global::status)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Fill the Eldrun-wide layer from the user's own `~/.claude`, `~/.codex` and
+/// `~/.gemini`; every agent home picks it up at its next tab start.
+#[tauri::command]
+pub async fn agent_global_import() -> Result<crate::services::agent_global::ImportReport, String> {
+    tauri::async_runtime::spawn_blocking(crate::services::agent_global::import_from_user_home)
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+/// Open the Eldrun-wide layer's folder in the file manager, creating it first.
+#[tauri::command]
+pub async fn agent_global_open() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let dir = crate::services::agent_global::ensure_dir().map_err(|e| e.to_string())?;
+        opener::open(&dir).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]

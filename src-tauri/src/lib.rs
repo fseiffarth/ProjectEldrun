@@ -1256,21 +1256,21 @@ pub fn run() {
             // run. See `services::terminal_service::migrate_project_sessions_once`.
             services::terminal_service::migrate_project_sessions_once();
             commands::projects::migrate_panel_prefs_once();
-            // A crashed run's staged agent transcripts go home BEFORE the window
-            // can restore a tab: the resume probe reads the host dir, and the
-            // stage root is wiped here too, so no fenced spawn can race it.
-            services::sandbox::harvest_and_clear_stage();
-            // Keep the Claude credential mirror in step with the host file:
-            // every fenced/contained tab is bound to the mirror's one inode, and
-            // Claude rotates the host file by rename, so without this a tab
-            // older than the last rotation reads a stale token and reports
-            // "Login expired" (see services::agent_creds). One detached thread
-            // — a notify watch plus a poll — holding no lock and no child; it
-            // dies with the process. Only the Linux fence and container mount
-            // the mirror (Seatbelt keeps the real file in place, Windows fences
-            // nothing), so only Linux has one to keep.
+            // A previous run's per-scope stage (private launcher dirs, Seatbelt
+            // profiles) is wiped BEFORE the window can restore a tab, so no
+            // fenced spawn can race it.
+            services::sandbox::clear_stage();
+            // The per-CLI login store (`services::agent_auth`): adopt the
+            // Claude mirror an older Eldrun kept, then keep every agent home's
+            // links in step with the store. One detached thread; dies with
+            // the process.
+            services::agent_install::migrate_legacy_stores();
+            services::agent_auth::start();
+            // Moves a fenced Copilot's `/login` token out of its private config
+            // into the keyring, for every later fenced Copilot tab (the fence
+            // hides the keyring Copilot would use). Linux only, like the fence.
             #[cfg(target_os = "linux")]
-            services::agent_creds::start();
+            services::copilot_auth::start();
             // Remove project containers a previous run left behind (a crash
             // skips the exit teardown). Off-thread: docker may be slow or
             // absent, and neither may block startup.
@@ -1399,8 +1399,7 @@ pub fn run() {
             commands::vm::remote_download_size,
             commands::vm::remote_download_to,
             commands::projects::set_project_remote_control,
-            commands::projects::set_project_agent_fence,
-            commands::projects::set_project_schedule_mcp,
+                        commands::projects::set_project_schedule_mcp,
             commands::projects::set_project_git_push_mcp,
             commands::root_mcp::git_push_mcp_proposals,
             commands::root_mcp::git_push_mcp_decide,
@@ -1832,6 +1831,8 @@ pub fn run() {
             // Terminal
             commands::terminal::pty_spawn,
             commands::terminal::agent_fence_status,
+            commands::terminal::copilot_fence_auth_status,
+            commands::terminal::copilot_fence_sign_out,
             commands::terminal::agent_fence_marks,
             commands::terminal::register_host_bound_tab,
             commands::terminal::pty_write,
@@ -2008,6 +2009,12 @@ pub fn run() {
             commands::agents::uninstall_agent,
             commands::agents::agent_warmup,
             commands::agents::claude_folder_trusted,
+            commands::agents::agent_logins,
+            commands::agents::agent_login_import,
+            commands::agents::agent_login_sign_out,
+            commands::agents::agent_global_status,
+            commands::agents::agent_global_import,
+            commands::agents::agent_global_open,
             commands::agents::agent_usage,
             commands::agents::agent_versions,
             commands::agents::dismiss_agent_version,

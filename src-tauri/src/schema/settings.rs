@@ -428,8 +428,9 @@ pub struct Settings {
     /// app/web. Only Claude supports the flag; other agents ignore it. Default ON.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_remote_control: Option<bool>,
-    /// Default-on filesystem fence for locally-running agent tabs.  On Linux it
-    /// uses bubblewrap; per-project overrides live in projects.json.
+    /// Kept for round-trip only: the fence used to be switchable here and per
+    /// project. It is the only mode now (`services::agent_fence`), so the
+    /// value is never read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_fence: Option<bool>,
     /// Extra host paths exposed read-only inside the agent fence.  Unset uses
@@ -915,11 +916,6 @@ impl Settings {
     }
 
     /// Whether local agent tabs should receive the filesystem fence.  Default
-    /// ON so older settings files adopt the safer posture automatically.
-    pub fn agent_fence(&self) -> bool {
-        self.agent_fence.unwrap_or(true)
-    }
-
     /// Whether unfenced agents on a fence-less platform were accepted. Off
     /// unless written: silence must never count as consent to full rights.
     pub fn agent_fence_platform_accepted(&self) -> bool {
@@ -1215,7 +1211,6 @@ mod tests {
     #[test]
     fn agent_fence_defaults_on_with_documented_paths_and_preserves_empty_override() {
         let defaults = Settings::default();
-        assert!(defaults.agent_fence());
         assert!(!defaults.agent_fence_cargo_credentials.unwrap_or(false));
         let publishing: Settings = serde_json::from_str(r#"{"agent_fence_cargo_credentials":true}"#).unwrap();
         assert_eq!(publishing.agent_fence_cargo_credentials, Some(true));
@@ -1236,7 +1231,8 @@ mod tests {
         let off: Settings =
             serde_json::from_str(r#"{"agent_fence":false,"agent_fence_paths":[]}"#)
                 .expect("agent fence settings parse");
-        assert!(!off.agent_fence());
+        // The old switch round-trips but decides nothing any more.
+        assert_eq!(off.agent_fence, Some(false));
         assert!(off.agent_fence_paths().is_empty());
         assert!(off.extra.is_empty());
     }

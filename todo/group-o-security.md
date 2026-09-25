@@ -1077,7 +1077,10 @@ Eldrun. None of these is started.
     abstract socket (`--unshare-net` + loopback proxy to the agent's API hosts,
     reusing the VM proxy allowlist). Splits the "shared network namespace"
     line out of #869. **Your call:** `--unshare-net` in Standard only, or
-    everywhere.
+    everywhere. Scrubbing `DISPLAY` alone doesn't fix it: the agent can
+    connect to the abstract socket directly. On a Wayland session the exposure
+    is limited to Xwayland clients (the Wayland socket under `/run/user` is
+    hidden), so audit on a real X11 session.
 
 2322. **tmux < 3.2 still leaks tokens to other users.** Refuse token-carrying
     tabs on an old tmux (or spawn them without tmux) instead of putting the
@@ -1146,7 +1149,6 @@ Eldrun. None of these is started.
          `networkingMode=mirrored`, Win11 22H2+); NAT needs Eldrun to also
          bind the WSL vEthernet address (token-protected as today).
 
-
 2328. **Warn about a planted `.git/commondir`.** Eldrun's own git ignores it
     (#862), but the user's own terminal git follows it. Detect a `commondir`
     inside a main `.git` and offer to remove it.
@@ -1175,3 +1177,19 @@ Eldrun. None of these is started.
 2333. **Disclosure policy and an outside audit.** Add `SECURITY.md` (how to
     report, scope, link to the threat model); reproducible release builds; an
     external audit or pentest before telling non-experts Eldrun is safe.
+
+2336. **`~/.claude/jobs/` and other new entries are writable in every fence.**
+    `CLAUDE_UNMOUNTED` (`sandbox.rs`) lists what to hide, so an entry a newer
+    Claude Code adds is mounted read-write from the host by default. Seen
+    inside a fenced tab (2026-09-25): `jobs/`, `state/`, `cache/`,
+    `downloads/`, `plans/`, `statusline-mode/`, `.last-update-result.json`,
+    `.last-cleanup` are all host mounts, read-write. `jobs/<id>/state.json`
+    carries `respawnFlags`, `cwd`, `providerEnv` and `resumeSessionId`: if a
+    host-side Claude (daemon or the user's own terminal) respawns jobs from it,
+    a fenced agent can plant one that runs unfenced with its own flags, cwd and
+    `ANTHROPIC_BASE_URL`. Not verified; audit what reads `jobs/`. Also readable:
+    every session's `jobs/` output and `plans/` across projects. Fix: invert
+    to an allowlist (mount only what resume/login need; everything else lands
+    in the fence's tmpfs), and do the same for `CODEX_UNMOUNTED`, which has
+    the same shape. Stopgap until group S #2335 Phase 1 replaces the host home
+    with a per-scope one; drop it if that ships first.

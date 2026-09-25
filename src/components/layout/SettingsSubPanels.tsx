@@ -55,6 +55,7 @@ import {
 import { formatTime } from "../../lib/calendar/calendarTime";
 import { useUse24h } from "../../lib/timeFormat";
 import { AGENT_FENCE_DEFAULT_PATHS, parseAgentFencePaths } from "../../lib/agents/agentFence";
+import { AGENT_ITEMS } from "../tabs/newTabItems";
 
 interface OllamaModelInfo {
   name: string;
@@ -668,6 +669,221 @@ function ClaudeRemoteControlNotice() {
   );
 }
 
+/** One row of `agent_logins` (`services::agent_auth`): a CLI's shared
+ *  sign-in across every Eldrun agent home. Never a token. */
+interface AgentLogin {
+  id: string;
+  signed_in: boolean;
+  account: string | null;
+  importable: boolean;
+  blocked: { account: string; stored: string } | null;
+  shared: boolean;
+}
+
+/** The shared agent logins: one row per CLI whose login Eldrun can share,
+ *  with the one-click import from this computer and a way out. */
+function AgentLoginsRows() {
+  const t = useT();
+  const [logins, setLogins] = useState<AgentLogin[] | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const refresh = () => {
+    invoke<AgentLogin[]>("agent_logins")
+      .then(setLogins)
+      .catch(() => setLogins(null));
+  };
+  useEffect(refresh, []);
+  const labels = useMemo(() => new Map(AGENT_ITEMS.map((a) => [a.cmd, a.label])), []);
+  const registry = useMemo(
+    () => new Map(AGENT_ITEMS.map((a) => [a.cmd === "agy" ? "antigravity" : a.cmd === "cn" ? "continue" : a.cmd === "kiro-cli" ? "kiro" : a.cmd === "sweagent" ? "swe-agent" : a.cmd === "mini" ? "mini-swe-agent" : a.cmd === "qoder" ? "qoder" : a.cmd, a.label])),
+    [],
+  );
+  if (!logins) return null;
+  const rows = logins.filter((l) => l.shared);
+  const run = (id: string, cmd: "agent_login_import" | "agent_login_sign_out") => {
+    setError(null);
+    setBusy(id);
+    invoke(cmd, { id })
+      .catch((e: unknown) => setError(String(e)))
+      .finally(() => {
+        setBusy(null);
+        refresh();
+      });
+  };
+  return (
+    <>
+      <div className="settings-subheader">
+        {t("settings.agentLogins")} <UntestedTag id="settings.agentLogins" />
+      </div>
+      <p className="settings-help">{t("settings.agentLoginsHelp")}</p>
+      {rows.map((l) => {
+        const label = registry.get(l.id) ?? labels.get(l.id) ?? l.id;
+        const state = l.signed_in
+          ? l.account
+            ? t("settings.agentLoginSignedInAs", { account: l.account })
+            : t("settings.agentLoginSignedIn")
+          : t("settings.agentLoginNotSignedIn");
+        return (
+          <div key={l.id} className="settings-toggle-card-row">
+            <span>
+              {label}
+              <span className="settings-help"> · {state}</span>
+              {l.blocked && (
+                <span className="settings-help pill-fence-live-note">
+                  {" "}
+                  {t("settings.agentLoginBlocked", { account: l.blocked.account, stored: l.blocked.stored })}
+                </span>
+              )}
+            </span>
+            <span>
+              {l.importable && (
+                <button
+                  type="button"
+                  className="ollama-action-btn"
+                  disabled={busy === l.id}
+                  onClick={() => run(l.id, "agent_login_import")}
+                >
+                  {t("settings.agentLoginImport")}
+                </button>
+              )}
+              {l.signed_in && (
+                <button
+                  type="button"
+                  className="ollama-action-btn"
+                  disabled={busy === l.id}
+                  onClick={() => run(l.id, "agent_login_sign_out")}
+                >
+                  {t("settings.agentLoginSignOut")}
+                </button>
+              )}
+            </span>
+          </div>
+        );
+      })}
+      {error && <p className="settings-help">{error}</p>}
+    </>
+  );
+}
+
+/** `agent_global_status` (`services::agent_global`). */
+interface AgentGlobalLayer {
+  dir: string;
+  files: number;
+}
+
+/** The Eldrun-wide agent config: the instructions, skills, hooks and MCP
+ *  servers every agent home gets, filled from this computer in one click. */
+function AgentGlobalRow() {
+  const t = useT();
+  const [layer, setLayer] = useState<AgentGlobalLayer | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const refresh = () => {
+    invoke<AgentGlobalLayer>("agent_global_status")
+      .then(setLayer)
+      .catch(() => setLayer(null));
+  };
+  useEffect(refresh, []);
+  const importNow = () => {
+    setNote(null);
+    setBusy(true);
+    invoke<{ files: number; configs: number }>("agent_global_import")
+      .then((r) => setNote(t("settings.agentGlobalImported", { files: r.files, configs: r.configs })))
+      .catch((e: unknown) => setNote(String(e)))
+      .finally(() => {
+        setBusy(false);
+        refresh();
+      });
+  };
+  return (
+    <>
+      <div className="settings-subheader">
+        {t("settings.agentGlobal")} <UntestedTag id="settings.agentGlobal" />
+      </div>
+      <p className="settings-help">{t("settings.agentGlobalHelp")}</p>
+      <div className="settings-toggle-card-row">
+        <span className="settings-help">
+          {layer && layer.files > 0
+            ? t("settings.agentGlobalFiles", { count: layer.files })
+            : t("settings.agentGlobalEmpty")}
+        </span>
+        <span>
+          <button type="button" className="ollama-action-btn" disabled={busy} onClick={importNow}>
+            {t("settings.agentGlobalImport")}
+          </button>
+          <button
+            type="button"
+            className="ollama-action-btn"
+            onClick={() => void invoke("agent_global_open").catch((e: unknown) => setNote(String(e)))}
+          >
+            {t("settings.agentGlobalOpen")}
+          </button>
+        </span>
+      </div>
+      {note && <p className="settings-help">{note}</p>}
+    </>
+  );
+}
+
+/** `copilot_fence_auth_status`: the Copilot sign-in Eldrun holds for fenced
+ *  tabs (`services::copilot_auth`). Never carries the token itself. */
+interface CopilotFenceAuth {
+  supported: boolean;
+  signedIn: boolean;
+  login: string | null;
+  valid: boolean | null;
+}
+
+/** Copilot sign-in for fenced tabs: who is signed in, and a way out. Hidden
+ *  where the fence leaves the keyring reachable (everything but Linux). */
+function CopilotFenceAuthRow() {
+  const t = useT();
+  const [auth, setAuth] = useState<CopilotFenceAuth | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const refresh = () => {
+    invoke<CopilotFenceAuth>("copilot_fence_auth_status")
+      .then(setAuth)
+      .catch(() => setAuth(null));
+  };
+  useEffect(refresh, []);
+  if (!auth?.supported) return null;
+
+  const state = !auth.signedIn
+    ? t("settings.copilotFenceAuthNone")
+    : auth.valid === false
+      ? t("settings.copilotFenceAuthExpired")
+      : auth.login
+        ? t("settings.copilotFenceAuthSignedIn", { login: auth.login })
+        : t("settings.copilotFenceAuthSignedInOffline");
+
+  return (
+    <>
+      <div className="settings-toggle-card-row">
+        <span>
+          {t("settings.copilotFenceAuth")} <UntestedTag id="settings.copilotFenceAuth" />
+        </span>
+        {auth.signedIn && (
+          <button
+            type="button"
+            className="ollama-action-btn"
+            onClick={() => {
+              setError(null);
+              invoke("copilot_fence_sign_out")
+                .then(refresh)
+                .catch((e: unknown) => setError(String(e)));
+            }}
+          >
+            {t("settings.copilotFenceAuthSignOut")}
+          </button>
+        )}
+      </div>
+      <p className="settings-help">{state}</p>
+      {error && <p className="settings-help">{error}</p>}
+      <p className="settings-help">{t("settings.copilotFenceAuthHelp")}</p>
+    </>
+  );
+}
+
 function AgentFenceCard() {
   const t = useT();
   const { settings, updateSettings } = useSettingsStore();
@@ -689,13 +905,6 @@ function AgentFenceCard() {
       <div className="settings-subheader">
         {t("settings.agentFenceTitle")} <UntestedTag id="settings.agentFenceTitle" />
       </div>
-      <label className="settings-toggle-card-row">
-        <span>{t("settings.agentFenceEnabled")}</span>
-        <Toggle
-          checked={settings?.agent_fence ?? true}
-          onChange={(e) => void updateSettings({ agent_fence: e.target.checked })}
-        />
-      </label>
       <p className="settings-help">{t("settings.agentFenceHelp")}</p>
       <p className="settings-help">{t("settings.agentFenceLimits")}</p>
       <p className="settings-help">{t("settings.agentFenceSharedState")}</p>
@@ -721,6 +930,9 @@ function AgentFenceCard() {
           <p className="settings-help">{t("settings.agentFencePlatformAcceptedHelp")}</p>
         </>
       )}
+      <AgentLoginsRows />
+      <AgentGlobalRow />
+      <CopilotFenceAuthRow />
       <label className="settings-toggle-card-row">
         <span>{t("settings.rootFenceProjects")} <UntestedTag id="settings.rootFenceProjects" /></span>
         <Toggle

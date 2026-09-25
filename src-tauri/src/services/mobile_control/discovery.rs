@@ -333,11 +333,7 @@ impl RootEnv {
     fn live() -> Self {
         Self {
             dir: crate::paths::root_work_dir(),
-            fenced: || {
-                crate::services::agent_fence::policy_enabled(None)
-                    && crate::services::agent_fence::platform_fenceable()
-                    && crate::services::agent_fence::bwrap_available()
-            },
+            fenced: crate::services::agent_fence::enforced_here,
         }
     }
 }

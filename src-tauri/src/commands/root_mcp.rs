@@ -466,9 +466,7 @@ pub fn root_mcp_status() -> RootMcpStatus {
     let local = crate::services::root_mcp_security::Policy::load(&settings)
         .is_ok_and(|p| p.serves(root_mcp::Caller::LocalModel) && p.reads_mail(root_mcp::Caller::LocalModel));
     let open = (reader || local) && crate::commands::mail::any_account_open_to_agents();
-    let review_enforced = crate::services::agent_fence::policy_enabled(None)
-        && crate::services::agent_fence::platform_fenceable()
-        && crate::services::agent_fence::bwrap_available();
+    let review_enforced = crate::services::agent_fence::enforced_here();
     RootMcpStatus {
         running: root_mcp::runtime().is_some(),
         enabled: root_mcp::enabled(),

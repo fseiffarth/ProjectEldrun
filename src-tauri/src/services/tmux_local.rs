@@ -382,6 +382,7 @@ const SECRET_ENV: &[&str] = &[
     crate::services::root_mcp::SCHEDULE_TOKEN_ENV,
     crate::services::root_mcp::GIT_TOKEN_ENV,
     crate::services::root_mcp::HELP_TOKEN_ENV,
+    crate::services::copilot_auth::TOKEN_ENV,
 ];
 
 /// First `update-environment` array slot Eldrun claims for [`SECRET_ENV`] (one
@@ -828,6 +829,7 @@ mod tests {
             (crate::services::root_mcp::TOKEN_ENV, "root-s3cret"),
             (crate::services::root_mcp::SCHEDULE_TOKEN_ENV, "sched-s3cret"),
             (crate::services::root_mcp::HELP_TOKEN_ENV, "help-s3cret"),
+            (crate::services::copilot_auth::TOKEN_ENV, "gho_copilot-s3cret"),
         ]);
         let leaks = |args: &[String]| args.iter().any(|a| a.contains("s3cret"));
         for cmd in ["", "claude", "bwrap"] {
@@ -993,6 +995,7 @@ mod tests {
             tmux_attach: None,
             host_bound_uid: None,
             schedule_target_id: None,
+            host_session: false,
         };
         wrap_pty_options_local(&mut opts);
         assert_eq!(opts.cmd, "bash");

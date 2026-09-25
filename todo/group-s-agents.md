@@ -2051,3 +2051,254 @@ unchanged; the new agents are additive.
       - [ ] ❌ Doesn't work on Windows
       - [ ] ✅ Works on macOS
       - [ ] ❌ Doesn't work on macOS
+2335. **Agents live only in Eldrun: Eldrun-owned homes, one login per CLI,
+    fence-only, and a Host session (implemented 2026-09-25, never run live).** "cursor cli needs
+    login for every new tab … it is also the fence … same probably for mistral
+    and antigravity (that makes the fence useless as everyone will turn it off)"
+    (user, 2026-09-25). Cause: the fence mounts `--tmpfs $HOME` (`bwrap_args`,
+    `services/agent_fence.rs:1317`) and restores only Claude/Codex/Gemini/
+    OpenCode auth; Cursor's `$XDG_CONFIG_HOME/cursor/auth.json` and Vibe's
+    `~/.vibe/.env` never arrive (`sandbox::CONTINUE_AGENT_SESSION_STORES` carries
+    only their session dirs), and a login done *inside* a fenced tab lands in the
+    tmpfs and dies with it. Target end state (user): all agents live only in
+    Eldrun. Decided with the user: fence is the only mode; login once per CLI,
+    shared across projects; `~/.cache` throwaway; import copies credentials
+    only; deleting a project deletes its agent home; a shell-typed agent is
+    fenced too; unfenced work goes through an explicit Host session.
+    - **Phase 1 — a persistent home per scope (Linux).** `<state_dir>/agent-homes/
+      <project_key(scope)>/` (`storage::project_key`; `root` and `box:<id>` get
+      their own), bound over `$HOME` in place of the tmpfs, `--tmpfs $HOME/.cache`
+      on top. Per scope, not per CLI: a fenced agent in project A must not plant
+      an MCP server/hook/skill that runs in project B or in root (which holds the
+      root MCP token) — the threat-model gap 7 class. Every CLI in a scope shares
+      the same roots, so one home per scope adds no authority. Precedents:
+      `copilot_auth::prepare_home`, `sandbox::codex_state_dir` (not
+      `sandbox-stage`, which is wiped at startup). Mount order otherwise
+      unchanged (extra_ro, mounts, symlinks, roots, cargo masks,
+      `guard_git_control`, `mask_private_state` last); the state dir sits under
+      `$HOME`, so the mask's explicit re-mounts keep other scopes' homes
+      unreachable. Gotchas: bwrap now creates mount points on disk inside the
+      home; a `--symlink` target a CLI replaced by rename makes the next spawn
+      fail EEXIST — clear every symlink destination before spawn, as
+      `prepare_codex_state_in` does for `config.toml`. `forget_project` /
+      `delete_archived_project` (`commands/projects.rs:988,1289`) delete the
+      scope's home. Project containers get the same home as `-v <home>:<home>`
+      (`sandbox.rs` create args ~318–356; fingerprint change recreates each once).
+    - **Phase 2 — one login per CLI.** New `auth_paths` field on `AgentSpec`
+      (`commands/agents.rs:15`), filled from the survey table below. Each path is
+      bound from `<state_dir>/agent-auth/<cli-id>/` into every fenced scope home,
+      so a login made anywhere (including inside a fenced tab) sticks everywhere.
+      Rules: (1) only credential files that cannot name a command — never a
+      config that can hold MCP/hooks (so Claude's `~/.claude.json` stays
+      per-scope, seeded with the filtered `oauthAccount` like
+      `staged_claude_json_mounts` does today; `.credentials.json` is shared);
+      (2) directory binds where the dir holds only auth, else the stable-inode
+      mirror of `sandbox::claude_credential_mounts` (CLIs rotate tokens by rename,
+      which a file bind pins); (3) account-swap guard: record the account at
+      first login where the file names one and block + warn on change (as the
+      Copilot adoption rule does). A CLI without `auth_paths` still works, one
+      login per scope. Fence env: set `TBH_CREDENTIAL_BACKEND=file` (Muse —
+      keychain write fails, no fallback), `FACTORY_DISABLE_KEYRING=1` (Droid
+      throws when a host `auth.v2.keyring` exists), `GOOSE_DISABLE_KEYRING=1`,
+      `GEMINI_FORCE_FILE_STORAGE=true`, `QWEN_CODE_FORCE_FILE_STORAGE=true`,
+      `QODER_FORCE_FILE_STORAGE=true`,
+      `PYTHON_KEYRING_BACKEND=keyring.backends.fail.Keyring` (Vibe; not
+      `null`, which drops writes silently); leave `DBUS_SESSION_BUS_ADDRESS`
+      unset (agy waits ~5 s probing it); keep hostname/username stable (Gemini/
+      Qwen encrypted stores key on them — bwrap does not unshare UTS today).
+      Never set Amp's `nativeSecretsStorage` (keyring-only, deletes the file).
+      Copilot persists a headless login only with `"storeTokenPlaintext": true`
+      in `~/.copilot/config.json` — **open:** may Eldrun seed that in its *own*
+      scope home (arguably not "another app's config" any more), or does the
+      user answer `y` once?
+    - **Where each CLI keeps its login** (Linux; survey 2026-09-25, bundles
+      grepped/run under scratch HOME). Plain files under `$HOME` for all 30:
+      claude `~/.claude/.credentials.json` (+`~/.claude.json`); codex
+      `~/.codex/auth.json`; agy `~/.gemini/antigravity-cli/antigravity-oauth-token`;
+      gemini `~/.gemini/oauth_creds.json`; kiro `$XDG_DATA_HOME/kiro-cli/
+      data.sqlite3`; cline `~/.cline/data/settings/providers.json`; cursor
+      `$XDG_CONFIG_HOME/cursor/auth.json`; copilot `~/.copilot/config.json`;
+      droid `~/.factory/` (`auth.v2.*`); grok `~/.grok/auth.json`; qwen
+      `~/.qwen/oauth_creds.json`; openclaw `~/.openclaw/` (SQLite); auggie
+      `~/.augment/session.json`; kilo `$XDG_DATA_HOME/kilo/kilo.db`; cn
+      `~/.continue/config.yaml`; junie `~/.junie/secure_credentials.json`;
+      codebuddy `~/.local/share/CodeBuddyExtension/Data/Public/auth/`; goose
+      `~/.config/goose/secrets.yaml`; pi `~/.pi/agent/auth.json`; plandex
+      `~/.plandex-home-v2/auth.json`; amp `~/.local/share/amp/secrets.json`;
+      aider `~/.aider/oauth-keys.env` / `.env`; opencode `~/.local/share/
+      opencode/auth.json`; vibe `~/.vibe/.env`; sweagent project `.env` only;
+      mini `~/.config/mini-swe-agent/.env`; crush `~/.local/share/crush/
+      crush.json`; kimi `~/.kimi-code/credentials/`; qodercli `~/.qoder/`
+      (+`.auth`); muse `~/.config/muse/auth.json`. Several mix auth with config
+      (cn `config.yaml`, qwen `settings.json` env block, crush, aider `.env`)
+      and need rule (1) checked per entry before sharing.
+    - **Phase 3 — Eldrun-owned installs.** Run each `install_cmd` with
+      `HOME=<state_dir>/agents/install`, `NPM_CONFIG_PREFIX`, `BUN_INSTALL`,
+      `UV_TOOL_DIR`/`UV_TOOL_BIN_DIR` pointed there; verify per installer and
+      add a per-entry override where one ignores them. Mount the tree read-only
+      into every fence, run updates outside it (`DISABLE_AUTOUPDATER` where a CLI
+      has one). Closes the "agent can replace its own CLI" residual; retires
+      `updatable_install_dirs`, `native_launcher`, `private_launcher_dir`
+      (#861). Keep detecting host installs until the user reinstalls.
+    - **Phase 4 — import credentials only.** One click copies the host's files at
+      each CLI's `auth_paths` into `agent-auth/<cli-id>/` (host → Eldrun is the
+      safe direction). Instructions, skills and MCP entries are not imported.
+      Logins the host keeps in a keyring (agy ≤1.0.0, Junie, Goose, Vibe, Droid)
+      cannot be imported — log in once in Eldrun.
+    - **Phase 5 — fence-only.** Drop the per-project/global "fence off"
+      (`fence_effective`, the Settings toggle); `FenceDecision::NotApplicable
+      { reason: "off" }` goes. **Shell tabs:** today never fenced
+      (`docs/context/agent_authority.md:171`), so typing `cursor-agent` in a
+      shell, or in a persistent agent tab's fallback login shell, runs it
+      unfenced with the real home. Put one shim per registry CLI in
+      `agent_bin::bin_dir()` (read-only in the fence) at the front of shell
+      tabs' PATH; the shim asks Eldrun for the fence argv over the channel
+      `eldrun-send` already uses and execs it in place — same scope home, same
+      shared login as an agent tab. It only launches Eldrun-installed CLIs and
+      has no bypass flag; running the binary by absolute path stays possible
+      (the user's own shell, real home, no Eldrun logins — not an escape, fences
+      cannot write the real home). **macOS:** Seatbelt cannot redirect, so set
+      `HOME=<scope home>` with pass-throughs `GIT_CONFIG_GLOBAL`, `CARGO_HOME`,
+      `RUSTUP_HOME`, `DOCKER_CONFIG` (ssh reads `~` from passwd). **Windows:**
+      no fence; tabs use the same Eldrun homes and shared logins via
+      `HOME`/`USERPROFILE`.
+    - **Phase 6 — Host session.** For work that is not a project's: repairing
+      Firefox, the printer, the machine. A fence cannot do it (bubblewrap sets
+      no-new-privs, so `sudo`/`pkexec` fail). An explicit, per-tab entry in the
+      root console, warned ("unfenced — full access to this computer"), red
+      badge, never a project default. Own home `<state_dir>/agent-homes/host/`,
+      never mounted into a fence; fenced tabs cannot reach it (state-dir mask),
+      so nothing fenced can plant config it runs. Never auto-resumes after a
+      restart (a paused "Resume?" instead), cannot be started from the phone.
+      Uses the shared logins (credential files only, rule (1)). The CLI's own
+      permission prompts apply; Eldrun injects no mode. Later, optional: a fenced
+      tab with one extra path granted for that tab (e.g. `~/.mozilla`).
+    - **What goes away** once the host home is out of the loop:
+      `CLAUDE_UNMOUNTED`, `CODEX_UNMOUNTED`, `GEMINI_*`, `AGENT_READ_ONLY`,
+      `staged_config_mounts`, `CONTINUE_AGENT_SESSION_STORES` (they protect the
+      host's uncontained CLI); the AGENTS.md hook exception to "never edits
+      another app's config" (hooks are registered in Eldrun's own homes). **Stays:**
+      read-only `state_dir/hooks` and `agent_bin`, per-scope `live_sessions`,
+      local-model control files, and treating everything Eldrun parses back from
+      a home as attacker-controlled (transcripts, Codex SQLite, Copilot adoption).
+    - **Gaps found in review (2026-09-25).**
+      - *X11 blocks Phase 6.* Fenced tabs still reach the host's abstract X11
+        socket with `DISPLAY` set (group O #2321, unaudited). With XTEST a
+        fenced agent could type into the Host session's window (unfenced,
+        `sudo` works) or any user shell, which bypasses the whole design. Close
+        #2321 (no `DISPLAY`/X11 socket in the fence, or a nested/filtered
+        display) before the Host session ships.
+      - *Shared login = shared attack surface.* In Phase 2 every fenced scope
+        can write the shared credential file. Swapping in a token for an
+        attacker-owned account makes every scope, and the Host session if it
+        shares logins, send its conversations there. The swap guard (rule 3)
+        covers this only for CLIs whose auth file names an account; the rest
+        stay open. Needed: a guard for those too (e.g. the host copy is written
+        only from an Eldrun-driven login, fenced writes stay per scope until
+        confirmed), or those CLIs log in per scope.
+      - *Hard links vs rename.* The Phase 1 draft (`services/agent_home.rs`,
+        untracked) says logins are **hard-linked** in from `agent-auth/`. CLIs
+        rotate tokens by rename, which breaks a hard link: the scope keeps the
+        new token, the store keeps the old one, and sharing silently stops
+        (the stale-token bug `sandbox::claude_credential_mounts` already fixed
+        once). Follow rule (2): directory binds or the stable-inode mirror.
+      - *Host session logins.* Given the swap risk above, the Host session
+        should not bind the shared stores writable. Either it gets its own
+        logins, or it only reads a shared login that the guard has confirmed.
+      - *Token confidentiality is not a goal.* The network stays shared, so
+        any fenced agent can read and send out the shared token of its CLI.
+        Today that exposure is per CLI per machine too; state it in
+        `docs/threat_model.md` rather than implying the homes fix it.
+    - **Docs/tests to update:** AGENTS.md invariants (fence-only, shell shims,
+      Host session, hook exception), `docs/context/agent_authority.md`,
+      `docs/threat_model.md`, `docs/help/agent-clis.md`, filemap rows. Tests
+      that assert the tmpfs home or the narrowed mounts:
+      `bwrap_argv_orders_home_mounts_roots_and_command` and the other
+      `bwrap_args` callers and the mask test (`agent_fence.rs`), container
+      HOME/`-v` assertions, `staged_config_mounts_copies_and_shadows_host_originals`,
+      the `GEMINI_STAGED` and `agent_home_mounts_*` tests (`sandbox.rs`). New:
+      symlink-destination clearing, scope-home isolation, auth-store binding
+      and swap guard, install env, shim routing, Host-session home isolation.
+    - **Open:** Copilot `storeTokenPlaintext` seeding (above); the swap guard for
+      CLIs whose auth file names no account; whether the Host session should
+      share logins at all (see the review gaps above).
+    - **Implemented 2026-09-25** (all six phases, Linux; macOS/Windows halves
+      written but not compiled here): `services::agent_home` (scope homes,
+      one-time seeding of the legacy `codex-state`/`copilot-home`, the scope's
+      Claude transcripts and `.claude.json` identity; deleted with the
+      project), `services::agent_auth` (per-CLI store, hard links, keeper,
+      swap guard, import, sign-out, keyring-off env), `AgentSpec.auth_paths`
+      for all 30 CLIs, `services::agent_install` (install HOME + prefixes,
+      PATH, read-only in the fence, `DISABLE_AUTOUPDATER` for Claude, legacy
+      mirror migration), `services::agent_shim` + shims in `agent_bin`
+      (`eldrun --agent-shim`, `ELDRUN_SCOPE` on every tab), fence-only
+      (`fence_effective`/`policy_*`/"off"/`set_project_agent_fence`, the
+      Settings toggle and the pill toggle are gone), `PtyOptions.host_session`
+      + the root console's "Host session — unfenced" group, HOST badge and
+      paused Resume card; containers mount the scope home at `$HOME`. Gone
+      with the host home: `CLAUDE_UNMOUNTED`, `CODEX_UNMOUNTED`, `GEMINI_*`,
+      `AGENT_READ_ONLY`, `staged_config_mounts`, `staged_claude_json_mounts`,
+      `claude_credential_mounts`, `CONTINUE_AGENT_SESSION_STORES`,
+      `codex_state_dir`, the transcript stage/harvest, `agent_trust.json`,
+      `services::agent_creds`, the AGENTS.md hook exception.
+      **Still open:** the shim's PATH-strip relies on `paste`/`grep`
+      (coreutils; fine on Linux/macOS); Copilot keeps its keyring route
+      (`storeTokenPlaintext` is seeded in the scope home, so no `y`); the swap
+      guard covers Codex and Claude only (other files name no account);
+      per-installer verification of the install prefixes; a login the host
+      keeps in a keyring cannot be imported (log in once in Eldrun); the
+      Claude transcript copy on a scope's first spawn can take seconds for a
+      big project; a project container on a **Windows** host no longer gets
+      the POSIX hook twin (the home's `settings.json` carries the PowerShell
+      command), so live-session recording there is lost until a per-container
+      registration exists.
+    - [x] 🤖 Automated test — `agent_home`, `agent_auth`, `agent_install`,
+      `agent_shim`, `agent_bin` shim, `bwrap_argv_orders_home_mounts_roots_and_command`,
+      the decision matrix's Host session case, the sandbox transcript-belongs
+      test; `AgentFence.test.ts` (2026-09-25, all green).
+    - [ ] 🖐️ Manual test — log in to Cursor in a fenced tab of project A; open a
+      new Cursor tab in project B: no login. Close all tabs, restart Eldrun: still
+      logged in. Type `cursor-agent` in a project shell: it is fenced (cannot
+      write outside the project). Open a Host session: `sudo -v` works.
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
+
+2336. **One global Eldrun agent config instead of losing it per project
+    (implemented 2026-09-25, never run live).** "instead of loosing it can you
+    make it one global eldrun instead of per project?" (user, 2026-09-25) —
+    after #2335 fenced tabs no longer saw the global CLAUDE.md, the RTK hook
+    or the Codex MCP config. Decided with the user: keep the per-scope homes
+    (gap 7) and add an Eldrun-wide layer that no agent can write.
+    `services::agent_global`: `<state_dir>/agent-global/` (home-shaped) is
+    copied into every home at every spawn and merged into
+    `.claude/settings.json`, `.claude.json`, `.codex/config.toml`,
+    `.gemini/settings.json` with exact take-back through a per-home manifest;
+    Settings → Agent fence → Global agent config imports from `~/.claude`,
+    `~/.codex`, `~/.gemini` (minus logins, state, folder trust, Eldrun's own
+    hooks) and opens the folder. Rationale: `docs/context/agent_authority.md`.
+    **Still open:** a hook script named by an absolute `~/.claude/…` path
+    works under the Linux fence (the home sits at the user's home path) but
+    not on macOS/Windows, where `HOME` is the scope home's own path; an
+    `env` block with API keys in the imported `settings.json` reaches every
+    home — intended, but worth knowing.
+    - [x] 🤖 Automated test — `agent_global` (merge/take-back for JSON and
+      TOML, backup, removal, symlink containment, import filter).
+    - [ ] 🖐️ Manual test — Settings → Agent fence → Global agent config →
+      Import from this computer; open a new Claude tab in any project: your
+      CLAUDE.md applies (ask it) and a Bash call is rewritten by the RTK hook.
+      A new Codex tab lists your MCP servers (`/mcp`). Remove a skill in the
+      opened folder, open a new tab: it is gone there.
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS

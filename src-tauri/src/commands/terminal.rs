@@ -362,6 +362,11 @@ pub async fn pty_spawn(
         }
     }
 
+    // The tab's scope, for the agent shims a shell tab may run
+    // (`services::agent_shim`): its project or box, else the root console.
+    opts.env
+        .entry("ELDRUN_SCOPE".into())
+        .or_insert_with(|| crate::services::agent_home::scope_of(opts.project_id.as_deref()));
     if let Some(pid) = opts.project_id.as_deref() {
         let box_folder = crate::commands::boxes::box_id_of_scope(pid).and_then(|id|
             crate::commands::boxes::get_boxes().ok()?.into_iter().find(|b| b.id == id)?.folder);
@@ -538,6 +543,7 @@ pub async fn pty_spawn(
                 &opts.id,
                 &uid,
                 std::path::Path::new(&opts.cwd),
+                opts.project_id.as_deref(),
                 resumed,
             );
         }
@@ -660,42 +666,71 @@ pub async fn pty_spawn(
     // unfenced (it already reads everything).
     let mut root_projects = crate::services::root_mcp::ProjectsGrant::All;
     #[cfg(target_os = "linux")]
-    let mut fenced_content_shadow = None;
+    let mut fenced_tab_dir = None;
     #[cfg(not(target_os = "linux"))]
-    let fenced_content_shadow = None;
+    let fenced_tab_dir = None;
     if let Some(roots) = fence_roots.as_deref() {
         let decision = crate::services::agent_fence::decide(
             &opts,
             roots.to_vec(),
             remote_agent_run,
-            crate::services::agent_fence::policy_enabled(opts.project_id.as_deref()),
             crate::services::agent_fence::platform_fenceable(),
             crate::services::agent_fence::platform_accepted(),
             crate::services::agent_fence::bwrap_available(),
         );
+        let local_agent = opts.cmd != "ssh" && opts.cmd != "docker";
+        let scope_id = crate::services::agent_home::scope_of(opts.project_id.as_deref());
         match decision {
-            crate::services::agent_fence::FenceDecision::Fenced { .. }
-                if opts.cmd != "ssh" && opts.cmd != "docker" =>
-            {
-                let scope_id = opts
-                    .project_id
-                    .clone()
-                    .unwrap_or_else(|| "root".to_string());
+            crate::services::agent_fence::FenceDecision::Fenced { .. } if local_agent => {
+                // The scope's Eldrun-owned home (`services::agent_home`), the
+                // agent's `$HOME` from here on: bound by the Linux fence, set
+                // by environment where the fence cannot redirect a path.
+                let home = crate::services::agent_home::prepare_scope_home(&scope_id, roots)
+                    .map_err(|e| format!("Agent home: {e}"))?;
                 #[cfg(target_os = "linux")]
                 {
-                    fenced_content_shadow = Some(crate::services::agent_fence::wrap_pty_options_bwrap(
-                        &mut opts, roots, &scope_id,
+                    fenced_tab_dir = Some(crate::services::agent_fence::wrap_pty_options_bwrap(
+                        &mut opts, roots, &scope_id, &home.dir,
                     )?);
                 }
                 #[cfg(target_os = "macos")]
                 crate::services::agent_fence::wrap_pty_options_sandbox_exec(
-                    &mut opts, roots, &scope_id,
+                    &mut opts, roots, &scope_id, &home.dir,
                 )?;
+                // Unreachable where no fence exists (`decide` never answers
+                // `Fenced` there); the home is still prepared for symmetry.
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                let _ = &home;
                 root_projects = match crate::services::agent_fence::take_root_projects_granted(&opts.id) {
                     Some(paths) => crate::services::root_mcp::ProjectsGrant::Paths(paths),
                     None => crate::services::root_mcp::ProjectsGrant::Hidden,
                 };
                 fenced_registration = Some((opts.id.clone(), scope_id));
+            }
+            // The root console's Host session: unfenced, in Eldrun's own
+            // `host` home, sharing the logins. Never a project's default.
+            crate::services::agent_fence::FenceDecision::NotApplicable {
+                reason: crate::services::agent_fence::HOST_SESSION_REASON,
+            } if local_agent => {
+                let home = crate::services::agent_home::prepare_host_home()
+                    .map_err(|e| format!("Host session home: {e}"))?;
+                for (k, v) in crate::services::agent_fence::home_env(&home.dir, &crate::paths::home_dir()) {
+                    opts.env.entry(k).or_insert(v);
+                }
+                crate::services::agent_auth::apply_fence_env(&opts.cmd, &mut opts.env);
+                opts.env.insert("ELDRUN_HOST_SESSION".into(), "1".into());
+            }
+            // No fence on this platform (Windows): the same Eldrun-owned home
+            // and shared logins, by environment; the rights are the user's.
+            crate::services::agent_fence::FenceDecision::NotApplicable { reason: "platform" }
+                if local_agent =>
+            {
+                let home = crate::services::agent_home::prepare_scope_home(&scope_id, roots)
+                    .map_err(|e| format!("Agent home: {e}"))?;
+                for (k, v) in crate::services::agent_fence::home_env(&home.dir, &crate::paths::home_dir()) {
+                    opts.env.entry(k).or_insert(v);
+                }
+                crate::services::agent_auth::apply_fence_env(&opts.cmd, &mut opts.env);
             }
             // Fail closed on a fence-less platform too: the tab that asked
             // shows the acceptance prompt and retries once it is given.
@@ -748,7 +783,7 @@ pub async fn pty_spawn(
             claim.keep();
         }
         if let Some((tab_id, scope_id)) = fenced_registration {
-            crate::services::agent_fence::register_tab(&tab_id, &scope_id, fenced_content_shadow);
+            crate::services::agent_fence::register_tab(&tab_id, &scope_id, fenced_tab_dir);
         }
         match host_agent_tab {
             Some(tab) => crate::services::agent_fence::track_host_agent_tab(&spawned_tab_id, tab),
@@ -764,6 +799,21 @@ pub async fn pty_spawn(
 #[tauri::command]
 pub fn agent_fence_status(project_id: String) -> crate::services::agent_fence::AgentFenceStatus {
     crate::services::agent_fence::status_for_scope(&project_id)
+}
+
+/// Whether fenced Copilot tabs have a sign-in Eldrun holds for them, and as
+/// whom. Never returns the token (see `services::copilot_auth`).
+#[tauri::command]
+pub async fn copilot_fence_auth_status() -> crate::services::copilot_auth::CopilotFenceAuth {
+    crate::services::copilot_auth::status().await
+}
+
+/// Forget the Copilot sign-in Eldrun holds for fenced tabs.
+#[tauri::command]
+pub async fn copilot_fence_sign_out() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(crate::services::copilot_auth::sign_out)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// The project pills' fence markers, one call for every pill: whether new

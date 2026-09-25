@@ -14,6 +14,7 @@ import { PrintManagerPane } from "../printing/PrintManagerPane";
 import { SkillsLibraryTab } from "../skills/SkillsLibraryTab";
 import { PromptChartTab } from "../agents/PromptChartTab";
 import { RemotePaneHold } from "../projects/RemotePaneHold";
+import { HostSessionHold } from "./HostSessionHold";
 import { effectiveTabLocation, remoteHostIdOf, type TabEntry } from "../../stores/tabs";
 
 /**
@@ -183,6 +184,11 @@ function TabPaneImpl({
       if (holdRemoteTerminal) {
         return <RemotePaneHold host={remoteHost} onConnect={onConnect ?? (() => {})} />;
       }
+      // A restored Host session never auto-resumes: it ran unfenced with the
+      // user's full rights, so restarting it is an explicit act.
+      if (tab.hostSession && tab.hostSessionPaused && !attachOnly) {
+        return <HostSessionHold scope={scope} tabKey={tab.key} />;
+      }
       return (
         <TerminalView
           // PTY ids include the scope: tab keys alone collide across projects.
@@ -205,6 +211,7 @@ function TabPaneImpl({
           tmuxSession={tmuxSession ?? null}
           tmuxAttach={tab.tmuxAttach ?? null}
           hostBoundUid={tab.hostBoundUid ?? null}
+          hostSession={!!tab.hostSession}
           kind={tab.kind}
           scheduleTargetId={tab.scheduleTargetId}
           zoomable={zoomable}

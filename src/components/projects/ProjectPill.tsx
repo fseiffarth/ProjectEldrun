@@ -54,7 +54,6 @@ import { useT } from "../../lib/i18n";
 import { CheckboxIcon, PauseIcon, SquareIcon, UnlockIcon } from "../common/icons/Icon";
 import {
   agentFenceInstallCommand,
-  agentFenceLabelKey,
   agentFenceMarkLevel,
   agentFenceReasonKey,
   type AgentFenceStatus,
@@ -1491,7 +1490,6 @@ export function ProjectPill({
   const moveRemoteMirror = useProjectsStore((s) => s.moveRemoteMirror);
   const setProjectSandbox = useProjectsStore((s) => s.setProjectSandbox);
   const setProjectRemoteControl = useProjectsStore((s) => s.setProjectRemoteControl);
-  const setProjectAgentFence = useProjectsStore((s) => s.setProjectAgentFence);
   const setProjectScheduleMcp = useProjectsStore((s) => s.setProjectScheduleMcp);
   const setProjectGitPushMcp = useProjectsStore((s) => s.setProjectGitPushMcp);
   const { confirmAction, dialogs: pillDialogs } = useDialogs();
@@ -1509,7 +1507,7 @@ export function ProjectPill({
     return () => {
       cancelled = true;
     };
-  }, [contextMenu, project.id, project.agent_fence]);
+  }, [contextMenu, project.id]);
   const [showContainerSettings, setShowContainerSettings] = useState(false);
   // VM tier (`docs/vm_projects_plan.md`): the settings dialog, plus a light
   // running/off poll for the pill's VM glyph — a local registry read, only
@@ -2346,22 +2344,14 @@ export function ProjectPill({
                     : "pill.remoteControlOff",
               )}
             </button>
+            {/* The fence is the only mode: this row states it and cannot
+                switch it (the unfenced way is the root console's Host session). */}
             <button
               className="untested"
-              onClick={() => {
-                setContextMenu(null);
-                void setProjectAgentFence(
-                  project.id,
-                  project.agent_fence === undefined
-                    ? false
-                    : project.agent_fence === false
-                      ? true
-                      : null,
-                );
-              }}
+              onClick={() => setContextMenu(null)}
               title={t("pill.agentFenceMenuTitle")}
             >
-              {t(agentFenceLabelKey(project.agent_fence))}
+              {t("pill.agentFenceStatus")}
               {agentFenceStatus &&
                 !agentFenceStatus.enforced &&
                 agentFenceReasonKey(agentFenceStatus.reason) && (
@@ -2371,7 +2361,7 @@ export function ProjectPill({
                     })}
                   </span>
                 )}
-              <UntestedTag id="projectPill.14" />
+              <UntestedTag id="pill.agentFenceStatus" />
               {fenceMark && fenceMark.live_unfenced > 0 && (
                 <span className="pill-fence-live-note">
                   {t("pill.agentFenceLiveUnfenced", { count: fenceMark.live_unfenced })}
@@ -2911,23 +2901,14 @@ export function ProjectPill({
             {vmRunning ? "▣" : "▢"}
           </button>
         )}
-        {/* Agent-fence marker: amber while agents of this project run outside
+        {/* Agent-fence marker: red while agents of this project run outside
             the fence right now (measured, so a tab started before the fence
-            was switched on counts), muted when only new tabs would. Opens the
-            pill menu, whose fence row says the same and flips the policy. */}
+            became the only mode counts). Opens the pill menu, whose fence row
+            says the same. */}
         {fenceMarkLevel && (
           <button
             className={`pill-vm-glyph pill-fence-glyph is-${fenceMarkLevel}`}
-            title={
-              fenceMarkLevel === "live"
-                ? t(
-                    fenceMark!.policy_off
-                      ? "pill.agentFenceGlyphLiveOff"
-                      : "pill.agentFenceGlyphLive",
-                    { count: fenceMark!.live_unfenced },
-                  )
-                : t("pill.agentFenceGlyphOff")
-            }
+            title={t("pill.agentFenceGlyphLive", { count: fenceMark!.live_unfenced })}
             onClick={handleContextMenu}
           >
             <UnlockIcon size={12} />

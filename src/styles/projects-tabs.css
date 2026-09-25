@@ -295,15 +295,16 @@
   color: var(--text-primary);
 }
 
-/* Agent-fence marker: the VM glyph's box. `is-live` = agents running outside
-   the fence right now, in the warning colour; `is-off` = only the policy for
-   new tabs, left muted. */
-.pill-fence-glyph.is-live {
-  color: var(--warning);
+/* Agent-fence marker: the VM glyph's box, red whenever it shows — `is-live`
+   (agents running outside the fence right now) and `is-off` (only the policy
+   for new tabs) alike. Red on hover too, so the box's hover can't wash it out. */
+.pill-fence-glyph,
+.pill-fence-glyph:hover {
+  color: var(--danger);
 }
 
 .pill-fence-live-note {
-  color: var(--warning);
+  color: var(--danger);
 }
 
 /* ── Box scope chip ─────────────────────────────────────────────────── */
@@ -1626,6 +1627,21 @@
   transition: background-color var(--transition), color var(--transition);
 }
 .tab-locality { cursor: var(--cur-pointer, pointer); }
+/* The root console's Host session (unfenced, full rights): a red pill on the
+   tab, always visible — it is the one tab that can reach the whole machine. */
+.tab-host-session {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 5px;
+  height: 14px;
+  border-radius: var(--radius-sm);
+  background: var(--danger);
+  color: var(--bg);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
 .tab-source { cursor: var(--cur-default, default); }
 .tab-locality.local,
 .tab-source.local { color: var(--success); }

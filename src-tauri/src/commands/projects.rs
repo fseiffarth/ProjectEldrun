@@ -1026,6 +1026,9 @@ fn forget_project_state(project_id: &str, remote: bool) -> Result<(), String> {
     let mut dirs = vec![
         storage::project_session_dir(project_id),
         crate::services::agent_session::project_live_sessions_dir(project_id),
+        // The project's Eldrun-owned agent home: its agents' config,
+        // transcripts and session stores go with it (`services::agent_home`).
+        crate::services::agent_home::scope_home(Some(project_id)),
     ];
     if remote {
         dirs.push(remote_project_state_dir(project_id));
@@ -1292,6 +1295,7 @@ pub fn delete_archived_project(project_id: String) -> Result<(), String> {
     if dest.exists() {
         fs::remove_dir_all(&dest).map_err(|e| e.to_string())?;
     }
+    crate::services::agent_home::delete_scope_home(&project_id).map_err(|e| e.to_string())?;
     purge_project_time(&project_id)?;
     Ok(())
 }
@@ -1853,34 +1857,6 @@ pub fn set_project_remote_control(
         |project, ()| project.remote_control = remote_control,
     )?;
     Ok(remote_control)
-}
-
-/// Set or clear a project's override of the global default-on agent fence.
-/// The trusted projects.json mirror is what terminal spawn reads; project.json
-/// receives the same value for display/export compatibility only.
-#[tauri::command]
-pub fn set_project_agent_fence(
-    project_id: String,
-    agent_fence: Option<bool>,
-) -> Result<Option<bool>, String> {
-    patch_project_entry_mirrored(
-        &project_id,
-        |entry| {
-            match agent_fence {
-                Some(value) => {
-                    entry
-                        .extra
-                        .insert("agent_fence".into(), serde_json::Value::Bool(value));
-                }
-                None => {
-                    entry.extra.remove("agent_fence");
-                }
-            }
-            Ok(())
-        },
-        |project, ()| project.agent_fence = agent_fence,
-    )?;
-    Ok(agent_fence)
 }
 
 /// Authority stays in projects.json; never copy this grant into the project tree.

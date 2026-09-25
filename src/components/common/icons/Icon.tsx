@@ -173,12 +173,13 @@ export function LockIcon(p: IconProps) {
   );
 }
 
-/** The lock with its shackle swung open. */
+/** The lock with its shackle swung out past the body's left edge. A shackle
+ *  that only lifts or shortens reads as closed at the 12px pill size. */
 export function UnlockIcon(p: IconProps) {
   return (
     <Frame {...p}>
       <rect x="5.5" y="10.5" width="13" height="10" rx="1.5" />
-      <path d="M8.5 10.5v-3a3.5 3.5 0 016.8-1.2" />
+      <path d="M8.5 10.5V7a3.5 3.5 0 00-7 0v1.5" />
     </Frame>
   );
 }

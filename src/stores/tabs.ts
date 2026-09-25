@@ -680,6 +680,16 @@ export interface TabEntry {
   // verbatim by `duplicateSpec`, since a colour DESCRIBES a tab rather than
   // identifying it.
   color?: TabColor;
+  // The root console's **Host session** (`docs/context/agent_authority.md`):
+  // this agent tab runs unfenced, with the user's full rights, in Eldrun's
+  // `host` agent home. Only ever set by the console's own "Host session" menu
+  // entry, never a project default, never from the phone. Persisted so the
+  // tab comes back after a restart — paused (`hostSessionPaused`), never
+  // auto-resumed.
+  hostSession?: boolean;
+  // Runtime only: a restored Host session waits for an explicit Resume before
+  // anything is spawned (see TabPane's HostSessionHold).
+  hostSessionPaused?: boolean;
   // Idempotency key of the request that created this tab, for the callers that
   // create one without a click behind them: a Mobile create (a keyed hash — it
   // contains no client token) whose timed-out retry must resolve to this exact
@@ -888,6 +898,8 @@ export interface SavedTabEntry {
   // Persisted user-chosen tab colour (see TabEntry.color).
   color?: TabColor;
   mobileRequestHash?: string;
+  // Persisted Host session marker (see TabEntry.hostSession).
+  hostSession?: boolean;
 }
 
 /**
@@ -939,6 +951,7 @@ export function toSavedTabEntry(t: TabEntry): SavedTabEntry {
     ephemeral: t.ephemeral,
     autoContinue: t.autoContinue,
     color: t.color,
+    hostSession: t.hostSession || undefined,
   };
 }
 
@@ -1100,6 +1113,8 @@ interface TabsStore {
   // TabEntry.autoContinue). Scoped like the rename above, because the Agents
   // view is rendered for a scope that need not be the active one.
   setAutoContinueInScope: (scope: string, key: string, on: boolean) => void;
+  // Let a restored Host session spawn (see TabEntry.hostSessionPaused).
+  resumeHostSession: (scope: string, key: string) => void;
   // Move one tab next to another inside `scope`, as the Agents view's drag
   // reorder does. Permutes `tabsByScope[scope]` — the order the "native" sort
   // reads — and, when both tabs sit in the same layout group, that group's
@@ -2590,6 +2605,20 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         s,
         scope,
         tabs.map((t) => (t.key === key ? { ...t, color: next } : t)),
+        s.layoutByScope[scope] ?? null,
+        s.focusedGroupByScope[scope] ?? null,
+      );
+    });
+  },
+
+  resumeHostSession: (scope, key) => {
+    set((s) => {
+      const tabs = s.tabsByScope[scope];
+      if (!tabs?.some((t) => t.key === key && t.hostSessionPaused)) return {};
+      return writeScope(
+        s,
+        scope,
+        tabs.map((t) => (t.key === key ? { ...t, hostSessionPaused: false } : t)),
         s.layoutByScope[scope] ?? null,
         s.focusedGroupByScope[scope] ?? null,
       );
@@ -4692,6 +4721,12 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         // authority the user never asked for.
         hostBoundUid: t.hostBoundUid,
         mobileRequestHash: t.mobileRequestHash,
+        // A Host session never auto-resumes after a restart: it comes back
+        // paused and waits for an explicit Resume (only in the root scope,
+        // the one place the marker means anything).
+        ...(t.hostSession && (targetScope ?? get().scope) === ROOT_SCOPE
+          ? { hostSession: true, hostSessionPaused: true }
+          : {}),
         // Restore the no-tmux marker BEFORE anything reads it: the minted name
         // above is harmless on such a tab precisely because `shouldPersistTab`
         // refuses to use it.
