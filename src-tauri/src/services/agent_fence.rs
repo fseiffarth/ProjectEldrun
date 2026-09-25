@@ -1139,6 +1139,119 @@ fn guard_git_control(args: &mut Vec<String>, guard: crate::services::git_guard::
     args.splice(separator..separator, binds);
 }
 
+/// `(audit arch, nr mask, [add_key, request_key, keyctl])` for the native
+/// architecture and the 32-bit one its kernel also runs: a 32-bit binary
+/// reaches the same keyring through the compat table. x32 is x86-64's `arch`
+/// with bit 30 set in `nr` and shares its numbers, hence the mask.
+#[cfg(all(any(target_os = "linux", test), target_arch = "x86_64"))]
+const KEYRING_SYSCALLS: &[(u32, u32, [u32; 3])] = &[
+    (0xC000_003E, 0xBFFF_FFFF, [248, 249, 250]),
+    (0x4000_0003, u32::MAX, [286, 287, 288]),
+];
+#[cfg(all(any(target_os = "linux", test), target_arch = "aarch64"))]
+const KEYRING_SYSCALLS: &[(u32, u32, [u32; 3])] = &[
+    (0xC000_00B7, u32::MAX, [217, 218, 219]),
+    (0x4000_0028, u32::MAX, [309, 310, 311]),
+];
+#[cfg(all(any(target_os = "linux", test), target_arch = "riscv64"))]
+const KEYRING_SYSCALLS: &[(u32, u32, [u32; 3])] = &[(0xC000_00F3, u32::MAX, [217, 218, 219])];
+#[cfg(all(
+    any(target_os = "linux", test),
+    not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64"))
+))]
+const KEYRING_SYSCALLS: &[(u32, u32, [u32; 3])] = &[];
+
+/// The seccomp program every fenced agent runs under (bwrap `--seccomp`): the
+/// kernel keyring syscalls `add_key`, `request_key` and `keyctl` fail with
+/// `EPERM`; everything else is allowed. `None` on an architecture without a
+/// table, which the fence refuses rather than launching without it.
+///
+/// Only Eldrun needs the keyring. Its saved secrets (`remote_credentials`) are
+/// cached there in front of the Secret Service, in the login session keyring
+/// every process inherits, bubblewrap included. The private `/run` hides the
+/// Secret Service's socket but nothing reached by syscall, so without this a
+/// fenced agent could read every saved SSH, VPN and mail password and the mail
+/// store key. No agent gets a keyring of its own either.
+///
+/// Classic BPF over `seccomp_data` (`nr` at offset 0, `arch` at 4). An
+/// architecture outside the table gets `EPERM` for every syscall.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn keyring_seccomp_filter() -> Option<Vec<u8>> {
+    const LD_W_ABS: u16 = 0x20;
+    const ALU_AND_K: u16 = 0x54;
+    const JMP_JEQ_K: u16 = 0x15;
+    const RET_K: u16 = 0x06;
+    const ALLOW: u32 = 0x7fff_0000;
+    const EPERM: u32 = 0x0005_0000 | libc::EPERM as u32;
+    fn op(code: u16, jt: u8, jf: u8, k: u32) -> [u8; 8] {
+        let mut out = [0u8; 8];
+        out[..2].copy_from_slice(&code.to_ne_bytes());
+        out[2] = jt;
+        out[3] = jf;
+        out[4..].copy_from_slice(&k.to_ne_bytes());
+        out
+    }
+    if KEYRING_SYSCALLS.is_empty() {
+        return None;
+    }
+    let mut prog = vec![op(LD_W_ABS, 0, 0, 4)];
+    for (arch, mask, nrs) in KEYRING_SYSCALLS {
+        let mut body = vec![op(LD_W_ABS, 0, 0, 0)];
+        if *mask != u32::MAX {
+            body.push(op(ALU_AND_K, 0, 0, *mask));
+        }
+        // Each match jumps over the checks after it and the allow, onto the deny.
+        for (i, nr) in nrs.iter().enumerate() {
+            body.push(op(JMP_JEQ_K, (nrs.len() - i) as u8, 0, *nr));
+        }
+        body.push(op(RET_K, 0, 0, ALLOW));
+        body.push(op(RET_K, 0, 0, EPERM));
+        // Another architecture skips this block with `arch` still loaded.
+        prog.push(op(JMP_JEQ_K, 0, body.len() as u8, *arch));
+        prog.extend(body);
+    }
+    prog.push(op(RET_K, 0, 0, EPERM));
+    Some(prog.concat())
+}
+
+/// The shell script that hands bwrap the filter: bwrap takes a seccomp program
+/// only as a descriptor, and no spawn path here can pass one (portable-pty
+/// closes inherited descriptors, tmux starts the command from its server), so
+/// the shell opens it at the last moment and `exec`s: the process is bwrap from
+/// then on. `$1` is the filter file, `$0` bwrap, the rest bwrap's argv.
+#[cfg(any(target_os = "linux", test))]
+const SECCOMP_LAUNCHER: &str = "f=$1; shift; exec \"$0\" --seccomp 9 \"$@\" 9<\"$f\"";
+
+/// `(cmd, args)` that run bwrap with `argv` under [`keyring_seccomp_filter`].
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn seccomp_launcher(bwrap: &str, filter: &Path, argv: Vec<String>) -> (String, Vec<String>) {
+    let mut args = vec![
+        "-c".to_string(),
+        SECCOMP_LAUNCHER.to_string(),
+        bwrap.to_string(),
+        filter.to_string_lossy().into_owned(),
+    ];
+    args.extend(argv);
+    ("/bin/sh".to_string(), args)
+}
+
+/// Write the filter where the launcher reads it: in the state dir, which the
+/// fence masks, rewritten atomically at every spawn so a file edited on disk
+/// never becomes the next agent's filter. Fails closed.
+#[cfg(target_os = "linux")]
+fn write_keyring_filter() -> Result<PathBuf, String> {
+    use std::io::Write as _;
+    let prog = keyring_seccomp_filter()
+        .ok_or_else(|| "Agent fence: no keyring filter for this CPU architecture".to_string())?;
+    let dir = storage::state_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Agent fence: {e}"))?;
+    let path = dir.join("agent-fence-seccomp.bpf");
+    let mut tmp = tempfile::NamedTempFile::new_in(&dir).map_err(|e| format!("Agent fence: keyring filter: {e}"))?;
+    tmp.write_all(&prog).map_err(|e| format!("Agent fence: keyring filter: {e}"))?;
+    tmp.persist(&path).map_err(|e| format!("Agent fence: keyring filter: {e}"))?;
+    Ok(path)
+}
+
 /// Pure bubblewrap argv builder.  Later mounts intentionally shadow earlier
 /// ones: the scope home (or, with no `home_src`, an empty tmpfs) replaces the
 /// user's home and hides everything in it, selected toolchain paths and
@@ -1164,6 +1277,14 @@ pub(crate) fn bwrap_args(
         "/dev".into(),
         "--proc".into(),
         "/proc".into(),
+        // The keyring's names (logins, hosts) are listed here even where the
+        // seccomp filter denies every keyring call.
+        "--ro-bind".into(),
+        "/dev/null".into(),
+        "/proc/keys".into(),
+        "--ro-bind".into(),
+        "/dev/null".into(),
+        "/proc/key-users".into(),
         "--tmpfs".into(),
         "/tmp".into(),
         "--tmpfs".into(),
@@ -1344,8 +1465,8 @@ pub fn wrap_pty_options_bwrap(
     );
     // Last: overlapping roots and allowlists must not reopen private stores.
     mask_private_state(&mut args, &storage::state_dir(), &support_mounts);
-    opts.cmd = bwrap.to_string_lossy().into_owned();
-    opts.args = args;
+    let filter = write_keyring_filter()?;
+    (opts.cmd, opts.args) = seccomp_launcher(&bwrap.to_string_lossy(), &filter, args);
     opts.env
         .insert("ELDRUN_AGENT_FENCE".to_string(), "1".to_string());
     // Keep the CLI's login in its file: the keyring is not reachable here.
@@ -1781,7 +1902,9 @@ pub fn one_shot_command(scope_id: &str, cmd: &str, args: &[String], cwd: &Path) 
         settings().agent_fence_cargo_credentials.unwrap_or(false)));
     guard_git_control(&mut argv, crate::services::git_guard::guard_paths(&roots, Some(cwd)));
     mask_private_state(&mut argv, &storage::state_dir(), &[]);
-    let mut command = crate::paths::command_no_window(bwrap);
+    let filter = write_keyring_filter()?;
+    let (cmd, argv) = seccomp_launcher(&bwrap.to_string_lossy(), &filter, argv);
+    let mut command = crate::paths::command_no_window(cmd);
     command.args(argv);
     command.env("ELDRUN_AGENT_FENCE", "1");
     Ok(command)
@@ -2019,6 +2142,91 @@ mod tests {
     use super::*;
     use crate::schema::boxes::ProjectBox;
     use serde_json::{json, Value};
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_keyring_table_matches_the_native_syscall_numbers() {
+        let (_, _, native) = KEYRING_SYSCALLS[0];
+        assert_eq!(
+            native.map(i64::from),
+            [libc::SYS_add_key, libc::SYS_request_key, libc::SYS_keyctl].map(i64::from)
+        );
+    }
+
+    /// Loads the real program into a child and calls the keyring from there:
+    /// every keyring syscall is refused, and the `exec` and shell that follow
+    /// (everything else) still run.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_keyring_filter_denies_the_keyring_and_nothing_else() {
+        use std::os::unix::process::CommandExt;
+        let prog = keyring_seccomp_filter().expect("a filter for this architecture");
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.args(["-c", "exit 7"]);
+        // SAFETY: only syscalls between fork and exec; `prog` was built before.
+        unsafe {
+            cmd.pre_exec(move || {
+                let fprog = libc::sock_fprog {
+                    len: (prog.len() / 8) as u16,
+                    filter: prog.as_ptr() as *mut libc::sock_filter,
+                };
+                if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0
+                    || libc::prctl(libc::PR_SET_SECCOMP, libc::SECCOMP_MODE_FILTER, &fprog) != 0
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+                let denied = |r: libc::c_long| {
+                    r == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+                };
+                let session: libc::c_long = -3; // KEY_SPEC_SESSION_KEYRING
+                let calls = [
+                    libc::syscall(libc::SYS_keyctl, 0 as libc::c_long, session, 0 as libc::c_long),
+                    libc::syscall(libc::SYS_add_key, c"user".as_ptr(), c"probe".as_ptr(), c"x".as_ptr(), 1usize, session),
+                    libc::syscall(libc::SYS_request_key, c"user".as_ptr(), c"probe".as_ptr(), 0usize, 0 as libc::c_long),
+                ];
+                if calls.iter().all(|r| denied(*r)) {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::from_raw_os_error(libc::EBADMSG))
+                }
+            });
+        }
+        let status = cmd.status().expect("the filtered child refused a keyring call and exec'd");
+        assert_eq!(status.code(), Some(7));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_seccomp_launcher_hands_bwrap_the_filter_on_fd_9() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let filter = dir.path().join("filter.bpf");
+        std::fs::write(&filter, b"program bytes").unwrap();
+        let fake = dir.path().join("bwrap");
+        std::fs::write(&fake, "#!/bin/sh\ncat <&9 >\"$OUT/fd9\"\nprintf '%s\\n' \"$@\" >\"$OUT/args\"\n").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let argv = vec!["--ro-bind".to_string(), "/a b".to_string(), "--".to_string(), "it's".to_string()];
+        let (cmd, args) = seccomp_launcher(&fake.to_string_lossy(), &filter, argv);
+        assert_eq!(cmd, "/bin/sh");
+        let status = std::process::Command::new(cmd).args(args).env("OUT", dir.path()).status().unwrap();
+        assert!(status.success());
+        assert_eq!(std::fs::read(dir.path().join("fd9")).unwrap(), b"program bytes");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("args")).unwrap(),
+            "--seccomp\n9\n--ro-bind\n/a b\n--\nit's\n"
+        );
+    }
+
+    #[test]
+    fn bwrap_masks_the_keyring_listing() {
+        let out = bwrap_args("/home/u", None, "/p", "sh", &[], &[], &[], &[]);
+        for file in ["/proc/keys", "/proc/key-users"] {
+            let at = out.iter().position(|a| a == file).unwrap();
+            assert_eq!(&out[at - 2..at], ["--ro-bind", "/dev/null"]);
+        }
+        let proc_mount = out.windows(2).position(|p| p == ["--proc", "/proc"]).unwrap();
+        assert!(proc_mount < out.iter().position(|a| a == "/proc/keys").unwrap());
+    }
 
     fn proc_(argv0: &str, argv1: Option<&str>, host_ns: bool) -> ProcView {
         ProcView {

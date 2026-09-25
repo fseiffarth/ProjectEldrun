@@ -293,16 +293,19 @@ fn local_tmux_args_with(
     session_env: bool,
 ) -> Vec<String> {
     let line = command_line(target_cmd, target_args, env, session_env);
-    local_tmux_args_for(session, line.as_deref(), env, session_env, is_fence(target_cmd))
+    local_tmux_args_for(session, line.as_deref(), env, session_env, is_fence(target_cmd, env))
 }
 
 /// Whether the tab's command is an agent fence (`agent_fence` has already
-/// rewritten a fenced agent's command to its sandbox launcher by now).
-fn is_fence(cmd: &str) -> bool {
-    matches!(
-        cmd.rsplit('/').next().unwrap_or(cmd),
-        "bwrap" | "sandbox-exec"
-    )
+/// rewritten a fenced agent's command to its sandbox launcher by now). On
+/// Linux that launcher is a shell that `exec`s bwrap, so the fence's own
+/// marker counts as well as the name.
+fn is_fence(cmd: &str, env: &HashMap<String, String>) -> bool {
+    env.contains_key("ELDRUN_AGENT_FENCE")
+        || matches!(
+            cmd.rsplit('/').next().unwrap_or(cmd),
+            "bwrap" | "sandbox-exec"
+        )
 }
 
 /// Run between a fenced command and the pane's trailing login shell: read and
@@ -569,7 +572,7 @@ pub fn wrap_pty_options_local(opts: &mut PtyOptions) {
                     Some(&line),
                     &opts.env,
                     session_env,
-                    is_fence(&opts.cmd),
+                    is_fence(&opts.cmd, &opts.env),
                 );
             }
             Err(e) => {

@@ -61,7 +61,12 @@ the **only mode** a local agent runs in: there is no per-project or global
 "off" any more. On Linux, a locally-running agent that is not already in a
 project container is launched under an outer `bubblewrap` boundary. The host
 root remains visible read-only so compilers and system tools still work;
-`/tmp`, `/run` and `~/.cache` are private; and `$HOME` is not the user's home
+`/tmp`, `/run` and `~/.cache` are private; the kernel keyring is denied (a
+seccomp filter makes `add_key`/`request_key`/`keyctl` fail with `EPERM`, and
+`/proc/keys` is masked) because Eldrun's saved secrets are cached there in the
+login session keyring every process inherits — the private `/run` alone hid
+only the Secret Service, and until 2026-09-25 a fenced agent could read every
+saved SSH, VPN and mail password; and `$HOME` is not the user's home
 at all but the scope's **Eldrun-owned agent home**
 (`services::agent_home`, `<state_dir>/agent-homes/<project_key(scope)>/`),
 bound over the home path. The owning project is mounted read-write. If it
@@ -236,7 +241,8 @@ Composition is explicit:
   `(allow default)`, so mach services stay reachable — `securityd` among them.
   A fenced agent can therefore ask the keychain for any item whose access list
   trusts the requesting tool (`/usr/bin/security` included), which is how the
-  agents sign in at all. The Linux fence hides the keyring; the macOS one cannot
+  agents sign in at all. The Linux fence hides the keyring (Secret Service and
+  kernel keyring alike); the macOS one cannot
   without breaking agent authentication, so treat login-keychain items as
   reachable from a fenced Mac agent. The keychain *file* itself stays unreadable
   (it sits under the hidden `$HOME`).
