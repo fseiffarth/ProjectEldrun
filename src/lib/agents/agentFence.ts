@@ -19,6 +19,18 @@ export function agentFenceInstallCommand(status: AgentFenceStatus | null | undef
   return status.install_cmd || null;
 }
 
+/** The marker `pty_spawn`'s refusal carries on a platform with no fence
+ *  (Windows) while the user has not yet accepted that agents run with their
+ *  full rights. Mirrors `agent_fence::PLATFORM_UNACCEPTED_SENTINEL`. */
+export const FENCE_PLATFORM_UNACCEPTED = "ELDRUN_FENCE_PLATFORM_UNACCEPTED";
+
+/** Whether a spawn error is that refusal — the one a `UnfencedPlatformDialog`
+ *  answer lifts — rather than something to print as it is. */
+export function unfencedPlatformRefusal(e: unknown): boolean {
+  const text = e instanceof Error ? e.message : String(e);
+  return text.includes(FENCE_PLATFORM_UNACCEPTED);
+}
+
 export const AGENT_FENCE_DEFAULT_PATHS = [
   "~/.local/bin",
   "~/.local/share/claude",

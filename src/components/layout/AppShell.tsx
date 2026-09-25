@@ -64,6 +64,7 @@ import {
 } from "../common/EdgeRailIcons";
 import { HostKeyConfirmDialog } from "../common/HostKeyConfirmDialog";
 import { HpcGuardDialog } from "../common/HpcGuardDialog";
+import { UnfencedPlatformDialog } from "../common/UnfencedPlatformDialog";
 import { StopProjectDialog } from "../common/StopProjectDialog";
 import { SyncConfirmDialog } from "../common/SyncConfirmDialog";
 import { RemoteUsageWarningDialog } from "../common/RemoteUsageWarningDialog";
@@ -1318,6 +1319,9 @@ export function AppShell() {
           here for the same reason the host-key prompt is: the caller is a lib
           function with no component of its own to render into. */}
       <HpcGuardDialog />
+      {/* Windows: the once-per-machine "agents run with your full rights"
+          acceptance a refused agent spawn asks for; same host rule as above. */}
+      <UnfencedPlatformDialog />
       <StopProjectDialog />
       {/* "This will overwrite that side" — the confirmation every byte-sync
           transfer asks for. Here for the same reason as the two above: a pull or

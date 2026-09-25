@@ -24,6 +24,8 @@ import {
 } from "../../lib/terminal/terminalBus";
 import { hpcGuardRefusal } from "../../lib/remote/hpc/hpcGuard";
 import { useHpcGuardStore } from "../../stores/remote/hpc/hpcGuardPrompt";
+import { unfencedPlatformRefusal } from "../../lib/agents/agentFence";
+import { useUnfencedPlatformStore } from "../../stores/unfencedPlatformPrompt";
 import { CSI_U_SHIFT_TAB, FORCE_SELECTION_MODIFIER, SILENT_START_MS, agentMouseDownAction, bufferTail, claimInitialInput, decodeOsc52Clipboard, initialInputForPty, claudeLaunchName, isClaudeCommand, isCodexCommand, isTerminalAutoReply, isTerminalIdentityResponse, isTerminalReport, showsAgentTrustDialog, silentStartNotice, stripTerminalQueries, suppressNativeContextMenu, terminalProgramLabel, type SilentStartNotice } from "../../lib/terminal/terminalControl";
 import { registerTerminal, unregisterTerminal } from "../../lib/terminal/terminalRegistry";
 import { clearPtyInput, writePtyInput } from "../../lib/terminal/terminalInput";
@@ -411,6 +413,9 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       program: program || t("terminal.silentStartShell"),
       s: SILENT_START_MS / 1000,
     });
+  // What the pane says when the Windows "full rights" acceptance was declined.
+  const unfencedDeclinedTextRef = useRef<() => string>(() => "");
+  unfencedDeclinedTextRef.current = () => t("unfencedPlatform.declined");
 
   const focusedRef = useRef(focused);
   visibleRef.current = visible;
@@ -1252,6 +1257,27 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         // holds a standing authorization once it is up
         // (`services::remote::connect_host`), which is the only distinction this
         // seam can make. So the retry is connect-then-spawn, not a flag.
+        // **A fence-less platform's refusal, made a one-time question.** On
+        // Windows `pty_spawn` refuses every local agent until the user has
+        // accepted, once, that agents there run with their full rights
+        // (`agent_fence::PlatformUnaccepted`). Every tab refused at the same
+        // moment — a restored session — shares the one prompt; accepting
+        // persists the answer, and the retry is the same spawn.
+        if (unfencedPlatformRefusal(e)) {
+          const accepted = await useUnfencedPlatformStore.getState().request();
+          if (cancelled) return;
+          if (!accepted) {
+            writeTerm(`\r\n\x1b[33m[${unfencedDeclinedTextRef.current()}]\x1b[0m\r\n`);
+            return;
+          }
+          try {
+            await spawn();
+            spawnState = "spawned";
+          } catch (retryErr) {
+            if (!cancelled) writeTerm(`\r\n\x1b[31m[spawn error: ${retryErr}]\x1b[0m\r\n`);
+          }
+          return;
+        }
         const refusal = hpcGuardRefusal(e);
         if (!refusal) {
           writeTerm(`\r\n\x1b[31m[spawn error: ${e}]\x1b[0m\r\n`);

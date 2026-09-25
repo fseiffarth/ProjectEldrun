@@ -41,7 +41,9 @@ Three rules follow:
   stand in the way.
 - **Fence:** on by default (`Settings::agent_fence()`), bubblewrap on Linux,
   `sandbox-exec` on macOS. **Windows has no fence** (`platform_fenceable()`);
-  agents run unfenced there and only the pill says so.
+  agents run unfenced there. The first agent spawn is refused until the user
+  accepts that once (`agent_fence_platform_accepted`, #2327 b); a WSL2-hosted
+  fence is the candidate for a real one (#2327 c).
 - **Fence network:** the fence shares the host network namespace. `DISPLAY` is
   not scrubbed and the abstract X11 socket is reachable. On a desktop that
   grants `SI:localuser:$USER` (GNOME's default), a same-uid client may connect

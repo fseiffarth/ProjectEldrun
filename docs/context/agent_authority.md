@@ -145,8 +145,18 @@ Composition is explicit:
   without breaking agent authentication, so treat login-keychain items as
   reachable from a fenced Mac agent. The keychain *file* itself stays unreadable
   (it sits under the hidden `$HOME`).
-- Windows has no unprivileged filesystem sandbox to build a fence on; the
-  status says so rather than presenting a false guarantee.
+- Windows has no fence; the status says so rather than presenting a false
+  guarantee, and the first local agent spawn is refused
+  (`FenceDecision::PlatformUnaccepted`) until the user accepts once that
+  agents there run with their full rights (`agent_fence_platform_accepted`).
+  AppContainer, the one unprivileged sandbox Windows offers, was rejected: it
+  cuts loopback for the contained process unless an admin adds an exemption,
+  and every Eldrun MCP endpoint (`root_mcp`, git push, schedule, help), the
+  local-model endpoint and the agents' own OAuth callbacks are `127.0.0.1`.
+  It also blocks Credential Manager and `%TEMP%`. Low integrity / restricted
+  tokens block writes but not reads, and hidden reads are the point. The
+  candidate for a real Windows fence is the Linux fence unchanged inside
+  WSL2 — see todo #2327 (c) for what must be verified first.
 - Shell/script tabs are the user's terminals and are never fenced.
 - A persistent (tmux) agent tab keeps an **unfenced** login shell after the
   agent exits, on the same terminal. Where the kernel still honours `TIOCSTI`

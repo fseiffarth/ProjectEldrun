@@ -700,6 +700,20 @@ function AgentFenceCard() {
         />
       </label>
       <p className="settings-help">{t("settings.agentFenceCargoCredentialsHelp")}</p>
+      {settings?.agent_fence_platform_accepted && (
+        // Only once given: the acceptance a fence-less platform (Windows) asks
+        // for before the first agent tab. Switching it off asks again next time.
+        <>
+          <label className="settings-toggle-card-row">
+            <span>{t("settings.agentFencePlatformAccepted")} <UntestedTag id="settings.agentFencePlatformAccepted" /></span>
+            <Toggle
+              checked
+              onChange={() => void updateSettings({ agent_fence_platform_accepted: false })}
+            />
+          </label>
+          <p className="settings-help">{t("settings.agentFencePlatformAcceptedHelp")}</p>
+        </>
+      )}
       <label className="settings-toggle-card-row">
         <span>{t("settings.rootFenceProjects")} <UntestedTag id="settings.rootFenceProjects" /></span>
         <Toggle

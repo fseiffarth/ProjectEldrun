@@ -536,6 +536,9 @@ export interface Settings {
   agent_fence_paths?: string[];
   /** Opt-in access to Cargo registry credential files in exposed toolchains. */
   agent_fence_cargo_credentials?: boolean;
+  /** Accepted once: agents on a platform with no fence (Windows) run with the
+   *  user's full rights. Backend-enforced (`agent_fence::platform_accepted`). */
+  agent_fence_platform_accepted?: boolean;
   /** A fenced root-console agent sees every project, box folder and remote
    *  mirror read-only (default off: a widening). The mail `attach` argument
    *  needs it; recorded per root tab at spawn. */

@@ -1109,10 +1109,43 @@ Eldrun. None of these is started.
     Display only — Eldrun still never picks or changes the mode.
 
 2327. **Agents on Windows run with the user's full rights.** No fence exists
-    there (`platform_fenceable()`). **Your call:** (a) in Standard, agent tabs
-    run in the project container (Docker Desktop/WSL2), with a one-click
-    install when missing; or (b) Standard asks once to accept "agents on this
-    computer run with your full rights".
+    there (`platform_fenceable()`).
+    - ✅ (b) The first local agent spawn is refused until the user accepts
+      once — `FenceDecision::PlatformUnaccepted`, `UnfencedPlatformDialog`,
+      `agent_fence_platform_accepted`; Settings → Agent fence can withdraw it.
+      🖐️ Not run live (no Windows box here): open an agent tab on Windows;
+      the prompt shows once, Cancel starts nothing, Accept starts the tab and
+      the next tab starts without asking. Linux/macOS never show it.
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+    - ❌ AppContainer, rejected: cuts loopback (every Eldrun MCP endpoint,
+      Ollama, agent OAuth callbacks are `127.0.0.1`; exemption is admin-only),
+      blocks Credential Manager and `%TEMP%`. Low-IL/restricted tokens don't
+      hide reads. Rationale in `docs/context/agent_authority.md`.
+    - (a) Project container (Docker Desktop) stays the opt-in stronger boundary;
+      needs `C:\` ↔ container path mapping (the same-absolute-path invariant
+      can't hold on Windows) and Docker Desktop's licensing.
+    - (c) **Candidate real fence: the Linux fence unchanged inside WSL2.**
+      Agent tabs run `wsl.exe -d <distro>` with Eldrun-owned Linux agent
+      installs; `services::agent_fence` wraps them as on Linux. Costs: hide
+      `/mnt/*` except the project (else `C:\Users\<you>` is readable), kill
+      interop, `C:\`↔`/mnt/c/` path mapping wherever paths cross (eldrun-send,
+      git MCP, mobile control), drvfs speed, no Windows toolchain for the
+      agent, one-time `wsl --install` (UAC + reboot). **Go/no-go checks, run
+      in the default WSL distro before any code:**
+      1. `bwrap --ro-bind / / --dev /dev --proc /proc --unshare-user --tmpfs /tmp true; echo $?`
+         — must print `0` (unprivileged userns + bwrap work in WSL2).
+      2. `bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /run --tmpfs /tmp --unshare-user --unsetenv WSL_INTEROP --unsetenv WSL_DISTRO_NAME bash -c 'cmd.exe /c echo LEAK; powershell.exe -c echo LEAK'`
+         — must print no `LEAK` (interop dead inside the fence; if it prints,
+         the design is void until interop can be disabled per process, e.g.
+         `/proc/sys/fs/binfmt_misc/WSLInterop` is ro-bound to an empty file).
+      3. `bwrap --ro-bind / / --tmpfs /mnt/c/Users/$WINUSER --bind /mnt/c/Users/$WINUSER/<project> /mnt/c/Users/$WINUSER/<project> --unshare-user ls /mnt/c/Users/$WINUSER`
+         — must list only `<project>`, and a write into it must land on `C:\`.
+      4. From WSL: `curl -s http://127.0.0.1:<eldrun-mcp-port>/mcp/help` —
+         reaches Eldrun only under mirrored networking (`.wslconfig`
+         `networkingMode=mirrored`, Win11 22H2+); NAT needs Eldrun to also
+         bind the WSL vEthernet address (token-protected as today).
+
 
 2328. **Warn about a planted `.git/commondir`.** Eldrun's own git ignores it
     (#862), but the user's own terminal git follows it. Detect a `commondir`

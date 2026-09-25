@@ -100,7 +100,13 @@ On Linux, local agent tabs run inside a bubblewrap filesystem fence by
 default: the project is writable, your home folder (SSH keys, other
 credentials, other projects) is hidden. If `bwrap` is missing the agent does
 not start, and Eldrun offers `sudo apt install bubblewrap` in a terminal tab.
-A project can switch the fence off explicitly. Windows has no fence.
+A project can switch the fence off explicitly.
+
+Windows has no fence: an agent there runs with your full rights — other
+projects, saved passwords, SSH keys, your browser profile. Eldrun says so
+before the first agent tab starts and asks you to accept that once; declining
+starts nothing. For a real boundary on Windows, open the project in a
+container.
 
 ## Custom agents and skills
 

@@ -440,6 +440,12 @@ pub struct Settings {
     /// paths. Default false; independent of agent login and resume credentials.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_fence_cargo_credentials: Option<bool>,
+    /// The user has accepted, once, that agents on a platform with no fence
+    /// (Windows) run with their full rights. Until written, `pty_spawn` refuses
+    /// every local agent there and the frontend asks; the answer outlives the
+    /// session because it is a policy about the machine, not one act.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_fence_platform_accepted: Option<bool>,
     /// Let a fenced **root** agent read every project (local directories, box
     /// folders, remote mirrors) read-only. Default off: one poisoned project can
     /// then reach the others through an agent with open network access.
@@ -912,6 +918,12 @@ impl Settings {
     /// ON so older settings files adopt the safer posture automatically.
     pub fn agent_fence(&self) -> bool {
         self.agent_fence.unwrap_or(true)
+    }
+
+    /// Whether unfenced agents on a fence-less platform were accepted. Off
+    /// unless written: silence must never count as consent to full rights.
+    pub fn agent_fence_platform_accepted(&self) -> bool {
+        self.agent_fence_platform_accepted.unwrap_or(false)
     }
 
     /// Whether the root fence exposes every project read-only. Off unless

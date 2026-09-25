@@ -76,6 +76,7 @@ import { BrowserDownloadHost } from "../browser/BrowserDownloadHost";
 import { ExecTrustHost } from "../common/ExecTrustHost";
 import { SyncConfirmDialog } from "../common/SyncConfirmDialog";
 import { HpcGuardDialog } from "../common/HpcGuardDialog";
+import { UnfencedPlatformDialog } from "../common/UnfencedPlatformDialog";
 import { ScreenshotSaveOverlay } from "./ScreenshotSaveOverlay";
 import { DetachedCloseChoice } from "./DetachedCloseChoice";
 
@@ -842,6 +843,7 @@ export function DetachedApp({ param }: Props) {
           rather than parking when no host is mounted, so the two together make
           the hang impossible in either direction.) */}
       <HpcGuardDialog />
+      <UnfencedPlatformDialog />
       {/* #233: the screenshot save step. `useScreenshotPendingStore` is
           per-window, so a PDF screenshot taken in a popout raised its overlay
           nowhere: the shot reached the clipboard and the save-to-project half of

@@ -116,11 +116,32 @@ pub fn fence_tool_name() -> &'static str {
 }
 
 /// Whether this OS has a fence implementation at all: Linux (bubblewrap) and
-/// macOS (sandbox-exec). Windows has no unprivileged filesystem sandbox a
-/// process can wrap another in, so agents there run unfenced and the pill says
-/// so.
+/// macOS (sandbox-exec). Windows has no fence: AppContainer is the one
+/// unprivileged sandbox there, and it cuts loopback, which every Eldrun MCP
+/// endpoint, local model and agent sign-in needs (`docs/context/agent_authority.md`).
+/// Agents there run unfenced, the pill says so, and the first one is refused
+/// until the user accepts that ([`platform_accepted`]).
 pub fn platform_fenceable() -> bool {
     cfg!(any(target_os = "linux", target_os = "macos"))
+}
+
+/// Whether the user has accepted, once, that agents on this fence-less
+/// platform run with their full rights (`Settings::agent_fence_platform_accepted`).
+pub fn platform_accepted() -> bool {
+    settings().agent_fence_platform_accepted()
+}
+
+/// The marker `pty_spawn`'s refusal carries when a fence-less platform has not
+/// been accepted yet. The frontend (`lib/agents/agentFence.ts`) matches it,
+/// asks, and retries; no other refusal starts with it.
+pub const PLATFORM_UNACCEPTED_SENTINEL: &str = "ELDRUN_FENCE_PLATFORM_UNACCEPTED";
+
+/// The spawn refusal on a fence-less platform nobody has accepted yet.
+pub fn platform_unaccepted_message() -> String {
+    format!(
+        "{PLATFORM_UNACCEPTED_SENTINEL} Agent fence: {} has no agent fence, so this agent would run with your full rights. Accept that once in the prompt Eldrun shows, or open the project in a container.",
+        platform_reason()
+    )
 }
 
 /// The backend authority decision.  `Unavailable` is fail-closed at spawn.
@@ -128,6 +149,10 @@ pub fn platform_fenceable() -> bool {
 pub enum FenceDecision {
     Fenced { roots: Vec<PathBuf> },
     NotApplicable { reason: &'static str },
+    /// No fence exists on this platform and the user has not yet accepted
+    /// that agents run with their full rights. Refused at spawn, like
+    /// `Unavailable`; the frontend asks and retries.
+    PlatformUnaccepted,
     /// The fence tool is missing or unusable. The install advice is not carried
     /// here: it depends on the distribution, and [`fence_unavailable_message`]
     /// reads it, which keeps this decision pure.
@@ -195,14 +220,16 @@ pub fn is_agent(opts: &PtyOptions) -> bool {
 
 /// Pure decision matrix.  Root resolution and remote detection are passed in so
 /// the policy is testable without touching the state directory. `fenceable` is
-/// [`platform_fenceable`] and `tool_ok` is [`bwrap_available`] (the fence tool
-/// probe, whichever tool that is on this OS).
+/// [`platform_fenceable`], `platform_ok` is [`platform_accepted`] (only read
+/// when there is no fence to build) and `tool_ok` is [`bwrap_available`] (the
+/// fence tool probe, whichever tool that is on this OS).
 pub fn decide(
     opts: &PtyOptions,
     roots: Vec<PathBuf>,
     remote_run: bool,
     policy_on: bool,
     fenceable: bool,
+    platform_ok: bool,
     tool_ok: bool,
 ) -> FenceDecision {
     if !is_agent(opts) {
@@ -219,7 +246,14 @@ pub fn decide(
         };
     }
     if !fenceable {
-        return FenceDecision::NotApplicable { reason: "platform" };
+        // A fence switched off for the project is still a choice the user made
+        // knowing what the fence is; a platform without one gets the same
+        // choice, made once for the machine rather than assumed.
+        return if platform_ok {
+            FenceDecision::NotApplicable { reason: "platform" }
+        } else {
+            FenceDecision::PlatformUnaccepted
+        };
     }
     if !policy_on {
         return FenceDecision::NotApplicable { reason: "off" };
@@ -1791,13 +1825,15 @@ pub fn status_for_scope(scope_id: &str) -> AgentFenceStatus {
         remote_run,
         policy_for_scope(&projects, Some(scope_id)),
         platform_fenceable(),
+        platform_accepted(),
         available,
     );
     let (enforced, reason) = match decision {
         FenceDecision::Fenced { .. } => (true, "enforced".to_string()),
-        FenceDecision::NotApplicable { reason: "platform" } => {
-            (false, platform_reason().to_string())
-        }
+        // Accepted or not, the pill states the same fact; the acceptance is
+        // asked for at spawn, where declining still has a tab to write into.
+        FenceDecision::NotApplicable { reason: "platform" }
+        | FenceDecision::PlatformUnaccepted => (false, platform_reason().to_string()),
         FenceDecision::NotApplicable { reason } => (false, reason.to_string()),
         FenceDecision::Unavailable => (false, format!("{} unavailable", fence_tool_name())),
     };
@@ -1855,6 +1891,7 @@ pub fn claude_config_staged(scope_id: Option<&str>, sandbox: bool, local_only: b
             remote_run,
             policy_enabled(scope_id),
             platform_fenceable(),
+            platform_accepted(),
             bwrap_available(),
         ),
         FenceDecision::Fenced { .. }
@@ -2556,19 +2593,19 @@ mod tests {
     fn decision_matrix() {
         let roots = vec![PathBuf::from("/p")];
         assert_eq!(
-            decide(&opts("bash"), roots.clone(), false, true, true, true),
+            decide(&opts("bash"), roots.clone(), false, true, true, true, true),
             FenceDecision::NotApplicable { reason: "shell" }
         );
         let mut container = opts("claude");
         container.sandbox = true;
         assert_eq!(
-            decide(&container, roots.clone(), false, true, true, true),
+            decide(&container, roots.clone(), false, true, true, true, true),
             FenceDecision::NotApplicable {
                 reason: "container"
             }
         );
         assert_eq!(
-            decide(&opts("claude"), roots.clone(), true, true, true, true),
+            decide(&opts("claude"), roots.clone(), true, true, true, true, true),
             FenceDecision::NotApplicable {
                 reason: "remote host"
             }
@@ -2582,23 +2619,51 @@ mod tests {
                 false,
                 true,
                 true,
+                true,
                 true
             ),
             FenceDecision::Fenced { roots }
                 if roots == vec![PathBuf::from("/mirror/p")]
         ));
         assert_eq!(
-            decide(&opts("claude"), roots.clone(), false, false, true, true),
+            decide(&opts("claude"), roots.clone(), false, false, true, true, true),
             FenceDecision::NotApplicable { reason: "off" }
         );
         assert!(matches!(
-            decide(&opts("claude"), roots.clone(), false, true, true, false),
+            decide(&opts("claude"), roots.clone(), false, true, true, true, false),
             FenceDecision::Unavailable
         ));
+        // No fence on this platform: refused until accepted once, then plain
+        // "not applicable" — whatever the policy or the (irrelevant) tool says.
+        assert_eq!(
+            decide(&opts("claude"), roots.clone(), false, true, false, false, false),
+            FenceDecision::PlatformUnaccepted
+        );
+        assert_eq!(
+            decide(&opts("claude"), roots.clone(), false, false, false, false, false),
+            FenceDecision::PlatformUnaccepted
+        );
+        assert_eq!(
+            decide(&opts("claude"), roots.clone(), false, true, false, true, false),
+            FenceDecision::NotApplicable { reason: "platform" }
+        );
+        // Shells, containers and remote runs never ask: nothing of the user's
+        // machine is at stake that isn't already.
+        assert_eq!(
+            decide(&opts("bash"), roots.clone(), false, true, false, false, false),
+            FenceDecision::NotApplicable { reason: "shell" }
+        );
+        assert_eq!(
+            decide(&opts("claude"), roots.clone(), true, true, false, false, false),
+            FenceDecision::NotApplicable {
+                reason: "remote host"
+            }
+        );
+        assert!(platform_unaccepted_message().starts_with(PLATFORM_UNACCEPTED_SENTINEL));
         let mut custom = opts("my-agent-wrapper");
         custom.agent = true;
         assert!(matches!(
-            decide(&custom, roots, false, true, true, true),
+            decide(&custom, roots, false, true, true, true, true),
             FenceDecision::Fenced { .. }
         ));
     }

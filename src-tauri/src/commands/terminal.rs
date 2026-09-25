@@ -670,6 +670,7 @@ pub async fn pty_spawn(
             remote_agent_run,
             crate::services::agent_fence::policy_enabled(opts.project_id.as_deref()),
             crate::services::agent_fence::platform_fenceable(),
+            crate::services::agent_fence::platform_accepted(),
             crate::services::agent_fence::bwrap_available(),
         );
         match decision {
@@ -695,6 +696,11 @@ pub async fn pty_spawn(
                     None => crate::services::root_mcp::ProjectsGrant::Hidden,
                 };
                 fenced_registration = Some((opts.id.clone(), scope_id));
+            }
+            // Fail closed on a fence-less platform too: the tab that asked
+            // shows the acceptance prompt and retries once it is given.
+            crate::services::agent_fence::FenceDecision::PlatformUnaccepted => {
+                return Err(crate::services::agent_fence::platform_unaccepted_message());
             }
             crate::services::agent_fence::FenceDecision::Unavailable => {
                 return Err(crate::services::agent_fence::fence_unavailable_message());
