@@ -3,7 +3,8 @@
  *
  * The desktop acks every binary input frame by its ordinal on the socket
  * (`pty_bridge.rs`, `TerminalEvent::Ack`). A frame nothing acks within
- * `ACK_DEADLINE` was buffered into a dead link: the prompt's bubble stays
+ * `ACK_DEADLINE`, and no pong answers the ping sent then within
+ * `ACK_PROBE_GRACE`, was buffered into a dead link: the prompt's bubble stays
  * exactly where it is, says so, and offers Resend, which sends the same words
  * as new frames under the same bubble; the ack for those clears the marker.
  * The bubble is never removed or re-ordered.
@@ -125,7 +126,7 @@ describe("Eldrun Mobile prompt delivery", () => {
     const framesBefore = socket().frames;
 
     // Nothing acks: past the deadline the bubble says so — in place, unchanged.
-    await tick(5_200);
+    await tick(9_300);
     expect(bubble()).toBe(shown);
     expect(shown.getAttribute("data-send-failed")).toBe("true");
     expect(shown.textContent).toContain("also the tests");
@@ -160,7 +161,7 @@ describe("Eldrun Mobile prompt delivery", () => {
   it("takes the marker down when the ack comes after the deadline", async () => {
     await sendPrompt();
     const shown = bubble();
-    await tick(5_200);
+    await tick(9_300);
     expect(shown.getAttribute("data-send-failed")).toBe("true");
     act(() => socket().ack());
     await tick(0);
@@ -169,17 +170,27 @@ describe("Eldrun Mobile prompt delivery", () => {
     expect(screen.queryByText(/Not delivered/)).toBeNull();
   });
 
-  it("counts a pong as delivery for the frames sent before its ping — a sidecar that never acks", async () => {
+  it("asks for a pong at the deadline and never marks what it vouches for — a late ack or a sidecar that never acks", async () => {
     await sendPrompt();
-    await tick(5_200);
-    expect(bubble().getAttribute("data-send-failed")).toBe("true");
-    // The next ping goes out after every frame of the prompt.
     const pings = socket().pings;
-    await tick(20_000);
+    await tick(5_050);
+    // The deadline probes the link instead of marking the bubble at once.
     expect(socket().pings).toBeGreaterThan(pings);
-    act(() => socket().pong());
-    await tick(0);
     expect(bubble().hasAttribute("data-send-failed")).toBe(false);
+    act(() => socket().pong());
+    await tick(10_000);
+    expect(bubble().hasAttribute("data-send-failed")).toBe(false);
+    expect(screen.queryByText(/Not delivered/)).toBeNull();
+  });
+
+  it("never raises the composer's notice for a keystroke the probe's pong vouches for", async () => {
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await tick(50);
+    fireEvent.click(screen.getByRole("button", { name: "Enter" }));
+    await tick(5_050);
+    act(() => socket().pong());
+    await tick(10_000);
+    expect(screen.queryByText(/That did not reach the desktop/)).toBeNull();
   });
 
   it("does not take a pong for a ping sent before the frames as their delivery", async () => {
@@ -190,7 +201,7 @@ describe("Eldrun Mobile prompt delivery", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await tick(600);
     act(() => socket().pong());
-    await tick(5_200);
+    await tick(9_300);
     expect(bubble().getAttribute("data-send-failed")).toBe("true");
   });
 
@@ -198,7 +209,7 @@ describe("Eldrun Mobile prompt delivery", () => {
     render(<Terminal tab={TAB} back={() => {}} />);
     await tick(50);
     fireEvent.click(screen.getByRole("button", { name: "Enter" }));
-    await tick(5_200);
+    await tick(9_300);
     screen.getByText(/That did not reach the desktop/);
     act(() => socket().ack());
     await tick(0);

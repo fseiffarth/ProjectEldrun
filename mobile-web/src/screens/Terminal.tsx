@@ -135,6 +135,9 @@ const RESUME_GRACE = 4_000;
  * prompt buffered into a half-open socket, and a reader should learn which
  * within seconds, not after the next missed pong. */
 const ACK_DEADLINE = 5_000;
+/** How long the pong asked for at an overdue ack may take before the frames
+ * it would vouch for count as lost (see `armAck`). */
+const ACK_PROBE_GRACE = 4_000;
 /** Bytes the browser may hold unsent before the link counts as stalled. The
  * phone's frames are keystrokes and prompts; this much sitting in the socket's
  * buffer is a link that has stopped taking anything. */
@@ -1106,11 +1109,28 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
       pingMarks.push(inputFrames);
       socket.send(JSON.stringify({ type: "ping" }));
     };
+    /** An overdue ack is not yet a lost frame: a late ack (behind a burst of
+     * output) or a desktop that predates acks left the marker flickering up on
+     * every prompt and the composer's notice up after every keystroke. Past
+     * the deadline the link is asked for a pong — which vouches for every
+     * frame sent before its ping — and only what that has not cleared within
+     * ACK_PROBE_GRACE counts as lost. */
     const armAck = () => {
       if (ackTimer || ![...unacked.values()].some((entry) => !entry.late)) return;
       ackTimer = window.setTimeout(() => {
+        const overdue = Date.now() - ACK_DEADLINE;
+        const socket = ws;
+        if (socket?.readyState === WebSocket.OPEN && [...unacked.values()].some((entry) => !entry.late && entry.at <= overdue)) {
+          sendPing(socket);
+          ackTimer = window.setTimeout(() => {
+            ackTimer = 0;
+            failUnacked(overdue);
+            armAck();
+          }, ACK_PROBE_GRACE);
+          return;
+        }
         ackTimer = 0;
-        failUnacked(Date.now() - ACK_DEADLINE);
+        failUnacked(overdue);
         armAck();
       }, ACK_DEADLINE);
     };
@@ -1288,9 +1308,8 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
           return;
         }
         if (control.type === "replay") {
-          // A replay on a socket that still owed acks means the desktop
-          // reattached under us: what was in flight did not reach the pane.
-          failUnacked(Number.POSITIVE_INFINITY, true);
+          // The desktop sends this once, before it reads any input: frames the
+          // phone sent ahead of it are still to be written and acked, not lost.
           // The server is about to resend the session. Without an explicit
           // boundary the replay was appended to whatever was already on screen,
           // so each reconnect left another copy of the same agent turn — and a
