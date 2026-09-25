@@ -1045,8 +1045,42 @@ fn claude_prompt_text(text: &str) -> Option<String> {
     if CLAUDE_NOT_A_PROMPT.iter().any(|tag| text.starts_with(*tag)) || is_cli_written_block(text) {
         return None;
     }
-    let text = strip_trailing_blocks(text);
+    let text = collapse_pasted_blocks(strip_trailing_blocks(text));
+    let text = text.trim();
     (!text.is_empty()).then(|| text.to_string())
+}
+
+/// Text pasted into Claude Code is recorded as `<pasted_content id="…">…
+/// </pasted_content id="…">` beside what the user typed, and the tag led every
+/// card and bubble for such a prompt (2026-09-25). Each block is shown as the
+/// CLI's own composer shows it — `[Pasted text #1 +N lines]` — so the words
+/// the user typed around it stay readable. Only a block that closes with its
+/// own id is collapsed; anything else is left as written.
+fn collapse_pasted_blocks(text: &str) -> String {
+    const OPEN: &str = "<pasted_content";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    let mut count = 0;
+    while let Some(start) = rest.find(OPEN) {
+        let after = &rest[start + OPEN.len()..];
+        let Some(head_end) = after.find('>') else { break };
+        let attrs = &after[..head_end];
+        if !(attrs.is_empty() || attrs.starts_with(' ')) {
+            out.push_str(&rest[..start + OPEN.len()]);
+            rest = after;
+            continue;
+        }
+        let body = &after[head_end + 1..];
+        let close = format!("</pasted_content{attrs}>");
+        let Some(body_end) = body.find(&close) else { break };
+        count += 1;
+        let lines = body[..body_end].trim_matches('\n').lines().count();
+        out.push_str(&rest[..start]);
+        out.push_str(&format!("[Pasted text #{count} +{lines} lines]"));
+        rest = &body[body_end + close.len()..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// A Codex rollout record: the `user_message` event is the prompt as typed;
@@ -1672,7 +1706,14 @@ fn container_hook_script_path() -> PathBuf {
 /// conversation. A Claude tab's session id is its launch key and stays that id
 /// until `/clear` or `/resume` rolls it (the `source` field says which), and
 /// `Stop` never introduces an id, so a session id that is neither the key nor
-/// the current record is accepted only from a `clear`/`resume` start — and only
+/// the current record is accepted only from a `clear`/`resume` start — or from a
+/// plain `startup` while the tab's own session has no transcript yet: Claude
+/// (2.1.282) relaunches itself to switch its renderer (the fullscreen upsell,
+/// `/tui`) or to update, and a session with no transcript comes back under a
+/// fresh id with `--session-id` dropped, so the record stayed on a launch id
+/// that never wrote a file and the phone read an empty conversation; a CLI
+/// nested under the tab is started by a session that has been prompted, whose
+/// transcript exists beside the new one — and only
 /// with Claude's own transcript for it (`…/<session_id>.jsonl`): a Codex run
 /// from the tab's shell fires the same `clear` start after its own `/clear`,
 /// with a null `transcript_path` or a `rollout-…` one, and took the Claude
@@ -1725,11 +1766,22 @@ fn posix_hook_script_body(live_dir: &str) -> String {
          \x20   # must come from the session the tab already recorded.\n\
          \x20   if [ \"$event\" != SessionStart ] && [ -n \"$cur\" ] && [ \"$sid\" != \"$cur\" ]; then exit 0; fi ;;\n\
          \x20 *) if [ \"$sid\" != \"$ELDRUN_TAB_UID\" ] && [ \"$sid\" != \"$cur\" ]; then\n\
-         \x20      case \"$src\" in clear|resume) ;; *) exit 0 ;; esac\n\
          \x20      # Claude names the new transcript after its session; a Codex run under\n\
          \x20      # the tab sends null (a /clear, no rollout yet) or a rollout-… file.\n\
          \x20      [ \"$tnull\" = null ] && exit 0\n\
          \x20      case \"$tpath\" in \"\"|*/\"$sid\".jsonl) ;; *) exit 0 ;; esac\n\
+         \x20      case \"$src\" in\n\
+         \x20        clear|resume) ;;\n\
+         \x20        # Claude relaunches itself (switching its renderer, updating) and,\n\
+         \x20        # while its session has no transcript yet, comes back under a fresh\n\
+         \x20        # id with a plain start. The tab's own session is then the one whose\n\
+         \x20        # transcript is missing beside the new one; a CLI nested under the\n\
+         \x20        # tab was started by a session that has been prompted, whose file\n\
+         \x20        # is there.\n\
+         \x20        startup) [ \"$ELDRUN_TAB_AGENT\" = claude ] && [ -n \"$tpath\" ] || exit 0\n\
+         \x20          [ -f \"${{tpath%/*}}/${{cur:-$ELDRUN_TAB_UID}}.jsonl\" ] && exit 0 ;;\n\
+         \x20        *) exit 0 ;;\n\
+         \x20      esac\n\
          \x20    fi ;;\n\
          esac\n\
          if [ \"$event\" = SessionStart ] && [ \"$ELDRUN_TAB_AGENT\" = claude ] && [ -n \"$ELDRUN_PROJECT_DIR\" ]; then\n\
@@ -1815,12 +1867,22 @@ fn hook_script_body(live_dir: &str) -> String {
          }} elseif (($sid -ne $uid) -and ($sid -ne $cur)) {{\r\n\
          \x20 $src = ''\r\n\
          \x20 if ($ms.Success) {{ $src = $ms.Groups[1].Value }}\r\n\
-         \x20 if (($src -ne 'clear') -and ($src -ne 'resume')) {{ exit 0 }}\r\n\
          \x20 # Claude names the new transcript after its session; a Codex run under\r\n\
          \x20 # the tab sends null (a /clear, no rollout yet) or a rollout-... file.\r\n\
          \x20 if ($payload -match '\"transcript_path\"\\s*:\\s*null') {{ exit 0 }}\r\n\
          \x20 $mt = [regex]::Match($payload, '\"transcript_path\"\\s*:\\s*\"([^\"]*)\"')\r\n\
          \x20 if ($mt.Success -and ($mt.Groups[1].Value -notmatch ('[\\\\/]' + [regex]::Escape($sid) + '\\.jsonl$'))) {{ exit 0 }}\r\n\
+         \x20 if ($src -eq 'startup') {{\r\n\
+         \x20   # Claude relaunches itself (switching its renderer, updating) and, while\r\n\
+         \x20   # its session has no transcript yet, comes back under a fresh id with a\r\n\
+         \x20   # plain start: the tab's own session is the one whose transcript is\r\n\
+         \x20   # missing beside the new one (see the POSIX twin).\r\n\
+         \x20   if (($env:ELDRUN_TAB_AGENT -ne 'claude') -or (-not $mt.Success)) {{ exit 0 }}\r\n\
+         \x20   $ref = $cur\r\n\
+         \x20   if ($ref -eq '') {{ $ref = $uid }}\r\n\
+         \x20   $tdir = Split-Path ($mt.Groups[1].Value -replace '\\\\\\\\', '\\') -Parent\r\n\
+         \x20   if (Test-Path (Join-Path $tdir ($ref + '.jsonl'))) {{ exit 0 }}\r\n\
+         \x20 }} elseif (($src -ne 'clear') -and ($src -ne 'resume')) {{ exit 0 }}\r\n\
          }}\r\n\
          if ($env:ELDRUN_TAB_AGENT -eq 'claude' -and $env:ELDRUN_PROJECT_DIR -and $event -eq 'SessionStart') {{ Write-Output 'To put a file in front of the user on their phone, run `eldrun-send <file>` (local and container tabs).' }}\r\n\
          # The turn state, from the events the agent fires as it works (see the\r\n\
@@ -2755,6 +2817,68 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    /// Claude relaunching itself before the first prompt (renderer switch,
+    /// update) comes back under a fresh id with a plain `startup`: the record
+    /// follows it while the tab's own session has no transcript, and only then.
+    #[cfg(unix)]
+    #[test]
+    fn hook_script_follows_a_relaunch_that_minted_a_fresh_id() {
+        let tmp = unique_tmp("eldrun-hook-relaunch");
+        let live = tmp.join("live");
+        let transcripts = tmp.join("projects").join("-p");
+        std::fs::create_dir_all(&transcripts).unwrap();
+        let script = tmp.join("hook.sh");
+        std::fs::write(&script, hook_script_body(&live.to_string_lossy())).unwrap();
+        let uid = "11111111-1111-4111-8111-111111111111";
+        let fresh = "22222222-2222-4222-8222-222222222222";
+        let again = "33333333-3333-4333-8333-333333333333";
+        let path = |sid: &str| transcripts.join(format!("{sid}.jsonl"));
+        let start = |sid: &str, tpath: &str| {
+            format!(r#"{{"session_id":"{sid}","transcript_path":{tpath},"hook_event_name":"SessionStart","source":"startup"}}"#)
+        };
+        let own = |sid: &str| format!("\"{}\"", path(sid).display());
+        let claude = Some("claude");
+        let source = || read_live_source_in(&live, uid);
+
+        // The launch id starts the tab; nothing has been written for it yet.
+        let (rec, _) = run_hook(&script, &live, uid, claude, true, &start(uid, &own(uid)));
+        assert_eq!(rec.as_deref(), Some(uid));
+        // A Codex under the tab (null path, then a rollout) is still refused.
+        let (rec, _) = run_hook(&script, &live, uid, claude, true, &start(fresh, "null"));
+        assert_eq!(rec.as_deref(), Some(uid));
+        let rollout = format!(r#""/h/.codex/sessions/rollout-2026-09-25T20-46-46-{fresh}.jsonl""#);
+        let (rec, _) = run_hook(&script, &live, uid, claude, true, &start(fresh, &rollout));
+        assert_eq!(rec.as_deref(), Some(uid));
+        // The relaunched Claude, transcript named after its fresh id: followed.
+        let (rec, _) = run_hook(&script, &live, uid, claude, true, &start(fresh, &own(fresh)));
+        assert_eq!(rec.as_deref(), Some(fresh));
+        assert_eq!(source().as_deref(), Some("startup"));
+        let stop = format!(r#"{{"session_id":"{fresh}","hook_event_name":"Stop","permission_mode":"acceptEdits"}}"#);
+        let (rec, mode) = run_hook(&script, &live, uid, claude, true, &stop);
+        assert_eq!(rec.as_deref(), Some(fresh));
+        assert_eq!(mode.as_deref(), Some("acceptEdits"));
+
+        // Once the session has been prompted (its transcript exists), a plain
+        // start under another id is a CLI nested under the tab: refused.
+        std::fs::write(path(fresh), "{}").unwrap();
+        let (rec, _) = run_hook(&script, &live, uid, claude, true, &start(again, &own(again)));
+        assert_eq!(rec.as_deref(), Some(fresh));
+        // …as it is without the agent marker, whatever the transcripts say.
+        std::fs::remove_file(path(fresh)).unwrap();
+        let (rec, _) = run_hook(&script, &live, uid, None, true, &start(again, &own(again)));
+        assert_eq!(rec.as_deref(), Some(fresh));
+
+        // A tab whose first start was already the relaunch has no record at
+        // all: the launch id's missing transcript is what lets it in.
+        let other = "44444444-4444-4444-8444-444444444444";
+        let (rec, _) = run_hook(&script, &live, other, claude, true, &start(again, &own(again)));
+        assert_eq!(rec.as_deref(), Some(again));
+        std::fs::write(path(other), "{}").unwrap();
+        let (rec, _) = run_hook(&script, &live, "55555555-5555-4555-8555-555555555555", claude, true, &start(fresh, &own(fresh)));
+        assert!(rec.is_none());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     #[cfg(unix)]
     #[test]
     fn hook_script_records_the_turn_state_for_the_tabs_own_session_only() {
@@ -3466,6 +3590,22 @@ mod tests {
         assert_eq!(claude_prompt_text("what does <T> mean here?").as_deref(), Some("what does <T> mean here?"));
         // The two tags that are the user's doing are still read first.
         assert_eq!(claude_prompt_text("<command-name>/clear</command-name>").as_deref(), Some("/clear"));
+        // A paste rides in its own block; the card shows it as the CLI does.
+        assert_eq!(
+            claude_prompt_text("\n\n<pasted_content id=\"d95e\">\nline one\nline two\n</pasted_content id=\"d95e\">\n\n implement it")
+                .as_deref(),
+            Some("[Pasted text #1 +2 lines]\n\n implement it")
+        );
+        assert_eq!(
+            claude_prompt_text("a <pasted_content id=\"1\">x</pasted_content id=\"1\"> b <pasted_content id=\"2\">y\nz</pasted_content id=\"2\">")
+                .as_deref(),
+            Some("a [Pasted text #1 +1 lines] b [Pasted text #2 +2 lines]")
+        );
+        // Unclosed, or closed under another id: the user's text, untouched.
+        assert_eq!(
+            claude_prompt_text("see <pasted_content id=\"1\">x").as_deref(),
+            Some("see <pasted_content id=\"1\">x")
+        );
         assert_eq!(claude_prompt_text("<bash-input>git status</bash-input>").as_deref(), Some("! git status"));
 
         // Codex injects its instructions as blocks beside the typed words.
