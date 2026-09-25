@@ -257,6 +257,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `hooks/useHeaderMenu.ts` | Shared single-open header menu behavior: hover grace, click/keyboard opening, arrow/Home/End navigation, Escape and natural Tab exit. |
 | `hooks/useListReorder.ts` + `lib/listReorder.ts` | The shared drag-a-row-into-place gesture for `{ id }[]` lists. Pointer events (not HTML5 DnD); the grip takes pointer capture. |
 | `lib/shortcuts/shortcuts.ts` | Shortcut definitions, chord parsing/resolution. |
+| `lib/shortcuts/zoomChord.ts` | The one Ctrl +/-/0 zoom matcher (window, agent panes, editor): typed key first, US position as fallback, so German `+`/`-` work. |
 | `lib/agents/codexHooks.ts` | Codex hook-trust state + the one-click "open Codex on `/hooks`" fix. |
 | `lib/remote/vpn/vpnConnect.ts` | Silent-connect gate: ask `vpn_can_connect_silently` before connecting (pkexec prompts before OpenVPN validates). Store-free. |
 | `lib/remote/vpn/vpnAutoConnect.ts` | "Connect on launch" per `.ovpn` (`settings.vpn_auto_connect`), never prompts. Also `openVpnLoginInTerminal` + `pollVpnUp`, the one non-headless VPN login. |

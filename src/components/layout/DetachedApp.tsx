@@ -70,6 +70,7 @@ import { installWindowsEvents } from "../../stores/windows";
 import { listenPdfReveal } from "../../stores/viewers/pdfSync";
 import { listenEditorJump } from "../../stores/viewers/editorJump";
 import { listenTexCenter } from "../../stores/viewers/texCenter";
+import { zoomChord } from "../../lib/shortcuts/zoomChord";
 import { DetachedCenterPanel } from "./DetachedCenterPanel";
 import { BrowserDownloadHost } from "../browser/BrowserDownloadHost";
 import { ExecTrustHost } from "../common/ExecTrustHost";
@@ -274,19 +275,12 @@ export function DetachedApp({ param }: Props) {
       void emit(DETACHED_ZOOM, { scope: param.scope, groupId: param.groupId, zoom: next });
     };
     const onKeyDown = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
       // Agent panes consume Ctrl +/- for their own font zoom and stopPropagation,
       // so those never reach here — this only fires for the rest of the window.
-      if (e.code === "Equal") {
-        e.preventDefault();
-        applyAndPersist(stepZoom(zoomRef.current, 1));
-      } else if (e.code === "Minus") {
-        e.preventDefault();
-        applyAndPersist(stepZoom(zoomRef.current, -1));
-      } else if (e.code === "Digit0") {
-        e.preventDefault();
-        applyAndPersist(1);
-      }
+      const zoom = zoomChord(e);
+      if (!zoom) return;
+      e.preventDefault();
+      applyAndPersist(zoom === "reset" ? 1 : stepZoom(zoomRef.current, zoom === "in" ? 1 : -1));
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);

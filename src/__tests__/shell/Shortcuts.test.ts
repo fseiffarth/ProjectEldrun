@@ -148,6 +148,15 @@ describe("isFixedChord", () => {
     expect(isFixedChord({ key: "Escape", ctrl: true })).toBe(true);
   });
 
+  it("flags the Ctrl +/-/0 zoom chords, whatever the layout typed", () => {
+    expect(isFixedChord({ key: "+", ctrl: true })).toBe(true);
+    expect(isFixedChord({ key: "+", ctrl: true, shift: true })).toBe(true);
+    expect(isFixedChord({ key: "-", ctrl: true })).toBe(true);
+    expect(isFixedChord({ key: "0", ctrl: true })).toBe(true);
+    expect(isFixedChord({ key: "-", ctrl: true, alt: true })).toBe(false);
+    expect(isFixedChord({ key: "0" })).toBe(false);
+  });
+
   it("passes ordinary chords, F1 included (rebindable shortcutHelp)", () => {
     expect(isFixedChord({ key: "F1" })).toBe(false);
     expect(isFixedChord({ key: "w", ctrl: true })).toBe(false);

@@ -267,6 +267,7 @@ import { isBibPath } from "../../lib/viewers/tex/bib";
 import { hasCards } from "../../lib/viewers/yamlGrid";
 import { useI18nStore, useT, type TranslationKey } from "../../lib/i18n";
 import { defaultSpellLanguage, dictionaryLabel } from "../../lib/spellDictionaries";
+import { zoomChord } from "../../lib/shortcuts/zoomChord";
 import { ArrowUpRightIcon, BoltIcon, BugIcon, CommentIcon, GearIcon, LinkIcon, PlayIcon, UploadIcon, WarningIcon } from "../common/icons/Icon";
 
 // The five heavyweight leaf viewers are code-split (§5.1 startup size): a
@@ -4729,18 +4730,21 @@ function CodeEditor({
       return;
     }
     if (suggestion) {
-      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && ["[", "]"].includes(e.key)) {
+      // Alt+[ / Alt+]. The US key positions count too: on German QWERTZ the
+      // brackets sit behind AltGr, so Alt+Ü / Alt++ is the reachable chord.
+      const bracket = e.key === "[" || e.code === "BracketLeft" ? "[" : e.key === "]" || e.code === "BracketRight" ? "]" : null;
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && bracket) {
         e.preventDefault();
         if (acCopilot) {
           const items = acCandidates.current;
           if (items.length > 1 && items[0].version === acDocumentVersion.current) {
             recordAcOutcome(false);
-            acCandidate.current = (acCandidate.current + (e.key === "]" ? 1 : items.length - 1)) % items.length;
+            acCandidate.current = (acCandidate.current + (bracket === "]" ? 1 : items.length - 1)) % items.length;
             const item = items[acCandidate.current];
             acOutcome.current = { model: `${item.provider}/${item.model ?? item.provider}`, mode: "copilot" };
             setSuggestion({ text: item.text, at: item.at, candidate: item });
           }
-        } else void requestCompletion({ candidate: (acCandidate.current + (e.key === "]" ? 1 : 2)) % 3 });
+        } else void requestCompletion({ candidate: (acCandidate.current + (bracket === "]" ? 1 : 2)) % 3 });
         return;
       }
       if (e.key === "ArrowRight" && e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
@@ -4800,23 +4804,15 @@ function CodeEditor({
       save();
       return;
     }
-    // Text-size: Ctrl/Cmd with "+"/"=" grows, "-" shrinks, "0" resets.
-    if (e.ctrlKey || e.metaKey) {
-      if (e.key === "+" || e.key === "=") {
-        e.preventDefault();
-        incFont?.();
-        return;
-      }
-      if (e.key === "-" || e.key === "_") {
-        e.preventDefault();
-        decFont?.();
-        return;
-      }
-      if (e.key === "0") {
-        e.preventDefault();
-        resetFont?.();
-        return;
-      }
+    // Text-size: Ctrl/Cmd +/-/0 on any layout. stopPropagation keeps the
+    // window-level UI zoom (useKeyboard / DetachedApp) from also zooming the
+    // whole window — the editor zooms its text, as an agent pane zooms its font.
+    const zoom = zoomChord(e);
+    if (zoom) {
+      e.preventDefault();
+      e.stopPropagation();
+      (zoom === "in" ? incFont : zoom === "out" ? decFont : resetFont)?.();
+      return;
     }
     // Ctrl/Cmd+Shift+C — comment out the touched lines, or uncomment them when
     // they already are. `%` in TeX, the language's own marker elsewhere; falls

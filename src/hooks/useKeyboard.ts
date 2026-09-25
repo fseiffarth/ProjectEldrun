@@ -4,6 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PLATFORM } from "../lib/window/dragPlatform";
 import { IS_MAC } from "../lib/platform";
 import { desktopOwnsSuperKey, probeSuperKeyOwnership } from "../lib/shortcuts/superKey";
+import { zoomChord } from "../lib/shortcuts/zoomChord";
 import { allGroups, findGroup, useTabsStore } from "../stores/tabs";
 import { closeTabWithConfirm } from "../lib/remote/closeRemoteTab";
 import { useProjectsStore } from "../stores/projects";
@@ -324,17 +325,15 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
       // convention). Agent panes consume these for font zoom and stopPropagation,
       // so those never reach here. Persisted to `ui_zoom` (the main window's own
       // value), which `updateSettings` also re-applies to this webview.
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
+      const zoom = zoomChord(e);
+      if (zoom) {
         const cur = useSettingsStore.getState().settings?.ui_zoom;
-        const set1 = (z: number) => {
-          e.preventDefault();
-          void useSettingsStore
-            .getState()
-            .updateSettings({ ui_zoom: z === 1 ? undefined : z });
-        };
-        if (e.code === "Equal") return set1(stepZoom(cur, 1));
-        if (e.code === "Minus") return set1(stepZoom(cur, -1));
-        if (e.code === "Digit0") return set1(1);
+        const z = zoom === "reset" ? 1 : stepZoom(cur, zoom === "in" ? 1 : -1);
+        e.preventDefault();
+        void useSettingsStore
+          .getState()
+          .updateSettings({ ui_zoom: z === 1 ? undefined : z });
+        return;
       }
 
       const tabs = useTabsStore.getState();

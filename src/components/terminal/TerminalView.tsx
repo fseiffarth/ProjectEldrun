@@ -28,6 +28,7 @@ import { CSI_U_SHIFT_TAB, FORCE_SELECTION_MODIFIER, SILENT_START_MS, agentMouseD
 import { registerTerminal, unregisterTerminal } from "../../lib/terminal/terminalRegistry";
 import { clearPtyInput, writePtyInput } from "../../lib/terminal/terminalInput";
 import { registerScheduledAgentInput } from "../../lib/agents/scheduledAgentInput";
+import { zoomChord } from "../../lib/shortcuts/zoomChord";
 import "@xterm/xterm/css/xterm.css";
 
 // Hoisted to module scope: keystroke input fires this on every key, so we reuse
@@ -967,11 +968,13 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       // stopPropagation stops the WINDOW-level per-window zoom handler (useKeyboard
       // / DetachedApp) from ALSO webview-zooming — an agent pane zooms its FONT, not
       // the whole window.
-      if (zoomable && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
+      const zoom = zoomable ? zoomChord(e) : null;
+      if (zoom) {
         const cur = term.options.fontSize ?? DEFAULT_FONT_SIZE;
-        if (e.code === "Equal") { e.preventDefault(); e.stopPropagation(); applyFontSize(cur + 1, true); return false; }
-        if (e.code === "Minus") { e.preventDefault(); e.stopPropagation(); applyFontSize(cur - 1, true); return false; }
-        if (e.code === "Digit0") { e.preventDefault(); e.stopPropagation(); applyFontSize(DEFAULT_FONT_SIZE, true); return false; }
+        e.preventDefault();
+        e.stopPropagation();
+        applyFontSize(zoom === "in" ? cur + 1 : zoom === "out" ? cur - 1 : DEFAULT_FONT_SIZE, true);
+        return false;
       }
       // Shift+Tab in a Codex pane. xterm.js would send the legacy backtab, which
       // Codex's permission-mode cycle does not recognize — send the CSI-u form of

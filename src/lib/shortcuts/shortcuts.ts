@@ -19,6 +19,7 @@
 import { IS_MAC, PLATFORM } from "../platform";
 import type { UntestedId } from "../untested";
 import { desktopOwnsSuperKey } from "./superKey";
+import { zoomChord } from "./zoomChord";
 import type { TranslationKey } from "../i18n";
 
 /** A serializable key chord. `key` is a `KeyboardEvent.key` value, normalized:
@@ -414,15 +415,22 @@ export function findConflicts(
  * True when a chord can never fire because `useKeyboard` consumes its key
  * before the rebindable table is consulted: F11 (OS fullscreen), F9 (panel
  * toggle) and Escape (exit fullscreen / dismiss) are all matched there on
- * `e.key` alone, so no modifier rescues such a chord. Deliberately independent
- * of `FIXED_KEYS`, which stores display strings. Not covered on purpose: a
- * lone Super/Meta never reaches capture (`chordFromEvent` returns null), and
- * the zoom chords match on `e.code` (keyboard-layout dependent), which a
- * stored `key` cannot reproduce faithfully.
+ * `e.key` alone, so no modifier rescues such a chord; the Ctrl +/-/0 zoom
+ * chords (`zoomChord`) are taken first too. Deliberately independent of
+ * `FIXED_KEYS`, which stores display strings. Not covered on purpose: a lone
+ * Super/Meta never reaches capture (`chordFromEvent` returns null).
  */
 export function isFixedChord(chord: ChordDescriptor): boolean {
   const key = normalizeKey(chord.key);
-  return key === "F11" || key === "F9" || key === "Escape";
+  if (key === "F11" || key === "F9" || key === "Escape") return true;
+  return zoomChord({
+    key,
+    code: "",
+    ctrlKey: !!chord.ctrl,
+    metaKey: !!chord.meta,
+    altKey: !!chord.alt,
+    shiftKey: !!chord.shift,
+  }) !== null;
 }
 
 /** One fixed key (or key family) inside steering mode. `keys` is display text
