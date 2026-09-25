@@ -1893,6 +1893,20 @@ pub fn set_project_schedule_mcp(project_id: String, level: String) -> Result<(),
     })
 }
 
+/// The agent-push policy (`services::git_push_mcp`): level and protected
+/// branches. Authority stays in projects.json; never copied into the tree.
+#[tauri::command]
+pub fn set_project_git_push_mcp(project_id: String, level: Option<String>, protected: Option<Vec<String>>) -> Result<crate::services::git_push_mcp::ProjectPolicy, String> {
+    let level = match level.as_deref() {
+        None => None,
+        Some("off") => Some(crate::services::git_push_mcp::Level::Off),
+        Some("propose") => Some(crate::services::git_push_mcp::Level::Propose),
+        Some("apply") => Some(crate::services::git_push_mcp::Level::Apply),
+        Some(_) => return Err("invalid agent push level".into()),
+    };
+    crate::services::git_push_mcp::set_policy(&project_id, level, protected, None)
+}
+
 /// Persist a container spec into both stores: the `projects.json` entry's
 /// flattened `sandbox` (the always-local mirror the spawn path reads) and the
 /// project's own `project.json` (best effort — the list is the source of truth).

@@ -90,6 +90,7 @@ pub fn origin_of(caller: Caller, read_mail: bool) -> &'static str {
         Caller::LocalModel if read_mail => "reader",
         Caller::Agent | Caller::LocalModel => "agent",
         Caller::Scheduler => "scheduler",
+        Caller::Pusher => "pusher",
         Caller::Helper => "helper",
     }
 }

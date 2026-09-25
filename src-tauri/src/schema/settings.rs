@@ -177,6 +177,11 @@ pub struct Settings {
     pub root_mcp: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule_mcp: Option<bool>,
+    /// Agent-requested pushes (`services::git_push_mcp`, `/mcp/git`). Absent
+    /// means off: no local project-agent spawn is wired, and the endpoint
+    /// refuses tabs that already hold a token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_push_mcp: Option<bool>,
     /// The read-only help server (`services::help_mcp`) handed to every local
     /// agent tab. **Absent means on**; a stored `false` stops new tabs getting
     /// it and makes `/mcp/help` refuse the tabs that already hold a token.

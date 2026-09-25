@@ -603,7 +603,7 @@ mod tests {
         let index = fixture();
         let list = json!({"jsonrpc":"2.0","id":1,"method":"tools/list"});
         let call_msg = json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"eldrun_help_search","arguments":{"query":"ollama"}}});
-        for caller in [Caller::Agent, Caller::LocalModel, Caller::Reader, Caller::Scheduler] {
+        for caller in [Caller::Agent, Caller::LocalModel, Caller::Reader, Caller::Scheduler, Caller::Pusher] {
             let (_, s) = super::super::root_mcp::test_session(caller);
             assert_eq!(handle_with(&s, &index, &call_msg).unwrap()["error"]["message"], "access refused", "{caller:?}");
             super::super::root_mcp::revoke_tab(&s.identity.tab);
@@ -630,7 +630,7 @@ mod tests {
         for name in TOOLS {
             let policy = security::tool(name).unwrap();
             assert!(policy.serves(Caller::Helper) && !policy.write);
-            for other in [Caller::Agent, Caller::LocalModel, Caller::Reader, Caller::Scheduler] {
+            for other in [Caller::Agent, Caller::LocalModel, Caller::Reader, Caller::Scheduler, Caller::Pusher] {
                 assert!(!policy.serves(other), "{name} {other:?}");
             }
         }

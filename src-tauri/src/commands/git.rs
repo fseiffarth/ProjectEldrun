@@ -1398,6 +1398,59 @@ fn push_local(
     cmd.output().map_err(|e| e.to_string())
 }
 
+/// The transport half of an agent-requested push (`services::git_push_mcp`):
+/// one explicit `refspec` to one explicit `url`, hooks off. Unlike
+/// [`push_local`] this never runs the repo's `pre-push` — the fenced,
+/// tokenless preflight has already run it — so no project code runs on the
+/// host while `ELDRUN_GIT_TOKEN` is in the environment. `--no-verify` says so
+/// twice: [`hardened_git_command_in`] already pins `core.hooksPath=`, which
+/// also silences `reference-transaction`. The URL goes on the command line, so
+/// `remote.<r>.pushurl` plays no part (a repo-scope `insteadOf` is refused by
+/// the caller before this runs). `token` is offered only to `origins`. The
+/// caller runs it under its own timeout.
+pub(crate) fn push_transport_command(
+    dir: &std::path::Path,
+    url: &str,
+    refspec: &str,
+    token: Option<&str>,
+    origins: &[String],
+) -> std::process::Command {
+    let mut args: Vec<String> = Vec::new();
+    if token.is_some() {
+        args.extend(scoped_token_config(origins, "x-access-token"));
+    }
+    args.extend(["push", "--no-verify", "--porcelain", "--", url, refspec].map(str::to_string));
+    let mut cmd = hardened_git_command_in(dir, &args);
+    if let Some(tok) = token {
+        cmd.env("ELDRUN_GIT_TOKEN", tok);
+    }
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd
+}
+
+/// The repo's `pre-push` hook as git would find it for a hooked push: the dir
+/// `rev-parse --git-path hooks` names (honouring `core.hooksPath`, relative to
+/// the repo), if an executable `pre-push` sits there. The lookup
+/// `services::exec_trust` fingerprints against. Neither query runs a hook.
+pub(crate) fn resolve_pre_push_hook(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let out = hooked_git_command_in(dir, &["rev-parse", "--git-path", "hooks"]).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let rel = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let hooks = if std::path::Path::new(&rel).is_absolute() { std::path::PathBuf::from(&rel) } else { dir.join(&rel) };
+    let hook = hooks.join("pre-push");
+    let meta = std::fs::metadata(&hook).ok()?;
+    #[cfg(unix)]
+    let executable = {
+        use std::os::unix::fs::PermissionsExt;
+        meta.permissions().mode() & 0o111 != 0
+    };
+    #[cfg(not(unix))]
+    let executable = true;
+    (meta.is_file() && executable).then_some(hook)
+}
+
 fn git_push_blocking(project_dir: String, project_id: Option<String>) -> Result<String, String> {
     let out = if let Some(target) = remote_target_for_dir(&project_dir) {
         // A remote project published from THIS machine has its `origin` on the

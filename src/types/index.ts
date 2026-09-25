@@ -250,6 +250,8 @@ export interface Settings {
    *  root agents no endpoint and refuses the ones already holding the token. */
   root_mcp?: boolean;
   schedule_mcp?: boolean;
+  /** Agent-requested pushes (`services::git_push_mcp`). Absent means off. */
+  git_push_mcp?: boolean;
   /** The read-only "Ask Eldrun" help MCP (`eldrun-help`) in local agent tabs.
    *  **Default true** — absent means on. Switched in the intro wizard. */
   help_mcp?: boolean;
@@ -1049,8 +1051,40 @@ export interface SshTooling {
   rsync: boolean;
 }
 
+export type GitPushMcpLevel = "off" | "propose" | "apply";
+/** The trusted per-project agent-push policy (`services::git_push_mcp`). */
+export interface GitPushMcpPolicy {
+  level?: GitPushMcpLevel;
+  protected?: string[];
+  confirmed_url?: string;
+}
+/** One agent push request as the backend reports it (`git_push_mcp_proposals`). */
+export interface GitPushProposal {
+  id: string;
+  session: string;
+  tab: string;
+  project: string;
+  branch: string | null;
+  remote: string | null;
+  url: string | null;
+  head: string | null;
+  remote_sha: string | null;
+  commits: string[];
+  diffstat: string;
+  note: string;
+  needs_url_confirm: boolean;
+  created_at: string;
+  status: "running" | "pending" | "pushed" | "failed" | "dismissed" | "expired";
+  category: string | null;
+  message: string;
+  output: string;
+  preflight_output: string;
+  state: { branch: string | null; head: string | null; remote: string | null; upstream: string | null; url: string | null; remote_sha: string | null; ahead: number; behind: number };
+}
+
 export interface ProjectEntry {
   schedule_mcp?: "off" | "propose" | "apply";
+  git_push_mcp?: GitPushMcpPolicy;
   id: string;
   name: string;
   /** "current" | "active" | "inactive" */

@@ -57,6 +57,10 @@ pub const TOKEN_ENV: &str = "ELDRUN_ROOT_MCP_TOKEN";
 pub const URL_ENV: &str = "ELDRUN_ROOT_MCP_URL";
 pub const SCHEDULE_TOKEN_ENV: &str = "ELDRUN_SCHEDULE_MCP_TOKEN";
 pub const SCHEDULE_URL_ENV: &str = "ELDRUN_SCHEDULE_MCP_URL";
+/// The push identity's pair (`services::git_push_mcp`), set for a local
+/// project-agent tab while agent pushes are switched on.
+pub const GIT_TOKEN_ENV: &str = "ELDRUN_GIT_MCP_TOKEN";
+pub const GIT_URL_ENV: &str = "ELDRUN_GIT_MCP_URL";
 /// The help identity's pair (`services::help_mcp`), set for every local agent
 /// tab while the help server is on.
 pub const HELP_TOKEN_ENV: &str = "ELDRUN_HELP_MCP_TOKEN";
@@ -78,6 +82,10 @@ pub struct Identity {
     /// one of its mail calls is checked against. `None` for a root agent.
     pub project: Option<String>,
     pub schedule_target: Option<ScheduleBinding>,
+    /// A [`Caller::Pusher`] tab's project directory, canonical, bound at
+    /// spawn from the trusted `projects.json` entry — never from the tab's
+    /// cwd or anything inside the tree. `None` for every other class.
+    pub push: Option<PushBinding>,
     /// A [`Caller::LocalModel`] tab's Ollama endpoint, resolved from
     /// `ollama_host` **at spawn** — the `api_base` its Vibe config was written
     /// with (`commands::ollama::prepare_local_agent`), which a later change of
@@ -87,6 +95,20 @@ pub struct Identity {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScheduleBinding { pub target: String, pub agent: String }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PushBinding { pub dir: std::path::PathBuf }
+/// The lane a caller class occupies on its tab: a tab holds at most one
+/// session per lane, and a respawn replaces only the session of its own lane.
+/// Root, local-model and reader tokens share the root lane; the schedule,
+/// push and help identities each ride beside it.
+fn lane(caller: Caller) -> u8 {
+    match caller {
+        Caller::Agent | Caller::LocalModel | Caller::Reader => 0,
+        Caller::Scheduler => 1,
+        Caller::Pusher => 2,
+        Caller::Helper => 3,
+    }
+}
 static TOKENS: OnceLock<std::sync::Mutex<HashMap<String, Session>>> = OnceLock::new();
 fn tokens() -> &'static std::sync::Mutex<HashMap<String, Session>> {
     TOKENS.get_or_init(Default::default)
@@ -94,14 +116,14 @@ fn tokens() -> &'static std::sync::Mutex<HashMap<String, Session>> {
 /// `read_mail` seeds the taint: `true` for a tab that read mail in an earlier
 /// spawn ([`tab_read_mail`]), so a `--resume` starts where it left off.
 ///
-/// A tab holds at most one session per *lane*: the help identity rides beside
-/// a tab's root, reader or schedule token, so a respawn replaces only the
-/// session of its own lane ([`Caller::Helper`] or not).
+/// A tab holds at most one session per *lane* ([`lane`]): the help, schedule
+/// and push identities ride beside a tab's root or reader token, so a respawn
+/// replaces only the session of its own lane.
 fn register_token(token: String, identity: Identity, read_mail: bool) {
     let mut map = tokens().lock().unwrap_or_else(|p| p.into_inner());
-    let helper = identity.caller == Caller::Helper;
+    let new_lane = lane(identity.caller);
     map.retain(|_, old| {
-        if old.identity.tab == identity.tab && (old.identity.caller == Caller::Helper) == helper {
+        if old.identity.tab == identity.tab && lane(old.identity.caller) == new_lane {
             old.revoked.store(true, Ordering::Release);
             false
         } else { true }
@@ -115,6 +137,7 @@ fn register_token(token: String, identity: Identity, read_mail: bool) {
         permits: Arc::new(tokio::sync::Semaphore::new(2)),
         rate: Arc::new(std::sync::Mutex::new((std::time::Instant::now(), 0))),
         schedule_rate: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+        push_rate: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
     };
     map.insert(token, session);
 }
@@ -197,7 +220,7 @@ pub(crate) fn test_session_for_tab(caller: Caller, tab: &str, state: &Path) -> (
 #[cfg(test)]
 pub(crate) fn test_session_with(caller: Caller, tab: &str, state: &Path, endpoint: Option<String>) -> (String, Session) {
     let token = mint_token().unwrap();
-    register_token(token.clone(), Identity { schedule_target: None, tab: tab.to_string(), caller, project: None, endpoint }, tab_read_mail(state, tab));
+    register_token(token.clone(), Identity { schedule_target: None, push: None, tab: tab.to_string(), caller, project: None, endpoint }, tab_read_mail(state, tab));
     let session = authenticate(Some(&format!("Bearer {token}"))).unwrap();
     (token, session)
 }
@@ -224,6 +247,9 @@ pub enum Caller {
     /// write it makes is staged whatever `root_mcp_review` says.
     Reader,
     Scheduler,
+    /// A local project-agent tab's push identity (`services::git_push_mcp`):
+    /// served the three push tools on `/mcp/git` and nothing else.
+    Pusher,
     /// Any local agent tab's help identity (`services::help_mcp`): served the
     /// read-only help tools on `/mcp/help` and nothing else.
     Helper,
@@ -276,12 +302,21 @@ pub struct Session {
     pub permits: Arc<tokio::sync::Semaphore>,
     rate: Arc<std::sync::Mutex<(std::time::Instant, u32)>>,
     schedule_rate: Arc<std::sync::Mutex<std::collections::VecDeque<std::time::Instant>>>,
+    push_rate: Arc<std::sync::Mutex<std::collections::VecDeque<std::time::Instant>>>,
 }
 impl Session {
     pub fn admit_schedule_rate(&self) -> bool {
         let mut calls = self.schedule_rate.lock().unwrap_or_else(|p| p.into_inner());
         calls.retain(|at| at.elapsed() < std::time::Duration::from_secs(3600));
         if calls.len() >= 12 { return false; }
+        calls.push_back(std::time::Instant::now());
+        true
+    }
+    /// Six `git_push` calls per tab per rolling hour (`services::git_push_mcp`).
+    pub fn admit_push_rate(&self) -> bool {
+        let mut calls = self.push_rate.lock().unwrap_or_else(|p| p.into_inner());
+        calls.retain(|at| at.elapsed() < std::time::Duration::from_secs(3600));
+        if calls.len() >= 6 { return false; }
         calls.push_back(std::time::Instant::now());
         true
     }
@@ -324,7 +359,7 @@ pub fn set_access(id: &str, access: Access) -> Result<(), String> {
     access.validate()?;
     let mut map = tokens().lock().unwrap_or_else(|p| p.into_inner());
     let s = map.values_mut().find(|s| s.id == id).ok_or("MCP session is closed")?;
-    if matches!(s.identity.caller, Caller::Scheduler | Caller::Helper) { return Err("this session's scope is fixed at spawn".into()); }
+    if matches!(s.identity.caller, Caller::Scheduler | Caller::Pusher | Caller::Helper) { return Err("this session's scope is fixed at spawn".into()); }
     s.revoked.store(true, Ordering::Release);
     s.revoked = Arc::new(AtomicBool::new(false));
     s.access = access;
@@ -339,6 +374,12 @@ pub fn revoke_session(id: &str) -> Result<String, String> {
     let s = map.remove(&key).unwrap();
     s.revoked.store(true, Ordering::Release);
     Ok(s.identity.tab)
+}
+/// Whether the session `id` (a [`Session::id`]) still holds an unrevoked
+/// token — what a record bound to a session checks before it trusts it.
+pub fn session_alive(id: &str) -> bool {
+    tokens().lock().unwrap_or_else(|p| p.into_inner()).values()
+        .any(|s| s.id == id && !s.revoked.load(Ordering::Acquire))
 }
 pub fn authenticate(header: Option<&str>) -> Option<Session> {
     let map = tokens().lock().unwrap_or_else(|p| p.into_inner());
@@ -515,20 +556,25 @@ fn local_model_has_tools(opts: &PtyOptions, tool_models: &[String]) -> bool {
 }
 
 /// Roll back a handed-out token if wrapping or spawning the PTY fails.
-pub struct SpawnTokenGuard { token: Option<String>, help: Option<String>, armed: bool }
+pub struct SpawnTokenGuard { token: Option<String>, push: Option<String>, help: Option<String>, armed: bool }
 impl SpawnTokenGuard {
     pub fn new(opts: &PtyOptions) -> Self {
-        Self { token: opts.env.get(TOKEN_ENV).or_else(|| opts.env.get(SCHEDULE_TOKEN_ENV)).cloned(), help: opts.env.get(HELP_TOKEN_ENV).cloned(), armed: true }
+        Self {
+            token: opts.env.get(TOKEN_ENV).or_else(|| opts.env.get(SCHEDULE_TOKEN_ENV)).cloned(),
+            push: opts.env.get(GIT_TOKEN_ENV).cloned(),
+            help: opts.env.get(HELP_TOKEN_ENV).cloned(),
+            armed: true,
+        }
     }
     pub fn keep(&mut self) { self.armed = false; }
-    /// Whether this spawn was handed a root-lane token (root, reader or
-    /// schedule); the help token alone does not count.
-    pub fn holds_token(&self) -> bool { self.token.is_some() }
+    /// Whether this spawn was handed a listed token (root, reader, schedule
+    /// or push); the help token alone does not count.
+    pub fn holds_token(&self) -> bool { self.token.is_some() || self.push.is_some() }
 }
 impl Drop for SpawnTokenGuard {
     fn drop(&mut self) {
         if self.armed {
-            for token in [&self.token, &self.help].into_iter().flatten() { revoke_token(token); }
+            for token in [&self.token, &self.push, &self.help].into_iter().flatten() { revoke_token(token); }
         }
     }
 }
@@ -583,7 +629,7 @@ pub fn apply_to_spawn(opts: &mut PtyOptions) {
     if opts.env.get(TOKEN_ENV) == Some(&token) {
         let state = crate::storage::state_dir();
         let read_mail = tab_read_mail(&state, &opts.id);
-        register_token(token, Identity { schedule_target: None, tab: opts.id.clone(), caller, project: None, endpoint }, read_mail);
+        register_token(token, Identity { schedule_target: None, push: None, tab: opts.id.clone(), caller, project: None, endpoint }, read_mail);
     }
 }
 
@@ -618,7 +664,64 @@ pub fn apply_schedule_to_spawn(opts: &mut PtyOptions) {
     let agent = basename(&opts.cmd).to_string();
     apply_schedule_to_spawn_with(opts, runtime, &token, &settings.ollama_mcp_models.unwrap_or_default());
     if opts.env.get(SCHEDULE_TOKEN_ENV) == Some(&token) {
-        register_token(token, Identity { tab: opts.id.clone(), caller: Caller::Scheduler, project: opts.project_id.clone(), schedule_target: Some(ScheduleBinding { target, agent }), endpoint: None }, false);
+        register_token(token, Identity { tab: opts.id.clone(), caller: Caller::Scheduler, project: opts.project_id.clone(), schedule_target: Some(ScheduleBinding { target, agent }), push: None, endpoint: None }, false);
+    }
+}
+
+/// Hand a local project-agent tab the push server (`services::git_push_mcp`).
+/// Pure over `runtime` so it is testable; [`apply_git_push_to_spawn`] decides
+/// who qualifies. Claude and Codex get the server on their own command line,
+/// a tool-tagged local Vibe model gets it merged into its MCP env (so this
+/// runs after the schedule wiring, which sets that env outright), every other
+/// CLI gets the inert env pair.
+pub fn apply_git_push_to_spawn_with(opts: &mut PtyOptions, runtime: &Runtime, token: &str, tool_models: &[String]) {
+    let local = is_local_model(opts);
+    if opts.project_id.is_none() || opts.sandbox || (local && !local_model_has_tools(opts, tool_models)) { return; }
+    let url = git_push_endpoint_url(runtime.port);
+    let name = super::git_push_mcp::SERVER_NAME;
+    opts.env.insert(GIT_TOKEN_ENV.into(), token.into());
+    opts.env.insert(GIT_URL_ENV.into(), url.clone());
+    if local {
+        let mut servers: Vec<Value> = opts.env.get("VIBE_MCP_SERVERS")
+            .and_then(|v| serde_json::from_str(v).ok()).unwrap_or_default();
+        servers.retain(|s| s["name"] != name);
+        servers.push(json!({"name": name, "transport": "http", "url": url, "api_key_env": GIT_TOKEN_ENV}));
+        opts.env.insert("VIBE_MCP_SERVERS".into(), Value::Array(servers).to_string());
+        let mut enabled: Vec<Value> = opts.env.get("VIBE_ENABLED_TOOLS")
+            .and_then(|v| serde_json::from_str(v).ok()).unwrap_or_default();
+        let pattern = json!(format!("{name}_*"));
+        if !enabled.contains(&pattern) { enabled.push(pattern); }
+        opts.env.insert("VIBE_ENABLED_TOOLS".into(), Value::Array(enabled).to_string());
+    } else {
+        wire_named_cli_args(basename(&opts.cmd), &mut opts.args, &url, name, GIT_TOKEN_ENV);
+    }
+}
+
+pub fn git_push_endpoint_url(port: u16) -> String {
+    format!("http://127.0.0.1:{port}/mcp/git")
+}
+
+/// [`apply_git_push_to_spawn_with`] for a real spawn: a local project-agent
+/// tab (not a container tab; not a remote, container or VM project) while
+/// `Settings::git_push_mcp` is on. The project's level is *not* checked here —
+/// an `off` project still gets the tools, so the agent can be told where to
+/// turn them on (`services::git_push_mcp::Category::LevelOff`). The bound
+/// directory is the trusted entry's, canonicalised; a project without one
+/// gets no token.
+pub fn apply_git_push_to_spawn(opts: &mut PtyOptions) {
+    let Some(project) = opts.project_id.as_deref() else { return };
+    if !super::agent_fence::is_agent(opts) || opts.sandbox
+        || super::remote::remote_target_for_host(project, opts.remote_host_id.as_deref().unwrap_or("primary")).is_some()
+        || super::sandbox::sandbox_spec_for(project).is_some_and(|s| s.enabled)
+        || super::vm::vm_spec_for(project).is_some()
+        || !super::git_push_mcp::enabled() { return; }
+    let Some(dir) = super::remote::project_directory(project).and_then(|d| std::fs::canonicalize(d).ok()) else { return };
+    let Some(runtime) = runtime() else { return };
+    let Ok(settings) = crate::storage::read_json::<crate::schema::Settings>(&crate::storage::state_dir().join("settings.json")) else { return };
+    let Some(token) = mint_token() else { return };
+    apply_git_push_to_spawn_with(opts, runtime, &token, &settings.ollama_mcp_models.unwrap_or_default());
+    if opts.env.get(GIT_TOKEN_ENV) == Some(&token) {
+        register_token(token, Identity { tab: opts.id.clone(), caller: Caller::Pusher, project: opts.project_id.clone(), schedule_target: None, push: Some(PushBinding { dir }), endpoint: None }, false);
     }
 }
 
@@ -685,7 +788,7 @@ pub fn apply_help_to_spawn(opts: &mut PtyOptions) {
     let Some(token) = mint_token() else { return };
     apply_help_to_spawn_with(opts, runtime, &token, &settings.ollama_mcp_models.unwrap_or_default());
     if opts.env.get(HELP_TOKEN_ENV) == Some(&token) {
-        register_token(token, Identity { tab: opts.id.clone(), caller: Caller::Helper, project: None, schedule_target: None, endpoint: None }, false);
+        register_token(token, Identity { tab: opts.id.clone(), caller: Caller::Helper, project: None, schedule_target: None, push: None, endpoint: None }, false);
     }
 }
 
@@ -729,7 +832,7 @@ pub fn apply_reader_to_spawn(
     let env = reader_wiring(agent_cmd, agent_args, &token)?;
     register_token(
         token,
-        Identity { schedule_target: None, tab: tab.to_string(), caller: Caller::Reader, project: Some(project.to_string()), endpoint: None },
+        Identity { schedule_target: None, push: None, tab: tab.to_string(), caller: Caller::Reader, project: Some(project.to_string()), endpoint: None },
         false,
     );
     Some(env)
@@ -3397,8 +3500,8 @@ mod tests {
     #[test]
     fn stale_spawn_teardown_cannot_revoke_a_replacement_token() {
         let tab = "root:token-generation";
-        register_token("generation-old".into(), Identity { schedule_target: None, tab: tab.into(), caller: Caller::Agent, project: None, endpoint: None }, false);
-        register_token("generation-new".into(), Identity { schedule_target: None, tab: tab.into(), caller: Caller::LocalModel, project: None, endpoint: None }, false);
+        register_token("generation-old".into(), Identity { schedule_target: None, push: None, tab: tab.into(), caller: Caller::Agent, project: None, endpoint: None }, false);
+        register_token("generation-new".into(), Identity { schedule_target: None, push: None, tab: tab.into(), caller: Caller::LocalModel, project: None, endpoint: None }, false);
         assert!(revoke_token("generation-old").is_none());
         assert_eq!(caller(Some("Bearer generation-new")).unwrap().tab, tab);
         let mut options = opts("vibe", &[], None);
@@ -3409,8 +3512,8 @@ mod tests {
 
     #[test]
     fn the_endpoint_tells_callers_apart_and_local_only_refuses_agents() {
-        register_token("tok".into(), Identity { schedule_target: None, tab: "root:auth-agent".into(), caller: Caller::Agent, project: None, endpoint: None }, false);
-        register_token("loc".into(), Identity { schedule_target: None, tab: "root:auth-local".into(), caller: Caller::LocalModel, project: None, endpoint: None }, false);
+        register_token("tok".into(), Identity { schedule_target: None, push: None, tab: "root:auth-agent".into(), caller: Caller::Agent, project: None, endpoint: None }, false);
+        register_token("loc".into(), Identity { schedule_target: None, push: None, tab: "root:auth-local".into(), caller: Caller::LocalModel, project: None, endpoint: None }, false);
         assert_eq!(caller(Some("Bearer tok")).unwrap().caller, Caller::Agent);
         assert_eq!(caller(Some("Bearer loc")).unwrap().caller, Caller::LocalModel);
         assert_eq!(caller(Some("Bearer nope")), None);
@@ -3689,8 +3792,8 @@ mod tests {
     fn tokens_are_per_tab_and_die_with_it() {
         let (a, b) = (mint_token().unwrap(), mint_token().unwrap());
         assert_ne!(a, b);
-        register_token(a.clone(), Identity { schedule_target: None, tab: "root:pt-a".into(), caller: Caller::Agent, project: None, endpoint: None }, false);
-        register_token(b.clone(), Identity { schedule_target: None, tab: "vm:pt-b".into(), caller: Caller::Reader, project: Some("p1".into()), endpoint: None }, false);
+        register_token(a.clone(), Identity { schedule_target: None, push: None, tab: "root:pt-a".into(), caller: Caller::Agent, project: None, endpoint: None }, false);
+        register_token(b.clone(), Identity { schedule_target: None, push: None, tab: "vm:pt-b".into(), caller: Caller::Reader, project: Some("p1".into()), endpoint: None }, false);
         let ida = caller(Some(&format!("Bearer {a}"))).unwrap();
         let idb = caller(Some(&format!("Bearer {b}"))).unwrap();
         assert_eq!((ida.tab.as_str(), ida.caller), ("root:pt-a", Caller::Agent));

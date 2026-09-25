@@ -75,7 +75,7 @@ pub fn audit_reason(session: &super::root_mcp::Session, name: &str, outcome: &'s
         session: session.id.clone(),
         caller: Some(session.identity.caller),
         // Do not echo arbitrary method names (which may contain private text).
-        tool: if tool(name).is_some() || super::schedule_mcp::tool_names().contains(&name) {
+        tool: if tool(name).is_some() || super::schedule_mcp::tool_names().contains(&name) || super::git_push_mcp::tool_names().contains(&name) {
             name
         } else {
             "protocol"
@@ -138,7 +138,7 @@ impl Policy {
         }
     }
     pub fn serves(&self, caller: Caller) -> bool {
-        if matches!(caller, Caller::Scheduler | Caller::Helper) { return false; }
+        if matches!(caller, Caller::Scheduler | Caller::Pusher | Caller::Helper) { return false; }
         self.enabled
             && (!self.local_only || caller == Caller::LocalModel)
             && (caller != Caller::Reader || self.serves_mail(caller))
@@ -159,7 +159,7 @@ impl Policy {
             && match caller {
                 Caller::Reader => true,
                 Caller::LocalModel => self.mail_local_read,
-                Caller::Agent | Caller::Scheduler | Caller::Helper => false,
+                Caller::Agent | Caller::Scheduler | Caller::Pusher | Caller::Helper => false,
             }
     }
 }
@@ -300,7 +300,7 @@ pub struct ToolPolicy {
 impl ToolPolicy {
     pub fn serves(&self, caller: Caller) -> bool {
         match caller {
-            Caller::Scheduler => false,
+            Caller::Scheduler | Caller::Pusher => false,
             Caller::Helper => self.help,
             Caller::Reader => self.reader,
             Caller::LocalModel => self.root || self.local,
@@ -437,7 +437,7 @@ mod tests {
     /// (always a cloud CLI) loses the endpoint with it.
     #[test]
     fn mail_local_only_keeps_mail_to_local_models() {
-        let classes = [Caller::Agent, Caller::LocalModel, Caller::Reader, Caller::Scheduler];
+        let classes = [Caller::Agent, Caller::LocalModel, Caller::Reader, Caller::Scheduler, Caller::Pusher];
         for mail in [false, true] {
             for mail_local_only in [false, true] {
                 let policy = Policy { enabled: true, local_only: false, mail, mail_local_only, mail_local_read: false, review: "all".into() };
@@ -449,6 +449,7 @@ mod tests {
                 assert!(policy.serves(Caller::Agent), "the other tools stay on: mail={mail} local={mail_local_only}");
                 assert!(policy.serves(Caller::LocalModel));
                 assert!(!policy.serves(Caller::Scheduler));
+                assert!(!policy.serves(Caller::Pusher));
             }
         }
     }
@@ -497,7 +498,7 @@ mod tests {
         for name in ["mail_folders", "mail_search", "mail_read", "mail_thread"] {
             let t = tool(name).unwrap();
             assert!(t.serves(Caller::Reader) && t.serves(Caller::LocalModel), "{name}");
-            assert!(!t.serves(Caller::Agent) && !t.serves(Caller::Scheduler), "{name}");
+            assert!(!t.serves(Caller::Agent) && !t.serves(Caller::Scheduler) && !t.serves(Caller::Pusher), "{name}");
         }
         // No other tool gains a local-only row.
         for name in super::super::root_mcp::tool_names() {

@@ -17,7 +17,7 @@ interface Access {
   calendars: Scope; projects: Scope; accounts: Scope;
   families: string[]; write: boolean;
 }
-type Caller = "agent" | "local_model" | "reader" | "scheduler";
+type Caller = "agent" | "local_model" | "reader" | "scheduler" | "pusher";
 interface Session { id: string; tab: string; caller: Caller; access: Access; project?: string }
 /** One audit row (`services::root_mcp_security::Audit`). `caller` is null and
  *  `session` empty for a request refused before it authenticated; `reason` is
@@ -55,6 +55,11 @@ function SessionCard({ session, update, revoke, busy, accounts }: {
   const calendars = useCalendarStore((s) => s.calendars);
   const projects = useProjectsStore((s) => s.projects);
   const [removeProposals, setRemoveProposals] = useState(false);
+  if (session.caller === "pusher") return <SettingsCard>
+    <strong><SessionTitle tab={session.tab} /> · {t("mcpSecurity.pusher")} · {stripInvisible(projects.find((p) => p.id === session.project)?.name ?? session.project ?? "")}</strong>
+    <UntestedTag id="gitPushMcp" />
+    <button className="settings-btn" disabled={busy} onClick={() => void revoke(session)}>{t("mcpSecurity.revoke")}</button>
+  </SettingsCard>;
   if (session.caller === "scheduler") return <SettingsCard>
     <strong><SessionTitle tab={session.tab} /> · {t("mcpSecurity.scheduler")} · {stripInvisible(projects.find((p) => p.id === session.project)?.name ?? session.project ?? "")}</strong>
     <ToggleRow label={t("scheduleMcp.removeProposals")} checked={removeProposals} disabled={busy} onChange={(e) => setRemoveProposals(e.target.checked)} />

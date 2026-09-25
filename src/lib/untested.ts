@@ -220,6 +220,7 @@ export const UNTESTED = {
   "settings.projectRemarks": { area: "layout", what: "SettingsPanel · Project file remarks" },
   "settings.rootMcp": { area: "layout", what: "SettingsPanel · Eldrun's tools (MCP) for root-console agents" },
   "scheduleMcp": { area: "agents", what: "Schedule MCP · local agent proposals, approval, quotas and delivery" },
+  "gitPushMcp": { area: "agents", what: "Git push MCP · agent push requests, fenced preflight, approval card, levels and URL confirmation" },
   "settings.rootMcpLocalOnly": { area: "layout", what: "SettingsPanel · Only local models get these tools" },
   "settings.rootMcpMail": { area: "layout", what: "SettingsPanel · Agents get Eldrun's mail tools" },
   "settings.rootMcpMailLocalOnly": { area: "layout", what: "SettingsPanel · Only local models get the mail tools" },

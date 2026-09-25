@@ -380,6 +380,7 @@ pub(crate) fn launcher_script(
 const SECRET_ENV: &[&str] = &[
     crate::services::root_mcp::TOKEN_ENV,
     crate::services::root_mcp::SCHEDULE_TOKEN_ENV,
+    crate::services::root_mcp::GIT_TOKEN_ENV,
     crate::services::root_mcp::HELP_TOKEN_ENV,
 ];
 

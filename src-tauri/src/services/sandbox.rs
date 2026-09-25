@@ -369,6 +369,7 @@ fn is_secret_exec_env(key: &str) -> bool {
         || [
             crate::services::root_mcp::TOKEN_ENV,
             crate::services::root_mcp::SCHEDULE_TOKEN_ENV,
+            crate::services::root_mcp::GIT_TOKEN_ENV,
             crate::services::root_mcp::HELP_TOKEN_ENV,
         ]
         .contains(&key)

@@ -1493,6 +1493,7 @@ export function ProjectPill({
   const setProjectRemoteControl = useProjectsStore((s) => s.setProjectRemoteControl);
   const setProjectAgentFence = useProjectsStore((s) => s.setProjectAgentFence);
   const setProjectScheduleMcp = useProjectsStore((s) => s.setProjectScheduleMcp);
+  const setProjectGitPushMcp = useProjectsStore((s) => s.setProjectGitPushMcp);
   const { confirmAction, dialogs: pillDialogs } = useDialogs();
   const [agentFenceStatus, setAgentFenceStatus] = useState<AgentFenceStatus | null>(null);
   useEffect(() => {
@@ -2408,6 +2409,37 @@ export function ProjectPill({
               })}
               <UntestedTag id="scheduleMcp" />
             </button>
+            {!project.remote && (
+            <button
+              className="untested"
+              onClick={() => {
+                setContextMenu(null);
+                const levels = ["off", "propose", "apply"] as const;
+                const current = levels.indexOf(project.git_push_mcp?.level ?? "off");
+                const next = levels[(current + 1) % levels.length];
+                // Apply lets an agent's push land with no card at all (the
+                // first push to a URL still asks): that step asks first.
+                void (async () => {
+                  if (next === "apply") {
+                    const ok = await confirmAction({
+                      title: t("gitPushMcp.confirmApplyTitle"),
+                      body: t("gitPushMcp.confirmApplyBody", { project: project.name }),
+                      confirmLabel: t("gitPushMcp.apply"),
+                      danger: true,
+                    });
+                    if (!ok) return;
+                  }
+                  await setProjectGitPushMcp(project.id, next);
+                })();
+              }}
+              title={t("gitPushMcp.menuTitle")}
+            >
+              {t("gitPushMcp.menuItem", {
+                level: t(`gitPushMcp.${project.git_push_mcp?.level ?? "off"}`),
+              })}
+              <UntestedTag id="gitPushMcp" />
+            </button>
+            )}
             {IS_LINUX && agentFenceInstallCommand(agentFenceStatus) && (
                 <button
                   className="untested"

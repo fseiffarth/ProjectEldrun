@@ -2895,6 +2895,29 @@ button:has(> .menu-shortcut) {
 .agent-prompt-card[data-agent-authored="true"] { border-style: dashed; }
 
 /* ── Agent-tab state, painted on the row ─────────────────────────────────
+/* ── Agent push requests (`services::git_push_mcp`) ─────────────────────────
+   One card per request, in the git bar and the Agents view: what would be
+   pushed, Push / Dismiss while pending, the outcome afterwards. */
+.git-push-proposals { display: flex; flex-direction: column; gap: 6px; width: 100%; margin: 4px 0; }
+.git-push-proposal {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 6px 8px; border: 1px dashed var(--accent); border-radius: var(--radius-sm, 6px);
+  font-size: var(--text-xs); color: var(--text-primary);
+}
+.git-push-proposal[data-status="pushed"] { border-style: solid; border-color: color-mix(in srgb, var(--success, var(--accent)) 60%, transparent); }
+.git-push-proposal[data-status="failed"] { border-color: color-mix(in srgb, var(--danger) 55%, transparent); }
+.git-push-proposal-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.git-push-proposal-head .agent-schedule-pill { color: var(--accent); border: 1px dashed currentColor; }
+.git-push-proposal-sha, .git-push-proposal-url { font-family: var(--font-mono); overflow-wrap: anywhere; color: var(--text-secondary); }
+.git-push-proposal-confirm { color: var(--warning, var(--accent)); }
+.git-push-proposal-note, .git-push-proposal-message { margin: 0; overflow-wrap: anywhere; }
+.git-push-proposal-commits { margin: 0; padding-left: 16px; }
+.git-push-proposal-commits code { font-size: var(--text-xs); }
+.git-push-proposal-output { max-height: 200px; overflow: auto; margin: 0; padding: 4px 6px; font-size: var(--text-xs); white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg-elevated, transparent); }
+.git-push-proposal-actions { display: flex; gap: 6px; }
+.git-push-mcp-level { display: flex; flex-direction: column; gap: 4px; align-items: stretch; }
+.git-push-mcp-protected { font-size: var(--text-xs); min-width: 14em; }
+
    What an AGENT TAB is doing, in the tab ring's own palette (`--status-*`, see
    themes.css) and its stroke style: the row in the Agents view and the border
    around the tab it names are the same statement, and a row that said "needs a

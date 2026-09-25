@@ -10,6 +10,7 @@ import { GLOBAL_APP_ROLES } from "./GlobalAppBar";
 import { Dropdown } from "../common/Dropdown";
 import { useSettingsStore } from "../../stores/settings";
 import { AgentScheduleMcpSettings } from "../agents/AgentScheduleMcpSettings";
+import { GitPushMcpSettings } from "../agents/GitPushMcp";
 import { PLATFORM } from "../../lib/platform";
 import {
   NODE_DOWNLOAD_URL,
@@ -1872,6 +1873,7 @@ export function AgentsPanel({ onBack, onClose }: SubPanelProps) {
         <AgentFenceCard />
         <AgentCronSection agents={agents} />
         <AgentScheduleMcpSettings />
+        <GitPushMcpSettings />
         <AgentComposerCard agents={agents} />
       </SettingsAdvanced>
       </div>

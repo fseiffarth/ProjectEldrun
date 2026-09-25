@@ -1089,6 +1089,7 @@ pub fn spawn_pty(
     let mcp_token = opts.env.get(crate::services::root_mcp::TOKEN_ENV)
         .or_else(|| opts.env.get(crate::services::root_mcp::SCHEDULE_TOKEN_ENV)).cloned();
     let help_token = opts.env.get(crate::services::root_mcp::HELP_TOKEN_ENV).cloned();
+    let push_token = opts.env.get(crate::services::root_mcp::GIT_TOKEN_ENV).cloned();
     tokio::spawn(async move {
         let emitter = app.clone();
         batch_output(rx, |bytes| match route_chunk(&id, bytes, route_seq) {
@@ -1181,6 +1182,10 @@ pub fn spawn_pty(
             crate::services::agent_fence::on_tab_gone(&id);
             if let Some(token) = help_token {
                 crate::services::root_mcp::revoke_token(&token);
+            }
+            if let Some(token) = push_token {
+                crate::services::root_mcp::revoke_token(&token);
+                let _ = app.emit(crate::services::git_push_mcp::CHANGED_EVENT, ());
             }
             if let Some(token) = mcp_token {
                 let state = crate::storage::state_dir();

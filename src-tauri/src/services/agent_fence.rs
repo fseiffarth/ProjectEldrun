@@ -1885,6 +1885,59 @@ pub fn register_tab(tab_id: &str, scope_id: &str, content_shadow: Option<tempfil
     }
 }
 
+/// The scope a fenced tab was spawned into, or `None` for a tab that runs
+/// unfenced (or is not a fenced host agent tab at all). The one record that a
+/// tab *was* fenced; a caller that runs work on the tab's behalf keeps it
+/// inside the same boundary ([`one_shot_command`]).
+pub fn fenced_scope_of_tab(tab_id: &str) -> Option<String> {
+    fenced_tabs().lock().unwrap_or_else(|e| e.into_inner()).get(tab_id).map(|t| t.scope_id.clone())
+}
+
+/// A one-shot command inside the fence of `scope_id`, for work Eldrun runs on
+/// a fenced tab's behalf (an agent-requested push's `pre-push` preflight,
+/// `services::git_push_mcp`). Built from the same primitives as the tab's own
+/// boundary — project and box roots read-write, the allowlist read-only, the
+/// git control files guarded, Cargo credentials and the private state masked —
+/// but *narrower*: no agent home, live-session or launcher mounts, and none of
+/// the per-tab registry state the PTY wrapper keeps. Fails closed like the
+/// rest of the fence: no working bubblewrap, no command. Linux only; other
+/// platforms answer the same refusal.
+#[cfg(target_os = "linux")]
+pub fn one_shot_command(scope_id: &str, cmd: &str, args: &[String], cwd: &Path) -> Result<std::process::Command, String> {
+    if !bwrap_available() {
+        return Err(fence_unavailable_message());
+    }
+    let bwrap = crate::paths::system_executable("bwrap").ok_or_else(fence_unavailable_message)?;
+    let roots = roots_for_scope((scope_id != ROOT_SCOPE).then_some(scope_id), false)
+        .ok_or_else(|| format!("Agent fence: unknown project or box scope '{scope_id}'"))?;
+    let extra_ro = configured_read_only_paths();
+    let home = paths::home_dir();
+    let mut argv = bwrap_args(
+        &paths::home_dir_string(),
+        &cwd.to_string_lossy(),
+        cmd,
+        args,
+        &roots,
+        &extra_ro,
+        &[],
+        &[],
+    );
+    let cargo_home = std::env::var_os("CARGO_HOME").map(PathBuf::from);
+    mask_cargo_credentials(&mut argv, cargo_credential_paths(&home, cargo_home.as_deref(), cwd,
+        settings().agent_fence_cargo_credentials.unwrap_or(false)));
+    guard_git_control(&mut argv, crate::services::git_guard::guard_paths(&roots, Some(cwd)));
+    mask_private_state(&mut argv, &storage::state_dir(), &[]);
+    let mut command = crate::paths::command_no_window(bwrap);
+    command.args(argv);
+    command.env("ELDRUN_AGENT_FENCE", "1");
+    Ok(command)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn one_shot_command(_scope_id: &str, _cmd: &str, _args: &[String], _cwd: &Path) -> Result<std::process::Command, String> {
+    Err(fence_unavailable_message())
+}
+
 pub fn on_tab_gone(tab_id: &str) {
     // Before the tab's shadow (which holds the private launcher) is dropped.
     #[cfg(target_os = "linux")]

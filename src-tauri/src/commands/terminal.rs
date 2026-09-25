@@ -463,6 +463,9 @@ pub async fn pty_spawn(
     }
     if agent_spawn && !root_agent && reader_project.is_none() {
         crate::services::root_mcp::apply_schedule_to_spawn(&mut opts);
+        // Agent-requested pushes (`services::git_push_mcp`), beside the
+        // schedule lane: same qualifying spawns, its own token.
+        crate::services::root_mcp::apply_git_push_to_spawn(&mut opts);
     }
     // The read-only help server (`services::help_mcp`): every LOCAL agent tab,
     // root or project, beside whatever the lines above handed out. Last, since

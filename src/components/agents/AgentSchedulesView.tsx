@@ -15,6 +15,7 @@ import { Dropdown } from "../common/Dropdown";
 import { MarkdownPromptField } from "../common/MarkdownPromptField";
 import { AgentScheduleDialog } from "./AgentScheduleDialog";
 import { AgentScheduleProposal } from "./AgentScheduleProposal";
+import { GitPushProposals } from "./GitPushMcp";
 import { isPromptTargetTab } from "./PromptChartTab";
 import { ArrowUpRightIcon } from "../common/icons/Icon";
 
@@ -232,6 +233,8 @@ export function AgentSchedulesView({ scope, active }: Props) {
           <Dropdown value={sort} title={t("agentPrompts.sort.title")} options={AGENT_SORTS.map((value) => ({ value, label: t(`agentPrompts.sort.${value}`) }))} onChange={(value) => { if (isAgentSort(value)) chooseSort(value); }} />
         </div>}
       </div>
+      {/* Agent push requests for this scope (`services::git_push_mcp`). */}
+      <GitPushProposals projectId={scope} />
       {agentTabs.length === 0 ? <div className="file-tree-empty">{t("agentPrompts.noTabs")}</div> : sortedTabs.map((tab) => {
         const schedules = schedulesByTarget[scheduleCacheKey(scope, tab.scheduleTargetId!)] ?? EMPTY_SCHEDULES;
         const summary = scheduleSummary(schedules, now);

@@ -55,11 +55,16 @@ signing_secret_missing() {
   return 0
 }
 signing_missing=0
-if [ -z "${ELDRUN_BUMPING:-}" ] && signing_secret_missing; then
+# Eldrun's agent-push preflight (ELDRUN_PUSH_PREFLIGHT=1, see
+# docs/context/git_push_mcp.md) runs this hook inside the agent's sandbox with
+# no credentials: the signing reminder is for the user's own pushes (it needs
+# gh and the network), and a v* tag can't be pushed through that lane anyway.
+if [ -z "${ELDRUN_BUMPING:-}" ] && [ -z "${ELDRUN_PUSH_PREFLIGHT:-}" ] && signing_secret_missing; then
   signing_missing=1
   echo "pre-push: REMINDER — the RELEASE_SIGNING_KEY secret is not set on GitHub." >&2
   echo "          The next v* release will fail at signing until it is:" >&2
   echo "          gh secret set RELEASE_SIGNING_KEY < ~/.config/eldrun-release-signing/release-signing.key.pem" >&2
+  echo "          Step by step: docs/context/release_signing.md" >&2
 fi
 
 bump=0
@@ -117,6 +122,14 @@ new="$("$repo_root/scripts/bump-version.sh" patch)"
 git -C "$repo_root" add -- \
   package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json Cargo.lock
 git -C "$repo_root" commit -m "chore: bump version to v${new}" >/dev/null
+
+# Under Eldrun's preflight there is nothing to re-push with: the bump commit
+# is on the branch, Eldrun's own transport (hooks off, with the token this
+# sandbox never sees) carries it. Exit 0 = "go ahead".
+if [ -n "${ELDRUN_PUSH_PREFLIGHT:-}" ]; then
+  echo "pre-push: bumped version to v${new}; Eldrun's transport carries the bump." >&2
+  exit 0
+fi
 
 echo "pre-push: bumped version to v${new}; pushing with the bump included…" >&2
 ELDRUN_BUMPING=1 git push "$remote" HEAD

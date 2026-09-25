@@ -233,6 +233,26 @@ async fn handle(State(state): State<ServerState>, request: Request) -> Response 
         if changed { let _ = state.app.emit("agent-schedules-changed", ()); }
         return match reply { Some(reply) => Json(reply).into_response(), None => StatusCode::ACCEPTED.into_response() };
     }
+    if session.identity.caller == root_mcp::Caller::Pusher {
+        // The push lane (`services::git_push_mcp`): the global switch is read
+        // per request, so "off" refuses tabs that already hold a token. The
+        // project's own level is *not* a refusal here — `off` is answered as a
+        // tool result naming the setting, so the agent can relay it.
+        if !crate::services::git_push_mcp::enabled() || session.check().is_err() {
+            security::audit_reason(&session, &tool, "denied", started.elapsed(), Some("policy_disabled"));
+            return StatusCode::FORBIDDEN.into_response();
+        }
+        let outcome = tokio::task::spawn_blocking(move || {
+            let (_global, _own) = (global, own);
+            crate::services::git_push_mcp::handle_message(&session, &message)
+        }).await;
+        let Ok((reply, changed)) = outcome else { return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
+        let reason = reply.as_ref().and_then(crate::services::git_push_mcp::refusal_reason);
+        let failed = reason.is_some() || reply.as_ref().is_some_and(|r| r.get("error").is_some() || r["result"]["isError"] == true);
+        security::audit_reason(&audit_session, &tool, if failed { "refused" } else { "allowed" }, started.elapsed(), reason);
+        if changed { let _ = state.app.emit(crate::services::git_push_mcp::CHANGED_EVENT, ()); }
+        return match reply { Some(reply) => Json(reply).into_response(), None => StatusCode::ACCEPTED.into_response() };
+    }
     let mail = state
         .app
         .try_state::<crate::commands::mail::MailState>()
@@ -355,6 +375,12 @@ pub fn stop_for_exit() {
 pub fn start(app: AppHandle) {
     // Copies a crash left behind: no tab is live yet, so every one of them goes.
     crate::services::root_mcp_review::sweep_sandboxes(&storage::state_dir());
+    // Push proposals change state on worker threads; the service stays
+    // AppHandle-free and rings this instead.
+    let push_events = app.clone();
+    crate::services::git_push_mcp::set_change_hook(Box::new(move || {
+        let _ = push_events.emit(crate::services::git_push_mcp::CHANGED_EVENT, ());
+    }));
     let handle = tauri::async_runtime::spawn(async move {
         let listener = match tokio::net::TcpListener::bind(("127.0.0.1", 0)).await {
             Ok(listener) => listener,
@@ -370,6 +396,7 @@ pub fn start(app: AppHandle) {
         let router = Router::new()
             .route("/mcp", post(handle))
             .route("/mcp/schedule", post(handle))
+            .route("/mcp/git", post(handle))
             .route("/mcp/help", post(handle))
             .layer(axum::middleware::map_response(close_connection))
             .with_state(ServerState { app, port: addr.port() });
@@ -626,16 +653,35 @@ pub async fn root_mcp_session_revoke(app: AppHandle, id: String, remove_proposal
         crate::services::root_mcp_review::cleanup_tab(&storage::state_dir(), &tab);
         crate::services::agent_tasks::drain_mutations();
         if remove_proposals == Some(true) { crate::services::schedule_mcp::remove_proposals(&id)?; }
+        // A push proposal is useless without the session that made it.
+        if crate::services::git_push_mcp::remove_for_session(&id) { let _ = app.emit(crate::services::git_push_mcp::CHANGED_EVENT, ()); }
         let _ = app.emit("agent-schedules-changed", ());
         let _ = app.emit(SESSIONS_EVENT, ());
         Ok(())
     }).await.map_err(|e| e.to_string())?
 }
 
+/// The push proposals of one project (the git bar's and the Agents view's
+/// card), pruned of expired and orphaned ones.
+#[tauri::command]
+pub fn git_push_mcp_proposals(project_id: String) -> Vec<crate::services::git_push_mcp::Proposal> {
+    crate::services::git_push_mcp::proposals_for(Some(&project_id), None)
+}
+/// Push (approve) or dismiss a pending proposal. Approval re-checks the
+/// bound SHA and the remote, confirms a first URL, then pushes; the reply is
+/// the proposal in its final state.
+#[tauri::command]
+pub async fn git_push_mcp_decide(app: AppHandle, id: String, approve: bool) -> Result<crate::services::git_push_mcp::Proposal, String> {
+    let result = tokio::task::spawn_blocking(move || crate::services::git_push_mcp::decide(&id, approve)).await.map_err(|e| e.to_string())?;
+    let _ = app.emit(crate::services::git_push_mcp::CHANGED_EVENT, ());
+    result
+}
+
 fn path_serves(path: &str, caller: root_mcp::Caller) -> bool {
     match path {
-        "/mcp" => !matches!(caller, root_mcp::Caller::Scheduler | root_mcp::Caller::Helper),
+        "/mcp" => !matches!(caller, root_mcp::Caller::Scheduler | root_mcp::Caller::Pusher | root_mcp::Caller::Helper),
         "/mcp/schedule" => caller == root_mcp::Caller::Scheduler,
+        "/mcp/git" => caller == root_mcp::Caller::Pusher,
         "/mcp/help" => caller == root_mcp::Caller::Helper,
         _ => false,
     }
@@ -645,14 +691,16 @@ fn path_serves(path: &str, caller: root_mcp::Caller) -> bool {
 mod security_tests {
     #[tokio::test]
     async fn routes_refuse_wrong_token_class_before_reading_body() {
-        for caller in [root_mcp::Caller::Agent, root_mcp::Caller::LocalModel, root_mcp::Caller::Reader, root_mcp::Caller::Scheduler] {
+        for caller in [root_mcp::Caller::Agent, root_mcp::Caller::LocalModel, root_mcp::Caller::Reader, root_mcp::Caller::Scheduler, root_mcp::Caller::Pusher] {
             let (token, session) = root_mcp::test_session(caller);
             let wrong = if caller == root_mcp::Caller::Scheduler { "/mcp" } else { "/mcp/schedule" };
             let req = Request::builder().method("POST").uri(wrong).header("host", "127.0.0.1:8765")
                 .header("authorization", format!("Bearer {token}"))
                 .body(axum::body::Body::from("not json")).unwrap();
             assert!(matches!(admit(req, 8765).await, Err(StatusCode::UNAUTHORIZED)));
-            assert!(path_serves(if caller == root_mcp::Caller::Scheduler { "/mcp/schedule" } else { "/mcp" }, caller));
+            let own = match caller { root_mcp::Caller::Scheduler => "/mcp/schedule", root_mcp::Caller::Pusher => "/mcp/git", _ => "/mcp" };
+            assert!(path_serves(own, caller));
+            assert!(!path_serves("/mcp/git", caller) || caller == root_mcp::Caller::Pusher, "{caller:?}");
             root_mcp::revoke_tab(&session.identity.tab);
         }
     }
@@ -679,7 +727,7 @@ mod security_tests {
         assert!(matches!(admit(post("/mcp/help", "0".repeat(64).as_str()), 8765).await, Err(StatusCode::UNAUTHORIZED)));
         root_mcp::revoke_tab(&helper.identity.tab);
         assert!(matches!(admit(post("/mcp/help", &token), 8765).await, Err(StatusCode::UNAUTHORIZED)), "a closed tab's token");
-        for caller in [root_mcp::Caller::Agent, root_mcp::Caller::LocalModel, root_mcp::Caller::Reader, root_mcp::Caller::Scheduler] {
+        for caller in [root_mcp::Caller::Agent, root_mcp::Caller::LocalModel, root_mcp::Caller::Reader, root_mcp::Caller::Scheduler, root_mcp::Caller::Pusher] {
             let (token, session) = root_mcp::test_session(caller);
             assert!(matches!(admit(post("/mcp/help", &token), 8765).await, Err(StatusCode::UNAUTHORIZED)), "{caller:?}");
             root_mcp::revoke_tab(&session.identity.tab);

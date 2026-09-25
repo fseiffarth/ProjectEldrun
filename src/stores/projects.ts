@@ -9,6 +9,8 @@ import {
   type ComputeHost,
   type GitHostingInfo,
   type GitProvider,
+  type GitPushMcpLevel,
+  type GitPushMcpPolicy,
   type ProjectEntry,
   type PublishFrom,
   type RemoteSpec,
@@ -877,6 +879,9 @@ interface ProjectsStore {
    * global default. Running tabs keep their current boundary until respawn. */
   setProjectAgentFence: (id: string, agentFence: boolean | null) => Promise<void>;
   setProjectScheduleMcp: (id: string, level: "off" | "propose" | "apply") => Promise<void>;
+  /** The agent-push policy (`services::git_push_mcp`): level and protected
+   *  branches; an omitted argument leaves that field alone. */
+  setProjectGitPushMcp: (id: string, level?: GitPushMcpLevel, protectedBranches?: string[]) => Promise<void>;
   /** Opt a remote project in/out of auto-connect (connect it silently on launch
    *  and activation). Only offered once the connect can complete with no prompt —
    *  a saved SSH password, or a host recorded as `key_auth`; `autoConnectRemote`
@@ -1679,6 +1684,11 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
   setProjectScheduleMcp: async (id, level) => {
     await invoke("set_project_schedule_mcp", { projectId: id, level });
     patchProject(id, (project) => ({ ...project, schedule_mcp: level }));
+  },
+
+  setProjectGitPushMcp: async (id, level, protectedBranches) => {
+    const policy = await invoke<GitPushMcpPolicy>("set_project_git_push_mcp", { projectId: id, level: level ?? null, protected: protectedBranches ?? null });
+    patchProject(id, (project) => ({ ...project, git_push_mcp: policy }));
   },
 
   setProjectAutoConnect: async (id, enabled) => {

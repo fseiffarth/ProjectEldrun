@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { invokeTrusted } from "../../lib/execTrust";
 import { GitHistory } from "./GitHistory";
 import { GitChangeTree, type ChangeScope } from "./GitChangeTree";
+import { GitPushProposals } from "../agents/GitPushMcp";
 import { AlertsSection } from "./AlertsSection";
 import {
   FileSourceSwitch,
@@ -1843,6 +1844,9 @@ export function ProjectFilesView({
               </>
             )}
             {gitError && <div className="git-action-error">{gitError}</div>}
+            {/* An agent's push request for this project (`services::git_push_mcp`):
+                the card that approves or dismisses it, beside the user's own Push. */}
+            {!onNestedRepo && <GitPushProposals projectId={projectId} />}
           </div>
         )}
         </>
