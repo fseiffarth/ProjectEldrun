@@ -1451,7 +1451,9 @@ export function FileTree({
     let timer: ReturnType<typeof setTimeout> | null = null;
     let cancelled = false;
 
-    invoke("watch_dir", { path: absDir }).catch(() => {});
+    // `repoDir` points the backend's `.git` watch at the project's repo, so
+    // add/commit/push (which only write `.git/`) re-read the markers too.
+    invoke("watch_dir", { path: absDir, repoDir: projectDir }).catch(() => {});
     listen("fs-change", () => {
       // Coalesce the burst of events a single write emits into one reload.
       if (timer) clearTimeout(timer);

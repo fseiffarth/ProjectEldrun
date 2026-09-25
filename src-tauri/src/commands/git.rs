@@ -1107,11 +1107,15 @@ fn git_file_statuses_blocking(
     }
 
     // Files in commits that exist locally but are not on the upstream branch.
-    if let Ok(out) = run_git(
-        target.as_ref(),
-        &project_dir,
-        &["log", "@{u}..", "--name-only", "--pretty=format:"],
-    ) {
+    let unpushed = unpushed_base(target.as_ref(), &project_dir).and_then(|base| {
+        run_git(
+            target.as_ref(),
+            &project_dir,
+            &["log", &format!("{base}.."), "--name-only", "--pretty=format:"],
+        )
+        .ok()
+    });
+    if let Some(out) = unpushed {
         if out.status.success() {
             let committed = String::from_utf8_lossy(&out.stdout).into_owned();
             for line in committed.lines() {
@@ -1182,14 +1186,19 @@ pub async fn git_change_stats(
         return Ok(vec![]);
     }
 
-    let numstat_args: &[&str] = match scope.as_str() {
-        "staged" => &["diff", "--cached", "--numstat", "--"],
-        "unpushed" => &["diff", "@{u}..", "--numstat", "--"],
-        _ => &["diff", "--numstat", "--"],
+    let numstat_args: Option<Vec<String>> = match scope.as_str() {
+        "staged" => Some(vec!["diff".into(), "--cached".into(), "--numstat".into(), "--".into()]),
+        "unpushed" => unpushed_base(target.as_ref(), &project_dir)
+            .map(|base| vec!["diff".into(), format!("{base}.."), "--numstat".into(), "--".into()]),
+        _ => Some(vec!["diff".into(), "--numstat".into(), "--".into()]),
     };
 
     let mut changes: Vec<FileChange> = Vec::new();
-    if let Ok(out) = run_git(target.as_ref(), &project_dir, numstat_args) {
+    let numstat = numstat_args.and_then(|args| {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        run_git(target.as_ref(), &project_dir, &args).ok()
+    });
+    if let Some(out) = numstat {
         if out.status.success() {
             let text = String::from_utf8_lossy(&out.stdout);
             for line in text.lines() {
@@ -1304,8 +1313,49 @@ async fn count_added_lines_remote(
     }
 }
 
-/// Returns one-line summaries of commits ahead of the upstream (not yet pushed).
-/// Returns an empty vec when there is no upstream or the repo is not git.
+/// The ref every "unpushed" view (tree markers, Push list, pill dot) measures
+/// against: the configured upstream, else the current branch's namesake on a
+/// remote (`origin` first). A branch pushed with an explicit refspec — or by a
+/// tool that never set tracking — has no `@{u}` yet plainly has a pushed copy,
+/// and measuring only `@{u}` left every one of its local commits unmarked.
+/// `None` for a detached HEAD or a branch no remote has.
+fn unpushed_base(target: Option<&RemoteTarget>, project_dir: &str) -> Option<String> {
+    let ok = |args: &[&str]| {
+        run_git(target, project_dir, args)
+            .ok()
+            .filter(|out| out.status.success())
+            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+    if ok(&["rev-parse", "--verify", "-q", "@{u}"]).is_some() {
+        return Some("@{u}".to_string());
+    }
+    let branch = ok(&["symbolic-ref", "-q", "--short", "HEAD"]).filter(|b| !b.is_empty())?;
+    let refs = ok(&["for-each-ref", "--format=%(refname)", "refs/remotes/"])?;
+    pick_remote_namesake(&refs, &branch)
+}
+
+/// From `for-each-ref refs/remotes/` output, the ref that is `branch` on some
+/// remote — `origin`'s when several remotes carry it.
+fn pick_remote_namesake(refs: &str, branch: &str) -> Option<String> {
+    let suffix = format!("/{branch}");
+    let mut found: Option<&str> = None;
+    for r in refs.lines().map(str::trim) {
+        let Some(rest) = r.strip_prefix("refs/remotes/") else {
+            continue;
+        };
+        if !rest.ends_with(&suffix) || rest.len() == suffix.len() {
+            continue;
+        }
+        if rest == format!("origin{suffix}") {
+            return Some(r.to_string());
+        }
+        found.get_or_insert(r);
+    }
+    found.map(str::to_string)
+}
+
+/// Returns one-line summaries of commits ahead of the upstream (not yet pushed),
+/// measured against [`unpushed_base`]. Empty when there is none or no repo.
 #[tauri::command]
 pub async fn git_unpushed_commits(project_dir: String) -> Result<Vec<String>, String> {
     run_off_thread(move || git_unpushed_commits_blocking(project_dir)).await
@@ -1316,10 +1366,13 @@ fn git_unpushed_commits_blocking(project_dir: String) -> Result<Vec<String>, Str
     if local_non_repo(target.as_ref(), &project_dir) {
         return Ok(vec![]);
     }
+    let Some(base) = unpushed_base(target.as_ref(), &project_dir) else {
+        return Ok(vec![]);
+    };
     let out = run_git(
         target.as_ref(),
         &project_dir,
-        &["log", "@{u}..", "--oneline"],
+        &["log", &format!("{base}.."), "--oneline"],
     )?;
     if !out.status.success() {
         return Ok(vec![]);
@@ -3502,6 +3555,66 @@ filename note.txt
             .expect("git_file_statuses should override the user's untracked-files setting");
 
         assert_eq!(statuses.get("cache").map(String::as_str), Some("ignored"));
+    }
+
+    #[test]
+    fn remote_namesake_prefers_origin_and_needs_the_whole_branch_name() {
+        let refs = "refs/remotes/fork/develop\nrefs/remotes/origin/HEAD\nrefs/remotes/origin/develop\nrefs/remotes/origin/main\n";
+        assert_eq!(pick_remote_namesake(refs, "develop").as_deref(), Some("refs/remotes/origin/develop"));
+        assert_eq!(
+            pick_remote_namesake("refs/remotes/fork/develop\n", "develop").as_deref(),
+            Some("refs/remotes/fork/develop")
+        );
+        // `feature/develop` is not `develop`, and a bare `refs/remotes/develop`
+        // names no remote at all.
+        assert_eq!(pick_remote_namesake("refs/remotes/origin/feature-develop\n", "develop"), None);
+        assert_eq!(pick_remote_namesake("refs/remotes/develop\n", "develop"), None);
+        assert_eq!(
+            pick_remote_namesake("refs/remotes/origin/feature/x\n", "feature/x").as_deref(),
+            Some("refs/remotes/origin/feature/x")
+        );
+    }
+
+    #[test]
+    fn unpushed_commits_count_without_a_configured_upstream() {
+        if !git_available() {
+            eprintln!("git not on PATH — skipping unpushed_commits_count_without_a_configured_upstream");
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let remote = tmp.path().join("remote.git");
+        let dir = tmp.path().join("work");
+        fs::create_dir(&dir).expect("mkdir work");
+        let git = |cwd: &Path, args: &[&str]| {
+            let ok = crate::paths::command_no_window("git")
+                .args(args)
+                .current_dir(cwd)
+                .output()
+                .expect("git should run")
+                .status
+                .success();
+            assert!(ok, "git {args:?} failed");
+        };
+        git(tmp.path(), &["init", "--bare", "remote.git"]);
+        init_repo(&dir);
+        git(&dir, &["checkout", "-b", "develop"]);
+        fs::write(dir.join("pushed.txt"), "a\n").expect("write");
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-m", "pushed"]);
+        git(&dir, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        // An explicit refspec and no `-u`: the branch is on the remote, but
+        // `@{u}` stays unset.
+        git(&dir, &["push", "origin", "develop:develop"]);
+        fs::create_dir(dir.join("src")).expect("mkdir src");
+        fs::write(dir.join("src/new.txt"), "b\n").expect("write");
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-m", "local only"]);
+
+        let d = dir.to_string_lossy().to_string();
+        let statuses = git_file_statuses_blocking(d.clone(), String::new()).expect("statuses");
+        assert_eq!(statuses.get("src").map(String::as_str), Some("unpushed"));
+        assert_eq!(statuses.get("pushed.txt"), None);
+        assert_eq!(git_unpushed_commits_blocking(d).expect("unpushed").len(), 1);
     }
 
     #[test]
