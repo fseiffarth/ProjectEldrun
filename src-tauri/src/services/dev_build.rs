@@ -2,8 +2,10 @@
 //! dev-build chip (`header/DevBuildIndicator.tsx`).
 //!
 //! The build is `scripts/package-dev-auto.sh`'s, queued by the `post-commit`
-//! hook (see `docs/context/dev_builds.md`). This module never starts, stops or
-//! queues one — it reads the files that script already keeps for `--status`:
+//! hook (see `docs/context/dev_builds.md`). This module never starts or stops
+//! one; the only thing it ever asks of the script is `--queue`, and only for a
+//! commit the hook could not queue itself (`queue_if_behind`). Otherwise it
+//! reads the files that script already keeps for `--status`:
 //! the lock directory and its pid, the pending marker, the installed-commit
 //! stamp, the last failure, and the tail of the log, whose own lines say which
 //! step a pass has reached.
@@ -16,6 +18,7 @@
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use serde::Serialize;
 
@@ -327,6 +330,76 @@ pub fn status() -> Option<DevBuildStatus> {
     })
 }
 
+/// The HEAD this process last asked the script to freeze, so a HEAD the script
+/// declined (`eldrun.autoDevBuild false`) or already failed is asked for once,
+/// not on every poll.
+static LAST_QUEUED: Mutex<Option<String>> = Mutex::new(None);
+
+/// Whether `head` still needs a freeze that nobody has queued: not the
+/// installed snapshot, no build alive or pending to pick it up, not the commit
+/// whose build just failed (`failed` is the script's short sha), and not
+/// already asked for by this process.
+pub fn needs_queue(
+    head: &str,
+    stamp: Option<&str>,
+    failed: Option<&str>,
+    busy: bool,
+    last_queued: Option<&str>,
+) -> bool {
+    !busy
+        && stamp != Some(head)
+        && !failed.is_some_and(|f| !f.is_empty() && head.starts_with(f))
+        && last_queued != Some(head)
+}
+
+/// Queue a freeze of HEAD when the `post-commit` hook could not. A commit made
+/// in an agent tab runs the hook inside the agent fence, whose `$HOME` is the
+/// agent's own: the script declines there (`ELDRUN_AGENT_FENCE`), since what it
+/// would lock, stamp and install is a throwaway copy and the real snapshot
+/// never moved (2026-09-25: 27 commits behind). This process runs on the host,
+/// so it asks instead, from the chip's poll. `SOURCE_ROOT` is this binary's
+/// own checkout, fixed at compile time — never a project path — and the
+/// script's own off switches still apply.
+pub fn queue_if_behind() {
+    let Some(root) = SOURCE_ROOT else { return };
+    let Some(head) = head_sha(root) else { return };
+    let dir = app_dir();
+    let stamp = read_trimmed(&dir.join("package-dev-auto.stamp"));
+    let failed = read_trimmed(&dir.join("package-dev-auto.failed"))
+        .and_then(|line| line.split(' ').next().map(str::to_string));
+    let busy = lock_holder_alive(&dir.join("package-dev-auto.lock"))
+        || dir.join("package-dev-auto.pending").exists();
+    let mut last = LAST_QUEUED.lock().unwrap_or_else(|e| e.into_inner());
+    if !needs_queue(&head, stamp.as_deref(), failed.as_deref(), busy, last.as_deref()) {
+        return;
+    }
+    *last = Some(head);
+    let script = Path::new(root).join("scripts/package-dev-auto.sh");
+    if !script.is_file() {
+        return;
+    }
+    // `--queue` detaches the build itself and returns at once.
+    let _ = crate::paths::command_no_window(&script)
+        .arg("--queue")
+        .current_dir(root)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+fn head_sha(root: &str) -> Option<String> {
+    let out = crate::paths::command_no_window("git")
+        .args(["-C", root, "rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!sha.is_empty()).then_some(sha)
+}
+
 /// Start the "Eldrun (dev)" launcher once this process has exited, detached so
 /// the quit's teardown does not take it along. The caller then closes the main
 /// window, which runs the ordinary quit (layout flush, tmux reap,
@@ -366,6 +439,21 @@ pub fn spawn_relauncher() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn queues_only_an_unclaimed_head() {
+        let h = "c031c7ef4818714450a5d0d4fa7f088575d43ce5";
+        assert!(needs_queue(h, Some("5bcd0392"), None, false, None));
+        assert!(needs_queue(h, None, Some("5bcd039"), false, None));
+        // Frozen already, a build alive or pending, failed at this very commit,
+        // or asked for once: leave it.
+        assert!(!needs_queue(h, Some(h), None, false, None));
+        assert!(!needs_queue(h, Some("5bcd0392"), None, true, None));
+        assert!(!needs_queue(h, Some("5bcd0392"), Some("c031c7ef"), false, None));
+        assert!(!needs_queue(h, Some("5bcd0392"), None, false, Some(h)));
+        // A malformed failure record blocks nothing.
+        assert!(needs_queue(h, Some("5bcd0392"), Some(""), false, None));
+    }
 
     #[test]
     fn iso8601_honours_the_offset() {

@@ -98,6 +98,14 @@ change was not run live.
   not a re-run of that check, since `dist/` moves on with every gate an agent
   runs and a launch-time re-check refused four days of good builds
   (2026-09-14). The launcher notifies either way: what it adopted, or why not.
+  **Since 2026-09-25 a fenced commit does not build at all**: that path never
+  moved `package-dev-auto.stamp` in the real home, so the header chip sat at
+  "27 behind" and never showed a build for an agent's commit. The script now
+  declines under `ELDRUN_AGENT_FENCE`, and the window (host-side, dev builds
+  only) queues it from the chip's poll: `dev_build::queue_if_behind` runs
+  `--queue` when HEAD is past the stamp with no build alive or pending, not the
+  last failed commit, and not already asked for by this process. The adopt path
+  above still covers a snapshot built by hand in `target/release/`.
   **A failed pass does not end the queue** (2026-09-15): a commit that landed
   mid-build is a different tree — usually the one that fixes it, since a
   change split over two commits compiles only as a pair — so the loop goes on

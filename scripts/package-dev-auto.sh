@@ -90,6 +90,12 @@ notify() { # urgency, title, body
 declined() {
   [ "${ELDRUN_NO_AUTO_DEV_BUILD:-}" = "1" ] && { echo "disabled for this commit"; return 0; }
   [ -n "${CI:-}" ] && { echo "running in CI"; return 0; }
+  # An agent tab's commit runs this hook inside the agent fence, whose $HOME is
+  # the agent's own: the lock, stamp and install would all land in a throwaway
+  # copy while the real snapshot never moves (2026-09-25: 27 commits behind).
+  # The window runs on the host and queues it from the dev-build chip's poll
+  # (services::dev_build::queue_if_behind).
+  [ -n "${ELDRUN_AGENT_FENCE:-}" ] && { echo "inside an agent fence — the Eldrun window queues it"; return 0; }
   case "$(git -C "$ROOT" config --bool --get eldrun.autoDevBuild 2>/dev/null)" in
     false) echo "disabled by git config eldrun.autoDevBuild"; return 0 ;;
   esac
