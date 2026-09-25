@@ -123,6 +123,11 @@ fn prepare_home_in(
         seed_home(state_dir, home, scope_id, roots, seed_scope_state);
         std::fs::write(home.join(SEEDED_MARKER), b"")?;
     }
+    // Before the logins are linked and the hooks registered: both write
+    // where the old fence's leftovers sit.
+    for adopted in [".codex", ".copilot"] {
+        scrub_fence_leftovers(&home.join(adopted));
+    }
     // The tmpfs the Linux fence mounts over it needs a mount point on disk.
     let _ = std::fs::create_dir_all(home.join(".cache"));
     // The user's Eldrun-wide instructions, skills, hooks and MCP servers,
@@ -173,6 +178,41 @@ fn seed_home(state_dir: &Path, home: &Path, scope_id: &str, roots: &[PathBuf], s
         let roots: Vec<String> = roots.iter().map(|r| r.to_string_lossy().into_owned()).collect();
         seed_claude_transcripts(&user_home.join(".claude").join("projects"), home, &roots);
         seed_claude_json(&user_home.join(".claude.json"), &home.join(".claude.json"), &roots);
+    }
+}
+
+/// Where the old fence bound a scope's staged config copies (`--symlink`ed
+/// from the store); gone with the per-scope homes.
+const LEGACY_STAGE_MOUNT: &str = "/run/eldrun-agent-config";
+
+/// Drop what the old fence left in an adopted store. Until the per-scope
+/// homes, the fence bind-mounted the user's own `~/.codex/<file>`s over the
+/// scope's Codex store and `--symlink`ed its `config.toml` into the stage
+/// mount; bubblewrap creates a missing file mount point as an empty read-only
+/// file, and the link landed on disk because the store was mounted
+/// read-write. As the home's `.codex` those are plain files Codex opens for
+/// writing on its first start (`session_index.jsonl`, `version.json`,
+/// `auth.json`, …) and dies on with `EACCES`, and the dangling link swallowed
+/// the hook registration. No CLI writes an empty read-only file of its own;
+/// Codex and the login link recreate what they need. Cheap: one directory
+/// listing, run at every spawn since existing homes were seeded before this.
+fn scrub_fence_leftovers(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        let stage_link = meta.file_type().is_symlink()
+            && std::fs::read_link(&path).is_ok_and(|target| target.starts_with(LEGACY_STAGE_MOUNT));
+        let mount_point = meta.is_file() && meta.len() == 0 && meta.permissions().readonly();
+        if stage_link || mount_point {
+            if let Err(e) = std::fs::remove_file(&path) {
+                eprintln!("agent_home: drop the old fence's {}: {e}", path.display());
+            }
+        }
     }
 }
 
@@ -355,6 +395,51 @@ mod tests {
         std::fs::write(dest.join("-work-p/s.jsonl"), "changed").unwrap();
         seed_claude_transcripts(&user, &home, &["/work/p".into()]);
         assert_eq!(std::fs::read_to_string(dest.join("-work-p/s.jsonl")).unwrap(), "changed");
+    }
+
+    /// The old fence's mount points (empty, read-only) and stage link go;
+    /// Codex's own files — empty but writable, or read-only with content —
+    /// stay, and the hook registration then lands in a plain `config.toml`.
+    #[cfg(unix)]
+    #[test]
+    fn preparing_a_home_drops_the_old_fences_mount_points_and_stage_link() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path();
+        let home = scope_home_in(state, "p1");
+        let codex = home.join(".codex");
+        std::fs::create_dir_all(&codex).unwrap();
+        let read_only = |name: &str| {
+            std::fs::set_permissions(codex.join(name), std::fs::Permissions::from_mode(0o444)).unwrap()
+        };
+        for name in ["version.json", "session_index.jsonl", "auth.json", ".sandbox_migration"] {
+            std::fs::write(codex.join(name), b"").unwrap();
+            read_only(name);
+        }
+        std::os::unix::fs::symlink(
+            format!("{LEGACY_STAGE_MOUNT}/home_u_.codex_config.toml"),
+            codex.join("config.toml"),
+        )
+        .unwrap();
+        std::fs::write(codex.join("history.jsonl"), b"").unwrap();
+        std::fs::write(codex.join("installation_id"), b"abc").unwrap();
+        read_only("installation_id");
+
+        prepare_home_in(state, &home, "p1", &[], true).unwrap();
+
+        for name in ["version.json", "session_index.jsonl", "auth.json", ".sandbox_migration"] {
+            assert!(!codex.join(name).exists(), "{name}");
+        }
+        assert!(codex.join("history.jsonl").is_file());
+        assert_eq!(std::fs::read(codex.join("installation_id")).unwrap(), b"abc");
+        let config = codex.join("config.toml");
+        assert!(std::fs::symlink_metadata(&config).unwrap().is_file());
+        assert!(std::fs::read_to_string(&config).unwrap().contains("[[hooks.SessionStart]]"));
+        // Already seeded: the scrub still runs on the next spawn.
+        std::fs::write(codex.join("models_cache.json"), b"").unwrap();
+        read_only("models_cache.json");
+        prepare_home_in(state, &home, "p1", &[], true).unwrap();
+        assert!(!codex.join("models_cache.json").exists());
     }
 
     #[test]

@@ -106,7 +106,7 @@ fn layer_files(root: &Path) -> Vec<String> {
 /// symlink. The home is agent-writable and this runs unfenced: a planted
 /// `~/.claude -> /somewhere` must not steer Eldrun's writes out of the home.
 /// Missing directories are created private.
-fn contained_path(home: &Path, rel: &str) -> Option<PathBuf> {
+pub(crate) fn contained_path(home: &Path, rel: &str) -> Option<PathBuf> {
     let parts: Vec<&str> = rel.split('/').filter(|p| !p.is_empty()).collect();
     if parts.is_empty() || parts.iter().any(|p| *p == "." || *p == "..") {
         return None;
@@ -124,7 +124,7 @@ fn contained_path(home: &Path, rel: &str) -> Option<PathBuf> {
 }
 
 /// Write `bytes` by rename, so a symlink at `path` is replaced, not followed.
-fn write_replacing(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn write_replacing(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let tmp = path.with_file_name(format!(
         ".{}.eldrun-tmp",
         path.file_name().and_then(|n| n.to_str()).unwrap_or("file")
@@ -134,7 +134,7 @@ fn write_replacing(path: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 /// Read a home file, never through a symlink.
-fn read_plain(path: &Path) -> Option<Vec<u8>> {
+pub(crate) fn read_plain(path: &Path) -> Option<Vec<u8>> {
     let meta = std::fs::symlink_metadata(path).ok()?;
     if !meta.is_file() {
         return None;

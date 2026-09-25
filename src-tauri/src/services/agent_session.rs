@@ -1528,19 +1528,32 @@ pub fn install_session_start_hook() -> std::io::Result<()> {
 /// Register the hooks in one Eldrun-owned agent home (`services::agent_home`):
 /// Claude's `settings.json`, Codex's `config.toml`, Vibe's `hooks.toml`. Each
 /// is idempotent and keeps whatever else the file holds. Never a file in the
-/// user's own home. Best effort, logged.
+/// user's own home, and never through a symlink: a fenced agent owns the home,
+/// so a link it plants there (or one the old fence left) is replaced by a
+/// plain file, and a linked `.claude`/`.codex`/`.vibe` dir is skipped
+/// (`agent_global::contained_path`). Best effort, logged.
 pub fn register_hooks_in_home(home: &std::path::Path) {
-    if let Err(e) = register_hook_in_settings(&home.join(".claude").join("settings.json")) {
-        eprintln!("agent_session: register claude hook in {}: {e}", home.display());
+    let plain = |rel: &str| {
+        let path = crate::services::agent_global::contained_path(home, rel);
+        if path.is_none() {
+            eprintln!("agent_session: {} in {} is not a plain path; hook skipped", rel, home.display());
+        }
+        path
+    };
+    if let Some(settings) = plain(".claude/settings.json") {
+        if let Err(e) = register_hook_in_settings(&settings) {
+            eprintln!("agent_session: register claude hook in {}: {e}", home.display());
+        }
     }
-    let codex = home.join(".codex");
-    if std::fs::create_dir_all(&codex).is_ok() {
-        if let Err(e) = register_codex_hook_in(&codex.join("config.toml")) {
+    if let Some(config) = plain(".codex/config.toml") {
+        if let Err(e) = register_codex_hook_in(&config) {
             eprintln!("agent_session: register codex hook in {}: {e}", home.display());
         }
     }
-    if let Err(e) = register_vibe_hook_in(&home.join(".vibe")) {
-        eprintln!("agent_session: register vibe hook in {}: {e}", home.display());
+    if let Some(hooks) = plain(".vibe/hooks.toml") {
+        if let Err(e) = register_vibe_hook_in(hooks.parent().unwrap_or(home)) {
+            eprintln!("agent_session: register vibe hook in {}: {e}", home.display());
+        }
     }
 }
 
@@ -1556,20 +1569,19 @@ pub fn register_vibe_hook_in(home: &std::path::Path) -> std::io::Result<()> {
 }
 
 fn write_vibe_hooks(home: &std::path::Path, eldrun_owned: bool) -> std::io::Result<()> {
+    use crate::services::agent_global::{read_plain, write_replacing};
     std::fs::create_dir_all(home)?;
     let path = home.join("hooks.toml");
     if eldrun_owned {
         let fresh = vibe_hook_block()?;
-        if std::fs::read_to_string(&path).ok().as_deref() != Some(fresh.as_str()) {
-            std::fs::write(&path, fresh)?;
+        if read_plain(&path).as_deref() != Some(fresh.as_bytes()) {
+            write_replacing(&path, fresh.as_bytes())?;
         }
         return Ok(());
     }
-    let mut content = match std::fs::read_to_string(&path) {
-        Ok(content) => content,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(e),
-    };
+    let mut content = read_plain(&path)
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .unwrap_or_default();
     if content.lines().any(|line| line.trim() == "name = \"eldrun-session\"") {
         return Ok(());
     }
@@ -1578,7 +1590,7 @@ fn write_vibe_hooks(home: &std::path::Path, eldrun_owned: bool) -> std::io::Resu
     }
     content.push('\n');
     content.push_str(&vibe_hook_block()?);
-    std::fs::write(path, content)
+    write_replacing(&path, content.as_bytes())
 }
 
 fn vibe_hook_block() -> std::io::Result<String> {
@@ -1859,9 +1871,8 @@ fn register_hook_in_settings(settings_path: &std::path::Path) -> std::io::Result
     if let Some(parent) = settings_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut root: serde_json::Value = std::fs::read_to_string(settings_path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
+    let mut root: serde_json::Value = crate::services::agent_global::read_plain(settings_path)
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_else(|| serde_json::json!({}));
     if !root.is_object() {
         root = serde_json::json!({});
@@ -1905,7 +1916,7 @@ fn register_hook_in_settings(settings_path: &std::path::Path) -> std::io::Result
     }
 
     let serialized = serde_json::to_string_pretty(&root).map_err(std::io::Error::other)?;
-    std::fs::write(settings_path, serialized)?;
+    crate::services::agent_global::write_replacing(settings_path, serialized.as_bytes())?;
     Ok(())
 }
 
@@ -1966,7 +1977,9 @@ pub fn codex_registered_events(src: &str, cmd: &str) -> std::collections::HashSe
 /// already hold.
 fn register_codex_hook_in(config_path: &std::path::Path) -> std::io::Result<()> {
     let cmd = hook_command();
-    let mut content = std::fs::read_to_string(config_path).unwrap_or_default();
+    let mut content = crate::services::agent_global::read_plain(config_path)
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .unwrap_or_default();
     let have = codex_registered_events(&content, &cmd);
     let missing: Vec<&str> = CODEX_HOOK_EVENTS
         .iter()
@@ -2002,13 +2015,59 @@ fn register_codex_hook_in(config_path: &std::path::Path) -> std::io::Result<()> 
              timeout = 10\n\n",
         ));
     }
-    std::fs::write(config_path, content)?;
+    crate::services::agent_global::write_replacing(config_path, content.as_bytes())?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A link at a hook file — planted by a fenced agent, or the old fence's
+    /// stage link — is replaced by a plain file; its target is never read or
+    /// written.
+    #[cfg(unix)]
+    #[test]
+    fn hook_registration_replaces_a_link_instead_of_following_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tmp.path().join("outside.toml");
+        std::fs::write(&outside, "model = \"o3\"\n").unwrap();
+        let codex = tmp.path().join("home/.codex");
+        std::fs::create_dir_all(&codex).unwrap();
+        let config = codex.join("config.toml");
+        std::os::unix::fs::symlink(&outside, &config).unwrap();
+        register_codex_hook_in(&config).unwrap();
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "model = \"o3\"\n");
+        assert!(std::fs::symlink_metadata(&config).unwrap().is_file());
+        let out = std::fs::read_to_string(&config).unwrap();
+        assert!(out.contains("[[hooks.SessionStart]]"));
+        assert!(!out.contains("model"));
+
+        let outside_json = tmp.path().join("outside.json");
+        std::fs::write(&outside_json, "{}").unwrap();
+        let settings = tmp.path().join("home/.claude/settings.json");
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&outside_json, &settings).unwrap();
+        register_hook_in_settings(&settings).unwrap();
+        assert_eq!(std::fs::read_to_string(&outside_json).unwrap(), "{}");
+        assert!(std::fs::symlink_metadata(&settings).unwrap().is_file());
+
+        let outside_hooks = tmp.path().join("outside-hooks.toml");
+        std::fs::write(&outside_hooks, "").unwrap();
+        let vibe = tmp.path().join("home/.vibe");
+        std::fs::create_dir_all(&vibe).unwrap();
+        std::os::unix::fs::symlink(&outside_hooks, vibe.join("hooks.toml")).unwrap();
+        write_vibe_hooks(&vibe, false).unwrap();
+        assert_eq!(std::fs::read_to_string(&outside_hooks).unwrap(), "");
+        assert!(std::fs::symlink_metadata(vibe.join("hooks.toml")).unwrap().is_file());
+
+        // A linked config dir is skipped altogether.
+        let home = tmp.path().join("linked");
+        std::fs::create_dir_all(&home).unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("home/.codex"), home.join(".codex")).unwrap();
+        register_hooks_in_home(&home);
+        assert!(std::fs::symlink_metadata(home.join(".codex")).unwrap().file_type().is_symlink());
+    }
 
     // ── agent session resolution ────────────────────────────────────────────
 
