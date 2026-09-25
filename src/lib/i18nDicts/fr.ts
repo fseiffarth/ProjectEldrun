@@ -1007,8 +1007,7 @@ export const dict: Dict = {
     "Comment démarrer, la visite, la visite avancée pour d'autres machines et les leçons — une visite narrée par tâche — se rouvrent toutes depuis le menu Paramètres.",
 
   "globalApps.title": "Applications globales",
-  "globalApps.help": "Applications qui restent visibles dans tous les espaces de travail. Les applications cochées apparaissent dans la barre d'outils supérieure.",
-  "globalApps.showRole": "Afficher {role}",
+  "globalApps.help": "Programmes externes auxquels Eldrun peut passer la main. Le navigateur ouvre les liens web des PDF.",
   "globalApps.notFoundPlaceholder": "introuvable",
   "globalApps.browseTitle": "Choisir l'exécutable pour {role}",
 
@@ -1587,7 +1586,6 @@ export const dict: Dict = {
   "ollama.endOfResults": "Fin des résultats",
   "ollama.pausedBadge": "en pause",
   "ollama.interruptedBadge": "interrompu",
-  "globalAppMenu.title": "Applications globales",
   "settings.categories": "Catégories de réglages",
   "settings.general": "Général",
   "settings.search": "Rechercher un réglage…",
@@ -1738,8 +1736,6 @@ export const dict: Dict = {
   "globalApp.role.screenshot": "Capture d'écran",
   "globalApp.role.screen_recorder": "Enregistreur d'écran",
   "globalApp.role.chat": "Discussion",
-  "globalApp.screenshotDelayHint": "Maj+clic : attendre {secs}s d'abord, pour changer de fen\u00eatre",
-  "globalApp.screenshotCountdown": "Capture dans {secs}s \u2014 passez \u00e0 la fen\u00eatre voulue",
   "screenshotSave.title": "Enregistrer la capture",
   "screenshotSave.preview": "Aper\u00e7u de la capture",
   "screenshotSave.clipboardNote": "D\u00e9j\u00e0 dans le presse-papiers. Choisissez o\u00f9 l'enregistrer ou abandonnez-la \u2014 l'abandon conserve la copie du presse-papiers.",
@@ -1751,10 +1747,6 @@ export const dict: Dict = {
   "screenshotSave.noProject": "Aucun projet o\u00f9 enregistrer \u2014 la capture reste dans le presse-papiers.",
   "screenshotSave.saved": "Capture enregistr\u00e9e dans {path}",
   "screenshotSave.failed": "Impossible d'enregistrer la capture : {msg}",
-  "globalApp.rightClickConfigure": "Clic droit pour configurer",
-  "globalApp.noCommandConfigured": "Aucune commande configurée",
-  "globalApp.clear": "Effacer",
-  "globalApp.set": "Définir",
   "header.dragToMove": "Faites glisser pour déplacer la fenêtre Eldrun",
   "header.rootProject": "Projet racine — pour le travail qui n'appartient à aucun projet : le terminal de contrôle et le dossier propres à Eldrun",
   "tabDrag.dropFolder": "Déposer sur un dossier → y déplacer le fichier",
@@ -6463,9 +6455,6 @@ export const dict: Dict = {
   "tour.mailCalendarTitle": "Courrier, agenda et tâches",
   "tour.mailCalendarBody":
     "Eldrun embarque aussi un client de messagerie, un agenda avec rappels et synchronisation CalDAV, et un tableau de tâches sur ces mêmes tâches. Chacun obtient un bouton dans l'en-tête dès que tu l'actives dans les Paramètres, et s'ouvre en onglet ou sur toute la fenêtre.",
-  "tour.globalAppsTitle": "Lancez vos outils",
-  "tour.globalAppsBody":
-    "Le menu ▦ lance ton éditeur, ton navigateur, un terminal, le gestionnaire de fichiers ou une capture d'écran. Clic droit sur une entrée pour définir la commande qu'elle exécute.",
   "tour.timeTrackingTitle": "Suivez votre temps",
   "tour.timeTrackingBody":
     "Survole l'horloge pour les totaux du jour : Eldrun enregistre le temps passé sur chaque projet. Clique sur le minuteur pour le mettre en pause, clic droit pour la vue d'activité, et consulte le récapitulatif quotidien (prompts, fichiers modifiés, commits).",
@@ -7131,8 +7120,6 @@ export const dict: Dict = {
   "fileError.open": "Impossible d’ouvrir ce fichier.",
   "startup.opening": "Ouverture de votre espace de travail…",
   "startup.ready": "Espace de travail prêt",
-  "globalApp.execPlaceholder": "Chemin de la commande, p. ex. /usr/bin/firefox",
-  "globalApp.execPlaceholderWindows": "Chemin de la commande, p. ex. C:\\Program Files\\Mozilla Firefox\\firefox.exe",
   "setDefaultApp.errNoProjectFile": "Aucun fichier de projet pour la portée projet",
   "remoteBrowse.nameSlash": "Le nom du dossier ne peut pas contenir « / ».",
   "remoteSession.pollGaveUp": "Aucune connexion détectée après deux minutes. Terminez la connexion dans le terminal, puis appuyez sur « Je suis connecté — parcourir ».",

@@ -1005,8 +1005,7 @@ export const dict: Dict = {
     "Come iniziare, il tour, il tour avanzato per altre macchine e le lezioni – una guida narrata per ogni compito – si riaprono tutte dal menu Impostazioni.",
 
   "globalApps.title": "App globali",
-  "globalApps.help": "App che restano visibili in tutti gli spazi di lavoro. Le app selezionate appaiono nella barra degli strumenti superiore.",
-  "globalApps.showRole": "Mostra {role}",
+  "globalApps.help": "Programmi esterni a cui Eldrun può passare il lavoro. Il browser apre i link web dei PDF.",
   "globalApps.notFoundPlaceholder": "non trovato",
   "globalApps.browseTitle": "Scegli l'eseguibile per {role}",
 
@@ -1585,7 +1584,6 @@ export const dict: Dict = {
   "ollama.endOfResults": "Fine dei risultati",
   "ollama.pausedBadge": "in pausa",
   "ollama.interruptedBadge": "interrotto",
-  "globalAppMenu.title": "App globali",
   "settings.categories": "Categorie delle impostazioni",
   "settings.general": "Generale",
   "settings.search": "Cerca nelle impostazioni…",
@@ -1736,8 +1734,6 @@ export const dict: Dict = {
   "globalApp.role.screenshot": "Screenshot",
   "globalApp.role.screen_recorder": "Registratore schermo",
   "globalApp.role.chat": "Chat",
-  "globalApp.screenshotDelayHint": "Maiusc+clic: attendi prima {secs}s per cambiare finestra",
-  "globalApp.screenshotCountdown": "Schermata tra {secs}s \u2014 passa ora alla finestra desiderata",
   "screenshotSave.title": "Salva la schermata",
   "screenshotSave.preview": "Anteprima della schermata",
   "screenshotSave.clipboardNote": "Gi\u00e0 negli appunti. Scegli dove salvarla oppure scartala \u2014 scartandola la copia negli appunti resta.",
@@ -1749,10 +1745,6 @@ export const dict: Dict = {
   "screenshotSave.noProject": "Nessun progetto in cui salvare \u2014 la schermata resta negli appunti.",
   "screenshotSave.saved": "Schermata salvata in {path}",
   "screenshotSave.failed": "Impossibile salvare la schermata: {msg}",
-  "globalApp.rightClickConfigure": "Clic destro per configurare",
-  "globalApp.noCommandConfigured": "Nessun comando configurato",
-  "globalApp.clear": "Cancella",
-  "globalApp.set": "Imposta",
   "header.dragToMove": "Trascina per spostare la finestra di Eldrun",
   "header.rootProject": "Progetto radice — per il lavoro che non appartiene a nessun progetto: il terminale di controllo e la cartella di Eldrun",
   "tabDrag.dropFolder": "Rilascia su una cartella → sposta lì il file",
@@ -6461,9 +6453,6 @@ export const dict: Dict = {
   "tour.mailCalendarTitle": "Posta, calendario e to-do",
   "tour.mailCalendarBody":
     "Eldrun porta con sé anche un client di posta, un calendario con promemoria e sincronizzazione CalDAV e una lavagna di to-do sulle stesse attività. Ognuno ottiene un pulsante nell'intestazione quando lo attivi nelle Impostazioni e si apre come scheda o su tutta la finestra.",
-  "tour.globalAppsTitle": "Avvia i tuoi strumenti",
-  "tour.globalAppsBody":
-    "Il menu ▦ avvia l'editor, il browser, un terminale, il gestore di file o uno screenshot. Clic destro su una voce per stabilire quale comando esegue.",
   "tour.timeTrackingTitle": "Monitora il tuo tempo",
   "tour.timeTrackingBody":
     "Passa sull'orologio per i totali di oggi: Eldrun registra quanto lavori in ogni progetto. Fai clic sul timer per metterlo in pausa, clic destro per la vista attività, e leggi il riepilogo giornaliero di prompt, modifiche ai file e commit.",
@@ -7129,8 +7118,6 @@ export const dict: Dict = {
   "fileError.open": "Impossibile aprire questo file.",
   "startup.opening": "Apertura dello spazio di lavoro…",
   "startup.ready": "Spazio di lavoro pronto",
-  "globalApp.execPlaceholder": "Percorso del comando, ad es. /usr/bin/firefox",
-  "globalApp.execPlaceholderWindows": "Percorso del comando, ad es. C:\\Program Files\\Mozilla Firefox\\firefox.exe",
   "setDefaultApp.errNoProjectFile": "Nessun file di progetto per l’ambito progetto",
   "remoteBrowse.nameSlash": "Il nome della cartella non può contenere «/».",
   "remoteSession.pollGaveUp": "Nessun accesso rilevato dopo due minuti. Completa l’accesso nel terminale, poi premi «Ho effettuato l’accesso — sfoglia».",

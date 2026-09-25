@@ -346,66 +346,6 @@
   border-color: var(--text-muted);
 }
 
-/* Global-app launcher rows: rides the shared .tab-new-menu/.tab-new-menu-item
-   one-column list chrome (same shape as the Local Model / Machines / VPN
-   dropdowns) — an icon (real app icon, or the role's fallback glyph) followed
-   by the program's label, instead of the old icon-only tile grid. */
-.global-app-menu-row[aria-disabled="true"] {
-  cursor: var(--cur-default, default);
-  opacity: 0.55;
-}
-
-.global-app-menu-row[aria-disabled="true"]:hover {
-  background: var(--control-bg);
-}
-
-.global-app-icon {
-  width: 18px;
-  height: 18px;
-  object-fit: contain;
-  flex-shrink: 0;
-}
-
-.global-app-fallback-icon {
-  width: 18px;
-  font-size: var(--text-lg);
-  line-height: 1;
-  text-align: center;
-  flex-shrink: 0;
-}
-
-.global-app-edit-popover {
-  position: fixed;
-  z-index: var(--z-menu);
-  width: 320px;
-  padding: 10px;
-  color: var(--text-primary);
-}
-
-.global-app-edit-title {
-  font-weight: 650;
-  margin-bottom: 4px;
-}
-
-.global-app-edit-current {
-  margin-bottom: 8px;
-  color: var(--text-secondary);
-  font-size: var(--text-md);
-}
-
-.global-app-edit-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 6px;
-}
-
-.global-app-edit-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 6px;
-  margin-top: 8px;
-}
-
 .side-panel {
   pointer-events: none;
 }
@@ -863,7 +803,6 @@
 .project-switcher-add-menu::before,
 .box-chip-menu::before,
 .project-search-popover::before,
-.global-app-edit-popover::before,
 .file-run-args::before,
 .file-viewer-run-args::before,
 .git-change-tree::before,

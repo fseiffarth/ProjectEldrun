@@ -1005,8 +1005,7 @@ export const dict: Dict = {
     "Cómo empezar, el recorrido, el recorrido avanzado para otras máquinas y las lecciones —una guía narrada por tarea— se reabren desde el menú Ajustes.",
 
   "globalApps.title": "Apps globales",
-  "globalApps.help": "Apps que permanecen visibles en todos los espacios de trabajo. Las apps marcadas aparecen en la barra superior.",
-  "globalApps.showRole": "Mostrar {role}",
+  "globalApps.help": "Programas externos a los que Eldrun puede delegar. El navegador abre los enlaces web de los PDF.",
   "globalApps.notFoundPlaceholder": "no encontrado",
   "globalApps.browseTitle": "Elegir el ejecutable para {role}",
 
@@ -1585,7 +1584,6 @@ export const dict: Dict = {
   "ollama.endOfResults": "Fin de los resultados",
   "ollama.pausedBadge": "pausado",
   "ollama.interruptedBadge": "interrumpido",
-  "globalAppMenu.title": "Apps globales",
   "settings.categories": "Categorías de ajustes",
   "settings.general": "General",
   "settings.search": "Buscar ajustes…",
@@ -1736,8 +1734,6 @@ export const dict: Dict = {
   "globalApp.role.screenshot": "Captura de pantalla",
   "globalApp.role.screen_recorder": "Grabadora de pantalla",
   "globalApp.role.chat": "Chat",
-  "globalApp.screenshotDelayHint": "May\u00fas+clic: esperar {secs}s primero para cambiar de ventana",
-  "globalApp.screenshotCountdown": "Captura en {secs}s \u2014 cambia ahora a la ventana que quieras",
   "screenshotSave.title": "Guardar captura",
   "screenshotSave.preview": "Vista previa de la captura",
   "screenshotSave.clipboardNote": "Ya est\u00e1 en el portapapeles. Elige d\u00f3nde guardarla o desc\u00e1rtala \u2014 al descartarla se mantiene la copia del portapapeles.",
@@ -1749,10 +1745,6 @@ export const dict: Dict = {
   "screenshotSave.noProject": "No hay ning\u00fan proyecto donde guardar \u2014 la captura queda en el portapapeles.",
   "screenshotSave.saved": "Captura guardada en {path}",
   "screenshotSave.failed": "No se pudo guardar la captura: {msg}",
-  "globalApp.rightClickConfigure": "Clic derecho para configurar",
-  "globalApp.noCommandConfigured": "Ningún comando configurado",
-  "globalApp.clear": "Borrar",
-  "globalApp.set": "Establecer",
   "header.dragToMove": "Arrastra para mover la ventana de Eldrun",
   "header.rootProject": "Proyecto raíz — para trabajo que no pertenece a ningún proyecto: la terminal de control y la carpeta propias de Eldrun",
   "tabDrag.dropFolder": "Suelta sobre una carpeta → mover el archivo allí",
@@ -6461,9 +6453,6 @@ export const dict: Dict = {
   "tour.mailCalendarTitle": "Correo, calendario y tareas",
   "tour.mailCalendarBody":
     "Eldrun también trae un cliente de correo, un calendario con recordatorios y sincronización CalDAV, y un tablero sobre esas mismas tareas. Cada uno tiene su botón en la cabecera cuando lo activas en Configuración, y se abre como pestaña o sobre toda la ventana.",
-  "tour.globalAppsTitle": "Inicia tus herramientas",
-  "tour.globalAppsBody":
-    "El menú ▦ lanza tu editor, navegador, terminal, gestor de archivos o una captura de pantalla. Haz clic derecho en una entrada para definir qué comando ejecuta.",
   "tour.timeTrackingTitle": "Controla tu tiempo",
   "tour.timeTrackingBody":
     "Pasa el cursor por el reloj para ver los totales de hoy: Eldrun registra cuánto trabajas en cada proyecto. Haz clic en el temporizador para pausarlo, clic derecho para la vista de actividad, y consulta el resumen diario de prompts, cambios en archivos y commits.",
@@ -7129,8 +7118,6 @@ export const dict: Dict = {
   "fileError.open": "No se pudo abrir este archivo.",
   "startup.opening": "Abriendo tu espacio de trabajo…",
   "startup.ready": "Espacio de trabajo listo",
-  "globalApp.execPlaceholder": "Ruta del comando, p. ej. /usr/bin/firefox",
-  "globalApp.execPlaceholderWindows": "Ruta del comando, p. ej. C:\\Program Files\\Mozilla Firefox\\firefox.exe",
   "setDefaultApp.errNoProjectFile": "No hay archivo de proyecto para el ámbito de proyecto",
   "remoteBrowse.nameSlash": "El nombre de la carpeta no puede contener «/».",
   "remoteSession.pollGaveUp": "No se detectó ningún inicio de sesión tras dos minutos. Termina de iniciar sesión en el terminal y pulsa «He iniciado sesión — explorar».",

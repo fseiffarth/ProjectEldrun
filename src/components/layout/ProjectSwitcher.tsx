@@ -662,7 +662,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
             title={t(currentBox
               ? "projectSwitcher.addProjectsToBox"
               : "projectSwitcher.addOrImport")}
-            // Hover-opened, like its sibling header menus (GlobalAppMenu,
+            // Hover-opened, like its sibling header menus (SettingsMenu,
             // LocalModelMenu, VpnIndicator). Click reveals rather than toggling: a
             // click also fires mouseenter, so a toggle here would open on enter and
             // immediately shut.

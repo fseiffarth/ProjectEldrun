@@ -64,6 +64,19 @@ describe("header settings menu", () => {
     expect(container.querySelector(".project-switcher-add-menu")).toBeNull();
   });
 
+  it("clicking the gear itself opens the settings dialog on the main panel", () => {
+    const seen: unknown[] = [];
+    const onOpen = (e: Event) => seen.push((e as CustomEvent).detail);
+    window.addEventListener("eldrun:open-settings", onOpen);
+    const { container, btn } = renderMenu();
+    act(() => {
+      fireEvent.click(btn);
+    });
+    window.removeEventListener("eldrun:open-settings", onOpen);
+    expect(seen).toEqual(["main"]);
+    expect(container.querySelector(".project-switcher-add-menu")).toBeNull();
+  });
+
   it("opens the settings dialog on the help panel", () => {
     const seen: unknown[] = [];
     const onOpen = (e: Event) => seen.push((e as CustomEvent).detail);

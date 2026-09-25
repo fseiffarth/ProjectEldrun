@@ -16,10 +16,10 @@ const MENU_ID = "settings";
  * of the pills, + and the search right of them) and left the + sitting flush
  * against the global-app cluster with nothing to say which of the two it
  * belonged to. Settings are the machine's, not a project's, so the gear belongs
- * with 🧠 ✉ 🗓 ☑ ▦ — after which everything left of the strip is a global app
+ * with 🧠 ✉ 🗓 ☑ — after which everything left of the strip is a global app
  * and everything right of it acts on the project list.
  *
- * Built as `GlobalAppMenu`'s twin down to the class names: same wrapper, same
+ * Built as the header menus' twin down to the class names: same wrapper, same
  * button chrome, and the same shared `headerHoverMenu` id — which is the real
  * reason to move it rather than merely re-order the DOM. The switcher's two
  * menus ran on their own timers, so the 250 ms grace one of them closes on let
@@ -61,10 +61,10 @@ export function SettingsMenu() {
         aria-label={t("settings.title")}
         aria-haspopup="menu"
         aria-expanded={open}
-        // Reveal rather than toggle: a click also fires mouseenter, so a toggle
-        // here would open on enter and immediately shut (the rule every hover
-        // menu in this header follows).
-        onClick={reveal}
+        // Hover reveals the menu; a click goes straight to the settings overlay,
+        // the gear's obvious meaning. Keyboard still opens the menu: the hook
+        // preventDefaults Enter/Space/↓ on the trigger, so they never click.
+        onClick={() => fire("eldrun:open-settings", "main")}
       >
         <SettingsGlyph className="settings-menu-icon" />
       </button>

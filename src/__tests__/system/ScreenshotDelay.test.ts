@@ -9,7 +9,7 @@ import {
  * The Shift+click delay: the window the user Alt+Tabs in.
  *
  * The interesting cases are all about the countdown outliving the thing that
- * started it — `GlobalAppBar` unmounts the moment the hover menu closes, which
+ * started it — the (since removed) header launcher unmounted the moment its menu closed, which
  * is immediately after the click — and about an occluded window's throttled
  * timers, which is the normal state during the wait (the point of the delay is
  * that another window is now on top).

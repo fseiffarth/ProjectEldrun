@@ -201,13 +201,6 @@ export const TOUR_STEPS: TourStep[] = [
     bodyKey: "tour.mailCalendarBody",
   },
   {
-    id: "global-apps",
-    anchor: '[data-hint-anchor="global-apps"]',
-    placement: "bottom",
-    titleKey: "tour.globalAppsTitle",
-    bodyKey: "tour.globalAppsBody",
-  },
-  {
     id: "time-tracking",
     // The timer readout lives inside the clock's hover menu now, so the clock
     // button is what's on screen to point at.

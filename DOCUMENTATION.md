@@ -169,8 +169,8 @@ The active layout is a single fullscreen orchestration surface:
 +------------------------------------------------------------------+  either edge)
 ```
 
-The global app bar (left) and the file panel appear on pointer hover and
-auto-close after the pointer leaves; the file panel can also be pinned open,
+The file panel appears on pointer hover and
+auto-closes after the pointer leaves; it can also be pinned open,
 resized, and moved to the left edge. The project switcher lives in the top
 header bar. `Super` hides the panels simultaneously; `F11` toggles fullscreen.
 
@@ -204,35 +204,13 @@ contains:
 `network_conn_type` is polled (10 s, stretched under the power saver) for the
 LAN/WiFi distinction.
 
-### Global App Toolbar
+### Global Apps
 
-`GlobalAppBar.tsx` is a thin hover-revealed strip on the left side of the app
-body. When the pointer enters the strip, the toolbar opens; it closes when the
-pointer leaves.
-
-Supported roles (`GLOBAL_APP_ROLES` in `GlobalAppBar.tsx`):
-
-| Role | Key |
-|------|-----|
-| Browser | `browser` |
-| Password Manager | `password_manager` |
-| Video Conferencing | `video_conf` |
-| Media Player | `media_player` |
-| Notes | `notes` |
-| Screenshot | `screenshot` |
-| Screen Recorder | `screen_recorder` |
-| Chat | `chat` |
-
-**Retired roles.** `mail`, `calendar`, `file_manager`, `print_manager` and
-`system_monitor` are in `RETIRED_GLOBAL_APP_ROLES`, because Eldrun renders each
-of them itself now. Dropping a role from `GLOBAL_APP_ROLES` alone is not enough:
-an existing `settings.json` (or a seeded platform default) still holds the entry,
-and `orderedGlobalApps` deliberately renders *unknown* roles so a hand-added one
-isn't swallowed — so a retired role would come back as an unnamed "●" button.
-They are filtered rather than deleted from settings, so a role that is re-added
-later still finds its configured command. `GlobalAppRoles.test.ts` pins the two
-lists together: `print_manager` was named as retired in the comment and missing
-from the set, which is exactly the stray button the set exists to prevent.
+The header's ▦ launcher is gone. **Settings → Global apps** still records one
+command per role (`settings.json["global_apps"]`, listed by `GLOBAL_APP_ROLES`
+in `SettingsSubPanels.tsx`); the `browser` entry is what PDF links open in
+(`lib/linkTarget.ts`). Entries for roles no longer listed stay in settings
+untouched.
 
 Toolbar behavior:
 
@@ -393,7 +371,7 @@ or `glab`) installed and authenticated, or a token under Settings → Git hostin
 Settings dialog (`SettingsPanel.tsx` + `SettingsSubPanels.tsx`) covers the main
 page — default agent command, theme, workspace management, experimental flags,
 the daily-recap toggle, and the Eldrun Mobile opt-in (`MobileSettings`) — plus
-these sub-panels: **Global apps** (role visibility and commands), **File types**
+these sub-panels: **Global apps** (per-role commands, e.g. the browser for PDF links), **File types**
 (per-type viewer behaviour, autocomplete and spelling defaults, autosave),
 **Ollama** (model management, when the binary is installed), **Agents**,
 **Shortcuts**, **Git hosting** (provider tokens), **VPN auto-connect**, **Remote
@@ -606,7 +584,7 @@ keeps global `~/.vibe/config.toml` untouched.
 | Key | Behavior |
 |-----|----------|
 | `F11` | Toggle fullscreen. |
-| `Super` | Toggle all panels (file panel, switcher, global app bar). Only while Eldrun is focused. |
+| `Super` | Toggle all panels (file panel, switcher). Only while Eldrun is focused. |
 | `Escape` | Close dialogs. |
 | `Enter` | Confirm create/import dialogs; activate a unique search result. |
 

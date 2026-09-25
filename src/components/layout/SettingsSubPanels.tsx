@@ -6,7 +6,6 @@ import { formatBytes as fmtBytes } from "../../lib/formatBytes";
 import { UntestedTag } from "../common/UntestedTag";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { GLOBAL_APP_ROLES } from "./GlobalAppBar";
 import { Dropdown } from "../common/Dropdown";
 import { useSettingsStore } from "../../stores/settings";
 import { AgentScheduleMcpSettings } from "../agents/AgentScheduleMcpSettings";
@@ -178,6 +177,18 @@ export interface SubPanelProps {
   onClose?: () => void;
 }
 
+/** The external programs a user can name here. `browser` is what PDF links
+ *  open in (`lib/linkTarget`); the header launcher that once ran the rest is
+ *  gone, but configured commands are kept in settings rather than dropped. */
+const GLOBAL_APP_ROLES: Array<{ key: string; labelKey: TranslationKey; fallback: string }> = [
+  { key: "browser", labelKey: "globalApp.role.browser", fallback: "◎" },
+  { key: "password_manager", labelKey: "globalApp.role.password_manager", fallback: "⚿" },
+  { key: "video_conf", labelKey: "globalApp.role.video_conf", fallback: "▣" },
+  { key: "screenshot", labelKey: "globalApp.role.screenshot", fallback: "▤" },
+  { key: "screen_recorder", labelKey: "globalApp.role.screen_recorder", fallback: "●" },
+  { key: "chat", labelKey: "globalApp.role.chat", fallback: "☏" },
+];
+
 export function GlobalAppsSettings({ onBack, onClose }: SubPanelProps) {
   const t = useT();
   const { settings, updateSettings } = useSettingsStore();
@@ -215,12 +226,6 @@ export function GlobalAppsSettings({ onBack, onClose }: SubPanelProps) {
           const roleLabel = t(role.labelKey);
           return (
             <div className="global-app-settings-row" key={role.key}>
-              <Toggle
-                size="sm"
-                checked={entry.visible !== false}
-                onChange={(e) => updateRole(role.key, { visible: e.target.checked })}
-                title={t("globalApps.showRole", { role: roleLabel })}
-              />
               <span className="settings-role-icon" aria-hidden>{role.fallback}</span>
               <span className="settings-role-label">{roleLabel}</span>
               <input

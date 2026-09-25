@@ -262,8 +262,8 @@ export const MAIL_TAB_CMD = "__eldrun_mail__";
 
 /**
  * Sentinel commands of tab kinds Eldrun no longer has, dropped unconditionally
- * on restore. The twin of `RETIRED_GLOBAL_APP_ROLES` in `layout/GlobalAppBar.tsx`
- * and there for the same reason: removing a feature does not remove it from the
+ * on restore. Here for the same reason the removed global-app launcher kept a list of
+ * retired roles: removing a feature does not remove it from the
  * state already written to disk, and the fall-through for an unrecognized `cmd`
  * is `"shell"` — a spawned terminal, not a no-op.
  *
@@ -309,7 +309,7 @@ export const BROWSER_TAB_CMD = "__eldrun_browser__";
  *
  * It is what the `print_manager` **global app** slot used to launch an external
  * GUI for, brought in-window the way mail, the calendar and the file manager
- * were before it (see `RETIRED_GLOBAL_APP_ROLES` in `layout/GlobalAppBar.tsx`).
+ * were before it.
  *
  *  - **It carries no PTY**, like the calendar and mail panes, which is why it is
  *    identified by this command (so `cmdToKind` recovers its kind from a bare

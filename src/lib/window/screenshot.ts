@@ -57,8 +57,8 @@ export function screenshotFilename(now: Date = new Date()): string {
 export const SCREENSHOT_DELAY_MS = 5000;
 
 /** The pending countdown's interval id, or null when none is running. Module
- *  state rather than component state because `GlobalAppBar` unmounts the moment
- *  the hover menu closes — which is immediately after the click that starts the
+ *  state rather than component state because the (since removed) header launcher
+ *  unmounted the moment its hover menu closed — which is immediately after the click that starts the
  *  countdown. */
 let countdownTimer: number | null = null;
 

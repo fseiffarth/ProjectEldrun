@@ -621,7 +621,7 @@ export function VpnIndicator() {
               ? t("vpnIndicator.titleConnecting")
               : t("vpnIndicator.titleConnected")
         }
-        // Hover-opened, like its sibling header menus (GlobalAppMenu,
+        // Hover-opened, like its sibling header menus (SettingsMenu,
         // LocalModelMenu). Click focuses rather than toggling: a click also fires
         // mouseenter, so a toggle here would open on enter and immediately shut.
         onClick={reveal}

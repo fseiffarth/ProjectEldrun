@@ -68,22 +68,21 @@
   color: var(--text-primary);
   border-color: var(--text-muted);
 }
-/* The header's six icon buttons — ✉ 🗓 ☑, the Models & agents chip, ▦ and ⚙
+/* The header's icon buttons — ✉ 🗓 ☑, the Models & agents chip and ⚙
    — fill the bar: a 40px square (the `.app-header` height), with the icons
-   grown to match. The ▦ and ⚙ are matched by the icon span they hold, having
-   no class of their own. The 🔔 stays at the shared 32px/15px: it stands with
+   grown to match. The ⚙ is matched by the icon span it holds, having
+   no class of its own. The 🔔 stays at the shared 32px/15px: it stands with
    the status cluster, whose readouts are sized to each other. */
 .mail-indicator-btn,
 .calendar-indicator-btn,
 .todo-indicator-btn,
 .inbox-indicator-btn,
 .local-model-btn,
-.global-apps-menu-btn:has(> .global-apps-menu-icon),
 .global-apps-menu-btn:has(> .settings-menu-icon) {
   min-width: 40px;
   height: 40px;
 }
-/* One icon size for all six header buttons (these four plus the ▦ and ⚙):
+/* One icon size for all six header buttons (these four plus the ⚙):
    each is an SVG from `header/HeaderGlyphs`, drawn on a 16-unit grid whose
    outlines all run y=2→14, so a shared 20px box gives them one height and the
    status cluster phone's ~1.4px line. The Models & agents chip is a 24-unit
@@ -94,7 +93,6 @@
 .calendar-indicator-icon,
 .todo-indicator-icon,
 .inbox-indicator-icon,
-.global-apps-menu-icon,
 .settings-menu-icon {
   width: 20px;
   height: 20px;

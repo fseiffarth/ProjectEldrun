@@ -77,17 +77,6 @@ export function InboxGlyph({ className }: { className: string }) {
   );
 }
 
-export function AppsGlyph({ className }: { className: string }) {
-  return (
-    <Glyph className={className}>
-      <rect x="2" y="2" width="5" height="5" rx="1.2" {...STROKE} />
-      <rect x="9" y="2" width="5" height="5" rx="1.2" {...STROKE} />
-      <rect x="2" y="9" width="5" height="5" rx="1.2" {...STROKE} />
-      <rect x="9" y="9" width="5" height="5" rx="1.2" {...STROKE} />
-    </Glyph>
-  );
-}
-
 export function SettingsGlyph({ className }: { className: string }) {
   return (
     <Glyph className={className}>

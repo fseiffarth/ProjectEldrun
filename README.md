@@ -112,7 +112,7 @@ sending you to another window — every one of those agent tabs is also readable
 and answerable from a phone through Eldrun Mobile, whichever vendor it belongs
 to. Alongside them sit the side panel (Files · Git
 · Search · Apps · Agents) and the header, where mail, the calendar, the to-do board, the
-machine hub, and the VPN live next to the global app toolbar. **③** the
+machine hub, and the VPN live. **③** the
 project-desktop layer — window parking, default-app mapping, time tracking and
 its daily recap, external windows, pop-out tab windows — follows the active
 project automatically. **④** and the project carries the machines it runs on:
@@ -663,16 +663,8 @@ restarting Eldrun) restores your position instead of jumping to the top.
 
 ### Interface and learning
 
-- **Global app toolbar**: cross-project roles — Browser, Password Manager, Video
-  Conferencing, Media Player, Notes, Screenshot, Screen Recorder, Chat — with
-  launch-or-raise and icon resolution. The Screenshot role launches straight into
-  interactive region selection when the configured tool supports it. Mail,
-  Calendar, File Manager, System Monitor, and the Print Manager have been retired
-  from this bar because Eldrun now renders them itself (see
-  [Workspace apps](#workspace-apps)); an existing `settings.json` keeps the
-  configured commands, so a role that comes back finds them.
-- **Hover-revealed panels**: the global app bar and file side panel appear on
-  pointer hover and disappear when the pointer leaves, keeping the center
+- **Hover-revealed panels**: the file side panel appears on
+  pointer hover and disappears when the pointer leaves, keeping the center
   terminal unobstructed; the side panel can also be pinned permanently open.
 - **Appearance and responsiveness**: a Theme Customizer with saved presets,
   keyboard steering and shortcut help, Fast mode, and Energy Saver. Hidden

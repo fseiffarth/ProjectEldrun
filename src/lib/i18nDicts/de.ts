@@ -1009,8 +1009,7 @@ export const dict: Dict = {
     "Erste Schritte, Tour starten, die erweiterte Tour für andere Rechner und die Lektionen – je eine geführte Anleitung pro Aufgabe – lassen sich alle im Einstellungen-Menü erneut öffnen.",
 
   "globalApps.title": "Globale Apps",
-  "globalApps.help": "Apps, die über alle Arbeitsbereiche sichtbar bleiben. Angehakte Apps erscheinen in der oberen Toolbar.",
-  "globalApps.showRole": "{role} anzeigen",
+  "globalApps.help": "Externe Programme, an die Eldrun übergeben kann. Der Browser öffnet Weblinks aus PDFs.",
   "globalApps.notFoundPlaceholder": "nicht gefunden",
   "globalApps.browseTitle": "Programmdatei für {role} auswählen",
 
@@ -1589,7 +1588,6 @@ export const dict: Dict = {
   "ollama.endOfResults": "Ende der Ergebnisse",
   "ollama.pausedBadge": "pausiert",
   "ollama.interruptedBadge": "unterbrochen",
-  "globalAppMenu.title": "Globale Apps",
   "settings.categories": "Einstellungskategorien",
   "settings.general": "Allgemein",
   "settings.search": "Einstellungen durchsuchen…",
@@ -1740,8 +1738,6 @@ export const dict: Dict = {
   "globalApp.role.screenshot": "Bildschirmfoto",
   "globalApp.role.screen_recorder": "Bildschirmrekorder",
   "globalApp.role.chat": "Chat",
-  "globalApp.screenshotDelayHint": "Umschalt+Klick: erst {secs}s warten, um das Fenster zu wechseln",
-  "globalApp.screenshotCountdown": "Bildschirmfoto in {secs}s \u2014 jetzt zum gew\u00fcnschten Fenster wechseln",
   "screenshotSave.title": "Bildschirmfoto speichern",
   "screenshotSave.preview": "Vorschau des Bildschirmfotos",
   "screenshotSave.clipboardNote": "Bereits in der Zwischenablage. Ziel w\u00e4hlen oder verwerfen \u2014 beim Verwerfen bleibt die Kopie in der Zwischenablage.",
@@ -1753,10 +1749,6 @@ export const dict: Dict = {
   "screenshotSave.noProject": "Kein Projekt zum Speichern \u2014 das Bild bleibt in der Zwischenablage.",
   "screenshotSave.saved": "Bildschirmfoto gespeichert unter {path}",
   "screenshotSave.failed": "Bildschirmfoto konnte nicht gespeichert werden: {msg}",
-  "globalApp.rightClickConfigure": "Rechtsklick zum Konfigurieren",
-  "globalApp.noCommandConfigured": "Kein Befehl konfiguriert",
-  "globalApp.clear": "Leeren",
-  "globalApp.set": "Setzen",
   "header.dragToMove": "Ziehen, um das Eldrun-Fenster zu verschieben",
   "header.rootProject": "Root-Projekt — für Arbeit, die zu keinem Projekt gehört: Eldruns eigenes Kontrollterminal und Ordner",
   "tabDrag.dropFolder": "Auf einen Ordner fallen lassen → Datei dorthin verschieben",
@@ -6466,9 +6458,6 @@ export const dict: Dict = {
   "tour.mailCalendarTitle": "Mail, Kalender und To-dos",
   "tour.mailCalendarBody":
     "Eldrun bringt außerdem einen Mail-Client, einen Kalender mit Erinnerungen und CalDAV-Sync sowie ein To-do-Board über dieselben Aufgaben mit. Jedes bekommt eine Header-Schaltfläche, sobald du es in den Einstellungen aktivierst, und öffnet sich als Tab oder über das ganze Fenster.",
-  "tour.globalAppsTitle": "Deine Tools starten",
-  "tour.globalAppsBody":
-    "Das ▦-Menü startet Editor, Browser, Terminal, Dateimanager oder einen Screenshot. Rechtsklicke einen Eintrag, um festzulegen, welchen Befehl er ausführt.",
   "tour.timeTrackingTitle": "Deine Zeit erfassen",
   "tour.timeTrackingBody":
     "Fahre über die Uhr für die heutigen Summen – Eldrun protokolliert, wie lange du in jedem Projekt arbeitest. Klicke dort auf den Timer, um zu pausieren, rechtsklicke ihn für die Aktivitätsansicht, und lies die Tagesübersicht für Prompts, Dateiänderungen und Commits.",
@@ -7134,8 +7123,6 @@ export const dict: Dict = {
   "fileError.open": "Diese Datei konnte nicht geöffnet werden.",
   "startup.opening": "Arbeitsbereich wird geöffnet…",
   "startup.ready": "Arbeitsbereich bereit",
-  "globalApp.execPlaceholder": "Befehlspfad, z. B. /usr/bin/firefox",
-  "globalApp.execPlaceholderWindows": "Befehlspfad, z. B. C:\\Program Files\\Mozilla Firefox\\firefox.exe",
   "setDefaultApp.errNoProjectFile": "Keine Projektdatei für den Projektbereich",
   "remoteBrowse.nameSlash": "Ordnername darf kein „/“ enthalten.",
   "remoteSession.pollGaveUp": "Nach zwei Minuten wurde keine Anmeldung erkannt. Schließe die Anmeldung im Terminal ab und drücke dann „Ich bin angemeldet — durchsuchen“.",

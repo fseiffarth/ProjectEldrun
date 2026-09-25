@@ -32,9 +32,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | File | Purpose |
 |------|---------|
 | `AppShell.tsx` | Top-level layout: header, center, side-panel wiring. |
-| `HeaderBar.tsx` | Window drag handle + the top bar's three zones: centre = project strip only; right = global apps (✉ 🗓 ☑), global menus (🧠 ▦ ⚙), then `header/StatusCluster`. |
-| `GlobalAppBar.tsx` | Global toolbar / app launcher (`GLOBAL_APP_ROLES`). |
-| `GlobalAppMenu.tsx` | Global-app launcher with shared hover/click/keyboard navigation (`useHeaderMenu`). |
+| `HeaderBar.tsx` | Window drag handle + the top bar's three zones: centre = project strip only; right = global apps (✉ 🗓 ☑), global menus (🧠 ⚙), then `header/StatusCluster`. |
 | `CenterPanel.tsx` | Tab/subwindow tiling host; keeps all panes mounted across scope switches. |
 | `DetachedCenterPanel.tsx` | Center-panel variant inside a detached OS window. Title-strip double-click = fit-to-this-screen (`snap_detached_window`); double-click counted from `pointerdown` because the WM grab eats `dblclick`. |
 | `DetachedApp.tsx` | Root component of a popped-out subwindow (#42). Holds the no-fullscreen guard (a fullscreen popout can't be moved): F11 maximizes here instead. |

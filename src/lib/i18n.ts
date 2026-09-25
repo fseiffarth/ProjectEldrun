@@ -995,8 +995,7 @@ export const en = {
 
   // Settings — Global Apps panel.
   "globalApps.title": "Global Apps",
-  "globalApps.help": "Apps that stay visible across workspaces. Checked apps appear in the top toolbar.",
-  "globalApps.showRole": "Show {role}",
+  "globalApps.help": "External programs Eldrun can hand off to. The browser opens web links from PDFs.",
   "globalApps.notFoundPlaceholder": "not found",
   "globalApps.browseTitle": "Choose the executable for {role}",
 
@@ -1593,7 +1592,6 @@ export const en = {
   "ollama.endOfResults": "End of results",
   "ollama.pausedBadge": "paused",
   "ollama.interruptedBadge": "interrupted",
-  "globalAppMenu.title": "Global apps",
   "settings.categories": "Settings categories",
   "settings.general": "General",
   "settings.search": "Search settings…",
@@ -1744,8 +1742,6 @@ export const en = {
   "globalApp.role.screenshot": "Screenshot",
   "globalApp.role.screen_recorder": "Screen Recorder",
   "globalApp.role.chat": "Chat",
-  "globalApp.screenshotDelayHint": "Shift+click: wait {secs}s first, so you can switch windows",
-  "globalApp.screenshotCountdown": "Screenshot in {secs}s \u2014 switch to the window you want",
   "screenshotSave.title": "Save screenshot",
   "screenshotSave.preview": "Screenshot preview",
   "screenshotSave.clipboardNote": "Already on the clipboard. Choose where to file it, or discard it \u2014 discarding keeps the clipboard copy.",
@@ -1757,10 +1753,6 @@ export const en = {
   "screenshotSave.noProject": "No project to save into \u2014 the shot stays on the clipboard.",
   "screenshotSave.saved": "Screenshot saved to {path}",
   "screenshotSave.failed": "Couldn't save the screenshot: {msg}",
-  "globalApp.rightClickConfigure": "Right-click to configure",
-  "globalApp.noCommandConfigured": "No command configured",
-  "globalApp.clear": "Clear",
-  "globalApp.set": "Set",
   "header.dragToMove": "Drag to move the Eldrun window",
   "header.rootProject": "Root project — for work that belongs to no project: Eldrun's own control terminal and folder",
   // The file-drag ghost's options legend + the divider scroll-link toggle
@@ -6776,9 +6768,6 @@ export const en = {
   "tour.mailCalendarTitle": "Mail, calendar, and to-dos",
   "tour.mailCalendarBody":
     "Eldrun also carries a mail client, a calendar with reminders and CalDAV sync, and a to-do board over those same tasks. Each gets a header button once you switch it on in Settings, and opens as a tab or over the whole window.",
-  "tour.globalAppsTitle": "Launch your tools",
-  "tour.globalAppsBody":
-    "The ▦ menu launches your editor, browser, terminal, file manager, or a screenshot. Right-click an entry to set which command it runs.",
   "tour.timeTrackingTitle": "Track your time",
   "tour.timeTrackingBody":
     "Hover the clock for today's totals — Eldrun logs how long you work in each project. Click the timer there to pause it, right-click it for the activity view, and read the daily recap for prompts, file churn, and commits.",
@@ -7410,8 +7399,6 @@ export const en = {
   "fileError.open": "Couldn't open this file.",
   "startup.opening": "Opening your workspace…",
   "startup.ready": "Workspace ready",
-  "globalApp.execPlaceholder": "Command path, e.g. /usr/bin/firefox",
-  "globalApp.execPlaceholderWindows": "Command path, e.g. C:\\Program Files\\Mozilla Firefox\\firefox.exe",
   "setDefaultApp.errNoProjectFile": "No project file for project scope",
   "remoteBrowse.nameSlash": "Folder name can't contain '/'.",
   "remoteSession.pollGaveUp": "No login detected after two minutes. Finish signing in in the terminal, then press “I've logged in — browse”.",
