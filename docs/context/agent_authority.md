@@ -158,7 +158,11 @@ also sets the per-CLI "keep your login in a file" variables
 keyring is not reachable inside it. Settings → Agent fence → Agent logins
 imports a login this computer already holds (the one safe direction) and
 signs out. An older Eldrun's Claude mirror (`agent-creds/`) is adopted into
-the store at startup.
+the store at startup. The first start after the upgrade also runs both
+imports once (`agent_auth::import_once`, `agent_global::import_once`, marker
+files in the state dir): every login the store lacks, and the global layer if
+it is empty — the user asked not to have to remember it. Never repeated, so a
+Sign out or a file removed from the layer stays.
 
 **Eldrun-owned installs.** A CLI installed through Manage CLIs goes into
 `<state_dir>/agents/install` (`services::agent_install`: the installer's

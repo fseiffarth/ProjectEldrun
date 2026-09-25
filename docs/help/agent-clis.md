@@ -76,7 +76,8 @@ per-project homes, and Eldrun shares each CLI's login file across all of
 them, so every other project's tab of that CLI is signed in too. If this
 computer already holds a login for the CLI, Settings → Agent fence → **Agent
 logins** → *Import from this computer* copies just that file into Eldrun
-(never config, skills or MCP entries). **Sign out** there forgets it
+(never config, skills or MCP entries). The first start of this version does
+that for you, once, for every CLI Eldrun has no login for yet. **Sign out** there forgets it
 everywhere. A CLI that keeps its login in the system keyring or a database
 (Kiro, Kilo, OpenClaw, Copilot) signs in once per project instead — Copilot's
 case is described under the fence below.
@@ -117,7 +118,8 @@ What you want in every project — your `CLAUDE.md`, `AGENTS.md` or
 line), MCP servers — goes in the **global agent config**: Settings → Agent
 fence → Global agent config. *Import from this computer* copies it from your
 own `~/.claude`, `~/.codex` and `~/.gemini` (never logins, history or folder
-trust); *Open folder* lets you edit it. Every agent tab gets a fresh copy
+trust) — done once for you at the first start, if the global config is still
+empty; *Open folder* lets you edit it. Every agent tab gets a fresh copy
 when it starts, merged into the settings files the CLI writes itself, so a
 model you picked in one project stays picked there. Agents cannot change
 the global config; what an agent changes in its own project's home stays in

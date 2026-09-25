@@ -758,6 +758,31 @@ pub fn import_from_user_home() -> io::Result<ImportReport> {
     import_from_user_home_in(&storage::state_dir(), &crate::paths::home_dir())
 }
 
+/// Marks that the first start of the Eldrun-wide layer has run.
+const IMPORTED_MARKER: &str = ".agent_global_imported";
+
+/// The import, done once for the user at the first start with the layer, so
+/// agents keep their instructions, skills, hooks and MCP servers without a
+/// trip to Settings. Skipped when the layer already holds files (the user
+/// filled it); never repeated, so later edits to the layer are the user's.
+pub fn import_once_in(state_dir: &Path, user_home: &Path) {
+    let marker = state_dir.join(IMPORTED_MARKER);
+    if marker.exists() {
+        return;
+    }
+    if layer_files(&global_dir_in(state_dir)).is_empty() {
+        if let Err(e) = import_from_user_home_in(state_dir, user_home) {
+            eprintln!("agent_global: first import: {e}");
+            return;
+        }
+    }
+    let _ = std::fs::write(&marker, b"");
+}
+
+pub fn import_once() {
+    import_once_in(&storage::state_dir(), &crate::paths::home_dir());
+}
+
 /// What the Settings row shows.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -942,6 +967,26 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         apply_to_home(&state, &home).unwrap();
         assert!(!home.join(MANIFEST).exists());
+    }
+
+    #[test]
+    fn first_start_imports_once_and_never_over_a_filled_layer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let user = tmp.path().join("user");
+        write(&user.join(".claude/CLAUDE.md"), "mine");
+        let state = tmp.path().join("state");
+        import_once_in(&state, &user);
+        assert!(global_dir_in(&state).join(".claude/CLAUDE.md").is_file());
+        // Never again: a file the user removes from the layer stays removed.
+        std::fs::remove_file(global_dir_in(&state).join(".claude/CLAUDE.md")).unwrap();
+        import_once_in(&state, &user);
+        assert!(!global_dir_in(&state).join(".claude/CLAUDE.md").exists());
+
+        // A layer the user already filled is left alone.
+        let filled = tmp.path().join("filled");
+        write(&global_dir_in(&filled).join(".codex/AGENTS.md"), "layer");
+        import_once_in(&filled, &user);
+        assert!(!global_dir_in(&filled).join(".claude/CLAUDE.md").exists());
     }
 
     #[test]

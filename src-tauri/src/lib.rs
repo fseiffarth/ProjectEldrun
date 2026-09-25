@@ -1265,6 +1265,12 @@ pub fn run() {
             // links in step with the store. One detached thread; dies with
             // the process.
             services::agent_install::migrate_legacy_stores();
+            // Once, at the first start with per-scope homes: this computer's
+            // logins and its ~/.claude, ~/.codex, ~/.gemini config, so no
+            // agent comes back signed out or without its instructions. Before
+            // the keeper and before any tab can spawn.
+            services::agent_auth::import_once();
+            services::agent_global::import_once();
             services::agent_auth::start();
             // Moves a fenced Copilot's `/login` token out of its private config
             // into the keyring, for every later fenced Copilot tab (the fence

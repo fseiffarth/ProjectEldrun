@@ -519,6 +519,32 @@ pub fn import_from_user_home(cli: &str) -> Result<usize, String> {
     import_from_user_home_in(&storage::state_dir(), &crate::paths::home_dir(), cli)
 }
 
+/// Marks that the first start of the login store has run.
+const IMPORTED_MARKER: &str = ".agent_logins_imported";
+
+/// Import, once, every login this computer holds for a CLI the store has no
+/// login for yet, so the upgrade to per-scope homes keeps every agent signed
+/// in without a trip to Settings. Never repeated: a later Sign out stays
+/// signed out. Run before the keeper starts and before any tab spawns.
+pub fn import_once_in(state_dir: &Path, user_home: &Path) {
+    let marker = state_dir.join(IMPORTED_MARKER);
+    if marker.exists() {
+        return;
+    }
+    for login in status_in(state_dir, user_home) {
+        if login.shared && login.importable && !login.signed_in {
+            if let Err(e) = import_from_user_home_in(state_dir, user_home, &login.id) {
+                eprintln!("agent_auth: first import of {}: {e}", login.id);
+            }
+        }
+    }
+    let _ = std::fs::write(&marker, b"");
+}
+
+pub fn import_once() {
+    import_once_in(&storage::state_dir(), &crate::paths::home_dir());
+}
+
 fn copy_dir(src: &Path, dst: &Path) -> io::Result<()> {
     crate::services::agent_home::create_private_dir(dst)?;
     for entry in std::fs::read_dir(src)? {
@@ -688,6 +714,28 @@ mod tests {
         assert!(!a.join(".codex/auth.json").exists());
         assert!(!store_dir_in(&state, "codex").exists());
         assert!(!status_in(&state, &user).iter().find(|s| s.id == "codex").unwrap().signed_in);
+    }
+
+    #[test]
+    fn first_start_imports_missing_logins_once_and_keeps_existing_ones() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("state");
+        let user = tmp.path().join("user");
+        std::fs::create_dir_all(user.join(".codex")).unwrap();
+        std::fs::create_dir_all(user.join(".claude")).unwrap();
+        std::fs::write(user.join(".codex/auth.json"), r#"{"tokens":{"account_id":"me"}}"#).unwrap();
+        std::fs::write(user.join(".claude/.credentials.json"), "user").unwrap();
+        // Claude is already in the store (the older mirror was adopted).
+        let claude = store_of(&state, "claude", ".claude/.credentials.json");
+        std::fs::create_dir_all(claude.parent().unwrap()).unwrap();
+        std::fs::write(&claude, "mirror").unwrap();
+        import_once_in(&state, &user);
+        assert!(store_of(&state, "codex", ".codex/auth.json").is_file());
+        assert_eq!(std::fs::read_to_string(&claude).unwrap(), "mirror");
+        // A sign-out afterwards stays: the import never runs again.
+        sign_out_in(&state, "codex").unwrap();
+        import_once_in(&state, &user);
+        assert!(!store_of(&state, "codex", ".codex/auth.json").exists());
     }
 
     #[test]
