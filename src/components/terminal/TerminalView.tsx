@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { CanvasAddon } from "@xterm/addon-canvas";
 import { WebglAddon } from "@xterm/addon-webgl";
@@ -32,6 +32,8 @@ import { clearPtyInput, writePtyInput } from "../../lib/terminal/terminalInput";
 import { registerScheduledAgentInput } from "../../lib/agents/scheduledAgentInput";
 import { zoomChord } from "../../lib/shortcuts/zoomChord";
 import { copyableSelection, installMouseModeGuard } from "../../lib/terminal/terminalSelection";
+import { findSignInRequest, findWrappedUrls, type SignInRequest } from "../../lib/terminal/terminalUrls";
+import { SIGN_IN_CARD_CLASS, TerminalSignInCard } from "./TerminalSignInCard";
 import "@xterm/xterm/css/xterm.css";
 
 // Hoisted to module scope: keystroke input fires this on every key, so we reuse
@@ -40,6 +42,18 @@ import "@xterm/xterm/css/xterm.css";
 // arrays to a `Vec<u8>` command directly), avoiding the per-key `Array.from`.
 const PTY_ENCODER = new TextEncoder();
 const PTY_DECODER = new TextDecoder();
+
+/** Rows above the live screen still searched for a sign-in link: a flow that
+ *  printed a few lines after the link must not lose its card. */
+const SIGN_IN_SCROLLBACK_ROWS = 20;
+/** How far above a hovered row a hard-wrapped URL may have started. */
+const WRAPPED_URL_LOOKBACK_ROWS = 40;
+
+/** Whether a pane-level mouse event came from the sign-in card, which the
+ *  terminal's own mouse handling must leave alone. */
+function fromSignInCard(e: Event): boolean {
+  return e.target instanceof Element && !!e.target.closest(`.${SIGN_IN_CARD_CLASS}`);
+}
 
 interface PtyScrollback {
   data: string;
@@ -417,6 +431,13 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   const unfencedDeclinedTextRef = useRef<() => string>(() => "");
   unfencedDeclinedTextRef.current = () => t("unfencedPlatform.declined");
 
+  // The sign-in link the program on screen is waiting on (see
+  // `TerminalSignInCard`), and the links the user already closed the card for.
+  const [signIn, setSignIn] = useState<SignInRequest | null>(null);
+  const dismissedSignIns = useRef(new Set<string>());
+  const signInCopiedRef = useRef(t("terminal.signIn.copied"));
+  signInCopiedRef.current = t("terminal.signIn.copied");
+
   const focusedRef = useRef(focused);
   visibleRef.current = visible;
   focusedRef.current = focused;
@@ -468,8 +489,54 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
 
     const fit = new FitAddon();
     const links = new WebLinksAddon();
+    // A URL an agent CLI cut across rows with hard newlines (a sign-in link,
+    // above all) is one link on every row it covers, opened whole. Registered
+    // before the web-links addon because the first provider with a link at the
+    // cell wins; it answers nothing for a URL that fits one row.
+    const wrappedLinks = term.registerLinkProvider({
+      provideLinks(row, reply) {
+        const buf = term.buffer.active;
+        const y = row - 1;
+        const hits = findWrappedUrls((n) => buf.getLine(n), term.cols, y - WRAPPED_URL_LOOKBACK_ROWS, y).filter(
+          (u) => u.start.y <= y && u.end.y >= y,
+        );
+        if (!hits.length) return reply(undefined);
+        reply(
+          hits.map((u) => ({
+            range: { start: { x: u.start.x + 1, y: u.start.y + 1 }, end: { x: u.end.x, y: u.end.y + 1 } },
+            text: u.url,
+            activate: () => void invoke("open_external_url", { url: u.url }).catch(() => {}),
+          })),
+        );
+      },
+    });
     term.loadAddon(fit);
     term.loadAddon(links);
+
+    // Watch the screen for a sign-in link (`findSignInRequest`) and show the
+    // card while one is up. Only parsed output triggers a look — a hidden pane
+    // parses nothing (see `writeTerm`) and catches up when shown — and the look
+    // is coalesced so a streaming agent costs one scan per 300 ms at most. The
+    // card goes away with the link: a login that succeeded redraws the screen.
+    setSignIn(null);
+    let signInScanTimer: ReturnType<typeof setTimeout> | null = null;
+    const scanForSignIn = () => {
+      signInScanTimer = null;
+      const buf = term.buffer.active;
+      const found = findSignInRequest(
+        (n) => buf.getLine(n),
+        term.cols,
+        buf.baseY - SIGN_IN_SCROLLBACK_ROWS,
+        buf.baseY + term.rows - 1,
+      );
+      const next = found && !dismissedSignIns.current.has(found.url) ? found : null;
+      setSignIn((prev) =>
+        prev?.url === next?.url && prev?.wantsCode === next?.wantsCode ? prev : next,
+      );
+    };
+    const signInWatch = term.onWriteParsed(() => {
+      signInScanTimer ??= setTimeout(scanForSignIn, 300);
+    });
 
     termRef.current = term;
     registerTerminal(id, term);
@@ -1425,6 +1492,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // from the selection service entirely and a "select" press can be handed to it
     // wearing the modifier it looks for.
     const onMouseDownCapture = (e: MouseEvent) => {
+      if (fromSignInCard(e)) return;
       const action = agentMouseDownAction(e, term.modes.mouseTrackingMode !== "none", zoomable);
       if (e.button === 0 && action !== "paste") {
         // Read before the "select" branch below re-defines a modifier on the
@@ -1453,6 +1521,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // here so the cleanup detaches both listeners from the node it attached to.
     const contextMenuTarget = containerRef.current;
     const onContextMenu = (e: MouseEvent) => {
+      if (fromSignInCard(e)) return;
       if (suppressNativeContextMenu(e, term.modes.mouseTrackingMode !== "none")) e.preventDefault();
     };
     contextMenuTarget?.addEventListener("contextmenu", onContextMenu);
@@ -1476,6 +1545,9 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       if (silentStartTimer.current) clearTimeout(silentStartTimer.current);
       oscHandler.dispose();
       mouseModeGuard.dispose();
+      wrappedLinks.dispose();
+      signInWatch.dispose();
+      if (signInScanTimer) clearTimeout(signInScanTimer);
       window.removeEventListener("resize", doFit);
       contextMenuTarget?.removeEventListener("contextmenu", onContextMenu);
       contextMenuTarget?.removeEventListener("mousedown", onMouseDownCapture, true);
@@ -1608,7 +1680,13 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     if (focused && openedRef.current && termRef.current) termRef.current.focus();
   }, [focused]);
 
+  const dismissSignIn = (url: string) => {
+    dismissedSignIns.current.add(url);
+    setSignIn(null);
+  };
+
   return (
+    <>
     <div
       ref={containerRef}
       style={{
@@ -1631,5 +1709,31 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         background: terminalTheme(colorScheme).background,
       }}
     />
+    {signIn && containerRef.current && (
+      <TerminalSignInCard
+        key={signIn.url}
+        host={containerRef.current}
+        request={signIn}
+        onOpen={() => void invoke("open_external_url", { url: signIn.url }).catch(() => {})}
+        onCopy={() => {
+          invoke("copy_text_to_clipboard", { text: signIn.url })
+            .then(() => useProjectsStore.setState({ switchToast: signInCopiedRef.current }))
+            .catch(() => {});
+        }}
+        onSendCode={(code) => {
+          const term = termRef.current;
+          if (!term) return;
+          // Pasted, not typed: a bracketed paste reaches the prompt as one
+          // piece. Enter follows once the program has taken it, as with the
+          // initial input.
+          term.paste(code);
+          setTimeout(() => void writePtyInput(id, new Uint8Array([0x0d])).catch(console.error), 200);
+          dismissSignIn(signIn.url);
+          term.focus();
+        }}
+        onDismiss={() => dismissSignIn(signIn.url)}
+      />
+    )}
+    </>
   );
 }

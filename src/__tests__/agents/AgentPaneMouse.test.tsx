@@ -86,6 +86,8 @@ vi.mock("@xterm/xterm", () => ({
     dispose() {}
     options = {};
     get modes() { return { mouseTrackingMode: termSpy.mouseTrackingMode }; }
+    registerLinkProvider() { return { dispose() {} }; }
+    onWriteParsed() { return { dispose() {} }; }
     parser = { registerOscHandler: () => ({ dispose() {} }), registerCsiHandler: () => ({ dispose() {} }) };
   },
 }));

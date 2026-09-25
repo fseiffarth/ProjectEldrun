@@ -365,6 +365,50 @@
   background: var(--accent-hover);
 }
 
+.hint-bubble-got-it:disabled {
+  opacity: 0.5;
+  cursor: var(--cur-default, default);
+}
+
+/* The sign-in card over a terminal pane (TerminalSignInCard): the hint bubble's
+   look, pinned to the pane's bottom-right instead of the viewport. Fades in
+   only — the bubble's breathing border animates a blurred box-shadow, which a
+   card that can sit on screen for minutes must not do on WebKitGTK. */
+.hint-bubble.terminal-sign-in {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  z-index: 5;
+  width: min(360px, calc(100% - 32px));
+  animation: hint-bubble-in 0.24s ease-out;
+}
+
+.terminal-sign-in .hint-bubble-actions .hint-bubble-got-it {
+  margin-left: 0;
+}
+
+.terminal-sign-in-code {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.terminal-sign-in-code input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-color);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+}
+
+.terminal-sign-in-code .hint-bubble-got-it {
+  margin-left: 0;
+}
+
 /* The element a tour step spotlights (TourHost) — an OUTWARD spread ring.
    Deliberately a different class from .hint-target: the hint version keeps
    its ring inset so it survives an overflow:hidden ancestor like .tab-bar,

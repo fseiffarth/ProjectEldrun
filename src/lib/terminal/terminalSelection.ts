@@ -32,10 +32,15 @@ const NEW_ITEM = /^([-*+•◦▪‣●○■□▶>#|⏺⎿✻※]|\d{1,3}[.)])
 // that ends or begins with one is layout, never a sentence broken in two.
 const FRAME = /[─-▟]/u;
 const NBSP = /\u00a0/gu;
+// The characters a URL is made of (RFC 3986 unreserved, reserved and `%`).
+const URL_BODY = /^[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]+$/u;
+// A token that reads as part of a URL rather than a long word: it holds the
+// scheme, or the query/path punctuation a word never carries.
+const URL_SIGNAL = /:\/\/|[/?=&%]/u;
 
 /** Cells the row actually uses: one past its last non-blank cell (wide glyphs
  *  count both halves). Zero for a blank row. */
-function usedCells(line: LineLike, cols: number): number {
+export function usedCells(line: LineLike, cols: number): number {
   for (let x = cols - 1; x >= 0; x--) {
     const cell = line.getCell(x);
     const ch = cell?.getChars() ?? "";
@@ -45,8 +50,39 @@ function usedCells(line: LineLike, cols: number): number {
 }
 
 /**
+ * The piece of row `next` that continues a URL row `prev` ends with, or null.
+ *
+ * Agent CLIs print a long URL — above all a sign-in link — cut into pane-wide
+ * rows with hard newlines, each indented like the text around it (Antigravity:
+ * one space). A click then opens the first row only, and a copy keeps the
+ * breaks and indents, so the browser gets a mangled `redirect_uri`. A row
+ * continues the URL when the URL runs to the right edge of `prev` and `next`
+ * starts with a bare run of URL characters; the indent before it is dropped.
+ */
+export function urlContinuation(prev: LineLike, next: LineLike, cols: number): string | null {
+  const prevText = prev.translateToString(true);
+  const tail = prevText.slice(prevText.search(/\S+$/u));
+  if (!tail || !URL_BODY.test(tail) || !URL_SIGNAL.test(tail)) return null;
+  const nextText = next.translateToString(true);
+  if (next.isWrapped) {
+    const piece = /^\S+/u.exec(nextText)?.[0] ?? "";
+    return URL_BODY.test(piece) ? piece : null;
+  }
+  // A TUI's word wrap moves whole words, so prose ending in a path ("see
+  // src/lib/a.ts" over "for details") must not be glued: the row above has to
+  // be the URL alone or hold its scheme, and the row below nothing but the
+  // rest of it.
+  if (prevText.trimStart() !== tail && !tail.includes("://")) return null;
+  if (usedCells(prev, cols) < cols - WRAP_SLACK) return null;
+  const lead = nextText.trim();
+  if (!lead || /\s/u.test(lead) || NEW_ITEM.test(lead)) return null;
+  return URL_BODY.test(lead) ? lead : null;
+}
+
+/**
  * Whether row `next` continues row `prev` as one line that was wrapped only
- * because it ran out of columns: `""` = joined as-is (the row was filled to the
+ * because it ran out of columns: `"url"` = a hard-wrapped URL, joined without
+ * the next row's indent (see {@link urlContinuation}); `""` = joined as-is (the row was filled to the
  * last column — the terminal's, or tmux's, character wrap), `" "` = joined with
  * a space (a TUI's word wrap: the next row's first word would not have fit on
  * this one), `null` = a real line break.
@@ -56,7 +92,7 @@ function usedCells(line: LineLike, cols: number): number {
  * which repaints with explicit cursor moves, and agent CLIs wrap their own text
  * with hard newlines — so neither kind of wrap reaches xterm as one.
  */
-export function rowJoin(prev: LineLike, next: LineLike, cols: number): "" | " " | null {
+export function rowJoin(prev: LineLike, next: LineLike, cols: number): "" | " " | "url" | null {
   const prevText = prev.translateToString(true);
   const lead = next.translateToString(true).trimStart();
   if (!prevText.trim() || !lead) return null;
@@ -64,6 +100,7 @@ export function rowJoin(prev: LineLike, next: LineLike, cols: number): "" | " " 
   if (NEW_ITEM.test(lead)) return null;
   const used = usedCells(prev, cols);
   if (used >= cols) return "";
+  if (urlContinuation(prev, next, cols) !== null) return "url";
   const width = cols - WRAP_SLACK;
   const word = lead.split(/\s/u, 1)[0].length;
   // The word must have been short enough to fit on a row of its own — a long
@@ -94,6 +131,7 @@ export function joinedSelectionText(
     const join = line?.isWrapped ? "" : line && prev ? rowJoin(prev, line, cols) : null;
     const text = segment(y);
     if (join === "") out += text;
+    else if (join === "url") out += text.trimStart();
     else if (join === " ") out += " " + text.trimStart();
     else out += eol + text;
   }

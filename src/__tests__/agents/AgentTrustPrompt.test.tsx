@@ -79,6 +79,8 @@ vi.mock("@xterm/xterm", () => ({
     focus() {}
     dispose() {}
     options = {};
+    registerLinkProvider() { return { dispose() {} }; }
+    onWriteParsed() { return { dispose() {} }; }
     parser = { registerOscHandler: () => ({ dispose() {} }), registerCsiHandler: () => ({ dispose() {} }) };
   },
 }));

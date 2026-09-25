@@ -48,6 +48,7 @@ export const UNTESTED = {
   "promptChart.heading": { area: "agents", what: "PromptChart · Prompt chart" },
   "agent.vibeResume": { area: "agents", what: "Mistral tab · exact conversation resume" },
   "agent.vibeLocalResume": { area: "agents", what: "Local Mistral model tab · exact conversation resume" },
+  "terminal.signIn.title": { area: "agents", what: "Terminal sign-in card · open/copy an agent's login link, paste the code back; wrapped URLs click and copy whole" },
 
   // --- browser — The built-in browser -------------------------------
   "browser.downloadTitle": { area: "browser", what: "BrowserDownloadDialog · Download this file?" },
