@@ -936,3 +936,42 @@ no-MDC OpenPGP refused — is deliberately not re-listed here.*
       thread is refused; a root tab does not list the reader's draft. Ask the
       reader to add a board card → a proposal carrying the reader mark. An
       ordinary project agent tab has no `eldrun` MCP server at all.
+
+### Address book (#870)
+
+- [x] **#870 Address Book for the mail client (Thunderbird-style)** —
+  ✅ Done · 🧪 untested live (2026-09-25). Code: `services/mail_contacts.rs`
+  (pure), `commands/mail.rs` §address book, `MailAddressBook.tsx`,
+  `MailRecipientField.tsx`, `lib/mailContacts.ts`. Pills:
+  `npm run untested -- list mail.contacts`.
+    - Personal + Collected books; cards (names, nickname, several addresses,
+      phones, org/title, postal address, website, birthday, notes); mailing
+      lists; search; Write per address / to a list; move Collected → Personal.
+    - Collect-on-send (after SMTP accepted, best effort, switchable); every
+      send bumps the matching card's popularity (the autocomplete tie-break).
+    - To/Cc/Bcc autocomplete (nickname > name prefix > address prefix >
+      substring); lists expand to members; bare addresses only.
+    - ☆/★ beside a message's sender: add to / open in the Address Book.
+    - vCard import (2.1/3.0/4.0, QP, Windows-1252, merge by address) and 3.0
+      export, through backend-raised dialogs; sealed `contacts.json` under
+      its own AAD, carried across an encryption reset.
+    - Not built: CardDAV sync, contact photos, CSV import/export, a contacts
+      sidebar in the composer, agent/MCP access (deliberately none).
+    - [x] 🤖 Automated tests — `services::mail_contacts::tests` (19),
+      `src/__tests__/mail/MailContacts.test.tsx` (12)
+    - [ ] 🖐️ Manual test — Address Book button → tab opens once; New Contact
+      with two addresses saves; a bad address is refused by name; type part of
+      the name in To → suggestion, Enter inserts the address; a list expands;
+      send a mail to a stranger → they appear under Collected Addresses; the ☆
+      on a received message pre-fills a card, ★ once saved; import a
+      Thunderbird/Google `.vcf`, re-import it → merged, not doubled; export and
+      re-import round-trips; with store encryption on, only
+      `contacts.json.enc` exists in the mail dir.
+        - [ ] ✅ Works on Linux (X11)
+        - [ ] ❌ Doesn't work on Linux (X11)
+        - [ ] ✅ Works on Linux (Wayland)
+        - [ ] ❌ Doesn't work on Linux (Wayland)
+        - [ ] ✅ Works on Windows
+        - [ ] ❌ Doesn't work on Windows
+        - [ ] ✅ Works on macOS
+        - [ ] ❌ Doesn't work on macOS

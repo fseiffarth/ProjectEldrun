@@ -684,3 +684,66 @@ export interface MailAiClassifyReport {
   matched: Array<{ message_id: string; priority: string; reason: string }>;
   dry_run: boolean;
 }
+
+// ── Address book ─────────────────────────────────────────────────────────────
+
+/** Thunderbird's two built-in books: `personal` is curated by the user,
+ *  `collected` is filled from sent mail. */
+export type MailContactBook = "personal" | "collected";
+
+export interface MailContactPhone {
+  /** `mobile` | `work` | `home` | `fax` | `pager` | "" — free text on import. */
+  kind: string;
+  number: string;
+}
+
+/**
+ * One address-book card. `emails` are bare addr-specs the backend validated
+ * with the composer's own recipient check; the first is the primary one.
+ * `popularity` / `last_used` are the backend's (bumped on each send), never
+ * the editor's.
+ */
+export interface MailContact {
+  id: string;
+  book: MailContactBook;
+  display_name: string;
+  first_name: string;
+  last_name: string;
+  nickname: string;
+  emails: string[];
+  phones: MailContactPhone[];
+  organization: string;
+  job_title: string;
+  address: string;
+  website: string;
+  /** `YYYY-MM-DD`, or `--MM-DD` without a year. */
+  birthday: string;
+  notes: string;
+  popularity: number;
+  last_used: number;
+  created: number;
+  updated: number;
+}
+
+/** A mailing list: a name that expands to its member addresses. */
+export interface MailContactList {
+  id: string;
+  name: string;
+  nickname: string;
+  description: string;
+  members: string[];
+}
+
+export interface MailContactsView {
+  contacts: MailContact[];
+  lists: MailContactList[];
+  /** Add outgoing addresses no card holds to the Collected book. */
+  collect_outgoing: boolean;
+}
+
+export interface MailContactsImportReport {
+  cancelled: boolean;
+  added: number;
+  merged: number;
+  skipped: number;
+}

@@ -28,6 +28,7 @@ import {
 } from "../../lib/mail";
 import { useI18nStore, useT } from "../../lib/i18n";
 import { useMailStore } from "../../stores/mail";
+import { findContactByEmail } from "../../lib/mailContacts";
 import { useProjectsStore } from "../../stores/projects";
 import { useUse24h } from "../../lib/timeFormat";
 import { UntestedTag } from "../common/UntestedTag";
@@ -124,6 +125,7 @@ export function MailMessageView({
         <div className="mail-message-meta">
           <span className="mail-meta-label">{t("mail.from")}</span>
           <span className="mail-meta-value">{formatAddress(header.from)}</span>
+          <SenderContactStar name={header.from.name ?? ""} address={header.from.address} />
         </div>
         {header.to.length > 0 && (
           <div className="mail-message-meta">
@@ -818,5 +820,40 @@ function AttachmentSaveDialog({
       </div>
     </div>,
     document.body,
+  );
+}
+
+/**
+ * Thunderbird's star beside the sender: hollow when no card holds the address
+ * (a click opens a new card for it in the Address Book), filled when one does
+ * (a click opens that card). The name only pre-fills an editor the user saves
+ * — a message never writes to the address book on its own.
+ */
+function SenderContactStar({ name, address }: { name: string; address: string }) {
+  const t = useT();
+  const loaded = useMailStore((s) => s.contactsLoaded);
+  const known = useMailStore((s) => !!findContactByEmail(s.contacts, address));
+  useEffect(() => {
+    if (!loaded) void useMailStore.getState().loadContacts();
+  }, [loaded]);
+  if (!address) return null;
+  const label = known ? t("mail.contacts.editSender") : t("mail.contacts.addSender");
+  return (
+    <>
+      <button
+        type="button"
+        className={`mail-contact-star${known ? " known" : ""}`}
+        title={label}
+        aria-label={label}
+        onClick={() =>
+          useMailStore
+            .getState()
+            .openContactsTab({ address, name: stripFormatControls(name).trim() || undefined })
+        }
+      >
+        {known ? "★" : "☆"}
+      </button>
+      <UntestedTag id="mail.contacts.addSender" />
+    </>
   );
 }

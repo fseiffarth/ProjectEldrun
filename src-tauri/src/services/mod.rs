@@ -78,6 +78,8 @@ pub mod mail_ai;
 // same-roots rule and read without following a link (`docs/mail_mcp_attachments_plan.md`).
 pub mod mail_attach;
 pub mod mail_authres;
+// The mail client's address book: cards, lists, collected addresses, vCard.
+pub mod mail_contacts;
 pub mod mail_crypt;
 pub mod mail_crypto;
 pub mod mail_engine;

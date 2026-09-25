@@ -544,15 +544,27 @@ svg.alerts-toggle-icon {
   color: var(--text-secondary);
   white-space: nowrap;
 }
+/* Every mail tab gets the same width, whatever its subject: 200px while they
+   fit, then all shrink evenly as more open (a browser's strip), down to a floor
+   past which the strip scrolls. A subject longer than its tab ends in an
+   ellipsis (the full one is the tab's `title`). */
 .mail-tab {
-  max-width: 260px;
+  flex: 0 1 200px;
+  min-width: 90px;
+}
+.mail-tab .tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .mail-tab-kind {
   opacity: 0.75;
+  flex-shrink: 0;
 }
 /* The unsent dot: a composer tab with work in it. Accent, static — the × beside
    it is what asks before that work is lost. */
 .mail-tab-dirty {
+  flex-shrink: 0;
   color: var(--accent);
   font-size: 9px;
 }
@@ -581,6 +593,203 @@ svg.alerts-toggle-icon {
 }
 .mail-compose-tab .mail-compose-body {
   min-height: 280px;
+}
+
+/* ── Address Book (MailAddressBook) ─────────────────────────────────────────
+   The mail window's contacts tab: the Inbox's own rail and rows, plus a card
+   column. No new colours — the accent wash is `.mail-row.selected`'s. */
+.mail-abook {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.mail-abook-status {
+  padding: 4px 12px;
+}
+.mail-abook-list {
+  flex: 0 0 280px;
+  min-width: 200px;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border-subtle);
+}
+.mail-abook-row-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mail-abook-row-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mail-abook-badge {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-color);
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.mail-abook-empty {
+  padding: 16px;
+}
+.mail-abook-collect {
+  margin-top: auto;
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mail-abook-collect-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.mail-abook-card {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+}
+.mail-abook-detail {
+  max-width: 640px;
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.mail-abook-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mail-abook-name {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.mail-abook-subtitle {
+  margin-top: -6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.mail-abook-value {
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  overflow-wrap: anywhere;
+}
+.mail-abook-pre {
+  white-space: pre-wrap;
+}
+.mail-abook-email {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mail-abook-address {
+  font-family: var(--font-mono, ui-monospace, Menlo, Consolas, monospace);
+  font-size: 11.5px;
+}
+.mail-abook-phone-kind {
+  color: var(--text-muted);
+}
+.mail-abook-multi {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.mail-abook-multi .mail-input[type="email"],
+.mail-abook-multi .mail-input[type="tel"] {
+  flex: 1;
+}
+.mail-abook-add {
+  align-self: flex-start;
+}
+.mail-abook-actions {
+  margin-top: 6px;
+}
+
+/* The composer's recipient autocomplete: a list hung under the field. Static
+   shadow only (never animated — the WebKitGTK rule). */
+.mail-recipient-wrap {
+  position: relative;
+}
+.mail-recipient-suggest {
+  position: absolute;
+  z-index: 20;
+  left: 0;
+  right: 0;
+  top: calc(100% + 2px);
+  margin: 0;
+  padding: 3px;
+  list-style: none;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+}
+.mail-recipient-option {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  cursor: var(--cur-pointer, pointer);
+}
+.mail-recipient-option.active {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.mail-recipient-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mail-recipient-address {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mail-recipient-list-mark {
+  color: var(--text-muted);
+}
+.mail-recipient-untested {
+  padding: 2px 8px;
+}
+
+/* Thunderbird's sender star: hollow = not in the book, filled = a card. */
+.mail-contact-star {
+  margin-left: 6px;
+  padding: 0 3px;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: var(--cur-pointer, pointer);
+}
+.mail-contact-star:hover {
+  color: var(--text-primary);
+}
+.mail-contact-star.known {
+  color: var(--accent);
 }
 
 /* ── The to-do board ──────────────────────────────────────────────────────

@@ -112,6 +112,8 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `mail/MailKeysDialog.tsx` | OpenPGP keyring. Fingerprint shown in full, grouped in fours, never truncated; "checked with owner" is reversible; export is public-only. |
 | `mail/MailAccountDialog.tsx` | Account editor. Save-password opt-in, default off, sends `true \| null` (never `false`, which clears). Uses shared `SavePasswordRow`; generic presets only. |
 | `mail/MailFiltersDialog.tsx` | Keyword filters filing arriving mail into Important/Urgent. States its limits on its face (local mark, snippet not body, arriving mail + explicit re-run, Sent/Drafts/Trash/Junk out of scope). |
+| `mail/MailAddressBook.tsx` | The Address Book tab (`MailContactsTab`, one at most): Personal/Collected books, lists, search, read-only card → Edit, Write, vCard import/export via backend dialogs. `tab.request.seq` = "add/open this sender". |
+| `mail/MailRecipientField.tsx` | To/Cc/Bcc textarea with address-book autocomplete; inserts **bare addresses only** (lists → members), so `parseRecipients` and the backend's `validate_recipient` still hold. Escape closes the list, not the window. |
 | `mail/MailComposeDialog.tsx` | Composer (modal, or `embedded` as a mail-window tab body). Sign/Encrypt per message, default off, never remembered; missing-key check while writing. Attaching is backend-side (`mail_attach_pick`) — no filesystem path in the frontend. Seeds `staged` from an agent draft (agent chips show `source`, preview the outbox copy), offers `suggested_to` as pills, and Send stops when the saved set differs from the shown one. |
 | `mail/MailAttachmentPreview.tsx` | The one attachment preview (image / pdf.js canvases / text), shared by `MailMessageView` and the composer's staged chips (`mail_staged_preview`). |
 | `browser/BrowserPane.tsx` | In-app browser tab (`web_browser` flag): a DOM pane rendering sanitized reader mode (no in-pane native webview under WebKitGTK); real engine = separate hardened window. Mounting never touches the network. |
@@ -141,6 +143,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `header/VpnIndicator.tsx` | Machine-wide OpenVPN control: always present, lists stored `.ovpn`s, connects/disconnects a tunnel with or without a project behind it, names its holders, and arms one to connect on launch. |
 | `header/WindowControls.tsx` | Minimize/maximize/close window buttons. |
 | `tabs/TabBar.tsx` | Per-subwindow tab strip (add/rename/close, pointer-based DnD). |
+| `tabs/ScrollingTabStrip.tsx` | Scrolling `.tab-strip` + overflow chevrons for the popout bars (`DetachedCenterPanel`) and the mail window. |
 | `tabs/TabColorPicker.tsx` + `lib/theme/tabColors.ts` | Tab user colour (#264): closed 8-hue palette (the calendar's); the id, not the hex, is persisted and crosses to the phone (`protocol::clean_tab_color`). |
 | `tabs/agentWorktrees.ts` + `lib/agents/agentWorktrees.ts` | Agent tab in a linked worktree (#23): `useAgentWorktreePicker` asks before spawning an agent only when a linked worktree exists (local `git_worktree_list`); worktree = cwd, branch in label. Local projects only. |
 | `tabs/localModelGroup.ts` | The "+" menus' local-model group (TabBar + popout share it). Agent rows only once the "tabs" model is on the GPU (`list_ollama_models_detailed` `size_vram`; CPU counts on a GPU-less machine); else one "Load onto GPU" row (`load_ollama_model` device `gpu`). Probes only while the menu is open. |
@@ -285,6 +288,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `lib/linkTarget.ts` | Pure URI routing table (#33) + address-bar commit rule. URLs Eldrun itself starts go external; URLs from untrusted content open in reader mode, never live in one click. |
 | `lib/hardenPrototype.ts` | Freezes `Object.prototype` from `main.tsx` before bootstrap (#159), methods turned into override-safe accessors first — a bare freeze (Tauri's `freezePrototype`) breaks pdf-lib and would also hit browsed pages. |
 | `lib/mail.ts` | Typed invoke surface for mail (`mail_*`); no wrapper takes a path (the sandbox boundary). Also `buildMessageSrcdoc`, `MAIL_FRAME_CSP`, `bodyLooksUnsafe` tripwire, `Authentication-Results` display rules. |
+| `lib/mailContacts.ts` | Pure address-book helpers: names, search, autocomplete ranking (nickname > name prefix > address prefix > substring, then popularity), recipient token surgery. |
 | `lib/remote/hpc/slurm.ts` | SLURM glue for HPC projects: pure `#SBATCH` parse/splice helpers (splice, never re-serialize) + tab glue (log window, submit). |
 | `lib/spellDictionaries.ts` | Dictionary picker's pure half: Hunspell stem → BCP 47, names via `Intl.DisplayNames`, default choice, installed/downloadable split. |
 | `lib/remote/hpc/hpcWorkspace.ts` | HPC workspaces (backend `commands::hpc_ws`): `ws*` invoke wrappers + shared pure helpers (`projectPathIn`, expiry labels/tones). Workspaces expire and get deleted. |

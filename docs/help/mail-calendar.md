@@ -1,7 +1,7 @@
 ---
 id: mail-calendar
 title: Mail, calendar, to-do board and browser
-keywords: [mail, email, imap, smtp, calendar, caldav, ics, event, reminder, todo, board, browser, web]
+keywords: [mail, email, imap, smtp, address book, contacts, vcard, autocomplete, calendar, caldav, ics, event, reminder, todo, board, browser, web]
 ---
 
 These surfaces are machine-wide, not per project. They open as overlays over
@@ -15,6 +15,25 @@ experimental: switch it on in **Settings → System → Experimental** (Mail
 client). The mail assistant runs only on a local Ollama model that you assign
 to the **Mail** role in the Models & agents menu; nothing about your mail
 leaves the machine. See `local-models`.
+
+### Address book
+
+**Address Book** in the mail toolbar opens your contacts in a tab of the mail
+window. As in Thunderbird, there are two books. **Personal** holds the
+contacts you add. **Collected Addresses** fills itself: after a send, each
+recipient without a card is added (switch this off at the bottom of the
+book's left column). A card holds a name, nickname, several addresses, phone
+numbers, organization, postal address, birthday and notes. Mailing lists
+group addresses under one name. **Import…** and **Export…** read and write
+vCard (`.vcf`) files; an imported card whose address is already in the book
+is merged into that card rather than duplicated.
+
+While you type in To, Cc or Bcc, matching contacts and lists appear below the
+field. Use ↑/↓ to move, Enter or Tab to pick, and Escape to close the list.
+A list expands to its members' addresses. A contact's full nickname is
+suggested first. The ☆ beside a message's sender adds them to the book, and
+the ★ opens the card you already have. The address book stays on this
+machine, encrypted with the rest of the local mail store.
 
 ## Calendar
 

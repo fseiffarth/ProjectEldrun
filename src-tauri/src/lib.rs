@@ -1578,6 +1578,14 @@ pub fn run() {
             // menu writes, so nothing here reaches a server either.
             commands::mail::mail_filters_list,
             commands::mail::mail_filters_set,
+            commands::mail::mail_contacts_get,
+            commands::mail::mail_contact_upsert,
+            commands::mail::mail_contacts_delete,
+            commands::mail::mail_contact_list_upsert,
+            commands::mail::mail_contact_list_delete,
+            commands::mail::mail_contacts_set_collect,
+            commands::mail::mail_contacts_import,
+            commands::mail::mail_contacts_export,
             commands::mail::mail_filters_apply,
             // Local-model mail assistant (Group Q, #203–#208). Every one runs a
             // prompt against a loopback Ollama via `services::mail_ai`, which

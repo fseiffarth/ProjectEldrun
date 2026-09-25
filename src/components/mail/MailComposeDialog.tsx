@@ -28,9 +28,10 @@ import type {
   MailPreviewBlob,
   StagedAttachment,
 } from "../../types/mail";
-import type { MailComposeMode } from "../../stores/mail";
+import { useMailStore, type MailComposeMode } from "../../stores/mail";
 import { WarningIcon } from "../common/icons/Icon";
 import { AttachmentPreview } from "./MailAttachmentPreview";
+import { MailRecipientField } from "./MailRecipientField";
 
 /**
  * The composer.
@@ -429,6 +430,8 @@ export function MailComposeDialog({
       return;
     }
     setStatus(t("mail.sent"));
+    // The send collected its recipients into the address book.
+    void useMailStore.getState().loadContacts();
     onClose();
   }
 
@@ -481,37 +484,17 @@ export function MailComposeDialog({
               ))}
             </div>
           )}
-          <label className="mail-field">
-            <span className="mail-field-label">{t("mail.to")}</span>
-            <textarea
-              className="mail-input mail-textarea mail-compose-to"
-              rows={2}
-              autoFocus
-              spellCheck={false}
-              value={to}
-              onChange={(e) => setTo(e.target.value)}
-            />
-          </label>
-          <label className="mail-field">
-            <span className="mail-field-label">{t("mail.cc")}</span>
-            <textarea
-              className="mail-input mail-textarea"
-              rows={1}
-              spellCheck={false}
-              value={cc}
-              onChange={(e) => setCc(e.target.value)}
-            />
-          </label>
-          <label className="mail-field">
-            <span className="mail-field-label">{t("mail.bcc")}</span>
-            <textarea
-              className="mail-input mail-textarea"
-              rows={1}
-              spellCheck={false}
-              value={bcc}
-              onChange={(e) => setBcc(e.target.value)}
-            />
-          </label>
+          {/* Address-book autocomplete; still plain parsed text underneath. */}
+          <MailRecipientField
+            label={t("mail.to")}
+            className="mail-compose-to"
+            rows={2}
+            autoFocus
+            value={to}
+            onChange={setTo}
+          />
+          <MailRecipientField label={t("mail.cc")} value={cc} onChange={setCc} />
+          <MailRecipientField label={t("mail.bcc")} value={bcc} onChange={setBcc} />
           <div className="settings-help">{t("mail.composeRecipientsHint")}</div>
 
           <label className="mail-field">

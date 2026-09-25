@@ -39,6 +39,10 @@ import type {
   MailAuthMethod,
   MailAuthResults,
   MailBody,
+  MailContact,
+  MailContactList,
+  MailContactsImportReport,
+  MailContactsView,
   MailCryptoInfo,
   MailCryptoState,
   MailDraft,
@@ -452,6 +456,49 @@ export function mailFiltersApply(opts: {
     rules: opts.rules ?? null,
     limit: opts.limit ?? null,
   });
+}
+
+// ── Address book ─────────────────────────────────────────────────────────────
+//
+// Local only, like the filters: the sealed `contacts.json` beside the store.
+// Import and export raise the OS dialog in the backend — no path crosses here.
+
+/** The whole book: cards, lists and the collect-outgoing switch. */
+export function mailContactsGet(): Promise<MailContactsView> {
+  return invoke<MailContactsView>("mail_contacts_get");
+}
+
+/** Insert or replace one card (empty `id` = new). Rejects an invalid address
+ *  with a message naming it. */
+export function mailContactUpsert(contact: MailContact): Promise<MailContact> {
+  return invoke<MailContact>("mail_contact_upsert", { contact });
+}
+
+export function mailContactsDelete(ids: string[]): Promise<number> {
+  return invoke<number>("mail_contacts_delete", { ids });
+}
+
+export function mailContactListUpsert(list: MailContactList): Promise<MailContactList> {
+  return invoke<MailContactList>("mail_contact_list_upsert", { list });
+}
+
+export function mailContactListDelete(id: string): Promise<boolean> {
+  return invoke<boolean>("mail_contact_list_delete", { id });
+}
+
+export function mailContactsSetCollect(enabled: boolean): Promise<void> {
+  return invoke<void>("mail_contacts_set_collect", { enabled });
+}
+
+/** Pick a `.vcf` (backend dialog) and merge it into the book. */
+export function mailContactsImport(): Promise<MailContactsImportReport> {
+  return invoke<MailContactsImportReport>("mail_contacts_import");
+}
+
+/** Save cards as a `.vcf` (backend dialog): these ids, or every card when
+ *  empty. `null` when the dialog was cancelled, else how many were written. */
+export function mailContactsExport(ids: string[] = []): Promise<number | null> {
+  return invoke<number | null>("mail_contacts_export", { ids });
 }
 
 // ── Local-model mail assistant (Group Q, #204–#208) ──────────────────────────

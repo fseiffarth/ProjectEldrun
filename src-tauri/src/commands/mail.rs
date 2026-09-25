@@ -21,7 +21,8 @@
 //! subsystem reads or writes resolves internally — under [`mail_dir`], or under
 //! a project directory the backend looks up from an opaque id — never from a
 //! path the frontend hands in. Files cross only through [`mail_attach_pick`] and
-//! [`mail_attachment_save`], both of which raise the **OS dialog inside Rust**
+//! [`mail_attachment_save`] (and the address book's [`mail_contacts_import`] /
+//! [`mail_contacts_export`]), all of which raise the **OS dialog inside Rust**
 //! (via `tauri_plugin_dialog`'s `DialogExt`, bridged to a `oneshot` — never
 //! `blocking_pick_*`, which would be rule 1 all over again), plus
 //! [`mail_attachment_save_to_project`] (see below). Consequence worth
@@ -65,8 +66,13 @@ use crate::schema::mail::{
     MailPriorityCounts, MailPrioritySource, MailProbe, MailSearchPage, MailSendResult, MailSort, MailSyncEvent,
     MailSyncSummary, StagedAttachment, ACCOUNTS_VERSION, FILTERS_VERSION,
 };
+use crate::schema::mail::{
+    MailContact, MailContactList, MailContacts, MailContactsImportReport, MailContactsView,
+    CONTACTS_VERSION,
+};
 use crate::services::mail_ai;
 use crate::services::mail_authres;
+use crate::services::mail_contacts;
 use crate::services::mail_crypt::{self, MailKeys};
 use crate::services::mail_crypto::{self, CryptoKind, DecryptError};
 use crate::services::mail_engine::{
@@ -332,6 +338,7 @@ fn open_store(dir: &Path) -> Result<OpenedStore, String> {
             let store = Arc::new(MailStore::open_with_keys(dir, Some(keys.clone()))?);
             migrate_accounts_file(Some(&keys))?;
             migrate_filters_file(Some(&keys))?;
+            migrate_contacts_file(Some(&keys))?;
             Ok(OpenedStore {
                 store,
                 keys: Some(keys),
@@ -368,7 +375,7 @@ fn open_unencrypted_or_enable(dir: &Path) -> Result<OpenedStore, String> {
     // either. Refuse instead, in the memory-only store, and say why: the fixes
     // are "put the key file back" or an explicit reset.
     let sealed_leftovers = MailStore::is_marked_encrypted(dir)
-        || ["accounts.json.enc", "filters.json.enc", "pgp.json"]
+        || ["accounts.json.enc", "filters.json.enc", "contacts.json.enc", "pgp.json"]
             .iter()
             .any(|name| dir.join(name).exists());
     if sealed_leftovers {
@@ -399,6 +406,7 @@ fn open_unencrypted_or_enable(dir: &Path) -> Result<OpenedStore, String> {
             let store = Arc::new(MailStore::open_with_keys(dir, Some(keys.clone()))?);
             migrate_accounts_file(Some(&keys))?;
             migrate_filters_file(Some(&keys))?;
+            migrate_contacts_file(Some(&keys))?;
             set_encrypt_preference(Some(true));
             return Ok(OpenedStore {
                 store,
@@ -770,6 +778,125 @@ fn migrate_filters_file(keys: Option<&MailKeys>) -> Result<(), String> {
     mail_crypt::write_bytes_atomic(&filters_enc_path(), &sealed)?;
     let _ = std::fs::remove_file(&plain);
     Ok(())
+}
+
+// ── contacts.json ───────────────────────────────────────────────────────────
+//
+// The address book, sealed like the filter list under its own AAD
+// (`mail_crypt::contacts_aad`) and — for the same reason given above — as a
+// copy of that shape rather than a shared abstraction. Unlike the filter list
+// it has two writers (the Address Book tab and every successful send), so each
+// read-modify-write holds `CONTACTS_LOCK`.
+
+static CONTACTS_LOCK: Mutex<()> = Mutex::new(());
+
+fn contacts_path() -> PathBuf {
+    mail_dir().join("contacts.json")
+}
+
+fn contacts_enc_path() -> PathBuf {
+    sealed_twin(&contacts_path())
+}
+
+/// Read the address book. A missing file is an empty book.
+fn read_contacts(path: &Path) -> Result<MailContacts, String> {
+    let raw: Option<Vec<u8>> = if let Some(keys) = file_keys() {
+        let enc = sealed_twin(path);
+        if enc.exists() {
+            let sealed = std::fs::read(&enc).map_err(|e| e.to_string())?;
+            let plain = mail_crypt::open(&keys.field, &mail_crypt::contacts_aad(), &sealed)
+                .map_err(|e| format!("the address book could not be decrypted: {e}"))?;
+            Some(plain.to_vec())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let bytes = match raw {
+        Some(b) => b,
+        None => {
+            if !path.exists() {
+                return Ok(MailContacts {
+                    version: CONTACTS_VERSION,
+                    ..Default::default()
+                });
+            }
+            std::fs::read(path).map_err(|e| e.to_string())?
+        }
+    };
+    parse_contacts(&bytes)
+}
+
+/// Unlike the filter list, a corrupt address book is an **error**, not an
+/// empty book: the next save would otherwise overwrite hundreds of cards that
+/// cannot be retyped with the one just edited. A card a newer build wrote
+/// survives through the `extra` catch-alls.
+fn parse_contacts(bytes: &[u8]) -> Result<MailContacts, String> {
+    let mut book: MailContacts = serde_json::from_slice(bytes)
+        .map_err(|e| format!("the address book file is damaged: {e}"))?;
+    if book.version == 0 {
+        book.version = CONTACTS_VERSION;
+    }
+    Ok(book)
+}
+
+fn write_contacts(path: &Path, data: &MailContacts) -> Result<(), String> {
+    let Some(keys) = file_keys() else {
+        // Stricter than the filters' rule: refused whenever the *mailbox* is
+        // encrypted, not only when a sealed twin exists. Collecting writes this
+        // file on its own after every send — a locked encrypted mailbox still
+        // sends — and the first book must not reach the disk in the clear.
+        let dir = mail_dir();
+        let encrypted = sealed_twin(path).exists()
+            || MailStore::is_marked_encrypted(&dir)
+            || dir.join("key.json").exists();
+        if let Some(why) = sealed_write_refusal(encrypted, false) {
+            return Err(why);
+        }
+        return storage::write_json_atomic(path, data).map_err(|e| e.to_string());
+    };
+    let json = serde_json::to_vec(data).map_err(|e| e.to_string())?;
+    let sealed = mail_crypt::seal(&keys.field, &mail_crypt::contacts_aad(), &json);
+    mail_crypt::write_bytes_atomic(&sealed_twin(path), &sealed)?;
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+/// Convert a plaintext `contacts.json` into its sealed twin, once.
+fn migrate_contacts_file(keys: Option<&MailKeys>) -> Result<(), String> {
+    let Some(keys) = keys else { return Ok(()) };
+    let plain = contacts_path();
+    if !plain.exists() || contacts_enc_path().exists() {
+        return Ok(());
+    }
+    let bytes = std::fs::read(&plain).map_err(|e| e.to_string())?;
+    // Left in place, plain, when damaged: store-open must not fail over the
+    // address book, and the Address Book tab reports the damage itself.
+    let Ok(data) = parse_contacts(&bytes) else { return Ok(()) };
+    let json = serde_json::to_vec(&data).map_err(|e| e.to_string())?;
+    let sealed = mail_crypt::seal(&keys.field, &mail_crypt::contacts_aad(), &json);
+    mail_crypt::write_bytes_atomic(&contacts_enc_path(), &sealed)?;
+    let _ = std::fs::remove_file(&plain);
+    Ok(())
+}
+
+/// Read, change and write the book under the lock.
+fn with_contacts<T>(f: impl FnOnce(&mut MailContacts) -> Result<T, String>) -> Result<T, String> {
+    let _guard = CONTACTS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let path = contacts_path();
+    let mut book = read_contacts(&path)?;
+    let out = f(&mut book)?;
+    book.version = CONTACTS_VERSION;
+    write_contacts(&path, &book)?;
+    Ok(out)
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or_default()
 }
 
 /// The enabled rules, or an empty list if the file cannot be read.
@@ -1331,7 +1458,7 @@ pub async fn mail_encryption_reset(
         }
 
         // What is *configuration* rather than cached mail survives a reset: the
-        // account list, the filters, and above all the OpenPGP keyring, whose
+        // account list, the filters, the address book, and above all the OpenPGP keyring, whose
         // private keys exist nowhere else. All three are sealed under the store
         // key this is about to destroy, so with the store unlocked they are
         // opened now and re-sealed under the new key below. Without that, the
@@ -1342,6 +1469,7 @@ pub async fn mail_encryption_reset(
             Some(old) => Some(CarriedConfig {
                 accounts: open_sealed_file(&accounts_enc_path(), old, &mail_crypt::accounts_aad())?,
                 filters: open_sealed_file(&filters_enc_path(), old, &mail_crypt::filters_aad())?,
+                contacts: open_sealed_file(&contacts_enc_path(), old, &mail_crypt::contacts_aad())?,
                 keyring: mail_pgp::keyring_plaintext(&dir, old)?,
             }),
             None => None,
@@ -1361,7 +1489,13 @@ pub async fn mail_encryption_reset(
                     .map(|d| d.as_secs())
                     .unwrap_or_default()
             ));
-            for name in ["key.json", "accounts.json.enc", "filters.json.enc", "pgp.json"] {
+            for name in [
+                "key.json",
+                "accounts.json.enc",
+                "filters.json.enc",
+                "contacts.json.enc",
+                "pgp.json",
+            ] {
                 let from = dir.join(name);
                 if from.exists() {
                     std::fs::create_dir_all(&aside).map_err(|e| e.to_string())?;
@@ -1376,6 +1510,7 @@ pub async fn mail_encryption_reset(
             "mail.db-shm",
             "accounts.json.enc",
             "filters.json.enc",
+            "contacts.json.enc",
             "pgp.json",
         ] {
             let _ = std::fs::remove_file(dir.join(name));
@@ -1398,6 +1533,10 @@ pub async fn mail_encryption_reset(
                 let sealed = mail_crypt::seal(&keys.field, &mail_crypt::filters_aad(), &plain);
                 mail_crypt::write_bytes_atomic(&filters_enc_path(), &sealed)?;
             }
+            if let Some(plain) = carried.contacts {
+                let sealed = mail_crypt::seal(&keys.field, &mail_crypt::contacts_aad(), &plain);
+                mail_crypt::write_bytes_atomic(&contacts_enc_path(), &sealed)?;
+            }
             if let Some(plain) = carried.keyring {
                 mail_pgp::write_keyring_plaintext(&dir, &keys, &plain)?;
             }
@@ -1414,6 +1553,7 @@ pub async fn mail_encryption_reset(
 struct CarriedConfig {
     accounts: Option<Zeroizing<Vec<u8>>>,
     filters: Option<Zeroizing<Vec<u8>>>,
+    contacts: Option<Zeroizing<Vec<u8>>>,
     keyring: Option<Zeroizing<Vec<u8>>>,
 }
 
@@ -1443,6 +1583,7 @@ fn adopt_keys(rt: &MailState, dir: &Path, keys: Arc<MailKeys>) -> Result<(), Str
     set_session_keys(Some(keys.clone()));
     migrate_accounts_file(Some(&keys))?;
     migrate_filters_file(Some(&keys))?;
+    migrate_contacts_file(Some(&keys))?;
     let mut guard = rt.lock().map_err(|_| "mail state is poisoned")?;
     guard.store = Some(store);
     guard.unlock_note = None;
@@ -3814,6 +3955,16 @@ pub async fn mail_draft_send(
             }
             let id = draft_id.clone();
             let _ = tokio::task::spawn_blocking(move || store.delete_draft(&id)).await;
+            // The address book learns who was written to — only now, after the
+            // server took the message. Best effort: a locked or damaged book
+            // must never turn a delivered message into a reported failure.
+            let sent_to = recipients.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                with_contacts(|book| {
+                    Ok(mail_contacts::collect(book, &sent_to, unix_now(), &mut uuid_v4))
+                })
+            })
+            .await;
             Ok(MailSendResult {
                 sent_id: Some(draft_id),
                 error: None,
@@ -3824,6 +3975,169 @@ pub async fn mail_draft_send(
             error: Some(e.to_string()),
         }),
     }
+}
+
+// ── Commands: the address book ──────────────────────────────────────────────
+//
+// Thunderbird's Address Book: a Personal book the user curates, a Collected
+// book filled from sent mail, and mailing lists. Local only — no CardDAV, no
+// network, no agent tool reads it. The logic is `services::mail_contacts`; these
+// are thin, locked read-modify-writes of `contacts.json`.
+
+/// The whole book, for the Address Book tab and the composer's autocomplete.
+#[tauri::command]
+pub async fn mail_contacts_get() -> Result<MailContactsView, String> {
+    tokio::task::spawn_blocking(|| {
+        let _guard = CONTACTS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let book = read_contacts(&contacts_path())?;
+        Ok(MailContactsView {
+            contacts: book.contacts,
+            lists: book.lists,
+            collect_outgoing: !book.collect_disabled,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Insert or replace one card; the backend mints the id and owns the counters.
+#[tauri::command]
+pub async fn mail_contact_upsert(contact: MailContact) -> Result<MailContact, String> {
+    tokio::task::spawn_blocking(move || {
+        with_contacts(|book| {
+            mail_contacts::upsert_contact(book, contact, unix_now(), &mut uuid_v4)
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn mail_contacts_delete(ids: Vec<String>) -> Result<u32, String> {
+    tokio::task::spawn_blocking(move || {
+        with_contacts(|book| Ok(mail_contacts::delete_contacts(book, &ids) as u32))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn mail_contact_list_upsert(list: MailContactList) -> Result<MailContactList, String> {
+    tokio::task::spawn_blocking(move || {
+        with_contacts(|book| mail_contacts::upsert_list(book, list, &mut uuid_v4))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn mail_contact_list_delete(id: String) -> Result<bool, String> {
+    tokio::task::spawn_blocking(move || {
+        with_contacts(|book| Ok(mail_contacts::delete_list(book, &id)))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Thunderbird's "automatically add outgoing e-mail addresses to Collected
+/// Addresses". Off stops new cards; sends still count toward known ones.
+#[tauri::command]
+pub async fn mail_contacts_set_collect(enabled: bool) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        with_contacts(|book| {
+            book.collect_disabled = !enabled;
+            Ok(())
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Import a `.vcf`. Like [`mail_attach_pick`], the OS dialog is raised **inside
+/// Rust** and no path crosses IPC; the file is read once, capped at
+/// `mail_contacts::MAX_IMPORT_BYTES`, and parsed as untrusted text.
+#[tauri::command]
+pub async fn mail_contacts_import(app: AppHandle) -> Result<MailContactsImportReport, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Import contacts")
+        .add_filter("vCard", &["vcf", "vcard"])
+        .pick_file(move |chosen| {
+            let _ = tx.send(chosen);
+        });
+    let chosen = rx.await.map_err(|_| "the file dialog was dismissed")?;
+    let Some(chosen) = chosen else {
+        return Ok(MailContactsImportReport {
+            cancelled: true,
+            ..Default::default()
+        });
+    };
+    let source = chosen.into_path().map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        let meta = std::fs::metadata(&source).map_err(|e| e.to_string())?;
+        if !meta.is_file() {
+            return Err("not a file".to_string());
+        }
+        if meta.len() > mail_contacts::MAX_IMPORT_BYTES {
+            return Err(format!(
+                "the file is larger than {} MiB",
+                mail_contacts::MAX_IMPORT_BYTES / (1024 * 1024)
+            ));
+        }
+        let bytes = std::fs::read(&source).map_err(|e| e.to_string())?;
+        let cards = mail_contacts::parse_vcards(&mail_contacts::decode_file(&bytes));
+        if cards.is_empty() {
+            return Err("no vCard (BEGIN:VCARD) found in that file".to_string());
+        }
+        with_contacts(|book| Ok(mail_contacts::merge_import(book, cards, unix_now(), &mut uuid_v4)))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Export cards as vCard 3.0 through a Rust-raised save dialog: the given ids,
+/// or the whole book when `ids` is empty. `None` when the dialog was cancelled,
+/// otherwise how many cards were written.
+#[tauri::command]
+pub async fn mail_contacts_export(app: AppHandle, ids: Vec<String>) -> Result<Option<u32>, String> {
+    let cards = tokio::task::spawn_blocking(move || {
+        let _guard = CONTACTS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let book = read_contacts(&contacts_path())?;
+        let wanted: std::collections::HashSet<String> = ids.into_iter().collect();
+        Ok::<_, String>(
+            book.contacts
+                .into_iter()
+                .filter(|c| wanted.is_empty() || wanted.contains(&c.id))
+                .collect::<Vec<_>>(),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    if cards.is_empty() {
+        return Err("there are no contacts to export".into());
+    }
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Export contacts")
+        .set_file_name("contacts.vcf")
+        .add_filter("vCard", &["vcf"])
+        .save_file(move |chosen| {
+            let _ = tx.send(chosen);
+        });
+    let chosen = rx.await.map_err(|_| "the file dialog was dismissed")?;
+    let Some(chosen) = chosen else {
+        return Ok(None);
+    };
+    let dest = chosen.into_path().map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        std::fs::write(&dest, mail_contacts::to_vcards(&cards)).map_err(|e| e.to_string())?;
+        Ok(Some(cards.len() as u32))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // ── Commands: the file boundary ─────────────────────────────────────────────

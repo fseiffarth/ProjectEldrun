@@ -1217,6 +1217,152 @@ pub struct MailPreviewBlob {
     pub truncated: bool,
 }
 
+// ── Address book ────────────────────────────────────────────────────────────
+
+/// Schema version of `contacts.json`.
+pub const CONTACTS_VERSION: u32 = 1;
+
+/// Which book a card lives in — Thunderbird's two built-in ones.
+///
+/// `Collected` is filled by the machine (every address the user sends to that
+/// no card holds yet); `Personal` only by the user. Keeping them apart is what
+/// lets the collected pile grow without cluttering the book someone curates,
+/// and what makes "promote to Personal" a one-field edit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MailContactBook {
+    #[default]
+    Personal,
+    Collected,
+}
+
+/// One labelled phone number (`mobile`, `work`, `home`, … — free text, so an
+/// imported `TYPE=pager` survives as itself instead of being forced into a
+/// fixed set).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct MailContactPhone {
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub number: String,
+}
+
+/// One address-book card.
+///
+/// **Addresses are bare addr-specs**, validated with the composer's own
+/// `validate_recipient` on save: whatever the book suggests is spliced into a
+/// draft's `To:` exactly as typed, and a card must never be the way a
+/// display-name form (or a CR/LF) reaches `RCPT TO`. The first address is the
+/// primary one — what a click on "Write" and the autocomplete default to.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct MailContact {
+    /// Minted by the backend when empty, as an account's is.
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub book: MailContactBook,
+    /// The name shown everywhere. Empty on a collected card until the user
+    /// names it; the UI then falls back to first + last, then the address.
+    #[serde(default)]
+    pub display_name: String,
+    #[serde(default)]
+    pub first_name: String,
+    #[serde(default)]
+    pub last_name: String,
+    /// Thunderbird's nickname: typed in full in a recipient field, it expands
+    /// to this card ahead of every other match.
+    #[serde(default)]
+    pub nickname: String,
+    #[serde(default)]
+    pub emails: Vec<String>,
+    #[serde(default)]
+    pub phones: Vec<MailContactPhone>,
+    #[serde(default)]
+    pub organization: String,
+    #[serde(default)]
+    pub job_title: String,
+    /// Postal address, free text (one line per line).
+    #[serde(default)]
+    pub address: String,
+    #[serde(default)]
+    pub website: String,
+    /// `YYYY-MM-DD`, or `--MM-DD` when the year is unknown (vCard's form).
+    #[serde(default)]
+    pub birthday: String,
+    #[serde(default)]
+    pub notes: String,
+    /// How many sent messages went to one of this card's addresses — the
+    /// autocomplete's tie-break, Thunderbird's "popularity index".
+    #[serde(default)]
+    pub popularity: u32,
+    /// Unix seconds of the last send to this card; `0` = never.
+    #[serde(default)]
+    pub last_used: i64,
+    #[serde(default)]
+    pub created: i64,
+    #[serde(default)]
+    pub updated: i64,
+    #[serde(flatten, default)]
+    pub extra: HashMap<String, Value>,
+}
+
+/// A mailing list: a name that expands to several addresses in a recipient
+/// field. Members are **addresses**, not card ids, so deleting a card never
+/// silently shrinks a list, and a list can hold someone the book does not.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct MailContactList {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub nickname: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub members: Vec<String>,
+    #[serde(flatten, default)]
+    pub extra: HashMap<String, Value>,
+}
+
+/// `contacts.json` — the whole address book.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MailContacts {
+    #[serde(default)]
+    pub version: u32,
+    #[serde(default)]
+    pub contacts: Vec<MailContact>,
+    #[serde(default)]
+    pub lists: Vec<MailContactList>,
+    /// Thunderbird's "automatically add outgoing addresses to Collected
+    /// Addresses". Stored **inverted** so a missing field (every file written
+    /// before the option existed) means on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub collect_disabled: bool,
+    #[serde(flatten, default)]
+    pub extra: HashMap<String, Value>,
+}
+
+/// What the Address Book tab reads in one call.
+#[derive(Debug, Clone, Serialize)]
+pub struct MailContactsView {
+    pub contacts: Vec<MailContact>,
+    pub lists: Vec<MailContactList>,
+    pub collect_outgoing: bool,
+}
+
+/// The outcome of a vCard import.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct MailContactsImportReport {
+    /// The file dialog was cancelled: nothing was read.
+    pub cancelled: bool,
+    pub added: u32,
+    /// Cards whose address was already in the book, folded into that card.
+    pub merged: u32,
+    /// Cards with no usable address, or past the size caps.
+    pub skipped: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

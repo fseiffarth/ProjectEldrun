@@ -18,7 +18,7 @@ import { MailAiQuickTags } from "./MailAiSettings";
 import { mailPgpAvailable } from "../../lib/mail";
 import { mailEncryptionState } from "../../lib/mail";
 import type { MailEncryptionState } from "../../types/mail";
-import { KeyIcon, LockIcon, SparkleIcon, UnlockIcon } from "../common/icons/Icon";
+import { BookIcon, KeyIcon, LockIcon, SparkleIcon, UnlockIcon } from "../common/icons/Icon";
 
 /**
  * The mail client's Inbox tab: folder rail / full-width header list. A message
@@ -495,6 +495,15 @@ export function MailPane({ visible }: MailPaneProps) {
           }
         >
           {t("mail.composeNew")}
+        </button>
+        {/* Thunderbird's Address Book: its own tab in the mail window. */}
+        <button
+          type="button"
+          className="settings-btn"
+          title={t("mail.contacts.title")}
+          onClick={() => useMailStore.getState().openContactsTab()}
+        >
+          <BookIcon /> {t("mail.contacts.open")}
         </button>
         {/* The count is *in the label*, not only in a tooltip: this is the one
             control here that acts on messages the user cannot see (the folder,

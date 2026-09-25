@@ -16,6 +16,7 @@ import {
   mailAgentMarkFolder,
   mailAgentMarkSender,
   mailAgentMarks,
+  mailContactsGet,
   mailPurge,
   mailSearch,
   mailSync,
@@ -26,6 +27,8 @@ import { translate, useI18nStore } from "../lib/i18n";
 import type {
   MailAccount,
   MailBody,
+  MailContact,
+  MailContactList,
   MailDraft,
   MailFlag,
   MailFolder,
@@ -64,7 +67,19 @@ export interface MailComposeTab {
   dirty: boolean;
 }
 
-export type MailTab = MailMessageTab | MailComposeTab;
+/** The Address Book — one tab at most, so its id is fixed. `request` is how
+ *  a message's "Add to address book" reaches an already-open book: a new
+ *  `seq` makes it select (or start) the card for that address. */
+export const MAIL_CONTACTS_TAB = "contacts";
+export interface MailContactsTab {
+  id: typeof MAIL_CONTACTS_TAB;
+  kind: "contacts";
+  request?: { seq: number; address: string; name?: string };
+}
+
+export type MailTab = MailMessageTab | MailComposeTab | MailContactsTab;
+
+let contactsSeq = 0;
 
 let composeSeq = 0;
 
@@ -267,6 +282,20 @@ interface MailStore {
   /** Drop every composer tab — the `mail_client` flag went off, and the
    *  composers holding their text are unmounting with the overlay. */
   dropComposeTabs: () => void;
+
+  /** The address book (`contacts.json`), read whole: the Address Book tab and
+   *  every recipient field's autocomplete share this copy. */
+  contacts: MailContact[];
+  contactLists: MailContactList[];
+  /** Outgoing addresses no card holds go to the Collected book. */
+  collectOutgoing: boolean;
+  contactsLoaded: boolean;
+  /** Why the book could not be read (a damaged or locked file). */
+  contactsError: string | null;
+  loadContacts: () => Promise<void>;
+  /** Open (or focus) the Address Book tab; with `prefill`, on the card holding
+   *  that address, or a new card for it. */
+  openContactsTab: (prefill?: { address: string; name?: string }) => void;
 
   /**
    * Open the overlay **on** a given account — the header dropdown's account rows.
@@ -581,6 +610,39 @@ export const useMailStore = create<MailStore>((set, get) => ({
       return { mailTabs, activeMailTab };
     });
     resumeQueuedSearch(get);
+  },
+  contacts: [],
+  contactLists: [],
+  collectOutgoing: true,
+  contactsLoaded: false,
+  contactsError: null,
+  loadContacts: async () => {
+    try {
+      const view = await mailContactsGet();
+      set({
+        contacts: Array.isArray(view?.contacts) ? view.contacts : [],
+        contactLists: Array.isArray(view?.lists) ? view.lists : [],
+        collectOutgoing: view?.collect_outgoing !== false,
+        contactsLoaded: true,
+        contactsError: null,
+      });
+    } catch (err) {
+      set({ contactsLoaded: true, contactsError: typeof err === "string" ? err : String(err) });
+    }
+  },
+  openContactsTab: (prefill) => {
+    clearQueuedSearchTimer();
+    const request = prefill ? { seq: ++contactsSeq, ...prefill } : undefined;
+    set((s) => {
+      const open = s.mailTabs.some((tab) => tab.kind === "contacts");
+      const tab: MailContactsTab = { id: MAIL_CONTACTS_TAB, kind: "contacts", ...(request ? { request } : {}) };
+      return {
+        mailTabs: open
+          ? s.mailTabs.map((t) => (t.kind === "contacts" ? { ...t, ...(request ? { request } : {}) } : t))
+          : [...s.mailTabs, tab],
+        activeMailTab: MAIL_CONTACTS_TAB,
+      };
+    });
   },
   closeMailTab: (id) => {
     set((s) => {

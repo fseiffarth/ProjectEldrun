@@ -3,8 +3,8 @@ import {
   MAIL_INBOX_TAB,
   accountInboxUnread,
   useMailStore,
-  type MailComposeTab,
   type MailMessageTab,
+  type MailTab,
 } from "../../stores/mail";
 import { useExperimental } from "../../lib/experimental";
 import { useT } from "../../lib/i18n";
@@ -14,11 +14,14 @@ import { UntestedTag } from "../common/UntestedTag";
 import { useFloatingFrame } from "../common/useFloatingFrame";
 import { useDialogs } from "../common/PromptDialogs";
 import { MailGlyph } from "../header/HeaderGlyphs";
+import { BookIcon } from "../common/icons/Icon";
 import { OverlayApprovals } from "../layout/OverlayApprovals";
+import { ScrollingTabStrip } from "../tabs/ScrollingTabStrip";
 import { MailAccountMenu } from "./MailAccountMenu";
 import { MailPane } from "./MailPane";
 import { MailMessageView } from "./MailMessageView";
 import { MailComposeDialog, composeSubject, composeTitle } from "./MailComposeDialog";
+import { MailAddressBook } from "./MailAddressBook";
 
 /**
  * The header mail button's overlay — **the** mail surface, floated over the
@@ -120,7 +123,7 @@ function MailOverlay({ open }: { open: boolean }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [open]);
 
-  const closeTab = async (shown: MailComposeTab | MailMessageTab) => {
+  const closeTab = async (shown: MailTab) => {
     // The store's copy, not the render's: an edit may have landed since.
     const tab = useMailStore.getState().mailTabs.find((x) => x.id === shown.id) ?? shown;
     if (
@@ -148,8 +151,10 @@ function MailOverlay({ open }: { open: boolean }) {
 
   // A reply or forward is labelled with the "Re: / Fwd:" subject its composer
   // opens with, until the first edit reports the typed one.
-  const tabLabel = (tab: MailComposeTab | MailMessageTab) =>
-    tab.kind === "message"
+  const tabLabel = (tab: MailTab) =>
+    tab.kind === "contacts"
+      ? t("mail.contacts.title")
+      : tab.kind === "message"
       ? stripFormatControls(tab.header.subject) || t("mail.noSubject")
       : stripFormatControls(
           tab.subject ?? tab.draft?.subject ?? composeSubject(t, tab.mode, tab.source?.header),
@@ -185,7 +190,14 @@ function MailOverlay({ open }: { open: boolean }) {
             <MailAccountMenu />
             <UntestedTag id="mail.overlayTitle" />
           </div>
-          <div className="tab-strip mail-tab-strip" role="tablist">
+          {/* Scrolls with chevrons once the tabs hit their minimum width, like
+              every other strip; the "+" stays outside so it never scrolls away. */}
+          <ScrollingTabStrip
+            className="mail-tab-strip"
+            role="tablist"
+            revision={tabs.map((tab) => tab.id).join(",")}
+            activeKey={active}
+          >
             {/* The Inbox: always first, never closes. */}
             <div
               role="tab"
@@ -238,6 +250,7 @@ function MailOverlay({ open }: { open: boolean }) {
                       ✎
                     </span>
                   )}
+                  {tab.kind === "contacts" && <BookIcon className="mail-tab-kind" />}
                   <span className="tab-label">{label}</span>
                   {tab.kind === "compose" && tab.dirty && (
                     <span className="mail-tab-dirty" title={t("mail.tabUnsent")} aria-label={t("mail.tabUnsent")}>
@@ -260,7 +273,7 @@ function MailOverlay({ open }: { open: boolean }) {
                 </div>
               );
             })}
-          </div>
+          </ScrollingTabStrip>
           <div className="tab-new-wrap">
             <button
               type="button"
@@ -305,7 +318,9 @@ function MailOverlay({ open }: { open: boolean }) {
               data-mail-tab={tab.id}
               style={tab.id === active ? undefined : { display: "none" }}
             >
-              {tab.kind === "message" ? (
+              {tab.kind === "contacts" ? (
+                <MailAddressBook tab={tab} />
+              ) : tab.kind === "message" ? (
                 <MailMessageTabBody tab={tab} />
               ) : (
                 <MailComposeDialog
