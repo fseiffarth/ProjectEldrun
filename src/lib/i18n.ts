@@ -206,6 +206,7 @@ export const en = {
   "mobile.outbox.previous": "Previous picture",
   "mobile.outbox.next": "Next picture",
   "mobile.outbox.position": "{index} / {count}",
+  "mobile.outbox.post": "Pictures and files from the agent ({count})",
 
   // Common action words, shared across surfaces.
   "common.back": "Back",

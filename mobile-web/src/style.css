@@ -894,6 +894,29 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .outbox-file { display:grid; gap:5px; width:160px; padding:9px; border:1px solid #34384a; border-radius:7px; background:#0f131c; color:#d8e2f5; text-align:left; text-decoration:none; font-size:.75rem; }
 .outbox-file strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .outbox-file span { color:#95a6c8; }
+/* The agent's files in the Focus chat (`OutboxPost`), drawn as WhatsApp draws
+   a picture: the picture is the bubble, inside a 3px rim of the agent's
+   bubble colour, with the time laid over its bottom corner on a shade. An
+   album is a grid of cropped tiles; a file that is no picture is a slim card
+   in the same bubble, with the time under it. */
+.readable-turn.agent.outbox-post { position:relative; width:min(78%,300px); padding:3px; border-radius:14px 14px 14px 4px; background:#1d2030; color:#e3e6f2; -webkit-touch-callout:none; gap:3px; }
+.outbox-post-album { display:grid; gap:2px; overflow:hidden; border-radius:11px 11px 11px 2px; background:#0f131c; }
+.outbox-post-album.tiles-1 { aspect-ratio:4 / 3; }
+.outbox-post-album.tiles-2 { grid-template-columns:1fr 1fr; aspect-ratio:2 / 1; }
+.outbox-post-album.tiles-3 { grid-template-columns:1fr 1fr; grid-template-rows:3fr 2fr; aspect-ratio:1; }
+.outbox-post-album.tiles-3 .outbox-post-picture:first-child { grid-column:1 / -1; }
+.outbox-post-album.tiles-4 { grid-template-columns:1fr 1fr; grid-template-rows:1fr 1fr; aspect-ratio:1; }
+.outbox-post:not(.pictures-only) .outbox-post-album { border-radius:11px; }
+.outbox-post-picture { position:relative; display:block; min-width:0; min-height:0; padding:0; border:0; background:transparent; overflow:hidden; }
+.outbox-post-picture img { display:block; width:100%; height:100%; object-fit:cover; }
+.outbox-post-more { position:absolute; inset:0; display:grid; place-items:center; background:rgba(8,10,16,.55); color:#fff; font:600 1.5rem/1 Inter,ui-sans-serif,system-ui,sans-serif; }
+.outbox-post-file { display:grid; grid-template-columns:auto 1fr; grid-template-rows:auto auto; column-gap:10px; align-items:center; min-width:0; padding:8px 10px; border:0; border-radius:11px; background:#161927; color:#e3e6f2; text-align:left; text-decoration:none; font:400 .82rem/1.3 Inter,ui-sans-serif,system-ui,sans-serif; }
+.outbox-post-file > span { grid-row:1 / 3; display:grid; place-items:center; width:36px; height:36px; border-radius:8px; background:#2b2f45; color:#b9c4e0; font-size:.72rem; font-weight:700; }
+.outbox-post-file strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
+.outbox-post-file small { color:#95a6c8; font-size:.72rem; }
+.outbox-post-meta { justify-self:end; padding:0 8px 2px; color:#95a6c8; font-size:.68rem; }
+.outbox-post-meta em { font-style:normal; opacity:.8; }
+.outbox-post.pictures-only .outbox-post-meta { position:absolute; right:10px; bottom:8px; padding:1px 7px; border-radius:9px; background:rgba(8,10,16,.55); color:#f1f3fa; pointer-events:none; }
 .outbox-entry-actions { display:flex; flex-wrap:wrap; align-items:center; gap:10px; min-width:0; }
 .outbox-details,.outbox-save { border:0; background:transparent; color:#8fb8ff; font-size:.7rem; padding:5px 0; text-decoration:none; }
 .outbox-save { display:inline-flex; align-items:center; gap:3px; }

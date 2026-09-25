@@ -4,7 +4,8 @@ import { OptionSheet, type SheetOption } from "../components/OptionSheet";
 import { SpeechLangSheet, speechLangSummary } from "../components/SpeechLangPicker";
 import { OutboxGallery } from "../components/OutboxGallery";
 import { OutboxViewer } from "../components/OutboxViewer";
-import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { OutboxPost } from "../components/OutboxPost";
+import { Fragment, memo, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -82,6 +83,7 @@ import { answerHtml } from "../terminal/answerMarkdown";
 import { commandArgsInline, slashCommand, transcriptTurns, type SlashCommand, type TranscriptTurn } from "../terminal/transcriptTurns";
 import { openSubagent, siblingPosition, stepSibling, type SubagentStep } from "../terminal/subagents";
 import { MAX_PENDING, pendingPrompt, withPending, type PendingPrompt } from "../terminal/pendingPrompts";
+import { outboxPosts, type OutboxPost as ChatPost } from "../terminal/outboxPosts";
 import { afterClear, clearMark, type ClearMark } from "../terminal/clearedSession";
 import { ageLabel, sizeLabel } from "../terminal/fileLabels";
 import { resetText, StatusSheet } from "./StatusSheet";
@@ -373,8 +375,10 @@ function SubagentCard({ turn, label, untested, onOpen }: {
  * reader's own prompts, the agent's answers on the left — from the record the
  * agent itself keeps, which reaches back past the pane's scrollback and
  * carries no tool status. `cut` marks text the desktop bounded. A subagent
- * the agent spawned is a card (`SubagentCard`) that opens its conversation. */
-const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promptLabel, agentLabel = "", agentUntested = "", onOpenAgent, onResend }: {
+ * the agent spawned is a card (`SubagentCard`) that opens its conversation.
+ * What the agent sent to the phone sits after the record it followed
+ * (`outboxPosts`), as picture messages. */
+const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promptLabel, agentLabel = "", agentUntested = "", onOpenAgent, onResend, posts, renderPost }: {
   entries: SessionTranscript["entries"];
   cutLabel: string;
   promptLabel: string;
@@ -383,6 +387,9 @@ const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promp
   onOpenAgent?: (turn: TranscriptTurn) => void;
   /** Send a prompt the link lost once more, by its pending id. */
   onResend?: (pending: number) => void;
+  /** The agent's files to draw after each record, by its index. */
+  posts?: ReadonlyMap<number, readonly ChatPost[]>;
+  renderPost?: (post: ChatPost) => ReactNode;
 }) {
   // One bubble per record, keyed by its time (`transcriptTurns`).
   const turns = useMemo(() => transcriptTurns(entries), [entries]);
@@ -411,6 +418,7 @@ const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promp
           <AnswerText text={turn.text} />
           {turn.cut && <small className="transcript-cut">{cutLabel}</small>}
         </div>}
+    {renderPost && posts?.get(turn.index)?.map((post) => <Fragment key={post.key}>{renderPost(post)}</Fragment>)}
   </Fragment>)}{menu}</>;
 });
 
@@ -1549,6 +1557,8 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
   const sinceClear = useMemo(() => afterClear(transcript?.entries ?? [], clearedAt), [transcript, clearedAt]);
   const storedEntries = useMemo(() => sinceClear ?? transcript?.entries ?? [], [sinceClear, transcript]);
   const sessionEntries = useMemo(() => withPending(storedEntries, pending), [storedEntries, pending]);
+  /** The files the agent sent while this conversation ran, as its messages. */
+  const chatPosts = useMemo(() => outboxPosts(sessionEntries, outbox), [sessionEntries, outbox]);
   /** The open subagent's conversation, once read. */
   const subToken = openStep?.token;
   const subTranscript = subRead && subRead.token === subToken ? subRead.transcript : null;
@@ -1668,7 +1678,7 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
     if (!sessionShown || !atBottom) return;
     const stream = readableHost.current;
     if (stream && typeof stream.scrollTo === "function") stream.scrollTo({ top: stream.scrollHeight });
-  }, [sessionShown, transcript, pending, atBottom, subToken, subTranscript]);
+  }, [sessionShown, transcript, pending, chatPosts, atBottom, subToken, subTranscript]);
   /** Reads the outbox now and every `OUTBOX_POLL` while the page is visible;
    * coming back to the page reads it at once. A listing that could not be
    * fetched keeps what was shown — the next poll retries. */
@@ -1750,6 +1760,14 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
     if (file.kind === "application/pdf") window.open(outboxFileUrl({ tab: tab.id }, file.name), "_blank", "noopener");
     else setOutboxOpen(file);
   }, [tab.id]);
+  /** A lone picture takes its own shape once loaded; a chat following its
+   * bottom follows the taller bubble (the resize observer watches the view's
+   * box, not what grows inside it). */
+  const settlePost = useCallback(() => {
+    const stream = readableHost.current;
+    if (atBottomRef.current && stream && typeof stream.scrollTo === "function") stream.scrollTo({ top: stream.scrollHeight });
+  }, []);
+  const renderPost = useCallback((post: ChatPost) => <OutboxPost scope={outboxScope} post={post} onOpen={openOutbox} onSettle={settlePost} />, [outboxScope, openOutbox, settlePost]);
   /** Removes one of the files the agent sent, from the tile's own confirm — the
    * same removal the project screen's shelf does, through this tab's scope. The
    * row goes now rather than at the next poll, and the sheet closes with the
@@ -2753,7 +2771,7 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
               ? <div className="readable-empty"><strong>{t("mobile.transcript.empty")}</strong><span>{t("mobile.transcript.emptyHint")}</span></div>
               : <div className="readable-lines chat transcript" data-testid="session-transcript">
                   {transcript?.truncated && !sinceClear && <button className="readable-earlier" onClick={() => setTranscriptLimit((limit) => limit + TRANSCRIPT_STEP)}>{t("mobile.transcript.earlier")}</button>}
-                  <TranscriptTurns entries={sessionEntries} cutLabel={t("mobile.transcript.cut")} promptLabel={t("mobile.transcript.prompt")} agentLabel={t("mobile.subagent.region")} agentUntested={subagentUntested} onOpenAgent={openSubagentTurn} onResend={resendPrompt} />
+                  <TranscriptTurns entries={sessionEntries} cutLabel={t("mobile.transcript.cut")} promptLabel={t("mobile.transcript.prompt")} agentLabel={t("mobile.subagent.region")} agentUntested={subagentUntested} onOpenAgent={openSubagentTurn} onResend={resendPrompt} posts={chatPosts} renderPost={renderPost} />
                   {liveQuestion && <div className="transcript-screen" role="group" aria-label={t("mobile.transcript.question")}>
                     <small>{t("mobile.transcript.question")}{isUntested("mobile.focus.onScreen") && <> · {t("mobile.focus.untested")}</>}</small>
                     {/* The screen the dialog was drawn onto, as the screen drew

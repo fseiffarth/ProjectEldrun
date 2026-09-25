@@ -154,6 +154,7 @@ export const dict: Dict = {
   "mobile.outbox.previous": "Image précédente",
   "mobile.outbox.next": "Image suivante",
   "mobile.outbox.position": "{index} / {count}",
+  "mobile.outbox.post": "Images et fichiers de l'agent ({count})",
 
   "settings.projectRemarks": "Remarques sur les fichiers du projet",
   "settings.projectRemarksHelp": "Associe aux fichiers du projet des notes de revue et des lignes facultatives dans un REMARKS.md adapté à git.",
