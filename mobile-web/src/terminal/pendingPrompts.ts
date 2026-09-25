@@ -96,7 +96,7 @@ export function withPending(entries: readonly TranscriptEntry[], pending: readon
   }
   for (const prompt of pending) {
     // After the last entry at or before the send — an entry without a stamp
-    // stands at the one before it (as `placeOutbox` reads them), and an
+    // stands at the one before it (as `outboxPosts` reads them), and an
     // earlier held prompt carries the same stamp, so two sent in a row keep
     // their order. Nothing stamped to go by: the end.
     let slot = shown.length;
