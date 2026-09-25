@@ -186,6 +186,9 @@ export const UNTESTED = {
   "lessons.intro": { area: "layout", what: "LessonsMenu · Short guided walkthroughs for common tasks. Pick one — it points things out step by step,…" },
   "localModel.igpuDropped": { area: "layout", what: "LocalModelMenu · A model is loaded, but none of it is on the GPU. This Ollama version drops integrated GPU…" },
   "localModel.skillsLibrary": { area: "layout", what: "LocalModelMenu · Skills library…" },
+  "localModel.manageAgents": { area: "layout", what: "LocalModelMenu · Manage CLIs… opens the Models & agents overlay's Agents & CLIs tab" },
+  "localModel.manageLocalModels": { area: "layout", what: "LocalModelMenu · Manage local models… / Install Ollama… opens the overlay's Ollama tab" },
+  "modelsOverlay.title": { area: "layout", what: "ModelsOverlay · Models & agents (header button click; tabs, panes, Escape, focus return)" },
   "localModelMenu.1": { area: "layout", what: "LocalModelMenu · MCP", tested: "2026-09-20" },
   "localModelMenu.2": { area: "layout", what: "LocalModelMenu · Dismiss this notice" },
   "localModelMenu.3": { area: "layout", what: "LocalModelMenu · Dismiss this notice" },
@@ -409,7 +412,7 @@ export const UNTESTED = {
   "transfer.import": { area: "projects", what: "ProjectImportBundleDialog · Import project file…" },
 
   // --- skills — The skills library ----------------------------------
-  "skillsLibrary.overlayTitle": { area: "skills", what: "SkillsOverlay · Skills Library" },
+  "skillsLibrary.overlayTitle": { area: "skills", what: "ModelsOverlay · Skills tab (the machine-level Skills Library)" },
 
   // --- tabs — Tabs and the new-tab menus ----------------------------
   "agentWorktrees.1": { area: "tabs", what: "agentWorktrees · Which worktree to open a tab on" },

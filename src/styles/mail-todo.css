@@ -443,7 +443,7 @@ svg.alerts-toggle-icon {
   opacity: 0.5;
 }
 
-/* The header overlays — mail, calendar, board, skills — all wear the root
+/* The header overlays — mail, calendar, board, models & agents — all wear the root
    console's subwindow chrome (`.root-overlay.subwindow`, its `.tab-bar` with a
    glyph mark, a tab strip and the console's controls); the tabs' shared parts
    are below. All that is left here is their size — exactly the split
@@ -461,7 +461,7 @@ svg.alerts-toggle-icon {
 .mail-overlay,
 .calendar-overlay,
 .todo-overlay,
-.skills-overlay {
+.models-overlay {
   width: min(1680px, calc(100vw - 24px));
   height: min(93vh, calc(100vh - 24px));
   max-height: min(93vh, calc(100vh - 24px));
@@ -486,7 +486,7 @@ svg.alerts-toggle-icon {
 .mail-overlay-body,
 .calendar-overlay-body,
 .todo-overlay-body,
-.skills-overlay-body {
+.models-overlay-body {
   position: relative;
   flex: 1;
   min-height: 0;
@@ -498,9 +498,35 @@ svg.alerts-toggle-icon {
    pane must take the width, or it shrinks to its toolbar's. */
 .calendar-overlay-body > *,
 .todo-overlay-body > *,
-.skills-overlay-body > * {
+.models-overlay-body > * {
   flex: 1;
   min-width: 0;
+}
+/* The Models & agents overlay's panes (`models/ModelsOverlay`). The hosted
+   Settings panels render a title row and a `.dialog-scroll`, which only scrolls
+   inside a flex column — so the pane is that column. `:not([hidden])` because
+   an author `display` would beat the `hidden` attribute a kept pane wears. */
+.models-overlay-pane:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  /* The surface the hosted panels were drawn on (the Settings dialog, the
+     dropdown's rows): on `--bg-panel` their `.settings-card`s went flat. */
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+/* Each tab's one-line intro, on the same 880px column as the pane under it
+   (its `padding-inline` is the column rule in apps.css — no `padding`
+   shorthand here, so the result doesn't hang on the @import order). */
+.models-overlay-body .models-overlay-intro {
+  margin: 0;
+  padding-top: 12px;
+  flex-shrink: 0;
+}
+/* …except Skills, whose pane is full-width: the intro lines up with its
+   toolbar's 10px inset instead. */
+.models-overlay-body #models-overlay-pane-skills > .models-overlay-intro {
+  padding-inline: 10px;
 }
 /* The window's title already names this surface — the label beside the
    window's tab strip — so the pane's own
@@ -508,7 +534,8 @@ svg.alerts-toggle-icon {
    equivalent: `.cal-toolbar-title` is the visible date range, not the app's
    name, so it says something the band does not. */
 .mail-overlay .mail-toolbar-title,
-.skills-overlay .skills-title {
+.models-overlay-pane .skills-title,
+.models-overlay-pane > .settings-title-row {
   display: none;
 }
 

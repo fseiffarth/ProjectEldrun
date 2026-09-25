@@ -81,3 +81,8 @@ gives it Eldrun's root tools (calendar, board, project list).
 The chip-icon button in the header hubs local Ollama models (load, unload,
 pull, role chips), installed agent CLIs (Default, "+ tab", Root and MCP
 chips), **Manage CLIs…**, **Skills library…**, and live CPU/RAM/GPU meters.
+Hover it for the quick menu; **click** it for the **Models & agents** window,
+with four tabs — **Agents & CLIs** (install, update, remove, plus the same
+chips), **Local models** (everything the menu shows, full size), **Ollama**
+(install Ollama, model storage, downloads, the catalog) and **Skills**. Every
+entry in the menu opens its tab there; Escape or a click outside closes it.

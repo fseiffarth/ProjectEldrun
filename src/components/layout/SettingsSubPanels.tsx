@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Toggle } from "../common/Toggle";
 import { SettingsAdvanced, SettingsCard, SettingsHeader, SettingsList, SettingsSection, ToggleRow } from "./settingsUi";
@@ -170,10 +170,12 @@ function matchesSizeBuckets(sizes: string[], selected: Set<string>): boolean {
 }
 
 /** Every sub-panel takes the same two: `onBack` returns to the main settings
- *  panel, `onClose` dismisses the whole dialog. Optional because the panels are
- *  also rendered standalone in tests. */
+ *  panel, `onClose` dismisses the whole dialog. Both optional: the panels are
+ *  also rendered standalone in tests, and the Models & agents overlay
+ *  (`models/ModelsOverlay`) hosts the Agents and Ollama panels as tabs, where
+ *  there is no settings page to go back to (`SettingsHeader` omits Back). */
 export interface SubPanelProps {
-  onBack: () => void;
+  onBack?: () => void;
   onClose?: () => void;
 }
 
@@ -1274,7 +1276,16 @@ function AgentCronRow({ cmd, label }: { cmd: string; label: string }) {
  * registry lives in the backend (`commands::agents`); this just renders each
  * entry with an install button, a live install log, and a manual fallback.
  */
-export function AgentsPanel({ onBack, onClose }: SubPanelProps) {
+export function AgentsPanel({
+  onBack,
+  onClose,
+  installedExtras,
+}: SubPanelProps & {
+  /** Rendered at the end of each **installed** card. The Models & agents
+   *  overlay passes the dropdown's Default · + tab · Root · MCP chips
+   *  (`AgentChips`); Settings passes nothing, so its cards are unchanged. */
+  installedExtras?: (a: AgentInfo) => ReactNode;
+}) {
   const t = useT();
   const { settings, updateSettings } = useSettingsStore();
   const remoteMachines = useGlobalMachinesStore((s) => s.machines);
@@ -1810,6 +1821,7 @@ export function AgentsPanel({ onBack, onClose }: SubPanelProps) {
       )}
       {a.id === "codex" && <CodexHookNotice />}
       {a.id === "claude" && <ClaudeRemoteControlNotice />}
+      {a.installed && installedExtras?.(a)}
     </SettingsCard>
   );
 

@@ -122,14 +122,18 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `browser/BrowserBlockedNotice.tsx` / `browser/BrowserStartPage.tsx` | Refused navigation as a page state (full URL, no override); loopback/private addresses get a one-tab, one-session "Open anyway, once". Plus the start page / resume card. |
 | `browser/useBrowserEvents.ts` | Backend browser events installed once per window (refcount + generation counter). |
 | `browser/BrowserDownloadHost.tsx` | The one download-consent dialog mount per window (`AppShell` + `DetachedApp`); owns the event listeners. |
-| `skills/SkillsLibraryTab.tsx` / `skills/SkillsLibraryView.tsx` / `skills/SkillsOverlay.tsx` | Skills Library (`docs/skills_plan.md`): browse git-hosted skills, preview, copy into `.claude/skills/` or `~/.claude/skills/`. Install only from the preview panel. The overlay wears `MailOverlay`'s chrome (movable, one fixed tab). |
+| `skills/SkillsLibraryTab.tsx` / `skills/SkillsLibraryView.tsx` | Skills Library (`docs/skills_plan.md`): browse git-hosted skills, preview, copy into `.claude/skills/` or `~/.claude/skills/`. Install only from the preview panel. The machine-level door is the Skills tab of `models/ModelsOverlay` (`projectDir` null, `visible` gated). |
+| `models/ModelsOverlay.tsx` | Models & agents overlay (`ModelsOverlayHost`, AppShell): header chip-button click. Four fixed tabs — Settings' `AgentsPanel` (+ `AgentChips`), Local models (hub sections), `OllamaPanel`, skills library; panes mount on first visit, then stay `hidden`. Never redirects to Settings. |
+| `models/useModelsHub.ts` | The dropdown's logic, shared with the overlay: `useModelsHub(active)` (agents, GPU/machine poll, load/unload, pulls, update check, upgrade, role/Root/MCP toggles) + `useAutoloadNotice`. |
+| `models/ModelsHubSections.tsx` | The dropdown's markup, shared: `AgentChips`, `LocalModelsSection` (`layout` menu/overlay), `MachineMeters`, `MODEL_ROLES`. Keeps the dropdown pixel-identical. |
 | `printing/PrintManagerPane.tsx` | Native print manager tab: printers, queues, make default / pause / test page / cancel. Machine-scoped (no project props), singleton per scope; `visible` gates polling. |
 | `printing/PrinterNetworkDefaultsHost.tsx` | Shell-mounted, renders nothing: applies the saved per-network default printer on each network change (launch included). No timer until a default is saved. |
 | `header/Clock.tsx` | Header clock. |
 | `header/DevBuildIndicator.tsx` | Dev-build chip in the cluster: the background frozen-dev build's step/clock/estimate bar; hover menu opens a `tail -F` of its log, and in the frozen window offers "Relaunch now" onto a newer snapshot. Renders nothing in release builds. |
 | `header/StatusCluster.tsx` | Machine-state readouts (connection, battery, Mobile, OpenVPN, Machines, CPU/RAM/GPU) as one collapsible cluster: collapsed = one worst-state `ConnLamp`; persists `Settings.header_status_expanded`. |
-| `header/SettingsMenu.tsx` | Header ⚙ menu: settings, help, tours, lessons. `GlobalAppMenu`'s twin on the shared `headerHoverMenu` id. |
-| `header/HeaderGlyphs.tsx` | The top bar's drawn icons (✉ 🗓 ☑ ▦ ⚙ as SVG): 16-unit grid, outlines y=2→14, the phone icon's line weight. Sized in `mail-todo.css`. |
+| `header/SettingsMenu.tsx` | Header ⚙ menu (hover): settings, help, tours, lessons; a click on the gear opens Settings directly. Twin of the other header menus on the shared `headerHoverMenu` id. |
+| `header/HeaderGlyphs.tsx` | The top bar's drawn icons (✉ 🗓 ☑ ⚙ as SVG): 16-unit grid, outlines y=2→14, the phone icon's line weight. Sized in `mail-todo.css`. `ModelsGlyph` keeps its own 24-unit chip drawing (button + overlay mark). |
+| `layout/LocalModelMenu.tsx` | Header Models & agents button: hover dropdown, click → `ModelsOverlay` (every door opens a tab), focus return on close, the `installed` poll, `initLocalModelEvents`, and the sole-resident → every-role auto-apply (its only owner). |
 | `header/AppTimerDisplay.tsx` | Active-project time-tracking readout. |
 | `header/AppResourceDisplay.tsx` | CPU/RAM/GPU readout. GPU = device memory + utilization (`gpustat`); Ollama models only in the tooltip, or as fallback where the GPU can't be read. |
 | `header/ConnTypeIcon.tsx` | Local/remote (SSH) connection-type icon. |
@@ -240,7 +244,8 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `todo.ts` | To-do board session state only (overlay flag, filters — never persisted, drag, optimistic overlay, mail cache, `collapsedSteps`, `focusTaskId`). |
 | `browser.ts` | In-app browser store (#61). Nothing reaches the network on its own (`load`/`openLive` only, both clicks), actions tolerate a rejected invoke, downloads refused by default. |
 | `mail.ts` | Global mail store. Every action tolerates a rejected invoke (lands in `error`); `checkMail` and a debounced typed folder search can reach a server. Owns list order and the search coverage flags (`searchRemote`, `searchPartial`). |
-| `skills.ts` | One boolean: is the Skills Library overlay shown. Holds no catalog copy on purpose. |
+| `modelsOverlay.ts` | Models & agents overlay: `open` + `tab` (last tab remembered in localStorage). No data copies. |
+| `agents/ollamaActivity.ts` | Local-model session facts shared by dropdown and overlay: `installed`, `models`, downloads/paused/loads, update verdicts, server version; ref-counted `initLocalModelEvents`. |
 | `alarms.ts` | Reminder ticker: fires an OS notification + the in-app popup, exactly once each; a calendar with `alerts_off` is recorded as fired but never shown. |
 | `linkRouting.ts` | Routing of clicked links/URIs to viewers or external apps. |
 | `pdfSync.ts` | Bidirectional PDF/SyncTeX sync state. |

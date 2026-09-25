@@ -849,7 +849,9 @@
   gap: 0;
   padding: 0;
 }
-.settings-dialog .dialog-scroll {
+/* The Models & agents overlay (`models/ModelsOverlay`) hosts Settings' Agents
+   and Ollama panels as tabs, so its body takes the same scroll frame. */
+:is(.settings-dialog, .models-overlay-body) .dialog-scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -857,6 +859,19 @@
   flex-direction: column;
   gap: 12px;
   padding: 18px;
+}
+/* An 880px reading column inside the overlay's near-viewport window: the panel
+   cards were drawn for a 560–740px dialog and stretch badly past that. Padding,
+   not max-width, so the scrollbar stays at the pane's edge and the wheel works
+   over the margins too. Each tab's intro line (mail-todo.css) sits on the
+   same column, defined here once. */
+.models-overlay-body :is(.dialog-scroll, .models-overlay-intro) {
+  padding-inline: max(18px, calc((100% - 880px) / 2));
+}
+/* The Local models tab stacks the dropdown's own rows, which expect the
+   menu's column with a 1px gap, not a settings page's 12px. */
+.models-overlay-body .models-overlay-models {
+  gap: 1px;
 }
 
 /* Split-scroll frame, generalized — the one Settings uses, made reusable so any

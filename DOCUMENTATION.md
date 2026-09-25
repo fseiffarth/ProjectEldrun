@@ -176,7 +176,8 @@ header bar. `Super` hides the panels simultaneously; `F11` toggles fullscreen.
 
 Some surfaces are **overlays over the whole window** rather than tabs — mail
 (`MailOverlay`), the calendar (`CalendarOverlay`), the to-do board
-(`TodoOverlay`), the Skills library (`SkillsOverlay`), and the presenter
+(`TodoOverlay`), models & agents with the machine-level Skills library
+(`ModelsOverlay`), and the presenter
 (`PresentationOverlay`) — opened from their header indicator or the `+` menu.
 Mail is the settled example: it was built as a tab *and* an overlay, and the tab
 was retired (`RETIRED_TAB_CMDS`) because the mail store is global, so a
@@ -424,7 +425,7 @@ list. Where a link still needs an app, `src/lib/linkTarget.ts::routeUri` decides
 | To-do board | `components/todo/`, `stores/todo.ts` | shares `calendar.json` | Cards **are** calendar tasks — one store, not a second one. |
 | Browser | `components/browser/`, `stores/browser.ts` | `commands/browser.rs`, `services/browser_engine.rs`, `services/web_safety.rs` | Reader mode, no scripts. Behind `web_browser`. |
 | Print manager | `components/printing/PrintManagerPane.tsx` | `commands/printing.rs` | CUPS on Linux/macOS, PowerShell on Windows. |
-| Skills library | `components/skills/`, `stores/skills.ts` | `commands/skills.rs`, `services/skills.rs` | Claude-only; no manifest or versioning by design. |
+| Skills library | `components/skills/` (+ the `ModelsOverlay` Skills tab) | `commands/skills.rs`, `services/skills.rs` | Claude-only; no manifest or versioning by design. |
 | Deck presenter | `components/embed/deck/`, `lib/viewers/deck/` | `commands/presenter.rs` | Behind `deck_presenter`. |
 | Daily recap | `components/stats/` | `commands/usage_stats.rs`, `services/usage_stats.rs` | Local-only counters. |
 | System monitor | `components/monitoring/` | `commands/monitor.rs`, `gpustat.rs`, `sysstat.rs` | Local and remote hosts through the same parsers. |

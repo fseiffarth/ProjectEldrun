@@ -11,7 +11,7 @@ import { useT } from "../../lib/i18n";
 
 /**
  * The root console's move / resize / fill, for the header overlays (mail,
- * calendar, to-do board, skills library) — the same frame math (`stores/rootOverlay`), the same
+ * calendar, to-do board, models & agents) — the same frame math (`stores/rootOverlay`), the same
  * eight grips, the same "drag the title bar to move, double-click to fill".
  *
  * Local state rather than a store: nothing outside the overlay reads its frame.

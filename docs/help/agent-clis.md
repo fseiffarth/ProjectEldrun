@@ -11,8 +11,9 @@ their conversations after a restart where the CLI allows it.
 
 ## Install an agent CLI
 
-1. Open **Settings → Agents → Manage CLIs** (or **Manage CLIs…** in the
-   Models & agents menu in the header).
+1. Click the **Models & agents** button in the header (chip icon) — it opens
+   on the **Agents & CLIs** tab — or hover it and pick **Manage CLIs…**. The
+   same list is also in **Settings → Agents → Manage CLIs**.
 2. Find the agent. Installed ones are listed first; use the search box for
    the rest.
 3. Click **Install <name>**. Eldrun runs the vendor's official installer and
@@ -111,6 +112,7 @@ container.
 ## Custom agents and skills
 
 - `+` → **Add agent…** registers any command as a custom agent.
-- **Skills library…** (Models & agents menu or `+` menu) installs reusable
+- **Skills library…** (the Models & agents window's **Skills** tab, or the
+  `+` menu) installs reusable
   Agent Skills into one project (`.claude/skills/`) or for every project on
   this machine (`~/.claude/skills/`).

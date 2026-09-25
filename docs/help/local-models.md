@@ -10,8 +10,9 @@ autocomplete and the mail assistant.
 
 ## 1. Install Ollama
 
-1. Open the **Models & agents** button in the header (chip icon) and click
-   **Install Ollama…** — or open **Settings → Agents → Ollama Models**.
+1. Click the **Models & agents** button in the header (chip icon) and open
+   its **Ollama** tab (hovering it and picking **Install Ollama…** lands on
+   the same tab) — or open **Settings → Agents → Ollama Models**.
 2. Click **Run in terminal** to run the installer in a visible terminal tab:
    - Linux / macOS: `curl -fsSL https://ollama.com/install.sh | sh`
    - Windows: `winget install --id Ollama.Ollama -e --silent --accept-source-agreements --accept-package-agreements`

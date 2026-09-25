@@ -90,13 +90,25 @@ export function SettingsGlyph({ className }: { className: string }) {
   );
 }
 
-/** An open book — the Skills Library (`skills/SkillsOverlay`), opened from the
- *  Models & agents menu, whose entry carries no icon of its own to reuse. */
-export function SkillsGlyph({ className }: { className: string }) {
+/** A processor chip — on-device compute — for the Models & agents button
+ *  (`layout/LocalModelMenu`) and the overlay it opens (`models/ModelsOverlay`).
+ *  The one glyph here NOT on the shared 16-unit `Glyph` grid: it keeps the
+ *  24-unit drawing and 1.4 stroke it had inline in the button, so the button
+ *  (sized to 19px by `svg.local-model-icon`) stays pixel-identical. */
+export function ModelsGlyph({ className }: { className: string }) {
   return (
-    <Glyph className={className}>
-      <path d="M8 3.8C6.5 2.6 4.5 2 2 2v10.2c2.5 0 4.5.6 6 1.8 1.5-1.2 3.5-1.8 6-1.8V2c-2.5 0-4.5.6-6 1.8Z" {...STROKE} />
-      <path d="M8 3.8V14" {...STROKE} />
-    </Glyph>
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden="true"
+    >
+      <g stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="6" y="6" width="12" height="12" rx="2" />
+        <rect x="9.5" y="9.5" width="5" height="5" rx="0.8" />
+        <path d="M9 2.5V6M12 2.5V6M15 2.5V6M9 18v3.5M12 18v3.5M15 18v3.5M2.5 9H6M2.5 12H6M2.5 15H6M18 9h3.5M18 12h3.5M18 15h3.5" />
+      </g>
+    </svg>
   );
 }

@@ -51,7 +51,7 @@ import { AgentContinueHost } from "./AgentContinueHost";
 import { AgentCronHost } from "./AgentCronHost";
 import { AgentScheduleHost } from "./AgentScheduleHost";
 import { CalDavConflictDialog } from "../calendar/CalDavConflictDialog";
-import { SkillsOverlayHost } from "../skills/SkillsOverlay";
+import { ModelsOverlayHost } from "../models/ModelsOverlay";
 import { RootOverlayHost } from "./RootOverlay";
 import { LocalLossDialog } from "../common/LocalLossDialog";
 import {
@@ -1399,11 +1399,14 @@ export function AppShell() {
           nothing makes them mutually exclusive, so DOM order is the tie-break
           and the surface opened most recently should be the one on top. */}
       <LazyTodoOverlayHost />
-      {/* The 🧠 menu's Skills Library — the machine-level door into the library
-          the project tab hosts. At the shell for the family's reason (it covers
-          the window and must survive a project switch), and after the three
-          above because it is opened from a header menu that sits over them. */}
-      <SkillsOverlayHost />
+      {/* The Models & agents overlay — a click on the header's processor-chip
+          button (its hover dropdown stays), and the home of the machine-level
+          Skills Library. At the shell for the family's reason (it covers the
+          window and must survive a project switch), after the three above
+          because it is opened from a header button that sits over them, and
+          before the root console so a one-click install started from one of
+          its tabs opens the console on top of it. */}
+      <ModelsOverlayHost />
       {/* The root console (Ctrl+Shift+R): the root scope as a floating subwindow
           instead of a scope to switch to, and the one overlay onto the root
           terminal — a one-click install (`runInstallInTab`) and a parked login
