@@ -3019,6 +3019,37 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
 
+- [~] **31bj — The agent's pictures are chat messages again, WhatsApp-style** (2026-09-25;
+  ✅ code-complete, automated tests passing — `MobileOutboxPosts.test.ts`,
+  `MobileFocusOutboxGallery.test.tsx`; ⚠️ not verified on a phone). Reverses
+  31am's "never in the chat" at the user's request, but not back to 31bd's
+  file cards: what `eldrun-send` puts out shows in the Focus chat (stored
+  session) as a picture bubble — thin rim, no filename, the time over its
+  corner — and one send of several files is one album bubble (2 side by
+  side, 3 as one wide over two, 4+ as a 2×2 whose last tile reads "+N").
+  Non-picture files are slim cards in the same bubble. The 🖼 gallery stays.
+  - Placement (`mobile-web/src/terminal/outboxPosts.ts`): after the last
+    record written at or before the file's mtime; files ≤ 10 s apart with no
+    record between them are one post. Files older than the first shown record
+    (earlier sessions, truncated turns) stay gallery-only; the screen chat has
+    no times, so it shows none. The outbox is per project, so another tab of
+    the same project sending during this conversation also shows here.
+  - Needs the embedded PWA rebuilt (`npm run mobile:bundle`) and a desktop
+    restart to be served. Untested id `mobile.outbox.chat`.
+  - [ ] 🖐️ Manual phone QA — in a Claude tab ask "send me a screenshot to my
+    phone": within ~8 s a picture bubble appears after the agent's message
+    that preceded the send, in the picture's own shape, time in the corner;
+    tap → full screen. Then "send me three plots at once" → one album bubble
+    with three tiles. The 🖼 count still rises and the gallery lists them all.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
 *Not coming to the phone (decided, not forgotten — see
 `docs/mobile_box_parity_plan.md`): editing a box from the phone (membership,
 rename, Dissolve), listing a box's members as project rows, a per-member
