@@ -321,6 +321,9 @@ const GRAPH_MODE_KEY = "eldrun.gitHistoryGraph";
  */
 const COMMIT_PAGE = 100;
 
+/** Most matches one commit search returns. */
+const SEARCH_LIMIT = 200;
+
 const LOCKSTEP_STATUS_KEY: Record<LockstepStatus, TranslationKey> = {
   synchronized: "gitHistory.statusSynchronized",
   syncing: "gitHistory.statusSyncing",
@@ -377,6 +380,11 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<GitCommit | null>(null);
+  // Commit search: the backend scans the whole history, not just the pages
+  // loaded so far. `results` is null while no search is active.
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<GitCommit[] | null>(null);
+  const [searching, setSearching] = useState(false);
   const [graphMode, setGraphMode] = useState<boolean>(() => {
     try {
       return localStorage.getItem(GRAPH_MODE_KEY) === "1";
@@ -445,6 +453,38 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
   useEffect(() => {
     commitsRef.current = commits;
   }, [commits]);
+
+  // Debounced search. A stale answer (the query moved on, or the project
+  // changed) is dropped so results never show under the wrong text.
+  useEffect(() => {
+    const q = query.trim();
+    if (!projectDir || !q) {
+      setResults(null);
+      setSearching(false);
+      return;
+    }
+    let live = true;
+    setSearching(true);
+    const timer = setTimeout(() => {
+      invoke<GitCommit[]>("git_log_search", { projectDir, query: q, limit: SEARCH_LIMIT })
+        .then((r) => {
+          if (live) setResults(r ?? []);
+        })
+        .catch((e) => {
+          if (live) {
+            setResults([]);
+            setError(String(e));
+          }
+        })
+        .finally(() => {
+          if (live) setSearching(false);
+        });
+    }, 250);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [query, projectDir, commits]);
 
   const loadMore = useCallback(async () => {
     if (!projectDir || loadingMoreRef.current) return;
@@ -918,6 +958,11 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
     return m;
   }, [commits, graph]);
 
+  // While a search is active the list shows its matches instead of the paged
+  // history, without the graph (filtered rows lose their parents).
+  const searchActive = query.trim() !== "" && results !== null;
+  const shown = searchActive ? results : commits;
+
   const current = branches.find((b) => b.is_current)?.name;
   const localBranches = branches.filter((b) => !b.is_remote);
   const remoteBranches = branches.filter((b) => b.is_remote);
@@ -1389,12 +1434,44 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
 
       {error && <div className="file-tree-error">{error}</div>}
       {loading && commits.length === 0 && <div className="file-tree-loading">{t("common.loading")}</div>}
-      {!loading && commits.length === 0 && !error && (
+      {!loading && commits.length === 0 && !error && !query.trim() && (
         <div className="file-tree-empty">{t("gitHistory.noCommitsYet")}</div>
       )}
 
-      <div className={`git-commit-list${graphMode ? " graph" : ""}`}>
-        {commits.map((c, i) => {
+      <div className="git-commit-search">
+        <input
+          type="search"
+          className="git-worktree-input"
+          placeholder={t("gitHistory.searchPlaceholder")}
+          aria-label={t("gitHistory.searchPlaceholder")}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape" && query) {
+              e.stopPropagation();
+              setQuery("");
+            }
+          }}
+        />
+        <UntestedTag id="gitHistory.search" />
+      </div>
+      {query.trim() && (
+        <div className="git-commit-search-status" aria-live="polite">
+          {searching || results === null
+            ? t("gitHistory.searching")
+            : results.length === 0
+              ? t("gitHistory.searchNoMatches")
+              : t(
+                  results.length >= SEARCH_LIMIT
+                    ? "gitHistory.searchCapped"
+                    : "gitHistory.searchCount",
+                  { n: results.length },
+                )}
+        </div>
+      )}
+
+      <div className={`git-commit-list${graphMode && !searchActive ? " graph" : ""}`}>
+        {shown.map((c, i) => {
           const refs = parseRefs(c.refs);
           // A branch tip carries at least one non-tag ref; mark it in the graph.
           const isTip = refs.some((r) => !r.startsWith("tag: "));
@@ -1405,7 +1482,7 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
               onClick={() => setSelected(c)}
               title={c.subject}
             >
-              {graphMode && (
+              {graphMode && !searchActive && (
                 <CommitGraphCell
                   row={graph[i]}
                   height={GRAPH_ROW_H}
@@ -1436,7 +1513,7 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
             the next chunk in, and clicking it does the same where there is no
             IntersectionObserver (jsdom) or where the pane is too short to ever
             scroll it into view. */}
-        {hasMore && (
+        {hasMore && !searchActive && (
           <button
             ref={sentinelRef}
             className="git-commit-row git-commit-more"

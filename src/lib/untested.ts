@@ -134,6 +134,7 @@ export const UNTESTED = {
   "fileTree.5": { area: "files", what: "FileTree · Download to…" },
   "gitHistory.1": { area: "files", what: "GitHistory · Worktrees" },
   "gitHistory.loadMoreCommits": { area: "files", what: "GitHistory · Load older commits" },
+  "gitHistory.search": { area: "files", what: "GitHistory · Commit search box" },
   "gitPull.1": { area: "files", what: "Git · Pull preview (fetch, fast-forward, merge)" },
   "gitMerge.1": { area: "files", what: "Git · Merge-in-progress bar (commit / abort)" },
   "gitMergeView.1": { area: "embed", what: "Git merge view · Incoming diff and conflict resolve" },

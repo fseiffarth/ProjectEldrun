@@ -1612,6 +1612,19 @@
   color: var(--text-muted);
 }
 
+.git-commit-search {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+}
+
+.git-commit-search-status {
+  padding: 0 6px 4px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
 .git-commit-list {
   display: flex;
   flex-direction: column;

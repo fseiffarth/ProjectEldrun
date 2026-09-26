@@ -1821,7 +1821,7 @@ fn git_remote_visibility_blocking(url: String) -> Result<String, String> {
 
 // ── Git history & branches ──────────────────────────────────────────────────
 
-#[derive(serde::Serialize)]
+#[derive(Clone, serde::Serialize)]
 pub struct GitCommit {
     pub hash: String,
     pub short: String,
@@ -1881,6 +1881,63 @@ fn git_log_blocking(
         &String::from_utf8_lossy(&out.stdout),
         head.as_deref(),
     ))
+}
+
+/// How far back a history search reads. Bounded so a huge repo cannot turn one
+/// keystroke into an unbounded `git log`; the panel says when a search hit it.
+const GIT_LOG_SEARCH_SCAN: u32 = 20_000;
+
+/// Search the history (newest first) for commits whose hash, subject, author or
+/// ref names contain `query` (case-insensitive). Reads `GIT_LOG_SEARCH_SCAN`
+/// commits at most and returns up to `limit` matches.
+#[tauri::command]
+pub async fn git_log_search(
+    project_dir: String,
+    query: String,
+    limit: Option<u32>,
+) -> Result<Vec<GitCommit>, String> {
+    run_off_thread(move || git_log_search_blocking(project_dir, query, limit)).await
+}
+
+fn git_log_search_blocking(
+    project_dir: String,
+    query: String,
+    limit: Option<u32>,
+) -> Result<Vec<GitCommit>, String> {
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() {
+        return Ok(vec![]);
+    }
+    let target = remote_target_for_dir(&project_dir);
+    if local_non_repo(target.as_ref(), &project_dir) {
+        return Ok(vec![]);
+    }
+    let max_count = format!("--max-count={GIT_LOG_SEARCH_SCAN}");
+    let out = run_git(
+        target.as_ref(),
+        &project_dir,
+        &["log", &max_count, GIT_LOG_FMT],
+    )?;
+    if !out.status.success() {
+        return Ok(vec![]);
+    }
+    let head = git_head_hash(target.as_ref(), &project_dir);
+    let all = parse_git_log(&String::from_utf8_lossy(&out.stdout), head.as_deref());
+    Ok(filter_commits(all, &needle, limit.unwrap_or(200) as usize))
+}
+
+/// Keep the commits matching the lower-cased `needle`, at most `limit`.
+fn filter_commits(commits: Vec<GitCommit>, needle: &str, limit: usize) -> Vec<GitCommit> {
+    commits
+        .into_iter()
+        .filter(|c| {
+            c.hash.starts_with(needle)
+                || c.subject.to_lowercase().contains(needle)
+                || c.author.to_lowercase().contains(needle)
+                || c.refs.to_lowercase().contains(needle)
+        })
+        .take(limit)
+        .collect()
 }
 
 /// The `--pretty` format shared by `git_log` and `git_file_log`: fields separated
@@ -3662,6 +3719,38 @@ filename note.txt
         assert_eq!(statuses.get("src").map(String::as_str), Some("unpushed"));
         assert_eq!(statuses.get("pushed.txt"), None);
         assert_eq!(git_unpushed_commits_blocking(d).expect("unpushed").len(), 1);
+    }
+
+    #[test]
+    fn filter_commits_matches_hash_subject_author_and_refs() {
+        let mk = |hash: &str, subject: &str, author: &str, refs: &str| GitCommit {
+            hash: hash.into(),
+            short: hash[..4].into(),
+            subject: subject.into(),
+            author: author.into(),
+            date: String::new(),
+            refs: refs.into(),
+            is_head: false,
+            parents: vec![],
+        };
+        let commits = vec![
+            mk("abcd1234", "Fix the Parser", "Ann", "HEAD -> develop"),
+            mk("ffff0000", "Add tests", "Bob", "tag: v1.0"),
+            mk("12345678", "Docs", "Parsley", ""),
+        ];
+        let subjects = |needle: &str, limit| {
+            filter_commits(commits.clone(), needle, limit)
+                .into_iter()
+                .map(|c| c.subject)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(subjects("parser", 10), vec!["Fix the Parser"]);
+        assert_eq!(subjects("pars", 10), vec!["Fix the Parser", "Docs"]);
+        assert_eq!(subjects("pars", 1), vec!["Fix the Parser"]);
+        assert_eq!(subjects("abcd12", 10), vec!["Fix the Parser"]);
+        assert_eq!(subjects("v1.0", 10), vec!["Add tests"]);
+        assert_eq!(subjects("bob", 10), vec!["Add tests"]);
+        assert!(subjects("nothing", 10).is_empty());
     }
 
     #[test]

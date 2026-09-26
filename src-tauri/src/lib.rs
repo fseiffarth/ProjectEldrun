@@ -1936,6 +1936,7 @@ pub fn run() {
             commands::git::git_change_stats,
             commands::git::git_add_path,
             commands::git::git_log,
+            commands::git::git_log_search,
             commands::git::git_branches,
             commands::git::git_checkout,
             commands::git::git_commit_message,
