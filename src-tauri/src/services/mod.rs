@@ -13,6 +13,8 @@ pub mod schedule_mcp;
 // Agent-requested pushes: the `/mcp/git` lane, its policy, the fenced
 // tokenless preflight and the hooks-off host transport.
 pub mod git_push_mcp;
+pub mod git_release;
+pub mod git_ci;
 pub mod help_mcp;
 pub mod schedule_usage;
 // One agent CLI's own usage panel (Claude's `/usage`), read in print mode

@@ -1061,12 +1061,16 @@ export interface GitPushMcpPolicy {
   protected?: string[];
   confirmed_url?: string;
 }
-/** One agent push request as the backend reports it (`git_push_mcp_proposals`). */
+/** One agent push or release request as the backend reports it (`git_push_mcp_proposals`). */
 export interface GitPushProposal {
   id: string;
   session: string;
   tab: string;
   project: string;
+  /** A branch push, or a release tag on a pushed tip (`services::git_release`). */
+  kind: "push" | "release";
+  /** The release tag (`kind === "release"`). */
+  tag: string | null;
   branch: string | null;
   remote: string | null;
   url: string | null;
@@ -1083,6 +1087,20 @@ export interface GitPushProposal {
   output: string;
   preflight_output: string;
   state: { branch: string | null; head: string | null; remote: string | null; upstream: string | null; url: string | null; remote_sha: string | null; ahead: number; behind: number };
+}
+
+/** The git bar's Release dialog state (`git_release_preview`). */
+export interface GitReleasePreview {
+  suggested: string;
+  /** The manifest the version came from; null when counted up from the latest tag. */
+  source: string | null;
+  branch: string | null;
+  head: string | null;
+  subject: string | null;
+  url: string | null;
+  /** Why a release cannot go out right now (push first, tag exists, …). */
+  problem: string | null;
+  category: string | null;
 }
 
 export interface ProjectEntry {

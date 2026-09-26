@@ -1920,6 +1920,8 @@ pub fn run() {
             commands::git::git_generate_commit_message,
             commands::git::git_commit,
             commands::git::git_push,
+            commands::git::git_release_preview,
+            commands::git::git_release_tag,
             commands::git_pull::git_fetch,
             commands::git_pull::git_pull_preview,
             commands::git_pull::git_pull_apply,

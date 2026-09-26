@@ -23,7 +23,7 @@ import { confirmSyncTransfer } from "../../stores/remote/syncConfirm";
 import { openLinkedFile, viewerForPath } from "../embed/FileViewerPane";
 import { useWindowsStore } from "../../stores/windows";
 import { useGitDirtyStore, gitDirtyState } from "../../stores/gitDirty";
-import { resolveLocalMirror, type FilesPanelView, type ProjectEntry } from "../../types";
+import { resolveLocalMirror, type FilesPanelView, type GitReleasePreview, type ProjectEntry } from "../../types";
 import { fmtModified, type SortKey } from "../../lib/viewers/fileUtils";
 import {
   readGitBarSnapshot,
@@ -1273,6 +1273,53 @@ export function ProjectFilesView({
     }
   };
 
+  // Release: tag the branch's pushed tip and push only that tag
+  // (`services::git_release`). The dialog opens on the backend's suggestion;
+  // anything that blocks a release right now (push first, tag exists) is
+  // said instead of offered.
+  const handleRelease = async () => {
+    if (!effectiveGitRoot || onNestedRepo) return;
+    setGitBusy(true);
+    setGitError(null);
+    let preview: GitReleasePreview;
+    try {
+      preview = await invokeTrusted<GitReleasePreview>("git_release_preview", { projectDir: effectiveGitRoot, projectId: projectId ?? null });
+    } catch (e) {
+      setGitError(String(e));
+      setGitBusy(false);
+      return;
+    }
+    setGitBusy(false);
+    if (preview.problem && preview.category !== "tag_exists") {
+      await showMessage({ title: t("projectFilesView.releaseBlockedTitle"), body: preview.problem, error: true });
+      return;
+    }
+    let done = "";
+    const tag = await promptText({
+      title: <>{t("projectFilesView.releaseDialogTitle")} <UntestedTag id="gitRelease" /></>,
+      body: [
+        t("projectFilesView.releaseBody", {
+          sha: preview.head?.slice(0, 7) ?? "",
+          subject: preview.subject?.replace(/^\S+\s/, "") ?? "",
+          branch: preview.branch ?? "",
+          url: preview.url ?? "",
+        }),
+        preview.source ? t("projectFilesView.releaseSource", { file: preview.source }) : t("projectFilesView.releaseCounted"),
+        preview.problem ?? "",
+      ].filter(Boolean).join("\n\n"),
+      label: t("projectFilesView.releaseLabel"),
+      initial: preview.suggested,
+      confirmLabel: t("projectFilesView.releaseConfirm"),
+      validate: (value) => (/^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$/.test(value.trim()) ? null : t("projectFilesView.releaseInvalid")),
+    }, async (value) => {
+      done = await invokeTrusted<string>("git_release_tag", { projectDir: effectiveGitRoot, projectId: projectId ?? null, tag: value.trim() });
+    });
+    if (tag !== null && done) {
+      refreshGit(effectiveGitRoot);
+      await showMessage({ title: t("projectFilesView.releaseDoneTitle"), body: done });
+    }
+  };
+
   // Keep pending Git work visible from the Files view without keeping the
   // action controls in a separate header row. The colour matches the next
   // actionable step: add, then commit, then push.
@@ -1838,6 +1885,14 @@ export function ProjectFilesView({
                     title={t("projectFilesView.pullTitle", { count: gitStatus.behind ?? 0 })}
                   >
                     <span className="git-btn-glyph"><ArrowDownIcon /></span><span className="git-btn-label">{t("projectFilesView.pull", { count: gitStatus.behind ?? 0 })}</span>
+                  </button>
+                )}
+                {/* Release: only once everything is pushed and nothing is
+                    incoming, on a local project's own repo. */}
+                {!onNestedRepo && !project?.remote && gitStatus.has_remote && unpushedCommits.length === 0 && (gitStatus.behind ?? 0) === 0 && (
+                  <button className="git-action-btn git-action-btn--release" disabled={gitBusy} onClick={() => void handleRelease()} title={t("projectFilesView.releaseTitle")}>
+                    <span className="git-btn-glyph">🏷</span><span className="git-btn-label">{t("projectFilesView.release")}</span>
+                    <UntestedTag id="gitRelease" />
                   </button>
                 )}
                 {treeScope && projectDir && <GitChangeTree projectDir={projectDir} scope={treeScope} />}

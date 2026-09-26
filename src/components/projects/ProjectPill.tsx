@@ -2405,7 +2405,7 @@ export function ProjectPill({
               onClick={() => {
                 setContextMenu(null);
                 const levels = ["off", "propose", "apply"] as const;
-                const current = levels.indexOf(project.git_push_mcp?.level ?? "off");
+                const current = levels.indexOf(project.git_push_mcp?.level ?? "propose");
                 const next = levels[(current + 1) % levels.length];
                 // Apply lets an agent's push land with no card at all (the
                 // first push to a URL still asks): that step asks first.
@@ -2425,7 +2425,7 @@ export function ProjectPill({
               title={t("gitPushMcp.menuTitle")}
             >
               {t("gitPushMcp.menuItem", {
-                level: t(`gitPushMcp.${project.git_push_mcp?.level ?? "off"}`),
+                level: t(`gitPushMcp.${project.git_push_mcp?.level ?? "propose"}`),
               })}
               <UntestedTag id="gitPushMcp" />
             </button>

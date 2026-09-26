@@ -28,7 +28,7 @@ export function GitPushMcpLevel({ projectId }: { projectId: string }) {
       .then(() => setError("")).catch((e) => setError(String(e))).finally(() => setBusy(false));
   };
   return <div className="git-push-mcp-level">
-    <Dropdown value={policy?.level ?? "off"} disabled={busy} title={t("gitPushMcp.level")}
+    <Dropdown value={policy?.level ?? "propose"} disabled={busy} title={t("gitPushMcp.level")}
       options={LEVELS.map((value) => ({ value, label: t(`gitPushMcp.${value}`) }))}
       onChange={(value) => save(value as Level)} />
     <input className="git-push-mcp-protected" type="text" value={protectedText} disabled={busy}
@@ -45,7 +45,7 @@ export function GitPushMcpLevel({ projectId }: { projectId: string }) {
 /** The off-by-default switch in Manage CLIs and the per-project levels. */
 export function GitPushMcpSettings() {
   const t = useT();
-  const enabled = useSettingsStore((s) => s.settings?.git_push_mcp ?? false);
+  const enabled = useSettingsStore((s) => s.settings?.git_push_mcp ?? true);
   const projects = useProjectsStore((s) => s.projects);
   return <>
     <ToggleRow label={<>{t("gitPushMcp.title")} <UntestedTag id="gitPushMcp" /></>} checked={enabled}
@@ -91,14 +91,21 @@ export function GitPushProposalCard({ proposal, onDecided }: { proposal: GitPush
     finally { setBusy(false); }
   };
   const pending = proposal.status === "pending";
+  const release = proposal.kind === "release";
   const output = proposal.output || proposal.preflight_output;
   return <div className="git-push-proposal" data-status={proposal.status} onClick={(event) => event.stopPropagation()}>
     <div className="git-push-proposal-head">
-      <span className="agent-schedule-pill">{t(`gitPushMcp.status.${proposal.status}`)}</span>
-      <UntestedTag id="gitPushMcp" />
-      <strong>{proposal.branch ?? "…"}</strong>
-      {proposal.remote && <small>→ {proposal.remote}</small>}
-      <small className="git-push-proposal-sha">{shortSha(proposal.remote_sha)} → {shortSha(proposal.head)}</small>
+      <span className="agent-schedule-pill">{t(release ? `gitPushMcp.releaseStatus.${proposal.status}` : `gitPushMcp.status.${proposal.status}`)}</span>
+      <UntestedTag id={release ? "gitRelease" : "gitPushMcp"} />
+      {release ? <>
+        <strong>{proposal.tag ?? "…"}</strong>
+        <small>{t("gitPushMcp.releaseOn", { branch: proposal.branch ?? "…" })}</small>
+        <small className="git-push-proposal-sha">{shortSha(proposal.head)}</small>
+      </> : <>
+        <strong>{proposal.branch ?? "…"}</strong>
+        {proposal.remote && <small>→ {proposal.remote}</small>}
+        <small className="git-push-proposal-sha">{shortSha(proposal.remote_sha)} → {shortSha(proposal.head)}</small>
+      </>}
     </div>
     {proposal.url && <small className="git-push-proposal-url" title={proposal.url}>{proposal.url}</small>}
     {proposal.needs_url_confirm && pending && <small className="git-push-proposal-confirm">{t("gitPushMcp.confirmUrl")}</small>}
@@ -113,7 +120,7 @@ export function GitPushProposalCard({ proposal, onDecided }: { proposal: GitPush
       {showOutput && <pre className="git-push-proposal-output">{output}</pre>}
     </>}
     {pending && <div className="git-push-proposal-actions">
-      <button className="settings-btn sm primary" disabled={busy} onClick={() => void decide(true)}>{t(proposal.needs_url_confirm ? "gitPushMcp.confirmAndPush" : "gitPushMcp.push")}</button>
+      <button className="settings-btn sm primary" disabled={busy} onClick={() => void decide(true)}>{t(release ? "gitPushMcp.release" : proposal.needs_url_confirm ? "gitPushMcp.confirmAndPush" : "gitPushMcp.push")}</button>
       <button className="settings-btn sm" disabled={busy} onClick={() => void decide(false)}>{t("gitPushMcp.dismiss")}</button>
     </div>}
     {error && <small role="alert">{error}</small>}

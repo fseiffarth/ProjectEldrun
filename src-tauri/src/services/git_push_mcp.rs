@@ -34,13 +34,16 @@ pub const SERVER_NAME: &str = "eldrun-git";
 /// Emitted whenever a proposal is created or changes state.
 pub const CHANGED_EVENT: &str = "git-push-mcp-changed";
 pub const CONTRACT: &str = "Pushes the branch checked out in this tab's project, fast-forward only, to its existing upstream branch — never a tag, a force-push, a delete, a new remote branch or the remote's default branch. Eldrun pushes from outside your sandbox with the user's stored token; you never see it. The repo's pre-push hook runs first, inside your sandbox and without any token (ELDRUN_PUSH_PREFLIGHT=1); other hooks do not run. Depending on the project's level the push is applied at once or staged for the user's approval — then poll git_push_status for the outcome. Every refusal is a normal result with a fixed `category` and a `message` saying what to do next. Budget: six pushes per hour and two pending proposals per tab.";
+/// The server's `instructions`: the push contract plus the release and CI
+/// tools that share the lane.
+pub const INSTRUCTIONS: &str = "Pushes, release tags and CI for the project this tab works in, done by Eldrun outside your sandbox with the user's stored token (you never see it). git_push pushes the checked-out branch fast-forward to its existing upstream (never a tag, force-push, delete, new remote branch or the remote's default branch); the repo's pre-push hook runs first inside your sandbox without a token. git_release proposes an annotated release tag on the checked-out branch's tip once that tip is on the remote; it always waits for the user to press Release on the card. Staged requests: poll git_push_status for the outcome. ci_runs, ci_run and ci_security_alerts read GitHub Actions runs, failed-job logs and annotations, and open code-scanning alerts of this repo — read-only, sixty reads per tab per hour. Every refusal is a normal result with a fixed `category` and a `message` saying what to do next. Budget: six push or release requests per hour and two pending per tab.";
 
 /// How long the whole request may block the tool call before it answers
 /// `running` and lets the agent poll — inside the listener's 30 s socket life.
 const INLINE_WAIT: Duration = Duration::from_secs(18);
 const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(300);
-const REMOTE_TIMEOUT: Duration = Duration::from_secs(120);
-const TRANSPORT_TIMEOUT: Duration = Duration::from_secs(600);
+pub(crate) const REMOTE_TIMEOUT: Duration = Duration::from_secs(120);
+pub(crate) const TRANSPORT_TIMEOUT: Duration = Duration::from_secs(600);
 /// Unapproved proposals expire after a day; records are kept as long.
 const RETENTION: Duration = Duration::from_secs(24 * 3600);
 const OUTPUT_CAP: usize = 8 * 1024;
@@ -68,14 +71,18 @@ pub struct ProjectPolicy {
     pub confirmed_url: Option<String>,
 }
 impl ProjectPolicy {
-    pub fn level(&self) -> Level { self.level.unwrap_or(Level::Off) }
+    /// Absent means Propose: every push or release waits for the user's click
+    /// on the card, so the lane is useful without setup and never acts alone.
+    pub fn level(&self) -> Level { self.level.unwrap_or(Level::Propose) }
 }
 
-/// The global switch (`Settings::git_push_mcp`, absent = off). Unreadable
-/// settings answer off: spawn and request agree.
+/// The global switch (`Settings::git_push_mcp`, absent = on: a project's
+/// default level only proposes). A missing settings file is a fresh install
+/// and answers on; an unreadable one answers off, so spawn and request agree.
 pub fn enabled() -> bool { enabled_in(&crate::storage::state_dir().join("settings.json")) }
 pub fn enabled_in(settings: &Path) -> bool {
-    crate::storage::read_json::<crate::schema::Settings>(settings).is_ok_and(|s| s.git_push_mcp == Some(true))
+    if !settings.exists() { return true; }
+    crate::storage::read_json::<crate::schema::Settings>(settings).is_ok_and(|s| s.git_push_mcp != Some(false))
 }
 
 pub fn policy(project: &str) -> Result<ProjectPolicy, String> {
@@ -119,7 +126,7 @@ pub enum Category {
     LevelOff, BranchProtected, NotCheckedOut, NoUpstream, RemoteBranchMissing, Diverged, NothingToPush,
     PreflightFailed, PreflightTimeout, UrlUnconfirmed, UrlRewritten, StaleApproval, Dismissed, Expired,
     RateLimited, PendingLimit, AuthFailed, Network, RemoteRejected, TransportFailed, FenceUnavailable,
-    NotLocal, Busy, NotFound, InvalidArguments,
+    NotLocal, Busy, NotFound, InvalidArguments, NotPushed, TagExists, NotGithub, NotAvailable,
 }
 impl Category {
     pub fn as_str(self) -> &'static str {
@@ -135,6 +142,8 @@ impl Category {
             Category::RemoteRejected => "remote_rejected", Category::TransportFailed => "transport_failed",
             Category::FenceUnavailable => "fence_unavailable", Category::NotLocal => "not_local", Category::Busy => "busy",
             Category::NotFound => "not_found", Category::InvalidArguments => "invalid_arguments",
+            Category::NotPushed => "not_pushed", Category::TagExists => "tag_exists",
+            Category::NotGithub => "not_github", Category::NotAvailable => "not_available",
         }
     }
     fn from_str(s: &str) -> Option<Category> {
@@ -147,8 +156,8 @@ impl Category {
 #[derive(Clone, Debug)]
 pub struct Failure { pub category: Category, pub message: String, pub output: String }
 impl Failure {
-    fn new(category: Category, message: impl Into<String>) -> Self { Failure { category, message: message.into(), output: String::new() } }
-    fn with_output(mut self, output: String) -> Self { self.output = output; self }
+    pub(crate) fn new(category: Category, message: impl Into<String>) -> Self { Failure { category, message: message.into(), output: String::new() } }
+    pub(crate) fn with_output(mut self, output: String) -> Self { self.output = output; self }
 }
 
 /// The repo as the agent last saw it: local and remote SHAs and the local
@@ -174,7 +183,7 @@ pub fn clean_output(raw: &str, secret: Option<&str>) -> String {
     tail(&redacted, OUTPUT_CAP)
 }
 
-fn tail(s: &str, cap: usize) -> String {
+pub(crate) fn tail(s: &str, cap: usize) -> String {
     if s.len() <= cap { return s.to_string(); }
     let mut start = s.len() - cap;
     while !s.is_char_boundary(start) { start += 1; }
@@ -257,11 +266,11 @@ pub fn is_protected(branch: &str, default_branch: Option<&str>, policy: &Project
 
 // ── Running processes with a cap ────────────────────────────────────────────
 
-struct Ran { success: bool, code: Option<i32>, stdout: String, stderr: String }
+pub(crate) struct Ran { pub success: bool, pub code: Option<i32>, pub stdout: String, pub stderr: String }
 
 /// Spawn, feed `stdin`, collect both streams, and give up after `timeout`
 /// (the whole subtree is reaped). `Err(None)` is a timeout.
-fn run_capped(mut cmd: std::process::Command, stdin: Option<&[u8]>, timeout: Duration) -> Result<Ran, Option<String>> {
+pub(crate) fn run_capped(mut cmd: std::process::Command, stdin: Option<&[u8]>, timeout: Duration) -> Result<Ran, Option<String>> {
     use std::process::Stdio;
     cmd.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| Some(e.to_string()))?;
@@ -295,7 +304,7 @@ fn run_capped(mut cmd: std::process::Command, stdin: Option<&[u8]>, timeout: Dur
     }
 }
 
-fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     let out = hardened_git_command_in(dir, args).output().map_err(|e| e.to_string())?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
@@ -365,14 +374,14 @@ fn allowed_branches(dir: &Path, policy: &ProjectPolicy) -> Vec<String> {
 
 /// A repo-scope `url.<base>.insteadOf` / `pushInsteadOf` would rewrite even
 /// the URL passed on the command line, so the destination could not be pinned.
-fn repo_rewrites_urls(dir: &Path) -> bool {
+pub(crate) fn repo_rewrites_urls(dir: &Path) -> bool {
     ["--local", "--worktree"].iter().any(|scope| {
         hardened_git_command_in(dir, &["config", scope, "--name-only", "--get-regexp", r"^url\..*\.(push)?insteadof$"])
             .output().is_ok_and(|o| o.status.success() && !o.stdout.is_empty())
     })
 }
 
-fn classify_remote_error(stderr: &str) -> Category {
+pub(crate) fn classify_remote_error(stderr: &str) -> Category {
     let s = stderr.to_ascii_lowercase();
     if s.contains("authentication failed") || s.contains("could not read username") || s.contains("could not read password")
         || s.contains("403") || s.contains("401") || s.contains("permission denied") || s.contains("invalid username or token")
@@ -395,9 +404,28 @@ struct RemoteView { sha: Option<String>, default_branch: Option<String> }
 /// One `ls-remote --symref` for the branch and the remote's `HEAD`, with the
 /// scoped token. The remote's own answer beats any local guess.
 fn ls_remote(dir: &Path, url: &str, branch: &str, token: Option<&str>, origins: &[String]) -> Result<RemoteView, Failure> {
+    let stdout = ls_remote_raw(dir, url, &["HEAD".to_string(), format!("refs/heads/{branch}")], token, origins)?;
+    let mut view = RemoteView { sha: None, default_branch: None };
+    let want = format!("refs/heads/{branch}");
+    for line in stdout.lines() {
+        if let Some(rest) = line.strip_prefix("ref: ") {
+            if let Some((target, name)) = rest.split_once('\t') {
+                if name == "HEAD" { view.default_branch = target.strip_prefix("refs/heads/").map(str::to_string); }
+            }
+        } else if let Some((sha, name)) = line.split_once('\t') {
+            if name == want && sha.len() == 40 { view.sha = Some(sha.to_string()); }
+        }
+    }
+    Ok(view)
+}
+
+/// `git ls-remote --symref` for exactly `refs`, with the scoped token; its
+/// stdout, or the classified failure. Shared with `services::git_release`.
+pub(crate) fn ls_remote_raw(dir: &Path, url: &str, refs: &[String], token: Option<&str>, origins: &[String]) -> Result<String, Failure> {
     let mut args: Vec<String> = Vec::new();
     if token.is_some() { args.extend(scoped_token_config(origins, "x-access-token")); }
-    args.extend(["ls-remote", "--symref", "--", url, "HEAD", &format!("refs/heads/{branch}")].map(str::to_string));
+    args.extend(["ls-remote", "--symref", "--", url].map(str::to_string));
+    args.extend(refs.iter().cloned());
     let mut cmd = hardened_git_command_in(dir, &args);
     if let Some(tok) = token { cmd.env("ELDRUN_GIT_TOKEN", tok); }
     cmd.env("GIT_TERMINAL_PROMPT", "0");
@@ -415,18 +443,7 @@ fn ls_remote(dir: &Path, url: &str, branch: &str, token: Option<&str>, origins: 
         };
         return Err(Failure::new(category, message).with_output(clean_output(&format!("{}{}", ran.stdout, ran.stderr), token)));
     }
-    let mut view = RemoteView { sha: None, default_branch: None };
-    let want = format!("refs/heads/{branch}");
-    for line in ran.stdout.lines() {
-        if let Some(rest) = line.strip_prefix("ref: ") {
-            if let Some((target, name)) = rest.split_once('\t') {
-                if name == "HEAD" { view.default_branch = target.strip_prefix("refs/heads/").map(str::to_string); }
-            }
-        } else if let Some((sha, name)) = line.split_once('\t') {
-            if name == want && sha.len() == 40 { view.sha = Some(sha.to_string()); }
-        }
-    }
-    Ok(view)
+    Ok(ran.stdout)
 }
 
 fn commits_between(dir: &Path, base: &str, head: &str) -> (Vec<String>, String) {
@@ -540,7 +557,7 @@ fn preflight(dir: &Path, tab: &str, mut plan: Plan) -> Result<(Plan, String), Fa
     Ok((plan, output))
 }
 
-fn join_streams(stdout: &str, stderr: &str) -> String {
+pub(crate) fn join_streams(stdout: &str, stderr: &str) -> String {
     match (stdout.trim().is_empty(), stderr.trim().is_empty()) {
         (true, _) => stderr.to_string(),
         (_, true) => stdout.to_string(),
@@ -579,6 +596,12 @@ fn transport(dir: &Path, plan: &Plan, token: Option<&str>, origins: &[String]) -
 #[serde(rename_all = "snake_case")]
 pub enum Status { Running, Pending, Pushed, Failed, Dismissed, Expired }
 
+/// What a proposal asks for: a branch push, or a release tag on a pushed tip
+/// (`services::git_release`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind { Push, Release }
+
 /// One agent request, from admission to its terminal state. The card and
 /// `git_push_status` both read this; the audit ring only ever sees the
 /// category and SHAs.
@@ -590,6 +613,9 @@ pub struct Proposal {
     pub project: String,
     #[serde(skip)]
     dir: PathBuf,
+    pub kind: Kind,
+    /// The release tag (`Kind::Release` only).
+    pub tag: Option<String>,
     pub branch: Option<String>,
     pub remote: Option<String>,
     pub url: Option<String>,
@@ -650,7 +676,7 @@ fn new_proposal(session: &Session, project: &str, dir: &Path, note: String) -> P
     Proposal {
         id: format!("push-{}", super::root_mcp::mint_token().map(|t| t[..16].to_string()).unwrap_or_else(|| format!("{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()))),
         session: session.id.clone(), tab: session.identity.tab.clone(), project: project.to_string(), dir: dir.to_path_buf(),
-        branch: None, remote: None, url: None, head: None, remote_sha: None, commits: Vec::new(), diffstat: String::new(), note,
+        kind: Kind::Push, tag: None, branch: None, remote: None, url: None, head: None, remote_sha: None, commits: Vec::new(), diffstat: String::new(), note,
         needs_url_confirm: false, created_at: chrono::Local::now().to_rfc3339(), created: Instant::now(), status: Status::Running,
         category: None, message: String::new(), output: String::new(), state: RepoState::default(), preflight_output: String::new(),
     }
@@ -703,7 +729,7 @@ pub fn remove_for_session(session: &str) -> bool {
     list.len() != before
 }
 
-fn creds(project: &str) -> (Option<String>, Vec<String>) {
+pub(crate) fn creds(project: &str) -> (Option<String>, Vec<String>) {
     let token = crate::commands::git_hosting::effective_git_creds(project).1;
     let origins = crate::commands::git_hosting::token_origins(Some(project), None);
     (token, origins)
@@ -713,7 +739,8 @@ fn creds(project: &str) -> (Option<String>, Vec<String>) {
 /// under the project's lock so two tabs cannot push the same repo at once.
 fn run_request(id: String, level: Level, requested: Option<String>) {
     let Some(p) = get(&id) else { return };
-    let _guard = project_lock(&p.project);
+    let lock = project_lock(&p.project);
+    let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
     let policy = match policy(&p.project) { Ok(policy) => policy, Err(e) => { fail(&id, Failure::new(Category::LevelOff, e)); return; } };
     let (token, origins) = creds(&p.project);
     let plan = match plan(&p.dir, &policy, requested.as_deref(), token.as_deref(), &origins) {
@@ -771,7 +798,9 @@ pub fn decide(id: &str, approve: bool) -> Result<Proposal, String> {
         changed();
         return out.ok_or("proposal not found".into());
     }
-    let _guard = project_lock(&p.project);
+    let lock = project_lock(&p.project);
+    let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    if p.kind == Kind::Release { return decide_release(p); }
     let (Some(branch), Some(head), Some(remote), Some(url), Some(remote_sha)) = (p.branch.clone(), p.head.clone(), p.remote.clone(), p.url.clone(), p.remote_sha.clone()) else {
         return Err("incomplete proposal".into());
     };
@@ -801,6 +830,68 @@ pub fn decide(id: &str, approve: bool) -> Result<Proposal, String> {
     get(id).ok_or("proposal not found".into())
 }
 
+/// The worker behind `git_release`: decide the tag on the host and stage it.
+/// A release is never applied without the user's click, whatever the level.
+fn run_release(id: String, requested: Option<String>) {
+    let Some(p) = get(&id) else { return };
+    let lock = project_lock(&p.project);
+    let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let (token, origins) = creds(&p.project);
+    let tag = match requested {
+        Some(tag) => tag,
+        None => match git(&p.dir, &["rev-parse", "--verify", "HEAD^{commit}"]) {
+            Ok(head) => super::git_release::suggest_tag(&p.dir, &head).0,
+            Err(e) => { fail(&id, Failure::new(Category::NotCheckedOut, e)); return; }
+        },
+    };
+    let plan = match super::git_release::plan(&p.dir, &tag, true, token.as_deref(), &origins) {
+        Ok(plan) => plan,
+        Err(failure) => { update(&id, |p| p.tag = Some(tag.clone())); fail(&id, failure); return; }
+    };
+    update(&id, |p| {
+        p.tag = Some(plan.tag.clone());
+        p.branch = Some(plan.branch.clone());
+        p.remote = Some(plan.remote.clone());
+        p.url = Some(plan.url.clone());
+        p.head = Some(plan.head.clone());
+        p.remote_sha = Some(plan.head.clone());
+        p.commits = vec![plan.subject.clone()];
+        p.state = local_state(&p.dir);
+        p.status = Status::Pending;
+        p.message = "Staged for the user's approval; poll git_push_status for the outcome.".into();
+    });
+    changed();
+}
+
+/// The user pressed Release: re-decide against the live remote, bind to the
+/// proposed tip, then tag and push the one tag.
+fn decide_release(p: Proposal) -> Result<Proposal, String> {
+    let (Some(tag), Some(head)) = (p.tag.clone(), p.head.clone()) else { return Err("incomplete proposal".into()) };
+    let (token, origins) = creds(&p.project);
+    let plan = match super::git_release::plan(&p.dir, &tag, true, token.as_deref(), &origins) {
+        Ok(plan) => plan,
+        Err(failure) => return fail(&p.id, failure).ok_or("proposal not found".into()),
+    };
+    if plan.head != head {
+        return fail(&p.id, Failure::new(Category::StaleApproval, "The branch moved after the release was proposed; ask the agent to request it again.")).ok_or("proposal not found".into());
+    }
+    update(&p.id, |p| p.status = Status::Running);
+    changed();
+    match super::git_release::release(&p.dir, &plan, &plan.tag, token.as_deref(), &origins) {
+        Ok(output) => {
+            update(&p.id, |p| {
+                p.status = Status::Pushed;
+                p.output = output;
+                p.message = format!("Tagged {} at {} and pushed it to {}.", plan.tag, &plan.head[..7.min(plan.head.len())], plan.remote);
+                p.state = local_state(&p.dir);
+            });
+            changed();
+        }
+        Err(failure) => { fail(&p.id, failure); }
+    }
+    get(&p.id).ok_or("proposal not found".into())
+}
+
 // ── The RPC ─────────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -808,12 +899,24 @@ pub fn decide(id: &str, approve: bool) -> Result<Proposal, String> {
 struct PushArgs { branch: Option<String>, note: Option<String> }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct ReleaseArgs { tag: Option<String>, note: Option<String> }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct CiRunsArgs { #[serde(rename = "ref")] reference: Option<String>, limit: Option<u64>, failed_only: Option<bool> }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CiRunArgs { id: u64 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CiAlertsArgs { #[serde(rename = "ref")] reference: Option<String>, limit: Option<u64> }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Cancel { id: String }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Empty {}
 
-pub fn tool_names() -> &'static [&'static str] { &["git_push_status", "git_push", "git_push_cancel"] }
+pub fn tool_names() -> &'static [&'static str] { &["git_push_status", "git_push", "git_push_cancel", "git_release", "ci_runs", "ci_run", "ci_security_alerts"] }
 
 pub fn tools() -> Value {
     let object = |properties: Value, required: Value| json!({"type":"object","properties":properties,"required":required,"additionalProperties":false});
@@ -825,8 +928,26 @@ pub fn tools() -> Value {
             "branch":{"type":"string","maxLength":200,"description":"The branch to push. Optional; defaults to the checked-out branch, and must be the checked-out branch."},
             "note":{"type":"string","maxLength":NOTE_MAX,"description":"One line for the user's approval card saying why this push is wanted. Optional; at most 200 characters."}
          }),json!([]))},
-        {"name":"git_push_cancel","description":"Withdraw one of this tab's own pending push requests. A request already running or decided cannot be withdrawn.",
-         "inputSchema":object(json!({"id":{"type":"string","maxLength":64,"description":"The request id git_push or git_push_status returned."}}),json!(["id"]))}
+        {"name":"git_push_cancel","description":"Withdraw one of this tab's own pending push or release requests. A request already running or decided cannot be withdrawn.",
+         "inputSchema":object(json!({"id":{"type":"string","maxLength":64,"description":"The request id git_push, git_release or git_push_status returned."}}),json!(["id"]))},
+        {"name":"git_release","description":"Ask Eldrun to tag a release: an annotated tag on the checked-out branch's tip, pushed as that one tag. The tip must already be on the remote (git_push first, and wait until git_push_status says pushed). The tag must be new on the remote. Always staged: the user presses Release on the card; poll git_push_status for the outcome. Counts against the push budget.",
+         "inputSchema":object(json!({
+            "tag":{"type":"string","maxLength":100,"description":"The tag, e.g. v1.2.3. Optional; defaults to v<version> from package.json / tauri.conf.json / Cargo.toml / pyproject.toml at the tip, else the latest v* tag counted up."},
+            "note":{"type":"string","maxLength":NOTE_MAX,"description":"One line for the user's approval card. Optional."}
+         }),json!([]))},
+        {"name":"ci_runs","description":"Recent GitHub Actions runs of this repository (CI, security scans, releases), newest first: workflow, title, event, status, conclusion, commit, run id and link. Read-only.",
+         "inputSchema":object(json!({
+            "ref":{"type":"string","maxLength":200,"description":"Branch or tag whose runs to list. Optional; defaults to the checked-out branch."},
+            "limit":{"type":"integer","minimum":1,"maximum":30,"description":"How many runs (default 10)."},
+            "failedOnly":{"type":"boolean","description":"Only runs that failed or timed out."}
+         }),json!([])),"annotations":{"readOnlyHint":true}},
+        {"name":"ci_run","description":"One GitHub Actions run: its jobs and steps with their conclusions and, for up to three failed jobs, the check annotations and the log around the first error (timestamps and colours stripped, capped, credentials redacted). Read-only.",
+         "inputSchema":object(json!({"id":{"type":"integer","minimum":1,"description":"The run id from ci_runs."}}),json!(["id"])),"annotations":{"readOnlyHint":true}},
+        {"name":"ci_security_alerts","description":"Open code-scanning alerts of this repository (CodeQL and other SARIF uploads): rule, severity, file and line, message and link. Read-only; needs code scanning set up and a token that may read it.",
+         "inputSchema":object(json!({
+            "ref":{"type":"string","maxLength":200,"description":"Only alerts on this branch (or refs/… ref). Optional."},
+            "limit":{"type":"integer","minimum":1,"maximum":100,"description":"How many alerts (default 30)."}
+         }),json!([])),"annotations":{"readOnlyHint":true}}
     ])
 }
 
@@ -866,6 +987,25 @@ pub fn admit(session: &Session, message: &Value) -> Result<(), String> {
             if !session.admit_push_rate() { return Err("rate_limited: six push requests per tab per hour".into()); }
             Ok(())
         }
+        "git_release" => {
+            let args: ReleaseArgs = serde_json::from_value(args).map_err(|e| format!("invalid_arguments: {e}"))?;
+            if let Some(tag) = &args.tag { super::git_release::validate_tag(tag).map_err(|e| format!("invalid_arguments: {e}"))?; }
+            sanitize_note(args.note)?;
+            let pending = proposals_for(None, Some(&session.identity.tab)).iter().filter(|p| matches!(p.status, Status::Pending | Status::Running)).count();
+            if pending >= PENDING_LIMIT { return Err(format!("pending_limit: at most {PENDING_LIMIT} pending requests per tab; cancel one or wait for the user")); }
+            if !session.admit_push_rate() { return Err("rate_limited: six push or release requests per tab per hour".into()); }
+            Ok(())
+        }
+        "ci_runs" | "ci_run" | "ci_security_alerts" => {
+            let parsed = match name {
+                "ci_runs" => serde_json::from_value::<CiRunsArgs>(args).map(|_| ()),
+                "ci_run" => serde_json::from_value::<CiRunArgs>(args).map(|_| ()),
+                _ => serde_json::from_value::<CiAlertsArgs>(args).map(|_| ()),
+            };
+            parsed.map_err(|e| format!("invalid_arguments: {e}"))?;
+            if !super::git_ci::admit_rate(&session.identity.tab) { return Err("rate_limited: sixty CI reads per tab per hour".into()); }
+            Ok(())
+        }
         "git_push_cancel" => serde_json::from_value::<Cancel>(args).map(|_| ()).map_err(|e| format!("invalid_arguments: {e}")),
         "git_push_status" => serde_json::from_value::<Empty>(args).map(|_| ()).map_err(|e| format!("invalid_arguments: {e}")),
         _ => Ok(()),
@@ -886,7 +1026,7 @@ fn admission_result(reason: &str) -> Value {
 
 fn proposal_view(p: &Proposal) -> Value {
     json!({
-        "id": p.id, "status": p.status, "category": p.category, "message": p.message, "output": p.output, "state": p.state,
+        "id": p.id, "kind": p.kind, "tag": p.tag, "status": p.status, "category": p.category, "message": p.message, "output": p.output, "state": p.state,
         "branch": p.branch, "remote": p.remote, "url": p.url, "head": p.head, "remoteSha": p.remote_sha,
         "commits": p.commits, "diffstat": p.diffstat, "note": p.note, "needsUrlConfirm": p.needs_url_confirm,
         "createdAt": p.created_at, "preflightOutput": p.preflight_output,
@@ -928,6 +1068,44 @@ fn call_push(session: &Session, project: &str, dir: &Path, level: Level, args: P
     let guard = flag.lock().unwrap_or_else(|p| p.into_inner());
     let _ = cv.wait_timeout_while(guard, INLINE_WAIT, |finished| !*finished);
     Ok(get(&id).map(|p| tool_result(&p)).unwrap_or_else(|| json!({"status":"failed","category":Category::NotFound,"message":"The request vanished.","output":"","state":Value::Null})))
+}
+
+fn call_release(session: &Session, project: &str, dir: &Path, level: Level, args: ReleaseArgs) -> Result<Value, String> {
+    let note = sanitize_note(args.note)?;
+    if level == Level::Off {
+        return Ok(json!({"status":"refused","category":Category::LevelOff,"message":"Agent pushes and releases are off for this project. Ask the user to set the project's agent push level (project pill menu, or Settings → Manage CLIs → Agent pushes) to Propose or Apply.","output":"","state":local_state(dir)}));
+    }
+    let mut proposal = new_proposal(session, project, dir, note);
+    proposal.kind = Kind::Release;
+    proposal.tag = args.tag.clone();
+    let id = proposal.id.clone();
+    {
+        let mut list = proposals().lock().unwrap_or_else(|p| p.into_inner());
+        prune(&mut list);
+        list.push(proposal);
+    }
+    changed();
+    let worker_id = id.clone();
+    let done = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+    let signal = done.clone();
+    std::thread::Builder::new().name("git-release-mcp".into()).spawn(move || {
+        run_release(worker_id, args.tag);
+        let (flag, cv) = &*signal;
+        *flag.lock().unwrap_or_else(|p| p.into_inner()) = true;
+        cv.notify_all();
+    }).map_err(|e| e.to_string())?;
+    let (flag, cv) = &*done;
+    let guard = flag.lock().unwrap_or_else(|p| p.into_inner());
+    let _ = cv.wait_timeout_while(guard, INLINE_WAIT, |finished| !*finished);
+    Ok(get(&id).map(|p| tool_result(&p)).unwrap_or_else(|| json!({"status":"failed","category":Category::NotFound,"message":"The request vanished.","output":"","state":Value::Null})))
+}
+
+/// A CI read's answer: the data, or the failure as a normal result.
+fn ci_result(result: Result<Value, Failure>) -> Value {
+    match result {
+        Ok(mut value) => { value["status"] = json!("ok"); value }
+        Err(f) => json!({"status":"failed","category":f.category,"message":f.message,"output":f.output}),
+    }
 }
 
 fn call_cancel(session: &Session, id: &str) -> Result<Value, String> {
@@ -972,7 +1150,7 @@ pub fn handle_admitted(session: &Session, message: &Value, admission: Result<(),
         return (ok(json!({"content":[{"type":"text","text":"not_local"}],"structuredContent":{"status":"refused","category":Category::NotLocal,"message":"Only local projects can be pushed through this lane.","output":"","state":Value::Null},"isError":false})), false);
     }
     match message["method"].as_str().unwrap_or_default() {
-        "initialize" => (ok(json!({"protocolVersion":"2025-03-26","capabilities":{"tools":{}},"serverInfo":{"name":SERVER_NAME,"version":env!("CARGO_PKG_VERSION")},"instructions":CONTRACT})), false),
+        "initialize" => (ok(json!({"protocolVersion":"2025-03-26","capabilities":{"tools":{}},"serverInfo":{"name":SERVER_NAME,"version":env!("CARGO_PKG_VERSION")},"instructions":INSTRUCTIONS})), false),
         "ping" => (ok(json!({})), false),
         "tools/list" => (ok(json!({"tools":tools()})), false),
         "tools/call" => {
@@ -983,12 +1161,19 @@ pub fn handle_admitted(session: &Session, message: &Value, admission: Result<(),
                 Err(reason) => Ok(admission_result(&reason)),
                 Ok(()) => match name {
                     "git_push" => serde_json::from_value(args).map_err(|e| e.to_string()).and_then(|args| call_push(session, project, &binding.dir, policy.level(), args)),
+                    "git_release" => serde_json::from_value(args).map_err(|e| e.to_string()).and_then(|args| call_release(session, project, &binding.dir, policy.level(), args)),
+                    "ci_runs" => serde_json::from_value::<CiRunsArgs>(args).map_err(|e| e.to_string())
+                        .map(|a| ci_result(super::git_ci::runs(&binding.dir, project, a.reference.as_deref(), a.limit, a.failed_only.unwrap_or(false)))),
+                    "ci_run" => serde_json::from_value::<CiRunArgs>(args).map_err(|e| e.to_string())
+                        .map(|a| ci_result(super::git_ci::run(&binding.dir, project, a.id))),
+                    "ci_security_alerts" => serde_json::from_value::<CiAlertsArgs>(args).map_err(|e| e.to_string())
+                        .map(|a| ci_result(super::git_ci::security_alerts(&binding.dir, project, a.reference.as_deref(), a.limit))),
                     "git_push_cancel" => serde_json::from_value::<Cancel>(args).map_err(|e| e.to_string()).and_then(|args| call_cancel(session, &args.id)),
                     "git_push_status" => serde_json::from_value::<Empty>(args).map_err(|e| e.to_string()).map(|_| call_status(session, &binding.dir, &policy)),
                     _ => Err("unknown tool".into()),
                 },
             };
-            let changed = result.is_ok() && name != "git_push_status";
+            let changed = result.is_ok() && matches!(name, "git_push" | "git_release" | "git_push_cancel");
             let value = match result {
                 Ok(value) => json!({"content":[{"type":"text","text":value.to_string()}],"structuredContent":value,"isError":false}),
                 Err(e) => json!({"content":[{"type":"text","text":e}],"isError":true}),
@@ -1122,7 +1307,7 @@ mod tests {
         std::fs::write(&projects, raw).unwrap();
         let policy = policy_at(&projects, "p").unwrap();
         assert_eq!(policy, ProjectPolicy::default());
-        assert_eq!(policy.level(), Level::Off);
+        assert_eq!(policy.level(), Level::Propose, "absent means propose: every agent push waits for a click");
         assert!(policy_at(&projects, "other").is_err());
         let list: crate::schema::projects::ProjectsList = serde_json::from_str(raw).unwrap();
         assert_eq!(serde_json::to_string(&list).unwrap(), raw, "an entry without the block is written back unchanged");
@@ -1131,10 +1316,15 @@ mod tests {
         assert_eq!(serde_json::to_value(&parsed).unwrap(), block);
         assert!(serde_json::from_value::<ProjectPolicy>(json!({"level":"propose","remote":"evil"})).is_err(), "no scope selectors sneak in");
         let settings = dir.path().join("settings.json");
+        assert!(enabled_in(&settings), "a fresh install has the lane on");
         std::fs::write(&settings, "{}").unwrap();
+        assert!(enabled_in(&settings), "absent means on");
+        std::fs::write(&settings, r#"{"git_push_mcp":false}"#).unwrap();
         assert!(!enabled_in(&settings));
         std::fs::write(&settings, r#"{"git_push_mcp":true}"#).unwrap();
         assert!(enabled_in(&settings));
+        std::fs::write(&settings, "not json").unwrap();
+        assert!(!enabled_in(&settings), "unreadable settings answer off");
     }
 
     #[test]

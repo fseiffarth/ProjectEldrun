@@ -9,7 +9,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockResolvedValue(() =
 const { GitPushProposalCard, GitPushProposals } = await import("../../components/agents/GitPushMcp");
 
 const row: GitPushProposal = {
-  id: "push-a", session: "s", tab: "p:t", project: "p", branch: "develop", remote: "origin",
+  id: "push-a", session: "s", tab: "p:t", project: "p", kind: "push", tag: null, branch: "develop", remote: "origin",
   url: "https://github.com/o/r.git", head: "abcdef0123456789", remote_sha: "0123456789abcdef",
   commits: ["abc1234 Fix the thing", "def5678 chore: bump version to v0.1.2"], diffstat: "2 files changed",
   note: "the fix for #12", needs_url_confirm: true, created_at: "2026-09-25T12:00:00+02:00", status: "pending",
@@ -52,4 +52,16 @@ it("lists a project's proposals from the backend and hides dismissed ones", asyn
   expect(buttons).toHaveLength(2);
   fireEvent.click(buttons[1]);
   expect(screen.getByText("privacy-check: match in foo.txt")).toBeTruthy();
+});
+
+it("renders a release request with its tag and releases through the same decide command", async () => {
+  const release: GitPushProposal = { ...row, id: "push-r", kind: "release", tag: "v0.1.86", remote_sha: row.head, commits: ["abcdef0 chore: bump version to v0.1.86"], needs_url_confirm: false, note: "" };
+  invoke.mockResolvedValueOnce({ ...release, status: "pushed", message: "Tagged v0.1.86 at abcdef0 and pushed it to origin." });
+  render(<GitPushProposalCard proposal={release} />);
+  expect(screen.getByText("Agent release · waiting for you")).toBeTruthy();
+  expect(screen.getByText("v0.1.86")).toBeTruthy();
+  expect(screen.getByText("on develop")).toBeTruthy();
+  expect(screen.getByText("abcdef0 chore: bump version to v0.1.86")).toBeTruthy();
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Release" })); });
+  expect(invoke).toHaveBeenCalledWith("git_push_mcp_decide", { id: "push-r", approve: true });
 });

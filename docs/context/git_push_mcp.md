@@ -2,18 +2,23 @@
 
 Desktop v1 implements `docs/git_push_mcp_plan.md`: a fenced agent tab can ask
 Eldrun to push the project it works in, without a credential ever entering the
-fence. Globally off by default (`Settings::git_push_mcp`, Settings → Manage
-CLIs). When on, every new local project-agent spawn (not a container tab; not
+fence. Globally **on** by default since 2026-09-26 (`Settings::git_push_mcp`,
+absent = on, `false` = off; Settings → Manage CLIs) — the fence has to stay
+usable, and the default level only proposes. When on, every new local
+project-agent spawn (not a container tab; not
 a remote, VM or container project) gets the `eldrun-git` server on `/mcp/git`
 with a `Caller::Pusher` token bound to the tab, the project and the trusted
 entry's canonical directory. The per-project level lives in the `projects.json`
 entry's `git_push_mcp` block (`level` off / propose / apply, `protected`,
-`confirmed_url`), default **off**, also on the project pill menu. An `off`
+`confirmed_url`), default **propose** (absent = propose, so every agent push
+or release is a card the user clicks), also on the project pill menu. An `off`
 project still gets the tools: every write answers `level_off` naming the
 setting, so the agent can tell the user where to turn it on.
 
 Tools: `git_push_status` (read-only), `git_push { branch?, note? }`,
-`git_push_cancel { id }`. No remote, URL, refspec, tag or force selector
+`git_push_cancel { id }`, `git_release { tag?, note? }` (below), and the
+read-only CI reads `ci_runs`, `ci_run`, `ci_security_alerts` (below). No
+remote, URL, refspec or force selector
 exists. Every failure is a normal tool result with a fixed `category`, one
 `message` saying what to do next, capped and redacted `output`, and `state`.
 
@@ -126,6 +131,43 @@ the git bar (`ProjectFilesView`) and the Agents view. Everything carries the
 - Out of v1: phone approval cards, remote/mirror projects, creating remote
   branches, other forges' token quirks, a typed outcome notice.
 
+## Releases (`services::git_release`)
+
+The git bar's **Release** button (shown when a local project's own repo has
+a remote, nothing unpushed and nothing incoming) and the agent's
+`git_release` share one path: tag the checked-out branch's tip, annotated and
+never signed (`-c tag.gpgSign=false`, so a repo `gpg.program` cannot run), and
+push the one refspec `refs/tags/T:refs/tags/T` through the hooks-off
+transport. Refused unless the tip is exactly the remote branch's SHA
+(`not_pushed`) — a tag can never publish commits the branch push (and its
+privacy scan) did not — and unless `T` is new on the remote (`tag_exists`;
+never moved). A local tag already on the tip is reused; one this call made is
+deleted again when the push fails. The suggested name is `v<version>` from
+the first of `package.json`, `src-tauri/tauri.conf.json`, `tauri.conf.json`,
+`Cargo.toml`, `pyproject.toml` at the tip, unless that tag already names
+another commit (version not bumped), else the latest `v*` tag counted up. The
+button runs behind `exec_trust` like Push (with no stored token the user's
+own credential helpers answer); the agent path needs a stored token for https
+and is **always staged**, whatever the level: approval re-plans against the
+live remote and binds the proposed tip (`stale_approval` if it moved). The
+button skips the `pre-push` hook (this repo's only guards branch pushes and
+the signing reminder; the release job refuses unsigned anyway).
+
+## CI reads (`services::git_ci`)
+
+`ci_runs { ref?, limit?, failedOnly? }`, `ci_run { id }` and
+`ci_security_alerts { ref?, limit? }` let a fenced agent read why the build,
+the tests or the security workflow failed. Eldrun calls api.github.com from
+the host; the repo is the checked-out branch's upstream URL (else `origin`),
+github.com only (`not_github`), never an argument. The token goes to the API
+only when `https://github.com` is one of the project's token origins. `ci_run`
+returns jobs and steps and, for up to three failed jobs, check annotations and
+a log excerpt (120 lines before the first `##[error]` to 20 after the last;
+timestamps and ANSI stripped; 12 KB; redacted). Job logs are fetched through
+GitHub's redirect without the token, at most 32 MB read, the last 4 MB kept.
+Budget: 60 reads per tab per hour (`git_ci::admit_rate`). Nothing writes — no
+re-run, cancel or dispatch. Reads work at every level, `off` included.
+
 ## User-run live QA
 
 Only after choosing to load a build with the backend; agents never restart
@@ -145,3 +187,13 @@ the app.
    Revoke the session in MCP session access: further calls fail, the tab
    stays open, its card disappears.
 6. Repeat step 2 in Codex and in an unfenced tab.
+7. Fresh settings (no `git_push_mcp` key): a new agent tab has the tools and
+   a project with no block reads Propose on the pill menu.
+8. Release button: with everything pushed, press Release; the dialog
+   suggests `v<package.json version>`. Tag & push; check the tag on GitHub
+   is annotated on the right commit. Press it again with the same name:
+   `tag_exists`. Commit without pushing: the button hides.
+9. Ask the agent to `git_release`: a Release card appears; press Release.
+10. Ask the agent why the last CI run failed: `ci_runs { failedOnly: true }`
+    then `ci_run { id }` should quote the failing step's log and annotations.
+    `ci_security_alerts` lists open CodeQL alerts (or says it is not set up).

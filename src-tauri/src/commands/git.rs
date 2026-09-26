@@ -1426,6 +1426,53 @@ pub async fn git_push(project_dir: String, project_id: Option<String>) -> Result
     run_off_thread(move || git_push_blocking(project_dir, project_id)).await
 }
 
+/// The git bar's Release dialog: the suggested tag for the checked-out
+/// branch's tip and whether a release could go out now
+/// (`services::git_release`). Local projects only; asks the remote.
+#[tauri::command]
+pub async fn git_release_preview(project_dir: String, project_id: Option<String>) -> Result<crate::services::git_release::Preview, String> {
+    run_off_thread(move || {
+        if remote_target_for_dir(&project_dir).is_some() {
+            return Err("Releases are tagged from local projects only.".to_string());
+        }
+        require_hook_trust(None, &project_dir)?;
+        let (token, origins) = release_creds(project_id.as_deref());
+        Ok(crate::services::git_release::preview(Path::new(&project_dir), token.as_deref(), &origins))
+    })
+    .await
+}
+
+/// The user's Release click: tag the checked-out branch's tip as `tag`
+/// (annotated, unsigned) and push that one tag, hooks off. Refused unless the
+/// tip is exactly what the remote branch holds and the tag is new there. Gated
+/// like Push: with no stored token the user's own credential helpers answer,
+/// and those are part of the approved hook fingerprint.
+#[tauri::command]
+pub async fn git_release_tag(project_dir: String, project_id: Option<String>, tag: String) -> Result<String, String> {
+    run_off_thread(move || {
+        if remote_target_for_dir(&project_dir).is_some() {
+            return Err("Releases are tagged from local projects only.".to_string());
+        }
+        require_hook_trust(None, &project_dir)?;
+        let dir = Path::new(&project_dir);
+        let (token, origins) = release_creds(project_id.as_deref());
+        let plan = crate::services::git_release::plan(dir, tag.trim(), false, token.as_deref(), &origins).map_err(|f| f.message)?;
+        crate::services::git_release::release(dir, &plan, &plan.tag, token.as_deref(), &origins)
+            .map(|_| format!("Tagged {} at {} and pushed it to {}.", plan.tag, &plan.head[..7.min(plan.head.len())], plan.remote))
+            .map_err(|f| if f.output.is_empty() { f.message } else { format!("{}\n{}", f.message, f.output) })
+    })
+    .await
+}
+
+/// The project's effective token and the origins it may go to; no project
+/// (a nested repo) means no token, so the user's own helpers answer.
+fn release_creds(project_id: Option<&str>) -> (Option<String>, Vec<String>) {
+    match project_id {
+        Some(id) => crate::services::git_push_mcp::creds(id),
+        None => (None, Vec::new()),
+    }
+}
+
 /// `git push` in a local directory, authenticating an https remote with `token`
 /// when one is set — scoped to `project_id`'s token origins (see
 /// [`scoped_token_config`]). Hardened like every local git call, and gated on

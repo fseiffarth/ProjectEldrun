@@ -1157,6 +1157,7 @@
 .git-action-btn--push,
 .git-action--push { --git-btn-accent: #3fb950; }
 .git-action-btn--pull { --git-btn-accent: var(--info); }
+.git-action-btn--release { --git-btn-accent: var(--accent); }
 
 /* An action + its disclosure caret, joined into one pill so the two read as a
    single control. The action button loses its right rounding, the caret its
