@@ -250,10 +250,16 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     // Both bubbles in view: nothing to pin.
     expect(pinnedText()).toBeNull();
 
-    // Scrolled into the older answer, the newer prompt still below: the older
-    // prompt pins, not the newest.
+    // Scrolled into the older answer, the newer prompt in view below it: a
+    // prompt is on screen, so the older one does not pin.
     tops["an older question"] = 20;
     tops["add a clear button"] = 400;
+    fireEvent.scroll(output);
+    expect(pinnedText()).toBeNull();
+
+    // The newer prompt below the view's bottom edge (700): the older prompt
+    // pins, not the newest.
+    tops["add a clear button"] = 720;
     fireEvent.scroll(output);
     expect(pinnedText()).toBe("an older question");
 

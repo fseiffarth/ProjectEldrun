@@ -608,24 +608,27 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
   /** The prompt the answer at the top of Focus belongs to — the last one
    * that starts above the scroll position — while its bubble is scrolled off
    * the top, pinned there so that answer is read against the question that
-   * asked for it; empty while the bubble itself is in view. Read off the chat
-   * as drawn (`data-prompt`), so the stored session and the screen reading
-   * pin alike. */
+   * asked for it; empty while any prompt bubble is in view, that one or a
+   * newer one further down (the reader already shows a prompt, and a pinned
+   * older one would read as the question to the answer below it). Read off
+   * the chat as drawn (`data-prompt`), so the stored session and the screen
+   * reading pin alike. */
   const [pinnedPrompt, setPinnedPrompt] = useState("");
   const pinnedPromptEl = useRef<HTMLElement | null>(null);
   const checkPinnedPrompt = useCallback(() => {
     const stream = readableHost.current;
     const prompts = stream?.querySelectorAll<HTMLElement>("[data-prompt]") ?? [];
-    const top = stream?.getBoundingClientRect().top ?? 0;
+    const view = stream?.getBoundingClientRect();
+    const top = view?.top ?? 0;
+    const bottom = view?.bottom ?? 0;
     let owner: HTMLElement | null = null;
     for (let i = prompts.length - 1; i >= 0; i--) {
       const box = prompts[i].getBoundingClientRect();
       // A bubble with no height is one not laid out (a hidden page), not one
-      // scrolled away.
-      if (box.height > 0 && box.top < top) {
-        owner = box.bottom <= top ? prompts[i] : null;
-        break;
-      }
+      // scrolled away; one wholly below the view is not read yet.
+      if (box.height === 0 || box.top >= bottom) continue;
+      owner = box.bottom <= top ? prompts[i] : null;
+      break;
     }
     pinnedPromptEl.current = owner;
     setPinnedPrompt((owner?.dataset.prompt ?? "").trim());
