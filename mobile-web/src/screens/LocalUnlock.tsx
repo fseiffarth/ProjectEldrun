@@ -2,6 +2,23 @@ import { useEffect, useRef, useState } from "react";
 import { MIN_NEW_PIN, configureLocalUnlock, localUnlockBiometricEnabled, localUnlockPinLength, maybeEnrollBiometric, platformBiometricAvailable, unlockLocal, unlockLocalBiometric, validPin } from "../localLock";
 import { localFailureText } from "../connection";
 import { isUntested } from "../../../src/lib/untested";
+import { BrandHead } from "../components/BrandHead";
+
+/** A ridge-arch fingerprint, drawn for this screen: open loops over a centre
+ * stem, with the broken ridges on the right that make it read as a print
+ * rather than a set of nested arches. Strokes take `currentColor`. */
+function FingerprintIcon() {
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M4.2 8.4A8.6 8.6 0 0 1 17.9 5.6" />
+    <path d="M19.9 9.2A8.6 8.6 0 0 1 20.6 12.6V13.6" />
+    <path d="M3.4 12.6A8.6 8.6 0 0 1 3.5 11.8" />
+    <path d="M5.9 18.2V12.6A6.1 6.1 0 0 1 16.3 8.3" />
+    <path d="M18 11.4 18.1 12.6V15.4" />
+    <path d="M8.4 20.4V12.6A3.6 3.6 0 0 1 15.6 12.6V17.6" />
+    <path d="M12 12.4V21" />
+    <path d="M18.1 18.6V18.9" />
+  </svg>;
+}
 
 export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked: () => void }) {
   const [pin, setPin] = useState("");
@@ -96,8 +113,8 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
     }, 250);
     return () => window.clearTimeout(timer);
   }, [onUnlocked, pin, pinLength, setup]);
-  return <main className="pair screen local-unlock">
-    <div className="brand"><span className="spark">✦</span><h1>{setup ? "Secure Eldrun Mobile" : "Eldrun Mobile locked"}{!setup && isUntested("mobile.link.silentResume") && <small className="untested"> Untested</small>}</h1></div>
+  return <main className="pair screen brand-screen local-unlock">
+    <BrandHead>{setup ? "Secure Eldrun Mobile" : "Eldrun Mobile locked"}{!setup && isUntested("mobile.link.silentResume") && <small className="untested"> Untested</small>}</BrandHead>
     {setup ? <>
       <p>{biometricAvailable === false
         ? "This browser offers no fingerprint or Face ID unlock — browsers built on the system WebView (DuckDuckGo among them) do not support it. The app PIN will be your only unlock here; keep the phone’s own screen lock enabled, or pair again in Chrome or Safari to use a fingerprint."
@@ -120,8 +137,9 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
         Chrome or Safari to unlock with a fingerprint; that means pairing the phone once more,
         since a pairing belongs to the browser it was made in.
       </p>}
-      {biometricEnrolled && <button className="primary" disabled={biometricBusy} onClick={unlockWithBiometric}>
-        {biometricBusy ? "Waiting for the device…" : "Unlock with fingerprint"}
+      {biometricEnrolled && <button className={`local-unlock-biometric${biometricBusy ? " waiting" : ""}`} disabled={biometricBusy} onClick={unlockWithBiometric}>
+        <span className="local-unlock-print"><FingerprintIcon /></span>
+        <span>{biometricBusy ? "Waiting for the device…" : "Unlock with fingerprint"}</span>
       </button>}
       <label>PIN<input className="code" type="password" inputMode="numeric" autoComplete="current-password" autoFocus={!biometricEnrolled} maxLength={pinLength ?? 12} value={pin} onChange={(event) => {
         const next = event.target.value.replace(/\D/g, "");

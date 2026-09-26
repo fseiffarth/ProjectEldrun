@@ -4,11 +4,10 @@ body { margin:0; min-height:100dvh; background:#000; }
 button,input,textarea,select { font:inherit; }
 button { color:inherit; }
 .screen { max-width:720px; min-height:100dvh; margin:auto; padding:max(22px,env(safe-area-inset-top)) 18px max(24px,env(safe-area-inset-bottom)); }
-header,.brand,.card,.settings-row,.agent-create,.mobile-build,.card-trailing { display:flex; align-items:center; gap:12px; }
+header,.card,.settings-row,.agent-create,.mobile-build,.card-trailing { display:flex; align-items:center; gap:12px; }
 header { min-height:52px; justify-content:space-between; }
 .mobile-build { gap:8px; white-space:nowrap; }
 h1 { margin:0; font-size:1.35rem; }
-.spark { color:#f4c95d; font-size:1.8rem; }
 .pair { display:grid; align-content:center; gap:18px; max-width:440px; }
 label { display:grid; gap:7px; color:#b7bac8; }
 input { width:100%; border:1px solid #3a3e50; border-radius:12px; padding:13px; background:#171a24; color:#fff; }
@@ -854,6 +853,36 @@ body.terminal-open { min-height:0; overflow:hidden; }
 @keyframes splash-progress { from { transform:translateX(-110%); } to { transform:translateX(215%); } }
 @media (prefers-reduced-motion:reduce) {
   .splash-mark,.splash-name,.splash-message,.splash-orbit,.splash-progress span { animation:none; }
+}
+/* Pairing and the local lock (`BrandHead`): the splash's mark and wordmark
+   over a centred form. The glow behind the mark is a static gradient. */
+.brand-screen { text-align:center; }
+.brand-head { position:relative; display:flex; flex-direction:column; align-items:center; gap:10px; margin-bottom:6px; }
+.brand-head::before { content:""; position:absolute; top:-28px; left:50%; width:260px; height:220px; transform:translateX(-50%); background:radial-gradient(closest-side,rgba(124,108,255,.2),rgba(199,154,69,.06) 60%,transparent); pointer-events:none; }
+.brand-head-mark .splash-orbit { animation-play-state:paused; }
+.brand-head h1 { position:relative; color:#9498aa; font-size:.95rem; font-weight:500; letter-spacing:.02em; }
+.brand-screen > p { margin:0; color:#b7bac8; line-height:1.5; }
+.brand-screen label { text-align:center; }
+.brand-screen input { border-color:#2d3142; background:#11131b; }
+.brand-screen input:focus { outline:none; border-color:#7c6cff; }
+.brand-screen input:not(.code) { text-align:center; }
+.brand-screen .error { text-align:left; }
+.brand-screen > .primary { min-height:48px; }
+/* The lock's fingerprint is a round target rather than a full-width bar; its
+   only motion is the waiting pulse, which animates transform/opacity on a
+   pseudo-element, never a blur. */
+.local-unlock-biometric { justify-self:center; display:flex; flex-direction:column; align-items:center; gap:10px; border:0; background:transparent; padding:6px 12px; color:#cfc8ff; font-weight:600; }
+.local-unlock-biometric:disabled { opacity:1; }
+.local-unlock-print { position:relative; display:grid; place-items:center; width:80px; height:80px; border:1px solid rgba(124,108,255,.5); border-radius:50%; background:radial-gradient(circle at 50% 35%,rgba(124,108,255,.28),rgba(108,92,231,.1)); box-shadow:0 8px 24px rgba(40,30,120,.35); transition:transform 160ms ease; }
+.local-unlock-print svg { width:44px; height:44px; color:#e4e0ff; }
+.local-unlock-biometric:active .local-unlock-print { transform:scale(.94); }
+.local-unlock-print::after { content:""; position:absolute; inset:-1px; border:2px solid rgba(124,108,255,.7); border-radius:50%; opacity:0; pointer-events:none; }
+.local-unlock-biometric.waiting .local-unlock-print::after { animation:local-unlock-pulse 1.4s ease-out infinite; }
+.local-unlock-biometric.waiting { color:#9498aa; }
+@keyframes local-unlock-pulse { from { opacity:.85; transform:scale(1); } to { opacity:0; transform:scale(1.45); } }
+.local-unlock .local-unlock-note { color:#6f7385; font-size:.76rem; line-height:1.5; }
+@media (prefers-reduced-motion:reduce) {
+  .local-unlock-biometric.waiting .local-unlock-print::after { animation:none; opacity:.6; }
 }
 @media (max-width:480px) { .terminal-title small { display:none; } .terminal-screen header { padding-inline:6px; } .terminal-view-switch button { padding-inline:7px; } }
 /* A phone file on its way into the project inbox (composer + → From this
