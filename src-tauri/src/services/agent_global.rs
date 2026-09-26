@@ -24,7 +24,10 @@
 //!   put there stays.
 //!
 //! [`import_from_user_home`] fills the layer from the user's own `~/.claude`,
-//! `~/.codex` and `~/.gemini` — one click, the one direction that is safe.
+//! `~/.codex` and `~/.gemini`, plus the hook and plugin files the other CLIs
+//! read (Cursor, Droid, Copilot, OpenCode, Pi, Mistral Vibe) — so a tool the
+//! user wired into their agents themselves (rtk's `rtk init -g`, say) reaches
+//! every Eldrun agent too. One click, the one direction that is safe.
 //! Eldrun's own session hooks are filtered out of what it imports; they are
 //! registered per home anyway. Every read and write into a home is relative
 //! to a directory handle (`services::home_io`): the home is agent-writable
@@ -60,6 +63,9 @@ const MERGED: &[(&str, Format)] = &[
     (".claude.json", Format::Json),
     (".codex/config.toml", Format::Toml),
     (".gemini/settings.json", Format::Json),
+    (".cursor/hooks.json", Format::Json),
+    (".factory/hooks.json", Format::Json),
+    (".vibe/hooks.toml", Format::Toml),
 ];
 
 pub fn global_dir_in(state_dir: &Path) -> PathBuf {
@@ -521,11 +527,7 @@ pub struct ImportReport {
 
 /// Where each CLI keeps what the layer carries, relative to a home: single
 /// files and whole directories copied as they are.
-const IMPORT_FILES: &[&str] = &[
-    ".codex/AGENTS.md",
-    ".codex/AGENTS.override.md",
-    ".gemini/GEMINI.md",
-];
+const IMPORT_FILES: &[&str] = &[".copilot/copilot-instructions.md"];
 const IMPORT_DIRS: &[&str] = &[
     ".claude/skills",
     ".claude/commands",
@@ -536,7 +538,17 @@ const IMPORT_DIRS: &[&str] = &[
     ".codex/rules",
     ".codex/skills",
     ".gemini/commands",
+    ".gemini/hooks",
+    ".copilot/hooks",
+    ".config/opencode/plugins",
+    ".pi/agent/extensions",
+    ".vibe/prompts",
 ];
+/// JSON hook configs of CLIs Eldrun registers nothing in, taken whole.
+const IMPORT_JSON: &[&str] = &[".cursor/hooks.json", ".factory/hooks.json"];
+/// Homes whose top-level `.md` files are instructions: `AGENTS.md` /
+/// `GEMINI.md` and the files they `@`-import (rtk's `RTK.md`).
+const INSTRUCTION_DIRS: &[&str] = &[".codex", ".gemini"];
 /// Top-level files of `~/.claude` taken by extension: the instructions
 /// (`CLAUDE.md` and the files it `@`-imports) and the scripts its hooks and
 /// status line name. Nothing else there is config.
@@ -657,6 +669,24 @@ pub(crate) fn filtered_codex_config(text: &str, hooks_dir: &str) -> Option<Strin
     (!out.trim().is_empty()).then_some(out)
 }
 
+/// The user's `~/.vibe/hooks.toml` minus Eldrun's own session hook, which
+/// every home gets registered anyway (`agent_session::register_hooks_in_home`).
+pub(crate) fn filtered_vibe_hooks(text: &str, hooks_dir: &str) -> Option<String> {
+    let mut doc: toml_edit::DocumentMut = text.parse().ok()?;
+    if let Some(hooks) = doc.get_mut("hooks").and_then(toml_edit::Item::as_array_of_tables_mut) {
+        hooks.retain(|h| {
+            let name = h.get("name").and_then(toml_edit::Item::as_str);
+            let command = h.get("command").and_then(toml_edit::Item::as_str).unwrap_or("");
+            name != Some("eldrun-session") && !is_eldrun_hook(command, hooks_dir)
+        });
+        if hooks.is_empty() {
+            doc.remove("hooks");
+        }
+    }
+    let out = doc.to_string();
+    (!out.trim().is_empty()).then_some(out)
+}
+
 fn write_layer_json(layer: &Path, rel: &str, value: &Value) -> bool {
     let dst = layer.join(rel);
     if let Some(parent) = dst.parent() {
@@ -690,6 +720,17 @@ pub fn import_from_user_home_in(state_dir: &Path, user_home: &Path) -> io::Resul
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             if CLAUDE_TOP_EXTENSIONS.contains(&ext)
                 && take_file(&path, &layer.join(".claude").join(entry.file_name()))
+            {
+                report.files += 1;
+            }
+        }
+    }
+    for dir in INSTRUCTION_DIRS {
+        let Ok(entries) = std::fs::read_dir(user_home.join(dir)) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("md")
+                && take_file(&path, &layer.join(dir).join(entry.file_name()))
             {
                 report.files += 1;
             }
@@ -734,6 +775,23 @@ pub fn import_from_user_home_in(state_dir: &Path, user_home: &Path) -> io::Resul
     if let Some(mut settings) = read_json(&user_home.join(".gemini/settings.json")).filter(Value::is_object) {
         strip_eldrun_json_hooks(&mut settings, &hooks_dir);
         if write_layer_json(&layer, ".gemini/settings.json", &settings) {
+            report.configs += 1;
+        }
+    }
+    for rel in IMPORT_JSON {
+        if let Some(config) = read_json(&user_home.join(rel)).filter(Value::is_object) {
+            if write_layer_json(&layer, rel, &config) {
+                report.configs += 1;
+            }
+        }
+    }
+    if let Some(hooks) = std::fs::read_to_string(user_home.join(".vibe/hooks.toml"))
+        .ok()
+        .and_then(|text| filtered_vibe_hooks(&text, &hooks_dir))
+    {
+        if crate::services::agent_home::create_private_dir(&layer.join(".vibe")).is_ok()
+            && std::fs::write(layer.join(".vibe/hooks.toml"), hooks).is_ok()
+        {
             report.configs += 1;
         }
     }
@@ -1053,8 +1111,21 @@ mod tests {
         write(&user.join(".claude/history.jsonl"), "{}");
         write(&user.join(".claude/skills/s/SKILL.md"), "skill");
         write(&user.join(".codex/skills/.system/x.md"), "bundled");
-        write(&user.join(".codex/AGENTS.md"), "codex");
+        write(&user.join(".codex/AGENTS.md"), "codex\n@/home/u/.codex/RTK.md");
+        write(&user.join(".codex/RTK.md"), "rtk");
         write(&user.join(".codex/auth.json"), "{}");
+        // What `rtk init -g` leaves for the other CLIs.
+        write(&user.join(".gemini/hooks/rtk-hook-gemini.sh"), "#!/bin/bash\nexec rtk hook gemini");
+        write(
+            &user.join(".cursor/hooks.json"),
+            r#"{"version": 1, "hooks": {"preToolUse": [{"command": "rtk hook cursor", "matcher": "Shell"}]}}"#,
+        );
+        write(
+            &user.join(".vibe/hooks.toml"),
+            &format!(
+                "[[hooks]]\nname = \"eldrun-session\"\ntype = \"post_agent\"\ncommand = '{hooks}'\n\n[[hooks]]\nname = \"rtk-rewrite\"\ntype = \"pre_tool\"\nmatch = \"bash\"\ncommand = \"rtk hook vibe\"\n"
+            ),
+        );
         write(
             &user.join(".claude/settings.json"),
             &json!({
@@ -1077,7 +1148,7 @@ mod tests {
             ),
         );
         let report = import_from_user_home_in(&state, &user).unwrap();
-        assert_eq!(report, ImportReport { files: 5, configs: 3 });
+        assert_eq!(report, ImportReport { files: 7, configs: 5 });
         let layer = global_dir_in(&state);
         assert!(layer.join(".claude/CLAUDE.md").is_file());
         assert!(layer.join(".claude/RTK.md").is_file());
@@ -1096,5 +1167,42 @@ mod tests {
         assert!(doc.get("projects").is_none());
         assert!(doc.get("hooks").is_none());
         assert_eq!(doc["mcp_servers"]["m"]["command"].as_str(), Some("x"));
+        assert!(layer.join(".codex/RTK.md").is_file());
+        assert!(layer.join(".gemini/hooks/rtk-hook-gemini.sh").is_file());
+        assert_eq!(
+            read_json(&layer.join(".cursor/hooks.json")).unwrap()["hooks"]["preToolUse"][0]["command"],
+            "rtk hook cursor"
+        );
+        let vibe: toml_edit::DocumentMut =
+            std::fs::read_to_string(layer.join(".vibe/hooks.toml")).unwrap().parse().unwrap();
+        let vibe_hooks = vibe["hooks"].as_array_of_tables().unwrap();
+        assert_eq!(vibe_hooks.len(), 1);
+        assert_eq!(vibe_hooks.get(0).unwrap()["name"].as_str(), Some("rtk-rewrite"));
+    }
+
+    #[test]
+    fn a_vibe_hook_from_the_layer_joins_the_homes_own() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("state");
+        let home = tmp.path().join("home");
+        write(
+            &global_dir_in(&state).join(".vibe/hooks.toml"),
+            "[[hooks]]\nname = \"rtk-rewrite\"\ntype = \"pre_tool\"\ncommand = \"rtk hook vibe\"\n",
+        );
+        let own = "# Eldrun: remember the live Vibe session for this tab.\n[[hooks]]\nname = \"eldrun-session\"\ntype = \"post_agent\"\ncommand = \"x\"\n";
+        write(&home.join(".vibe/hooks.toml"), own);
+        apply_to_home(&state, &home).unwrap();
+        let doc: toml_edit::DocumentMut =
+            std::fs::read_to_string(home.join(".vibe/hooks.toml")).unwrap().parse().unwrap();
+        let names: Vec<_> = doc["hooks"]
+            .as_array_of_tables()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names, ["eldrun-session", "rtk-rewrite"]);
+        std::fs::remove_file(global_dir_in(&state).join(".vibe/hooks.toml")).unwrap();
+        apply_to_home(&state, &home).unwrap();
+        assert_eq!(std::fs::read_to_string(home.join(".vibe/hooks.toml")).unwrap(), own);
     }
 }

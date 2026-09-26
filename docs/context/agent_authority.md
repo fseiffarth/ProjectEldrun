@@ -221,11 +221,18 @@ because a shared home would give back exactly the gap-7 path above.
 `<state_dir>/agent-global/` that the user fills (Settings → Global agent
 config: one-click import from `~/.claude`, `~/.codex`, `~/.gemini` without
 logins, transcripts, folder trust or Eldrun's own hooks; or "Open folder").
+The import also takes the hook and plugin files the other CLIs read
+(`.cursor/hooks.json`, `.factory/hooks.json`, `.vibe/hooks.toml`,
+`.copilot/hooks/`, `.config/opencode/plugins/`, `.pi/agent/extensions/`,
+`.gemini/hooks/`, every top-level `.md` of `.codex`/`.gemini`), so what the
+user wired into their agents on their side — `rtk init -g --agent …` — reaches
+every agent. Eldrun never installs or registers such a tool itself: it comes
+from the user's own setup, through this import (2026-09-26).
 At every spawn, before Eldrun's hooks are registered, its plain files are
 copied over the home's (a scope file replaced the first time is kept in
 `.eldrun-global-backup/`) and its fragments of the files the CLIs write
 themselves (`.claude/settings.json`, `.claude.json`, `.codex/config.toml`,
-`.gemini/settings.json`) are merged: objects recurse, arrays gain elements,
+`.gemini/settings.json`, and the Cursor/Droid/Vibe hook files) are merged: objects recurse, arrays gain elements,
 scalars take the layer's value. A per-home manifest records what was placed
 and merged, so the next spawn first takes exactly that back out — a key the
 user drops from the layer leaves every home, while a model a tab picked
