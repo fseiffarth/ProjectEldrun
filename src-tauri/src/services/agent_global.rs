@@ -26,7 +26,9 @@
 //! [`import_from_user_home`] fills the layer from the user's own `~/.claude`,
 //! `~/.codex` and `~/.gemini` — one click, the one direction that is safe.
 //! Eldrun's own session hooks are filtered out of what it imports; they are
-//! registered per home anyway. AppHandle-free.
+//! registered per home anyway. Every read and write into a home is relative
+//! to a directory handle (`services::home_io`): the home is agent-writable
+//! and the apply runs unfenced. AppHandle-free.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -35,6 +37,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::services::home_io::HomeFile;
 use crate::storage;
 
 /// The layer's directory under the state dir.
@@ -102,76 +105,32 @@ fn layer_files(root: &Path) -> Vec<String> {
     out
 }
 
-/// `home/rel`, provided no directory between `home` and the file is a
-/// symlink. The home is agent-writable and this runs unfenced: a planted
-/// `~/.claude -> /somewhere` must not steer Eldrun's writes out of the home.
-/// Missing directories are created private.
-pub(crate) fn contained_path(home: &Path, rel: &str) -> Option<PathBuf> {
-    let parts: Vec<&str> = rel.split('/').filter(|p| !p.is_empty()).collect();
-    if parts.is_empty() || parts.iter().any(|p| *p == "." || *p == "..") {
-        return None;
-    }
-    let mut dir = home.to_path_buf();
-    for part in &parts[..parts.len() - 1] {
-        dir.push(part);
-        match std::fs::symlink_metadata(&dir) {
-            Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => return None,
-            Ok(_) => {}
-            Err(_) => crate::services::agent_home::create_private_dir(&dir).ok()?,
-        }
-    }
-    Some(dir.join(parts[parts.len() - 1]))
-}
-
-/// Write `bytes` by rename, so a symlink at `path` is replaced, not followed.
-pub(crate) fn write_replacing(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let tmp = path.with_file_name(format!(
-        ".{}.eldrun-tmp",
-        path.file_name().and_then(|n| n.to_str()).unwrap_or("file")
-    ));
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)
-}
-
-/// Give `dst` the exec bits of `src`. The copy is written as bytes, so without
-/// this a hook or status-line script lands non-executable and every hook call
-/// fails with `Permission denied`. Also repairs a copy whose bytes already
-/// match. `dst` was just checked or written as a plain file; a symlink there
-/// is left alone rather than followed.
+/// The exec bits a layer file carries. The copy is written as bytes, so
+/// without carrying these a hook or status-line script lands non-executable
+/// and every hook call fails with `Permission denied`.
 #[cfg(unix)]
-fn copy_exec_bits(src: &Path, dst: &Path) {
+fn exec_bits(src: &Path) -> u32 {
     use std::os::unix::fs::PermissionsExt;
-    let Ok(want) = std::fs::metadata(src).map(|m| m.permissions().mode() & 0o111) else {
-        return;
-    };
-    let Ok(meta) = std::fs::symlink_metadata(dst) else { return };
-    if !meta.is_file() {
-        return;
-    }
-    let mode = meta.permissions().mode();
-    if mode & 0o111 != want {
-        let _ = std::fs::set_permissions(dst, std::fs::Permissions::from_mode((mode & !0o111) | want));
-    }
+    std::fs::metadata(src).map(|m| m.permissions().mode() & 0o111).unwrap_or(0)
 }
 
 #[cfg(not(unix))]
-fn copy_exec_bits(_src: &Path, _dst: &Path) {}
-
-/// Read a home file, never through a symlink.
-pub(crate) fn read_plain(path: &Path) -> Option<Vec<u8>> {
-    let meta = std::fs::symlink_metadata(path).ok()?;
-    if !meta.is_file() {
-        return None;
-    }
-    std::fs::read(path).ok()
+fn exec_bits(_src: &Path) -> u32 {
+    0
 }
 
 /// Lay the layer under `state_dir` into `home`. A no-op for a home that never
 /// saw the layer while the layer is empty.
+///
+/// The home is agent-writable and this runs unfenced, so every read and
+/// write goes through a directory handle ([`HomeFile`]): a `~/.claude` the
+/// agent swaps for a link — before or during the apply — never steers a
+/// write out of the home.
 pub fn apply_to_home(state_dir: &Path, home: &Path) -> io::Result<()> {
     let layer = global_dir_in(state_dir);
-    let manifest_path = home.join(MANIFEST);
-    let previous: Manifest = read_plain(&manifest_path)
+    let manifest_file = HomeFile::open(home, MANIFEST).ok_or_else(|| io::Error::other("home is not a directory"))?;
+    let previous: Manifest = manifest_file
+        .read()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default();
     let files: Vec<String> = layer_files(&layer)
@@ -183,30 +142,31 @@ pub fn apply_to_home(state_dir: &Path, home: &Path) -> io::Result<()> {
     }
     let mut placed = Vec::new();
     for rel in &files {
-        let Some(dst) = contained_path(home, rel) else {
+        let Some(dst) = HomeFile::open(home, rel) else {
             eprintln!("agent_global: skip {rel}: not a plain path in {}", home.display());
             continue;
         };
         let src = layer.join(rel);
         let Ok(bytes) = std::fs::read(&src) else { continue };
-        let current = read_plain(&dst);
+        let current = dst.read();
         if current.as_deref() != Some(bytes.as_slice()) {
             if let Some(own) = current.filter(|_| !previous.files.contains(rel)) {
-                if let Some(backup) = contained_path(home, &format!("{BACKUP_DIR}/{rel}")) {
-                    if std::fs::symlink_metadata(&backup).is_err() {
-                        let _ = write_replacing(&backup, &own);
+                if let Some(backup) = HomeFile::open(home, &format!("{BACKUP_DIR}/{rel}")) {
+                    if !backup.exists() {
+                        let _ = backup.write(&own);
                     }
                 }
             }
-            write_replacing(&dst, &bytes)?;
+            dst.write(&bytes)?;
         }
-        copy_exec_bits(&src, &dst);
+        // Also repairs a copy an earlier spawn left non-executable.
+        let _ = dst.set_exec_bits(exec_bits(&src));
         placed.push(rel.clone());
     }
     for rel in previous.files.iter().filter(|r| !files.contains(r)) {
-        if let Some(dst) = contained_path(home, rel) {
-            if std::fs::symlink_metadata(&dst).is_ok() {
-                let _ = std::fs::remove_file(&dst);
+        if let Some(dst) = HomeFile::open_existing(home, rel) {
+            if dst.exists() {
+                let _ = dst.remove();
             }
         }
     }
@@ -217,7 +177,7 @@ pub fn apply_to_home(state_dir: &Path, home: &Path) -> io::Result<()> {
         if fragment.is_none() && before.is_none() {
             continue;
         }
-        let Some(dst) = contained_path(home, rel) else { continue };
+        let Some(dst) = HomeFile::open(home, rel) else { continue };
         match merge_file(&dst, *format, before, fragment.as_ref()) {
             Ok(()) => {
                 if let Some(json) = fragment {
@@ -235,8 +195,8 @@ pub fn apply_to_home(state_dir: &Path, home: &Path) -> io::Result<()> {
     }
     let manifest = Manifest { files: placed, merged };
     let body = serde_json::to_vec_pretty(&manifest).map_err(io::Error::other)?;
-    if read_plain(&manifest_path).as_deref() != Some(body.as_slice()) {
-        write_replacing(&manifest_path, &body)?;
+    if manifest_file.read().as_deref() != Some(body.as_slice()) {
+        manifest_file.write(&body)?;
     }
     Ok(())
 }
@@ -267,8 +227,8 @@ fn read_fragment(path: &Path, format: Format) -> Option<Value> {
     }
 }
 
-fn merge_file(dst: &Path, format: Format, before: Option<&Value>, fragment: Option<&Value>) -> io::Result<()> {
-    let current = read_plain(dst);
+fn merge_file(dst: &HomeFile, format: Format, before: Option<&Value>, fragment: Option<&Value>) -> io::Result<()> {
+    let current = dst.read();
     let text = current
         .as_deref()
         .map(|b| String::from_utf8_lossy(b).into_owned())
@@ -308,7 +268,7 @@ fn merge_file(dst: &Path, format: Format, before: Option<&Value>, fragment: Opti
     if current.is_some() && semantically_equal(&text, &next, format) {
         return Ok(());
     }
-    write_replacing(dst, next.as_bytes())
+    dst.write(next.as_bytes())
 }
 
 fn semantically_equal(a: &str, b: &str, format: Format) -> bool {
@@ -931,6 +891,48 @@ mod tests {
         std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o644)).unwrap();
         apply_to_home(&state, &home).unwrap();
         assert_eq!(mode(&dst), 0o111);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_planted_temporary_symlink_cannot_redirect_a_global_write() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("state");
+        let home = tmp.path().join("home");
+        let victim = tmp.path().join("victim");
+        write(&global_dir_in(&state).join(".codex/AGENTS.md"), "global");
+        write(&home.join(".codex/AGENTS.md"), "scope");
+        write(&victim, "keep");
+        std::os::unix::fs::symlink(&victim, home.join(".codex/.AGENTS.md.eldrun-tmp")).unwrap();
+
+        apply_to_home(&state, &home).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
+        assert_eq!(std::fs::read_to_string(home.join(".codex/AGENTS.md")).unwrap(), "global");
+    }
+
+    /// The directory race (agent_authority reevaluation, item 1): the layer
+    /// file's directory is opened by handle, so a `.claude` swapped for a
+    /// link between two applies — or between the open and the write — never
+    /// redirects the copy. The write lands where the handle points.
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_swapped_between_applies_never_redirects_the_layer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("state");
+        let home = tmp.path().join("home");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        write(&global_dir_in(&state).join(".claude/CLAUDE.md"), "global");
+        apply_to_home(&state, &home).unwrap();
+        assert_eq!(std::fs::read_to_string(home.join(".claude/CLAUDE.md")).unwrap(), "global");
+        // The agent's move between two spawns.
+        std::fs::rename(home.join(".claude"), home.join(".claude.moved")).unwrap();
+        std::os::unix::fs::symlink(&outside, home.join(".claude")).unwrap();
+        write(&global_dir_in(&state).join(".claude/CLAUDE.md"), "changed");
+        apply_to_home(&state, &home).unwrap();
+        assert!(!outside.join("CLAUDE.md").exists());
+        assert!(std::fs::symlink_metadata(home.join(".claude")).unwrap().file_type().is_symlink());
     }
 
     #[cfg(unix)]

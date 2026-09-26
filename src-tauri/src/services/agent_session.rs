@@ -17,6 +17,7 @@
 use std::path::PathBuf;
 
 use crate::paths;
+use crate::services::home_io::HomeFile;
 use crate::storage;
 use crate::terminal::PtyOptions;
 
@@ -1564,15 +1565,17 @@ pub fn install_session_start_hook() -> std::io::Result<()> {
 /// is idempotent and keeps whatever else the file holds. Never a file in the
 /// user's own home, and never through a symlink: a fenced agent owns the home,
 /// so a link it plants there (or one the old fence left) is replaced by a
-/// plain file, and a linked `.claude`/`.codex`/`.vibe` dir is skipped
-/// (`agent_global::contained_path`). Best effort, logged.
+/// plain file, and a linked `.claude`/`.codex`/`.vibe` dir is skipped. The
+/// file's directory is opened by handle (`services::home_io`) and every read
+/// and write is relative to it, so a directory the agent swaps meanwhile
+/// cannot redirect the registration. Best effort, logged.
 pub fn register_hooks_in_home(home: &std::path::Path) {
     let plain = |rel: &str| {
-        let path = crate::services::agent_global::contained_path(home, rel);
-        if path.is_none() {
+        let file = HomeFile::open(home, rel);
+        if file.is_none() {
             eprintln!("agent_session: {} in {} is not a plain path; hook skipped", rel, home.display());
         }
-        path
+        file
     };
     if let Some(settings) = plain(".claude/settings.json") {
         if let Err(e) = register_hook_in_settings(&settings) {
@@ -1585,7 +1588,7 @@ pub fn register_hooks_in_home(home: &std::path::Path) {
         }
     }
     if let Some(hooks) = plain(".vibe/hooks.toml") {
-        if let Err(e) = register_vibe_hook_in(hooks.parent().unwrap_or(home)) {
+        if let Err(e) = write_vibe_hooks(&hooks, false) {
             eprintln!("agent_session: register vibe hook in {}: {e}", home.display());
         }
     }
@@ -1599,21 +1602,21 @@ pub fn register_hooks_in_home(home: &std::path::Path) {
 /// there before the fence made the file read-only must not survive into the
 /// next local-model tab (threat model gap 7).
 pub fn register_vibe_hook_in(home: &std::path::Path) -> std::io::Result<()> {
-    write_vibe_hooks(home, is_local_vibe_home(home))
+    let file = HomeFile::open(home, "hooks.toml")
+        .ok_or_else(|| std::io::Error::other(format!("{} is not a directory", home.display())))?;
+    write_vibe_hooks(&file, is_local_vibe_home(home))
 }
 
-fn write_vibe_hooks(home: &std::path::Path, eldrun_owned: bool) -> std::io::Result<()> {
-    use crate::services::agent_global::{read_plain, write_replacing};
-    std::fs::create_dir_all(home)?;
-    let path = home.join("hooks.toml");
+fn write_vibe_hooks(file: &HomeFile, eldrun_owned: bool) -> std::io::Result<()> {
     if eldrun_owned {
         let fresh = vibe_hook_block()?;
-        if read_plain(&path).as_deref() != Some(fresh.as_bytes()) {
-            write_replacing(&path, fresh.as_bytes())?;
+        if file.read().as_deref() != Some(fresh.as_bytes()) {
+            file.write(fresh.as_bytes())?;
         }
         return Ok(());
     }
-    let mut content = read_plain(&path)
+    let mut content = file
+        .read()
         .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
         .unwrap_or_default();
     if content.lines().any(|line| line.trim() == "name = \"eldrun-session\"") {
@@ -1624,7 +1627,7 @@ fn write_vibe_hooks(home: &std::path::Path, eldrun_owned: bool) -> std::io::Resu
     }
     content.push('\n');
     content.push_str(&vibe_hook_block()?);
-    write_replacing(&path, content.as_bytes())
+    file.write(content.as_bytes())
 }
 
 fn vibe_hook_block() -> std::io::Result<String> {
@@ -1929,11 +1932,9 @@ pub const HOOK_EVENTS: [&str; 6] = [
 /// event: a handler already pointing at our script is left untouched, and an
 /// install that predates an event gains just that event. Matchers are omitted
 /// so each hook fires for every `source` / tool / notification type.
-fn register_hook_in_settings(settings_path: &std::path::Path) -> std::io::Result<()> {
-    if let Some(parent) = settings_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut root: serde_json::Value = crate::services::agent_global::read_plain(settings_path)
+fn register_hook_in_settings(settings: &HomeFile) -> std::io::Result<()> {
+    let mut root: serde_json::Value = settings
+        .read()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_else(|| serde_json::json!({}));
     if !root.is_object() {
@@ -1978,7 +1979,7 @@ fn register_hook_in_settings(settings_path: &std::path::Path) -> std::io::Result
     }
 
     let serialized = serde_json::to_string_pretty(&root).map_err(std::io::Error::other)?;
-    crate::services::agent_global::write_replacing(settings_path, serialized.as_bytes())?;
+    settings.write(serialized.as_bytes())?;
     Ok(())
 }
 
@@ -2037,9 +2038,10 @@ pub fn codex_registered_events(src: &str, cmd: &str) -> std::collections::HashSe
 /// Testable core of [`register_codex_hook`] against an explicit config path.
 /// Appends one block per event of [`CODEX_HOOK_EVENTS`] the file does not
 /// already hold.
-fn register_codex_hook_in(config_path: &std::path::Path) -> std::io::Result<()> {
+fn register_codex_hook_in(config: &HomeFile) -> std::io::Result<()> {
     let cmd = hook_command();
-    let mut content = crate::services::agent_global::read_plain(config_path)
+    let mut content = config
+        .read()
         .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
         .unwrap_or_default();
     let have = codex_registered_events(&content, &cmd);
@@ -2077,7 +2079,7 @@ fn register_codex_hook_in(config_path: &std::path::Path) -> std::io::Result<()> 
              timeout = 10\n\n",
         ));
     }
-    crate::services::agent_global::write_replacing(config_path, content.as_bytes())?;
+    config.write(content.as_bytes())?;
     Ok(())
 }
 
@@ -2094,11 +2096,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let outside = tmp.path().join("outside.toml");
         std::fs::write(&outside, "model = \"o3\"\n").unwrap();
-        let codex = tmp.path().join("home/.codex");
+        let home = tmp.path().join("home");
+        let codex = home.join(".codex");
         std::fs::create_dir_all(&codex).unwrap();
         let config = codex.join("config.toml");
         std::os::unix::fs::symlink(&outside, &config).unwrap();
-        register_codex_hook_in(&config).unwrap();
+        register_codex_hook_in(&HomeFile::open(&home, ".codex/config.toml").unwrap()).unwrap();
         assert_eq!(std::fs::read_to_string(&outside).unwrap(), "model = \"o3\"\n");
         assert!(std::fs::symlink_metadata(&config).unwrap().is_file());
         let out = std::fs::read_to_string(&config).unwrap();
@@ -2107,21 +2110,32 @@ mod tests {
 
         let outside_json = tmp.path().join("outside.json");
         std::fs::write(&outside_json, "{}").unwrap();
-        let settings = tmp.path().join("home/.claude/settings.json");
+        let settings = home.join(".claude/settings.json");
         std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
         std::os::unix::fs::symlink(&outside_json, &settings).unwrap();
-        register_hook_in_settings(&settings).unwrap();
+        register_hook_in_settings(&HomeFile::open(&home, ".claude/settings.json").unwrap()).unwrap();
         assert_eq!(std::fs::read_to_string(&outside_json).unwrap(), "{}");
         assert!(std::fs::symlink_metadata(&settings).unwrap().is_file());
 
         let outside_hooks = tmp.path().join("outside-hooks.toml");
         std::fs::write(&outside_hooks, "").unwrap();
-        let vibe = tmp.path().join("home/.vibe");
+        let vibe = home.join(".vibe");
         std::fs::create_dir_all(&vibe).unwrap();
         std::os::unix::fs::symlink(&outside_hooks, vibe.join("hooks.toml")).unwrap();
-        write_vibe_hooks(&vibe, false).unwrap();
+        write_vibe_hooks(&HomeFile::open(&home, ".vibe/hooks.toml").unwrap(), false).unwrap();
         assert_eq!(std::fs::read_to_string(&outside_hooks).unwrap(), "");
         assert!(std::fs::symlink_metadata(vibe.join("hooks.toml")).unwrap().is_file());
+
+        // The directory swapped after the file's handle was opened: the
+        // registration lands in the moved directory, never at the link.
+        let settings = HomeFile::open(&home, ".claude/settings.json").unwrap();
+        std::fs::rename(home.join(".claude"), home.join(".claude.moved")).unwrap();
+        std::os::unix::fs::symlink(tmp.path(), home.join(".claude")).unwrap();
+        std::fs::write(home.join(".claude.moved/settings.json"), "{\"model\": \"x\"}").unwrap();
+        register_hook_in_settings(&settings).unwrap();
+        assert!(!tmp.path().join("settings.json").exists());
+        let moved = std::fs::read_to_string(home.join(".claude.moved/settings.json")).unwrap();
+        assert!(moved.contains("\"model\": \"x\"") && moved.contains(&hook_command()));
 
         // A linked config dir is skipped altogether.
         let home = tmp.path().join("linked");
@@ -2211,11 +2225,12 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         let hooks = home.join("hooks.toml");
         std::fs::write(&hooks, "[[hooks]]\nname = \"planted\"\ntype = \"post_agent\"\ncommand = \"true\"\n").unwrap();
-        write_vibe_hooks(&home, true).unwrap();
+        let file = HomeFile::open(&home, "hooks.toml").unwrap();
+        write_vibe_hooks(&file, true).unwrap();
         let once = std::fs::read_to_string(&hooks).unwrap();
         assert!(!once.contains("planted"));
         assert_eq!(once.matches("name = \"eldrun-session\"").count(), 1);
-        write_vibe_hooks(&home, true).unwrap();
+        write_vibe_hooks(&file, true).unwrap();
         assert_eq!(std::fs::read_to_string(&hooks).unwrap(), once);
         std::fs::remove_dir_all(home).unwrap();
     }
@@ -2996,8 +3011,8 @@ mod tests {
         )
         .unwrap();
 
-        register_hook_in_settings(&settings).unwrap();
-        register_hook_in_settings(&settings).unwrap(); // second call must not duplicate
+        register_hook_in_settings(&HomeFile::open(&tmp, "settings.json").unwrap()).unwrap();
+        register_hook_in_settings(&HomeFile::open(&tmp, "settings.json").unwrap()).unwrap(); // second call must not duplicate
 
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
@@ -3037,7 +3052,7 @@ mod tests {
             ),
         )
         .unwrap();
-        register_hook_in_settings(&settings).unwrap();
+        register_hook_in_settings(&HomeFile::open(&tmp, "settings.json").unwrap()).unwrap();
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
         for ev in HOOK_EVENTS {
@@ -3059,8 +3074,8 @@ mod tests {
         )
         .unwrap();
 
-        register_codex_hook_in(&config).unwrap();
-        register_codex_hook_in(&config).unwrap(); // idempotent
+        register_codex_hook_in(&HomeFile::open(&tmp, "config.toml").unwrap()).unwrap();
+        register_codex_hook_in(&HomeFile::open(&tmp, "config.toml").unwrap()).unwrap(); // idempotent
 
         let out = std::fs::read_to_string(&config).unwrap();
         // original content preserved verbatim at the top
@@ -3090,7 +3105,7 @@ mod tests {
             ),
         )
         .unwrap();
-        register_codex_hook_in(&config).unwrap();
+        register_codex_hook_in(&HomeFile::open(&tmp, "config.toml").unwrap()).unwrap();
         let out = std::fs::read_to_string(&config).unwrap();
         assert_eq!(out.matches("[[hooks.SessionStart]]").count(), 1);
         assert_eq!(out.matches("[[hooks.Stop]]").count(), 1);

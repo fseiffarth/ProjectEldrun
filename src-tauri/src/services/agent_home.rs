@@ -14,11 +14,16 @@
 //! (`services::agent_auth`), so a login made anywhere sticks everywhere.
 //! `~/.cache` of every home is a throwaway tmpfs on Linux.
 //!
+//! Everything written into a home here runs unfenced against a tree the
+//! scope's agent may be rewriting, so it goes through directory handles
+//! (`services::home_io`), never a checked path.
+//!
 //! Design and rationale: `docs/context/agent_authority.md`. AppHandle-free.
 
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::services::home_io::{HomeDir, HomeFile};
 use crate::storage;
 
 /// The directory under the state dir holding every scope's home.
@@ -126,10 +131,16 @@ fn prepare_home_in(
     // Before the logins are linked and the hooks registered: both write
     // where the old fence's leftovers sit.
     for adopted in [".codex", ".copilot"] {
-        scrub_fence_leftovers(&home.join(adopted));
+        scrub_fence_leftovers(home, adopted);
     }
-    // The tmpfs the Linux fence mounts over it needs a mount point on disk.
-    let _ = std::fs::create_dir_all(home.join(".cache"));
+    // The tmpfs the Linux fence mounts over it needs a mount point on disk —
+    // a directory, not whatever an agent left at the name.
+    if HomeDir::open(home, ".cache").is_none() {
+        if let Some(stray) = HomeFile::open(home, ".cache") {
+            let _ = stray.remove();
+        }
+        let _ = HomeDir::open(home, ".cache");
+    }
     // The user's Eldrun-wide instructions, skills, hooks and MCP servers,
     // before Eldrun's own hooks so a merge never displaces those.
     if let Err(e) = crate::services::agent_global::apply_to_home(state_dir, home) {
@@ -177,7 +188,7 @@ fn seed_home(state_dir: &Path, home: &Path, scope_id: &str, roots: &[PathBuf], s
         }
         let roots: Vec<String> = roots.iter().map(|r| r.to_string_lossy().into_owned()).collect();
         seed_claude_transcripts(&user_home.join(".claude").join("projects"), home, &roots);
-        seed_claude_json(&user_home.join(".claude.json"), &home.join(".claude.json"), &roots);
+        seed_claude_json(&user_home.join(".claude.json"), home, &roots);
     }
 }
 
@@ -196,21 +207,21 @@ const LEGACY_STAGE_MOUNT: &str = "/run/eldrun-agent-config";
 /// the hook registration. No CLI writes an empty read-only file of its own;
 /// Codex and the login link recreate what they need. Cheap: one directory
 /// listing, run at every spawn since existing homes were seeded before this.
-fn scrub_fence_leftovers(dir: &Path) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+/// Through the directory handle: the names are only ever unlinked relative
+/// to the `.codex` that was opened, never through a link planted at its path.
+fn scrub_fence_leftovers(home: &Path, adopted: &str) {
+    let Some(dir) = HomeDir::open_existing(home, adopted) else {
         return;
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Ok(meta) = std::fs::symlink_metadata(&path) else {
-            continue;
-        };
-        let stage_link = meta.file_type().is_symlink()
-            && std::fs::read_link(&path).is_ok_and(|target| target.starts_with(LEGACY_STAGE_MOUNT));
-        let mount_point = meta.is_file() && meta.len() == 0 && meta.permissions().readonly();
+    for name in dir.names() {
+        let Some(file) = dir.file(&name) else { continue };
+        let Some(meta) = file.metadata() else { continue };
+        let stage_link = meta.is_symlink
+            && file.read_link().is_some_and(|target| target.starts_with(LEGACY_STAGE_MOUNT));
+        let mount_point = meta.is_file && meta.len == 0 && meta.mode & 0o222 == 0;
         if stage_link || mount_point {
-            if let Err(e) = std::fs::remove_file(&path) {
-                eprintln!("agent_home: drop the old fence's {}: {e}", path.display());
+            if let Err(e) = file.remove() {
+                eprintln!("agent_home: drop the old fence's {}: {e}", file.path().display());
             }
         }
     }
@@ -218,11 +229,16 @@ fn scrub_fence_leftovers(dir: &Path) {
 
 /// Copy every transcript dir of `user_projects` that belongs to one of `roots`
 /// into `<home>/.claude/projects`. Dirs the home already has are left alone.
+/// Seeding runs when the home has no seeded marker — which an agent can
+/// delete — so the copy is written through directory handles like every
+/// other write into a home.
 pub(crate) fn seed_claude_transcripts(user_projects: &Path, home: &Path, roots: &[String]) {
     let Ok(entries) = std::fs::read_dir(user_projects) else {
         return;
     };
-    let dest_root = home.join(".claude").join("projects");
+    let Some(dest_root) = HomeDir::open(home, ".claude/projects") else {
+        return;
+    };
     for entry in entries.flatten() {
         let src = entry.path();
         if !src.is_dir() {
@@ -234,28 +250,30 @@ pub(crate) fn seed_claude_transcripts(user_projects: &Path, home: &Path, roots: 
         if !crate::services::sandbox::transcript_dir_belongs_to(&src, name, roots) {
             continue;
         }
-        let dst = dest_root.join(name);
-        if dst.exists() {
+        if dest_root.file(name).is_some_and(|f| f.exists()) {
             continue;
         }
+        let Some(dst) = dest_root.subdir(name) else { continue };
         if let Err(e) = copy_tree(&src, &dst) {
             eprintln!("agent_home: seed transcripts {}: {e}", src.display());
         }
     }
 }
 
-/// Recursive copy of regular files and directories; symlinks are skipped
-/// (a transcript tree holds none of Claude's own making).
-fn copy_tree(src: &Path, dst: &Path) -> io::Result<()> {
-    std::fs::create_dir_all(dst)?;
+/// Recursive copy of regular files and directories into an opened home
+/// directory; symlinks are skipped (a transcript tree holds none of Claude's
+/// own making).
+fn copy_tree(src: &Path, dst: &HomeDir) -> io::Result<()> {
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let ty = entry.file_type()?;
-        let to = dst.join(entry.file_name());
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else { continue };
         if ty.is_dir() {
-            copy_tree(&entry.path(), &to)?;
+            let Some(sub) = dst.subdir(&name) else { continue };
+            copy_tree(&entry.path(), &sub)?;
         } else if ty.is_file() {
-            std::fs::copy(entry.path(), &to)?;
+            let Some(to) = dst.file(&name) else { continue };
+            to.write(&std::fs::read(entry.path())?)?;
         }
     }
     Ok(())
@@ -275,8 +293,12 @@ pub(crate) const CLAUDE_JSON_IDENTITY_KEYS: &[&str] = &[
 
 /// Seed `<home>/.claude.json` from the user's file: the identity keys and the
 /// `projects` entries at or under `roots` (prompt history, folder trust). The
-/// destination is written only when absent.
-pub(crate) fn seed_claude_json(user_file: &Path, dst: &Path, roots: &[String]) {
+/// destination is written only when absent (a link there counts as present
+/// and is never followed).
+pub(crate) fn seed_claude_json(user_file: &Path, home: &Path, roots: &[String]) {
+    let Some(dst) = HomeFile::open(home, ".claude.json") else {
+        return;
+    };
     if dst.exists() {
         return;
     }
@@ -287,11 +309,8 @@ pub(crate) fn seed_claude_json(user_file: &Path, dst: &Path, roots: &[String]) {
         return;
     };
     let seeded = filtered_claude_json(&value, roots);
-    if let Some(parent) = dst.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
     if let Ok(body) = serde_json::to_vec_pretty(&seeded) {
-        let _ = std::fs::write(dst, body);
+        let _ = dst.write(&body);
     }
 }
 
@@ -395,6 +414,34 @@ mod tests {
         std::fs::write(dest.join("-work-p/s.jsonl"), "changed").unwrap();
         seed_claude_transcripts(&user, &home, &["/work/p".into()]);
         assert_eq!(std::fs::read_to_string(dest.join("-work-p/s.jsonl")).unwrap(), "changed");
+    }
+
+    /// A re-seed forced by a deleted marker meets a home the agent prepared:
+    /// `.claude` linked out of the home, `.claude.json` linked at a host
+    /// file. Nothing is written through either.
+    #[cfg(unix)]
+    #[test]
+    fn seeding_never_writes_through_a_planted_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        let user = tmp.path().join("user-projects");
+        let home = tmp.path().join("home");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(user.join("-work-p")).unwrap();
+        std::fs::write(user.join("-work-p/s.jsonl"), "{\"cwd\":\"/work/p\"}\n").unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        std::os::unix::fs::symlink(&outside, home.join(".claude")).unwrap();
+        let victim = tmp.path().join("victim.json");
+        std::fs::write(&victim, "{}").unwrap();
+        std::os::unix::fs::symlink(&victim, home.join(".claude.json")).unwrap();
+        let user_json = tmp.path().join("user.json");
+        std::fs::write(&user_json, r#"{"oauthAccount":{"emailAddress":"a@b"}}"#).unwrap();
+
+        seed_claude_transcripts(&user, &home, &["/work/p".into()]);
+        seed_claude_json(&user_json, &home, &["/work/p".into()]);
+
+        assert!(!outside.join("projects").exists());
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "{}");
     }
 
     /// The old fence's mount points (empty, read-only) and stage link go;

@@ -76,6 +76,9 @@ pub mod git_guard;
 // unpublished-`master` rename that runs just before a publish.
 pub mod git_init;
 pub mod git_peer;
+// Directory-handle-relative I/O inside agent-writable homes: what every
+// unfenced write into a scope home goes through.
+pub mod home_io;
 pub mod hpc_mode;
 // Which IDE a project tree belongs to (`.idea/`, `.vs/` + `*.sln`, `.vscode/`)
 // and which installed program opens it — never one named inside the tree.

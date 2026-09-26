@@ -44,6 +44,8 @@ use std::time::{Duration, SystemTime};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
+use crate::services::home_io::HomeFile;
+
 /// The variable Copilot reads before `GH_TOKEN`, `GITHUB_TOKEN` and its own
 /// stored logins.
 pub const TOKEN_ENV: &str = "COPILOT_GITHUB_TOKEN";
@@ -72,14 +74,14 @@ pub(crate) fn prepare_home(scope_id: &str) -> PathBuf {
 
 fn prepare_home_in(state_dir: &Path, scope_id: &str) -> PathBuf {
     let dir = home_in(state_dir, scope_id);
-    if std::fs::create_dir_all(&dir).is_ok() {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let private = std::fs::Permissions::from_mode(0o700);
-            let _ = std::fs::set_permissions(&dir, private);
-        }
-        ensure_plaintext_setting(&dir.join("settings.json"));
+    // Through a directory handle (`home_io`): the home is the agent's and
+    // this runs unfenced.
+    let settings = dir
+        .parent()
+        .and_then(|home| HomeFile::open(home, ".copilot/settings.json"));
+    if let Some(settings) = settings {
+        let _ = settings.dir().set_private();
+        ensure_plaintext_setting(&settings);
     }
     dir
 }
@@ -112,34 +114,25 @@ fn parse_jsonc(text: &str) -> Option<(String, Value)> {
     Some((header, value))
 }
 
-/// Write by temp file + rename in the same directory: Copilot may read the
-/// file at any moment and must never see half of it.
-fn write_private(path: &Path, header: &str, value: &Value) -> std::io::Result<()> {
+/// Write by temp file + rename in the same directory, relative to its handle:
+/// Copilot may read the file at any moment and must never see half of it.
+fn write_private(file: &HomeFile, header: &str, value: &Value) -> std::io::Result<()> {
     let body = serde_json::to_string_pretty(value).map_err(std::io::Error::other)?;
-    let tmp = path.with_extension(format!("eldrun-{}.tmp", std::process::id()));
-    std::fs::write(&tmp, format!("{header}{body}\n"))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-    }
-    std::fs::rename(&tmp, path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&tmp);
-    })
+    file.write(format!("{header}{body}\n").as_bytes())
 }
 
 /// Turn on Copilot's own plain-text token storage in the scope's settings, so
 /// a `/login` inside the fence stores the token where [`start`] can collect it
 /// instead of stopping at the vault question. A file that does not parse is left
 /// alone: the user then sees the question once, and "Yes" works just as well.
-fn ensure_plaintext_setting(path: &Path) {
-    let (header, mut value) = match std::fs::read_to_string(path) {
-        Ok(text) => match parse_jsonc(&text) {
+fn ensure_plaintext_setting(file: &HomeFile) {
+    let (header, mut value) = match file.read().and_then(|bytes| String::from_utf8(bytes).ok()) {
+        Some(text) => match parse_jsonc(&text) {
             Some(parsed) => parsed,
             None => return,
         },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), Value::Object(Map::new())),
-        Err(_) => return,
+        None if !file.exists() => (String::new(), Value::Object(Map::new())),
+        None => return,
     };
     let Some(obj) = value.as_object_mut() else {
         return;
@@ -148,8 +141,8 @@ fn ensure_plaintext_setting(path: &Path) {
         return;
     }
     obj.insert(PLAINTEXT_SETTING.into(), Value::Bool(true));
-    if let Err(e) = write_private(path, &header, &value) {
-        eprintln!("copilot_auth: settings {}: {e}", path.display());
+    if let Err(e) = write_private(file, &header, &value) {
+        eprintln!("copilot_auth: settings {}: {e}", file.path().display());
     }
 }
 
@@ -190,13 +183,13 @@ fn preferred_token(config: &Value) -> Option<String> {
 
 /// Remove every stored token from the config, keeping the rest of it (the
 /// logged-in user list included) as Copilot wrote it.
-fn strip_tokens(path: &Path, header: &str, mut config: Value) -> std::io::Result<()> {
+fn strip_tokens(file: &HomeFile, header: &str, mut config: Value) -> std::io::Result<()> {
     if let Some(obj) = config.as_object_mut() {
         for key in TOKEN_KEYS {
             obj.remove(*key);
         }
     }
-    write_private(path, header, &config)
+    write_private(file, header, &config)
 }
 
 /// The adoption rule of the module docs. `stored_still_valid` is asked only
@@ -279,8 +272,8 @@ async fn github_login(token: &str) -> Result<Option<String>, String> {
 /// token from it. A keyring write that fails (a locked keyring) keeps the file
 /// as it is, so the next pass can try again rather than lose the login.
 /// Returns whether the file was settled (and needs no retry).
-fn process_config(path: &Path) -> bool {
-    let Ok(text) = std::fs::read_to_string(path) else {
+fn process_config(file: &HomeFile) -> bool {
+    let Some(text) = file.read().and_then(|bytes| String::from_utf8(bytes).ok()) else {
         return true;
     };
     let Some((header, config)) = parse_jsonc(&text) else {
@@ -303,32 +296,40 @@ fn process_config(path: &Path) -> bool {
         } else if stored.as_deref() != Some(found.as_str()) {
             eprintln!(
                 "copilot_auth: {} holds a different Copilot sign-in; kept the stored one",
-                path.display()
+                file.path().display()
             );
         }
     }
-    if let Err(e) = strip_tokens(path, &header, config) {
-        eprintln!("copilot_auth: clear {}: {e}", path.display());
+    if let Err(e) = strip_tokens(file, &header, config) {
+        eprintln!("copilot_auth: clear {}: {e}", file.path().display());
         return false;
     }
     true
+}
+
+/// The regular file's modification time, read off the opened inode.
+fn modified(file: &HomeFile) -> Option<SystemTime> {
+    file.open_read()?.metadata().ok()?.modified().ok()
 }
 
 /// One pass over every scope's `config.json`, skipping files unchanged since
 /// they were last settled.
 fn sweep(state_dir: &Path, seen: &mut HashMap<PathBuf, SystemTime>) {
     for home in crate::services::agent_home::existing_homes_in(state_dir) {
-        let config = home.join(".copilot").join("config.json");
-        let Some(mtime) = std::fs::metadata(&config).and_then(|m| m.modified()).ok() else {
+        let Some(config) = HomeFile::open_existing(&home, ".copilot/config.json") else {
             continue;
         };
-        if seen.get(&config) == Some(&mtime) {
+        let Some(mtime) = modified(&config) else {
+            continue;
+        };
+        let key = config.path();
+        if seen.get(&key) == Some(&mtime) {
             continue;
         }
         if process_config(&config) {
             // Our own rewrite moved the mtime; record that one, not the old.
-            let settled = std::fs::metadata(&config).and_then(|m| m.modified()).unwrap_or(mtime);
-            seen.insert(config, settled);
+            let settled = modified(&config).unwrap_or(mtime);
+            seen.insert(key, settled);
         }
     }
 }
@@ -454,6 +455,33 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn a_planted_temporary_link_cannot_redirect_a_copilot_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, "keep").unwrap();
+        let planted = path.with_extension(format!("eldrun-{}.tmp", std::process::id()));
+        std::os::unix::fs::symlink(&victim, planted).unwrap();
+        let file = HomeFile::open(dir.path(), "config.json").unwrap();
+        write_private(&file, "", &serde_json::json!({"model": "x"})).unwrap();
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
+        assert!(std::fs::symlink_metadata(&path).unwrap().is_file());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn preparing_a_copilot_home_refuses_a_directory_link() {
+        let state = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let dir = home_in(state.path(), "scope");
+        std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(outside.path(), &dir).unwrap();
+        prepare_home_in(state.path(), "scope");
+        assert!(!outside.path().join("settings.json").exists());
+    }
+
+    #[test]
     fn stripping_removes_only_the_tokens() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
@@ -462,7 +490,7 @@ mod tests {
             "copilot_tokens": {"https://github.com:alice": TOKEN_A},
             "loggedInUsers": [{"host": "https://github.com", "login": "alice"}],
         });
-        strip_tokens(&path, "// managed\n", config).unwrap();
+        strip_tokens(&HomeFile::open(dir.path(), "config.json").unwrap(), "// managed\n", config).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.starts_with("// managed\n"));
         assert!(!text.contains(TOKEN_A));
