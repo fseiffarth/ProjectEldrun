@@ -734,6 +734,7 @@ export const en = {
   "settings.agentLoginImport": "Import from this computer",
   "settings.agentLoginSignOut": "Sign out",
   "settings.agentLoginBlocked": "A tab signed in as {account} while Eldrun holds {stored}: not adopted. Sign out first to switch accounts.",
+  "settings.agentLoginBlockedCommand": "A tab wrote a login whose {field} is a command, not a key: not shared. Log in again with a plain key.",
   "settings.agentFenceCargoCredentials": "Allow Cargo registry credential files",
   "settings.agentFenceCargoCredentialsHelp": "Off by default. Enable when an agent needs registry tokens, for example to publish a Rust package. This exposes credentials in allowed Cargo paths to newly started fenced agents; it does not change agent login or resume. Tokens inherited through environment variables are unaffected.",
   "settings.copilotFenceAuth": "Copilot sign-in for fenced tabs",

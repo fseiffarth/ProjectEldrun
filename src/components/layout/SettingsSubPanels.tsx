@@ -676,7 +676,9 @@ interface AgentLogin {
   signed_in: boolean;
   account: string | null;
   importable: boolean;
-  blocked: { account: string; stored: string } | null;
+  /** A tab's login the keeper refused: another account, or a file that
+   *  names a command where a credential belongs. */
+  blocked: { account: string | null; stored: string | null; command: string | null } | null;
   shared: boolean;
 }
 
@@ -731,7 +733,9 @@ function AgentLoginsRows() {
               {l.blocked && (
                 <span className="settings-help pill-fence-live-note">
                   {" "}
-                  {t("settings.agentLoginBlocked", { account: l.blocked.account, stored: l.blocked.stored })}
+                  {l.blocked.command
+                    ? t("settings.agentLoginBlockedCommand", { field: l.blocked.command })
+                    : t("settings.agentLoginBlocked", { account: l.blocked.account ?? "", stored: l.blocked.stored ?? "" })}
                 </span>
               )}
             </span>

@@ -7123,6 +7123,7 @@ export const dict: Dict = {
   "settings.agentLoginImport": "Von diesem Rechner importieren",
   "settings.agentLoginSignOut": "Abmelden",
   "settings.agentLoginBlocked": "Ein Tab hat sich als {account} angemeldet, Eldrun hält {stored}: nicht übernommen. Zum Kontowechsel erst abmelden.",
+  "settings.agentLoginBlockedCommand": "Ein Tab hat einen Login geschrieben, dessen {field} ein Befehl statt eines Schlüssels ist: nicht geteilt. Mit einem einfachen Schlüssel erneut anmelden.",
   "newTabMenu.groupHostSession": "Host-Sitzung – ohne Fence",
   "newTabMenu.hostSessionEntry": "{label} mit vollem Zugriff auf diesen Rechner",
   "newTabMenu.hostSessionLabel": "{label} · Host",

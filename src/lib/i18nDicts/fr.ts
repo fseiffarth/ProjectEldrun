@@ -7120,6 +7120,7 @@ export const dict: Dict = {
   "settings.agentLoginImport": "Importer depuis cet ordinateur",
   "settings.agentLoginSignOut": "Se déconnecter",
   "settings.agentLoginBlocked": "Un onglet s'est connecté en tant que {account} alors qu'Eldrun garde {stored} : non adopté. Déconnectez-vous d'abord pour changer de compte.",
+  "settings.agentLoginBlockedCommand": "Un onglet a écrit une connexion dont {field} est une commande, pas une clé : non partagée. Reconnectez-vous avec une clé simple.",
   "newTabMenu.groupHostSession": "Session hôte — sans barrière",
   "newTabMenu.hostSessionEntry": "{label} avec un accès complet à cet ordinateur",
   "newTabMenu.hostSessionLabel": "{label} · Hôte",

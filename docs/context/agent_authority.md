@@ -255,7 +255,12 @@ and places the store's bytes into every other home; what it last placed per
 home is recorded in the store (`.placed/`), which is how a tab's write is
 told from a stale copy. Which paths are shared is the registry's
 `auth_paths` column (`commands::agents`, Linux survey 2026-09-25): only
-files that hold a credential and can never name a command. A config that
+files that hold a credential and can never name a command. The survey missed
+Pi: its `auth.json` runs a key that starts with `!` through a shell on every
+read, so a fenced tab could have planted a command that ran in every other
+scope and unfenced in the Host session (2026-09-26). The keeper now refuses
+a Pi login whose key is not a literal (`agent_auth::names_command`) and shows
+why in the Agents view, the same way as a refused account. A config that
 mixes both (Continue's `config.yaml`, Crush's `crush.json`, Aider's `.env`),
 a login in a database beside other state (Kiro, Kilo, OpenClaw) or one in
 the keyring stays per scope. Directories that hold nothing but a login

@@ -7118,6 +7118,7 @@ export const dict: Dict = {
   "settings.agentLoginImport": "Importa da questo computer",
   "settings.agentLoginSignOut": "Esci",
   "settings.agentLoginBlocked": "Una scheda ha effettuato l'accesso come {account} mentre Eldrun conserva {stored}: non adottato. Esci prima per cambiare account.",
+  "settings.agentLoginBlockedCommand": "Una scheda ha scritto un accesso il cui {field} è un comando, non una chiave: non condiviso. Accedi di nuovo con una chiave semplice.",
   "newTabMenu.groupHostSession": "Sessione host — senza recinto",
   "newTabMenu.hostSessionEntry": "{label} con accesso completo a questo computer",
   "newTabMenu.hostSessionLabel": "{label} · Host",

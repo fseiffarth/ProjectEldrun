@@ -7118,6 +7118,7 @@ export const dict: Dict = {
   "settings.agentLoginImport": "Importar de este equipo",
   "settings.agentLoginSignOut": "Cerrar sesión",
   "settings.agentLoginBlocked": "Una pestaña inició sesión como {account} mientras Eldrun guarda {stored}: no se adoptó. Cierra sesión primero para cambiar de cuenta.",
+  "settings.agentLoginBlockedCommand": "Una pestaña escribió un inicio de sesión cuyo {field} es un comando, no una clave: no se compartió. Vuelve a iniciar sesión con una clave simple.",
   "newTabMenu.groupHostSession": "Sesión de host — sin límite",
   "newTabMenu.hostSessionEntry": "{label} con acceso total a este equipo",
   "newTabMenu.hostSessionLabel": "{label} · Host",
