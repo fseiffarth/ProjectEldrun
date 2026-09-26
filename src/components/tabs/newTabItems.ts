@@ -7,6 +7,7 @@ import {
 import type { CustomAgent } from "../../types";
 import type { AddMenuEntry } from "./AddTabMenuList";
 import type { TranslationKey } from "../../lib/i18n";
+import { cloudLaunchesFor, type CloudLaunch } from "../../lib/agents/cloudSessions";
 
 /**
  * A static entry in the "new tab" add menu. Shared by the main-window `TabBar`
@@ -164,6 +165,30 @@ export function buildStaticTabSpec(
   };
 }
 
+/**
+ * The tab payload for a built-in agent's *cloud* session (see
+ * `lib/agents/cloudSessions`). Unlike {@link buildStaticTabSpec} it mints no
+ * session id, no `ELDRUN_TAB_UID` and no session-rename input: the session is
+ * the vendor's, and a tab without an id is one restore drops rather than
+ * relaunching into a second cloud session.
+ */
+export function buildCloudTabSpec(
+  item: StaticMenuItem,
+  launch: CloudLaunch,
+  task: string,
+  projectCwd: string,
+  t: (key: TranslationKey, vars?: Record<string, string>) => string,
+): Omit<TabEntry, "key"> {
+  return {
+    label: t("newTabMenu.cloudTabLabel", { agent: itemLabel(item, t) }),
+    cmd: item.cmd,
+    args: launch.args(task),
+    env: { ...(item.env ?? {}) },
+    cwd: projectCwd,
+    kind: item.kind,
+  };
+}
+
 /** Stable empty custom-agent array, so a settings selector's `?? …` fallback
  *  keeps a constant reference (a fresh `[]` each render would loop the probe
  *  effect that depends on it). */
@@ -180,9 +205,15 @@ export function compactAgentMenuEntries(
   compactBins: ReadonlySet<string>,
 ): AddMenuEntry[] {
   return entries.filter(
-    (entry) => compactBins.has(entry.key) || entry.key === "__add_custom_agent__",
+    (entry) =>
+      compactBins.has(entry.key) ||
+      entry.key === "__add_custom_agent__" ||
+      entry.key === CLOUD_SESSION_KEY,
   );
 }
+
+/** The Agents group's "Cloud session" row — kept in the compact menu too. */
+export const CLOUD_SESSION_KEY = "__cloud_session__";
 
 /** The installed built-in commands from the backend's agent registry. Agent
  * ids are not necessarily executable names (Google Antigravity is
@@ -258,8 +289,11 @@ export function agentMenuEntries(opts: {
   installedCmds: Set<string> | null;
   customAgents: CustomAgent[];
   pick: (item: StaticMenuItem) => void;
+  /** Start one of an installed built-in's cloud launches. Unset → no
+   *  "Cloud session" row (a scope where no cloud session makes sense). */
+  pickCloud?: (item: StaticMenuItem, launch: CloudLaunch) => void;
   onAddCustom: () => void;
-  t: (key: TranslationKey) => string;
+  t: (key: TranslationKey, vars?: Record<string, string>) => string;
 }): AddMenuEntry[] {
   const builtins = AGENT_ITEMS.filter((item) =>
     opts.installedBuiltins?.has(item.cmd),
@@ -270,6 +304,36 @@ export function agentMenuEntries(opts: {
     ...(item.cmd === "vibe" ? { untested: "agent.vibeResume" as const } : {}),
     onPick: () => opts.pick(item),
   }));
+  // One row whose fly-out holds every installed built-in's cloud launches,
+  // rather than a cloud twin per agent: most agents have none, and the plain
+  // local launch stays the one-click row it always was.
+  const cloudEntries: AddMenuEntry[] = opts.pickCloud
+    ? AGENT_ITEMS.filter((item) => opts.installedBuiltins?.has(item.cmd)).flatMap((item) =>
+        cloudLaunchesFor(item.cmd).map((launch) => ({
+          key: `cloud:${item.cmd}:${launch.action}`,
+          label: opts.t(
+            launch.action === "new" ? "newTabMenu.cloudNew" : "newTabMenu.cloudOpen",
+            { agent: item.label },
+          ),
+          dot: "☁",
+          color: TAB_ACCENT[item.kind],
+          onPick: () => opts.pickCloud?.(item, launch),
+        })),
+      )
+    : [];
+  const cloudLabel = opts.t("newTabMenu.cloudSession");
+  const cloud: AddMenuEntry[] = cloudEntries.length
+    ? [{
+        key: CLOUD_SESSION_KEY,
+        label: cloudLabel,
+        dot: "☁",
+        color: TAB_ACCENT.agent,
+        untested: "newTabMenu.cloudSession",
+        moreTitle: cloudLabel,
+        moreEntries: cloudEntries,
+        onPick: () => {},
+      }]
+    : [];
   const custom = opts.customAgents.map((ca) => {
     const missing = opts.installedCmds != null && !opts.installedCmds.has(ca.cmd);
     return {
@@ -282,6 +346,7 @@ export function agentMenuEntries(opts: {
   });
   return [
     ...builtins,
+    ...cloud,
     ...custom,
     {
       key: "__add_custom_agent__",

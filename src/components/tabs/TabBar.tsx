@@ -40,6 +40,8 @@ import { TabColorPicker } from "./TabColorPicker";
 import { tabColorCss } from "../../lib/theme/tabColors";
 import { useAddTabMenuData } from "./useAddTabMenuData";
 import { useAgentWorktreePicker } from "./agentWorktrees";
+import type { CloudLaunch } from "../../lib/agents/cloudSessions";
+import { BOX_SCOPE_PREFIX } from "../../lib/terminal/ptyId";
 import { CustomAgentDialog } from "./CustomAgentDialog";
 import { reseedDetached, startDetachedDropSession } from "./detachedDropTargets";
 import { TabHoverCard } from "./TabHoverCard";
@@ -457,6 +459,20 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
       addTab(spec);
     });
   }
+
+  // Cloud sessions clone a project's repository, so they are offered in a
+  // project's menu only — not the root console's or a box's.
+  const handleAddCloud =
+    scope !== "root" && !scope.startsWith(BOX_SCOPE_PREFIX)
+      ? (item: StaticMenuItem, launch: CloudLaunch) => {
+          setMenuPos(null);
+          void worktreePicker.cloudSpecFor(item, launch).then((spec) => {
+            if (!spec) return;
+            focusGroup(groupId);
+            addTab(spec);
+          });
+        }
+      : undefined;
 
   /** Box "+" menu: a Files (Project) tab rooted at ONE member (the viewer
    *  resolves the member's identity from the cwd — see ProjectFilesTab). */
@@ -1492,6 +1508,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   installedCmds: installedCustom,
                   customAgents,
                   pick: handleAdd,
+                  pickCloud: handleAddCloud,
                   onAddCustom: () => {
                     setMenuPos(null);
                     setAgentDialogOpen(true);
@@ -1504,6 +1521,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                     installedCmds: installedCustom,
                     customAgents,
                     pick: handleAdd,
+                    pickCloud: handleAddCloud,
                     onAddCustom: () => {
                       setMenuPos(null);
                       setAgentDialogOpen(true);

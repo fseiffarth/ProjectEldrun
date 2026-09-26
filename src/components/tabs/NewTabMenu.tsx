@@ -29,6 +29,8 @@ import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import { useAddTabMenuData } from "./useAddTabMenuData";
 import { localModelMenuGroup, useLocalModelPlacement } from "./localModelGroup";
 import { useAgentWorktreePicker } from "./agentWorktrees";
+import type { CloudLaunch } from "../../lib/agents/cloudSessions";
+import { BOX_SCOPE_PREFIX } from "../../lib/terminal/ptyId";
 import { useExperimental } from "../../lib/experimental";
 import { useT } from "../../lib/i18n";
 import { registerHostBoundTab } from "../../lib/remote/hostBound";
@@ -115,6 +117,18 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
     });
   };
 
+  // Cloud sessions clone a project's repository, so they are offered in a
+  // project's menu only — not the root console's or a box's.
+  const pickCloud =
+    scope !== ROOT_SCOPE && !scope.startsWith(BOX_SCOPE_PREFIX)
+      ? (item: StaticMenuItem, launch: CloudLaunch) => {
+          void worktreePicker.cloudSpecFor(item, launch).then((spec) => {
+            if (spec) onPick(spec);
+            onClose();
+          });
+        }
+      : undefined;
+
   const pickFixed = (spec: Omit<TabEntry, "key">) => {
     onPick(spec);
     onClose();
@@ -197,6 +211,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
               installedCmds: installedCustom,
               customAgents,
               pick: pickStatic,
+              pickCloud,
               onAddCustom: () => {
                 onClose();
                 onManageAgents();
@@ -209,6 +224,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                 installedCmds: installedCustom,
                 customAgents,
                 pick: pickStatic,
+                pickCloud,
                 onAddCustom: () => {
                   onClose();
                   onManageAgents();

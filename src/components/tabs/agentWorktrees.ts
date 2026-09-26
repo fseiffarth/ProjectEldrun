@@ -35,13 +35,36 @@ import { useT } from "../../lib/i18n";
 import { useDialogs } from "../common/PromptDialogs";
 import type { TabEntry } from "../../stores/tabs";
 import type { StaticMenuItem } from "./newTabItems";
-import { buildStaticTabSpec } from "./newTabItems";
+import { buildCloudTabSpec, buildStaticTabSpec } from "./newTabItems";
 import {
   agentWorktreeChoices,
   isAgentMenuKind,
   worktreeName,
   type GitWorktree,
 } from "../../lib/agents/agentWorktrees";
+import { cleanCloudTask, type CloudLaunch } from "../../lib/agents/cloudSessions";
+
+/**
+ * The tab payload for an agent started in a linked worktree `wt`: cwd there,
+ * and named after the branch on both the tab and the agent's own session so
+ * two Claudes on two branches can be told apart at a glance. Shared with the
+ * phone's ＋ (`MobileBridgeHost`), which picks the worktree by opaque id.
+ */
+export function worktreeAgentSpec(
+  item: StaticMenuItem,
+  wt: GitWorktree,
+  projectName: string,
+  t: ReturnType<typeof useT>,
+): Omit<TabEntry, "key"> {
+  const branch = wt.branch || worktreeName(wt.path);
+  const spec = buildStaticTabSpec(
+    item,
+    wt.path,
+    projectName ? `${projectName} (${branch})` : branch,
+    t,
+  );
+  return { ...spec, label: t("newTabMenu.agentWorktreeLabel", { agent: spec.label, branch }) };
+}
 
 /**
  * The "+" menus' worktree question, shared by `TabBar` and the popout's
@@ -62,7 +85,7 @@ export function useAgentWorktreePicker({
   enabled: boolean;
 }) {
   const t = useT();
-  const { chooseOption, dialogs } = useDialogs();
+  const { chooseOption, promptText, dialogs } = useDialogs();
   const [asking, setAsking] = useState(false);
 
   const specFor = useCallback(
@@ -105,19 +128,40 @@ export function useAgentWorktreePicker({
       if (picked === null) return null;
       const wt = choices.find((w) => w.path === picked);
       if (!wt || wt.is_main) return rootSpec();
-      const branch = wt.branch || worktreeName(wt.path);
-      // Named after the branch on both the tab and the agent's own session so
-      // two Claudes on two branches can be told apart at a glance.
-      const spec = buildStaticTabSpec(
-        item,
-        wt.path,
-        projectName ? `${projectName} (${branch})` : branch,
-        t,
-      );
-      return { ...spec, label: t("newTabMenu.agentWorktreeLabel", { agent: spec.label, branch }) };
+      return worktreeAgentSpec(item, wt, projectName, t);
     },
     [chooseOption, enabled, projectCwd, projectName, t],
   );
 
-  return { specFor, dialogs, asking };
+  /** A cloud launch (the "+" menu's "Cloud session" fly-out): asks for the
+   *  task first when the CLI takes it on its command line, `null` when that
+   *  question is dismissed. Always at the project root — the vendor's sandbox
+   *  clones the repository, so a local worktree has nothing to give it. */
+  const cloudSpecFor = useCallback(
+    async (item: StaticMenuItem, launch: CloudLaunch): Promise<Omit<TabEntry, "key"> | null> => {
+      let task = "";
+      if (launch.needsTask) {
+        setAsking(true);
+        let typed: string | null;
+        try {
+          typed = await promptText({
+            title: t("newTabMenu.cloudTaskTitle", { agent: item.label }),
+            body: t("newTabMenu.cloudTaskBody"),
+            label: t("newTabMenu.cloudTaskLabel"),
+            confirmLabel: t("newTabMenu.cloudTaskStart"),
+            validate: (value) => (cleanCloudTask(value) ? null : t("newTabMenu.cloudTaskInvalid")),
+          });
+        } finally {
+          setAsking(false);
+        }
+        const clean = cleanCloudTask(typed ?? undefined);
+        if (!clean) return null;
+        task = clean;
+      }
+      return buildCloudTabSpec(item, launch, task, projectCwd, t);
+    },
+    [projectCwd, promptText, t],
+  );
+
+  return { specFor, cloudSpecFor, dialogs, asking };
 }

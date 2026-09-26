@@ -424,6 +424,7 @@ export const UNTESTED = {
 
   // --- tabs — Tabs and the new-tab menus ----------------------------
   "agentWorktrees.1": { area: "tabs", what: "agentWorktrees · Which worktree to open a tab on" },
+  "newTabMenu.cloudSession": { area: "tabs", what: "+ menu · Cloud session fly-out: Claude --cloud/--teleport, Codex cloud, Kiro --cloud, Mistral --remote, Copilot --connect" },
   "localModelGroup.1": { area: "tabs", what: "localModelGroup · Load the local model on the GPU" },
   "newTabMenu.boxMemberAgent": { area: "tabs", what: "TabBar · Claude — {name}" },
   "newTabMenu.boxMemberFiles": { area: "tabs", what: "NewTabMenu · Files — {name}" },
