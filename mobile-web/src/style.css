@@ -202,6 +202,9 @@ small { color:#9498aa; }
 .new-tab-sheet .new-tab-file small { color:#aeb4c8; font-size:.76rem; }
 .new-tab-sheet .new-tab-file svg { flex:0 0 20px; width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
 .new-tab-agents .agent-create > .mode { flex:1 1 auto; min-height:36px; padding:6px 8px; font-size:.8rem; }
+.new-tab-where { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
+.new-tab-where > small { flex:1 0 100%; padding:0 6px; color:#9da3b6; font-size:.8rem; }
+.new-tab-where > button { min-height:36px; padding:6px 10px; font-size:.8rem; overflow-wrap:anywhere; }
 /* The ＋ at the end of the project header. Square against the back chevron
    opposite it, and it never shrinks: the project's name is what gives way. */
 .new-tab { flex:0 0 auto; min-width:44px; padding:8px 12px; font-size:1.25rem; line-height:1.1; }

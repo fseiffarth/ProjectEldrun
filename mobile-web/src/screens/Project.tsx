@@ -7,7 +7,7 @@ import { readChoice, writeChoice } from "../prefs";
 import { useRowDrag } from "../rowDrag";
 import { applyServerOrder, placeBeside } from "../tabReorder";
 import { ColorSheet } from "./ColorSheet";
-import { NewTabSheet } from "./NewTabSheet";
+import { NewTabSheet, type NewTabLaunch } from "./NewTabSheet";
 import { useProjectInbox } from "../components/ProjectInbox";
 import { PromptsSheet } from "./PromptsSheet";
 import { RenameSheet } from "./RenameSheet";
@@ -266,13 +266,13 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     });
     setFileOpen((open) => open?.name === file.name ? null : open);
   }, [id]);
-  const create = async (kind: "shell" | "agent", agent?: AgentRow, mode?: string) => {
+  const create = async (kind: "shell" | "agent", agent?: AgentRow, mode?: string, launch?: NewTabLaunch) => {
     setCreating(true); setError("");
-    const action = `${kind}:${agent?.id ?? ""}:${mode ?? ""}`;
+    const action = `${kind}:${agent?.id ?? ""}:${mode ?? ""}:${launch?.worktree ?? ""}:${launch?.cloud ?? ""}:${launch?.task ?? ""}`;
     const idempotencyKey = pendingKeys.current.get(action) ?? crypto.randomUUID();
     pendingKeys.current.set(action, idempotencyKey);
     try {
-      const body = await api<{ tab: TabRow }>(`/api/v1/projects/${encodeURIComponent(id)}/tabs`, { method: "POST", body: JSON.stringify({ project_id: id, kind, agent_id: agent?.id, mode, idempotency_key: idempotencyKey }) });
+      const body = await api<{ tab: TabRow }>(`/api/v1/projects/${encodeURIComponent(id)}/tabs`, { method: "POST", body: JSON.stringify({ project_id: id, kind, agent_id: agent?.id, mode, ...launch, idempotency_key: idempotencyKey }) });
       pendingKeys.current.delete(action);
       terminal(body.tab);
     } catch (reason) { setError(describeFailure(reason)); void load(); } finally { setCreating(false); }
@@ -467,10 +467,11 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     {/* The shell and agent buttons that stood here are the header's ＋ now: a
         project with a screenful of tabs put them past the end of the scroll. */}
     {newTabOpen && detail && <NewTabSheet
+      projectId={id}
       agents={detail.agents}
       busy={creating}
       onClose={() => setNewTabOpen(false)}
-      onPick={(kind, agent, mode) => { setNewTabOpen(false); void create(kind, agent, mode); }}
+      onPick={(kind, agent, mode, launch) => { setNewTabOpen(false); void create(kind, agent, mode, launch); }}
       onSendFile={() => { projectInbox.open(); setNewTabOpen(false); }}
     />}
     {promptsOpen && detail && <PromptsSheet projectId={id} tabs={detail.tabs} onClose={() => setPromptsOpen(false)} onSchedule={(tab, initialMessage) => { setPromptsOpen(false); setScheduleTab({ tab, initialMessage }); }} />}

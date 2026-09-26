@@ -44,10 +44,14 @@ import {
 import {
   AGENT_ITEMS,
   SHELL_ITEMS,
+  buildCloudTabSpec,
   buildStaticTabSpec,
   customAgentToItem,
   type StaticMenuItem,
 } from "../tabs/newTabItems";
+import { worktreeAgentSpec } from "../tabs/agentWorktrees";
+import { agentWorktreeChoices, worktreeName, type GitWorktree } from "../../lib/agents/agentWorktrees";
+import { cleanCloudTask, cloudLaunch, cloudLaunchesFor } from "../../lib/agents/cloudSessions";
 import { useI18nStore, useT } from "../../lib/i18n";
 import { resolveUse24h } from "../../lib/timeFormat";
 import { finishAlert } from "../../lib/alertDone";
@@ -77,8 +81,14 @@ interface CreateRequest {
   kind: "shell" | "agent";
   agent_id?: string;
   mode?: string;
+  /** Opaque id from `launch_options`; the path stays here. */
+  worktree?: string;
+  cloud?: string;
+  task?: string;
   idempotency_key: string;
 }
+interface MobileWorktree { id: string; label: string; branch?: string; main: boolean }
+interface MobileCloudLaunch { agent_id: string; action: string; task: boolean }
 interface TodoColumn { id: string; name: string; position: number; done: boolean; archived: boolean; overdue?: boolean; due_today?: boolean; color?: string }
 interface TodoSubtask { id: string; title: string; done: boolean }
 interface TodoTaskInput {
@@ -194,6 +204,7 @@ type DesktopRequest =
   | { type: "activity"; request_id: string }
   | { type: "activate"; request_id: string; project_id: string }
   | { type: "create"; request_id: string; request: CreateRequest }
+  | { type: "launch_options"; request_id: string; project_id: string }
   | { type: "todo"; request_id: string }
   | { type: "alerts"; request_id: string }
   | { type: "alert_resolve"; request_id: string; alert_id: string }
@@ -225,6 +236,7 @@ type DesktopResponse =
   | { status: "activity"; statuses: AgentTabStatus[]; prompts: AgentTabPrompts[] }
   | { status: "activated" }
   | { status: "created"; tmux_session: string }
+  | { status: "launch_options"; worktrees: MobileWorktree[]; cloud: MobileCloudLaunch[] }
   | { status: "todo"; board: TodoBoard }
   | { status: "alerts"; alerts: MobileAlerts }
   | { status: "calendar"; calendar: MobileCalendar }
@@ -642,7 +654,24 @@ async function create(request: CreateRequest, t: ReturnType<typeof useT>): Promi
     if (request.mode && !choice.public.modes.includes(request.mode)) {
       return { status: "error", code: "unsupported_mode", message: "Agent mode is unavailable" };
     }
-    spec = buildStaticTabSpec(choice.item, cwd, scope.name, t);
+    if (request.cloud) {
+      // Built-ins only: a custom agent's own args are not ours to extend.
+      const launch = scope.project && AGENT_ITEMS.includes(choice.item)
+        ? cloudLaunch(choice.item.cmd, request.cloud)
+        : undefined;
+      if (!launch) return { status: "error", code: "unsupported_cloud", message: "Cloud session is unavailable" };
+      const task = launch.needsTask ? cleanCloudTask(request.task) : "";
+      if (task === null) return { status: "error", code: "task_required", message: "Cloud session needs a task" };
+      spec = buildCloudTabSpec(choice.item, launch, task, cwd, t);
+    } else if (request.worktree) {
+      const wt = (await worktreesOf(scope)).find((entry) => entry.id === request.worktree)?.worktree;
+      if (!wt) return { status: "error", code: "worktree_not_found", message: "Worktree is unavailable" };
+      spec = wt.is_main
+        ? buildStaticTabSpec(choice.item, cwd, scope.name, t)
+        : worktreeAgentSpec(choice.item, wt, scope.name, t);
+    } else {
+      spec = buildStaticTabSpec(choice.item, cwd, scope.name, t);
+    }
   }
   let created: TabEntry;
   try {
@@ -661,6 +690,55 @@ async function create(request: CreateRequest, t: ReturnType<typeof useT>): Promi
   }
   if (scope.id === ROOT_SCOPE) useTabsStore.getState().revealTabInScope(ROOT_SCOPE, created.key);
   return { status: "created", tmux_session: created.tmuxSession };
+}
+
+/** A project scope's startable worktrees under their opaque ids — the same
+ * list the desktop "+" asks from (`agentWorktreeChoices`: empty unless a
+ * linked worktree exists). Box and root scopes have none. */
+async function worktreesOf(scope: MobileScope): Promise<{ id: string; worktree: GitWorktree }[]> {
+  if (!scope.project || !scope.cwd) return [];
+  let list: GitWorktree[] = [];
+  try {
+    list = agentWorktreeChoices(
+      (await invoke<GitWorktree[]>("git_worktree_list", { projectDir: scope.cwd, site: "mirror" })) ?? [],
+    );
+  } catch {
+    return [];
+  }
+  const named = await Promise.all(list.map(async (worktree) => {
+    try {
+      return { id: await invoke<string>("mobile_opaque_id", { domain: "worktree", value: worktree.path }), worktree };
+    } catch {
+      return null; // a path too long for an opaque id is simply not offered
+    }
+  }));
+  return named.filter((entry): entry is { id: string; worktree: GitWorktree } => entry !== null);
+}
+
+/** What the phone's ＋ can start an agent in: worktrees by opaque id and
+ * directory/branch name, and the catalog agents' cloud launches. Cloud is a
+ * project's only (it clones the project's repository). */
+async function launchOptions(projectId: string): Promise<DesktopResponse> {
+  const scope = mobileScope(projectId);
+  if (!scope) {
+    return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
+  }
+  const worktrees = (await worktreesOf(scope)).map(({ id, worktree }) => ({
+    id,
+    label: worktree.is_main ? "" : worktreeName(worktree.path),
+    ...(worktree.branch ? { branch: worktree.branch } : {}),
+    main: worktree.is_main,
+  }));
+  const cloud = scope.project
+    ? (await agentChoices())
+        .filter((choice) => AGENT_ITEMS.includes(choice.item))
+        .flatMap((choice) => cloudLaunchesFor(choice.item.cmd).map((launch) => ({
+          agent_id: choice.public.id,
+          action: launch.action,
+          task: launch.needsTask,
+        })))
+    : [];
+  return { status: "launch_options", worktrees, cloud };
 }
 
 /** Make `scope` the one the desktop shows: a project is activated, a box is
@@ -1801,6 +1879,7 @@ async function handleRequest(
     case "activity": return { status: "activity", statuses: allAgentStatuses(), prompts: allAgentPrompts() };
     case "activate": return activate(request.project_id);
     case "create": return create(request.request, t);
+    case "launch_options": return launchOptions(request.project_id);
     case "todo": return { status: "todo", board: await todoSnapshot() };
     case "alerts": return { status: "alerts", alerts: await alertsSnapshot(alerts) };
     case "alert_resolve": return resolveAlertRow(alerts, request.alert_id);

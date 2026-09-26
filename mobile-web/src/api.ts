@@ -23,6 +23,25 @@ export interface TabSchedules { total: number; enabled: number; next?: string }
 export interface TabPrompt { text: string; at?: string }
 export interface TabRow { id: string; label: string; kind: "shell" | "agent"; agent_label?: string; agent_status?: AgentStatus; agent_model?: string; working_at?: number; done_at?: number; schedules?: TabSchedules; prompts?: TabPrompt[]; available: boolean; viewer_busy: boolean; last_activity?: number; /** The tab's colour as a palette id (see `tabColors.ts`); absent when it has none. */ color?: string }
 export interface AgentRow { id: string; label: string; modes: ("plan" | "auto")[] }
+/** A place the ＋ can start an agent: a linked worktree by opaque id. The
+ * main one has an empty label — it is the project folder. */
+export interface WorktreeRow { id: string; label: string; branch?: string; main: boolean }
+/** One cloud launch an agent offers; `task` → it needs the task up front. */
+export interface CloudLaunchRow { agent_id: string; action: "new" | "open"; task: boolean }
+export interface LaunchOptions { worktrees: WorktreeRow[]; cloud: CloudLaunchRow[] }
+
+/** `GET /api/v1/projects/{id}/launch-options` — asked when the ＋ sheet opens.
+ * A desktop that predates the route answers 404; that reads as "project folder
+ * only, no cloud", which is exactly what such a desktop can start. */
+export async function getLaunchOptions(projectId: string, signal?: AbortSignal): Promise<LaunchOptions> {
+  try {
+    const body = await api<Partial<LaunchOptions>>(`/api/v1/projects/${encodeURIComponent(projectId)}/launch-options`, { signal });
+    return { worktrees: body.worktrees ?? [], cloud: body.cloud ?? [] };
+  } catch (reason) {
+    if (reason instanceof ApiError && reason.status === 404) return { worktrees: [], cloud: [] };
+    throw reason;
+  }
+}
 /** One agent tab in the cross-project activity list: an ordinary tab row plus
  * the project it lives in, because that list is flat and a tab label on its own
  * does not say where the session is. */

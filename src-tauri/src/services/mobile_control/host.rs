@@ -607,6 +607,7 @@ async fn create_tab(
     if request.project_id != project_id
         || request.idempotency_key.len() < 16
         || request.idempotency_key.len() > 128
+        || !request.launch_shape_ok()
     {
         return api_error(StatusCode::BAD_REQUEST, "invalid_request");
     }
@@ -643,6 +644,50 @@ async fn create_tab(
             }
             api_error(StatusCode::GATEWAY_TIMEOUT, "launch_pending")
         }
+        Ok(DesktopResponse::Error { code, .. }) => api_error(
+            if code == "desktop_unavailable" {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else {
+                StatusCode::BAD_REQUEST
+            },
+            &code,
+        ),
+        _ => api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable"),
+    }
+}
+
+/// `GET /api/v1/projects/{project_id}/launch-options` — what the ＋ sheet can
+/// start an agent in: the project's linked worktrees (opaque ids, directory
+/// and branch names — never a path) and each agent's cloud launches.
+async fn launch_options(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(project_id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    let Ok(catalog_snapshot) = catalog(&state) else {
+        return api_error(StatusCode::SERVICE_UNAVAILABLE, "catalog_unavailable");
+    };
+    let Some(project) = catalog_snapshot.project(&project_id) else {
+        return api_error(StatusCode::NOT_FOUND, "project_not_found");
+    };
+    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    let request_id = Base64UrlUnpadded::encode_string(&random_16());
+    match admin::desktop_call(
+        &desktop_socket,
+        &DesktopRequest::LaunchOptions {
+            request_id,
+            project_id: project.raw_id.clone(),
+        },
+    )
+    .await
+    {
+        Ok(DesktopResponse::LaunchOptions { worktrees, cloud }) => (
+            StatusCode::OK,
+            Json(json!({ "worktrees": worktrees, "cloud": cloud })),
+        ),
         Ok(DesktopResponse::Error { code, .. }) => api_error(
             if code == "desktop_unavailable" {
                 StatusCode::SERVICE_UNAVAILABLE
@@ -2759,6 +2804,10 @@ fn router(state: HostState) -> Router {
             post(activate_project),
         )
         .route("/api/v1/projects/{project_id}/tabs", post(create_tab))
+        .route(
+            "/api/v1/projects/{project_id}/launch-options",
+            get(launch_options),
+        )
         .route(
             "/api/v1/projects/{project_id}/prompts",
             get(prompts).post(prompt_create),

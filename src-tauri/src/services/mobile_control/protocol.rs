@@ -73,7 +73,84 @@ pub struct CreateTabRequest {
     pub agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
+    /// An agent started in a linked worktree: the opaque id a
+    /// [`DesktopResponse::LaunchOptions`] listed. The path never crosses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<String>,
+    /// A cloud session instead of a local agent: `"new"` or `"open"`
+    /// (`src/lib/agents/cloudSessions.ts`). Never together with `worktree`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud: Option<String>,
+    /// The task a `"new"` cloud session starts on, for CLIs that take it on
+    /// their command line. Bounded by [`MAX_CLOUD_TASK`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
     pub idempotency_key: String,
+}
+
+/// Longest cloud-session task a phone may send (characters) — the desktop's
+/// `MAX_CLOUD_TASK` in `src/lib/agents/cloudSessions.ts`.
+pub const MAX_CLOUD_TASK: usize = 4000;
+
+impl CreateTabRequest {
+    /// The shape rules the sidecar can check without the desktop: worktree
+    /// and cloud are agent-only and exclusive, the action is a known one, and
+    /// a task is plain text of bounded length that only a cloud launch carries.
+    /// Whether the agent *has* that launch, and whether the worktree id is
+    /// one the desktop listed, stays the desktop's to answer.
+    pub fn launch_shape_ok(&self) -> bool {
+        let agent = matches!(self.kind, CreateTabKind::Agent);
+        if (self.worktree.is_some() || self.cloud.is_some()) && !agent {
+            return false;
+        }
+        if self.worktree.is_some() && self.cloud.is_some() {
+            return false;
+        }
+        if let Some(id) = &self.worktree {
+            if id.is_empty() || id.len() > 128 {
+                return false;
+            }
+        }
+        if let Some(action) = &self.cloud {
+            if action != "new" && action != "open" {
+                return false;
+            }
+        }
+        if let Some(task) = &self.task {
+            if self.cloud.is_none()
+                || task.trim().is_empty()
+                || task.chars().count() > MAX_CLOUD_TASK
+                || task
+                    .chars()
+                    .any(|c| (c.is_control() && c != '\n' && c != '\t') || c == '\u{7f}')
+            {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// One place an agent can start on the phone's ＋: a linked worktree, named
+/// by its directory and branch. `id` is opaque; the path stays on the desktop.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MobileWorktree {
+    pub id: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub main: bool,
+}
+
+/// One cloud launch an agent offers on the phone's ＋ (`agent_id` is the
+/// catalog's opaque agent id). `task` → the phone asks for the task first.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MobileCloudLaunch {
+    pub agent_id: String,
+    pub action: String,
+    #[serde(default)]
+    pub task: bool,
 }
 
 /// Phone-editable schedule fields. Receipts and prefix commands are desktop-owned
@@ -615,6 +692,14 @@ pub enum DesktopRequest {
         request_id: String,
         request: CreateTabRequest,
     },
+    /// What the phone's ＋ can start an agent *in* for one project: its
+    /// linked worktrees and its agents' cloud launches. Asked when the sheet
+    /// opens rather than carried on every catalog poll — listing worktrees is
+    /// a git call.
+    LaunchOptions {
+        request_id: String,
+        project_id: String,
+    },
     Todo {
         request_id: String,
     },
@@ -834,6 +919,7 @@ impl DesktopRequest {
             | Self::Activity { request_id }
             | Self::Activate { request_id, .. }
             | Self::Create { request_id, .. }
+            | Self::LaunchOptions { request_id, .. }
             | Self::Todo { request_id }
             | Self::Alerts { request_id }
             | Self::AlertResolve { request_id, .. }
@@ -1104,6 +1190,14 @@ pub enum DesktopResponse {
     Created {
         tmux_session: String,
     },
+    /// Answers [`DesktopRequest::LaunchOptions`]. Both lists default, so an
+    /// empty answer reads as "project folder only, no cloud".
+    LaunchOptions {
+        #[serde(default)]
+        worktrees: Vec<MobileWorktree>,
+        #[serde(default)]
+        cloud: Vec<MobileCloudLaunch>,
+    },
     Todo {
         board: TodoBoardSnapshot,
     },
@@ -1258,6 +1352,7 @@ mod tests {
         MobileMailView, MobilePromptInput, MobileScheduleInput, PromptMutation, ScheduleMutation,
     };
     use crate::schema::AgentScheduleRule;
+    use serde_json::json;
 
     #[test]
     fn catalog_statuses_stay_on_the_internal_control_plane() {
@@ -1714,5 +1809,49 @@ mod tests {
                 serde_json::from_str(&event.to_frame()).expect("server frame round trip");
             assert_eq!(restored, event);
         }
+    }
+
+    fn create(body: serde_json::Value) -> super::CreateTabRequest {
+        serde_json::from_value(body).expect("create request")
+    }
+
+    #[test]
+    fn create_request_launch_shape() {
+        let key = "0123456789abcdef";
+        let ok = |body: serde_json::Value| create(body).launch_shape_ok();
+        // Older phones send none of the new fields.
+        assert!(ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "idempotency_key": key})));
+        assert!(ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "worktree": "w1", "idempotency_key": key})));
+        assert!(ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "cloud": "open", "idempotency_key": key})));
+        assert!(ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "cloud": "new", "task": "fix the\nbuild\tnow", "idempotency_key": key})));
+        // A shell has no worktree or cloud; the two are exclusive.
+        assert!(!ok(json!({"project_id": "p", "kind": "shell", "cloud": "new", "idempotency_key": key})));
+        assert!(!ok(json!({"project_id": "p", "kind": "shell", "worktree": "w1", "idempotency_key": key})));
+        assert!(!ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "cloud": "open", "worktree": "w1", "idempotency_key": key})));
+        // Unknown action, a stray task, a blank, control-laden or overlong one.
+        assert!(!ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "cloud": "rm", "idempotency_key": key})));
+        assert!(!ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "task": "hi", "idempotency_key": key})));
+        assert!(!ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "cloud": "new", "task": "  ", "idempotency_key": key})));
+        assert!(!ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "cloud": "new", "task": "a\u{1b}[2Jb", "idempotency_key": key})));
+        let long = "x".repeat(super::MAX_CLOUD_TASK + 1);
+        assert!(!ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "cloud": "new", "task": long, "idempotency_key": key})));
+        assert!(!ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "worktree": "", "idempotency_key": key})));
+    }
+
+    #[test]
+    fn launch_options_round_trip_and_default() {
+        let response: DesktopResponse = serde_json::from_value(json!({"status": "launch_options"}))
+            .expect("empty launch options");
+        let DesktopResponse::LaunchOptions { worktrees, cloud } = response else {
+            panic!("launch options");
+        };
+        assert!(worktrees.is_empty() && cloud.is_empty());
+        let request = DesktopRequest::LaunchOptions {
+            request_id: "r".into(),
+            project_id: "p".into(),
+        };
+        let value = serde_json::to_value(&request).expect("serialize");
+        assert_eq!(value, json!({"type": "launch_options", "request_id": "r", "project_id": "p"}));
+        assert_eq!(request.request_id(), "r");
     }
 }
