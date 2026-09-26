@@ -89,6 +89,25 @@ function Splash({ message, progress, tone, children }: { message: string; progre
   );
 }
 
+/** How long "Connecting…" runs before it names the likeliest culprit. The
+ * request itself only gives up after `REQUEST_TIMEOUT` (behind the service
+ * worker's own wait), and with Tailscale off on the phone that is the whole
+ * wait, spent on a spinner that says nothing. */
+const SLOW_CONNECT_MS = 4000;
+
+function SlowConnectHint() {
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSlow(true), SLOW_CONNECT_MS);
+    return () => window.clearTimeout(timer);
+  }, []);
+  if (!slow) return null;
+  return <p className="splash-hint">
+    Taking a while. Check Tailscale is connected on this phone.
+    {isUntested("mobile.link.slowConnectHint") && <> <span className="untested">Untested</span></>}
+  </p>;
+}
+
 function TabBar({ active, open }: { active: Tab; open: (tab: Tab) => void }) {
   return <nav className="mobile-tabbar" aria-label="Sections">
     {TABS.map((tab) => <button
@@ -308,7 +327,7 @@ export function App() {
     }
     setTab(next);
   };
-  if (auth === "loading") return <Splash message="Connecting to your workspace…" progress />;
+  if (auth === "loading") return <Splash message="Connecting to your workspace…" progress><SlowConnectHint /></Splash>;
   if (auth === "unavailable") {
     const { title, hint } = describeUnavailable(unavailable.reason);
     return (

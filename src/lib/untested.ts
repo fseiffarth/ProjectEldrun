@@ -330,6 +330,7 @@ export const UNTESTED = {
   "mobile.link.ack": { area: "mobile", what: "Terminal · A prompt the link lost keeps its bubble, says Not delivered, and Resend delivers it once" },
   "mobile.link.failureText": { area: "mobile", what: "Terminal · Every close reason and error reads as a sentence, never a code (session_expired, desktop_unavailable, …)" },
   "mobile.link.offlineShell": { area: "mobile", what: "App · Opened with the desktop closed, the phone shows Eldrun's own splash rather than the proxy's 502 page" },
+  "mobile.link.slowConnectHint": { area: "mobile", what: "App · With Tailscale off on the phone, Connecting… asks after a few seconds whether Tailscale is on, and the failure splash names it in its title" },
   "mobile.link.silentResume": { area: "mobile", what: "LocalUnlock · A sidecar restart or a lapsed session is renewed silently while the reader is active; a cold open always asks for the PIN" },
   "mobile.focus.noSessionYet": { area: "mobile", what: "Terminal · A tab created from the phone stays in the Reader and shows its stored session once the agent records one" },
   "mobile.calendar.manage": { area: "mobile", what: "Calendar · Edit a calendar's name and colour in a sheet; deletes ask in the option sheet" },

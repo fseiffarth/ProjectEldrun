@@ -110,6 +110,15 @@ describe("describeUnavailable", () => {
     expect(hint).toContain("Tailscale");
     expect(hint).toContain("asleep");
   });
+
+  it("asks about Tailscale on a stall, the shape an off tailnet takes", () => {
+    // The desktop's 100.x address routes nowhere with Tailscale off, so the
+    // request times out rather than failing fast.
+    const { title, hint } = describeUnavailable("timeout");
+    expect(title).toContain("Tailscale");
+    expect(hint).toContain("Tailscale");
+    expect(hint).not.toContain("reached the desktop");
+  });
 });
 
 describe("describeFailure", () => {

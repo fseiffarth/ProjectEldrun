@@ -62,7 +62,7 @@ describe("Mobile activity list — what it says when it cannot answer", () => {
     fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
     const onConnection = vi.fn();
     render(<Activity open={() => {}} onConnection={onConnection} />);
-    await screen.findByText("Can't reach your desktop.");
+    await screen.findByText("Can't reach your desktop. Is Tailscale on?");
     expect(screen.getByText("Agent activity is never loaded from cache.")).toBeTruthy();
     expect(screen.queryByRole("status")).toBeNull();
     expect(onConnection).toHaveBeenLastCalledWith("unreachable");

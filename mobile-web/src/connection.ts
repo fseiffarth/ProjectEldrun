@@ -95,13 +95,16 @@ export function describeUnavailable(reason: UnavailableReason): UnavailableCopy 
       };
     case "unreachable":
       return {
-        title: "Can't reach your desktop.",
-        hint: "Nothing answered at your desktop's address. Either this phone is disconnected from Tailscale, or the desktop is asleep or shut down. Open the Tailscale app and check it is connected.",
+        title: "Can't reach your desktop. Is Tailscale on?",
+        hint: "Nothing answered at your desktop's address. Open the Tailscale app on this phone and check it is connected. If it is, the desktop is asleep or shut down.",
       };
+    // With Tailscale off, the desktop's 100.x address routes nowhere and the
+    // request stalls instead of failing — so a timeout is the usual shape of
+    // "off the tailnet", not proof the desktop was reached.
     case "timeout":
       return {
-        title: "Your desktop didn't answer in time.",
-        hint: "The connection reached the desktop but stalled. This is usually a weak signal — retry when you have a better connection.",
+        title: "Your desktop didn't answer. Is Tailscale on?",
+        hint: "Nothing came back in time. Open the Tailscale app on this phone and check it is connected — while it is off, requests to your desktop go nowhere. If it is on, the desktop may be asleep or the signal weak.",
       };
     case "host_down":
       return {
