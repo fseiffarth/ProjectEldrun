@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { MIN_NEW_PIN, configureLocalUnlock, localUnlockBiometricEnabled, localUnlockPinLength, maybeEnrollBiometric, platformBiometricAvailable, unlockLocal, unlockLocalBiometric, validPin } from "../localLock";
 import { localFailureText } from "../connection";
 import { isUntested } from "../../../src/lib/untested";
@@ -20,6 +20,14 @@ function FingerprintIcon() {
   </svg>;
 }
 
+/** How long the unlock flourish plays before the app takes over: the mark
+ * flares and lifts away. None under reduced motion. */
+const UNLOCK_FLOURISH_MS = 520;
+
+function unlockFlourishMs(): number {
+  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? 0 : UNLOCK_FLOURISH_MS;
+}
+
 export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked: () => void }) {
   const [pin, setPin] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -32,6 +40,8 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
   const [biometricEnrolled, setBiometricEnrolled] = useState<boolean | null>(setup ? false : null);
   const [biometricBusy, setBiometricBusy] = useState(false);
   const [pinLength, setPinLength] = useState<number | null>(null);
+  /** Set once an unlock succeeds: the screen plays its flourish, then hands over. */
+  const [unlocked, setUnlocked] = useState(false);
   const attempt = useRef(0);
   const autoPrompted = useRef(false);
   useEffect(() => {
@@ -43,11 +53,15 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
   useEffect(() => {
     if (!setup) void localUnlockBiometricEnabled().then(setBiometricEnrolled).catch(() => setBiometricEnrolled(false));
   }, [setup]);
+  const finish = useCallback(() => {
+    setUnlocked(true);
+    window.setTimeout(onUnlocked, unlockFlourishMs());
+  }, [onUnlocked]);
   const unlockWithBiometric = () => {
     attempt.current += 1;
     setBiometricBusy(true);
     setError("");
-    void unlockLocalBiometric().then(maybeEnrollBiometric).then(onUnlocked).catch((reason) => setError(localFailureText(reason))).finally(() => setBiometricBusy(false));
+    void unlockLocalBiometric().then(maybeEnrollBiometric).then(finish).catch((reason) => setError(localFailureText(reason))).finally(() => setBiometricBusy(false));
   };
   useEffect(() => {
     // Fingerprint is the default unlock: raise the OS sheet as the screen opens,
@@ -68,7 +82,7 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
       setBiometricBusy(true);
       // A rejection is not retried: a cancelled sheet hands focus straight back,
       // and re-asking on that would trap the reader in a prompt they closed.
-      void unlockLocalBiometric().then(maybeEnrollBiometric).then(() => { if (!disposed) onUnlocked(); }).catch(() => {}).finally(() => { if (!disposed) setBiometricBusy(false); });
+      void unlockLocalBiometric().then(maybeEnrollBiometric).then(() => { if (!disposed) finish(); }).catch(() => {}).finally(() => { if (!disposed) setBiometricBusy(false); });
     };
     promptWhenReady();
     document.addEventListener("visibilitychange", promptWhenReady);
@@ -78,7 +92,7 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
       document.removeEventListener("visibilitychange", promptWhenReady);
       window.removeEventListener("focus", promptWhenReady);
     };
-  }, [biometricEnrolled, onUnlocked, setup]);
+  }, [biometricEnrolled, finish, setup]);
   const submit = () => {
     attempt.current += 1;
     setBusy(true);
@@ -88,7 +102,7 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
         ? Promise.reject(new Error("The PIN entries do not match."))
         : configureLocalUnlock(pin)
       : unlockLocal(pin).then(maybeEnrollBiometric);
-    void action.then(onUnlocked).catch((reason) => setError(localFailureText(reason))).finally(() => setBusy(false));
+    void action.then(finish).catch((reason) => setError(localFailureText(reason))).finally(() => setBusy(false));
   };
   useEffect(() => {
     const currentAttempt = ++attempt.current;
@@ -104,7 +118,7 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
       setBusy(true);
       setError("");
       void unlockLocal(pin).then(maybeEnrollBiometric).then(() => {
-        if (currentAttempt === attempt.current) onUnlocked();
+        if (currentAttempt === attempt.current) finish();
       }).catch((reason) => {
         if (currentAttempt === attempt.current) setError(localFailureText(reason));
       }).finally(() => {
@@ -112,9 +126,19 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
       });
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [onUnlocked, pin, pinLength, setup]);
-  return <main className="pair screen brand-screen local-unlock">
+  }, [finish, pin, pinLength, setup]);
+  // Android's fingerprint sheet covers the lower part of the screen and no page
+  // can restyle it, so while it is up this screen becomes the branded half
+  // above it: the form steps aside, the mark lifts into view with its rings
+  // turning, and one line says what the sheet is waiting for.
+  const verifying = biometricBusy && !unlocked;
+  const phase = unlocked ? " unlocked" : verifying ? " verifying" : "";
+  return <main className={`pair screen brand-screen local-unlock${phase}`}>
     <BrandHead>{setup ? "Secure Eldrun Mobile" : "Eldrun Mobile locked"}{!setup && isUntested("mobile.link.silentResume") && <small className="untested"> Untested</small>}</BrandHead>
+    <p className="local-unlock-status" aria-live="polite">
+      {unlocked ? "Unlocked" : verifying ? "Touch the fingerprint sensor" : ""}
+      {verifying && isUntested("mobile.lock.brandedSheet") && <small className="untested"> Untested</small>}
+    </p>
     {setup ? <>
       <p>{biometricAvailable === false
         ? "This browser offers no fingerprint or Face ID unlock — browsers built on the system WebView (DuckDuckGo among them) do not support it. The app PIN will be your only unlock here; keep the phone’s own screen lock enabled, or pair again in Chrome or Safari to use a fingerprint."

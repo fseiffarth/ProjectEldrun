@@ -881,8 +881,34 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .local-unlock-biometric.waiting { color:#9498aa; }
 @keyframes local-unlock-pulse { from { opacity:.85; transform:scale(1); } to { opacity:0; transform:scale(1.45); } }
 .local-unlock .local-unlock-note { color:#6f7385; font-size:.76rem; line-height:1.5; }
+/* Fingerprint sheet up (`.verifying`): Android draws it over the lower part of
+   the screen, so the form steps aside and the mark lifts into the half above
+   it, larger, rings turning. Unlocked (`.unlocked`): the mark flares gold and
+   lifts away before the app takes over. The flare is a gradient pseudo-element
+   animated by opacity — never a blurred shadow. */
+.local-unlock .local-unlock-status { min-height:1.4em; margin:0; color:#cfc8ff; font-weight:600; letter-spacing:.02em; }
+.local-unlock-status:empty { display:none; }
+.local-unlock.verifying,.local-unlock.unlocked { align-content:start; padding-top:max(12dvh,env(safe-area-inset-top)); }
+.local-unlock.verifying > :not(.brand-head):not(.local-unlock-status),
+.local-unlock.unlocked > :not(.brand-head):not(.local-unlock-status) { display:none; }
+.local-unlock.verifying .brand-head,.local-unlock.unlocked .brand-head { animation:local-unlock-lift 420ms cubic-bezier(.22,1,.36,1) both; }
+.local-unlock .brand-head-mark { transition:transform 420ms cubic-bezier(.22,1,.36,1); }
+.local-unlock.verifying .brand-head-mark,.local-unlock.unlocked .brand-head-mark { animation:none; transform:scale(1.35); margin-block:18px; }
+.local-unlock.verifying .brand-head-mark .splash-orbit { animation-play-state:running; }
+.local-unlock.verifying .local-unlock-status { animation:local-unlock-breathe 1.8s ease-in-out infinite; }
+.brand-head-mark::after { content:""; position:absolute; inset:-30%; border-radius:50%; background:radial-gradient(closest-side,rgba(231,179,105,.55),rgba(199,154,69,.18) 55%,transparent); opacity:0; pointer-events:none; }
+.local-unlock.unlocked .brand-head-mark::after { animation:local-unlock-flare 520ms ease-out both; }
+.local-unlock.unlocked .brand-head { animation:local-unlock-away 520ms cubic-bezier(.4,0,.2,1) both; }
+.local-unlock.unlocked .local-unlock-status { color:#e7b369; animation:local-unlock-away 520ms cubic-bezier(.4,0,.2,1) both; }
+@keyframes local-unlock-lift { from { opacity:.4; transform:translateY(28px); } to { opacity:1; transform:none; } }
+@keyframes local-unlock-breathe { 0%,100% { opacity:.55; } 50% { opacity:1; } }
+@keyframes local-unlock-flare { 0% { opacity:0; } 35% { opacity:1; } 100% { opacity:0; } }
+@keyframes local-unlock-away { 0%,30% { opacity:1; transform:none; } 100% { opacity:0; transform:translateY(-18px) scale(1.04); } }
 @media (prefers-reduced-motion:reduce) {
   .local-unlock-biometric.waiting .local-unlock-print::after { animation:none; opacity:.6; }
+  .local-unlock.verifying .brand-head,.local-unlock.unlocked .brand-head,.local-unlock .local-unlock-status,.local-unlock.unlocked .brand-head-mark::after { animation:none; }
+  .local-unlock.verifying .brand-head-mark .splash-orbit { animation-play-state:paused; }
+  .local-unlock .brand-head-mark { transition:none; }
 }
 @media (max-width:480px) { .terminal-title small { display:none; } .terminal-screen header { padding-inline:6px; } .terminal-view-switch button { padding-inline:7px; } }
 /* A phone file on its way into the project inbox (composer + → From this

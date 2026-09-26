@@ -51,13 +51,21 @@ beforeEach(() => {
   lock.biometric.mockResolvedValue(undefined);
   lock.configure.mockResolvedValue({ biometricEnrolled: true });
   vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  // Reduced motion: the unlock flourish is skipped and `onUnlocked` follows at
+  // once. The flourish's own test turns it back on.
+  reduceMotion(true);
 });
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
   for (const fn of Object.values(lock)) fn.mockReset();
 });
+
+function reduceMotion(reduce: boolean) {
+  vi.stubGlobal("matchMedia", (query: string) => ({ matches: reduce && query.includes("reduce"), media: query }));
+}
 
 const type = (label: string | RegExp, value: string) => fireEvent.change(screen.getByLabelText(label), { target: { value } });
 
@@ -187,6 +195,27 @@ describe("Mobile local unlock — unlock", () => {
     act(() => { window.dispatchEvent(new Event("focus")); });
     await waitFor(() => expect(onUnlocked).toHaveBeenCalledOnce());
     expect(lock.biometric).toHaveBeenCalledTimes(1);
+  });
+
+  it("lifts the mark above the fingerprint sheet while it is up, then plays the unlock before handing over", async () => {
+    lock.enrolled.mockResolvedValue(true);
+    reduceMotion(false);
+    vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    let pass!: () => void;
+    lock.biometric.mockReturnValueOnce(new Promise<void>((resolve) => { pass = resolve; }));
+    const onUnlocked = vi.fn();
+    const { container } = render(<LocalUnlock setup={false} onUnlocked={onUnlocked} />);
+    const main = container.querySelector("main")!;
+    fireEvent.click(await screen.findByRole("button", { name: "Unlock with fingerprint" }));
+    await waitFor(() => expect(main.classList.contains("verifying")).toBe(true));
+    expect(screen.getByText("Touch the fingerprint sensor")).toBeTruthy();
+
+    act(() => pass());
+    await waitFor(() => expect(main.classList.contains("unlocked")).toBe(true));
+    expect(main.classList.contains("verifying")).toBe(false);
+    expect(screen.getByText("Unlocked")).toBeTruthy();
+    expect(onUnlocked).not.toHaveBeenCalled();
+    await waitFor(() => expect(onUnlocked).toHaveBeenCalledOnce(), { timeout: 3000 });
   });
 
   it("explains a missing fingerprint option instead of leaving it out silently", async () => {

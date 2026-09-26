@@ -1644,6 +1644,22 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ❌ Doesn't work on Windows
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual test — branded fingerprint wait (2026-09-27,
+    `mobile.lock.brandedSheet`). Android's sheet cannot be restyled, so the
+    lock screen dresses the space above it: while the sheet is up the form
+    steps aside, the mark lifts and grows with its rings turning and "Touch
+    the fingerprint sensor" breathing under it; on success the mark flares
+    gold and lifts away (~0.5 s) before the app opens. Check that nothing
+    sits under the sheet, a cancelled sheet brings the form back, and the
+    PIN unlock plays the same flourish
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31m — Mobile to-do board: sticky filters, FAB, hide archived**
   (2026-08-30; ✅ Code-complete, ⚠️ needs live QA on a phone).
