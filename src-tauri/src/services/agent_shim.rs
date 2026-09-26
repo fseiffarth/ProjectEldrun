@@ -5,10 +5,12 @@
 //! shell tab now has one shim per registry CLI at the front of its PATH
 //! (`services::agent_bin`), a tiny script that execs this entry point. It
 //! builds the same fence a tab of the tab's scope would get — the scope's
-//! Eldrun-owned home, the shared logins, the project roots — and replaces
-//! itself with it. There is no bypass flag: it launches the CLI Eldrun would
-//! launch, fenced, or refuses. Running the binary by absolute path stays the
-//! user's own shell, real home, no Eldrun logins.
+//! Eldrun-owned home, the shared logins, the project roots — and runs it as
+//! its child on the same terminal, draining the terminal's input queue once
+//! it has exited and before the shell reads again ([`run`]). There is no
+//! bypass flag: it launches the CLI Eldrun would launch, fenced, or refuses.
+//! Running the binary by absolute path stays the user's own shell, real
+//! home, no Eldrun logins.
 //!
 //! The scope comes from `ELDRUN_SCOPE`, which every tab Eldrun spawns carries
 //! (`commands::terminal::pty_spawn`); outside an Eldrun tab the shim refuses.
@@ -98,17 +100,60 @@ pub fn command(cli: &str, args: &[String]) -> Result<std::process::Command, Stri
     Ok(command)
 }
 
-/// The entry point behind `eldrun --agent-shim`. Replaces the process on
-/// success; every failure is printed and becomes the exit status.
+/// Discard whatever is waiting in the terminal's input queue. The shim runs
+/// on the user's own shell tab; once the fenced CLI has exited, the next
+/// reader of that queue is the unfenced shell, so nothing the fenced process
+/// left there may reach it (the same drain a fenced tmux pane runs before
+/// its trailing shell, `tmux_local::FENCE_INPUT_DRAIN`). On Linux the fence's
+/// pid namespace dies with the CLI, so nothing fenced can add more after
+/// this; on macOS a process the agent left behind could still, which is the
+/// same limit the pane drain has there.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn drain_terminal_input() {
+    // SAFETY: plain libc calls on descriptor 0.
+    unsafe {
+        if libc::isatty(0) == 1 {
+            libc::tcflush(0, libc::TCIFLUSH);
+        }
+    }
+}
+
+/// The entry point behind `eldrun --agent-shim`. Runs the fenced CLI as a
+/// child, on the same terminal, and waits for it — rather than `exec`ing
+/// into it — so the terminal can be drained between the fenced process and
+/// the shell that continues on it. Every failure is printed and becomes the
+/// exit status; the child's own status is passed through.
 pub fn run(cli: &str, args: &[String]) -> i32 {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
-        use std::os::unix::process::CommandExt;
+        use std::os::unix::process::{CommandExt, ExitStatusExt};
         match command(cli, args) {
             Ok(mut command) => {
-                let err = command.exec();
-                eprintln!("agent shim: exec: {err}");
-                126
+                // Ctrl+C and Ctrl+\ go to the foreground process group, the
+                // child included; the shim itself must outlive them to drain
+                // and report. The child gets the default dispositions back.
+                // SAFETY: signal disposition changes; the child's runs
+                // between fork and exec, on nothing but libc.
+                unsafe {
+                    libc::signal(libc::SIGINT, libc::SIG_IGN);
+                    libc::signal(libc::SIGQUIT, libc::SIG_IGN);
+                    command.pre_exec(|| {
+                        libc::signal(libc::SIGINT, libc::SIG_DFL);
+                        libc::signal(libc::SIGQUIT, libc::SIG_DFL);
+                        Ok(())
+                    });
+                }
+                let status = command.status();
+                drain_terminal_input();
+                match status {
+                    Ok(status) => status
+                        .code()
+                        .unwrap_or_else(|| 128 + status.signal().unwrap_or(0)),
+                    Err(err) => {
+                        eprintln!("agent shim: run: {err}");
+                        126
+                    }
+                }
             }
             Err(e) => {
                 eprintln!("{e}");

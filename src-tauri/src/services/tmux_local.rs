@@ -309,7 +309,8 @@ fn is_fence(cmd: &str, env: &HashMap<String, String>) -> bool {
 }
 
 /// Run between a fenced command and the pane's trailing login shell: read and
-/// discard whatever is waiting in the terminal's input queue. On a kernel that
+/// discard whatever is waiting in the terminal's input queue (a CLI typed
+/// into a shell tab gets the same from `agent_shim::run`). On a kernel that
 /// still honours `TIOCSTI` (Linux before 6.2 or with `legacy_tiocsti=1`,
 /// macOS), a fenced agent can push bytes into its own terminal's input and exit;
 /// the next reader of that queue is the *unfenced* shell below, which would run
