@@ -47,7 +47,7 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
     attempt.current += 1;
     setBiometricBusy(true);
     setError("");
-    void unlockLocalBiometric().then(onUnlocked).catch((reason) => setError(localFailureText(reason))).finally(() => setBiometricBusy(false));
+    void unlockLocalBiometric().then(maybeEnrollBiometric).then(onUnlocked).catch((reason) => setError(localFailureText(reason))).finally(() => setBiometricBusy(false));
   };
   useEffect(() => {
     // Fingerprint is the default unlock: raise the OS sheet as the screen opens,
@@ -68,7 +68,7 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
       setBiometricBusy(true);
       // A rejection is not retried: a cancelled sheet hands focus straight back,
       // and re-asking on that would trap the reader in a prompt they closed.
-      void unlockLocalBiometric().then(() => { if (!disposed) onUnlocked(); }).catch(() => {}).finally(() => { if (!disposed) setBiometricBusy(false); });
+      void unlockLocalBiometric().then(maybeEnrollBiometric).then(() => { if (!disposed) onUnlocked(); }).catch(() => {}).finally(() => { if (!disposed) setBiometricBusy(false); });
     };
     promptWhenReady();
     document.addEventListener("visibilitychange", promptWhenReady);

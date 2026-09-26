@@ -21,6 +21,11 @@ interface LocalUnlockRecord {
   pinLength?: number;
   /** A WebAuthn credential bound to this exact Serve origin. */
   biometricCredentialId?: string;
+  /** "device" once the credential is device-bound (`BIOMETRIC_SELECTION`);
+   * "passkey" for one enrolled before that whose one-time re-enrollment did
+   * not go through. Absent on a record from before either existed, whose
+   * credential is a synced passkey still due its one re-enrollment. */
+  biometricKind?: "device" | "passkey";
   failedAttempts?: number;
   lockedUntil?: number;
 }
@@ -115,41 +120,66 @@ export async function platformBiometricAvailable(): Promise<boolean> {
     && await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
 }
 
+/**
+ * How the fingerprint credential is made. Device-bound, not a discoverable
+ * passkey: on Android, Chrome files a `residentKey: "required"` credential in
+ * Google Password Manager, and every unlock then opened a Google "Use passkey
+ * for …? Continue" sheet before the fingerprint. A non-discoverable credential
+ * stays on the phone and is asked for by id (`allowCredentials`), which is all
+ * this lock needs — it never has to find the credential without knowing it.
+ */
+export const BIOMETRIC_SELECTION: AuthenticatorSelectionCriteria = {
+  authenticatorAttachment: "platform",
+  residentKey: "discouraged",
+  requireResidentKey: false,
+  userVerification: "required",
+};
+/** Steers the browser to this phone's own authenticator, past the sheet that
+ * offers "use another device" or a password manager to save into. */
+export const BIOMETRIC_HINTS = ["client-device"];
+/** WebAuthn Level 3 `hints`; this TypeScript types it on the JSON forms only. */
+type WithHints<T> = T & { hints: string[] };
+
+/** Tell the password manager a replaced credential is gone, so it neither
+ * lists nor offers it again. Chrome 132+; elsewhere a no-op. */
+function forgetCredential(credentialId: string): void {
+  const signal = (PublicKeyCredential as unknown as {
+    signalUnknownCredential?: (options: { rpId: string; credentialId: string }) => Promise<void>;
+  }).signalUnknownCredential;
+  void signal?.call(PublicKeyCredential, { rpId: location.hostname, credentialId }).catch(() => {});
+}
+
 async function enrollBiometric(): Promise<string | null> {
   if (!await platformBiometricAvailable()) return null;
-  const credential = await navigator.credentials.create({
-    publicKey: {
-      challenge: arrayBuffer(randomBytes(32)),
-      rp: { name: "Eldrun Mobile", id: location.hostname },
-      user: {
-        id: arrayBuffer(randomBytes(32)),
-        name: "eldrun-mobile",
-        displayName: "Eldrun Mobile local unlock",
-      },
-      pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
-      authenticatorSelection: {
-        authenticatorAttachment: "platform",
-        residentKey: "required",
-        userVerification: "required",
-      },
-      attestation: "none",
-      timeout: 60_000,
+  const publicKey: WithHints<PublicKeyCredentialCreationOptions> = {
+    challenge: arrayBuffer(randomBytes(32)),
+    rp: { name: "Eldrun Mobile", id: location.hostname },
+    user: {
+      id: arrayBuffer(randomBytes(32)),
+      name: "eldrun-mobile",
+      displayName: "Eldrun Mobile local unlock",
     },
-  }) as PublicKeyCredential | null;
+    pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
+    authenticatorSelection: BIOMETRIC_SELECTION,
+    hints: BIOMETRIC_HINTS,
+    attestation: "none",
+    timeout: 60_000,
+  };
+  const credential = await navigator.credentials.create({ publicKey }) as PublicKeyCredential | null;
   if (!credential) throw new Error("Device biometric enrollment was cancelled.");
   return b64url(credential.rawId);
 }
 
 async function verifyBiometric(credentialId: string): Promise<void> {
-  const assertion = await navigator.credentials.get({
-    publicKey: {
-      challenge: arrayBuffer(randomBytes(32)),
-      rpId: location.hostname,
-      allowCredentials: [{ type: "public-key", id: arrayBuffer(fromB64url(credentialId)) }],
-      userVerification: "required",
-      timeout: 60_000,
-    },
-  });
+  const publicKey: WithHints<PublicKeyCredentialRequestOptions> = {
+    challenge: arrayBuffer(randomBytes(32)),
+    rpId: location.hostname,
+    allowCredentials: [{ type: "public-key", id: arrayBuffer(fromB64url(credentialId)) }],
+    userVerification: "required",
+    hints: BIOMETRIC_HINTS,
+    timeout: 60_000,
+  };
+  const assertion = await navigator.credentials.get({ publicKey });
   if (!assertion) throw new Error("Device biometric verification was cancelled.");
 }
 
@@ -167,7 +197,7 @@ export async function configureLocalUnlock(pin: string): Promise<LocalUnlockSetu
   const salt = randomBytes(16);
   const verifier = await pinDigest(pin, salt);
   const biometricCredentialId = await enrollBiometric();
-  await saveRecord({ version: 1, salt: b64url(salt), verifier: b64url(verifier), pinLength: pin.length, biometricCredentialId: biometricCredentialId ?? undefined });
+  await saveRecord({ version: 1, salt: b64url(salt), verifier: b64url(verifier), pinLength: pin.length, biometricCredentialId: biometricCredentialId ?? undefined, biometricKind: biometricCredentialId ? "device" : undefined });
   return { biometricEnrolled: !!biometricCredentialId };
 }
 
@@ -187,20 +217,28 @@ function describeWait(milliseconds: number): string {
 
 /** Enroll the platform biometric onto an existing record — the path for a
  * phone whose browser lacked (or refused) an authenticator at setup, which
- * otherwise leaves the lock PIN-only forever. Called after a verified PIN
- * unlock only, never from the locked screen. Failure is not an error: the
- * lock simply stays PIN-only and the next unlock offers again. */
+ * otherwise leaves the lock PIN-only forever. Called after a verified unlock
+ * only, never from the locked screen. Failure is not an error: the lock
+ * simply stays PIN-only and the next unlock offers again.
+ *
+ * A credential enrolled as a synced passkey (a record without
+ * `biometricKind`) is replaced by a device-bound one, once: it keeps working
+ * until the replacement is saved, and a refused replacement is not asked for
+ * again — asking at every unlock would be the extra sheet this removes. */
 export async function maybeEnrollBiometric(): Promise<boolean> {
   const record = await readRecord();
   if (!record) return false;
-  if (record.biometricCredentialId) return true;
+  const previous = record.biometricCredentialId;
+  if (previous && record.biometricKind) return true;
   try {
     const biometricCredentialId = await enrollBiometric();
-    if (!biometricCredentialId) return false;
-    await saveRecord({ ...record, biometricCredentialId });
+    if (!biometricCredentialId) throw new Error("No platform authenticator.");
+    await saveRecord({ ...record, biometricCredentialId, biometricKind: "device" });
+    if (previous) forgetCredential(previous);
     return true;
   } catch {
-    return false;
+    if (previous) await saveRecord({ ...record, biometricKind: "passkey" }).catch(() => {});
+    return !!previous;
   }
 }
 

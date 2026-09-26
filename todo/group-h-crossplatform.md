@@ -1627,6 +1627,23 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ❌ Doesn't work on Windows
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual test — no Google "Use passkey?" sheet before the
+    fingerprint (2026-09-26). The credential is now device-bound
+    (`BIOMETRIC_SELECTION`, `residentKey: "discouraged"`, `client-device`
+    hint) instead of a Google Password Manager passkey; an old passkey record
+    is re-enrolled once after the next unlock (one extra fingerprint touch),
+    and the old passkey is signalled away (`signalUnknownCredential`). On
+    Android Chrome: after that one upgrade, locking and reopening goes
+    straight to the fingerprint, and the passkey no longer shows in Password
+    Manager
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 - [~] **31m — Mobile to-do board: sticky filters, FAB, hide archived**
   (2026-08-30; ✅ Code-complete, ⚠️ needs live QA on a phone).
