@@ -2,6 +2,10 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { isDetachedWindow } from "./detachedContext";
 import { ROOT_SCOPE, hydrateScopeFromDisk, useTabsStore, type TabEntry } from "./tabs";
+import { boxScopeId, useBoxesStore } from "./boxes";
+import { useProjectsStore } from "./projects";
+import { BOX_SCOPE_PREFIX } from "../lib/terminal/ptyId";
+import { resolveLocalMirror, resolveProjectDirectory } from "../types";
 
 /**
  * The **root console** — the root scope, reached as an overlay instead of as a
@@ -246,6 +250,51 @@ export function openTabInRootConsole(
     return;
   }
   void ensureRootScopeHydrated().then(open);
+}
+
+/**
+ * The project shell (Ctrl+Shift+S): the root console with a shell whose cwd is
+ * the active project's root — a box's folder while a box is the scope — on
+ * THIS machine. A remote project has only its local mirror here; one without a
+ * mirror, like the root scope itself, just opens the console. A root shell
+ * already sitting at that folder is brought to the front instead of a second
+ * one being spawned, so the chord is a way back to it too.
+ */
+export function openProjectShellInRootConsole(): void {
+  const { activeId, projects } = useProjectsStore.getState();
+  const { scope } = useTabsStore.getState();
+  const box = scope.startsWith(BOX_SCOPE_PREFIX)
+    ? useBoxesStore.getState().boxes.find((b) => boxScopeId(b.id) === scope)
+    : undefined;
+  const project = box ? undefined : projects.find((p) => p.id === activeId);
+  const cwd = box
+    ? box.folder ?? ""
+    : project?.remote
+      ? resolveLocalMirror(project) ?? ""
+      : resolveProjectDirectory(project);
+  const label = box?.name ?? project?.name ?? "";
+  if (!cwd) {
+    useRootOverlayStore.getState().show();
+    return;
+  }
+  const reuse = () => {
+    const existing = (useTabsStore.getState().tabsByScope[ROOT_SCOPE] ?? []).find(
+      (tab) =>
+        tab.kind === "shell" &&
+        !tab.cmd &&
+        !tab.initialInput &&
+        !tab.tmuxAttach &&
+        tab.cwd === cwd,
+    );
+    if (!existing) return false;
+    useRootOverlayStore.getState().show(existing.key);
+    return true;
+  };
+  const spawn = () => {
+    if (!reuse()) openTabInRootConsole({ label, cmd: "", args: [], env: {}, cwd, kind: "shell" });
+  };
+  if (isDetachedWindow() || ROOT_SCOPE in useTabsStore.getState().tabsByScope) spawn();
+  else void ensureRootScopeHydrated().then(spawn);
 }
 
 /**

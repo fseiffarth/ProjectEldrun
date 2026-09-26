@@ -261,6 +261,7 @@ export const UNTESTED = {
   "shortcut.cycleBox": { area: "lib", what: "shortcuts · Cycle to next box" },
   "shortcut.cycleBoxBack": { area: "lib", what: "shortcuts · Cycle to previous box" },
   "shortcut.rootConsole": { area: "lib", what: "shortcuts · Open / close the root console" },
+  "shortcut.projectShell": { area: "lib", what: "shortcuts · Ctrl+Shift+S: root console shell at the project root" },
   "shortcut.shortcutHelp": { area: "lib", what: "shortcuts · Open shortcut help" },
   "shortcut.steeringMode": { area: "lib", what: "shortcuts · Enter keyboard steering mode" },
   "shortcut.texBack": { area: "lib", what: "shortcuts · TeX workspace: back to the previous file" },

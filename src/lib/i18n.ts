@@ -7484,6 +7484,7 @@ export const en = {
   "shortcut.closeAllTabs": "Close all tabs in project",
   "shortcut.steeringMode": "Enter keyboard steering mode",
   "shortcut.rootConsole": "Open / close the root console",
+  "shortcut.projectShell": "Open a shell at the project root in the root console",
   "rootConsole.title": "Root console",
   "rootConsole.rightsBadge": "⚿ Eldrun tools",
   "rootConsole.rightsLocalOnly": "Only local-model tabs opened here get Eldrun's own tools (MCP): your projects, calendar and to-do board. Cloud agents and a project's agents do not.",

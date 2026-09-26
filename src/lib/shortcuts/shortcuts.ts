@@ -53,6 +53,7 @@ export type ShortcutAction =
   | "cycleBoxBack"
   | "shortcutHelp"
   | "rootConsole"
+  | "projectShell"
   | "texUp"
   | "texBack"
   | "texCompile";
@@ -220,6 +221,17 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     group: "navigation",
     default: { key: "r", ctrl: true, shift: true },
     untested: "shortcut.rootConsole",
+  },
+  // The root console again, with a shell at the active project's root
+  // (`openProjectShellInRootConsole`). Same capture-phase handler, same
+  // reason. Ctrl+Shift+S is no terminal chord; the editors' Ctrl+S save
+  // matches it too, and loses it here (plain Ctrl+S still saves).
+  {
+    action: "projectShell",
+    labelKey: "shortcut.projectShell",
+    group: "navigation",
+    default: { key: "s", ctrl: true, shift: true },
+    untested: "shortcut.projectShell",
   },
   // The TeX workspace's two navigation steps (#tex-structure-up). Unlike every
   // chord above these are NOT handled by `useKeyboard`: they only mean anything

@@ -7208,6 +7208,7 @@ export const dict: Dict = {
   "shortcut.closeAllTabs": "Alle Tabs im Projekt schließen",
   "shortcut.steeringMode": "Tastatursteuerungsmodus aktivieren",
   "shortcut.rootConsole": "Root-Konsole öffnen / schließen",
+  "shortcut.projectShell": "Shell im Projektverzeichnis in der Root-Konsole öffnen",
   "rootConsole.title": "Root-Konsole",
   "rootConsole.rightsBadge": "⚿ Eldrun-Werkzeuge",
   "rootConsole.rightsLocalOnly": "Nur hier geöffnete Tabs mit lokalem Modell erhalten Eldruns eigene Werkzeuge (MCP): deine Projekte, den Kalender und das To-do-Board. Cloud-Agenten und die Agenten eines Projekts erhalten sie nicht.",

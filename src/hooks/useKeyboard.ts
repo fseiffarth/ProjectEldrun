@@ -15,7 +15,7 @@ import {
   projectStations,
   useKeyboardSteeringStore,
 } from "../stores/keyboardSteering";
-import { toggleRootConsole } from "../stores/rootOverlay";
+import { openProjectShellInRootConsole, toggleRootConsole } from "../stores/rootOverlay";
 import {
   chordMatches,
   isLoneModifier,
@@ -99,6 +99,8 @@ export function isEditableTarget(target: EventTarget | null): boolean {
  *   - Shift+Ctrl+←         → cycle to the previous active project
  *   - F1                   → open the shortcut cheat sheet (window event)
  *   - Ctrl+Shift+Space     → toggle keyboard steering mode (see below)
+ *   - Ctrl+Shift+R         → open / close the root console
+ *   - Ctrl+Shift+S         → root console shell at the active project's root
  *
  * Steering mode (`steeringMode` chord): a modal layer for the fixed keys in
  * `STEERING_KEYS`, captured on `document` in the CAPTURE phase so xterm never
@@ -164,6 +166,13 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
         e.stopPropagation();
         if (steering.active) steering.exit();
         toggleRootConsole();
+        return;
+      }
+      if (chordMatches(resolveChord("projectShell", overrides), e)) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (steering.active) steering.exit();
+        openProjectShellInRootConsole();
         return;
       }
       if (!steering.active) return;
