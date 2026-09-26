@@ -869,7 +869,7 @@ pub fn up(
     .dir;
     // Parent first; Docker also sorts nested bind mounts by destination,
     // but preserving the relationship here keeps the pure argv obvious.
-    let mut rw_mounts = vec![
+    let rw_mounts = vec![
         format!("{}:{home}", scope_home.to_string_lossy()),
         format!(
             "{}:{}",
@@ -877,15 +877,6 @@ pub fn up(
             live_sessions.to_string_lossy()
         ),
     ];
-    // Login directories a CLI keeps in a folder of its own: the shared store,
-    // bound over the home's path (`services::agent_auth`).
-    for (src, dst) in crate::services::agent_auth::dir_binds_in(&state_dir, &scope_home) {
-        let dst = match Path::new(&dst).strip_prefix(&scope_home) {
-            Ok(rel) => Path::new(&home).join(rel).to_string_lossy().into_owned(),
-            Err(_) => dst,
-        };
-        rw_mounts.push(format!("{src}:{dst}"));
-    }
     let mut ro_mounts = ro_mounts_for_hooks(&hooks_dir);
     let bin = crate::services::agent_bin::bin_dir();
     std::fs::create_dir_all(&bin).map_err(|e| e.to_string())?;

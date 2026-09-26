@@ -4,27 +4,38 @@
 //! `$HOME` — see the `auth_paths` column of the registry in
 //! `commands::agents`. Those paths, and only those, are shared across scopes:
 //! the file lives once in `<state_dir>/agent-auth/<cli-id>/` and every scope
-//! home (`services::agent_home`) carries a **hard link** to it at the CLI's
-//! own path. A hard link, not a bind mount and not a symlink: several CLIs
-//! rotate a token by writing a sibling file and renaming it over the original,
-//! which a file bind mount refuses (`EBUSY` on a mount point) and Claude opens
-//! its store `O_NOFOLLOW`, so a symlink is refused too. A rename simply gives
-//! the scope a new inode; the keeper ([`start`]) notices, copies the new bytes
-//! into the store's inode in place — every other scope's link sees them at
-//! once — and links the scope's path back to the store. So a login made in any
-//! tab, fenced or not, sticks everywhere, and a refresh a tab persists reaches
-//! the other tabs without a respawn.
+//! home (`services::agent_home`) carries a **copy** of it at the CLI's own
+//! path — its own inode, so nothing a tab writes reaches another scope until
+//! the keeper has looked at it. The keeper ([`start`]: every [`POLL`], at
+//! every spawn and at every tab end) reconciles each home against the store:
+//! a copy the tab changed — a login, a token refresh, whether the CLI wrote
+//! in place or rotated by rename — is adopted into the store if it does not
+//! switch the account, and every other home's copy is brought up to the
+//! store's bytes on its next pass. The store records per home what it last
+//! placed there ([`PLACED_DIR`]); that is how a tab's write is told from a
+//! copy the store has since moved past, and it lives in the store, where no
+//! agent can forge it.
+//!
+//! Until 2026-09-26 the copies were hard links to the store's one inode, so a
+//! refresh reached every running tab at once — and so did any in-place
+//! write, before the account guard could see it, the Host session's copy
+//! included (agent_authority reevaluation, item 4). A copy costs the guard
+//! nothing and the other running tabs one keeper pass.
 //!
 //! Directories (a CLI that keeps only its login in a folder of its own) are
-//! bind-mounted from the store on Linux (`dir_binds`) and symlinked elsewhere.
+//! reconciled file by file, one level deep. Every read and write into a
+//! home goes through a directory handle (`services::home_io`): the home is
+//! the agent's, and the keeper runs unfenced.
 //!
 //! Only credential files are shared — never a config that could name a
 //! command (an MCP server, a hook), which stays per scope. Where the file
 //! names an account, the store records it at first adoption and a later file
-//! naming a different account is **not** adopted (the tab that wrote it keeps
-//! its own login, the store keeps the user's); switching accounts on purpose
-//! is Sign out, then log in again. AppHandle-free and unit-testable.
+//! naming a different account is **not** adopted (the store's copy is put
+//! back over it; the tab keeps the token it already loaded); switching
+//! accounts on purpose is Sign out, then log in again. AppHandle-free and
+//! unit-testable.
 
+use std::collections::BTreeSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -32,24 +43,30 @@ use std::time::Duration;
 
 use serde::Serialize;
 
+use crate::services::home_io::{HomeDir, HomeFile};
 use crate::storage;
 
 /// The directory under the state dir holding every CLI's login.
 pub const STORE_DIR: &str = "agent-auth";
-/// The keeper's cadence: a login done in a tab reaches the other scopes'
-/// next spawn at once (spawn reconciles) and their running tabs within this.
-const POLL: Duration = Duration::from_secs(20);
+/// The keeper's cadence: a login or refresh done in a tab reaches the other
+/// scopes' next spawn at once (spawn reconciles) and their running tabs
+/// within this.
+const POLL: Duration = Duration::from_secs(5);
 /// Sidecar in a CLI's store dir naming the account the store was adopted from.
 const ACCOUNT_FILE: &str = ".account";
 /// Sidecar left when an adoption was refused, for the Agents view to show.
 const BLOCKED_FILE: &str = ".blocked";
+/// Per CLI store dir: `<home key>/<leaf>` holds the digest of the bytes the
+/// store last placed in that home at that path.
+const PLACED_DIR: &str = ".placed";
 
 /// What kind of path a CLI keeps its login in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthKind {
-    /// One file; hard-linked into every home.
+    /// One file; copied into every home.
     File,
-    /// A directory holding nothing but the login; bound into every home.
+    /// A directory holding nothing but the login; its files copied into
+    /// every home.
     Dir,
 }
 
@@ -98,69 +115,53 @@ fn registry() -> Vec<(&'static str, &'static [AuthPath])> {
     crate::commands::agents::auth_registry()
 }
 
-#[cfg(unix)]
-fn inode(path: &Path) -> Option<(u64, u64)> {
-    use std::os::unix::fs::MetadataExt;
-    let m = std::fs::metadata(path).ok()?;
-    Some((m.dev(), m.ino()))
+fn digest(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(bytes))
 }
 
-#[cfg(not(unix))]
-fn inode(_path: &Path) -> Option<(u64, u64)> {
-    // Windows exposes file ids only through an unstable API; compare content
-    // instead (`same_file` below), which is what the linkage buys anyway.
-    None
+/// The home's key in the store's records: its directory name, which is the
+/// scope's `project_key` (unique per scope, `host` for the Host session).
+fn home_key(home: &Path) -> String {
+    home.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
-/// Whether `a` and `b` are the same file (one inode, two names).
-fn same_file(a: &Path, b: &Path) -> bool {
-    match (inode(a), inode(b)) {
-        (Some(x), Some(y)) => x == y,
-        _ => match (std::fs::read(a), std::fs::read(b)) {
-            (Ok(x), Ok(y)) => x == y,
-            _ => false,
-        },
+fn placed_file(store_dir: &Path, home: &Path, leaf: &str) -> PathBuf {
+    store_dir.join(PLACED_DIR).join(home_key(home)).join(leaf)
+}
+
+fn read_placed(store_dir: &Path, home: &Path, leaf: &str) -> Option<String> {
+    read_sidecar(&store_dir.join(PLACED_DIR).join(home_key(home)), leaf)
+}
+
+fn write_placed(store_dir: &Path, home: &Path, leaf: &str, hash: &str) {
+    let path = placed_file(store_dir, home, leaf);
+    if let Some(parent) = path.parent() {
+        let _ = crate::services::agent_home::create_private_dir(parent);
     }
+    let _ = std::fs::write(path, hash);
 }
 
-/// Write in place — open, truncate, write — so every link keeps seeing the
-/// one inode. Created `0600`.
-fn write_in_place(path: &Path, bytes: &[u8]) -> io::Result<()> {
+/// A non-blank file's bytes.
+fn content(bytes: Option<Vec<u8>>) -> Option<Vec<u8>> {
+    bytes.filter(|b| !b.iter().all(u8::is_ascii_whitespace))
+}
+
+/// Write a store file (`0600`) by temporary and rename: the store dir is
+/// Eldrun's own, but a keeper pass and a spawn may run at once.
+fn write_store(path: &Path, bytes: &[u8]) -> io::Result<()> {
     use std::io::Write;
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
+    let parent = path.parent().ok_or_else(|| io::Error::other("missing parent directory"))?;
+    crate::services::agent_home::create_private_dir(parent)?;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
+        use std::os::unix::fs::PermissionsExt;
+        tmp.as_file().set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
-    let mut f = opts.open(path)?;
-    f.write_all(bytes)?;
-    f.flush()
-}
-
-/// Put a hard link to `store` at `link`, replacing whatever is there
-/// (atomically: a temp link renamed over). Falls back to a copy when linking
-/// is impossible (another filesystem), which then holds a per-scope login.
-fn link_or_copy(store: &Path, link: &Path) -> io::Result<()> {
-    if let Some(parent) = link.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = link.with_file_name(format!(
-        ".{}.eldrun-{}",
-        link.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
-        std::process::id()
-    ));
-    let _ = std::fs::remove_file(&tmp);
-    match std::fs::hard_link(store, &tmp) {
-        Ok(()) => std::fs::rename(&tmp, link).inspect_err(|_| {
-            let _ = std::fs::remove_file(&tmp);
-        }),
-        Err(_) => {
-            let _ = std::fs::remove_file(&tmp);
-            std::fs::copy(store, link).map(|_| ())
-        }
-    }
+    tmp.write_all(bytes)?;
+    tmp.persist(path).map_err(|e| e.error)?;
+    Ok(())
 }
 
 /// The account a login file names, where a CLI's file does: Codex's
@@ -180,8 +181,8 @@ pub fn account_of(cli: &str, bytes: &[u8]) -> Option<String> {
 
 /// The signed-in Claude account of a home, from its `.claude.json`.
 pub fn claude_account_in_home(home: &Path) -> Option<String> {
-    let value: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(home.join(".claude.json")).ok()?).ok()?;
+    let bytes = HomeFile::open_existing(home, ".claude.json")?.read()?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     value
         .pointer("/oauthAccount/emailAddress")
         .and_then(|v| v.as_str())
@@ -203,26 +204,13 @@ pub struct Blocked {
     pub stored: String,
 }
 
-/// Adopt the login a tab wrote at `home_file` into `store`, if it is a new
-/// file (not the store's own inode), holds something, and does not switch the
-/// account. Returns whether the store changed.
-fn adopt_file(cli: &str, store_dir: &Path, store: &Path, home: &Path, home_file: &Path) -> bool {
-    if !home_file.is_file() || (store.is_file() && same_file(store, home_file)) {
-        return false;
-    }
-    let Ok(bytes) = std::fs::read(home_file) else {
-        return false;
-    };
-    if bytes.iter().all(u8::is_ascii_whitespace) {
-        return false;
-    }
-    if store.is_file() && std::fs::read(store).ok().as_deref() == Some(bytes.as_slice()) {
-        return false;
-    }
+/// Adopt `bytes`, which a tab wrote into `home`, into `store`, unless they
+/// switch the account. Returns whether the store now holds them.
+fn adopt(cli: &str, store_dir: &Path, store: &Path, home: &Path, bytes: &[u8]) -> bool {
     let account = if cli == "claude" {
         claude_account_in_home(home)
     } else {
-        account_of(cli, &bytes)
+        account_of(cli, bytes)
     };
     if let (Some(new), Some(stored)) = (&account, read_sidecar(store_dir, ACCOUNT_FILE)) {
         if *new != stored {
@@ -232,10 +220,7 @@ fn adopt_file(cli: &str, store_dir: &Path, store: &Path, home: &Path, home_file:
             return false;
         }
     }
-    if crate::services::agent_home::create_private_dir(store_dir).is_err() {
-        return false;
-    }
-    if let Err(e) = write_in_place(store, &bytes) {
+    if let Err(e) = write_store(store, bytes) {
         eprintln!("agent_auth: {cli}: store {}: {e}", store.display());
         return false;
     }
@@ -246,44 +231,133 @@ fn adopt_file(cli: &str, store_dir: &Path, store: &Path, home: &Path, home_file:
     true
 }
 
+/// Which half of a reconciliation runs. A pass over every home adopts from
+/// all of them first and places into all of them after, so a login made in
+/// any home reaches every other in the same pass whatever the order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    Adopt,
+    Place,
+    Both,
+}
+
+impl Step {
+    fn adopts(self) -> bool {
+        self != Step::Place
+    }
+
+    fn places(self) -> bool {
+        self != Step::Adopt
+    }
+}
+
+/// Reconcile one shared file: the store's `store` against the home's `copy`.
+///
+/// 1. A copy that differs from what the store last placed there is the
+///    tab's own write (a login, a refresh — in place or by rename): adopted
+///    if it does not switch the account.
+/// 2. Then the store's bytes go into the home, whatever it held: a refused
+///    login is overwritten, a stale copy caught up, a hard link from an
+///    older Eldrun replaced by a copy of its own.
+fn reconcile_file(cli: &str, store_dir: &Path, store: &Path, leaf: &str, home: &Path, copy: &HomeFile, step: Step) {
+    let home_bytes = content(copy.read());
+    let store_bytes = content(std::fs::read(store).ok());
+    if let (Some(bytes), true) = (&home_bytes, step.adopts()) {
+        let hash = digest(bytes);
+        let placed = read_placed(store_dir, home, leaf);
+        let changed = placed.as_deref() != Some(hash.as_str()) && store_bytes.as_deref() != Some(bytes.as_slice());
+        if changed && adopt(cli, store_dir, store, home, bytes) {
+            write_placed(store_dir, home, leaf, &hash);
+            return;
+        }
+    }
+    if !step.places() {
+        return;
+    }
+    let Some(bytes) = store_bytes else { return };
+    let hash = digest(&bytes);
+    let linked = copy.metadata().and_then(|m| m.ino).is_some_and(|ino| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::metadata(store).is_ok_and(|m| (m.dev(), m.ino()) == ino)
+        }
+        #[cfg(not(unix))]
+        {
+            false
+        }
+    });
+    if linked || home_bytes.as_deref() != Some(bytes.as_slice()) {
+        match copy.write(&bytes) {
+            Ok(()) => write_placed(store_dir, home, leaf, &hash),
+            Err(e) => eprintln!("agent_auth: {cli}: place {}: {e}", copy.path().display()),
+        }
+    } else if read_placed(store_dir, home, leaf).as_deref() != Some(hash.as_str()) {
+        write_placed(store_dir, home, leaf, &hash);
+    }
+}
+
+/// The names of the regular files in a store directory.
+fn store_dir_files(store: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(store) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .collect()
+}
+
+/// Reconcile a login directory file by file, one level deep: every name the
+/// store or the home holds.
+fn reconcile_dir(cli: &str, store_dir: &Path, store: &Path, rel: &str, home: &Path, step: Step) {
+    let has_store = !store_dir_files(store).is_empty();
+    let home_dir = if has_store { HomeDir::open(home, rel) } else { HomeDir::open_existing(home, rel) };
+    let Some(home_dir) = home_dir else { return };
+    let names: BTreeSet<String> = store_dir_files(store)
+        .into_iter()
+        .chain(home_dir.names())
+        .filter(|n| !n.starts_with('.'))
+        .collect();
+    for name in names {
+        let Some(copy) = home_dir.file(&name) else { continue };
+        if !copy.exists() && !store.join(&name).is_file() {
+            continue;
+        }
+        let leaf = format!("{}_{}", leaf_of(rel), name);
+        reconcile_file(cli, store_dir, &store.join(&name), &leaf, home, &copy, step);
+    }
+}
+
 /// Reconcile one home against the store, both ways: adopt what its tabs
-/// wrote, then link the store in. Pure over `state_dir`/`home`.
+/// wrote, then place the store's logins. Pure over `state_dir`/`home`.
 pub fn reconcile_home_in(state_dir: &Path, home: &Path) {
+    reconcile_home_step(state_dir, home, Step::Both);
+}
+
+fn reconcile_home_step(state_dir: &Path, home: &Path, step: Step) {
     for (cli, paths) in registry() {
         let store_dir = store_dir_in(state_dir, cli);
         for path in paths {
-            let home_file = home_path(home, path.rel);
+            let store = store_path_in(state_dir, cli, path);
             match path.kind {
                 AuthKind::File => {
-                    let store = store_path_in(state_dir, cli, path);
-                    adopt_file(cli, &store_dir, &store, home, &home_file);
-                    if store.is_file() && !same_file(&store, &home_file) {
-                        if let Err(e) = link_or_copy(&store, &home_file) {
-                            eprintln!("agent_auth: {cli}: link {}: {e}", home_file.display());
-                        }
+                    // The directories are created only once there is a login
+                    // to place; a home without one is left as it is.
+                    let copy = if store.is_file() {
+                        HomeFile::open(home, path.rel)
+                    } else {
+                        HomeFile::open_existing(home, path.rel)
+                    };
+                    if let Some(copy) = copy {
+                        reconcile_file(cli, &store_dir, &store, &leaf_of(path.rel), home, &copy, step);
                     }
                 }
-                AuthKind::Dir => {
-                    let store = store_path_in(state_dir, cli, path);
-                    let _ = crate::services::agent_home::create_private_dir(&store);
-                    // Linux binds the store dir over this path (`dir_binds`);
-                    // the mount point must exist. Elsewhere the path is a
-                    // symlink to the store.
-                    if cfg!(target_os = "linux") {
-                        let _ = std::fs::create_dir_all(&home_file);
-                    } else if !home_file.exists() {
-                        if let Some(parent) = home_file.parent() {
-                            let _ = std::fs::create_dir_all(parent);
-                        }
-                        #[cfg(unix)]
-                        let _ = std::os::unix::fs::symlink(&store, &home_file);
-                        #[cfg(windows)]
-                        let _ = std::os::windows::fs::symlink_dir(&store, &home_file);
-                    }
-                }
+                AuthKind::Dir => reconcile_dir(cli, &store_dir, &store, path.rel, home, step),
             }
         }
-        if cli == "claude" {
+        if cli == "claude" && step.places() {
             link_claude_identity(&store_dir, home);
         }
     }
@@ -294,9 +368,9 @@ pub fn reconcile_home_in(state_dir: &Path, home: &Path) {
 /// that signed in feeds them back (same account rule as the credentials).
 fn link_claude_identity(store_dir: &Path, home: &Path) {
     let identity = store_dir.join("identity.json");
-    let file = home.join(".claude.json");
-    let mut value: serde_json::Value = std::fs::read(&file)
-        .ok()
+    let Some(file) = HomeFile::open(home, ".claude.json") else { return };
+    let mut value: serde_json::Value = file
+        .read()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_else(|| serde_json::json!({}));
     if !value.is_object() {
@@ -310,12 +384,10 @@ fn link_claude_identity(store_dir: &Path, home: &Path) {
     match (home_account, stored) {
         // The home is signed in: record its identity unless it is another account.
         (Some(account), _) if stored_account.as_deref().is_none_or(|s| s == account) => {
-            let keys = crate::services::agent_home::filtered_claude_json(&value, &[]);
-            let mut keys = keys;
+            let mut keys = crate::services::agent_home::filtered_claude_json(&value, &[]);
             keys.as_object_mut().map(|o| o.remove("projects"));
-            let _ = crate::services::agent_home::create_private_dir(store_dir);
             if let Ok(body) = serde_json::to_vec(&keys) {
-                let _ = write_in_place(&identity, &body);
+                let _ = write_store(&identity, &body);
             }
             let _ = std::fs::write(store_dir.join(ACCOUNT_FILE), account);
         }
@@ -333,7 +405,7 @@ fn link_claude_identity(store_dir: &Path, home: &Path) {
             }
             if changed {
                 if let Ok(body) = serde_json::to_vec_pretty(&value) {
-                    let _ = std::fs::write(&file, body);
+                    let _ = file.write(&body);
                 }
             }
         }
@@ -345,25 +417,6 @@ fn link_claude_identity(store_dir: &Path, home: &Path) {
 /// agent spawn runs for its home before the agent starts.
 pub fn link_into_home(state_dir: &Path, home: &Path) {
     reconcile_home_in(state_dir, home);
-}
-
-/// The Linux fence's / container's directory binds for `home`:
-/// `(store dir, path in home)` for every `Dir` login path.
-pub fn dir_binds_in(state_dir: &Path, home: &Path) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    for (cli, paths) in registry() {
-        for path in paths.iter().filter(|p| p.kind == AuthKind::Dir) {
-            let store = store_path_in(state_dir, cli, path);
-            let _ = crate::services::agent_home::create_private_dir(&store);
-            let dst = home_path(home, path.rel);
-            let _ = std::fs::create_dir_all(&dst);
-            out.push((
-                store.to_string_lossy().into_owned(),
-                dst.to_string_lossy().into_owned(),
-            ));
-        }
-    }
-    out
 }
 
 /// Environment that makes a CLI keep its login in its file instead of a
@@ -418,7 +471,7 @@ pub fn status_in(state_dir: &Path, user_home: &Path) -> Vec<LoginStatus> {
                 let s = store_path_in(state_dir, cli, p);
                 match p.kind {
                     AuthKind::File => std::fs::metadata(&s).is_ok_and(|m| m.len() > 0),
-                    AuthKind::Dir => std::fs::read_dir(&s).is_ok_and(|mut d| d.next().is_some()),
+                    AuthKind::Dir => !store_dir_files(&s).is_empty(),
                 }
             });
             let importable = paths.iter().any(|p| home_path(user_home, p.rel).exists());
@@ -447,10 +500,34 @@ pub fn status() -> Vec<LoginStatus> {
     status_in(&storage::state_dir(), &crate::paths::home_dir())
 }
 
+/// Remove a home's copies of `cli`'s login paths.
+fn remove_copies(home: &Path, paths: &[AuthPath]) {
+    for path in paths {
+        match path.kind {
+            AuthKind::File => {
+                if let Some(copy) = HomeFile::open_existing(home, path.rel) {
+                    if copy.exists() {
+                        let _ = copy.remove();
+                    }
+                }
+            }
+            AuthKind::Dir => {
+                if let Some(dir) = HomeDir::open_existing(home, path.rel) {
+                    for name in dir.names() {
+                        if let Some(copy) = dir.file(&name) {
+                            let _ = copy.remove();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Copy the user's own login files for `cli` into the store (the one safe
-/// direction: this computer → Eldrun), then link them into every home. The
-/// account record is reset to whatever the imported file names. Instructions,
-/// skills and MCP entries are never imported.
+/// direction: this computer → Eldrun), then place them into every home,
+/// whatever it held. The account record is reset to whatever the imported
+/// file names. Instructions, skills and MCP entries are never imported.
 pub fn import_from_user_home_in(state_dir: &Path, user_home: &Path, cli: &str) -> Result<usize, String> {
     let paths = registry()
         .into_iter()
@@ -461,6 +538,7 @@ pub fn import_from_user_home_in(state_dir: &Path, user_home: &Path, cli: &str) -
     crate::services::agent_home::create_private_dir(&store_dir).map_err(|e| e.to_string())?;
     let _ = std::fs::remove_file(store_dir.join(ACCOUNT_FILE));
     let _ = std::fs::remove_file(store_dir.join(BLOCKED_FILE));
+    let _ = std::fs::remove_dir_all(store_dir.join(PLACED_DIR));
     let mut copied = 0;
     for path in paths {
         let src = home_path(user_home, path.rel);
@@ -468,7 +546,7 @@ pub fn import_from_user_home_in(state_dir: &Path, user_home: &Path, cli: &str) -
         match path.kind {
             AuthKind::File if src.is_file() => {
                 let bytes = std::fs::read(&src).map_err(|e| format!("{}: {e}", src.display()))?;
-                write_in_place(&store, &bytes).map_err(|e| format!("{}: {e}", store.display()))?;
+                write_store(&store, &bytes).map_err(|e| format!("{}: {e}", store.display()))?;
                 if let Some(account) = account_of(cli, &bytes) {
                     let _ = std::fs::write(store_dir.join(ACCOUNT_FILE), account);
                 }
@@ -498,7 +576,7 @@ pub fn import_from_user_home_in(state_dir: &Path, user_home: &Path, cli: &str) -
                 let _ = std::fs::write(store_dir.join(ACCOUNT_FILE), account);
             }
             if let Ok(body) = serde_json::to_vec(&keys) {
-                let _ = write_in_place(&store_dir.join("identity.json"), &body);
+                let _ = write_store(&store_dir.join("identity.json"), &body);
             }
         }
     }
@@ -506,10 +584,7 @@ pub fn import_from_user_home_in(state_dir: &Path, user_home: &Path, cli: &str) -
         return Err("this computer holds no login file for that CLI (it may keep it in a keyring — log in once in an Eldrun tab instead)".into());
     }
     for home in crate::services::agent_home::existing_homes_in(state_dir) {
-        // Every home takes the imported login, whatever it held.
-        for path in paths.iter().filter(|p| p.kind == AuthKind::File) {
-            let _ = std::fs::remove_file(home_path(&home, path.rel));
-        }
+        remove_copies(&home, paths);
         reconcile_home_in(state_dir, &home);
     }
     Ok(copied)
@@ -559,8 +634,7 @@ fn copy_dir(src: &Path, dst: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Forget the login of `cli` everywhere: the store and every home's link to
-/// it (a home's own, unlinked file — a refused other-account login — stays).
+/// Forget the login of `cli` everywhere: the store and every home's copy.
 pub fn sign_out_in(state_dir: &Path, cli: &str) -> Result<(), String> {
     let paths = registry()
         .into_iter()
@@ -569,15 +643,11 @@ pub fn sign_out_in(state_dir: &Path, cli: &str) -> Result<(), String> {
         .ok_or_else(|| format!("unknown agent: {cli}"))?;
     let store_dir = store_dir_in(state_dir, cli);
     for home in crate::services::agent_home::existing_homes_in(state_dir) {
-        for path in paths {
-            let link = home_path(&home, path.rel);
-            let store = store_path_in(state_dir, cli, path);
-            if path.kind == AuthKind::File && link.is_file() && store.is_file() && same_file(&store, &link) {
-                let _ = std::fs::remove_file(&link);
-            }
-        }
+        remove_copies(&home, paths);
         if cli == "claude" {
-            strip_claude_identity(&home.join(".claude.json"));
+            if let Some(file) = HomeFile::open_existing(&home, ".claude.json") {
+                strip_claude_identity(&file);
+            }
         }
     }
     if store_dir.exists() {
@@ -590,9 +660,9 @@ pub fn sign_out(cli: &str) -> Result<(), String> {
     sign_out_in(&storage::state_dir(), cli)
 }
 
-fn strip_claude_identity(file: &Path) {
-    let Some(mut value) = std::fs::read(file)
-        .ok()
+fn strip_claude_identity(file: &HomeFile) {
+    let Some(mut value) = file
+        .read()
         .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
     else {
         return;
@@ -600,16 +670,21 @@ fn strip_claude_identity(file: &Path) {
     if let Some(obj) = value.as_object_mut() {
         if obj.remove("oauthAccount").is_some() {
             if let Ok(body) = serde_json::to_vec_pretty(&value) {
-                let _ = std::fs::write(file, body);
+                let _ = file.write(&body);
             }
         }
     }
 }
 
-/// One keeper pass over every home.
+/// One keeper pass over every home: every tab's write adopted first, then
+/// the store placed everywhere, so nothing depends on the homes' order.
 pub fn reconcile_all_in(state_dir: &Path) {
-    for home in crate::services::agent_home::existing_homes_in(state_dir) {
-        reconcile_home_in(state_dir, &home);
+    let homes = crate::services::agent_home::existing_homes_in(state_dir);
+    for home in &homes {
+        reconcile_home_step(state_dir, home, Step::Adopt);
+    }
+    for home in &homes {
+        reconcile_home_step(state_dir, home, Step::Place);
     }
 }
 
@@ -646,8 +721,83 @@ mod tests {
         store_path_in(state, cli, &file(rel))
     }
 
+    #[cfg(unix)]
+    fn same_inode(a: &Path, b: &Path) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        let (a, b) = (std::fs::metadata(a).unwrap(), std::fs::metadata(b).unwrap());
+        (a.dev(), a.ino()) == (b.dev(), b.ino())
+    }
+
+    /// Write the way a CLI refreshing in place does: same inode, new bytes.
+    fn write_in_place(path: &Path, bytes: &str) {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().write(true).truncate(true).open(path).unwrap();
+        f.write_all(bytes.as_bytes()).unwrap();
+    }
+
     #[test]
-    fn a_login_written_in_one_home_is_adopted_and_linked_into_the_others() {
+    #[cfg(unix)]
+    fn a_home_symlink_cannot_publish_a_host_file_as_a_shared_login() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("state");
+        let home = crate::services::agent_home::scope_home_in(&state, "a");
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        let secret = tmp.path().join("host-secret");
+        std::fs::write(&secret, "private fixture").unwrap();
+        std::os::unix::fs::symlink(&secret, home.join(".codex/auth.json")).unwrap();
+
+        reconcile_home_in(&state, &home);
+
+        assert!(!store_of(&state, "codex", ".codex/auth.json").exists());
+        assert_eq!(std::fs::read_to_string(&secret).unwrap(), "private fixture");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_home_directory_symlink_cannot_redirect_login_reconciliation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("state");
+        let home = crate::services::agent_home::scope_home_in(&state, "a");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("auth.json"), "private fixture").unwrap();
+        std::os::unix::fs::symlink(&outside, home.join(".codex")).unwrap();
+
+        reconcile_home_in(&state, &home);
+
+        assert!(!store_of(&state, "codex", ".codex/auth.json").exists());
+        assert_eq!(std::fs::read_to_string(outside.join("auth.json")).unwrap(), "private fixture");
+        // With a login in the store, the linked directory is still not
+        // written through.
+        let store = store_of(&state, "codex", ".codex/auth.json");
+        write_store(&store, b"{\"tokens\":{\"account_id\":\"me\"}}").unwrap();
+        reconcile_home_in(&state, &home);
+        assert_eq!(std::fs::read_to_string(outside.join("auth.json")).unwrap(), "private fixture");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn seeding_claude_identity_replaces_a_link_without_writing_its_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = tmp.path().join("store");
+        let home = tmp.path().join("home");
+        let victim = tmp.path().join("victim");
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(store.join("identity.json"), r#"{"oauthAccount":{"emailAddress":"fixture@example.com"}}"#).unwrap();
+        std::fs::write(&victim, "{}").unwrap();
+        std::os::unix::fs::symlink(&victim, home.join(".claude.json")).unwrap();
+
+        link_claude_identity(&store, &home);
+
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "{}");
+        assert!(std::fs::symlink_metadata(home.join(".claude.json")).unwrap().is_file());
+        assert_eq!(claude_account_in_home(&home).as_deref(), Some("fixture@example.com"));
+    }
+
+    #[test]
+    fn a_login_written_in_one_home_is_adopted_and_copied_into_the_others() {
         let tmp = tempfile::tempdir().unwrap();
         let state = tmp.path();
         let a = crate::services::agent_home::scope_home_in(state, "a");
@@ -658,41 +808,121 @@ mod tests {
         reconcile_all_in(state);
         let store = store_of(state, "codex", ".codex/auth.json");
         assert!(store.is_file());
-        assert!(same_file(&store, &a.join(".codex/auth.json")));
-        assert!(same_file(&store, &b.join(".codex/auth.json")));
+        assert!(std::fs::read_to_string(b.join(".codex/auth.json")).unwrap().contains("\"t\""));
         assert_eq!(read_sidecar(&store_dir_in(state, "codex"), ACCOUNT_FILE).as_deref(), Some("acc-1"));
+        // Copies, not links: a tab's write is its own until adopted.
+        #[cfg(unix)]
+        {
+            assert!(!same_inode(&store, &a.join(".codex/auth.json")));
+            assert!(!same_inode(&store, &b.join(".codex/auth.json")));
+        }
 
-        // A rotation by rename in b: new inode, same account → adopted, a sees it.
+        // A rotation by rename in b: same account → adopted, a sees it.
         let fresh = b.join(".codex/auth.json.tmp");
         std::fs::write(&fresh, r#"{"tokens":{"account_id":"acc-1","access_token":"t2"}}"#).unwrap();
         std::fs::rename(&fresh, b.join(".codex/auth.json")).unwrap();
         reconcile_all_in(state);
         assert!(std::fs::read_to_string(a.join(".codex/auth.json")).unwrap().contains("t2"));
-        assert!(same_file(&store, &b.join(".codex/auth.json")));
+
+        // A refresh in place in a: adopted just the same, b sees it.
+        write_in_place(&a.join(".codex/auth.json"), r#"{"tokens":{"account_id":"acc-1","access_token":"t3"}}"#);
+        reconcile_all_in(state);
+        assert!(std::fs::read_to_string(&store).unwrap().contains("t3"));
+        assert!(std::fs::read_to_string(b.join(".codex/auth.json")).unwrap().contains("t3"));
+        // Steady state: another pass changes nothing.
+        reconcile_all_in(state);
+        assert!(std::fs::read_to_string(a.join(".codex/auth.json")).unwrap().contains("t3"));
     }
 
+    /// The guard holds for every kind of write now: a login as another
+    /// account, whether the tab renamed a new file in or rewrote its copy in
+    /// place, never reaches the store or the other homes, and the store's
+    /// copy is put back.
     #[test]
-    fn a_login_as_another_account_is_refused_and_stays_in_its_own_home() {
+    fn a_login_as_another_account_is_refused_however_it_was_written() {
         let tmp = tempfile::tempdir().unwrap();
         let state = tmp.path();
         let a = crate::services::agent_home::scope_home_in(state, "a");
         let b = crate::services::agent_home::scope_home_in(state, "b");
+        let host = crate::services::agent_home::host_home_in(state);
         std::fs::create_dir_all(a.join(".codex")).unwrap();
         std::fs::create_dir_all(b.join(".codex")).unwrap();
+        std::fs::create_dir_all(&host).unwrap();
         std::fs::write(a.join(".codex/auth.json"), r#"{"tokens":{"account_id":"user"}}"#).unwrap();
         reconcile_all_in(state);
+        let store = store_of(state, "codex", ".codex/auth.json");
+        let holds_user = |p: &Path| std::fs::read_to_string(p).unwrap().contains("\"user\"");
+        assert!(holds_user(&host.join(".codex/auth.json")));
+
+        // By rename.
         std::fs::remove_file(b.join(".codex/auth.json")).unwrap();
         std::fs::write(b.join(".codex/auth.json"), r#"{"tokens":{"account_id":"attacker"}}"#).unwrap();
         reconcile_all_in(state);
-        let store = store_of(state, "codex", ".codex/auth.json");
-        assert!(std::fs::read_to_string(&store).unwrap().contains("\"user\""));
-        assert!(std::fs::read_to_string(a.join(".codex/auth.json")).unwrap().contains("\"user\""));
-        // b keeps what it wrote; the store's link is restored only on sign-out/import.
-        assert!(std::fs::read_to_string(b.join(".codex/auth.json")).unwrap().contains("\"user\""));
+        assert!(holds_user(&store));
+        assert!(holds_user(&a.join(".codex/auth.json")));
+        assert!(holds_user(&host.join(".codex/auth.json")));
+        assert!(holds_user(&b.join(".codex/auth.json")));
         let status: Vec<LoginStatus> = status_in(state, tmp.path());
         let codex = status.iter().find(|s| s.id == "codex").unwrap();
         assert_eq!(codex.blocked.as_ref().map(|b| b.account.as_str()), Some("attacker"));
         assert!(codex.signed_in);
+
+        // In place: the write that used to change every home at once.
+        write_in_place(&b.join(".codex/auth.json"), r#"{"tokens":{"account_id":"attacker2"}}"#);
+        assert!(holds_user(&store), "the store is its own inode");
+        assert!(holds_user(&host.join(".codex/auth.json")));
+        reconcile_all_in(state);
+        assert!(holds_user(&store));
+        assert!(holds_user(&a.join(".codex/auth.json")));
+        assert!(holds_user(&b.join(".codex/auth.json")));
+        let status: Vec<LoginStatus> = status_in(state, tmp.path());
+        let codex = status.iter().find(|s| s.id == "codex").unwrap();
+        assert_eq!(codex.blocked.as_ref().map(|b| b.account.as_str()), Some("attacker2"));
+    }
+
+    /// A home linked by an older Eldrun to the store's inode gets a copy of
+    /// its own on the first pass, so its in-place writes stop reaching the
+    /// store directly.
+    #[test]
+    #[cfg(unix)]
+    fn a_hard_link_from_an_older_eldrun_is_replaced_by_a_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path();
+        let a = crate::services::agent_home::scope_home_in(state, "a");
+        std::fs::create_dir_all(a.join(".codex")).unwrap();
+        let store = store_of(state, "codex", ".codex/auth.json");
+        write_store(&store, b"{\"tokens\":{\"account_id\":\"user\"}}").unwrap();
+        std::fs::write(store_dir_in(state, "codex").join(ACCOUNT_FILE), "user").unwrap();
+        std::fs::hard_link(&store, a.join(".codex/auth.json")).unwrap();
+        assert!(same_inode(&store, &a.join(".codex/auth.json")));
+
+        reconcile_all_in(state);
+
+        assert!(!same_inode(&store, &a.join(".codex/auth.json")));
+        write_in_place(&a.join(".codex/auth.json"), r#"{"tokens":{"account_id":"attacker"}}"#);
+        assert!(std::fs::read_to_string(&store).unwrap().contains("\"user\""));
+    }
+
+    #[test]
+    fn a_login_directory_is_reconciled_file_by_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path();
+        let a = crate::services::agent_home::scope_home_in(state, "a");
+        let b = crate::services::agent_home::scope_home_in(state, "b");
+        std::fs::create_dir_all(a.join(".kimi-code/credentials")).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join(".kimi-code/credentials/token"), "k1").unwrap();
+        reconcile_all_in(state);
+        let store = store_path_in(state, "kimi", &dir(".kimi-code/credentials"));
+        assert_eq!(std::fs::read_to_string(store.join("token")).unwrap(), "k1");
+        assert_eq!(std::fs::read_to_string(b.join(".kimi-code/credentials/token")).unwrap(), "k1");
+        assert!(status_in(state, tmp.path()).iter().find(|s| s.id == "kimi").unwrap().signed_in);
+        write_in_place(&b.join(".kimi-code/credentials/token"), "k2");
+        reconcile_all_in(state);
+        assert_eq!(std::fs::read_to_string(a.join(".kimi-code/credentials/token")).unwrap(), "k2");
+        sign_out_in(state, "kimi").unwrap();
+        assert!(!a.join(".kimi-code/credentials/token").exists());
+        assert!(!store.exists());
     }
 
     #[test]
@@ -704,9 +934,11 @@ mod tests {
         std::fs::write(user.join(".codex/auth.json"), r#"{"tokens":{"account_id":"me"}}"#).unwrap();
         std::fs::write(user.join(".codex/config.toml"), "[mcp_servers.x]\ncommand='x'\n").unwrap();
         let a = crate::services::agent_home::scope_home_in(&state, "a");
-        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(a.join(".codex")).unwrap();
+        // A refused login in a: the import replaces it like any other copy.
+        std::fs::write(a.join(".codex/auth.json"), r#"{"tokens":{"account_id":"other"}}"#).unwrap();
         assert_eq!(import_from_user_home_in(&state, &user, "codex"), Ok(1));
-        assert!(a.join(".codex/auth.json").is_file());
+        assert!(std::fs::read_to_string(a.join(".codex/auth.json")).unwrap().contains("\"me\""));
         // Only the login: the config with its MCP servers is not imported.
         assert!(!a.join(".codex/config.toml").exists());
         assert!(import_from_user_home_in(&state, &user, "kiro").is_err());

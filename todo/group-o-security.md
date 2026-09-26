@@ -1062,6 +1062,56 @@ table). Code-read findings; only #862 was reproduced (scratch repo, git 2.53).
       - [ ] ✅ Works on macOS
       - [ ] ❌ Doesn't work on macOS
 
+### Agent fence reevaluation follow-ups (2026-09-26)
+
+Evidence and the focused fixes are in
+`docs/context/agent_authority.md` → “Reevaluation, 2026-09-26”.
+
+- [x] **High: confine host-side agent-home I/O with directory handles.**
+  `contained_path` checks followed by path-based open/rename/chmod/unlink
+  still race an active agent replacing a directory. Cover global apply,
+  hook registration, credential keepers, home migration/preparation and
+  cleanup; test concurrent directory replacement. The planted temporary/file
+  symlink fixes do not resolve this race.
+  - **Fixed 2026-09-26 (not live).** `services::home_io` (`HomeDir`,
+    `HomeFile`): `openat(O_DIRECTORY | O_NOFOLLOW)` walk, then reads,
+    exclusive-temporary writes, `renameat`, `unlinkat`, `fchmod` relative to
+    the handle. `contained_path`/`write_replacing`/`read_plain` are gone;
+    global apply, hook registration, both keepers, the scrub, `.cache` and
+    the one-time seeding go through it. Tests swap the directory for a link
+    between the open and the write.
+- [x] **High: remove writable shared CLI payloads from the fence.**
+  Host-installed CLIs still get `~/.local/share/<tool>` writable for updates;
+  another scope or host shell then executes the modified payload. Plan the
+  migration to Eldrun-owned installs or host-side updates, preserving the
+  one-click install flow. The private launcher copy alone is insufficient.
+  - **Fixed 2026-09-26 (not live).** Every install is read-only in the
+    fence; `updatable_install_dirs`, the Copilot `pkg/` payload and the
+    private `~/.local/bin` copy + carry-back (#861) are removed; the
+    updater switch is applied to every fenced spawn. Updates: reinstall
+    through Manage CLIs (one click, unchanged) or outside Eldrun.
+- [x] **Conditional high: close terminal injection for shell-tab shims.**
+  A CLI entered in a shell uses `agent_shim`, outside the direct fenced-tmux
+  drain path. Evaluate denying injection ioctls at the Linux fence boundary
+  and terminal isolation for macOS; verify with an isolated test PTY, never
+  by injecting into the user's live terminal.
+  - **Fixed 2026-09-26 (not live), drain only.** The shim runs the fenced
+    CLI as a child, waits, and `tcflush`es the terminal's input before the
+    shell reads again (the pane drain's twin). A seccomp deny of the
+    injecting ioctls was **not** added; macOS keeps the pane drain's limit
+    (a process the agent leaves behind). Not verified on a test PTY.
+- [x] **Make shared-login integrity explicit or mediate writes.**
+  In-place writes through shared credential hard links change every scope,
+  including Host, without passing the account-adoption guard. If isolation
+  is required, use per-home copies and validated host-side reconciliation;
+  cover both in-place updates and rename rotations in tests.
+  - **Fixed 2026-09-26 (not live).** Per-home copies; the store records
+    what it last placed per home (`.placed/`); every changed copy passes
+    the account guard; adopt-all-then-place-all per pass; keeper at 5 s;
+    login dirs reconciled file by file (no bind); old hard links replaced
+    by copies. Tests: in-place and rename, refused account both ways, Host
+    home, migration, directories.
+
 ### Safe for everyone — non-expert users (2026-09-24)
 
 Plan: `docs/safe_for_everyone_plan.md`. Goal: every "⚠️ yours" row in

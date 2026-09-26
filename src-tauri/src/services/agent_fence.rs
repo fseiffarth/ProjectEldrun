@@ -782,14 +782,12 @@ pub(crate) fn local_model_home(
 /// The support mounts every fenced tab gets on top of its scope home
 /// (`services::agent_home`, bound over `$HOME`): the scope's own live-session
 /// slice at the canonical path the hook script writes, the hook scripts and
-/// Eldrun's commands read-only, the spawn's own local-model home, and the
-/// shared login directories (`services::agent_auth`) bound from their store
-/// over the home's path. Everything else an agent keeps — config, transcripts,
-/// session stores — is simply in the home.
+/// Eldrun's commands read-only and the spawn's own local-model home.
+/// Everything else an agent keeps — config, transcripts, session stores, its
+/// copy of the shared logins — is simply in the home.
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn agent_state_mounts(
     scope_id: &str,
-    scope_home: &Path,
     env: &std::collections::HashMap<String, String>,
 ) -> Vec<BindMount> {
     let state_dir = storage::state_dir();
@@ -811,16 +809,8 @@ fn agent_state_mounts(
     let _ = std::fs::create_dir_all(&bin);
     let bin = bin.to_string_lossy().into_owned();
     mounts.push(BindMount { src: bin.clone(), dst: bin, read_only: true });
-    // The agent sees its home at the user's home path; a login dir kept in
-    // the store is bound there, over the same relative path.
-    let home = paths::home_dir();
-    for (src, dst) in crate::services::agent_auth::dir_binds_in(&state_dir, scope_home) {
-        let dst = match Path::new(&dst).strip_prefix(scope_home) {
-            Ok(rel) => home.join(rel).to_string_lossy().into_owned(),
-            Err(_) => dst,
-        };
-        mounts.push(BindMount { src, dst, read_only: false });
-    }
+    // Logins are per-home copies in the home itself (`services::agent_auth`);
+    // nothing shared is bound in.
     add_install_mount(&mut mounts, &state_dir);
     mounts
 }
@@ -1139,7 +1129,7 @@ pub fn wrap_pty_options_bwrap(
     // Before `opts.cmd` becomes bwrap below.
     let agent_cmd = opts.cmd.clone();
     let copilot = basename(&agent_cmd) == "copilot";
-    let mounts = agent_state_mounts(scope_id, scope_home, &opts.env);
+    let mounts = agent_state_mounts(scope_id, &opts.env);
     let support_mounts = mounts.clone();
     let mut extra_ro = configured_read_only_paths();
     // A root agent's read-only view of the projects (a switch, default off):
@@ -1324,7 +1314,7 @@ pub(crate) fn sandbox_exec_profile(inputs: &SeatbeltInputs) -> String {
 fn sandbox_exec_inputs(opts: &PtyOptions, roots: &[PathBuf], scope_id: &str, scope_home: &Path) -> SeatbeltInputs {
     let home = paths::home_dir_string();
     let state_dir = storage::state_dir();
-    let mounts = agent_state_mounts(scope_id, scope_home, &opts.env);
+    let mounts = agent_state_mounts(scope_id, &opts.env);
     let mut writable: Vec<String> = Vec::new();
     let mut readable: Vec<String> = Vec::new();
     let mut protected: Vec<String> = Vec::new();
