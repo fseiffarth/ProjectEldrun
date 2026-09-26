@@ -197,7 +197,7 @@ pub fn redact(text: &str, secret: Option<&str>) -> String {
         Some(secret) => text.replace(secret, "[redacted]"),
         None => text.to_string(),
     };
-    const PREFIXES: &[&str] = &["github_pat_", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "glpat-"];
+    const PREFIXES: &[&str] = &["github_pat_", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "glpat-"]; // privacy-check: ok — token prefixes the redactor looks for, no token
     let mut result = String::with_capacity(out.len());
     let chars: Vec<char> = out.chars().collect();
     let mut i = 0;
@@ -1291,9 +1291,9 @@ mod tests {
         let long = "x".repeat(OUTPUT_CAP + 100);
         let capped = clean_output(&long, None);
         assert!(capped.starts_with('…') && capped.chars().count() == OUTPUT_CAP + 1);
-        assert_eq!(redact("token ghp_abcdefghijklmnop123 and github_pat_11AAAA_bbbb end", None), "token [redacted] and [redacted] end");
-        assert_eq!(redact("glpat-xxxxxxxxxxxxxxxxxxxx\n", None), "[redacted]\n");
-        assert_eq!(redact("remote: https://x-access-token:ghp_secretsecret@github.com/o/r.git", None), "remote: https://[redacted]@github.com/o/r.git");
+        assert_eq!(redact("token ghp_abcdefghijklmnop123 and github_pat_11AAAA_bbbb end", None), "token [redacted] and [redacted] end"); // privacy-check: ok — fake test token
+        assert_eq!(redact("glpat-xxxxxxxxxxxxxxxxxxxx\n", None), "[redacted]\n"); // privacy-check: ok — fake test token
+        assert_eq!(redact("remote: https://x-access-token:ghp_secretsecret@github.com/o/r.git", None), "remote: https://[redacted]@github.com/o/r.git"); // privacy-check: ok — fake test token
         assert_eq!(redact("https://github.com/o/r.git ok", None), "https://github.com/o/r.git ok");
         assert_eq!(redact("the effective one is s3cr3tvalue here", Some("s3cr3tvalue")), "the effective one is [redacted] here");
         assert_eq!(clean_output("a\u{200b}b\x1b[31mc", None), "ab[31mc");

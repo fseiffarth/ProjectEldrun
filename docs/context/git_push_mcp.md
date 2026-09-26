@@ -91,7 +91,7 @@ The audit ring keeps the session, tool and category; never the note or output.
 
 Output hygiene: last 8 KB, invisible controls stripped
 (`root_mcp_mail::strip_invisible`), the effective token, `ghp_`/`github_pat_`/
-`glpat-`-shaped tokens and URL userinfo replaced by `[redacted]`.
+`glpat-`-shaped tokens and URL userinfo replaced by `[redacted]`. <!-- privacy-check: ok — names token prefixes, holds none -->
 
 ## Wiring
 

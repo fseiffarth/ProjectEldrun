@@ -40,7 +40,7 @@ Run these in your own terminal, not in a fenced agent tab — the fence hides
 
    After the first signed release, a new key is a rotation instead (see below).
 
-3. **Set the secret:**
+3. **Set the secret:** <!-- privacy-check: ok — a step heading, no secret -->
 
    ```bash
    gh secret set RELEASE_SIGNING_KEY --repo fseiffarth/ProjectEldrun \

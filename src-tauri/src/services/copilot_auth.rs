@@ -396,17 +396,17 @@ pub fn sign_out() -> Result<(), String> {
 mod tests {
     use super::*;
 
-    const TOKEN_A: &str = "gho_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    const TOKEN_B: &str = "gho_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const TOKEN_A: &str = "gho_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; // privacy-check: ok — fake test token
+    const TOKEN_B: &str = "gho_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"; // privacy-check: ok — fake test token
 
     #[test]
     fn token_shapes_copilot_accepts_pass_and_others_do_not() {
         assert!(token_shape_ok(TOKEN_A));
-        assert!(token_shape_ok("github_pat_11ABCDEFG0123456789_abcdefghijklmnop"));
-        assert!(token_shape_ok("ghu_0123456789abcdef0123"));
-        assert!(!token_shape_ok("ghp_0123456789abcdef0123456789"));
+        assert!(token_shape_ok("github_pat_11ABCDEFG0123456789_abcdefghijklmnop")); // privacy-check: ok — fake test token
+        assert!(token_shape_ok("ghu_0123456789abcdef0123")); // privacy-check: ok — fake test token
+        assert!(!token_shape_ok("ghp_0123456789abcdef0123456789")); // privacy-check: ok — fake test token
         assert!(!token_shape_ok("gho_short"));
-        assert!(!token_shape_ok("gho_aaaaaaaaaaaaaaaaaaaa;rm -rf"));
+        assert!(!token_shape_ok("gho_aaaaaaaaaaaaaaaaaaaa;rm -rf")); // privacy-check: ok — fake test token
         assert!(!token_shape_ok(""));
     }
 
@@ -431,7 +431,7 @@ mod tests {
             "copilot_tokens": {"https://github.com:alice": TOKEN_A}
         });
         assert_eq!(preferred_token(&snake).as_deref(), Some(TOKEN_A));
-        let junk = serde_json::json!({"copilotTokens": {"x": "ghp_classicclassicclassic"}});
+        let junk = serde_json::json!({"copilotTokens": {"x": "ghp_classicclassicclassic"}}); // privacy-check: ok — fake test token
         assert_eq!(preferred_token(&junk), None);
         assert!(has_token_fields(&junk));
     }
