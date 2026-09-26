@@ -108,9 +108,9 @@ pub fn fence_read_only_paths() -> Vec<String> {
     }
 }
 
-/// The auto-update switch of a CLI Eldrun owns, by command basename. Only
-/// switches that are documented; a CLI without one simply fails its update
-/// on the read-only tree and carries on.
+/// The auto-update switch of a CLI, by command basename. Only switches that
+/// are documented; a CLI without one simply fails its update on the
+/// read-only tree and carries on.
 fn autoupdate_off(bin: &str) -> &'static [(&'static str, &'static str)] {
     match bin {
         "claude" => &[("DISABLE_AUTOUPDATER", "1")],
@@ -118,20 +118,14 @@ fn autoupdate_off(bin: &str) -> &'static [(&'static str, &'static str)] {
     }
 }
 
-/// Switch off the self-updater of an Eldrun-owned CLI for a fenced spawn. A
-/// value the user set wins.
+/// Switch off the self-updater of a CLI for a fenced spawn: its install is
+/// read-only in every fence, whether Eldrun or the host installed it (a
+/// payload one scope's agent could rewrite would run in every other scope
+/// and the user's own shell next). Updates go through Manage CLIs. A value
+/// the user set wins.
 pub fn apply_fence_env(cmd: &str, env: &mut std::collections::HashMap<String, String>) {
-    let search: Vec<PathBuf> = std::env::split_paths(
-        &env.get("PATH")
-            .map(std::ffi::OsString::from)
-            .or_else(crate::paths::effective_path)
-            .unwrap_or_default(),
-    )
-    .collect();
-    if !owns_command(cmd, &search) {
-        return;
-    }
     let bin = cmd.rsplit(['/', '\\']).next().unwrap_or(cmd);
+    let bin = bin.strip_suffix(".exe").unwrap_or(bin);
     for (k, v) in autoupdate_off(bin) {
         env.entry((*k).to_string()).or_insert_with(|| (*v).to_string());
     }

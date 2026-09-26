@@ -83,11 +83,8 @@ pub fn command(cli: &str, args: &[String]) -> Result<std::process::Command, Stri
         .cloned()
         .unwrap_or_else(|| cwd.clone());
     crate::services::agent_fence::add_box_root_args(&mut opts, &roots, &own);
-    // The tab dir this returns holds the private launcher of a host-installed
-    // CLI; it lives in the stage the next Eldrun start wipes, and `exec`
-    // never returns to drop it early.
     #[cfg(target_os = "linux")]
-    std::mem::forget(crate::services::agent_fence::wrap_pty_options_bwrap(&mut opts, &roots, &scope_id, &home.dir)?);
+    crate::services::agent_fence::wrap_pty_options_bwrap(&mut opts, &roots, &scope_id, &home.dir)?;
     #[cfg(target_os = "macos")]
     crate::services::agent_fence::wrap_pty_options_sandbox_exec(&mut opts, &roots, &scope_id, &home.dir)?;
     let mut command = std::process::Command::new(&opts.cmd);

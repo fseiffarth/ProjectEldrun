@@ -583,261 +583,6 @@ fn normalize_lexically(path: &Path) -> PathBuf {
     out
 }
 
-/// The part of the agent's own install that must be **writable** for the CLI
-/// to update itself from inside the fence — `claude update`, and Claude's
-/// background auto-update, which otherwise fails on every fenced tab.
-///
-/// Recognised is the native-installer layout only: a launcher link in
-/// `~/.local/bin` pointing at a payload under `~/.local/share/<tool>/`. The
-/// updater writes the new binary into `~/.local/share/claude/versions/` and
-/// swaps the `~/.local/bin/claude` link by rename (measured 2026-09-13: those
-/// two directories and nothing else). The `~/.local/share/<tool>` root comes
-/// back read-write here — the root rather than `versions/`, so a lock or
-/// staging file beside it is not refused either. An install that lives
-/// anywhere else (npm/nvm, a package manager) stays read-only: making a Node
-/// prefix's `bin/` writable would expose every global tool in it, and those
-/// installs update from a plain terminal tab anyway.
-///
-/// The launcher dir is **not** in this list (#861): `~/.local/bin` is on every
-/// PATH Eldrun and the user's shell build, so a writable one let a fenced
-/// agent plant `git` or `bwrap` for the host to run. The Linux fence gives the
-/// agent a private copy of it instead ([`native_launcher`],
-/// [`private_launcher_dir`]) and carries only the launcher link back
-/// ([`reconcile_launcher`]); Seatbelt cannot redirect a path, so on macOS the
-/// link swap is refused and the update lands on the next unfenced run.
-///
-/// This is a deliberate widening of the fence (user, 2026-09-13): an agent
-/// that can update its own CLI can also replace it, and that binary is the one
-/// the user runs everywhere. Pure over the filesystem, like
-/// [`command_bind_paths`].
-///
-/// Also recognised: a CLI whose updater leaves the launcher alone and drops
-/// the new release into a payload dir of its own ([`SELF_UPDATE_PAYLOADS`]).
-#[cfg(any(target_os = "linux", target_os = "macos", test))]
-pub(crate) fn updatable_install_dirs(
-    cmd: &str,
-    path_dirs: &[PathBuf],
-    home: &Path,
-) -> Vec<String> {
-    let hops = command_bind_paths(cmd, path_dirs, home, &[]);
-    let share = home.join(".local/share");
-    let mut out: Vec<String> = Vec::new();
-    let name = Path::new(cmd).file_name().and_then(|n| n.to_str());
-    for (agent, rel) in SELF_UPDATE_PAYLOADS {
-        let dir = home.join(rel);
-        if name == Some(*agent) && dir.is_dir() {
-            out.push(dir.to_string_lossy().into_owned());
-        }
-    }
-    for hop in &hops {
-        let hop = Path::new(hop);
-        if let Ok(rest) = hop.strip_prefix(&share) {
-            if let Some(tool) = rest.components().next() {
-                let root = share
-                    .join(tool.as_os_str())
-                    .to_string_lossy()
-                    .into_owned();
-                if !out.contains(&root) {
-                    out.push(root);
-                }
-            }
-        }
-    }
-    out
-}
-
-/// CLIs that update by downloading a release into a payload dir under `$HOME`
-/// and loading the newest one found there on the next start, keyed by command
-/// name, dir relative to `$HOME`. In the fence `$HOME` is a tmpfs, so without
-/// this the download died with the tab and every restart said "downloaded,
-/// restart to update" again.
-///
-/// Copilot CLI: its launcher (the standalone binary, or the one npm's loader
-/// spawns) runs the highest `pkg/{linux-x64,universal}/<version>/index.js` and
-/// its auto-update downloads there (read out of the 0.0.393 launcher,
-/// 2026-09-25).
-/// Mounted only when the host already has the dir — Eldrun never creates it.
-#[cfg(any(target_os = "linux", target_os = "macos", test))]
-const SELF_UPDATE_PAYLOADS: &[(&str, &str)] = &[("copilot", ".copilot/pkg")];
-
-/// A symlink's target as an absolute, lexically clean path, resolved against
-/// `base` (the directory the link is seen in) when relative. `None` for
-/// anything that is not a symlink.
-#[cfg(any(target_os = "linux", all(unix, test)))]
-fn absolute_link_target(link: &Path, base: &Path) -> Option<PathBuf> {
-    if !link.symlink_metadata().ok()?.file_type().is_symlink() {
-        return None;
-    }
-    let target = std::fs::read_link(link).ok()?;
-    Some(normalize_lexically(&base.join(target)))
-}
-
-/// A native-installed CLI's launcher: the `~/.local/bin/<name>` link and the
-/// `~/.local/share/<tool>` root its payload lives in.
-#[cfg(any(target_os = "linux", all(unix, test)))]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct NativeLauncher {
-    /// `~/.local/bin/<name>` on the host.
-    pub link: PathBuf,
-    /// Where it points at spawn time, absolute.
-    pub target: PathBuf,
-    /// The writable `~/.local/share/<tool>` root that `target` is inside.
-    pub root: PathBuf,
-}
-
-/// The launcher link of `cmd` when it is a native install — the case
-/// [`updatable_install_dirs`] hands a writable payload root to. Pure over the
-/// filesystem.
-#[cfg(any(target_os = "linux", all(unix, test)))]
-pub(crate) fn native_launcher(
-    cmd: &str,
-    path_dirs: &[PathBuf],
-    home: &Path,
-) -> Option<NativeLauncher> {
-    let bin = home.join(".local/bin");
-    let link = if cmd.contains('/') {
-        PathBuf::from(cmd)
-    } else {
-        path_dirs
-            .iter()
-            .map(|dir| dir.join(cmd))
-            .find(|cand| cand.is_file())?
-    };
-    if link.parent()? != bin {
-        return None;
-    }
-    let target = absolute_link_target(&link, &bin)?;
-    let root = updatable_install_dirs(cmd, path_dirs, home)
-        .into_iter()
-        .map(PathBuf::from)
-        .find(|root| target.starts_with(root) && target != *root)?;
-    Some(NativeLauncher { link, target, root })
-}
-
-/// Where the fence shows the host's real `~/.local/bin`, read-only, for the
-/// private copy's links to reach (the private copy is mounted over the real
-/// path).
-#[cfg(any(target_os = "linux", all(unix, test)))]
-const HOST_BIN_MOUNT: &str = "/run/eldrun-host-local-bin";
-
-/// Build the fence's private `~/.local/bin` in `dir` (#861): every host entry
-/// as a link, so the agent's tools resolve as before, and the launcher as a
-/// link to its current payload — a directory the agent may write, for the
-/// updater's link swap, whose writes never reach the host. Host links are
-/// copied with their target made absolute; plain files are linked through the
-/// read-only [`HOST_BIN_MOUNT`] view. Returns the two mounts, in order.
-#[cfg(any(target_os = "linux", all(unix, test)))]
-pub(crate) fn private_launcher_dir(
-    launcher: &NativeLauncher,
-    dir: &Path,
-) -> std::io::Result<Vec<BindMount>> {
-    use std::os::unix::fs::symlink;
-    let bin = launcher.link.parent().unwrap_or(Path::new("/"));
-    std::fs::create_dir_all(dir)?;
-    let name = launcher.link.file_name();
-    for entry in std::fs::read_dir(bin)? {
-        let entry = entry?;
-        let file_name = entry.file_name();
-        let target = if Some(file_name.as_os_str()) == name {
-            launcher.target.clone()
-        } else if let Some(target) = absolute_link_target(&entry.path(), bin) {
-            target
-        } else {
-            Path::new(HOST_BIN_MOUNT).join(&file_name)
-        };
-        symlink(target, dir.join(&file_name))?;
-    }
-    Ok(vec![
-        BindMount {
-            src: bin.to_string_lossy().into_owned(),
-            dst: HOST_BIN_MOUNT.to_string(),
-            read_only: true,
-        },
-        BindMount {
-            src: dir.to_string_lossy().into_owned(),
-            dst: bin.to_string_lossy().into_owned(),
-            read_only: false,
-        },
-    ])
-}
-
-/// A fenced tab's private launcher, to carry an in-fence update back.
-#[cfg(any(target_os = "linux", all(unix, test)))]
-#[derive(Debug, Clone)]
-pub(crate) struct LauncherSync {
-    pub launcher: NativeLauncher,
-    /// The launcher link inside the private copy.
-    pub private_link: PathBuf,
-}
-
-/// After a fenced tab, carry the CLI's own self-update back to the host: the
-/// **one** launcher link, and only when the private copy now points at a
-/// different regular file inside the same `~/.local/share/<tool>` root and the
-/// host link still points where it did at spawn (nothing else updated it
-/// meanwhile). Replaced by rename, like the installer does. Nothing else in the
-/// private copy — a planted `git`, a repointed `uv` — is ever read back.
-/// Returns whether the host link was replaced.
-#[cfg(any(target_os = "linux", all(unix, test)))]
-pub(crate) fn reconcile_launcher(sync: &LauncherSync) -> bool {
-    let launcher = &sync.launcher;
-    let Some(bin) = launcher.link.parent() else {
-        return false;
-    };
-    // Relative targets were written as the fence saw them: in `~/.local/bin`.
-    let Some(new) = absolute_link_target(&sync.private_link, bin) else {
-        return false;
-    };
-    if new == launcher.target || !new.starts_with(&launcher.root) {
-        return false;
-    }
-    if absolute_link_target(&launcher.link, bin).as_ref() != Some(&launcher.target) {
-        return false;
-    }
-    // No link inside the root may lead the new target out of it.
-    let (Ok(real), Ok(root)) = (new.canonicalize(), launcher.root.canonicalize()) else {
-        return false;
-    };
-    if !real.starts_with(&root) || !std::fs::metadata(&real).is_ok_and(|m| m.is_file()) {
-        return false;
-    }
-    let Some(name) = launcher.link.file_name() else {
-        return false;
-    };
-    let tmp = bin.join(format!(
-        ".{}.eldrun-{}",
-        name.to_string_lossy(),
-        std::process::id()
-    ));
-    let _ = std::fs::remove_file(&tmp);
-    if std::os::unix::fs::symlink(&new, &tmp).is_err() {
-        return false;
-    }
-    if std::fs::rename(&tmp, &launcher.link).is_err() {
-        let _ = std::fs::remove_file(&tmp);
-        return false;
-    }
-    true
-}
-
-/// Private launchers of live fenced tabs, by tab id.
-#[cfg(target_os = "linux")]
-fn launcher_syncs() -> &'static Mutex<HashMap<String, LauncherSync>> {
-    static SYNCS: OnceLock<Mutex<HashMap<String, LauncherSync>>> = OnceLock::new();
-    SYNCS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// Reconcile and forget a tab's private launcher, if it had one.
-#[cfg(target_os = "linux")]
-fn finish_launcher_sync(tab_id: &str) {
-    let sync = launcher_syncs()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(tab_id);
-    if let Some(sync) = sync {
-        reconcile_launcher(&sync);
-    }
-}
-
 /// PATH as the fenced command will see it: an explicit per-tab override wins,
 /// otherwise the launcher-augmented PATH the PTY is spawned with.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1076,7 +821,19 @@ fn agent_state_mounts(
         };
         mounts.push(BindMount { src, dst, read_only: false });
     }
+    add_install_mount(&mut mounts, &state_dir);
     mounts
+}
+
+/// Installs live inside private state, so they must be explicit support mounts
+/// restored after the final state mask, not just entries in the early allowlist.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+fn add_install_mount(mounts: &mut Vec<BindMount>, state_dir: &Path) {
+    let root = crate::services::agent_install::install_root_in(state_dir);
+    if root.is_dir() {
+        let root = root.to_string_lossy().into_owned();
+        mounts.push(BindMount { src: root.clone(), dst: root, read_only: true });
+    }
 }
 
 /// Both Cargo credential spellings, including an explicit CARGO_HOME and
@@ -1374,7 +1131,7 @@ pub fn wrap_pty_options_bwrap(
     roots: &[PathBuf],
     scope_id: &str,
     scope_home: &Path,
-) -> Result<tempfile::TempDir, String> {
+) -> Result<(), String> {
     if !bwrap_available() {
         return Err(fence_unavailable_message());
     }
@@ -1382,70 +1139,25 @@ pub fn wrap_pty_options_bwrap(
     // Before `opts.cmd` becomes bwrap below.
     let agent_cmd = opts.cmd.clone();
     let copilot = basename(&agent_cmd) == "copilot";
-    let mut mounts = agent_state_mounts(scope_id, scope_home, &opts.env);
+    let mounts = agent_state_mounts(scope_id, scope_home, &opts.env);
     let support_mounts = mounts.clone();
-    let stage = crate::services::sandbox::stage_dir(scope_id);
-    std::fs::create_dir_all(&stage).map_err(|e| format!("Agent fence: {e}"))?;
-    // Holds the private launcher dir of a host-installed CLI for the tab's
-    // life; dropped with the tab.
-    let tab_dir = tempfile::Builder::new()
-        .prefix("tab-")
-        .tempdir_in(&stage)
-        .map_err(|e| format!("Agent fence: create tab dir: {e}"))?;
     let mut extra_ro = configured_read_only_paths();
     // A root agent's read-only view of the projects (a switch, default off):
     // the same channel as the allowlist, so the state mask below still wins.
     extra_ro.extend(root_project_read_only_paths_for(&opts.id, scope_id));
     let search_dirs = command_search_dirs(opts);
-    // A CLI Eldrun installed itself (`agent_install`) is read-only in the
-    // fence and updates outside it; a CLI installed on the host keeps the
-    // self-update path below until the user reinstalls it.
-    let eldrun_owned = crate::services::agent_install::owns_command(&agent_cmd, &search_dirs);
-    let updatable = if eldrun_owned {
-        Vec::new()
-    } else {
-        updatable_install_dirs(&agent_cmd, &search_dirs, &paths::home_dir())
-    };
-    let mut visible = extra_ro.clone();
-    visible.extend(updatable.iter().cloned());
+    // The CLI's own install — Eldrun's (`agent_install`) or the host's — is
+    // read-only in the fence, every hop of it: a payload one scope's agent
+    // could rewrite would run in every other scope and the user's own shell
+    // next. Updates run through Manage CLIs (a reinstall) or outside Eldrun;
+    // the CLI's own updater is switched off below where it has a switch.
+    let visible = extra_ro.clone();
     extra_ro.extend(command_bind_paths(
         &agent_cmd,
         &search_dirs,
         &paths::home_dir(),
         &visible,
     ));
-    extra_ro.extend(crate::services::agent_install::fence_read_only_paths());
-    mounts.extend(updatable.into_iter().map(|dir| BindMount {
-        src: dir.clone(),
-        dst: dir,
-        read_only: false,
-    }));
-    // Its launcher link: swapped in a private copy of `~/.local/bin`, never the
-    // host's (#861), and carried back when the tab ends. Without the copy the
-    // launcher dir stays read-only and only the link swap of an update fails.
-    let launcher = if eldrun_owned {
-        None
-    } else {
-        native_launcher(&agent_cmd, &search_dirs, &paths::home_dir())
-    };
-    if let Some(launcher) = launcher {
-        let dir = tab_dir.path().join("local-bin");
-        match private_launcher_dir(&launcher, &dir) {
-            Ok(private) => {
-                mounts.extend(private);
-                let private_link = dir.join(launcher.link.file_name().unwrap_or_default());
-                let previous = launcher_syncs()
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(opts.id.clone(), LauncherSync { launcher, private_link });
-                // A respawn of the same tab: its last run's update first.
-                if let Some(previous) = previous {
-                    reconcile_launcher(&previous);
-                }
-            }
-            Err(e) => eprintln!("[agent_fence] private launcher dir: {e}"),
-        }
-    }
     let mut args = bwrap_args(
         &paths::home_dir_string(),
         Some(&scope_home.to_string_lossy()),
@@ -1477,7 +1189,7 @@ pub fn wrap_pty_options_bwrap(
     if copilot {
         crate::services::copilot_auth::inject_env(&mut opts.env);
     }
-    Ok(tab_dir)
+    Ok(())
 }
 
 /// Everything the macOS profile needs to know, resolved by
@@ -1649,17 +1361,8 @@ fn sandbox_exec_inputs(opts: &PtyOptions, roots: &[PathBuf], scope_id: &str, sco
     readable.extend(root_project_read_only_paths_for(&opts.id, scope_id));
     readable.extend(crate::services::agent_install::fence_read_only_paths());
     let search_dirs = command_search_dirs(opts);
-    let eldrun_owned = crate::services::agent_install::owns_command(&opts.cmd, &search_dirs);
-    // The agent's own install, writable so it can update itself — the same
-    // payload root the Linux fence hands back read-write. The launcher dir is
-    // not (#861): Seatbelt cannot give a private copy, so the link swap fails.
-    if !eldrun_owned {
-        writable.extend(updatable_install_dirs(
-            &opts.cmd,
-            &search_dirs,
-            &paths::home_dir(),
-        ));
-    }
+    // The CLI's own install is read-only here as on Linux, whoever installed
+    // it; its updater is switched off where it has a switch.
     let visible = readable.clone();
     readable.extend(command_bind_paths(
         &opts.cmd,
@@ -1841,8 +1544,6 @@ pub fn status_for_scope(scope_id: &str) -> AgentFenceStatus {
 
 struct FencedTab {
     scope_id: String,
-    // The tab's private launcher dir (a host-installed CLI); dropped with it.
-    _tab_dir: Option<tempfile::TempDir>,
 }
 
 fn fenced_tabs() -> &'static Mutex<HashMap<String, FencedTab>> {
@@ -1850,13 +1551,12 @@ fn fenced_tabs() -> &'static Mutex<HashMap<String, FencedTab>> {
     TABS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub fn register_tab(tab_id: &str, scope_id: &str, tab_dir: Option<tempfile::TempDir>) {
+pub fn register_tab(tab_id: &str, scope_id: &str) {
     fenced_tabs()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .insert(tab_id.to_string(), FencedTab {
             scope_id: scope_id.to_string(),
-            _tab_dir: tab_dir,
         });
 }
 
@@ -1916,9 +1616,6 @@ pub fn one_shot_command(_scope_id: &str, _cmd: &str, _args: &[String], _cwd: &Pa
 }
 
 pub fn on_tab_gone(tab_id: &str) {
-    // Before the tab's dir (which holds the private launcher) is dropped.
-    #[cfg(target_os = "linux")]
-    finish_launcher_sync(tab_id);
     let was_fenced = fenced_tabs()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -2422,6 +2119,37 @@ mod tests {
         assert!(private_state_paths(&state).contains(&state.join("calendar.json")));
     }
 
+    #[test]
+    fn owned_installs_survive_the_final_state_mask_read_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let install = crate::services::agent_install::install_root_in(&state);
+        let command = install.join("bin/agent");
+        std::fs::create_dir_all(command.parent().unwrap()).unwrap();
+        std::fs::write(&command, "fixture").unwrap();
+        std::fs::create_dir_all(state.join("agent-global")).unwrap();
+        let mut support = Vec::new();
+        add_install_mount(&mut support, &state);
+        let mut args = bwrap_args(
+            "/home/u", None, "/p", &command.to_string_lossy(), &[],
+            std::slice::from_ref(&state), &[], &support,
+        );
+        mask_private_state(&mut args, &state, &support);
+        let state_s = state.to_string_lossy();
+        let install_s = install.to_string_lossy();
+        let mask = args.windows(2).rposition(|w| w[0] == "--tmpfs" && w[1] == state_s).unwrap();
+        let restored = args.windows(3).rposition(|w| {
+            w[0] == "--ro-bind" && w[1] == install_s && w[2] == install_s
+        }).unwrap();
+        assert!(restored > mask);
+        assert!(!args.windows(2).any(|w| w[0] == "--bind" && w[1] == install_s));
+        assert!(args.iter().position(|a| a == "--").unwrap() > restored);
+        // A missing install does not create a mount point on the host.
+        let mut missing = Vec::new();
+        add_install_mount(&mut missing, &dir.path().join("missing"));
+        assert!(missing.is_empty());
+    }
+
     fn project(id: &str, dir: &str) -> ProjectEntry {
         let mut extra = HashMap::new();
         extra.insert("directory".into(), Value::String(dir.into()));
@@ -2747,89 +2475,46 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    /// A CLI installed on the host by its native installer — a launcher link
+    /// in `~/.local/bin` into a payload under `~/.local/share/<tool>` — is
+    /// bound into the fence read-only, every hop of it. Until 2026-09-26 the
+    /// payload root came back read-write for the CLI's self-update, which let
+    /// one scope's agent replace the binary every other scope and the user's
+    /// own shell run next (agent_authority reevaluation, item 2).
     #[cfg(unix)]
     #[test]
-    fn native_installer_layout_is_writable_other_installs_are_not() {
-        let tmp = std::env::temp_dir().join(format!(
-            "eldrun-fence-upd-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let home = tmp.join("home");
+    fn a_host_installed_cli_is_read_only_in_the_fence() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
         let bin = home.join(".local/bin");
         let versions = home.join(".local/share/claude/versions");
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::create_dir_all(&versions).unwrap();
         std::fs::write(versions.join("2.1.270"), "#!/bin/sh\n").unwrap();
         std::os::unix::fs::symlink(versions.join("2.1.270"), bin.join("claude")).unwrap();
-        // An nvm-style install: a link in the Node prefix's bin/ into its
-        // node_modules — nothing under ~/.local/share, so nothing opens up.
-        let node_bin = home.join(".nvm/versions/node/v22/bin");
-        let pkg = home.join(".nvm/versions/node/v22/lib/node_modules/@openai/codex/bin");
-        std::fs::create_dir_all(&node_bin).unwrap();
-        std::fs::create_dir_all(&pkg).unwrap();
-        std::fs::write(pkg.join("codex.js"), "").unwrap();
-        std::os::unix::fs::symlink(pkg.join("codex.js"), node_bin.join("codex")).unwrap();
-        // A launcher link in ~/.local/bin that points OUTSIDE ~/.local/share
-        // does not earn the launcher dir either.
-        std::os::unix::fs::symlink(pkg.join("codex.js"), bin.join("codex-link")).unwrap();
-        let dirs = vec![bin.clone(), node_bin];
-
-        let root = home.join(".local/share/claude");
-        let root_s = root.to_string_lossy().into_owned();
-        // The install root — not `versions/`, and never the shared launcher
-        // dir (#861): that one is a private copy, see the next test.
-        assert_eq!(updatable_install_dirs("claude", &dirs, &home), vec![root_s]);
-        assert!(updatable_install_dirs("codex", &dirs, &home).is_empty());
-        assert!(updatable_install_dirs("codex-link", &dirs, &home).is_empty());
-        assert!(updatable_install_dirs("no-such-agent", &dirs, &home).is_empty());
-        assert_eq!(
-            native_launcher("claude", &dirs, &home),
-            Some(NativeLauncher {
-                link: bin.join("claude"),
-                target: versions.join("2.1.270"),
-                root,
-            })
-        );
-        assert_eq!(native_launcher("codex", &dirs, &home), None);
-        assert_eq!(native_launcher("codex-link", &dirs, &home), None);
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn copilot_gets_its_update_payload_dir_only_when_the_host_has_one() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("home");
-        let bin = home.join(".local/bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        // The standalone install: a plain binary, not a link into ~/.local/share.
-        std::fs::write(bin.join("copilot"), "").unwrap();
-        std::fs::write(bin.join("codex"), "").unwrap();
         let dirs = vec![bin.clone()];
-
-        // Never created by Eldrun: no dir on the host, nothing mounted.
-        assert!(updatable_install_dirs("copilot", &dirs, &home).is_empty());
-
-        let pkg = home.join(".copilot/pkg");
-        std::fs::create_dir_all(&pkg).unwrap();
-        let pkg_s = pkg.to_string_lossy().into_owned();
-        assert_eq!(updatable_install_dirs("copilot", &dirs, &home), vec![pkg_s.clone()]);
-        let by_path = bin.join("copilot").to_string_lossy().into_owned();
-        assert_eq!(updatable_install_dirs(&by_path, &dirs, &home), vec![pkg_s]);
-        // Only Copilot's own tab: another agent never reaches its payload.
-        assert!(updatable_install_dirs("codex", &dirs, &home).is_empty());
-        // No launcher link to carry back.
-        assert_eq!(native_launcher("copilot", &dirs, &home), None);
+        let hops = command_bind_paths("claude", &dirs, &home, &[]);
+        assert!(hops.iter().any(|h| Path::new(h) == bin));
+        assert!(hops.iter().any(|h| Path::new(h) == versions));
+        let args = bwrap_args("/home/u", None, "/p", "claude", &[], &[], &hops, &[]);
+        let home_s = home.to_string_lossy().into_owned();
+        // Each bind is `<flag> <src> <dst>` with src == dst; count the flags
+        // ahead of every src under the home.
+        let mut n = 0;
+        for i in 1..args.len() - 1 {
+            if args[i].starts_with(&home_s) && args[i + 1] == args[i] {
+                assert_eq!(args[i - 1], "--ro-bind-try", "{} bound writable: {args:?}", args[i]);
+                n += 1;
+            }
+        }
+        assert_eq!(n, 2, "{args:?}");
     }
 
     #[test]
     fn later_rw_mount_shadows_the_allowlist_read_only_bin() {
         let bin = "/home/u/.local/bin".to_string();
         let mounts = vec![BindMount {
-            src: "/state/sandbox-stage/p/codex-content-x/local-bin".to_string(),
+            src: "/state/sandbox-stage/p/private/local-bin".to_string(),
             dst: bin.clone(),
             read_only: false,
         }];
@@ -2852,97 +2537,10 @@ mod tests {
             .enumerate()
             .position(|(i, a)| a == "--bind" && out.get(i + 2) == Some(&bin))
             .expect("read-write bind");
-        // bubblewrap applies mounts in order; the later read-write bind of the
-        // same path (the private copy) is the one the agent sees.
+        // bubblewrap applies mounts in order: an explicit support mount of a
+        // path the allowlist already restored read-only is the one the agent
+        // sees, which is what lets the state masks be re-opened selectively.
         assert!(rw > ro, "{out:?}");
-    }
-
-    /// #861: a native install's fence binds the host's `~/.local/bin` only
-    /// read-only; the agent writes a private copy, where it can swap its
-    /// launcher link (the self-update) and plant anything else. At the end only
-    /// the launcher, repointed inside its own payload root, reaches the host.
-    #[cfg(unix)]
-    #[test]
-    fn a_fenced_update_carries_back_only_the_launcher_link() {
-        use std::os::unix::fs::symlink;
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("home");
-        let bin = home.join(".local/bin");
-        let versions = home.join(".local/share/claude/versions");
-        let aider = home.join(".local/share/uv/tools/aider/bin");
-        for dir in [&bin, &versions, &aider] {
-            std::fs::create_dir_all(dir).unwrap();
-        }
-        std::fs::write(versions.join("2.1.270"), "old").unwrap();
-        std::fs::write(aider.join("aider"), "").unwrap();
-        std::fs::write(bin.join("uv"), "").unwrap();
-        symlink(versions.join("2.1.270"), bin.join("claude")).unwrap();
-        symlink("../share/uv/tools/aider/bin/aider", bin.join("aider")).unwrap();
-        let dirs = vec![bin.clone()];
-        let launcher = native_launcher("claude", &dirs, &home).expect("native install");
-
-        // The fence argv: the host dir read-only (twice: the allowlist and the
-        // private copy's view), the copy read-write over it — never the host
-        // dir itself writable.
-        let private = tmp.path().join("shadow/local-bin");
-        let mut mounts = private_launcher_dir(&launcher, &private).unwrap();
-        mounts.extend(updatable_install_dirs("claude", &dirs, &home).into_iter().map(|dir| {
-            BindMount { src: dir.clone(), dst: dir, read_only: false }
-        }));
-        let bin_s = bin.to_string_lossy().into_owned();
-        let args = bwrap_args("/home/u", None, "/p", "claude", &[], &[], std::slice::from_ref(&bin_s), &mounts);
-        assert!(
-            !args.windows(2).any(|w| (w[0] == "--bind" || w[0] == "--bind-try") && w[1] == bin_s),
-            "host launcher dir bound writable: {args:?}"
-        );
-        assert!(args.windows(3).any(|w| w[0] == "--ro-bind" && w[1] == bin_s && w[2] == HOST_BIN_MOUNT));
-        assert!(args.windows(3).any(|w| w[0] == "--bind" && w[1] == private.to_string_lossy() && w[2] == bin_s));
-        // The copy resolves every host tool as before.
-        let link = |name: &str| std::fs::read_link(private.join(name)).unwrap();
-        assert_eq!(link("claude"), versions.join("2.1.270"));
-        assert_eq!(link("uv"), Path::new(HOST_BIN_MOUNT).join("uv"));
-        assert_eq!(link("aider"), aider.join("aider"));
-
-        // In the fence: plant helpers, and update the CLI the way its
-        // installer does (new payload, relative link swapped in by rename).
-        std::fs::write(private.join("git"), "#!/bin/sh\nevil\n").unwrap();
-        std::fs::write(private.join("bwrap"), "#!/bin/sh\nevil\n").unwrap();
-        std::fs::write(versions.join("2.1.280"), "new").unwrap();
-        symlink("../share/claude/versions/2.1.280", private.join(".claude.tmp")).unwrap();
-        std::fs::rename(private.join(".claude.tmp"), private.join("claude")).unwrap();
-        let sync = LauncherSync { launcher: launcher.clone(), private_link: private.join("claude") };
-        assert!(reconcile_launcher(&sync));
-        assert_eq!(std::fs::read_link(bin.join("claude")).unwrap(), versions.join("2.1.280"));
-        let mut names: Vec<String> = std::fs::read_dir(&bin)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        names.sort();
-        assert_eq!(names, ["aider", "claude", "uv"], "nothing else reached the host");
-        // The host moved on since spawn: a second pass changes nothing.
-        assert!(!reconcile_launcher(&sync));
-
-        // Hostile repoints are never carried back.
-        std::fs::remove_file(bin.join("claude")).unwrap();
-        symlink(versions.join("2.1.270"), bin.join("claude")).unwrap();
-        symlink("/bin/sh", versions.join("escape")).unwrap();
-        for target in [
-            PathBuf::from("/bin/sh"),
-            aider.join("aider"),
-            versions.join("escape"),
-            versions.clone(),
-            versions.join("missing"),
-        ] {
-            std::fs::remove_file(private.join("claude")).unwrap();
-            symlink(&target, private.join("claude")).unwrap();
-            assert!(!reconcile_launcher(&sync), "{target:?} carried back");
-            assert_eq!(std::fs::read_link(bin.join("claude")).unwrap(), versions.join("2.1.270"));
-        }
-        // Nor is a plain file put where the link was.
-        std::fs::remove_file(private.join("claude")).unwrap();
-        std::fs::write(private.join("claude"), "evil").unwrap();
-        assert!(!reconcile_launcher(&sync));
-        assert_eq!(std::fs::read_link(bin.join("claude")).unwrap(), versions.join("2.1.270"));
     }
 
     #[test]

@@ -1634,7 +1634,7 @@ pub(crate) fn ro_mounts_for_hooks(hooks_dir: &Path) -> Vec<String> {
 /// Per-project staging dir for the writable hook-config copies:
 /// `<state_dir>/sandbox-stage/<sanitized project id>`. One dir per project
 /// (mounts are fixed at create), refreshed at each `up` — no per-tab leak.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "macos")]
 pub(crate) fn stage_dir(project_id: &str) -> PathBuf {
     storage::state_dir()
         .join("sandbox-stage")

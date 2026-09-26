@@ -665,10 +665,6 @@ pub async fn pty_spawn(
     // paths the fence argv bound when fenced, everything when the agent runs
     // unfenced (it already reads everything).
     let mut root_projects = crate::services::root_mcp::ProjectsGrant::All;
-    #[cfg(target_os = "linux")]
-    let mut fenced_tab_dir = None;
-    #[cfg(not(target_os = "linux"))]
-    let fenced_tab_dir = None;
     if let Some(roots) = fence_roots.as_deref() {
         let decision = crate::services::agent_fence::decide(
             &opts,
@@ -688,11 +684,9 @@ pub async fn pty_spawn(
                 let home = crate::services::agent_home::prepare_scope_home(&scope_id, roots)
                     .map_err(|e| format!("Agent home: {e}"))?;
                 #[cfg(target_os = "linux")]
-                {
-                    fenced_tab_dir = Some(crate::services::agent_fence::wrap_pty_options_bwrap(
-                        &mut opts, roots, &scope_id, &home.dir,
-                    )?);
-                }
+                crate::services::agent_fence::wrap_pty_options_bwrap(
+                    &mut opts, roots, &scope_id, &home.dir,
+                )?;
                 #[cfg(target_os = "macos")]
                 crate::services::agent_fence::wrap_pty_options_sandbox_exec(
                     &mut opts, roots, &scope_id, &home.dir,
@@ -783,7 +777,7 @@ pub async fn pty_spawn(
             claim.keep();
         }
         if let Some((tab_id, scope_id)) = fenced_registration {
-            crate::services::agent_fence::register_tab(&tab_id, &scope_id, fenced_tab_dir);
+            crate::services::agent_fence::register_tab(&tab_id, &scope_id);
         }
         match host_agent_tab {
             Some(tab) => crate::services::agent_fence::track_host_agent_tab(&spawned_tab_id, tab),
