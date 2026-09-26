@@ -64,7 +64,6 @@ export const MAX_CLOUD_TASK = 4000;
 export function cleanCloudTask(task: string | undefined): string | null {
   const text = (task ?? "").trim();
   if (!text || [...text].length > MAX_CLOUD_TASK) return null;
-  // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u0008\u000b-\u001f\u007f]/.test(text)) return null;
   return text;
 }
