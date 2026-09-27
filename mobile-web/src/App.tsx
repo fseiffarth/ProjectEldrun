@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { EldrunMark } from "./EldrunMark";
 import { hasPairedDevice, logoutAuth, resumeAuth } from "./auth";
-import { setUnauthorizedHandler, type TabRow } from "./api";
+import { primeConnection, setUnauthorizedHandler, type TabRow } from "./api";
 import { classifyUnavailable, describeUnavailable, unavailableDetail, type UnavailableReason } from "./connection";
 import { forgetLastPlace, rememberLastPlace, restoreLastPlace, type LastPlace, type MobileSection } from "./lastPlace";
 import { hasLocalUnlock } from "./localLock";
@@ -134,6 +134,10 @@ export function App() {
   /** When the reader last touched the glass — the idle lock's clock, and the
    * silent re-login's test of whether anyone is still here. */
   const lastActive = useRef(Date.now());
+  /** When the reader last passed the local lock. The unavailable splash's
+   * Retry signs in again without asking for it a second time while this is
+   * recent; past the idle window it goes back through the lock. */
+  const unlockedAt = useRef(0);
   /** One renewal at a time: every request that met the same 401 waits on it. */
   const renewing = useRef<Promise<boolean> | null>(null);
   // Everything the tab bar navigates between, back at its starting point. Used
@@ -287,6 +291,7 @@ export function App() {
     };
     const onVisibility = () => {
       if (document.visibilityState !== "visible") return;
+      primeConnection();
       if (Date.now() - lastActive.current >= LOCK_AFTER_IDLE_MS) lock();
       else arm();
     };
@@ -327,6 +332,13 @@ export function App() {
     }
     setTab(next);
   };
+  // A failed sign-in right after an unlock is retried as a sign-in: sending
+  // the reader back through the fingerprint for a network hiccup made every
+  // failure cost two unlocks. A blocked key store never got that far.
+  const retry = () => {
+    if (unavailable.reason !== "storage_blocked" && Date.now() - unlockedAt.current < LOCK_AFTER_IDLE_MS) resume();
+    else begin();
+  };
   if (auth === "loading") return <Splash message="Connecting to your workspace…" progress><SlowConnectHint /></Splash>;
   if (auth === "unavailable") {
     const { title, hint } = describeUnavailable(unavailable.reason);
@@ -336,13 +348,14 @@ export function App() {
         {unavailable.reason === "host_down" && isUntested("mobile.link.offlineShell") && <p className="splash-hint muted"><span className="untested">Untested</span></p>}
         <p className="splash-hint muted">No project or terminal data is loaded from cache.</p>
         {unavailable.detail && <p className="splash-detail">{unavailable.detail}</p>}
-        <button className="primary" onClick={begin}>Retry</button>
+        <button className="primary" onClick={retry}>Retry</button>
+        {isUntested("mobile.link.unlockRetry") && <p className="splash-hint muted"><span className="untested">Untested</span></p>}
       </Splash>
     );
   }
   if (auth === "unpaired") return <Pair onDone={begin} />;
   if (auth === "setup") return <LocalUnlock setup onUnlocked={() => setAuth("locked")} />;
-  if (auth === "locked") return <LocalUnlock setup={false} onUnlocked={resume} />;
+  if (auth === "locked") return <LocalUnlock setup={false} onUnlocked={() => { unlockedAt.current = Date.now(); resume(); }} />;
   // A terminal is the one full-bleed screen: it owns every pixel it can get,
   // and the tab bar would sit on the keyboard toolbar besides.
   if (terminal) return <Terminal tab={terminal.tab} pickModel={terminal.pickModel} back={() => setTerminal(null)} />;

@@ -2970,6 +2970,15 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   tmux `prefix None` on Eldrun sessions (decision 5). Not done from the plan:
   the optional `calendar_writes`/`todo_writes` desktop switches (6, "consider")
   — a CalDAV delete from the phone is still guarded by the confirm sheet alone.
+  - [ ] 🖐️ Manual phone QA — "every second unlock fails, Retry works" (2026-09-27, `mobile.link.unlockRetry`): leave the PWA past the 3-minute lock with the screen off for a few minutes, come back, unlock ten times in a row: each one connects (Connecting… may run ~10 s on a dead connection, then lands) and none shows the failure splash; when a splash does show, Retry connects without asking for the fingerprint again. Phone-bundle-only change: commit, let the dev build publish, pull to refresh.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
   - [ ] 🖐️ Manual phone QA — open the PWA with the desktop closed: the app's own "Eldrun Mobile isn't running on your desktop" splash, never the proxy's 502 page (step 3).
     - [ ] ✅ Works on Linux (X11)
     - [ ] ❌ Doesn't work on Linux (X11)

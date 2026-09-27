@@ -46,6 +46,43 @@ describe("Eldrun Mobile API client", () => {
     expect((failure as ApiError).code).toBe("offline");
   });
 
+  it("sends a dropped read once more before calling the phone offline", async () => {
+    let calls = 0;
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) throw new TypeError("Failed to fetch");
+      return new Response(JSON.stringify({ projects: [] }), { status: 200 });
+    }));
+    await expect(api("/api/v1/projects")).resolves.toEqual({ projects: [] });
+    expect(calls).toBe(2);
+  });
+
+  it("never resends a dropped write, which may have landed", async () => {
+    const fetchMock = vi.fn(async () => { throw new TypeError("Failed to fetch"); });
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(api("/api/v1/todo", { method: "POST", body: "{}" })).rejects.toMatchObject({ code: "offline" });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("still renews an expired session after a resent read", async () => {
+    const renew = vi.fn(async () => true);
+    setUnauthorizedHandler(renew);
+    let calls = 0;
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) throw new TypeError("Failed to fetch");
+      if (calls === 2) return new Response(JSON.stringify({ error: "authentication_required" }), { status: 401 });
+      return new Response(JSON.stringify({ projects: [] }), { status: 200 });
+    }));
+    await expect(api("/api/v1/projects")).resolves.toEqual({ projects: [] });
+    expect(renew).toHaveBeenCalledOnce();
+  });
+
+  it("reports the deadline's own TimeoutError as a timeout, not as offline", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new DOMException("signal timed out", "TimeoutError"); }));
+    await expect(api("/api/v1/projects")).rejects.toMatchObject({ status: 0, code: "timeout" });
+  });
+
   it("gives up on a request that never settles", async () => {
     vi.stubGlobal("fetch", vi.fn((_input: string, init?: RequestInit) => new Promise((_resolve, reject) => {
       init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));

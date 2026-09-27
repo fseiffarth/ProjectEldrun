@@ -331,6 +331,7 @@ export const UNTESTED = {
   "mobile.link.failureText": { area: "mobile", what: "Terminal · Every close reason and error reads as a sentence, never a code (session_expired, desktop_unavailable, …)" },
   "mobile.link.offlineShell": { area: "mobile", what: "App · Opened with the desktop closed, the phone shows Eldrun's own splash rather than the proxy's 502 page" },
   "mobile.link.slowConnectHint": { area: "mobile", what: "App · With Tailscale off on the phone, Connecting… asks after a few seconds whether Tailscale is on, and the failure splash names it in its title" },
+  "mobile.link.unlockRetry": { area: "mobile", what: "App · Unlocking after the phone slept connects on the first try (a stale connection or a dropped request is retried inside Connecting…); the failure splash's Retry reconnects without a second fingerprint", tested: "2026-09-27" },
   "mobile.link.silentResume": { area: "mobile", what: "LocalUnlock · A sidecar restart or a lapsed session is renewed silently while the reader is active; a cold open always asks for the PIN" },
   "mobile.lock.brandedSheet": { area: "mobile", what: "LocalUnlock · While the fingerprint sheet is up, the mark lifts above it with turning rings; a successful unlock flares it away" },
   "mobile.focus.noSessionYet": { area: "mobile", what: "Terminal · A tab created from the phone stays in the Reader and shows its stored session once the agent records one" },

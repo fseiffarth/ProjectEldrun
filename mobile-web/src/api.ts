@@ -260,6 +260,16 @@ export function recoverSession(): Promise<boolean> {
 /** A stalled socket on bad signal would otherwise hang a screen forever; the
  * splash in particular had no way back. */
 const REQUEST_TIMEOUT = 10_000;
+/** The pause before a read dropped in transit goes out again. */
+const READ_RETRY_DELAY = 400;
+
+/** A deadline, ours or the caller's. `AbortSignal.timeout` rejects the fetch
+ * with a `TimeoutError`, not an `AbortError`, so testing the name alone
+ * reported every stalled request as `offline` — "is Tailscale on?" for what
+ * was a slow answer. */
+function aborted(error: unknown): boolean {
+  return error instanceof DOMException && (error.name === "AbortError" || error.name === "TimeoutError");
+}
 
 function withTimeout(signal: AbortSignal | null | undefined, ms: number): AbortSignal {
   const timeout = AbortSignal.timeout(ms);
@@ -275,22 +285,45 @@ function withTimeout(signal: AbortSignal | null | undefined, ms: number): AbortS
   return both.signal;
 }
 
+/**
+ * Put the connection to the host to work, answer unread. The browser keeps the
+ * HTTP/2 connection it had before the phone slept, and only finds out that it
+ * died by sending on it and waiting out a liveness ping. Sent the moment the
+ * app is back in front of the reader, that wait runs while they are still at
+ * the fingerprint sheet rather than after it, on the sign-in. `/healthz` is
+ * unauthenticated and the service worker leaves it alone.
+ */
+export function primeConnection(): void {
+  void fetch("/healthz", { cache: "no-store", signal: AbortSignal.timeout(REQUEST_TIMEOUT) }).catch(() => undefined);
+}
+
 /** `timeoutMs` overrides the default deadline for the one route that needs a
  * longer one (see `getAgentStatus`); everything else keeps `REQUEST_TIMEOUT`,
  * because a screen with no way back is worse than a failed request. */
 export async function api<T>(path: string, init?: RequestInit, timeoutMs = REQUEST_TIMEOUT, retried = false): Promise<T> {
+  const send = () => fetch(path, {
+    ...init,
+    credentials: "same-origin",
+    cache: "no-store",
+    signal: withTimeout(init?.signal, timeoutMs),
+    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+  });
   let response: Response;
   try {
-    response = await fetch(path, {
-      ...init,
-      credentials: "same-origin",
-      cache: "no-store",
-      signal: withTimeout(init?.signal, timeoutMs),
-      headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
-    });
+    response = await send();
   } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") throw new ApiError(0, "timeout");
-    throw new ApiError(0, "offline");
+    if (aborted(error)) throw new ApiError(0, "timeout");
+    // A read the network dropped before any answer — the browser abandons
+    // what is in flight when the phone's network changes, which is what the
+    // Tailscale app bringing its tunnel back after a wake looks like — goes
+    // out once more. Only a read: a write may have landed before the drop.
+    if ((init?.method ?? "GET").toUpperCase() !== "GET" || init?.signal?.aborted) throw new ApiError(0, "offline");
+    await new Promise((resolve) => { setTimeout(resolve, READ_RETRY_DELAY); });
+    try {
+      response = await send();
+    } catch (again) {
+      throw new ApiError(0, aborted(again) ? "timeout" : "offline");
+    }
   }
   let body: { error?: string } | undefined;
   try {
@@ -607,7 +640,7 @@ async function postFile<T>(url: string, file: Blob, retried = false): Promise<[n
       headers: { "Content-Type": file.type || "application/octet-stream" },
     });
   } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") throw new ApiError(0, "timeout");
+    if (aborted(error)) throw new ApiError(0, "timeout");
     throw new ApiError(0, "offline");
   }
   let body: (T & { error?: string }) | undefined;
