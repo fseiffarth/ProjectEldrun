@@ -154,12 +154,14 @@ nav button,.keys button { flex:1; }
 /* The same pill the sheets' headings wear (`.option-sheet h2 small`), as a
    class, for the places that mark an unverified feature outside a heading. */
 .untested { margin-left:6px; color:#8fb8ff; font-size:.62rem; text-transform:uppercase; }
-/* The newest prompt is the primary preview; older ones form a quiet history. */
-.tab-card-prompts { display:grid; gap:0; min-width:0; margin:0 12px 12px; padding:10px; border:1px solid #343a50; border-radius:13px; background:#171b29; }
-.tab-card-prompts-label { margin:1px 2px 8px; font-size:.68rem; font-weight:700; text-transform:uppercase; letter-spacing:.09em; color:#929cba; }
-.tab-card-prompt { display:flex; gap:8px; min-width:0; margin:0; padding:5px 2px; border-top:1px solid #292f40; color:#a3abc2; font-size:.82rem; line-height:1.35; }
-.tab-card-prompt.latest { display:grid; gap:3px; margin-bottom:3px; padding:9px 10px; border:0; border-radius:9px; background:#282e42; color:#ecedfa; font-size:.88rem; }
-.tab-card-prompt.empty { border:0; color:#8992ad; font-style:italic; }
+/* The newest prompt is the primary preview; older ones form a quiet history.
+   Flat on the card, no inner surface: indented to the tab name (the 44px dot
+   column plus the head's 2px) so it reads as that tab's, not as its own box. */
+.tab-card-prompts { display:grid; gap:0; min-width:0; margin:0 14px 10px 46px; }
+.tab-card-prompts-label { margin:0 0 3px; font-size:.68rem; font-weight:700; text-transform:uppercase; letter-spacing:.09em; color:#929cba; }
+.tab-card-prompt { display:flex; gap:8px; min-width:0; margin:0; padding:2px 0; color:#a3abc2; font-size:.82rem; line-height:1.35; }
+.tab-card-prompt.latest { display:grid; gap:1px; color:#ecedfa; font-size:.88rem; }
+.tab-card-prompt.empty { color:#8992ad; font-style:italic; }
 .tab-card-prompt-when { flex:0 0 auto; color:#858fac; font-size:.75rem; font-variant-numeric:tabular-nums; white-space:nowrap; }
 .tab-card-prompt.latest .tab-card-prompt-when { color:#afa5f4; font-size:.7rem; font-weight:700; }
 .tab-card-prompt-text { min-width:0; overflow:hidden; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:1; overflow-wrap:anywhere; }
