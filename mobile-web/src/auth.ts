@@ -1,4 +1,4 @@
-import { ApiError, api } from "./api";
+import { ApiError, api, traceConnect } from "./api";
 import { classifyUnavailable, unavailableDetail, type UnavailableReason } from "./connection";
 
 const DB = "eldrun-mobile-auth";
@@ -50,20 +50,37 @@ let pendingLogout: Promise<void> | null = null;
 /** Short: it is best effort, and a sign-in waits on it. */
 const LOGOUT_TIMEOUT = 3_000;
 
+/** One request of the sign-in exchange, its outcome and time on the trace. */
+async function traced<T>(name: string, request: () => Promise<T>): Promise<T> {
+  const started = performance.now();
+  const took = () => `${Math.round(performance.now() - started)} ms`;
+  try {
+    const answer = await request();
+    traceConnect(`${name} ok after ${took()}`);
+    return answer;
+  } catch (error) {
+    traceConnect(`${name} ${error instanceof ApiError ? `${error.status} ${error.code}` : "failed"} after ${took()}`);
+    throw error;
+  }
+}
+
 async function login(record: AuthRecord): Promise<void> {
-  if (pendingLogout) await pendingLogout;
-  const challenge = await api<{ nonce: string; payload: string }>("/api/v1/auth/challenge", {
+  if (pendingLogout) {
+    traceConnect("waiting for the lock's logout");
+    await pendingLogout;
+  }
+  const challenge = await traced("challenge", () => api<{ nonce: string; payload: string }>("/api/v1/auth/challenge", {
     method: "POST", body: JSON.stringify({ device_id: record.deviceId }),
-  }, AUTH_REQUEST_TIMEOUT);
+  }, AUTH_REQUEST_TIMEOUT));
   const signature = await crypto.subtle.sign(
     { name: "ECDSA", hash: "SHA-256" },
     record.privateKey,
     new TextEncoder().encode(challenge.payload),
   );
-  await api("/api/v1/auth/session", {
+  await traced("session", () => api("/api/v1/auth/session", {
     method: "POST",
     body: JSON.stringify({ device_id: record.deviceId, nonce: challenge.nonce, signature: b64url(signature) }),
-  }, AUTH_REQUEST_TIMEOUT);
+  }, AUTH_REQUEST_TIMEOUT));
 }
 
 export type ResumeResult =

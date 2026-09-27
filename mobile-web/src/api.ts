@@ -294,7 +294,35 @@ function withTimeout(signal: AbortSignal | null | undefined, ms: number): AbortS
  * unauthenticated and the service worker leaves it alone.
  */
 export function primeConnection(): void {
-  void fetch("/healthz", { cache: "no-store", signal: AbortSignal.timeout(REQUEST_TIMEOUT) }).catch(() => undefined);
+  const started = performance.now();
+  traceConnect("warm-up sent");
+  void fetch("/healthz", { cache: "no-store", signal: AbortSignal.timeout(REQUEST_TIMEOUT) })
+    .then((response) => traceConnect(`warm-up ${response.status} after ${Math.round(performance.now() - started)} ms`))
+    .catch((error: unknown) => traceConnect(`warm-up ${aborted(error) ? "timed out" : "failed"} after ${Math.round(performance.now() - started)} ms`));
+}
+
+/**
+ * Where the time went on the way in: the warm-up, the lock's logout, each
+ * sign-in request with its outcome, stamped from the moment the app started
+ * or last came to the front. The slow "Connecting…" splash and the failure
+ * splash show it, so a slow unlock can be read off the phone instead of
+ * guessed at from the desktop.
+ */
+let traceOrigin = 0;
+let trace: string[] = [];
+const TRACE_LINES = 24;
+
+export function traceConnect(event: string, restart = false): void {
+  const now = performance.now();
+  if (restart) {
+    traceOrigin = now;
+    trace = [];
+  }
+  trace = [...trace, `${((now - traceOrigin) / 1000).toFixed(1)} s  ${event}`].slice(-TRACE_LINES);
+}
+
+export function connectTrace(): readonly string[] {
+  return trace;
 }
 
 /** `timeoutMs` overrides the default deadline for the one route that needs a

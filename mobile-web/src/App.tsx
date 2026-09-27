@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { EldrunMark } from "./EldrunMark";
 import { hasPairedDevice, logoutAuth, resumeAuth } from "./auth";
-import { primeConnection, setUnauthorizedHandler, type TabRow } from "./api";
+import { connectTrace, primeConnection, setUnauthorizedHandler, traceConnect, type TabRow } from "./api";
 import { classifyUnavailable, describeUnavailable, unavailableDetail, type UnavailableReason } from "./connection";
 import { forgetLastPlace, rememberLastPlace, restoreLastPlace, type LastPlace, type MobileSection } from "./lastPlace";
 import { hasLocalUnlock } from "./localLock";
@@ -98,15 +98,34 @@ const SLOW_CONNECT_MS = 4000;
 
 function SlowConnectHint() {
   const [slow, setSlow] = useState(false);
+  const [, setTick] = useState(0);
   useEffect(() => {
     const timer = window.setTimeout(() => setSlow(true), SLOW_CONNECT_MS);
     return () => window.clearTimeout(timer);
   }, []);
+  useEffect(() => {
+    if (!slow) return;
+    const timer = window.setInterval(() => setTick((tick) => tick + 1), 500);
+    return () => window.clearInterval(timer);
+  }, [slow]);
   if (!slow) return null;
-  return <p className="splash-hint">
-    Taking a while. Check Tailscale is connected on this phone.
-    {isUntested("mobile.link.slowConnectHint") && <> <span className="untested">Untested</span></>}
-  </p>;
+  return <>
+    <p className="splash-hint">
+      Taking a while. Check Tailscale is connected on this phone.
+      {isUntested("mobile.link.slowConnectHint") && <> <span className="untested">Untested</span></>}
+    </p>
+    <ConnectTrace />
+  </>;
+}
+
+/** The way in so far (`traceConnect`), for a slow or failed sign-in. */
+function ConnectTrace() {
+  const lines = connectTrace();
+  if (lines.length === 0) return null;
+  return <pre className="splash-detail connect-trace" aria-label="Connection timeline">
+    {lines.join("\n")}
+    {isUntested("mobile.link.connectTrace") && <>{"\n"}<span className="untested">Untested</span></>}
+  </pre>;
 }
 
 function TabBar({ active, open }: { active: Tab; open: (tab: Tab) => void }) {
@@ -183,6 +202,13 @@ export function App() {
 
   const begin = useCallback(() => {
     setAuth("loading");
+    // A cold open had no warm-up at all — only a return to the front sent
+    // one — so the sign-in after the fingerprint was the first request on
+    // the connection the browser kept from before the phone slept, and it
+    // waited out the browser's ~10 s check that the connection is dead. Sent
+    // now, that check runs while the reader is still at the lock.
+    traceConnect("app started", true);
+    primeConnection();
     void Promise.all([hasPairedDevice(), hasLocalUnlock()]).then(([paired, locked]) => {
       if (!paired) {
         forgetLastPlace();
@@ -292,6 +318,7 @@ export function App() {
     };
     const onVisibility = () => {
       if (document.visibilityState !== "visible") return;
+      traceConnect("back in front", true);
       primeConnection();
       if (Date.now() - lastActive.current >= LOCK_AFTER_IDLE_MS) lock();
       else arm();
@@ -349,6 +376,7 @@ export function App() {
         {unavailable.reason === "host_down" && isUntested("mobile.link.offlineShell") && <p className="splash-hint muted"><span className="untested">Untested</span></p>}
         <p className="splash-hint muted">No project or terminal data is loaded from cache.</p>
         {unavailable.detail && <p className="splash-detail">{unavailable.detail}</p>}
+        <ConnectTrace />
         <button className="primary" onClick={retry}>Retry</button>
         {isUntested("mobile.link.unlockRetry") && <p className="splash-hint muted"><span className="untested">Untested</span></p>}
       </Splash>
@@ -358,7 +386,7 @@ export function App() {
   if (auth === "setup") return <LocalUnlock setup onUnlocked={() => setAuth("locked")} />;
   if (auth === "locked") return <>
     <LockedHomeShell />
-    <LocalUnlock setup={false} onUnlocked={() => { unlockedAt.current = Date.now(); resume(); }} />
+    <LocalUnlock setup={false} onUnlocked={() => { unlockedAt.current = Date.now(); traceConnect("unlocked"); resume(); }} />
   </>;
   // A terminal is the one full-bleed screen: it owns every pixel it can get,
   // and the tab bar would sit on the keyboard toolbar besides.
