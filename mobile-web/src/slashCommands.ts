@@ -84,6 +84,8 @@ const CATALOG: Record<string, CatalogEntry[]> = {
     { command: "/compact", description: "Summarize the conversation to free context", args: true },
     { command: "/context", description: "Show what fills the context window" },
     { command: "/model", description: "Choose the model", args: true },
+    { command: "/plan", description: "Plan first, without editing", args: true },
+    { command: "/goal", description: "Keep working until a goal is met", args: true },
     { command: "/usage", description: "Plan usage and limits" },
     { command: "/cost", description: "Tokens and cost of this session" },
     { command: "/resume", description: "Resume an earlier conversation" },
@@ -106,6 +108,8 @@ const CATALOG: Record<string, CatalogEntry[]> = {
     { command: "/new", description: "New conversation, in a checkout or worktree" },
     { command: "/compact", description: "Summarize the conversation to free context" },
     { command: "/model", description: "Choose the model and reasoning effort" },
+    { command: "/plan", description: "Plan first, without editing", args: true },
+    { command: "/goal", description: "Keep working until a goal is met", args: true },
     { command: "/approvals", description: "What runs without asking" },
     { command: "/review", description: "Review the working tree" },
     { command: "/diff", description: "Show the git diff" },
@@ -120,6 +124,7 @@ const CATALOG: Record<string, CatalogEntry[]> = {
     { command: "/clear", description: "Clear the screen and conversation" },
     { command: "/compress", description: "Summarize the conversation to free context" },
     { command: "/model", description: "Choose the model" },
+    { command: "/plan", description: "Plan first, without editing", args: true },
     { command: "/stats", description: "Session statistics" },
     { command: "/memory", description: "Show, add or refresh memory", args: true },
     { command: "/chat", description: "Save, resume or list conversations", args: true },
@@ -174,6 +179,38 @@ const CATALOG: Record<string, CatalogEntry[]> = {
     { command: "/help", description: "List the commands" },
   ],
 };
+
+/** The commands the composer bar offers as chips beside ＋: each one leads the
+ * draft with the reader's own words after it. Each CLI gets only the ones it
+ * documents (checked 2026-09-27); a CLI with neither shows no chips. */
+const DRAFT_PREFIXES: Record<string, readonly string[]> = {
+  claude: ["/plan", "/goal"],
+  codex: ["/plan", "/goal"],
+  antigravity: ["/plan", "/goal"],
+  gemini: ["/plan"],
+  copilot: ["/plan"],
+  cursor: ["/plan"],
+  kimi: ["/plan"],
+};
+
+export function draftPrefixes(cli: string): readonly string[] {
+  return DRAFT_PREFIXES[cli] ?? [];
+}
+
+/** The draft's leading command when it is one of `commands`, else null. */
+export function draftPrefix(draft: string, commands: readonly string[]): string | null {
+  const head = /^\s*(\/[^\s/]+)(?:\s|$)/u.exec(draft)?.[1];
+  return head && commands.includes(head) ? head : null;
+}
+
+/** A chip's tap: the draft led by `command`, or — when it already is — the
+ * draft without it. Another chip's command is replaced, never stacked; the
+ * reader's words are kept either way. Nothing is sent. */
+export function toggleDraftPrefix(draft: string, command: string, commands: readonly string[]): string {
+  const current = draftPrefix(draft, commands);
+  const words = current ? draft.replace(/^\s*\/[^\s/]+\s?/u, "") : draft.replace(/^\s+/u, "");
+  return current === command ? words : `${command} ${words}`;
+}
 
 /** The built-in list for a CLI, empty for one without. */
 export function slashCatalog(cli: string): readonly CatalogEntry[] {

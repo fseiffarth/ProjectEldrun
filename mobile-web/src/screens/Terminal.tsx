@@ -89,7 +89,7 @@ import { ageLabel, sizeLabel } from "../terminal/fileLabels";
 import { resetText, StatusSheet } from "./StatusSheet";
 import { limitMeters, parseUsageReport, type LimitMeters } from "../../../shared/usageReport";
 import { isUntested } from "../../../src/lib/untested";
-import { forgetSlashCommand, readSlashCommands, rememberSlashCommand, slashCli, slashSuggestions, type SlashSuggestion } from "../slashCommands";
+import { draftPrefix, draftPrefixes, forgetSlashCommand, readSlashCommands, rememberSlashCommand, slashCli, slashSuggestions, toggleDraftPrefix, type SlashSuggestion } from "../slashCommands";
 import {
   prepareOnDeviceSpeech,
   speechRecognitionConstructor,
@@ -1974,6 +1974,15 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
     setDraft(suggestion.args ? `${suggestion.line} ` : suggestion.line);
     composerInput.current?.focus();
   };
+  /** The bar's Plan / Goal chips: tapping one leads the draft with its
+   * command (or takes it off again). Like the `/` menu it only fills the
+   * field — the reader still writes the words and sends. */
+  const prefixCommands = draftPrefixes(slashCliKey);
+  const activePrefix = draftPrefix(draft, prefixCommands);
+  const togglePrefix = (command: string) => {
+    setDraft((current) => toggleDraftPrefix(current, command, prefixCommands));
+    composerInput.current?.focus();
+  };
   const forgetSlash = (line: string) => {
     forgetSlashCommand(slashCliKey, line);
     setUsedSlash(readSlashCommands(slashCliKey));
@@ -2912,6 +2921,11 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
             <input ref={fileInput} type="file" multiple hidden aria-hidden="true" tabIndex={-1} data-testid="inbox-file-input" onChange={(event) => { attachFromPhone(event.target.files); event.target.value = ""; }} />
             <input ref={galleryInput} type="file" accept="image/*,video/*" multiple hidden aria-hidden="true" tabIndex={-1} data-testid="inbox-gallery-input" onChange={(event) => { attachFromPhone(event.target.files); event.target.value = ""; }} />
             <button className="composer-add" disabled={!connected} onClick={() => setAddSheet(true)} aria-label="Add to the message" aria-haspopup="dialog" aria-expanded={addSheet} title="Add a photo or file from this phone, pictures from its gallery, an image from the desktop, or a project file (@)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg></button>
+            {prefixCommands.map((command) => {
+              const plan = command === "/plan";
+              return <button key={command} className={`composer-prefix${activePrefix === command ? " active" : ""}`} disabled={!connected} aria-pressed={activePrefix === command} onPointerDown={(event) => event.preventDefault()} onClick={() => togglePrefix(command)} title={t(plan ? "mobile.composer.planHint" : "mobile.composer.goalHint")}>{t(plan ? "mobile.composer.plan" : "mobile.composer.goal")}</button>;
+            })}
+            {prefixCommands.length > 0 && isUntested("mobile.composer.prefix") && <em className="composer-untested">{t("mobile.focus.untested")}</em>}
           </>}
           <span className="composer-spacer" />
           {tab.kind === "agent" && <button className={`composer-dictate${listening ? " listening" : ""}`} disabled={!connected || !voiceAvailable || preparingVoice} title={t(voiceAvailable ? "mobile.voice.hint" : "mobile.voice.hintUnavailable")} aria-label={dictateLabel} aria-pressed={listening} ref={dictateButton} onClick={listening ? stopVoice : () => void startVoice()}>{listening ? <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1" /></svg> : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M6 11a6 6 0 0 0 12 0M12 17v4M8 21h8" /></svg>}</button>}

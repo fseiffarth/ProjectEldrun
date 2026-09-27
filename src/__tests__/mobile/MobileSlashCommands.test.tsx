@@ -8,12 +8,15 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  draftPrefix,
+  draftPrefixes,
   forgetSlashCommand,
   readSlashCommands,
   rememberSlashCommand,
   slashCatalog,
   slashCli,
   slashSuggestions,
+  toggleDraftPrefix,
 } from "../../../mobile-web/src/slashCommands";
 
 vi.mock("@xterm/xterm", () => ({
@@ -228,5 +231,55 @@ describe("Eldrun Mobile slash commands — the composer", () => {
     const menu = screen.getByRole("group", { name: "Commands" });
     expect(within(menu).queryByText("/review the auth change")).toBeNull();
     expect(within(menu).getByText("/review")).toBeTruthy();
+  });
+
+  it("puts Plan and Goal between ＋ and the mic; a tap leads the draft and sends nothing", async () => {
+    render(<Terminal tab={CLAUDE_TAB} back={() => {}} />);
+    await settle();
+    const field = screen.getByLabelText("Message agent") as HTMLTextAreaElement;
+    const plan = screen.getByRole("button", { name: "Plan" });
+    const goal = screen.getByRole("button", { name: "Goal" });
+    const bar = plan.closest(".composer-bar") as HTMLElement;
+    const order = Array.from(bar.querySelectorAll("button")).map((button) => button.className.split(" ")[0]);
+    expect(order.slice(0, 4)).toEqual(["composer-add", "composer-prefix", "composer-prefix", "composer-dictate"]);
+
+    fireEvent.change(field, { target: { value: "fix the build" } });
+    const before = sent.length;
+    fireEvent.click(plan);
+    expect(field.value).toBe("/plan fix the build");
+    expect(plan.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(goal);
+    expect(field.value).toBe("/goal fix the build");
+    fireEvent.click(goal);
+    expect(field.value).toBe("fix the build");
+    expect(sent.length).toBe(before);
+  });
+
+  it("offers only the chips a CLI documents", async () => {
+    render(<Terminal tab={{ ...CLAUDE_TAB, id: "tab-g", label: "Gemini" }} back={() => {}} />);
+    await settle();
+    expect(screen.getByRole("button", { name: "Plan" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Goal" })).toBeNull();
+  });
+});
+
+describe("Eldrun Mobile slash commands — the Plan / Goal chips", () => {
+  const both = draftPrefixes("claude");
+
+  it("knows which CLIs have which", () => {
+    expect(draftPrefixes("codex")).toEqual(["/plan", "/goal"]);
+    expect(draftPrefixes("copilot")).toEqual(["/plan"]);
+    expect(draftPrefixes("aider")).toEqual([]);
+  });
+
+  it("toggles its own command, swaps the other, and keeps the words", () => {
+    expect(toggleDraftPrefix("", "/plan", both)).toBe("/plan ");
+    expect(toggleDraftPrefix("  ship it", "/plan", both)).toBe("/plan ship it");
+    expect(toggleDraftPrefix("/plan ship it", "/plan", both)).toBe("ship it");
+    expect(toggleDraftPrefix("/plan ship it", "/goal", both)).toBe("/goal ship it");
+    expect(toggleDraftPrefix("/plan", "/plan", both)).toBe("");
+    // Another command is words to lead, not a chip to replace.
+    expect(toggleDraftPrefix("/model opus", "/plan", both)).toBe("/plan /model opus");
+    expect(draftPrefix("/planning", both)).toBeNull();
   });
 });
