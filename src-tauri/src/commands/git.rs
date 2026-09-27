@@ -1559,7 +1559,10 @@ pub(crate) fn resolve_pre_push_hook(dir: &std::path::Path) -> Option<std::path::
 }
 
 fn git_push_blocking(project_dir: String, project_id: Option<String>) -> Result<String, String> {
-    let out = if let Some(target) = remote_target_for_dir(&project_dir) {
+    // The local repo whose remote-tracking ref this push moves — the mirror
+    // for a mirror-published remote project, none for a push run on the host.
+    let mut local_repo: Option<std::path::PathBuf> = None;
+    let (out, before) = if let Some(target) = remote_target_for_dir(&project_dir) {
         // A remote project published from THIS machine has its `origin` on the
         // lockstep mirror, not on the host (see `commands::git_publish`) — so the
         // push has to run there, where the remote exists and the effective token
@@ -1567,27 +1570,69 @@ fn git_push_blocking(project_dir: String, project_id: Option<String>) -> Result<
         match crate::commands::git_publish::mirror_origin_repo(&target.project_id) {
             Some(mirror) => {
                 let token = crate::commands::git_hosting::effective_git_creds(&target.project_id).1;
-                push_local(&mirror, token.as_deref(), Some(&target.project_id))?
+                let before = pushed_tip(&mirror);
+                local_repo = Some(mirror.clone());
+                let out = push_local(&mirror, token.as_deref(), Some(&target.project_id))?;
+                (out, before)
             }
             // No mirror-side origin: the repo was published (or wired by hand) on
             // the host, so the push runs there and authenticates with the host's
             // own git credentials/SSH keys. The local effective token does not
             // apply (it would be the wrong machine's secret) and is not forwarded.
-            None => crate::services::ssh_exec::run_git_remote(&target.spec, &PUSH_ARGS.map(str::to_string))?,
+            None => (crate::services::ssh_exec::run_git_remote(&target.spec, &PUSH_ARGS.map(str::to_string))?, None),
         }
     } else {
         // Local project: effective per-project → global token (if any).
         let token = project_id
             .as_deref()
             .and_then(|id| crate::commands::git_hosting::effective_git_creds(id).1);
-        push_local(std::path::Path::new(&project_dir), token.as_deref(), project_id.as_deref())?
+        let dir = std::path::PathBuf::from(&project_dir);
+        let before = pushed_tip(&dir);
+        local_repo = Some(dir.clone());
+        (push_local(&dir, token.as_deref(), project_id.as_deref())?, before)
     };
+    push_outcome(&out, local_repo.as_deref(), before)
+}
+
+/// The push's result for the git bar. `repo` is the local repo whose
+/// remote-tracking ref the push moves and `before` that ref's commit ahead of
+/// the push (see [`pushed_tip`]).
+fn push_outcome(out: &std::process::Output, repo: Option<&std::path::Path>, before: Option<String>) -> Result<String, String> {
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     if !out.status.success() {
-        return Err(if stderr.is_empty() { stdout } else { stderr });
+        // A pre-push hook that amends the push (this repo's version bump)
+        // re-pushes HEAD itself and then aborts the original, so git reports
+        // failure for a push that landed — with everything the bump commit's
+        // own hooks printed (the phone-staleness advisory) as the "error".
+        // The remote-tracking ref says what actually happened.
+        let landed = repo.is_some_and(|dir| {
+            let after = pushed_tip(dir);
+            after.is_some() && after != before && after == head_sha(dir)
+        });
+        if !landed {
+            return Err(if stderr.is_empty() { stdout } else { stderr });
+        }
+        return Ok("Pushed — the repository's pre-push hook re-pushed it itself.".to_string());
     }
     Ok(if stdout.is_empty() { stderr } else { stdout })
+}
+
+/// The commit the current branch's pushed copy points at, per the local
+/// remote-tracking ref ([`unpushed_base`]); `None` when there is none.
+fn pushed_tip(dir: &std::path::Path) -> Option<String> {
+    let d = dir.to_string_lossy();
+    let base = unpushed_base(None, &d)?;
+    rev_parse(dir, &base)
+}
+
+fn head_sha(dir: &std::path::Path) -> Option<String> {
+    rev_parse(dir, "HEAD")
+}
+
+fn rev_parse(dir: &std::path::Path, rev: &str) -> Option<String> {
+    let out = run_git(None, &dir.to_string_lossy(), &["rev-parse", "--verify", "-q", rev]).ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 // ── Clone (import from GitHub/GitLab) ───────────────────────────────────────
@@ -3756,6 +3801,43 @@ filename note.txt
         let pushed = git(&remote, &["rev-parse", "develop"]);
         let head = git(&dir, &["rev-parse", "HEAD"]);
         assert_eq!(pushed.stdout, head.stdout);
+    }
+
+    #[test]
+    fn a_push_a_pre_push_hook_re_pushed_itself_is_not_an_error() {
+        if !git_available() {
+            eprintln!("git not on PATH — skipping a_push_a_pre_push_hook_re_pushed_itself_is_not_an_error");
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let remote = tmp.path().join("remote.git");
+        let dir = tmp.path().join("work");
+        fs::create_dir(&dir).expect("mkdir work");
+        let git = |cwd: &Path, args: &[&str]| {
+            crate::paths::command_no_window("git").args(args).current_dir(cwd).output().expect("git should run")
+        };
+        assert!(git(tmp.path(), &["init", "--bare", "remote.git"]).status.success());
+        init_repo(&dir);
+        assert!(git(&dir, &["checkout", "-b", "develop"]).status.success());
+        fs::write(dir.join("a.txt"), "a\n").expect("write");
+        assert!(git(&dir, &["add", "."]).status.success());
+        assert!(git(&dir, &["commit", "-m", "first"]).status.success());
+        assert!(git(&dir, &["remote", "add", "origin", remote.to_str().unwrap()]).status.success());
+        assert!(git(&dir, &["push", "-u", "origin", "develop"]).status.success());
+        fs::write(dir.join("a.txt"), "b\n").expect("write");
+        assert!(git(&dir, &["commit", "-am", "second"]).status.success());
+
+        // What the version-bump hook leaves behind: HEAD re-pushed by the
+        // hook, the original push aborted with a failure and hook chatter.
+        let before = pushed_tip(&dir);
+        let aborted = git(&dir, &["rev-parse", "--verify", "-q", "no-such-ref"]);
+        assert!(!aborted.status.success());
+        assert!(push_outcome(&aborted, Some(&dir), before.clone()).is_err(), "nothing landed: a real failure");
+        assert!(git(&dir, &["push", "origin", "HEAD"]).status.success());
+        assert!(push_outcome(&aborted, Some(&dir), before).is_ok(), "HEAD landed on the remote");
+        // A failure with the tracking ref already at HEAD is not salvaged.
+        let now = pushed_tip(&dir);
+        assert!(push_outcome(&aborted, Some(&dir), now).is_err());
     }
 
     #[test]

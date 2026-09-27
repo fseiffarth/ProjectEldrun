@@ -121,7 +121,10 @@ new="$("$repo_root/scripts/bump-version.sh" patch)"
 # sweep up whatever else happens to be in the working tree.
 git -C "$repo_root" add -- \
   package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json Cargo.lock
-git -C "$repo_root" commit -m "chore: bump version to v${new}" >/dev/null
+# ELDRUN_VERSION_BUMP tells post-commit this is the push's own bump: its
+# phone-staleness advisory has nothing to do with pushing, and git routes a
+# hook's output to stderr, where it read as the push's error.
+ELDRUN_VERSION_BUMP=1 git -C "$repo_root" commit -m "chore: bump version to v${new}" >/dev/null
 
 # Under Eldrun's preflight there is nothing to re-push with: the bump commit
 # is on the branch, Eldrun's own transport (hooks off, with the token this
