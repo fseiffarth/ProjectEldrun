@@ -72,7 +72,7 @@ interface CatalogAgent { id: string; label: string; modes: string[] }
 interface AgentTabStatus { tmux_session: string; status: "working" | "question" | "done"; model?: string; working_at?: number; done_at?: number }
 /** The same readings for an agent tab with no status: a finished turn stays
  * sorted among the finished ones on the phone after it has been read. */
-interface AgentTabTiming { tmux_session: string; working_at?: number; done_at?: number }
+interface AgentTabTiming { tmux_session: string; model?: string; working_at?: number; done_at?: number }
 interface AgentTabSchedules { tmux_session: string; total: number; enabled: number; next?: string }
 interface AgentTabPrompt { text: string; at?: string }
 interface AgentTabPrompts { tmux_session: string; prompts: AgentTabPrompt[] }
@@ -436,9 +436,17 @@ function mobileAgentState(ptyId: string): "working" | "question" | "done" | "idl
   return "idle";
 }
 
+/** The model tag a phone card shows for `tab`, with both of its sources asked
+ * to re-read for the next poll. */
+function mobileModelTag(projectId: string, tab: TabEntry): string | undefined {
+  const models = useAgentModelsStore.getState();
+  void models.refresh(projectId, tab);
+  void models.refreshScreen(projectId, tab);
+  return agentTabModelTag(projectId, tab, models.byTab, models.screenByTab);
+}
+
 function projectAgentStatuses(projectId: string): AgentTabStatus[] {
   const activity = useActivityStore.getState();
-  const models = useAgentModelsStore.getState();
   return (useTabsStore.getState().tabsByScope[projectId] ?? []).flatMap((tab) => {
     if (tab.kind !== "agent" || !tab.tmuxSession) return [];
     const ptyId = `${projectId}:${tab.key}`;
@@ -447,11 +455,10 @@ function projectAgentStatuses(projectId: string): AgentTabStatus[] {
     const status: AgentTabStatus["status"] = state;
     // The phone sorts by these and tags the row with the model; the answer is
     // whatever the desktop knows at this poll (the model store throttles its
-    // own re-read), so the phone can be one poll behind, never wrong. The
-    // model is read off the pane first, which owes nothing to that throttle.
-    void models.refresh(projectId, tab);
+    // own re-reads), so the phone can be one poll behind, never wrong. The
+    // model is read off the live tmux pane first (`agentTabModelTag`).
     const row: AgentTabStatus = { tmux_session: tab.tmuxSession, status };
-    const model = agentTabModelTag(projectId, tab, models.byTab);
+    const model = mobileModelTag(projectId, tab);
     if (model) row.model = model;
     const workingAt = status === "working" ? Date.now() : activity.lastWorkingByTab[ptyId];
     if (workingAt !== undefined) row.working_at = workingAt;
@@ -463,7 +470,8 @@ function projectAgentStatuses(projectId: string): AgentTabStatus[] {
 
 /** Timings of the agent tabs `projectAgentStatuses` leaves out (a quiet or
  * already-read tab), so the phone's "last working" sort keeps a read turn in
- * its place among the finished ones instead of dropping it to its tab-bar spot. */
+ * its place among the finished ones instead of dropping it to its tab-bar spot
+ * — and their model, so a quiet card is tagged like a busy one. */
 function projectAgentTimings(projectId: string): AgentTabTiming[] {
   const activity = useActivityStore.getState();
   return (useTabsStore.getState().tabsByScope[projectId] ?? []).flatMap((tab) => {
@@ -471,11 +479,13 @@ function projectAgentTimings(projectId: string): AgentTabTiming[] {
     const ptyId = `${projectId}:${tab.key}`;
     if (mobileAgentState(ptyId) !== "idle") return [];
     const row: AgentTabTiming = { tmux_session: tab.tmuxSession };
+    const model = mobileModelTag(projectId, tab);
+    if (model) row.model = model;
     const workingAt = activity.lastWorkingByTab[ptyId];
     if (workingAt !== undefined) row.working_at = workingAt;
     const doneAt = activity.lastDoneByTab[ptyId];
     if (doneAt !== undefined) row.done_at = doneAt;
-    return row.working_at === undefined && row.done_at === undefined ? [] : [row];
+    return row.model === undefined && row.working_at === undefined && row.done_at === undefined ? [] : [row];
   });
 }
 

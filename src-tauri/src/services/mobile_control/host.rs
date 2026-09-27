@@ -536,7 +536,9 @@ async fn project(
                 tab.working_at = status.working_at;
                 tab.done_at = status.done_at;
             } else if let Some(timing) = timings.remove(&resolved.tmux_name) {
-                // A read turn has no status, but it still sorts by when it ran.
+                // A read turn has no status, but it still sorts by when it ran
+                // and still names its model.
+                tab.agent_model = timing.model;
                 tab.working_at = timing.working_at;
                 tab.done_at = timing.done_at;
             }

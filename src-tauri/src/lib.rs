@@ -1854,6 +1854,7 @@ pub fn run() {
             commands::terminal::local_tmux_kill,
             commands::terminal::local_tmux_kill_eldrun_sessions,
             commands::terminal::local_tmux_rename,
+            commands::terminal::local_tmux_screen,
             commands::terminal::project_cpu_percent,
             // External apps / window tracking
             commands::apps::launch_app,

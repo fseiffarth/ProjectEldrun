@@ -1018,6 +1018,10 @@ pub struct AgentTabStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentTabTiming {
     pub tmux_session: String,
+    /// The quiet tab's model, composed as `AgentTabStatus::model`: a session
+    /// with no status still shows which model it will answer with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1387,6 +1391,7 @@ mod tests {
             }],
             timings: vec![AgentTabTiming {
                 tmux_session: "eldrun-project-0--agent-987654321".into(),
+                model: None,
                 working_at: None,
                 done_at: Some(1_700_000_100_000),
             }],

@@ -47,3 +47,13 @@ export function screenModelTag(buffer: ReadableBufferLike, agentLabel?: string):
   if (!status?.model) return undefined;
   return status.effort ? `${status.model} · ${status.effort}` : status.model;
 }
+
+/** `screenModelTag` over a plain-text screen — the rows `tmux capture-pane -p`
+ * prints for the live pane (`local_tmux_screen`). */
+export function textScreenModelTag(screen: string, agentLabel?: string): string | undefined {
+  const rows = screen.replace(/\r/g, "").replace(/\n$/, "").split("\n");
+  return screenModelTag({
+    length: rows.length,
+    getLine: (row) => (rows[row] === undefined ? undefined : { translateToString: () => rows[row] }),
+  }, agentLabel);
+}

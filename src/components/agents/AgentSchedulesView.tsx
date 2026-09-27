@@ -91,7 +91,9 @@ export function AgentSchedulesView({ scope, active }: Props) {
   const lastDoneByTab = useActivityStore((state) => state.lastDoneByTab);
   const modelByTab = useAgentModelsStore((state) => state.byTab);
   const promptByTab = useAgentModelsStore((state) => state.promptByTab);
+  const screenModelByTab = useAgentModelsStore((state) => state.screenByTab);
   const refreshModel = useAgentModelsStore((state) => state.refresh);
+  const refreshScreen = useAgentModelsStore((state) => state.refreshScreen);
   const settings = useSettingsStore((state) => state.settings);
   const renameTabInScope = useTabsStore((state) => state.renameTabInScope);
   const setAutoContinue = useTabsStore((state) => state.setAutoContinueInScope);
@@ -178,8 +180,11 @@ export function AgentSchedulesView({ scope, active }: Props) {
     // The model tag: read on show and on the 30-second tick (throttled in the
     // store); the store itself re-reads a tab the moment it finishes a turn.
     if (!active) return;
-    for (const tab of agentTabs) void refreshModel(scope, tab);
-  }, [active, agentTabs, now, refreshModel, scope]);
+    for (const tab of agentTabs) {
+      void refreshModel(scope, tab);
+      void refreshScreen(scope, tab);
+    }
+  }, [active, agentTabs, now, refreshModel, refreshScreen, scope]);
   useEffect(() => {
     for (const tab of agentTabs) if (tab.scheduleTargetId && !schedulesByTarget[scheduleCacheKey(scope, tab.scheduleTargetId)]) void loadSchedules(scope, tab.scheduleTargetId).catch(() => []);
   }, [agentTabs, loadSchedules, schedulesByTarget, scope]);
@@ -241,12 +246,12 @@ export function AgentSchedulesView({ scope, active }: Props) {
         const summary = scheduleSummary(schedules, now);
         const queued = schedules.filter((schedule) => scheduleStatus(schedule, now).kind === "due");
         const state = stateOf(tab);
-        // The session's own status line, read off the pane, with the
-        // transcript's shortened id behind it (`agentTabModelTag`). Read here
-        // rather than held in the store: a `/model` typed into the session
+        // The session's own status line, read off the live pane, with the
+        // transcript's shortened id behind it (`agentTabModelTag`). Composed
+        // here rather than held in the store: a `/model` typed into the session
         // changes the screen and nothing else, and this row is re-rendered on
         // the 30-second tick and on every edge the activity store reports.
-        const model = agentTabModelTag(scope, tab, modelByTab);
+        const model = agentTabModelTag(scope, tab, modelByTab, screenModelByTab);
         const open = unfolded.includes(tab.key);
         const slot = drop?.anchor === tab.key ? ` drop-${drop.place}` : "";
         return <div

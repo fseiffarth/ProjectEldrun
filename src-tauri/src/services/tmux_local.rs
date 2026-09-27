@@ -519,6 +519,21 @@ pub fn local_tmux_kill_args(session: &str) -> Vec<String> {
     vec!["kill-session".into(), "-t".into(), session.to_string()]
 }
 
+/// `tmux capture-pane -p -t =<session>:` argv: the session's visible screen as
+/// plain rows, for reading an agent's status line off the live pane. A hidden
+/// desktop pane's xterm stops receiving output, so its buffer is a stale
+/// screen; tmux always holds the current one. `=` makes the match exact — a
+/// missing session fails instead of prefix-matching a sibling's.
+pub fn local_tmux_screen_args(session: &str) -> Vec<String> {
+    vec![
+        "-u".into(),
+        "capture-pane".into(),
+        "-p".into(),
+        "-t".into(),
+        format!("={session}:"),
+    ]
+}
+
 /// `tmux rename-session -t <old> <new>` argv.
 pub fn local_tmux_rename_args(old: &str, new: &str) -> Vec<String> {
     vec![
@@ -940,6 +955,10 @@ mod tests {
     #[test]
     fn kill_and_rename_argv() {
         assert_eq!(local_tmux_kill_args("s"), vec!["kill-session", "-t", "s"]);
+        assert_eq!(
+            local_tmux_screen_args("eldrun-s"),
+            vec!["-u", "capture-pane", "-p", "-t", "=eldrun-s:"]
+        );
         assert_eq!(
             local_tmux_rename_args("old", "new"),
             vec!["rename-session", "-t", "old", "new"]

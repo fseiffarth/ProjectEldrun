@@ -903,6 +903,31 @@ pub async fn local_tmux_kill_eldrun_sessions() -> Result<(), String> {
         .map_err(|e| e.to_string())?
 }
 
+/// The visible screen of a **local** tmux session, as plain rows — what the
+/// model tag beside an agent tab reads the session's status line from
+/// (`stores/agents/agentModels`). `None` when the session is not here (a remote
+/// tab, one that exited, no tmux), which the caller reads as "no screen".
+#[tauri::command]
+pub async fn local_tmux_screen(session: String) -> Result<Option<String>, String> {
+    if !crate::services::ssh_exec::valid_tmux_session_name(&session)
+        || !crate::services::tmux_local::tmux_available()
+    {
+        return Ok(None);
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let output = crate::paths::command_no_window("tmux")
+            .args(crate::services::tmux_local::local_tmux_screen_args(&session))
+            .output()
+            .ok()?;
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 /// Rename a **local** tmux session (TODO #85). `new_name` must be a safe tmux name.
 #[tauri::command]
 pub async fn local_tmux_rename(session: String, new_name: String) -> Result<(), String> {

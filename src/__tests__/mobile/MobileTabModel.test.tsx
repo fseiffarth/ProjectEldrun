@@ -48,6 +48,17 @@ const SCREEN = [
   "~/projects/paper (develop) · Sonnet 4.5 · 85% context left",
 ];
 
+/** What this window's xterm still shows for a pane that was hidden before the
+ * `/model` switch: a hidden pane is fed no output until it is shown again. */
+const STALE_SCREEN = [
+  "● Done.",
+  "",
+  ">",
+  "~/projects/paper (develop) · Opus 4.1 · 85% context left",
+];
+
+let liveScreen: string | null = null;
+
 function pane(rows: string[]): Terminal {
   const buffer: ReadableBufferLike = {
     length: rows.length,
@@ -77,12 +88,13 @@ describe("Mobile bridge — the model beside a tab", () => {
       if (command === "agent_tab_recent_prompts") return Promise.resolve([]);
       if (command === "agent_tab_model") return Promise.resolve("claude-opus-4-1-20250805");
       if (command === "agent_prompt_history_list") return Promise.resolve([]);
+      if (command === "local_tmux_screen") return Promise.resolve(liveScreen);
       return Promise.resolve(undefined);
     });
     vi.mocked(listen).mockResolvedValue(() => {});
     useProjectsStore.setState({ projects: [paper], activeId: paper.id, loaded: true });
     useSettingsStore.setState({ settings: {} as Settings, loaded: true });
-    useAgentModelsStore.setState({ byTab: {}, promptByTab: {}, recentByTab: {} });
+    useAgentModelsStore.setState({ byTab: {}, promptByTab: {}, recentByTab: {}, screenByTab: {} });
     clearAgentModelFloorForTest();
     useTabsStore.setState({
       scope: paper.id,
@@ -98,11 +110,12 @@ describe("Mobile bridge — the model beside a tab", () => {
   });
 
   afterEach(() => {
+    liveScreen = null;
     cleanup();
     vi.mocked(invoke).mockReset();
     vi.mocked(listen).mockReset();
     useActivityStore.setState({ busyByTab: {}, attentionByTab: {}, attentionByScope: {} });
-    useAgentModelsStore.setState({ byTab: {}, promptByTab: {}, recentByTab: {} });
+    useAgentModelsStore.setState({ byTab: {}, promptByTab: {}, recentByTab: {}, screenByTab: {} });
   });
 
   it("is what the session's own status line says, in its own words", async () => {
@@ -132,5 +145,47 @@ describe("Mobile bridge — the model beside a tab", () => {
     } finally {
       unregisterTerminal(PTY, term);
     }
+  });
+
+  it("reads the live tmux pane over a hidden pane's stale xterm", async () => {
+    liveScreen = SCREEN.join("\n");
+    // The busy edge in `beforeEach` already read a pane with no session.
+    clearAgentModelFloorForTest();
+    const term = pane(STALE_SCREEN);
+    registerTerminal(PTY, term);
+    try {
+      await vi.waitFor(async () => {
+        const answer = await ask({ type: "catalog", request_id: "m4", project_id: paper.id });
+        expect(answer.statuses).toMatchObject([{ tmux_session: TMUX, model: "Sonnet 4.5" }]);
+      });
+    } finally {
+      unregisterTerminal(PTY, term);
+    }
+  });
+
+  it("keeps the last live reading while the status line is covered", async () => {
+    liveScreen = SCREEN.join("\n");
+    clearAgentModelFloorForTest();
+    await vi.waitFor(async () => {
+      const answer = await ask({ type: "catalog", request_id: "m5", project_id: paper.id });
+      expect(answer.statuses).toMatchObject([{ tmux_session: TMUX, model: "Sonnet 4.5" }]);
+    });
+    // A dialog replaces the input box: no status line to read.
+    liveScreen = "Do you want to proceed?\n❯ 1. Yes\n  2. No";
+    clearAgentModelFloorForTest();
+    await useAgentModelsStore.getState().refreshScreen(paper.id, useTabsStore.getState().tabsByScope[paper.id][0], true);
+    const answer = await ask({ type: "catalog", request_id: "m6", project_id: paper.id });
+    expect(answer.statuses).toMatchObject([{ tmux_session: TMUX, model: "Sonnet 4.5" }]);
+  });
+
+  it("tags a quiet tab too", async () => {
+    useActivityStore.setState({ busyByTab: {} });
+    liveScreen = SCREEN.join("\n");
+    clearAgentModelFloorForTest();
+    await vi.waitFor(async () => {
+      const answer = await ask({ type: "catalog", request_id: "m7", project_id: paper.id });
+      expect(answer.statuses).toEqual([]);
+      expect(answer.timings).toMatchObject([{ tmux_session: TMUX, model: "Sonnet 4.5" }]);
+    });
   });
 });

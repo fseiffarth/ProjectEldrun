@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
-import { claudeModelLabel, screenModelTag, shortModelName } from "../../lib/agents/agentModel";
+import { claudeModelLabel, screenModelTag, shortModelName, textScreenModelTag } from "../../lib/agents/agentModel";
 import { isClaudeCommand } from "../../lib/terminal/terminalControl";
 import { AGENT_ITEMS } from "../../components/tabs/newTabItems";
 import { adoptTranscriptPrompts, adoptTypedPrompt, type TranscriptPrompt } from "../../lib/agents/prompt/adopt";
@@ -36,11 +36,16 @@ import { useTabsStore, type TabEntry } from "../tabs";
  */
 const REFRESH_FLOOR_MS = 10_000;
 const askedAt: Record<string, number> = {};
+/** The live screen is one local `tmux capture-pane`, cheap enough to follow a
+ * 5-second phone poll without skipping one. */
+const SCREEN_FLOOR_MS = 2_000;
+const screenAskedAt: Record<string, number> = {};
 
 /** The floor is module state, so resetting the store between two tests still
  * leaves the next read of a tab refused. */
 export function clearAgentModelFloorForTest(): void {
   for (const key of Object.keys(askedAt)) delete askedAt[key];
+  for (const key of Object.keys(screenAskedAt)) delete screenAskedAt[key];
 }
 
 interface AgentModelsStore {
@@ -61,6 +66,17 @@ interface AgentModelsStore {
    *  cannot read: the screen-echo fallback yields one line with no time, which
    *  belongs in `promptByTab` alone. */
   recentByTab: Record<string, TranscriptPrompt[]>;
+  /** Composed PTY id → the model tag last read off the tab's *live* tmux pane
+   *  (`local_tmux_screen`). A hidden pane's xterm stops receiving output, so
+   *  its buffer can show a model the session switched away from long ago; tmux
+   *  always has the current screen. Sticky: a screen with no readable status
+   *  line (a dialog up, the `/model` picker open) keeps the last reading
+   *  rather than dropping the tag back to the transcript's older answer. Gone
+   *  only when the session is. */
+  screenByTab: Record<string, string>;
+  /** Re-read one tab's model off its live tmux screen, throttled unless
+   *  `force`. A no-op for a tab with no local tmux session. */
+  refreshScreen: (scope: string, tab: TabEntry, force?: boolean) => Promise<void>;
   /** Re-read one tab's model and last prompt. `force` skips the throttle (a
    *  turn just started or ended); `turnStarted` says the read is the one at a
    *  turn's start, where a changed prompt is a typed one to adopt. */
@@ -85,15 +101,18 @@ export function agentTabLabel(tab: TabEntry): string {
  * The model tag one agent tab wears, for every surface that shows one: the
  * Agents view here and the phone's tab cards through the mobile bridge.
  *
- * The pane's own status line comes first — the model in the words the session
- * prints, with the reasoning effort beside it where it prints one
+ * The session's own status line comes first — the model in the words the
+ * session prints, with the reasoning effort beside it where it prints one
  * (`lib/agents/agentModel.screenModelTag`), which is exactly what the phone's
- * Focus chip reads off the same screen. Behind it stands `byTab`, the
- * transcript's model id shortened: the transcript names the model of the last
- * *answer*, so a `/model` switch is invisible there until the next one, and it
- * names it as an API id rather than in the session's own words. A tab whose
- * pane this window does not hold — popped out, or never mounted — has no
- * screen to read and is tagged from the transcript alone.
+ * Focus chip reads off the same screen. The live tmux pane (`screenByTab`)
+ * is read before this window's xterm: a hidden pane's xterm is fed nothing
+ * until it is shown again, so its screen is whatever it was when the tab was
+ * last looked at — a session switched to Sonnet since then still said Opus
+ * there. The xterm answers for a tab with no local tmux session, and until
+ * the first capture lands. Behind both stands `byTab`, the transcript's model
+ * id shortened: the transcript names the model of the last *answer*, so a
+ * `/model` switch is invisible there until the next one, and it names it as an
+ * API id rather than in the session's own words.
  *
  * Read at display time rather than stored: the screen can change without a
  * turn, which is precisely the case the transcript misses, and both callers
@@ -103,8 +122,11 @@ export function agentTabModelTag(
   scope: string,
   tab: TabEntry,
   byTab: Record<string, string>,
+  screenByTab: Record<string, string> = {},
 ): string | undefined {
   const ptyId = `${scope}:${tab.key}`;
+  const live = screenByTab[ptyId];
+  if (live) return live;
   const term = terminalFor(ptyId);
   const shown = term && screenModelTag(term.buffer.active, agentTabLabel(tab));
   if (shown) return shown;
@@ -128,6 +150,32 @@ export const useAgentModelsStore = create<AgentModelsStore>((set, get) => ({
   byTab: {},
   promptByTab: {},
   recentByTab: {},
+  screenByTab: {},
+  refreshScreen: async (scope, tab, force = false) => {
+    if (!isModelTaggedTab(tab) || !tab.tmuxSession) return;
+    const ptyId = `${scope}:${tab.key}`;
+    const now = Date.now();
+    const asked = screenAskedAt[ptyId];
+    if (!force && asked !== undefined && now - asked < SCREEN_FLOOR_MS) return;
+    screenAskedAt[ptyId] = now;
+    const screen = await invoke<string | null>("local_tmux_screen", { session: tab.tmuxSession }).catch(() => null);
+    const known = get().screenByTab[ptyId];
+    if (typeof screen !== "string") {
+      // No session here (a remote tab, one that exited, a backend without the
+      // command): nothing to stand in front of the xterm and the transcript.
+      if (known !== undefined) {
+        set((state) => {
+          const screenByTab = { ...state.screenByTab };
+          delete screenByTab[ptyId];
+          return { screenByTab };
+        });
+      }
+      return;
+    }
+    const tag = textScreenModelTag(screen, agentTabLabel(tab));
+    if (!tag || tag === known) return;
+    set((state) => ({ screenByTab: { ...state.screenByTab, [ptyId]: tag } }));
+  },
   refresh: async (scope, tab, force = false, turnStarted = false) => {
     if (!isModelTaggedTab(tab)) return;
     const ptyId = `${scope}:${tab.key}`;
@@ -199,7 +247,10 @@ const TURN_START_RECHECK_MS = 2_500;
 function refreshTab(ptyId: string, turnStarted = false): void {
   const parts = splitPtyId(ptyId);
   const tab = parts && useTabsStore.getState().tabsByScope[parts.scope]?.find((entry) => entry.key === parts.key);
-  if (tab) void useAgentModelsStore.getState().refresh(parts.scope, tab, true, turnStarted);
+  if (!tab) return;
+  const store = useAgentModelsStore.getState();
+  void store.refresh(parts.scope, tab, true, turnStarted);
+  void store.refreshScreen(parts.scope, tab, true);
 }
 
 // A finished turn is the one moment the tag can have changed (a `/model` mid-
