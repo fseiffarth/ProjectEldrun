@@ -42,10 +42,10 @@ about 600 MB) as one-click terminal tabs. The pill's VM menu boots and shuts
 down the guest and sets resources and network access. The VM tier is new and
 less tested than the others.
 
-## The Linux agent fence
+## The Linux agent sandbox
 
 Separate from containers: on Linux every local agent tab runs inside a
-bubblewrap fence by default, with the project writable and your home folder
+bubblewrap sandbox by default, with the project writable and your home folder
 hidden. See `agent-clis`.
 
 ## Project boxes

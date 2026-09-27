@@ -97,15 +97,15 @@ pub fn fence_unavailable_message() -> String {
     let tool = fence_tool_name();
     if cfg!(target_os = "macos") {
         return format!(
-            "Agent fence: {tool} is unavailable on this Mac, so this agent was not started. Open the project in a container, or use a Host session from the root console."
+            "Agent sandbox: {tool} is unavailable on this Mac, so this agent was not started. Open the project in a container, or use a Host session from the root console."
         );
     }
     match fence_install_cmd() {
         Some(cmd) => format!(
-            "Agent fence: {tool} is unavailable, so this agent was not started. Install it with `{cmd}`."
+            "Agent sandbox: {tool} is unavailable, so this agent was not started. Install it with `{cmd}`."
         ),
         None => format!(
-            "Agent fence: {tool} is unavailable, so this agent was not started. Install the {tool} package with your distribution's package manager."
+            "Agent sandbox: {tool} is unavailable, so this agent was not started. Install the {tool} package with your distribution's package manager."
         ),
     }
 }
@@ -143,7 +143,7 @@ pub const PLATFORM_UNACCEPTED_SENTINEL: &str = "ELDRUN_FENCE_PLATFORM_UNACCEPTED
 /// The spawn refusal on a fence-less platform nobody has accepted yet.
 pub fn platform_unaccepted_message() -> String {
     format!(
-        "{PLATFORM_UNACCEPTED_SENTINEL} Agent fence: {} has no agent fence, so this agent would run with your full rights. Accept that once in the prompt Eldrun shows, or open the project in a container.",
+        "{PLATFORM_UNACCEPTED_SENTINEL} Agent sandbox: {} has no agent sandbox, so this agent would run with your full rights. Accept that once in the prompt Eldrun shows, or open the project in a container.",
         platform_reason()
     )
 }
@@ -989,13 +989,13 @@ pub(crate) fn seccomp_launcher(bwrap: &str, filter: &Path, argv: Vec<String>) ->
 fn write_keyring_filter() -> Result<PathBuf, String> {
     use std::io::Write as _;
     let prog = keyring_seccomp_filter()
-        .ok_or_else(|| "Agent fence: no keyring filter for this CPU architecture".to_string())?;
+        .ok_or_else(|| "Agent sandbox: no keyring filter for this CPU architecture".to_string())?;
     let dir = storage::state_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Agent fence: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Agent sandbox: {e}"))?;
     let path = dir.join("agent-fence-seccomp.bpf");
-    let mut tmp = tempfile::NamedTempFile::new_in(&dir).map_err(|e| format!("Agent fence: keyring filter: {e}"))?;
-    tmp.write_all(&prog).map_err(|e| format!("Agent fence: keyring filter: {e}"))?;
-    tmp.persist(&path).map_err(|e| format!("Agent fence: keyring filter: {e}"))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(&dir).map_err(|e| format!("Agent sandbox: keyring filter: {e}"))?;
+    tmp.write_all(&prog).map_err(|e| format!("Agent sandbox: keyring filter: {e}"))?;
+    tmp.persist(&path).map_err(|e| format!("Agent sandbox: keyring filter: {e}"))?;
     Ok(path)
 }
 
@@ -1391,16 +1391,16 @@ pub fn wrap_pty_options_sandbox_exec(
 ) -> Result<(), String> {
     if !bwrap_available() {
         return Err(
-            "Agent fence: sandbox-exec is unavailable on this Mac, so this agent was not started. Turn the Agent fence off for this project."
+            "Agent sandbox: sandbox-exec is unavailable on this Mac, so this agent was not started. Open the project in a container, or use a Host session from the root console."
                 .to_string(),
         );
     }
     let inputs = sandbox_exec_inputs(opts, roots, scope_id, scope_home);
     let profile = sandbox_exec_profile(&inputs);
     let stage = crate::services::sandbox::stage_dir(scope_id);
-    std::fs::create_dir_all(&stage).map_err(|e| format!("Agent fence: {e}"))?;
+    std::fs::create_dir_all(&stage).map_err(|e| format!("Agent sandbox: {e}"))?;
     let profile_path = stage.join("fence.sb");
-    std::fs::write(&profile_path, profile).map_err(|e| format!("Agent fence: {e}"))?;
+    std::fs::write(&profile_path, profile).map_err(|e| format!("Agent sandbox: {e}"))?;
     let resolved = if opts.cmd.contains('/') {
         PathBuf::from(&opts.cmd)
     } else {
@@ -1574,7 +1574,7 @@ pub fn one_shot_command(scope_id: &str, cmd: &str, args: &[String], cwd: &Path) 
     }
     let bwrap = crate::paths::system_executable("bwrap").ok_or_else(fence_unavailable_message)?;
     let roots = roots_for_scope((scope_id != ROOT_SCOPE).then_some(scope_id), false)
-        .ok_or_else(|| format!("Agent fence: unknown project or box scope '{scope_id}'"))?;
+        .ok_or_else(|| format!("Agent sandbox: unknown project or box scope '{scope_id}'"))?;
     let extra_ro = configured_read_only_paths();
     let home = paths::home_dir();
     let mut argv = bwrap_args(

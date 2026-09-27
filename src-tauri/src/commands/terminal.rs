@@ -414,7 +414,7 @@ pub async fn pty_spawn(
             )
             .ok_or_else(|| {
                 format!(
-                    "Agent fence: unknown project or box scope '{}'; agent '{}' was not started.",
+                    "Agent sandbox: unknown project or box scope '{}'; agent '{}' was not started.",
                     opts.project_id.as_deref().unwrap_or("root"),
                     opts.id
                 )

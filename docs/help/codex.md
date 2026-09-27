@@ -52,11 +52,11 @@ hook" notice on the Codex row while the hook is not active, and a hint with an
 
 ## Troubleshooting
 
-- **Codex asks to run a command outside its sandbox** (Linux, fenced tab):
-  Codex's own bubblewrap sandbox cannot start inside Eldrun's fence on
+- **Codex asks to run a command outside its sandbox** (Linux, sandboxed tab):
+  Codex's own bubblewrap sandbox cannot start inside Eldrun's sandbox on
   systems whose AppArmor blocks nested user namespaces. Codex then asks per
   command or per session; approving runs the command outside Codex's
-  sandbox but still inside Eldrun's fence.
+  sandbox but still inside Eldrun's sandbox.
 - **Codex tab reopens the wrong conversation**: enable the session hook
   (above).
 - **Not in the `+` menu**: install it, **Re-check**, and for the root console

@@ -28,11 +28,11 @@ describe("unfenced-platform acceptance", () => {
   it("recognises only the backend's sentinel", () => {
     expect(
       unfencedPlatformRefusal(
-        "ELDRUN_FENCE_PLATFORM_UNACCEPTED Agent fence: Windows has no agent fence, so this agent would run with your full rights.",
+        "ELDRUN_FENCE_PLATFORM_UNACCEPTED Agent sandbox: Windows has no agent sandbox, so this agent would run with your full rights.",
       ),
     ).toBe(true);
     expect(unfencedPlatformRefusal(new Error("ELDRUN_FENCE_PLATFORM_UNACCEPTED …"))).toBe(true);
-    expect(unfencedPlatformRefusal("Agent fence: bubblewrap is unavailable")).toBe(false);
+    expect(unfencedPlatformRefusal("Agent sandbox: bubblewrap is unavailable")).toBe(false);
     expect(unfencedPlatformRefusal("ELDRUN_HPC_GUARD connect u@h:22")).toBe(false);
   });
 

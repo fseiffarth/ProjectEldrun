@@ -50,7 +50,7 @@ one place Eldrun writes into another app's configuration.
 ## Updating
 
 Run `claude update` in any terminal, or let Claude's background auto-update
-run; both work from a fenced tab too. Manage CLIs shows a notice when the
+run; both work from a sandboxed tab too. Manage CLIs shows a notice when the
 installed version differs from the one Eldrun was verified against. Nothing is
 blocked; it is the first thing to check if a tab misreads a prompt.
 
@@ -67,6 +67,6 @@ blocked; it is the first thing to check if a tab misreads a prompt.
   starts without restarting Eldrun.
 - **"Login expired · Please run /login"**: run `/login` in that tab, or close
   and reopen it; new tabs read the current credentials.
-- **Claude's own sandbox is unavailable inside the fence**: on some Linux
+- **Claude's own sandbox is unavailable inside Eldrun's sandbox**: on some Linux
   systems a nested bubblewrap is blocked by AppArmor, so Claude's internal
-  sandbox falls back to running unsandboxed inside Eldrun's outer fence.
+  sandbox falls back to running unsandboxed inside Eldrun's outer sandbox.

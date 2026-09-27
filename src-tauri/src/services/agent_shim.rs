@@ -27,7 +27,7 @@ pub fn plan(cli: &str, env: &HashMap<String, String>) -> Result<(Option<String>,
         return Err("agent shim: a registry CLI name, not a path".into());
     }
     if env.contains_key("ELDRUN_AGENT_FENCE") {
-        return Err("agent shim: already inside a fence".into());
+        return Err("agent shim: already inside the agent sandbox".into());
     }
     let scope = env
         .get("ELDRUN_SCOPE")
@@ -164,7 +164,7 @@ pub fn run(cli: &str, args: &[String]) -> i32 {
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = (cli, args);
-        eprintln!("agent shim: no fence on this platform; open the CLI from an Eldrun agent tab");
+        eprintln!("agent shim: no agent sandbox on this platform; open the CLI from an Eldrun agent tab");
         1
     }
 }

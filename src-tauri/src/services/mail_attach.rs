@@ -39,12 +39,12 @@ pub const MAX_DRAFT_BYTES: u64 = 25 * 1024 * 1024;
 pub const MAX_TAB_BYTES: u64 = 100 * 1024 * 1024;
 
 /// The session's spawn record says its fence hides the projects.
-pub const NEEDS_PROJECTS_READABLE: &str = "attaching needs a root tab that can read the projects: switch on \"Root agent reads projects\" under Agent fence in Eldrun's Settings, then start a new root tab";
+pub const NEEDS_PROJECTS_READABLE: &str = "attaching needs a root tab that can read the projects: switch on \"Root agent reads projects\" under Agent sandbox in Eldrun's Settings, then start a new root tab";
 /// Reader and local-model tabs never attach.
 pub const NOT_FOR_CALLER: &str = "`attach` is not available to this agent";
 /// No fence exists on Windows to hold the read to what the tab could see, and
 /// no `openat`; a handle-based check is a filed follow-up.
-pub const WINDOWS_REFUSED: &str = "attaching project files is not available on Windows yet: there is no agent fence there to bound what Eldrun would read";
+pub const WINDOWS_REFUSED: &str = "attaching project files is not available on Windows yet: there is no agent sandbox there to bound what Eldrun would read";
 
 /// One `attach` item as the agent sent it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,10 +167,10 @@ fn root_refusal(root: &Path, home: &Path, state_dir: &Path) -> Option<&'static s
     let private = super::agent_fence::private_state_paths(state_dir);
     for r in &forms {
         if r.parent().is_none() || homes.iter().any(|h| h.starts_with(r)) {
-            return Some("that project's folder is `/` or your home folder, which no fenced tab sees");
+            return Some("that project's folder is `/` or your home folder, which no sandboxed tab sees");
         }
         if private.iter().any(|p| r.starts_with(p)) {
-            return Some("that project's folder lies inside Eldrun's own state, which no fenced tab sees");
+            return Some("that project's folder lies inside Eldrun's own state, which no sandboxed tab sees");
         }
     }
     None
@@ -240,7 +240,7 @@ fn read_from_roots(lists: &Lists, roots: &[PathBuf], parts: &[&str], asked: &str
         }
         let joined = parts.iter().fold(root.clone(), |p, c| p.join(c));
         if private.iter().any(|p| joined.starts_with(p)) {
-            return Err("that file lies inside Eldrun's own state, which no fenced tab sees".into());
+            return Err("that file lies inside Eldrun's own state, which no sandboxed tab sees".into());
         }
         match read_under(root, parts, crate::schema::mail::MAX_STAGED_BYTES) {
             Ok(bytes) => {

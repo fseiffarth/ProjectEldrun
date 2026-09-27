@@ -50,7 +50,7 @@ fresh from the `+` menu. Closing a popped-out window closes its tabs for good.
 - Push the cursor to the right edge to reveal it; click the pin to dock it.
   It can be resized and moved to the left edge.
 - Views in its header: **Files** (tree with git markers and a context menu),
-  **Git** (branches, commits, lockstep), **Search** (file names and contents),
+  **Git** (branches, commits, Git sync), **Search** (file names and contents),
   **Apps** (tracked external windows), and for remote projects the **±** sync
   view, **Sessions** and **Jobs**.
 - Double-click a file to open it in Eldrun's built-in viewers: PDF, LaTeX,

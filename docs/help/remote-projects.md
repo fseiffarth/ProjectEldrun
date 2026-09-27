@@ -37,7 +37,7 @@ keychain, keyed by host.
 2. Connect to the host (or pick one under "Your machines").
 3. Browse to the parent folder where the host copy should live → **Use this
    folder**, then review Local ⇄ Remote and click **Extend to remote**.
-4. Your local files are not touched: they become the mirror, and git lockstep
+4. Your local files are not touched: they become the mirror, and Git sync
    carries commits between the two. See `sync`.
 
 ## Hosts behind a VPN

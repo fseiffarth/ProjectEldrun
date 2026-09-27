@@ -30,7 +30,7 @@ keywords: [problem, error, fix, faq, not working, missing, crash, slow, freeze, 
 
 ## An agent tab closes or refuses to start (Linux)
 
-- **Mentions bubblewrap / bwrap**: the agent fence needs bubblewrap. Run the
+- **Mentions bubblewrap / bwrap**: the agent sandbox needs bubblewrap. Run the
   offered `sudo apt install bubblewrap` tab; the next agent tab starts without
   restarting Eldrun.
 - **`execvp …: No such file or directory`**: reinstall the CLI from Manage
@@ -58,7 +58,7 @@ session hook once in Codex's `/hooks` list (see `codex`).
 
 ## Remote project problems
 
-- **A saved file is not on the host**: it is git-tracked and lockstep is on —
+- **A saved file is not on the host**: it is git-tracked and Git sync is on —
   commit it. See `sync`.
 - **The file tree is stale or grey**: the project is disconnected; click the
   pill's connection lamp. Eldrun pauses remote probes while disconnected so

@@ -25,7 +25,7 @@ match and answers from it.
 ## Which tabs have it
 
 - **Claude** and **Codex** tabs on this machine — in a project or in the root
-  console, fenced or not. Eldrun adds the server to their command line.
+  console, sandboxed or not. Eldrun adds the server to their command line.
 - **Local Model** tabs whose model has the **MCP** chip on in the Models &
   agents menu (the model must support tool calling).
 - Other agent CLIs receive the server's address and token in their

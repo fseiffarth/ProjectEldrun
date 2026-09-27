@@ -1,7 +1,7 @@
 ---
 id: sync
-title: Syncing remote projects (git lockstep and byte-sync)
-keywords: [sync, lockstep, byte-sync, mirror, remote, git, commit, conflict, orange, diverged, push, pull, auto-sync, exclude]
+title: Syncing remote projects (Git sync and file sync)
+keywords: [sync, Git sync, file sync, lockstep, byte-sync, mirror, remote, git, commit, conflict, orange, diverged, push, pull, auto-sync, exclude]
 ---
 
 A remote project has two working trees: the **mirror** on this machine and the
@@ -10,7 +10,7 @@ split the files by git.
 
 ## The two engines
 
-| | Git lockstep | Byte-sync |
+| | Git sync | File sync |
 |---|---|---|
 | Owns | git-tracked files | everything else (untracked, gitignored) |
 | Moves | commits and branches | raw file bytes |
@@ -23,13 +23,15 @@ background sync; manual actions still work.
 
 ## The rule to remember
 
-With lockstep on (the default for a new git-backed remote project), **a saved
+With Git sync on (the default for a new git-backed remote project), **a saved
 edit to a tracked file reaches the other side only after you commit it.**
-Byte-sync will not carry tracked files. This is by design.
+File sync will not carry tracked files. This is by design.
 
-## Git lockstep
+## Git sync
 
-- Toggle it with **⇄ Lockstep** in the file panel's Git view.
+(Earlier versions called this *lockstep*.)
+
+- Toggle it with **⇄ Git sync** in the file panel's Git view.
 - On first pass it pairs the two sides: the side with commits becomes the
   authority. If the empty side already holds differing files, pairing stops
   and names them; **Overwrite** is the explicit consent.
@@ -40,7 +42,9 @@ Byte-sync will not carry tracked files. This is by design.
   tips are backed up under `refs/eldrun/backup/…` and can be restored from
   **Backups**.
 
-## Byte-sync
+## File sync
+
+(Earlier versions called this *byte-sync*.)
 
 Right-click a file or folder in the remote tree:
 
@@ -71,8 +75,8 @@ direction, file count, size and which files would be overwritten.
 | A host output folder appeared locally | **Exclude from sync** on it |
 | Orange row, both sides changed | merge viewer, or take one side |
 | Orange row for a file you deleted | apply the delete, or restore it |
-| Lockstep red: *Diverged* | Use local / Use remote / resolve in terminal |
-| Lockstep red: *Out of step* | pick a branch in the Git view |
+| Git sync red: *Diverged* | Use local / Use remote / resolve in terminal |
+| Git sync red: *Out of step* | pick a branch in the Git view |
 | "Files changed on your local copy" dialog | a sync step removed or overwrote mirror files; read the entry — git-side losses name the restore command |
 
 ## Workers
