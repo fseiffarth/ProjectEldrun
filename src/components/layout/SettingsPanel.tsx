@@ -80,6 +80,7 @@ import {
   ToggleCard,
   ToggleRow,
 } from "./settingsUi";
+import { ErrorNote } from "../common/ErrorNote";
 
 // The workspace-layout help text. The key is the one that works here, from
 // `livePanelToggleKey`: a lone Super on a Linux desktop that leaves it to the
@@ -679,7 +680,7 @@ function ArchivedProjectsPanel({ onBack, onClose }: SubPanelProps) {
       <SettingsHeader title={t("nav.archive.title")} onBack={onBack} onClose={onClose} />
       <div className="dialog-scroll">
       <p className="settings-help">{t("archive.help")}</p>
-      {error && <div className="project-dialog-error">{error}</div>}
+      {error && <ErrorNote className="project-dialog-error" error={error} />}
       {items === null ? (
         <p className="settings-help">{t("common.loading")}</p>
       ) : items.length === 0 ? (
@@ -818,7 +819,7 @@ function ScaffoldRepairPanel({ onBack, onClose }: SubPanelProps) {
       />
       <div className="dialog-scroll">
       <p className="settings-help">{t("scaffoldRepair.help")}</p>
-      {error && <div className="project-dialog-error">{error}</div>}
+      {error && <ErrorNote className="project-dialog-error" error={error} />}
       <div className="settings-link-row">
         <button type="button" className="settings-btn primary" disabled={busy} onClick={() => void run()}>
           {busy ? t("scaffoldRepair.running") : t("scaffoldRepair.runNow")}

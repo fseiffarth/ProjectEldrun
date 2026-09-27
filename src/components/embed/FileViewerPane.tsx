@@ -269,6 +269,7 @@ import { useI18nStore, useT, type TranslationKey } from "../../lib/i18n";
 import { defaultSpellLanguage, dictionaryLabel } from "../../lib/spellDictionaries";
 import { zoomChord } from "../../lib/shortcuts/zoomChord";
 import { ArrowUpRightIcon, BoltIcon, BugIcon, CommentIcon, GearIcon, LinkIcon, PlayIcon, UploadIcon, WarningIcon } from "../common/icons/Icon";
+import { ErrorNote } from "../common/ErrorNote";
 
 // The five heavyweight leaf viewers are code-split (§5.1 startup size): a
 // static import here would parse pdfjs-dist + pdf-lib + fontkit (PdfView,
@@ -7703,7 +7704,7 @@ function TextView({
         <PrintButton onPrint={handlePrint} disabled={!loaded} />
       </ViewerHeader>
       {externalChange && <ExternalChangeBanner onReload={reloadFromDisk} onKeep={keepMine} />}
-      {saveError && <div className="file-viewer-error">{saveError}</div>}
+      {saveError && <ErrorNote className="file-viewer-error" error={saveError} />}
       {fmt.status && <div className="file-viewer-status-line">{fmt.status}</div>}
       {(showEditor || structured) && <ValidationBanner issue={issue} onJump={jumpToLine} />}
       <div
@@ -8232,7 +8233,7 @@ function MarkdownView({
         <PrintButton onPrint={handlePrint} disabled={!loaded} />
       </ViewerHeader>
       {externalChange && <ExternalChangeBanner onReload={reloadFromDisk} onKeep={keepMine} />}
-      {saveError && <div className="file-viewer-error">{saveError}</div>}
+      {saveError && <ErrorNote className="file-viewer-error" error={saveError} />}
       {mode === "edit" && fmt.status && (
         <div className="file-viewer-status-line">{fmt.status}</div>
       )}
@@ -9816,7 +9817,7 @@ function TexView({
           <PrintButton onPrint={handlePrint} disabled={!loaded} />
         </ViewerHeader>
         {externalChange && <ExternalChangeBanner onReload={reloadFromDisk} onKeep={keepMine} />}
-        {saveError && <div className="file-viewer-error">{saveError}</div>}
+        {saveError && <ErrorNote className="file-viewer-error" error={saveError} />}
         {createRef && (
           <TexCreateRefBanner
             creation={createRef.creation}
@@ -10088,7 +10089,7 @@ function TexView({
           {t("fileViewer.shellEscapeWarnPost")} <code>.tex</code> {t("fileViewer.shellEscapeWarnEnd")}
         </div>
       )}
-      {saveError && <div className="file-viewer-error">{saveError}</div>}
+      {saveError && <ErrorNote className="file-viewer-error" error={saveError} />}
       {compileError && (
         <div className="file-viewer-tex-error-card" role="alert">
           <div className="file-viewer-tex-error-head">

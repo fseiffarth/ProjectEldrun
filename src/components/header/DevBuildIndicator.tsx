@@ -8,6 +8,7 @@ import { openTabInRootConsole } from "../../stores/rootOverlay";
 import { shellQuote } from "../../lib/terminal/shellScriptRun";
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
+import { ErrorNote } from "../common/ErrorNote";
 
 /**
  * The background "Eldrun (dev)" freeze that every commit queues
@@ -291,7 +292,7 @@ export function DevBuildIndicator() {
                 </div>
               )
             )}
-            {relaunchError && <div className="mobile-indicator-error">{relaunchError}</div>}
+            {relaunchError && <ErrorNote className="mobile-indicator-error" error={relaunchError} />}
             <div className="mobile-indicator-actions">
               {status.canRelaunch && (
                 <button

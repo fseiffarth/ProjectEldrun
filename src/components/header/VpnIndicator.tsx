@@ -23,6 +23,7 @@ import type { StoredVpnConfig } from "../../types";
 import { useT } from "../../lib/i18n";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { useHeaderStatusReport } from "../../stores/headerStatus";
+import { ErrorNote } from "../common/ErrorNote";
 
 const MENU_ID = "vpn";
 
@@ -822,7 +823,7 @@ export function VpnIndicator() {
               </button>
             </div>
           )}
-          {error && <div className="vpn-indicator-error">{error}</div>}
+          {error && <ErrorNote className="vpn-indicator-error" error={error} />}
           </div>
         </div>
       )}

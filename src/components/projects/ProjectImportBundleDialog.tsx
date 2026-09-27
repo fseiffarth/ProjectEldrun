@@ -13,6 +13,7 @@ import type {
   ImportBundleResult,
   ProjectEntry,
 } from "../../types";
+import { ErrorNote } from "../common/ErrorNote";
 
 /**
  * "Import project file…" — register a `.eldrunproj` bundle written by
@@ -276,7 +277,7 @@ export function ProjectImportBundleDialog({
 
         </div>
         <div className="dialog-fixed-footer">
-        {error && <div className="project-dialog-error" role="alert">{error}</div>}
+        {error && <ErrorNote className="project-dialog-error" role="alert" error={error} />}
 
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose} disabled={busy}>

@@ -3,6 +3,7 @@ import { edgeCommandChoices, toggleEdgeCommand } from "../../lib/agents/prompt/l
 import { useT } from "../../lib/i18n";
 import type { PromptLink } from "../../stores/agents/agentPrompts";
 import { ContextMenuPortal } from "../common/ContextMenuPortal";
+import { ErrorNote } from "../common/ErrorNote";
 
 interface Props {
   link: PromptLink;
@@ -66,7 +67,7 @@ export function PromptLinkEditor({ link, fromLabel, toLabel, tabLabel, offered, 
           <p className="context-menu-note">{t("promptChart.edgeCommandsHelp", { tab: tabLabel ?? t("promptChart.edgeTargetTab") })}</p>
         </>
       ) : <p className="context-menu-note">{t("promptChart.edgeRelatedHelp")}</p>}
-      {error && <p className="context-menu-note project-dialog-error">{error}</p>}
+      {error && <ErrorNote className="context-menu-note project-dialog-error" as="p" error={error} />}
       <div className="agent-prompt-link-editor-row">
         <button type="button" className="settings-btn sm danger" onClick={() => void onRemove().catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)))}>{t("common.remove")}</button>
       </div>

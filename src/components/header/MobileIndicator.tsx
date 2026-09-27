@@ -6,6 +6,7 @@ import { useSettingsStore } from "../../stores/settings";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { useHeaderStatusReport } from "../../stores/headerStatus";
 import { translate, useI18nStore, useT } from "../../lib/i18n";
+import { ErrorNote } from "../common/ErrorNote";
 
 /** `translate` at the live language, for the async callbacks below (component
  *  `t` inside them would churn their identity on a language switch). */
@@ -356,7 +357,7 @@ export function MobileIndicator() {
               </div>
             </div>
             {status?.origin && <div className="mobile-indicator-origin">{status.origin}</div>}
-            {error && <div className="mobile-indicator-error">{error}</div>}
+            {error && <ErrorNote className="mobile-indicator-error" error={error} />}
             {uploadNotice && <div className="mobile-indicator-notice" role="status">{uploadNotice}</div>}
             {pairCode && (
               <div className="mobile-indicator-paircode" role="status">

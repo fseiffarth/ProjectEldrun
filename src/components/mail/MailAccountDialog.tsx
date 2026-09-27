@@ -12,6 +12,7 @@ import { mailAccountTest, mailAccountUpsert, mailForgetPassword, mailPasswordSta
 import type { KeyringState } from "../../lib/keyring";
 import { useT } from "../../lib/i18n";
 import type { MailAccount, MailAgentScope, MailKeyringState, MailSecurity } from "../../types/mail";
+import { ErrorNote } from "../common/ErrorNote";
 
 /** The account dialog's agent-access states, in the order they are shown. */
 const AGENT_SCOPES = ["off", "marked", "all"] as const;
@@ -451,7 +452,7 @@ export function MailAccountDialog({
           </label>
 
           {status && <div className="mail-note">{status}</div>}
-          {error && <div className="project-dialog-error">{error}</div>}
+          {error && <ErrorNote className="project-dialog-error" error={error} />}
 
           <div className="mail-dialog-actions">
             <button type="button" className="settings-btn" onClick={onClose}>

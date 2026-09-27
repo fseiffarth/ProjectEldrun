@@ -16,6 +16,7 @@ import type { useRemoteSession } from "./useRemoteSession";
 import { useT, type TranslationKey } from "../../lib/i18n";
 import { HpcHostToggle } from "./HpcHostToggle";
 import { TerminalIcon, WarningIcon } from "../common/icons/Icon";
+import { ErrorNote } from "../common/ErrorNote";
 
 type RemoteSession = ReturnType<typeof useRemoteSession>;
 
@@ -515,7 +516,7 @@ export function RemoteProjectSection({
                         </div>
                       </div>
                     )}
-                    {vpnError && <div className="project-dialog-error">{vpnError}</div>}
+                    {vpnError && <ErrorNote className="project-dialog-error" error={vpnError} />}
                   </div>
                 )}
                 {/* Outside the branch above, so it is reachable from *both* states: it

@@ -7,6 +7,7 @@ import { Toggle } from "../common/Toggle";
 import { Dropdown } from "../common/Dropdown";
 import { UntestedTag } from "../common/UntestedTag";
 import { useT } from "../../lib/i18n";
+import { ErrorNote } from "../common/ErrorNote";
 
 /**
  * The pill's "VM settings…" dialog (`docs/vm_projects_plan.md`): the VM's
@@ -244,7 +245,7 @@ export function VmSettingsDialog({
           </>
         )}
 
-        {error && <div className="project-dialog-error">{error}</div>}
+        {error && <ErrorNote className="project-dialog-error" error={error} />}
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose} disabled={busy}>{t("common.cancel")}</button>
           <button type="button" onClick={() => void save()} disabled={busy}>

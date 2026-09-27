@@ -20,6 +20,7 @@ import type {
   SkillDetail,
   SkillSource,
 } from "../../types/skills";
+import { ErrorNote } from "../common/ErrorNote";
 
 export interface SkillsLibraryViewProps {
   /** Absolute path to the project skills may install into, or `null` where
@@ -377,7 +378,7 @@ export function SkillsLibraryView({ projectDir, visible = true }: SkillsLibraryV
         </span>
       </div>
 
-      {error && <div className="skills-strip error">{error}</div>}
+      {error && <ErrorNote className="skills-strip error" error={error} />}
 
       <div className="skills-body">
         <div className="skills-list-col">

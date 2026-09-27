@@ -15,6 +15,7 @@ import { UntestedTag } from "../common/UntestedTag";
 import { hostKeyConfirmOnce } from "../../lib/remote/hostKeyOnce";
 import type { DroppedGlobalMachine } from "../../stores/remote/remoteMachines";
 import { useT } from "../../lib/i18n";
+import { ErrorNote } from "../common/ErrorNote";
 
 /**
  * "Extend to remote…" modal for an existing **local** project. It attaches a
@@ -306,7 +307,7 @@ export function ExtendToRemoteDialog({
           </div>
         )}
 
-        {error && <div className="project-dialog-error">{error}</div>}
+        {error && <ErrorNote className="project-dialog-error" error={error} />}
 
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose} disabled={busy}>

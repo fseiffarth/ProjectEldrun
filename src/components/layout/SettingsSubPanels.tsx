@@ -56,6 +56,7 @@ import { formatTime } from "../../lib/calendar/calendarTime";
 import { useUse24h } from "../../lib/timeFormat";
 import { AGENT_FENCE_DEFAULT_PATHS, parseAgentFencePaths } from "../../lib/agents/agentFence";
 import { AGENT_ITEMS } from "../tabs/newTabItems";
+import { ErrorNote } from "../common/ErrorNote";
 
 interface OllamaModelInfo {
   name: string;
@@ -300,7 +301,7 @@ export function FileTypeSettings({ onBack, onClose }: SubPanelProps) {
       <SettingsHeader title={t("filetypes.title")} onBack={onBack} onClose={onClose} />
       <div className="dialog-scroll">
       <p className="settings-help">{t("filetypes.help")}</p>
-      {error && <div className="project-dialog-error">{error}</div>}
+      {error && <ErrorNote className="project-dialog-error" error={error} />}
       <SettingsList boxed>
         {Object.entries(apps).sort(([a], [b]) => a.localeCompare(b)).map(([ext, app]) => (
           <div className="filetype-settings-row" key={ext}>
@@ -441,7 +442,7 @@ export function RemoteHostsSettings({ onBack, onClose }: SubPanelProps) {
       <SettingsHeader title={t("nav.remoteHosts.title")} onBack={onBack} onClose={onClose} />
       <div className="dialog-scroll">
       <p className="settings-help">{t("remoteHosts.help")}</p>
-      {error && <div className="project-dialog-error">{error}</div>}
+      {error && <ErrorNote className="project-dialog-error" error={error} />}
       {/* One framed list holds the saved hosts, the empty state AND the add
           row — the same shape the File Type Apps panel uses. Before, the add
           row sat outside the frame and read as a stray strip below it. */}
@@ -1333,7 +1334,7 @@ function AgentComposerCard({ agents }: { agents: AgentInfo[] | null }) {
           {t("agents.composerAdd")}
         </button>
       </div>
-      {error && <div className="project-dialog-error">{error}</div>}
+      {error && <ErrorNote className="project-dialog-error" error={error} />}
 
       <div className="settings-subheader">{t("agents.composerModels")}</div>
       {listEditor(models, writeModels, "agents.composerNoModels")}
@@ -2857,7 +2858,7 @@ export function OllamaPanel({ onBack, onClose }: SubPanelProps) {
           {installing && <span className="ollama-status-text">{t("ollama.runningInstaller")}</span>}
         </div>
 
-        {error && <div className="project-dialog-error">{error}</div>}
+        {error && <ErrorNote className="project-dialog-error" error={error} />}
         {installLog !== null && (
           <pre className="ollama-install-log" ref={installLogRef}>
             {installLog || t("ollama.startingEllipsis")}
@@ -2951,7 +2952,7 @@ export function OllamaPanel({ onBack, onClose }: SubPanelProps) {
         )}
       </div>
 
-      {error && <div className="project-dialog-error">{error}</div>}
+      {error && <ErrorNote className="project-dialog-error" error={error} />}
 
       <div className="settings-section-title">
         {t("ollama.modelLocationTitle")} <UntestedTag id="ollama.modelLocationTitle" />
@@ -3366,7 +3367,7 @@ export function OllamaPanel({ onBack, onClose }: SubPanelProps) {
         ))}
       </div>
 
-      {regError && <div className="project-dialog-error">{regError}</div>}
+      {regError && <ErrorNote className="project-dialog-error" error={regError} />}
 
       <div className="settings-list">
         {shownRegistry.map((m) => (

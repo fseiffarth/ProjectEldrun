@@ -2299,6 +2299,17 @@ label.settings-toggle-card-row {
   word-break: break-word;
 }
 
+/* ErrorNote's "Details": the raw error under its plain-language summary, in
+   whatever error line hosts it — so it inherits that line's size and colour. */
+.error-note-raw {
+  display: block;
+  margin-top: 4px;
+  font-family: var(--font-mono, monospace);
+  white-space: pre-wrap;
+  word-break: break-word;
+  opacity: 0.8;
+}
+
 /* "This folder is already the project X" — the duplicate-import notice. It sits on
    the error colour because it does block Create, but it carries an action (open
    the existing project) rather than leaving the user to go find it, so it needs a

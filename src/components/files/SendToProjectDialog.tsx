@@ -7,6 +7,7 @@ import { type FileEntry } from "../../lib/viewers/fileUtils";
 import { loadLastSendTarget, saveLastSendTarget } from "../../lib/projects/sendToProject";
 import { useT } from "../../lib/i18n";
 import { ArrowLeftIcon, ArrowUpIcon, FolderIcon, GlobeIcon } from "../common/icons/Icon";
+import { ErrorNote } from "../common/ErrorNote";
 
 /** The item being sent — always a LOCAL absolute path (the dialog is only opened
  *  for local file-tree rows, so `import_external_file` can read it as an ordinary
@@ -198,7 +199,7 @@ export function SendToProjectDialog({ source, fromProjectId, onClose }: Props) {
                   })
                 )}
               </div>
-              {error && <p className="settings-help folder-picker-error">{error}</p>}
+              {error && <ErrorNote className="settings-help folder-picker-error" as="p" error={error} />}
             </>
           )}
 
@@ -246,7 +247,7 @@ export function SendToProjectDialog({ source, fromProjectId, onClose }: Props) {
                 )}
               </div>
 
-              {error && <p className="settings-help folder-picker-error">{error}</p>}
+              {error && <ErrorNote className="settings-help folder-picker-error" as="p" error={error} />}
 
               <div className="folder-picker-actions">
                 <button type="button" onClick={onClose}>{t("common.cancel")}</button>

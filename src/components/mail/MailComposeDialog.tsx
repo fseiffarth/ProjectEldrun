@@ -32,6 +32,7 @@ import { useMailStore, type MailComposeMode } from "../../stores/mail";
 import { WarningIcon } from "../common/icons/Icon";
 import { AttachmentPreview } from "./MailAttachmentPreview";
 import { MailRecipientField } from "./MailRecipientField";
+import { ErrorNote } from "../common/ErrorNote";
 
 /**
  * The composer.
@@ -642,7 +643,7 @@ export function MailComposeDialog({
           )}
 
           {status && <div className="mail-note">{status}</div>}
-          {error && <div className="project-dialog-error">{error}</div>}
+          {error && <ErrorNote className="project-dialog-error" error={error} />}
 
           <div className="mail-dialog-actions">
             {embedded && <UntestedTag id="mailComposeDialog.1" />}

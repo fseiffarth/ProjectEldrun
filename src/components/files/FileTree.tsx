@@ -84,6 +84,7 @@ import { Dropdown } from "../common/Dropdown";
 import { FileIcon } from "../common/icons/FileIcon";
 import { ArrowDownIcon, ArrowUpIcon, PlayIcon, SearchIcon } from "../common/icons/Icon";
 import { useT, type TranslationKey } from "../../lib/i18n";
+import { ErrorNote } from "../common/ErrorNote";
 
 // The context menu's Delete rows name their keyboard twin (handleTreeKeyDown).
 const DELETE_KEY: ChordDescriptor = { key: "Delete" };
@@ -3781,7 +3782,7 @@ export function FileTree({
       })()}
       </div>
       {loading && <div className="file-tree-loading">{t("common.loading")}</div>}
-      {error && <div className="file-tree-error">{error}</div>}
+      {error && <ErrorNote className="file-tree-error" error={error} />}
       {/* What the last transfer did — the success half, which nothing reported
           before. Same chrome as the whole-project row's result line. */}
       {syncNotice && (
@@ -4786,9 +4787,7 @@ export function FileTree({
                 if (e.key === "Escape") setPastePrompt(null);
               }}
             />
-            {pastePrompt.error && (
-              <div className="file-delete-path file-delete-error">{pastePrompt.error}</div>
-            )}
+            {pastePrompt.error && <ErrorNote className="file-delete-path file-delete-error" error={pastePrompt.error} />}
             <div className="file-delete-actions">
               <button type="button" onClick={() => setPastePrompt(null)} disabled={pasteBusy}>{t("common.cancel")}</button>
               <button type="button" onClick={confirmPaste} disabled={pasteBusy || !pastePrompt.name.trim()}>

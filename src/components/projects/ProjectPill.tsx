@@ -58,6 +58,7 @@ import {
   agentFenceReasonKey,
   type AgentFenceStatus,
 } from "../../lib/agents/agentFence";
+import { ErrorNote } from "../common/ErrorNote";
 
 interface Props {
   project: ProjectEntry;
@@ -355,7 +356,7 @@ function RenameWindow({
             )}
           </>
         )}
-        {error && <div className="project-dialog-error">{error}</div>}
+        {error && <ErrorNote className="project-dialog-error" error={error} />}
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose} disabled={saving}>{t("common.cancel")}</button>
           <button type="button" onClick={() => void save()} disabled={saving || folderBlocked}>
@@ -563,7 +564,7 @@ function PublishWindow({
           </div>
         ) : null}
 
-        {error && <div className="project-dialog-error">{error}</div>}
+        {error && <ErrorNote className="project-dialog-error" error={error} />}
         {result && <div className="scaffold-empty">{result}</div>}
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose}>{result ? t("common.close") : t("common.cancel")}</button>
@@ -704,7 +705,7 @@ function GitHostingWindow({
           </label>
         )}
 
-        {error && <div className="project-dialog-error">{error}</div>}
+        {error && <ErrorNote className="project-dialog-error" error={error} />}
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose} disabled={saving}>{t("common.cancel")}</button>
           <button type="button" onClick={() => void save()} disabled={saving || !info}>
@@ -772,7 +773,7 @@ function DisableGitWindow({
             }}
           />
         </label>
-        {error && <div className="project-dialog-error">{error}</div>}
+        {error && <ErrorNote className="project-dialog-error" error={error} />}
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose} disabled={busy}>{t("common.cancel")}</button>
           <button
@@ -832,7 +833,7 @@ function ArchiveConfirmWindow({
             <> {t("pill.archiveRemoteNotTouchedPre")} <strong>{t("pill.notWord")}</strong> {t("pill.archiveRemoteNotTouchedPost")}</>
           )}
         </p>
-        {error && <div className="project-dialog-error">{error}</div>}
+        {error && <ErrorNote className="project-dialog-error" error={error} />}
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose} disabled={busy}>{t("common.cancel")}</button>
           <button
@@ -895,7 +896,7 @@ function ForgetConfirmWindow({
           <strong>{t("pill.notWord")}</strong> {t("pill.forgetDescPost")}
           {project.remote && <> {t("pill.forgetRemoteNote")}</>}
         </p>
-        {error && <div className="project-dialog-error">{error}</div>}
+        {error && <ErrorNote className="project-dialog-error" error={error} />}
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose} disabled={busy}>{t("common.cancel")}</button>
           <button
@@ -964,7 +965,7 @@ function DetachRemoteWindow({
         <p className="settings-help">
           {t("pill.detachDesc2Pre")} <strong>{t("pill.pairingWord")}</strong>{t("pill.detachDesc2Post")}
         </p>
-        {error && <div className="project-dialog-error">{error}</div>}
+        {error && <ErrorNote className="project-dialog-error" error={error} />}
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose} disabled={busy}>{t("common.cancel")}</button>
           <button type="button" autoFocus onClick={() => void run()} disabled={busy}>
@@ -1168,7 +1169,7 @@ function ContainerSettingsWindow({
             size="sm"
           />
         </label>
-        {error && <div className="project-dialog-error">{error}</div>}
+        {error && <ErrorNote className="project-dialog-error" error={error} />}
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose} disabled={busy}>{t("common.cancel")}</button>
           <button type="button" onClick={() => void save()} disabled={busy}>
@@ -1219,7 +1220,7 @@ function UnpublishWindow({
           {" "}{providerName(project.git_provider)} {t("pill.unpublishDesc3")} <strong>{t("pill.notWord")}</strong>{" "}
           {t("pill.unpublishDesc4")}
         </p>
-        {error && <div className="project-dialog-error">{error}</div>}
+        {error && <ErrorNote className="project-dialog-error" error={error} />}
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose} disabled={busy}>{t("common.cancel")}</button>
           <button type="button" autoFocus onClick={() => void run()} disabled={busy}>
@@ -1280,7 +1281,7 @@ function VisibilityWindow({
           {t("pill.flipVisibility1")} <strong>{t(current === "public" ? "pill.visPublic" : "pill.visPrivate")}</strong> {t("pill.flipVisibility2")}{" "}
           <strong>{t(target === "public" ? "pill.visPublic" : "pill.visPrivate")}</strong> {t("pill.flipVisibility3")} <code>{cli} repo edit</code>. {t("pill.flipVisibility4")}
         </p>
-        {error && <div className="project-dialog-error">{error}</div>}
+        {error && <ErrorNote className="project-dialog-error" error={error} />}
         {result && <div className="scaffold-empty">{result}</div>}
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose}>{result ? t("common.close") : t("common.cancel")}</button>
@@ -1398,7 +1399,7 @@ function MigrateProviderWindow({
           {providerName(project.git_provider)} {t("pill.migrateDesc4")}{" "}
           <strong>{t("pill.leftIntact")}</strong> {t("pill.migrateDesc5")} <code>origin-old</code>{t("pill.migrateDesc6")}
         </p>
-        {error && <div className="project-dialog-error">{error}</div>}
+        {error && <ErrorNote className="project-dialog-error" error={error} />}
         {result && <div className="scaffold-empty">{result}</div>}
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose}>{result ? t("common.close") : t("common.cancel")}</button>

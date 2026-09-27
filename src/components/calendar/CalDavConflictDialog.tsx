@@ -2,6 +2,7 @@ import { useState } from "react";
 import { UntestedTag } from "../common/UntestedTag";
 import { useCalDavStore } from "../../stores/calendar/caldav";
 import { useT } from "../../lib/i18n";
+import { ErrorNote } from "../common/ErrorNote";
 
 /**
  * "Someone else changed this too" — the answer to a CalDAV `412`
@@ -81,7 +82,7 @@ export function CalDavConflictDialog() {
         </p>
         <p className="caldav-conflict-detail">{t("caldavConflict.explain")}</p>
 
-        {pushError && <div className="caldav-conflict-error">{pushError}</div>}
+        {pushError && <ErrorNote className="caldav-conflict-error" error={pushError} />}
 
         <div className="caldav-conflict-actions">
           <button

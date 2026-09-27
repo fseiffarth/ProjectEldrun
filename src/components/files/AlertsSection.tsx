@@ -15,6 +15,7 @@ import { awayDelta, type DueDelta } from "../../lib/todoBoard";
 import { useT, type TranslationKey } from "../../lib/i18n";
 import { BellIcon } from "../common/BellIcon";
 import { CalendarIcon, CheckboxIcon, MailIcon, VideoIcon, type IconProps } from "../common/icons/Icon";
+import { ErrorNote } from "../common/ErrorNote";
 
 /**
  * The side-panel **Alerts** group: urgent mail, the next appointments, and the
@@ -391,7 +392,7 @@ export function AlertsSection({ onClose }: AlertsSectionProps) {
       </div>
 
       {error && <div className="alerts-error">{t("filesAlerts.failed")}</div>}
-      {finishError && <div className="alerts-error">{finishError}</div>}
+      {finishError && <ErrorNote className="alerts-error" error={finishError} />}
 
       <div className="alerts-list">
         {!enabled ? (

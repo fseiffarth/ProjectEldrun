@@ -37,6 +37,7 @@ import {
 } from "../../lib/mail";
 import type { MailAccount, PgpKeyInfo } from "../../types/mail";
 import { UntestedTag } from "../common/UntestedTag";
+import { ErrorNote } from "../common/ErrorNote";
 
 export interface MailKeysDialogProps {
   /** The account new keys are generated for and bound to. */
@@ -238,7 +239,7 @@ export function MailKeysDialog({ account, onClose }: MailKeysDialogProps) {
             </>
           )}
 
-          {error && <div className="project-dialog-error">{error}</div>}
+          {error && <ErrorNote className="project-dialog-error" error={error} />}
 
           <div className="mail-dialog-actions">
             <button type="button" className="settings-btn primary" onClick={onClose}>

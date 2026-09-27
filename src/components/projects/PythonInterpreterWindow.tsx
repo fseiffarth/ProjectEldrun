@@ -4,6 +4,7 @@ import { resolveProjectDirectory, type ProjectEntry } from "../../types";
 import { useProjectsStore } from "../../stores/projects";
 import { listInterpreters, type PyInterpreter } from "../../lib/terminal/pythonRun";
 import { useT } from "../../lib/i18n";
+import { ErrorNote } from "../common/ErrorNote";
 
 /**
  * Which Python the code viewer's Run/Debug buttons use for this project (#87).
@@ -140,7 +141,7 @@ export function PythonInterpreterWindow({
           </>
         )}
 
-        {error && <div className="project-dialog-error">{error}</div>}
+        {error && <ErrorNote className="project-dialog-error" error={error} />}
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose} disabled={busy}>{t("common.cancel")}</button>
           <button type="button" onClick={() => void save()} disabled={busy || found === null}>

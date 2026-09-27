@@ -43,6 +43,7 @@ import {
 } from "../../lib/mail";
 import type { MailEncryptionState } from "../../types/mail";
 import { UntestedTag } from "../common/UntestedTag";
+import { ErrorNote } from "../common/ErrorNote";
 
 export interface MailEncryptionDialogProps {
   state: MailEncryptionState;
@@ -231,7 +232,7 @@ export function MailEncryptionDialog({ state, onChanged, onClose }: MailEncrypti
             </>
           )}
 
-          {error && <div className="project-dialog-error">{error}</div>}
+          {error && <ErrorNote className="project-dialog-error" error={error} />}
 
           <div className="mail-dialog-actions">
             {face === "unlock" && (

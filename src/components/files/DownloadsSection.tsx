@@ -10,6 +10,7 @@ import { useT } from "../../lib/i18n";
 import { FileIcon } from "../common/icons/FileIcon";
 import { InboxIcon } from "../common/icons/Icon";
 import { useResizableSection } from "./useResizableSection";
+import { ErrorNote } from "../common/ErrorNote";
 
 /**
  * The side-panel Downloads section (fast-copy of freshly downloaded files into a
@@ -299,7 +300,7 @@ export function DownloadsSection({
           : t("downloads.dragOrCopyInto", { target: targetLabel })}
       </div>
 
-      {error && <div className="downloads-error">{error}</div>}
+      {error && <ErrorNote className="downloads-error" error={error} />}
 
       <div className="downloads-list">
         {!hasSources ? (

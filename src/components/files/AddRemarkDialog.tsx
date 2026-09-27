@@ -3,6 +3,7 @@ import { useProjectRemarksStore } from "../../stores/projectRemarks";
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
 import { DialogShell } from "../common/PromptDialogs";
+import { ErrorNote } from "../common/ErrorNote";
 
 /** A multi-line note on a file (or one of its lines). Wears the panel's
  *  file-operation dialog (`DialogShell`), like every other question the file
@@ -36,7 +37,7 @@ export function AddRemarkDialog({ projectId, projectDir, file, line = null, onCl
         onChange={(e) => setText(e.target.value)}
         placeholder={t("projectRemarks.placeholder")}
       />
-      {error && <div id={errorId} role="alert" className="file-delete-path file-delete-error">{error}</div>}
+      {error && <ErrorNote id={errorId} role="alert" className="file-delete-path file-delete-error" error={error} />}
       <div className="file-delete-actions">
         <button type="button" onClick={onClose} disabled={saving}>{t("common.cancel")}</button>
         <button type="button" disabled={saving || !text.trim()} onClick={() => void save()}>{t("common.save")}</button>

@@ -9,6 +9,7 @@ import { UntestedTag } from "../common/UntestedTag";
 import { IS_WINDOWS } from "../../lib/platform";
 import { runInstallInTab } from "../../lib/installCommand";
 import { translate, useI18nStore, useT } from "../../lib/i18n";
+import { ErrorNote } from "../common/ErrorNote";
 
 /** `translate` at the live language, for code that runs outside a render: the
  *  module-level parser below and the async callbacks, whose `useCallback`
@@ -598,8 +599,8 @@ export function MobileSettings() {
         {serveVerification && !serveVerification.verified ? ` ${serveVerification.error}` : ""}
         {pairCode ? ` ${t("mobile.statusPairCode", { code: pairCode })}` : ""}
       </p>
-      {refreshError && <div className="project-dialog-error">{refreshError}</div>}
-      {error && <div className="project-dialog-error">{error}</div>}
+      {refreshError && <ErrorNote className="project-dialog-error" error={refreshError} />}
+      {error && <ErrorNote className="project-dialog-error" error={error} />}
 
       <div className="settings-subheader">{t("mobile.mailWrites")}</div>
       <ToggleRow

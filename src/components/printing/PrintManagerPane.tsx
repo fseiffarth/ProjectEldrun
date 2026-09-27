@@ -26,6 +26,7 @@ import {
 } from "../../lib/window/printerNetworkDefaults";
 import { useSettingsStore } from "../../stores/settings";
 import type { PrintJob, PrintSnapshot, PrinterInfo } from "../../types/printing";
+import { ErrorNote } from "../common/ErrorNote";
 
 /**
  * The print manager tab: the machine's printers, what is queued on each, and the
@@ -174,7 +175,7 @@ export function PrintManagerPane({ visible = true }: PrintManagerPaneProps) {
         </button>
       </div>
 
-      {error && <div className="print-strip error">{error}</div>}
+      {error && <ErrorNote className="print-strip error" error={error} />}
       {notice && <div className="print-strip notice">{notice}</div>}
       {/* The backend's own note (no tooling, a probe that timed out). Kept
           separate from `error`, which only ever holds an action's failure. */}

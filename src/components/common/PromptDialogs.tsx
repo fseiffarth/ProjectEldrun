@@ -4,6 +4,7 @@ import { UntestedTag } from "./UntestedTag";
 import { createPortal } from "react-dom";
 import { useT } from "../../lib/i18n";
 import type { UntestedId } from "../../lib/untested";
+import { ErrorNote } from "./ErrorNote";
 
 /**
  * The three shapes every in-app question takes — ask for a name, ask yes/no,
@@ -195,7 +196,7 @@ export function TextPromptDialog({
           e.currentTarget.setSelectionRange(0, dot > 0 ? dot : initial.length);
         }}
       />
-      {error && <div id={errorId} role="alert" className="file-delete-path file-delete-error">{error}</div>}
+      {error && <ErrorNote id={errorId} role="alert" className="file-delete-path file-delete-error" error={error} />}
       <div className="file-delete-actions">
         <button type="button" onClick={onCancel} disabled={busy}>
           {t("common.cancel")}

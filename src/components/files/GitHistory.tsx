@@ -11,6 +11,7 @@ import { useTabsStore } from "../../stores/tabs";
 import { useT, type TranslationKey } from "../../lib/i18n";
 import { GitMergeBar, GitPullPanel, type MergeState } from "./GitPullPanel";
 import { LockIcon, UnlockIcon, WarningIcon } from "../common/icons/Icon";
+import { ErrorNote } from "../common/ErrorNote";
 
 interface GitCommit {
   hash: string;
@@ -1432,7 +1433,7 @@ export function GitHistory({ projectDir, projectId, remote, authProjectId, onCha
         )}
       </div>
 
-      {error && <div className="file-tree-error">{error}</div>}
+      {error && <ErrorNote className="file-tree-error" error={error} />}
       {loading && commits.length === 0 && <div className="file-tree-loading">{t("common.loading")}</div>}
       {!loading && commits.length === 0 && !error && !query.trim() && (
         <div className="file-tree-empty">{t("gitHistory.noCommitsYet")}</div>
@@ -1618,7 +1619,7 @@ function CommitWindow({ projectDir, commit, onClose, onCheckout, onReworded }: C
         {!commit.is_head && (
           <p className="settings-help">{t("gitHistory.onlyHeadReworded")}</p>
         )}
-        {error && <div className="settings-error">{error}</div>}
+        {error && <ErrorNote className="settings-error" error={error} />}
         <div className="commit-window-actions">
           {commit.is_head && (
             <>

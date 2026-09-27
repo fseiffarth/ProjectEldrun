@@ -28,6 +28,7 @@ import { RenameDialog, containingFolderLabel } from "./RenameDialog";
 import { useDialogs } from "../common/PromptDialogs";
 import { FileIcon } from "../common/icons/FileIcon";
 import { useT, type TranslationKey } from "../../lib/i18n";
+import { ErrorNote } from "../common/ErrorNote";
 
 type ProjectJson = Record<string, unknown>;
 
@@ -493,7 +494,7 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
         </aside>
         <div className="file-browser-main" onContextMenu={showBackgroundContextMenu}>
           {loading && <div className="file-browser-message">{t("fileBrowser.loading")}</div>}
-          {error && <div className="file-browser-error">{error}</div>}
+          {error && <ErrorNote className="file-browser-error" error={error} />}
           {!loading && displayed.length === 0 && <div className="file-browser-message">{t("fileBrowser.noFiles")}</div>}
           {(() => {
             const splitScaffold = !relPath && showStandardFiles && separateScaffold;

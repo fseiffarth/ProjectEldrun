@@ -79,6 +79,7 @@ import { useExperimental } from "../../lib/experimental";
 import { useProjectRemarksStore } from "../../stores/projectRemarks";
 import { RemarksPane } from "./RemarksPane";
 import { ArrowDownIcon, ArrowUpIcon, CheckIcon, CommentIcon, GearIcon, InboxIcon, SearchIcon, TrashIcon, WindowIcon } from "../common/icons/Icon";
+import { ErrorNote } from "../common/ErrorNote";
 
 /** How long the pointer must rest on a session row before its stats card opens
  *  (TODO #85) — same value and rationale as `FileTree`'s `TOOLTIP_DWELL_MS`:
@@ -1449,9 +1450,7 @@ export function ProjectFilesView({
             <MobileAccessIcon on={mobileAccessOn} />
           </button>
         )}
-        {mobileAccessError && (
-          <div className="side-panel-mobile-access-error" role="alert">{mobileAccessError}</div>
-        )}
+        {mobileAccessError && <ErrorNote className="side-panel-mobile-access-error" role="alert" error={mobileAccessError} />}
         {sshTagMenu && projectId && (
           <ContextMenuPortal
             x={sshTagMenu.x}
@@ -1898,7 +1897,7 @@ export function ProjectFilesView({
                 {treeScope && projectDir && <GitChangeTree projectDir={projectDir} scope={treeScope} />}
               </>
             )}
-            {gitError && <div className="git-action-error">{gitError}</div>}
+            {gitError && <ErrorNote className="git-action-error" error={gitError} />}
             {/* An agent's push request for this project (`services::git_push_mcp`):
                 the card that approves or dismisses it, beside the user's own Push. */}
             {!onNestedRepo && <GitPushProposals projectId={projectId} />}

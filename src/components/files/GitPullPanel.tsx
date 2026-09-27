@@ -6,6 +6,7 @@ import { UntestedTag } from "../common/UntestedTag";
 import { useDialogs } from "../common/PromptDialogs";
 import { openLinkedFile } from "../embed/FileViewerPane";
 import { WarningIcon } from "../common/icons/Icon";
+import { ErrorNote } from "../common/ErrorNote";
 
 /** Mirrors `commands::git_pull::PullPreview`. */
 interface PullPreview {
@@ -135,7 +136,7 @@ export function GitPullPanel({
         </button>
       </div>
       {fetchError && <div className="git-worktree-note git-pull-warn">{t("gitPull.fetchFailed", { error: fetchError })}</div>}
-      {error && <div className="git-worktree-note git-pull-error">{error}</div>}
+      {error && <ErrorNote className="git-worktree-note git-pull-error" error={error} />}
       {busy && !preview && <div className="git-worktree-note">{t("gitPull.fetching")}</div>}
       {preview && upToDate && <div className="git-worktree-note">{t("gitPull.upToDate")}</div>}
       {preview && !upToDate && (
@@ -292,7 +293,7 @@ export function GitMergeBar({
           </ul>
         </>
       )}
-      {error && <div className="git-worktree-note git-pull-error">{error}</div>}
+      {error && <ErrorNote className="git-worktree-note git-pull-error" error={error} />}
       <div className="git-worktree-form">
         <button
           className="toolbar-btn"

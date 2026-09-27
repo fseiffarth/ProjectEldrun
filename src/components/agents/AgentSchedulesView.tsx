@@ -18,6 +18,7 @@ import { AgentScheduleProposal } from "./AgentScheduleProposal";
 import { GitPushProposals } from "./GitPushMcp";
 import { isPromptTargetTab } from "./PromptChartTab";
 import { ArrowUpRightIcon } from "../common/icons/Icon";
+import { ErrorNote } from "../common/ErrorNote";
 
 interface Props { scope: string; active: boolean }
 const EMPTY_TABS: TabEntry[] = [];
@@ -69,7 +70,7 @@ function AgentTabComposer({ scope, tab, offered, models }: { scope: string; tab:
       {preface.length > 0 && <small className="agent-composer-preview">{t("agentPrompts.prefixPreview", { commands: preface.join(" · ") })}</small>}
       <div className="agent-schedule-form-actions"><button className="settings-btn sm primary" type="button" disabled={busy || !draft.trim()} title={t("agentPrompts.composerSendTitle")} onClick={() => void submit()}>{t("agentPrompts.composerSend")}</button></div>
       {notice && <div className="agent-prompts-notice" data-testid="agent-composer-notice">{notice}</div>}
-      {error && <div className="project-dialog-error">{error}</div>}
+      {error && <ErrorNote className="project-dialog-error" error={error} />}
     </div>
   );
 }

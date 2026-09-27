@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useT } from "../../lib/i18n";
+import { ErrorNote } from "../common/ErrorNote";
 
 interface InstalledApp {
   name: string;
@@ -260,7 +261,7 @@ export function SetDefaultAppDialog({ ext, fileName, projectId, onClose }: Props
           </button>
         </div>
 
-        {error && <div className="settings-error">{error}</div>}
+        {error && <ErrorNote className="settings-error" error={error} />}
 
         <div className="set-default-app-actions">
           <button type="button" onClick={onClose} disabled={busy}>{t("common.cancel")}</button>

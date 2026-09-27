@@ -17,6 +17,7 @@ import {
 import { useCalDavStore } from "../../stores/calendar/caldav";
 import { useT } from "../../lib/i18n";
 import type { CalDavAccount, CalDavCollection } from "../../types/caldav";
+import { ErrorNote } from "../common/ErrorNote";
 
 /**
  * The CalDAV account editor — `MailAccountDialog`'s structural twin, and
@@ -377,7 +378,7 @@ export function CalDavAccountDialog({
           )}
 
           {status && <div className="caldav-note">{status}</div>}
-          {error && <div className="project-dialog-error">{error}</div>}
+          {error && <ErrorNote className="project-dialog-error" error={error} />}
 
           <div className="caldav-dialog-actions">
             <button type="button" className="cal-btn" onClick={onClose}>

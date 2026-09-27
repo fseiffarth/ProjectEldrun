@@ -23,6 +23,7 @@ import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { useHeaderStatusReport } from "../../stores/headerStatus";
 import type { ConnState } from "../../stores/remote/remoteStatus";
 import type { GlobalMachine, MachineImportEntry, ProjectEntry } from "../../types";
+import { ErrorNote } from "../common/ErrorNote";
 
 const MENU_ID = "machines";
 
@@ -1423,7 +1424,7 @@ export function MachinesIndicator() {
                 ))}
                 </>
               )}
-              {ioError && <div className="vpn-indicator-error">{ioError}</div>}
+              {ioError && <ErrorNote className="vpn-indicator-error" error={ioError} />}
               <div className="vpn-indicator-actions">
                 <button
                   type="button"
@@ -1536,7 +1537,7 @@ export function MachinesIndicator() {
                       <UntestedTag id="machinesIndicator.4" />
                     </span>
                   </label>
-                  {ioError && <div className="vpn-indicator-error">{ioError}</div>}
+                  {ioError && <ErrorNote className="vpn-indicator-error" error={ioError} />}
                   <div className="vpn-indicator-actions">
                     <button
                       type="button"
@@ -2063,7 +2064,7 @@ export function MachinesIndicator() {
                         if (e.key === "Enter") void submitRetry(m.id);
                       }}
                     />
-                    {retryError && <div className="vpn-indicator-error">{retryError}</div>}
+                    {retryError && <ErrorNote className="vpn-indicator-error" error={retryError} />}
                     <div className="vpn-indicator-actions">
                       <button type="button" className="vpn-indicator-connect" onClick={() => void submitRetry(m.id)}>
                         {t("machines.retry")}
@@ -2203,7 +2204,7 @@ export function MachinesIndicator() {
                         {t("machines.terminalEditHint.post")}
                       </div>
                     )}
-                    {editError && <div className="vpn-indicator-error">{editError}</div>}
+                    {editError && <ErrorNote className="vpn-indicator-error" error={editError} />}
                     <div className="vpn-indicator-actions">
                       {editViaTerminal ? (
                         <button
@@ -2377,7 +2378,7 @@ export function MachinesIndicator() {
                   {t("machines.terminalLoginHint.post")}
                 </div>
               )}
-              {addError && <div className="vpn-indicator-error">{addError}</div>}
+              {addError && <ErrorNote className="vpn-indicator-error" error={addError} />}
               <div className="vpn-indicator-actions">
                 {addViaTerminal ? (
                   <button

@@ -8,6 +8,7 @@ import { resolveProjectDirectory } from "../../types";
 import { useT } from "../../lib/i18n";
 import { ELDRUN_SCREENSHOTS_DIR } from "../../lib/window/screenshot";
 import { UntestedTag } from "../common/UntestedTag";
+import { ErrorNote } from "../common/ErrorNote";
 
 /**
  * "Where should this screenshot go?" — the consent step every capture passes
@@ -231,7 +232,7 @@ export function ScreenshotSaveOverlay() {
           </div>
         )}
         {relPath && dir && <div className="file-delete-path">{`${dir}/${relPath}`}</div>}
-        {error && <div className="file-delete-path file-delete-error">{error}</div>}
+        {error && <ErrorNote className="file-delete-path file-delete-error" error={error} />}
         <div className="file-delete-actions">
           <button type="button" disabled={busy} onClick={() => void discard()}>
             {t("screenshotSave.discard")}

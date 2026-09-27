@@ -12,6 +12,7 @@ import { useSettingsStore } from "../../../stores/settings";
 import { UntestedTag } from "../../common/UntestedTag";
 import { GPU_SIZING_MIN_BYTES, recommendModel, sameModel, type ModelPick } from "./introData";
 import { IntroActions, IntroStatus, IntroStep, IntroSteps, startLessonById } from "./introUi";
+import { ErrorNote } from "../../common/ErrorNote";
 
 /** Backend `OllamaInstallStrategy` (`ollama_install_strategy`). */
 interface InstallStrategy {
@@ -394,7 +395,7 @@ export function LocalModelsPage({ onClose }: { onClose: () => void }) {
         </IntroStep>
       </IntroSteps>
 
-      {error && <div className="project-dialog-error">{error}</div>}
+      {error && <ErrorNote className="project-dialog-error" error={error} />}
       <p className="settings-help">{t("intro.terminalNote")}</p>
     </>
   );

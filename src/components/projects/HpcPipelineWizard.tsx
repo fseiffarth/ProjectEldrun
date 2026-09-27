@@ -73,6 +73,7 @@ import {
 } from "../../lib/remote/hpc/hpcWorkspace";
 import { useT, type TranslationKey } from "../../lib/i18n";
 import { GearIcon, UploadIcon } from "../common/icons/Icon";
+import { ErrorNote } from "../common/ErrorNote";
 
 type Step = "login" | "project" | "workspace" | "data" | "run" | "watch";
 
@@ -360,7 +361,7 @@ function HpcPipelineWizard({ onClose }: { onClose: () => void }) {
         </div>
         <div className="dialog-scroll">
         <StepTrail step={step} />
-        {error && <div className="project-dialog-error">{error}</div>}
+        {error && <ErrorNote className="project-dialog-error" error={error} />}
 
         {step === "login" && (
           <>
@@ -746,7 +747,7 @@ function WorkspaceStep({
         {t("hpcWizard.introPost")}
       </p>
       {!info && <p className="ssh-optional-hint">{t("hpcWizard.checkingTooling")}</p>}
-      {wsError && <div className="project-dialog-error">{wsError}</div>}
+      {wsError && <ErrorNote className="project-dialog-error" error={wsError} />}
 
       {info?.available && (
         <>
@@ -1000,7 +1001,7 @@ function DataStep({
         {workspace ? ` ${t("hpcWizard.dataHintWorkspaceSuffix")}` : t("hpcWizard.dataHintPlainSuffix")}{" "}
         {t("hpcWizard.dataHintPost")}
       </p>
-      {error && <div className="project-dialog-error">{error}</div>}
+      {error && <ErrorNote className="project-dialog-error" error={error} />}
       <div className="folder-picker-row">
         <button type="button" disabled={busy} onClick={() => void addFiles()}>
           {busy ? t("hpcWizard.uploading") : t("hpcWizard.addFiles")}
@@ -1095,7 +1096,7 @@ function RunStep({
       <p className="ssh-optional-hint">
         {t("hpcWizard.scriptHintPre")}<code>{STARTER_NAME}</code>{t("hpcWizard.scriptHintPost")}
       </p>
-      {error && <div className="project-dialog-error">{error}</div>}
+      {error && <ErrorNote className="project-dialog-error" error={error} />}
       <div className="slurm-directive-grid">
         {COMMON_SBATCH_KEYS.map((key) => (
           <label key={key} className="slurm-directive-field">

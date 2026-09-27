@@ -13,6 +13,7 @@ import type {
   ExportReport,
   ProjectEntry,
 } from "../../types";
+import { ErrorNote } from "../common/ErrorNote";
 
 /**
  * "Export project…" — write one project into a single `.eldrunproj` file that
@@ -299,7 +300,7 @@ export function ProjectExportDialog({
           </>
         )}
 
-        {error && <div className="project-dialog-error">{error}</div>}
+        {error && <ErrorNote className="project-dialog-error" error={error} />}
 
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose} disabled={busy}>

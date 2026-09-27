@@ -22,6 +22,7 @@ import { MailPane } from "./MailPane";
 import { MailMessageView } from "./MailMessageView";
 import { MailComposeDialog, composeSubject, composeTitle } from "./MailComposeDialog";
 import { MailAddressBook } from "./MailAddressBook";
+import { ErrorNote } from "../common/ErrorNote";
 
 /**
  * The header mail button's overlay — **the** mail surface, floated over the
@@ -394,7 +395,7 @@ function MailMessageTabBody({ tab }: { tab: MailMessageTab }) {
 
   return (
     <div className="mail-message-tab">
-      {error && <div className="mail-error-strip">{error}</div>}
+      {error && <ErrorNote className="mail-error-strip" error={error} />}
       <MailMessageView
         header={header}
         body={body}
