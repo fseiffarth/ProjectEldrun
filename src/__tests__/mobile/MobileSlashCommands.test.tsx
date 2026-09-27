@@ -233,7 +233,7 @@ describe("Eldrun Mobile slash commands — the composer", () => {
     expect(within(menu).getByText("/review")).toBeTruthy();
   });
 
-  it("puts Plan and Goal between ＋ and the mic; a tap leads the draft and sends nothing", async () => {
+  it("puts Plan, Goal and Clear after ＋, the mic in the field; a tap leads the draft and sends nothing", async () => {
     render(<Terminal tab={CLAUDE_TAB} back={() => {}} />);
     await settle();
     const field = screen.getByLabelText("Message agent") as HTMLTextAreaElement;
@@ -241,7 +241,9 @@ describe("Eldrun Mobile slash commands — the composer", () => {
     const goal = screen.getByRole("button", { name: "Goal" });
     const bar = plan.closest(".composer-bar") as HTMLElement;
     const order = Array.from(bar.querySelectorAll("button")).map((button) => button.className.split(" ")[0]);
-    expect(order.slice(0, 4)).toEqual(["composer-add", "composer-prefix", "composer-prefix", "composer-dictate"]);
+    expect(order).toEqual(["composer-add", "composer-prefix", "composer-prefix", "composer-prefix", "send-icon"]);
+    expect(screen.getByRole("button", { name: "Start a new conversation" }).textContent).toBe("Clear");
+    expect(bar.previousElementSibling?.querySelector(".composer-dictate")).toBeTruthy();
 
     fireEvent.change(field, { target: { value: "fix the build" } });
     const before = sent.length;

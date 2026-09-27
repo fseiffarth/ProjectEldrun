@@ -1966,7 +1966,7 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
     setPending([]);
     if (!codexBusy()) setClearedAt(clearMark(transcript?.entries ?? []));
   };
-  /** The field's new-conversation button sends the selected CLI's command at
+  /** The bar's Clear chip sends the selected CLI's new-conversation command at
    * once — no confirm dialog. The draft is left alone. A Codex that is working
    * would refuse it, so the button says so here instead. */
   const clearConversation = () => {
@@ -2940,11 +2940,8 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
             event.preventDefault();
             submitDraft();
           }} />
-          {/* One slot: with a draft it empties the draft; empty, an agent tab's
-              field offers /clear there instead, which costs the chip row nothing. */}
-          {draft
-            ? <button className="composer-clear" onClick={clearDraft} aria-label={t("mobile.composer.clear")} title={t("mobile.composer.clear")}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg></button>
-            : tab.kind === "agent" && <button className="composer-clear" disabled={!connected} onClick={clearConversation} aria-label={t("mobile.composer.clearChat")} title={t("mobile.composer.clearChat")}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4V5Z" /><path d="m10 8.5 4 4M14 8.5l-4 4" /></svg></button>}
+          {draft && <button className="composer-clear" onClick={clearDraft} aria-label={t("mobile.composer.clear")} title={t("mobile.composer.clear")}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg></button>}
+          {tab.kind === "agent" && <button className={`composer-dictate${listening ? " listening" : ""}`} disabled={!connected || !voiceAvailable || preparingVoice} title={t(voiceAvailable ? "mobile.voice.hint" : "mobile.voice.hintUnavailable")} aria-label={dictateLabel} aria-pressed={listening} ref={dictateButton} onClick={listening ? stopVoice : () => void startVoice()}>{listening ? <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1" /></svg> : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M6 11a6 6 0 0 0 12 0M12 17v4M8 21h8" /></svg>}</button>}
         </div>
         <div className="composer-bar">
           {tab.kind === "agent" && <>
@@ -2955,10 +2952,11 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
               const plan = command === "/plan";
               return <button key={command} className={`composer-prefix${activePrefix === command ? " active" : ""}`} disabled={!connected} aria-pressed={activePrefix === command} onPointerDown={(event) => event.preventDefault()} onClick={() => togglePrefix(command)} title={t(plan ? "mobile.composer.planHint" : "mobile.composer.goalHint")}>{t(plan ? "mobile.composer.plan" : "mobile.composer.goal")}</button>;
             })}
-            {prefixCommands.length > 0 && isUntested("mobile.composer.prefix") && <em className="composer-untested">{t("mobile.focus.untested")}</em>}
+            {/* Clear sends /clear at once, draft or not; the draft stays. */}
+            <button className="composer-prefix" disabled={!connected} onPointerDown={(event) => event.preventDefault()} onClick={clearConversation} aria-label={t("mobile.composer.clearChat")} title={t("mobile.composer.clearChat")}>{t("mobile.composer.clearChip")}</button>
+            {(prefixCommands.length > 0 && isUntested("mobile.composer.prefix") || isUntested("mobile.composer.clearChip")) && <em className="composer-untested">{t("mobile.focus.untested")}</em>}
           </>}
           <span className="composer-spacer" />
-          {tab.kind === "agent" && <button className={`composer-dictate${listening ? " listening" : ""}`} disabled={!connected || !voiceAvailable || preparingVoice} title={t(voiceAvailable ? "mobile.voice.hint" : "mobile.voice.hintUnavailable")} aria-label={dictateLabel} aria-pressed={listening} ref={dictateButton} onClick={listening ? stopVoice : () => void startVoice()}>{listening ? <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1" /></svg> : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M6 11a6 6 0 0 0 12 0M12 17v4M8 21h8" /></svg>}</button>}
           <button className="send-icon" disabled={!connected || !draft.trim()} onClick={submitDraft} aria-label="Send" title="Send"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 16 8-16 8 3-8-3-8Z" /><path d="M7 12h13" /></svg></button>
         </div>
       </div>

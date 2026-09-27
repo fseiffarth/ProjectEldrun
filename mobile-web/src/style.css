@@ -703,18 +703,19 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .prompt-composer textarea:focus { outline:0; }
 .prompt-composer textarea:disabled { opacity:1; color:#9fa4b6 !important; -webkit-text-fill-color:#9fa4b6; }
 .composer-bar { display:flex; align-items:center; gap:6px; }
-.composer-bar svg { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:1.9; stroke-linecap:round; stroke-linejoin:round; }
-.composer-bar .composer-dictate,.composer-bar .send-icon { display:grid; place-items:center; width:40px; min-width:40px; height:40px; padding:0; border:0; border-radius:10px; }
+.composer-bar svg,.composer-dictate svg { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:1.9; stroke-linecap:round; stroke-linejoin:round; }
+.composer-dictate,.composer-bar .send-icon { display:grid; place-items:center; width:40px; min-width:40px; height:40px; padding:0; border:0; border-radius:10px; }
 .composer-add { display:grid; place-items:center; flex:0 0 auto; width:36px; height:36px; padding:0; border:0; border-radius:50%; background:transparent; color:#c8cdda; }
 .composer-spacer { flex:1 0 0; }
-/* Plan / Goal: lead the draft with `/plan` or `/goal`; lit while it does. */
+/* Plan / Goal: lead the draft with `/plan` or `/goal`; lit while it does.
+   Clear, right of them, sends `/clear` at once. */
 .composer-prefix { flex:0 0 auto; height:30px; padding:0 11px; border:1px solid #3a3f55; border-radius:15px; background:transparent; color:#c8cdda; font:inherit; font-size:.8rem; }
 .composer-prefix.active { border-color:#8c7df4; background:rgba(120,104,217,.28); color:#fff; }
 .composer-prefix:disabled { opacity:.5; }
 .composer-untested { color:#ffd36b; font-size:.7rem; font-style:normal; }
-/* The draft row: the textarea and, while there is a draft, a ✕ that empties
-   it — a phone keyboard has no select-all, and a long dictated draft was
-   otherwise deleted a character at a time. */
+/* The draft row: the textarea, while there is a draft a ✕ that empties it —
+   a phone keyboard has no select-all, and a long dictated draft was otherwise
+   deleted a character at a time — and the mic, right above Send. */
 .composer-field { display:flex; align-items:flex-start; gap:4px; }
 .composer-field textarea { flex:1 1 auto; min-width:0; }
 .composer-clear { display:grid; place-items:center; flex:0 0 auto; width:32px; height:32px; margin-top:5px; padding:0; border:0; border-radius:50%; background:#2a2e3e; color:#c8cdda; }
@@ -737,7 +738,7 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .composer-dictate.listening { color:#fff; background:#7a3151; box-shadow:0 0 0 2px rgba(227,107,154,.22); }
 .composer-dictate.listening svg rect { fill:currentColor; stroke:none; }
 /* The level ring: a static ring scaled by the measured level, never an animated shadow. */
-.composer-dictate { position:relative; }
+.composer-dictate { position:relative; flex:0 0 auto; margin-top:1px; }
 .composer-dictate.listening::after { content:""; position:absolute; inset:0; border-radius:inherit; border:2px solid #e36b9a; opacity:calc(.15 + var(--mic-level, 0) * .75); transform:scale(calc(1 + var(--mic-level, 0) * .35)); transition:transform 80ms linear, opacity 80ms linear; pointer-events:none; }
 .send-icon { color:#fff; background:#6c5ce7; }
 .send-icon svg { fill:currentColor; stroke:#fff; }

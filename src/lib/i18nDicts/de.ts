@@ -79,6 +79,7 @@ export const dict: Dict = {
   "mobile.outbox.untested": "Ungetestet",
   "mobile.composer.clear": "Nachricht leeren",
   "mobile.composer.clearChat": "Neue Unterhaltung beginnen",
+  "mobile.composer.clearChip": "Leeren",
   "mobile.composer.plan": "Plan",
   "mobile.composer.planHint": "Die Nachricht mit /plan beginnen: der Agent plant zuerst und ändert nichts, bis du zustimmst",
   "mobile.composer.goal": "Ziel",

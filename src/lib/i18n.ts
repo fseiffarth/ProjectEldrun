@@ -75,6 +75,7 @@ export const en = {
   "mobile.outbox.untested": "Untested",
   "mobile.composer.clear": "Clear the message",
   "mobile.composer.clearChat": "Start a new conversation",
+  "mobile.composer.clearChip": "Clear",
   "mobile.composer.plan": "Plan",
   "mobile.composer.planHint": "Start the message with /plan: the agent plans first and edits nothing until you agree",
   "mobile.composer.goal": "Goal",
