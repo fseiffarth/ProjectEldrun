@@ -1006,7 +1006,9 @@ pub(crate) fn keyring_seccomp_filter() -> Option<Vec<u8>> {
     const JMP_JEQ_K: u16 = 0x15;
     const RET_K: u16 = 0x06;
     const ALLOW: u32 = 0x7fff_0000;
-    const EPERM: u32 = 0x0005_0000 | libc::EPERM as u32;
+    // SECCOMP_RET_ERRNO | EPERM (1). A literal: `libc` is a Unix-only dependency
+    // and this also compiles into the Windows test build.
+    const EPERM: u32 = 0x0005_0000 | 1;
     fn op(code: u16, jt: u8, jf: u8, k: u32) -> [u8; 8] {
         let mut out = [0u8; 8];
         out[..2].copy_from_slice(&code.to_ne_bytes());
