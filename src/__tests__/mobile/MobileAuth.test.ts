@@ -156,13 +156,37 @@ describe("Eldrun Mobile auth — resume", () => {
     vi.stubGlobal("fetch", fetchMock);
     vi.useFakeTimers();
     const pending = resumeAuth();
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(10_000);
     vi.useRealTimers();
     const result = await pending;
     expect(result.kind).toBe("unavailable");
     expect(["unreachable", "phone_offline"]).toContain((result as { reason: string }).reason);
-    // Three whole attempts, then the splash.
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    // Six whole attempts, then the splash.
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+  });
+
+  it("keeps asking past two stalled attempts while the tunnel comes back", async () => {
+    // Two attempts used to be all there was room for: a path still down at
+    // the second meant the error splash and a Retry press.
+    await seedDevice();
+    let challenges = 0;
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const key = `${init?.method ?? "GET"} ${String(input)}`;
+      if (key === "POST /api/v1/auth/challenge") {
+        challenges += 1;
+        if (challenges <= 3) throw new DOMException("signal timed out", "TimeoutError");
+        return json({ nonce: "n-4", payload: "p" })();
+      }
+      if (key === "POST /api/v1/auth/session") return json({ ok: true })();
+      throw new Error(`unexpected ${key}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.useFakeTimers();
+    const pending = resumeAuth();
+    await vi.advanceTimersByTimeAsync(5_000);
+    vi.useRealTimers();
+    await expect(pending).resolves.toEqual({ kind: "paired" });
+    expect(challenges).toBe(4);
   });
 
   it("signs in on a second attempt when the first dies on a stale connection", async () => {

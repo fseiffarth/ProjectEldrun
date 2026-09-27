@@ -54,7 +54,7 @@ async function login(record: AuthRecord): Promise<void> {
   if (pendingLogout) await pendingLogout;
   const challenge = await api<{ nonce: string; payload: string }>("/api/v1/auth/challenge", {
     method: "POST", body: JSON.stringify({ device_id: record.deviceId }),
-  });
+  }, AUTH_REQUEST_TIMEOUT);
   const signature = await crypto.subtle.sign(
     { name: "ECDSA", hash: "SHA-256" },
     record.privateKey,
@@ -63,7 +63,7 @@ async function login(record: AuthRecord): Promise<void> {
   await api("/api/v1/auth/session", {
     method: "POST",
     body: JSON.stringify({ device_id: record.deviceId, nonce: challenge.nonce, signature: b64url(signature) }),
-  });
+  }, AUTH_REQUEST_TIMEOUT);
 }
 
 export type ResumeResult =
@@ -73,12 +73,20 @@ export type ResumeResult =
    * than showing one "Host unavailable" for every possible cause. */
   | { kind: "unavailable"; reason: UnavailableReason; detail?: string };
 
-/** Pauses before the second and third sign-in attempt. */
-export const RESUME_RETRY_DELAYS = [300, 1_500];
+/** Pauses before each further sign-in attempt. */
+export const RESUME_RETRY_DELAYS = [300, 800, 1_500, 2_500, 4_000];
 /** No new attempt starts once this much has gone by: a phone that really is
- * off the tailnet should reach the splash that says so, not wait out three
- * full request timeouts. */
-const RESUME_RETRY_WINDOW = 12_000;
+ * off the tailnet should reach the splash that says so. It used to be 12 s
+ * with 10 s attempts, which left room for exactly two: a tunnel still coming
+ * back at the second one meant "Connecting…" for twenty seconds and then the
+ * Retry press anyway. Short attempts inside a longer window keep asking until
+ * the path is back. */
+const RESUME_RETRY_WINDOW = 24_000;
+/** Each request of the sign-in exchange. Both are a few hundred bytes the
+ * sidecar answers in under a millisecond, so one still silent after this is
+ * stalled on a dead path, not slow; the next attempt is worth more than the
+ * rest of `REQUEST_TIMEOUT`. */
+const AUTH_REQUEST_TIMEOUT = 5_000;
 
 /**
  * A failure that says nothing about the host, only about the path to it. The
