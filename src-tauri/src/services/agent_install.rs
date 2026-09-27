@@ -165,9 +165,10 @@ mod tests {
     fn install_env_points_every_prefix_into_the_install_home() {
         let env = install_env_in(Path::new("/s"));
         let get = |k: &str| env.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone()).unwrap();
-        assert_eq!(get("HOME"), "/s/agents/install");
-        assert_eq!(get("NPM_CONFIG_PREFIX"), "/s/agents/install/npm");
-        assert_eq!(get("UV_TOOL_BIN_DIR"), "/s/agents/install/.local/bin");
+        // Compared as paths: on Windows the joins mix `\` and `/`.
+        assert_eq!(Path::new(&get("HOME")), Path::new("/s/agents/install"));
+        assert_eq!(Path::new(&get("NPM_CONFIG_PREFIX")), Path::new("/s/agents/install/npm"));
+        assert_eq!(Path::new(&get("UV_TOOL_BIN_DIR")), Path::new("/s/agents/install/.local/bin"));
         assert!(bin_dirs_in(Path::new("/s")).contains(&PathBuf::from("/s/agents/install/npm/bin")));
     }
 
