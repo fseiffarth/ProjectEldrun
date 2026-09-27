@@ -16,6 +16,7 @@ pub mod outbox;
 pub mod limits;
 pub mod protocol;
 pub mod pty_bridge;
+pub mod sign_in;
 pub mod store;
 
 // The bundle baked in at compile time, when it was built, and the directory a

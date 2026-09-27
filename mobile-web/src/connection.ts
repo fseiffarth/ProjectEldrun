@@ -185,6 +185,13 @@ const FAILURE_TEXT: Record<string, string> = {
   project_not_found: "This project is no longer shared with the phone.",
   project_ineligible: "This project is no longer shared with the phone.",
   tab_not_found: "That tab is no longer available.",
+  // A sign-in address the phone handed back (`sign_in.rs`).
+  invalid_callback: "That is not the address the browser ended on. Copy all of it — it starts with http://localhost.",
+  callback_not_local: "That address does not lead to the agent waiting on the desktop.",
+  callback_without_code: "That address carries no sign-in code. Copy it from the page that failed to load, after approving.",
+  callback_unreachable: "Nothing on the desktop is waiting for that sign-in anymore. Start the sign-in again.",
+  callback_refused: "The agent did not accept that sign-in; the code may be used up or expired. Start the sign-in again.",
+  callback_timeout: "The agent took too long to finish the sign-in. Check the session.",
   tab_scope_mismatch: "That tab belongs to another project.",
   agent_tab_required: "That is not an agent tab.",
   invalid_request: "The desktop rejected the request.",

@@ -37,6 +37,7 @@ use super::{
         MAX_TAB_LABEL, TERMINAL_PROTOCOL,
     },
     pty_bridge::{self, TerminalRegistry},
+    sign_in,
     live_pwa, MOBILE_ASSETS,
 };
 
@@ -1482,6 +1483,44 @@ async fn sent_prompt(
     }
 }
 
+/// `POST /api/v1/tabs/{id}/sign-in-callback` — the address the phone's browser
+/// ended on after an agent CLI's sign-in redirected it to `localhost`, handed
+/// to the listener that CLI is waiting on here (`sign_in`). The tab only
+/// scopes who may ask: the address is checked on its own terms, and the
+/// answer carries the listener's status and nothing it sent.
+async fn sign_in_callback(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(tab_id): Path<String>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    if !exact_origin(&headers, &state) {
+        return api_error(StatusCode::FORBIDDEN, "invalid_origin");
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct CallbackBody {
+        url: String,
+    }
+    let Ok(request) = serde_json::from_slice::<CallbackBody>(&body) else {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    if let Err(error) = agent_tab_target(&state, &tab_id) {
+        return error;
+    }
+    let callback = match sign_in::parse_callback(&request.url, state.config.host.port) {
+        Ok(callback) => callback,
+        Err(code) => return api_error(StatusCode::BAD_REQUEST, code),
+    };
+    match sign_in::deliver(&callback).await {
+        Ok(status) => (StatusCode::OK, Json(json!({ "delivered": true, "status": status }))),
+        Err(code) => api_error(StatusCode::BAD_GATEWAY, code),
+    }
+}
+
 /// `PUT /api/v1/tabs/{id}/order` — move one tab next to another, the phone's
 /// half of the desktop Agents view's drag reorder (#264). Both tabs are named
 /// by opaque id and must live in the same scope: the order being permuted is
@@ -2829,6 +2868,7 @@ fn router(state: HostState) -> Router {
         .route("/api/v1/tabs/{tab_id}/color", put(color_tab))
         .route("/api/v1/tabs/{tab_id}/order", put(order_tab))
         .route("/api/v1/tabs/{tab_id}/prompt", post(sent_prompt))
+        .route("/api/v1/tabs/{tab_id}/sign-in-callback", post(sign_in_callback))
         .route(
             "/api/v1/tabs/{tab_id}/schedules",
             get(schedules).post(schedule_create),
@@ -3312,6 +3352,7 @@ mod tests {
             "/api/v1/inbox",
             "/api/v1/tabs/anything/desktop-images",
             "/api/v1/tabs/anything/prompt",
+            "/api/v1/tabs/anything/sign-in-callback",
             "/api/v1/projects/anything/prompts",
             "/api/v1/projects/anything/prompts/anything/send",
             "/api/v1/mail/folders/anything/messages/anything/mark",
@@ -3472,6 +3513,55 @@ mod tests {
         assert!(clean_tab_color(Some("#ff0000")).is_err());
         assert!(clean_tab_color(Some("red; background:url(x)")).is_err());
         assert!(clean_tab_color(Some("Red")).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_callback_reaches_only_a_local_listener_for_a_known_agent_tab() {
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(31)).await.0;
+        let (_, _, projects_body) = host.send(get_as("/api/v1/projects", &cookie)).await;
+        let project_id = json(&projects_body)["projects"][0]["id"].as_str().expect("project id").to_string();
+        let (_, _, project_body) = host.send(get_as(&format!("/api/v1/projects/{project_id}"), &cookie)).await;
+        let tab_id = json(&project_body)["tabs"][0]["id"].as_str().expect("tab id").to_string();
+        let press = |tab: &str, origin: &'static str, url: &str| {
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/tabs/{tab}/sign-in-callback"))
+                .header(header::ORIGIN, origin)
+                .header(header::COOKIE, cookie_pair(&cookie))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(&json!({ "url": url })).expect("body")))
+                .expect("request")
+        };
+        let good = "http://localhost:1455/auth/callback?code=c&state=s";
+
+        let (status, _, _) = host.send(press(&tab_id, "https://evil.example", good)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _, body) = host.send(press("not-a-tab", ORIGIN, good)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "answered: {body}");
+        let (status, _, body) = host
+            .send(press(&tab_id, ORIGIN, "http://example.com:1455/cb?code=c&state=s"))
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "answered: {body}");
+        assert_eq!(json(&body)["error"], "callback_not_local");
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut request = vec![0u8; 4096];
+            let _ = socket.read(&mut request).await;
+            let _ = socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nsecret")
+                .await;
+        });
+        let (status, _, body) = host
+            .send(press(&tab_id, ORIGIN, &format!("http://127.0.0.1:{port}/cb?code=c&state=s")))
+            .await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(json(&body)["delivered"], true);
+        assert!(!body.contains("secret"), "the listener's page stays on the desktop: {body}");
     }
 
     #[tokio::test]

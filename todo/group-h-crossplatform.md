@@ -3109,6 +3109,39 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ❌ Doesn't work on Windows
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
+- [~] **31bk — Agent sign-in (`/login`) from the phone, every CLI** (2026-09-27;
+  ✅ code-complete, automated tests passing — `MobileSignIn.test.tsx`,
+  `mobile_control::sign_in` + host route test; ⚠️ not verified on a phone).
+  A CLI printing a sign-in link (OAuth/device markers only, bottom 40 lines)
+  gets a notice over the composer → **Sign in** sheet: *Open the sign-in
+  page* (a real link, so the phone's browser takes it) + Copy link, then by
+  flow — device code shown with Copy (Copilot, Qwen); a field for the code
+  the page ends on, typed into the session + Enter (Claude, Gemini,
+  Antigravity); a field for the `http://localhost:<port>/…` address the
+  phone's browser failed on, which the sidecar relays to the CLI's loopback
+  listener (`POST /api/v1/tabs/{id}/sign-in-callback`; Codex's ChatGPT
+  sign-in) — or nothing (Cursor polls). The Status sheet gains **Sign in**
+  for CLIs whose command is documented (Claude/Copilot `/login`,
+  Gemini/Qwen `/auth`); the `/` menu lists `/login`, `/logout`, `/auth`.
+  - Needs the PWA rebuilt and the backend restarted (the relay route is
+    sidecar code). Untested id `mobile.signIn`.
+  - Open: whether Gemini in the fence prints the paste-code flow or the
+    localhost one (no DISPLAY socket in the fence; either is handled);
+    Droid/Grok/Vibe sign-in shapes unverified.
+  - [ ] 🖐️ Manual phone QA — Claude tab → Status → Sign in → pick the
+    subscription row in the chat → notice → Sign in → open page, approve,
+    copy the code, paste → Send → Claude says Login successful and the
+    notice goes. Then a Codex tab signed out → "Sign in with ChatGPT" →
+    open page, approve → copy the failed localhost address → Finish
+    sign-in → Codex continues.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 *Not coming to the phone (decided, not forgotten — see
 `docs/mobile_box_parity_plan.md`): editing a box from the phone (membership,

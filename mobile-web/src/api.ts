@@ -371,6 +371,14 @@ export function reportSentPrompt(tabId: string, message: string): Promise<unknow
   return api(`/api/v1/tabs/${encodeURIComponent(tabId)}/prompt`, { method: "POST", body: JSON.stringify({ message }) });
 }
 
+/** `POST /api/v1/tabs/{id}/sign-in-callback` — the address the phone's
+ * browser ended on after an agent's sign-in redirected it to `localhost`,
+ * for the desktop to deliver to the CLI waiting there. The sidecar does it
+ * itself, so this works with the desktop window closed. */
+export function finishSignIn(tabId: string, url: string): Promise<{ delivered: boolean }> {
+  return api(`/api/v1/tabs/${encodeURIComponent(tabId)}/sign-in-callback`, { method: "POST", body: JSON.stringify({ url }) });
+}
+
 /** Which side of the anchor tab a dragged row lands on — the desktop's own
  * `reorderTabInScope` vocabulary, so both surfaces mean one thing by a drop. */
 export type TabPlace = "before" | "after";

@@ -929,6 +929,20 @@ body.terminal-open { min-height:0; overflow:hidden; }
 /* A phone file on its way into the project inbox (composer + → From this
    phone), or one that did not arrive. Delivered ones leave the list: the `@`
    reference in the draft is the record. */
+/* An agent waiting for a browser sign-in (`signIn.ts`): the notice over the
+   composer, in the upload notices' shape, and the sheet it opens. The page
+   opens from a real link, so the phone hands it to the browser on the tap. */
+.sign-in-notice { display:flex; align-items:center; gap:8px; margin:6px 7px 0; padding:6px 6px 6px 11px; border-radius:9px; background:#29253d; color:#e8e3ff; font-size:.84rem; }
+.sign-in-notice span { flex:1 1 auto; min-width:0; overflow-wrap:anywhere; }
+.sign-in-notice button { flex:0 0 auto; padding:7px 12px; }
+.sign-in-notice .sign-in-hide { padding:7px 10px; border:0; background:transparent; }
+.sign-in-open { display:flex; gap:8px; align-items:stretch; }
+.sign-in-open a { display:grid; flex:1; gap:2px; min-width:0; padding:12px 14px; border:1px solid #8c7df4; border-radius:11px; color:#fff; text-align:center; text-decoration:none; }
+.sign-in-open small { color:#dcd6ff; font-weight:400; font-size:.78rem; overflow-wrap:anywhere; }
+.sign-in-open button { flex:0 0 auto; }
+.sign-in-code { display:flex; gap:8px; align-items:center; padding:10px 12px; border:1px solid #383c4d; border-radius:12px; background:#11141c; }
+.sign-in-code code { flex:1; font:700 1.45rem ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.14em; text-align:center; -webkit-user-select:all; user-select:all; }
+.sign-in-answer { padding-top:0; border-top:0; }
 .inbox-upload { display:flex; align-items:center; gap:8px; margin:6px 7px 0; padding:8px 10px; border-radius:9px; background:#211d35; color:#dcd6ff; font-size:.78rem; }
 .inbox-upload.error { background:#3b2027; color:#ffb4c0; }
 .inbox-upload strong { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:650; }

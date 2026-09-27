@@ -313,6 +313,7 @@ export const UNTESTED = {
 
   // --- mobile — The phone PWA ---------------------------------------
   "mobile.boxAccess": { area: "mobile", what: "MobileSettings · Box access" },
+  "mobile.signIn": { area: "mobile", what: "Terminal · Agent sign-in from the phone: notice + sheet for the CLI's login link (device code, paste-back code, localhost address relayed by the desktop), Status sheet Sign in button" },
   "mobile.composer.slash": { area: "mobile", what: "Terminal · Composer `/` menu: slash commands per CLI, the ones sent before first", tested: "2026-09-23" },
   "mobile.focus.messageMenu": { area: "mobile", what: "Terminal · Reader click-hold menu on a chat message (copy, read aloud)", tested: "2026-09-23" },
   "mobile.focus.selectText": { area: "mobile", what: "Terminal · Reader message menu → Select text: pick part of a chat message to copy" },

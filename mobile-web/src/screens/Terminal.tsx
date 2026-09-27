@@ -87,6 +87,8 @@ import { outboxPosts, type OutboxPost as ChatPost } from "../terminal/outboxPost
 import { afterClear, clearMark, type ClearMark } from "../terminal/clearedSession";
 import { ageLabel, sizeLabel } from "../terminal/fileLabels";
 import { resetText, StatusSheet } from "./StatusSheet";
+import { SignInSheet } from "./SignInSheet";
+import { readSignIn, signInCommand } from "../terminal/signIn";
 import { limitMeters, parseUsageReport, type LimitMeters } from "../../../shared/usageReport";
 import { isUntested } from "../../../src/lib/untested";
 import { draftPrefix, draftPrefixes, forgetSlashCommand, readSlashCommands, rememberSlashCommand, slashCli, slashSuggestions, toggleDraftPrefix, type SlashSuggestion } from "../slashCommands";
@@ -592,6 +594,12 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
    * history never do: an alternate screen has no scrollback to grow them
    * from. */
   const liveScreen = useMemo(() => (altScreen ? altFrame : lines), [altScreen, altFrame, lines]);
+  /** The browser sign-in an agent is waiting on (`signIn.ts`): a notice over
+   * the composer, and the sheet that finishes it from the phone. A notice the
+   * reader hid stays hidden for that link only — a retry prints a new one. */
+  const signIn = useMemo(() => (tab.kind === "agent" ? readSignIn(liveScreen) : null), [tab.kind, liveScreen]);
+  const [signInSheet, setSignInSheet] = useState(false);
+  const [hiddenSignIn, setHiddenSignIn] = useState("");
   /** The absorbed earlier output, republished for render whenever it grows.
    * The log itself lives in a ref inside the terminal effect; this is only the
    * render snapshot (chunk references are stable, so revealing is cheap). */
@@ -2236,6 +2244,15 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
     setAnswered(listedStep);
     setEffortStep(null);
   };
+  /** The Status sheet's Sign in: the CLI's own sign-in command, typed into
+   * the session like any slash command. What it prints next — a method list
+   * the reading view answers, then the link — reaches the notice above the
+   * composer; nothing here waits on it. */
+  const startSignIn = (command: string) => {
+    if (!sendAgentText(command)) return;
+    setStatusSheet(false);
+    setHiddenSignIn("");
+  };
   const closeModelSheet = () => {
     // The dialog is the session's own and still open: close it there too,
     // rather than leaving a modal behind that the reader can no longer see.
@@ -2881,6 +2898,11 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
       {uploads.map((upload) => upload.failure
         ? <div key={upload.id} className="inbox-upload error" role="alert"><strong>{upload.name}</strong><span>{upload.failure}</span><button onClick={() => dismissUpload(upload.id)} aria-label={`Dismiss ${upload.name}`}>✕</button></div>
         : <div key={upload.id} className="inbox-upload" role="status"><strong>{upload.name}</strong><span>{upload.source === "desktop" ? "Copying from the desktop…" : "Sending to the project inbox…"}</span></div>)}
+      {signIn && !signInSheet && signIn.url !== hiddenSignIn && <div className="sign-in-notice" role="status">
+        <span>{t("mobile.signIn.banner", { agent: agentLabel })}</span>
+        <button className="primary" onClick={() => setSignInSheet(true)} aria-haspopup="dialog">{t("mobile.signIn.open")}</button>
+        <button className="sign-in-hide" onClick={() => setHiddenSignIn(signIn.url)} aria-label={t("mobile.signIn.hide")} title={t("mobile.signIn.hide")}>✕</button>
+      </div>}
       {(tab.kind === "agent" || status?.branch || contextLeft || shownLimits.session || shownLimits.week) && <div className="session-facts">
         {/* An agent tab's model, mode and status lead the row as tappable facts:
             the composer keeps the whole bar for the draft and its buttons. */}
@@ -2999,7 +3021,18 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
       onPick={(key) => void applyMode(key)}
       onClose={() => { if (!switching) setModeSheet(false); }}
     />}
-    {statusSheet && <StatusSheet tab={tab} live={status} onLimits={setLimits} onClose={() => setStatusSheet(false)} />}
+    {statusSheet && <StatusSheet tab={tab} live={status} onLimits={setLimits} onClose={() => setStatusSheet(false)} signInCommand={connected ? signInCommand(slashCliKey) : null} onSignIn={startSignIn} />}
+    {signInSheet && <SignInSheet
+      tabId={tab.id}
+      agent={agentLabel}
+      signIn={signIn}
+      connected={connected}
+      onType={(text) => {
+        clearPending();
+        return deliver([text, "\r"]);
+      }}
+      onClose={() => setSignInSheet(false)}
+    />}
     {/* The viewer covers the phone; the gallery stays chosen behind it, so
         closing the file lands back on the grid. */}
     {gallery && !outboxOpen && <OutboxGallery scope={outboxScope} files={outbox} onOpen={openOutbox} onDetails={setOutboxOpen} onDelete={removeOutbox} onClose={() => setGallery(false)} />}
