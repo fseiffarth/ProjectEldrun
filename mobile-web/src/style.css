@@ -687,6 +687,7 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .fact-action { display:flex; align-items:center; gap:5px; flex:0 0 auto; max-width:14em; margin:0 -4px; padding:5px 4px; border:0; border-radius:6px; background:transparent; color:#b9bed0; font:inherit; }
 .fact-action:active { background:rgba(255,255,255,.08); }
 .fact-action:disabled { color:#8b90a5; opacity:.6; }
+.fact-action-plan { box-shadow:inset 0 0 0 1px #8c7df4; background:rgba(120,104,217,.28); color:#fff; }
 .fact-action-label { min-width:0; overflow:hidden; text-overflow:ellipsis; text-decoration:underline dotted rgba(185,190,208,.45); text-underline-offset:3px; }
 /* The same lamp the tab row shows, so the state reads without opening the
    sheet. `idle` is dim rather than absent: a missing lamp reads as broken. */

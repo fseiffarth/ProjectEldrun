@@ -318,6 +318,7 @@ export const UNTESTED = {
   "mobile.focus.selectText": { area: "mobile", what: "Terminal · Reader message menu → Select text: pick part of a chat message to copy" },
   "mobile.composer.prefix": { area: "mobile", what: "Terminal · Composer Plan / Goal chips between ＋ and the mic lead the draft with /plan or /goal, on the CLIs that have each", tested: "2026-09-27" },
   "mobile.focus.planBubble": { area: "mobile", what: "Terminal · Reader draws a plan Claude put up for approval (ExitPlanMode) as a violet-outlined answer bubble headed Plan" },
+  "mobile.focus.planModeMark": { area: "mobile", what: "Terminal · The Mode fact button gets a purple fill while the session's own live status line reads plan mode" },
   "mobile.composer.clearBusy": { area: "mobile", what: "Terminal · new-conversation button on a working Codex says to stop it first; after a clear the Reader starts empty" },
   "mobile.focus.onScreen": { area: "mobile", what: "Terminal · Reader on-screen transcript note", tested: "2026-09-23" },
   "mobile.focus.readAloud": { area: "mobile", what: "Terminal · Reader auto-read toggle", tested: "2026-09-23" },

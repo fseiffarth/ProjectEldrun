@@ -2988,6 +2988,15 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ❌ Doesn't work on Windows
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
+  - [ ] 🖐️ Manual phone QA — plan-mode tint on the Mode fact (2026-09-27, `mobile.focus.planModeMark`): in an open agent session, switch the CLI's own permission mode to plan (Shift+Tab or its picker) — the Mode button in the facts row fills purple while plan mode holds, and returns to plain once switched away. Phone-bundle-only change: commit, let the dev build publish, pull to refresh.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
   - [ ] 🖐️ Manual phone QA — open the PWA with the desktop closed: the app's own "Eldrun Mobile isn't running on your desktop" splash, never the proxy's 502 page (step 3).
     - [ ] ✅ Works on Linux (X11)
     - [ ] ❌ Doesn't work on Linux (X11)
