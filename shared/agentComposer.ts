@@ -59,7 +59,10 @@ export function bracketsAgentMessage(agent: string | undefined, paneBracketed: b
 export function agentInputWrites(draft: string, bracketedPaste = false): string[] {
   const text = sanitizeAgentMessage(draft);
   if (!text) return [];
-  if (bracketedPaste) return [AGENT_LINE_RESET, `${PASTE_START}${text}${PASTE_END}`, "\r"];
+  // A lone character is a key press, never a paste: a TUI screen that reads
+  // keys — Codex's pager ("q close"), an approval's "y" — ignores pasted text,
+  // and one character cannot form the burst the markers guard against.
+  if (bracketedPaste && Array.from(text).length > 1) return [AGENT_LINE_RESET, `${PASTE_START}${text}${PASTE_END}`, "\r"];
   const writes = [AGENT_LINE_RESET];
   text.split("\n").forEach((line, index) => {
     if (index) writes.push("\n");

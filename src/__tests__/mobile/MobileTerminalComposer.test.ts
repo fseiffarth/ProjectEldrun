@@ -50,6 +50,14 @@ describe("Eldrun Mobile agent composer writes", () => {
     ]);
   });
 
+  it("types a one-character message as a key press even where the pane pastes", () => {
+    // Codex's pager ("q close") only reads keys; a pasted `q` left the phone
+    // stuck in it (2026-09-27).
+    expect(agentInputWrites("q", true)).toEqual([AGENT_LINE_RESET, "q", "\r"]);
+    expect(agentInputWrites("y\n", true)).toEqual([AGENT_LINE_RESET, "y", "\r"]);
+    expect(agentInputWrites("ok", true)).toEqual([AGENT_LINE_RESET, `${PASTE_START}ok${PASTE_END}`, "\r"]);
+  });
+
   it("types a Claude Code message instead of pasting it", () => {
     // Claude Code shows any bracketed paste as a `[Pasted text]` block and the
     // model receives it as pasted content, not as the user's own words.
