@@ -170,7 +170,7 @@ async function enrollBiometric(): Promise<string | null> {
   return b64url(credential.rawId);
 }
 
-async function verifyBiometric(credentialId: string): Promise<void> {
+async function verifyBiometric(credentialId: string, signal?: AbortSignal): Promise<void> {
   const publicKey: WithHints<PublicKeyCredentialRequestOptions> = {
     challenge: arrayBuffer(randomBytes(32)),
     rpId: location.hostname,
@@ -179,7 +179,7 @@ async function verifyBiometric(credentialId: string): Promise<void> {
     hints: BIOMETRIC_HINTS,
     timeout: 60_000,
   };
-  const assertion = await navigator.credentials.get({ publicKey });
+  const assertion = await navigator.credentials.get({ publicKey, signal });
   if (!assertion) throw new Error("Device biometric verification was cancelled.");
 }
 
@@ -246,11 +246,11 @@ export async function maybeEnrollBiometric(): Promise<boolean> {
  * the session. The OS rate-limits and hardware-binds biometric attempts, so a
  * PIN lockout deliberately does not block this path — it is the stronger
  * factor and the way back in for a locked-out legitimate user. */
-export async function unlockLocalBiometric(): Promise<void> {
+export async function unlockLocalBiometric(signal?: AbortSignal): Promise<void> {
   const record = await readRecord();
   if (!record) throw new Error("Set up the app lock before unlocking Eldrun Mobile.");
   if (!record.biometricCredentialId) throw new Error("Device biometric unlock is not set up on this phone.");
-  await verifyBiometric(record.biometricCredentialId);
+  await verifyBiometric(record.biometricCredentialId, signal);
   if (record.failedAttempts || record.lockedUntil) {
     await saveRecord({ ...record, failedAttempts: 0, lockedUntil: undefined });
   }

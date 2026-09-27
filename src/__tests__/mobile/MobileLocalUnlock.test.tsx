@@ -224,6 +224,28 @@ describe("Mobile local unlock — unlock", () => {
     await waitFor(() => expect(onUnlocked).toHaveBeenCalledOnce(), { timeout: 3000 });
   });
 
+  it("offers the PIN while the fingerprint prompt is up, withdrawing the prompt", async () => {
+    lock.enrolled.mockResolvedValue(true);
+    vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    let signal: AbortSignal | undefined;
+    lock.biometric.mockImplementationOnce((given?: AbortSignal) => {
+      signal = given;
+      return new Promise<void>(() => {});
+    });
+    const onUnlocked = vi.fn();
+    const { container } = render(<LocalUnlock setup={false} onUnlocked={onUnlocked} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Unlock with fingerprint" }));
+    const sheet = container.querySelector(".local-unlock")!;
+    await waitFor(() => expect(sheet.classList.contains("verifying")).toBe(true));
+
+    fireEvent.click(screen.getByRole("button", { name: /Use PIN instead/ }));
+    expect(signal?.aborted).toBe(true);
+    expect(sheet.classList.contains("verifying")).toBe(false);
+    expect(screen.getByLabelText("PIN")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(onUnlocked).not.toHaveBeenCalled();
+  });
+
   it("explains a missing fingerprint option instead of leaving it out silently", async () => {
     lock.available.mockResolvedValue(false);
     render(<LocalUnlock setup={false} onUnlocked={() => {}} />);

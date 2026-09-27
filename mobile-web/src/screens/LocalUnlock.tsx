@@ -44,6 +44,9 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
   const [unlocked, setUnlocked] = useState(false);
   const attempt = useRef(0);
   const autoPrompted = useRef(false);
+  /** The fingerprint request in flight, so "Use PIN instead" can withdraw it. */
+  const biometricRequest = useRef<AbortController | null>(null);
+  const pinInput = useRef<HTMLInputElement | null>(null);
   useEffect(() => {
     void platformBiometricAvailable().then(setBiometricAvailable).catch(() => setBiometricAvailable(false));
   }, []);
@@ -59,9 +62,22 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
   }, [onUnlocked]);
   const unlockWithBiometric = () => {
     attempt.current += 1;
+    const request = new AbortController();
+    biometricRequest.current = request;
     setBiometricBusy(true);
     setError("");
-    void unlockLocalBiometric().then(maybeEnrollBiometric).then(finish).catch((reason) => setError(localFailureText(reason))).finally(() => setBiometricBusy(false));
+    void unlockLocalBiometric(request.signal).then(maybeEnrollBiometric).then(finish).catch((reason) => {
+      if (!request.signal.aborted) setError(localFailureText(reason));
+    }).finally(() => setBiometricBusy(false));
+  };
+  /** The way out of the fingerprint wait: a sheet that never came up, or a
+   * reader who would rather type, left the screen showing nothing but the
+   * mark — the PIN field steps aside while the wait runs. */
+  const usePinInstead = () => {
+    biometricRequest.current?.abort();
+    biometricRequest.current = null;
+    setBiometricBusy(false);
+    window.setTimeout(() => pinInput.current?.focus(), 0);
   };
   useEffect(() => {
     // Fingerprint is the default unlock: raise the OS sheet as the screen opens,
@@ -79,10 +95,12 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
       // be in front of them, then ask.
       if (document.visibilityState !== "visible" || !document.hasFocus()) return;
       autoPrompted.current = true;
+      const request = new AbortController();
+      biometricRequest.current = request;
       setBiometricBusy(true);
       // A rejection is not retried: a cancelled sheet hands focus straight back,
       // and re-asking on that would trap the reader in a prompt they closed.
-      void unlockLocalBiometric().then(maybeEnrollBiometric).then(() => { if (!disposed) finish(); }).catch(() => {}).finally(() => { if (!disposed) setBiometricBusy(false); });
+      void unlockLocalBiometric(request.signal).then(maybeEnrollBiometric).then(() => { if (!disposed) finish(); }).catch(() => {}).finally(() => { if (!disposed) setBiometricBusy(false); });
     };
     promptWhenReady();
     document.addEventListener("visibilitychange", promptWhenReady);
@@ -139,6 +157,9 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
       {unlocked ? "Unlocked" : verifying ? "Touch the fingerprint sensor" : ""}
       {verifying && isUntested("mobile.lock.brandedSheet") && <small className="untested"> Untested</small>}
     </p>
+    {verifying && !setup && <button className="local-unlock-use-pin" onClick={usePinInstead}>
+      Use PIN instead{isUntested("mobile.lock.pinInstead") && <small className="untested"> Untested</small>}
+    </button>}
     {setup ? <>
       <p>{biometricAvailable === false
         ? "This browser offers no fingerprint or Face ID unlock — browsers built on the system WebView (DuckDuckGo among them) do not support it. The app PIN will be your only unlock here; keep the phone’s own screen lock enabled, or pair again in Chrome or Safari to use a fingerprint."
@@ -165,7 +186,7 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
         <span className="local-unlock-print"><FingerprintIcon /></span>
         <span>{biometricBusy ? "Waiting for the device…" : "Unlock with fingerprint"}</span>
       </button>}
-      <label>PIN<input className="code" type="password" inputMode="numeric" autoComplete="current-password" autoFocus={!biometricEnrolled} maxLength={pinLength ?? 12} value={pin} onChange={(event) => {
+      <label>PIN<input ref={pinInput} className="code" type="password" inputMode="numeric" autoComplete="current-password" autoFocus={!biometricEnrolled} maxLength={pinLength ?? 12} value={pin} onChange={(event) => {
         const next = event.target.value.replace(/\D/g, "");
         setPin(pinLength === null ? next : next.slice(0, pinLength));
       }} /></label>

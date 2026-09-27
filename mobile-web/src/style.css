@@ -904,6 +904,7 @@ body.terminal-open { min-height:0; overflow:hidden; }
    animated by opacity — never a blurred shadow. */
 .local-unlock .local-unlock-status { min-height:1.4em; margin:0; color:#cfc8ff; font-weight:600; letter-spacing:.02em; }
 .local-unlock-status:empty { display:none; }
+.local-unlock-use-pin { justify-self:center; margin-top:8px; border:1px solid #383c4d; border-radius:999px; background:transparent; padding:9px 18px; color:#cfc8ff; font-weight:600; }
 .local-unlock.verifying,.local-unlock.unlocked { align-content:start; padding-top:max(12dvh,env(safe-area-inset-top)); }
 /* The lock sheet (`LocalUnlock` over `LockedHomeShell`) rises to the full
    screen for both: left at the bottom, the collapsed sheet sat exactly under
@@ -911,7 +912,7 @@ body.terminal-open { min-height:0; overflow:hidden; }
    shell above it — the launch read as the logo and then a black screen. */
 .lock-sheet-backdrop.verifying,.lock-sheet-backdrop.unlocked { align-items:stretch; background:#000; }
 .lock-sheet-backdrop.verifying .local-unlock-sheet,.lock-sheet-backdrop.unlocked .local-unlock-sheet { max-height:none; border-top:0; border-radius:0; background:transparent; }
-.local-unlock.verifying > :not(.brand-head):not(.local-unlock-status),
+.local-unlock.verifying > :not(.brand-head):not(.local-unlock-status):not(.local-unlock-use-pin),
 .local-unlock.unlocked > :not(.brand-head):not(.local-unlock-status) { display:none; }
 .local-unlock.verifying .brand-head,.local-unlock.unlocked .brand-head { animation:local-unlock-lift 420ms cubic-bezier(.22,1,.36,1) both; }
 .local-unlock .brand-head-mark { transition:transform 420ms cubic-bezier(.22,1,.36,1); }
