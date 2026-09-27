@@ -904,6 +904,12 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .local-unlock .local-unlock-status { min-height:1.4em; margin:0; color:#cfc8ff; font-weight:600; letter-spacing:.02em; }
 .local-unlock-status:empty { display:none; }
 .local-unlock.verifying,.local-unlock.unlocked { align-content:start; padding-top:max(12dvh,env(safe-area-inset-top)); }
+/* The lock sheet (`LocalUnlock` over `LockedHomeShell`) rises to the full
+   screen for both: left at the bottom, the collapsed sheet sat exactly under
+   Android's fingerprint sheet and the reader saw only the dimmed, black Home
+   shell above it — the launch read as the logo and then a black screen. */
+.lock-sheet-backdrop.verifying,.lock-sheet-backdrop.unlocked { align-items:stretch; background:#000; }
+.lock-sheet-backdrop.verifying .local-unlock-sheet,.lock-sheet-backdrop.unlocked .local-unlock-sheet { max-height:none; border-top:0; border-radius:0; background:transparent; }
 .local-unlock.verifying > :not(.brand-head):not(.local-unlock-status),
 .local-unlock.unlocked > :not(.brand-head):not(.local-unlock-status) { display:none; }
 .local-unlock.verifying .brand-head,.local-unlock.unlocked .brand-head { animation:local-unlock-lift 420ms cubic-bezier(.22,1,.36,1) both; }

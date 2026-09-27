@@ -208,8 +208,12 @@ describe("Mobile local unlock — unlock", () => {
     // than its own `<main>`, so the phase classes land on the sheet section.
     const { container } = render(<LocalUnlock setup={false} onUnlocked={onUnlocked} />);
     const sheet = container.querySelector(".local-unlock")!;
+    const backdrop = container.querySelector(".lock-sheet-backdrop")!;
     fireEvent.click(await screen.findByRole("button", { name: "Unlock with fingerprint" }));
     await waitFor(() => expect(sheet.classList.contains("verifying")).toBe(true));
+    // The backdrop takes the phase too, so the sheet fills the screen: left at
+    // the bottom it sat under Android's fingerprint sheet, over a black shell.
+    expect(backdrop.classList.contains("verifying")).toBe(true);
     expect(screen.getByText("Touch the fingerprint sensor")).toBeTruthy();
 
     act(() => pass());

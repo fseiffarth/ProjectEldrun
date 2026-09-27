@@ -186,7 +186,7 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
   // instead, so the reader lands somewhere that already looks like where they
   // are going rather than a screen unto itself.
   if (setup) return <main className={`pair screen brand-screen local-unlock${phase}`}>{content}</main>;
-  return <div className="sheet-backdrop lock-sheet-backdrop" role="presentation">
+  return <div className={`sheet-backdrop lock-sheet-backdrop${phase}`} role="presentation">
     <section className={`option-sheet brand-screen local-unlock-sheet local-unlock${phase}`} role="dialog" aria-modal="true" aria-label="Eldrun Mobile locked">
       <span className="sheet-grip" aria-hidden="true" />
       {content}
