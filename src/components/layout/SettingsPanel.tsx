@@ -937,7 +937,7 @@ const SEARCH_KEYS: Record<NavEntry, TranslationKey[]> = {
   general: ["settings.theme", "settings.themeVars", "settings.language", "settings.runScriptsBg", "settings.persistLocal"],
   layout: ["settings.windowZoom", "settings.minSubWidth", "settings.minSubHeight"],
   clock: ["settings.showClockSeconds", "settings.clock24"],
-  hintsOnboarding: ["settings.showHints", "settings.howToStart", "settings.takeTour", "settings.takeAdvancedTour", "settings.lessons", "settings.resetHints"],
+  hintsOnboarding: ["settings.showHints", "settings.howToStart", "settings.lessons", "lessons.tour.title", "lessons.tourRemote.title", "settings.resetHints"],
   downloads: ["settings.addDownloadFolder"],
   browser: ["settings.browserHome", "settings.browserSearch", "settings.browserLinkTarget", "settings.browserRestoreNavigate", "settings.browserLivePages"],
   calendar: ["settings.calendarGlobalApp", "settings.todoBoard", "settings.weekStartsOn", "settings.defaultView", "settings.dayGridStart", "settings.defaultReminder"],
@@ -1280,26 +1280,6 @@ export function SettingsDialog({
                 }}
               >
                 {t("settings.howToStart")}
-              </button>
-              <button
-                type="button"
-                className="settings-btn"
-                onClick={() => {
-                  onClose();
-                  window.dispatchEvent(new Event("eldrun:start-tour"));
-                }}
-              >
-                {t("settings.takeTour")}
-              </button>
-              <button
-                type="button"
-                className="settings-btn"
-                onClick={() => {
-                  onClose();
-                  window.dispatchEvent(new Event("eldrun:start-advanced-tour"));
-                }}
-              >
-                {t("settings.takeAdvancedTour")} <UntestedTag id="settings.takeAdvancedTour" />
               </button>
               <button
                 type="button"

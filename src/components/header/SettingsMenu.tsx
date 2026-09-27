@@ -86,12 +86,6 @@ export function SettingsMenu() {
           <button role="menuitem" onClick={() => fire("eldrun:open-how-to-start")}>
             {t("projectSwitcher.howToStartMenu")}
           </button>
-          <button role="menuitem" onClick={() => fire("eldrun:start-tour")}>
-            {t("settings.takeTour")}
-          </button>
-          <button role="menuitem" onClick={() => fire("eldrun:start-advanced-tour")}>
-            {t("settings.takeAdvancedTour")}
-          </button>
           <button role="menuitem" onClick={() => fire("eldrun:open-lessons")}>
             {t("settings.lessons")}
           </button>

@@ -504,10 +504,8 @@ export const en = {
   "settings.hintsOnboarding": "Hints & onboarding",
   "settings.showHints": "Show contextual hints",
   "settings.howToStart": "How to start...",
-  "settings.takeTour": "Take a tour",
   "settings.lessons": "Lessons",
   "settings.checkForUpdates": "Check for updates",
-  "settings.takeAdvancedTour": "Advanced tour",
   "settings.advancedOptions": "Advanced options",
   "settings.resetHints": "Reset hints",
 
@@ -921,7 +919,7 @@ export const en = {
   // Settings — help / feature guide panel.
   "help.title": "Eldrun Help",
   "help.intro":
-    "A quick guide to what each part of Eldrun does. Hover the toolbar buttons for their shortcuts — or take the guided version: Take a tour, the Advanced tour, and the Lessons all live in the Settings menu.",
+    "A quick guide to what each part of Eldrun does. Hover the toolbar buttons for their shortcuts — or take the guided version: the Lessons in the Settings menu start with a quick tour.",
   "help.workspaceLayout.title": "Workspace layout",
   "help.workspaceLayout.introMac":
     "Eldrun keeps your AI-assisted development in a single window. Push your cursor to a screen edge to reveal the panels, and press F11 for fullscreen.",
@@ -1025,7 +1023,7 @@ export const en = {
     "Eldrun records active time per project, and a private daily recap adds agents used, prompts asked, file churn, and commits. Both stay on this machine.",
   "help.settingsExtras.item4.term": "Onboarding",
   "help.settingsExtras.item4.desc":
-    "How to start, Take a tour, the Advanced tour for other machines, and the Lessons — one narrated walkthrough per task — all reopen from the Settings menu.",
+    "How to start and the Lessons — a quick tour, a tour of working on other machines, and one narrated walkthrough per task — all reopen from the Settings menu.",
 
   // Settings — Global Apps panel.
   "globalApps.title": "Global Apps",
@@ -6850,13 +6848,15 @@ export const en = {
     "Hover the clock for today's totals — Eldrun logs how long you work in each project. Click the timer there to pause it, right-click it for the activity view, and read the daily recap for prompts, file churn, and commits.",
   "tour.settingsFocusTitle": "Settings and focus mode",
   "tour.settingsFocusBody":
-    "Theme, Git, agents, shortcuts, and the Feature Guide live behind Settings — along with this tour, the Lessons, and the Advanced tour for working on other machines. {tip}",
+    "Theme, Git, agents, shortcuts, and the Feature Guide live behind Settings — along with the Lessons, where this tour, a tour of working on other machines, and one walkthrough per task wait. {tip}",
+  "tour.settingsTask": "Rest the pointer on the ⚙ gear to open its menu — Lessons are in there.",
+  "tour.settingsTaskHint": "The gear is at the top right of the header. Hovering opens its menu; clicking opens Settings, where Lessons sit under Hints & onboarding — either counts.",
   "tour.remoteProjectsTitle": "Work on remote machines",
   "tour.remoteProjectsBody":
     "In the New/Import dialog, flip \"Remote (SSH) project\" to host a project on another machine. Eldrun runs it over SSH and SFTP — agent tabs, files, and git all execute on the host, with no local mount and nothing to install there.",
   "tour.advanced.introTitle": "Working on other machines",
   "tour.advanced.introBody":
-    "This second tour covers the parts of Eldrun that reach past this computer: projects living on an SSH host, VPN tunnels, extra compute machines, containers and VMs, long runs, and your phone. None of it is needed for local work.",
+    "This tour covers the parts of Eldrun that reach past this computer: projects living on an SSH host, VPN tunnels, extra compute machines, containers and VMs, long runs, and your phone. None of it is needed for local work.",
   "tour.advanced.extendTitle": "Pair a local project with a host",
   "tour.advanced.extendBody":
     "An existing local project can be extended to a remote later. The folder stays on this machine as a mirror and git lockstep carries commits both ways; byte-sync moves the untracked paths you list explicitly, and only those.",
@@ -6880,6 +6880,10 @@ export const en = {
     "Each of these has a narrated walkthrough under Lessons in the Settings menu: SSH project via OpenVPN, compute machines, containers, VM projects, the SLURM pipeline, persistent sessions, and pairing a phone.",
   "lessons.addProject.title": "Add a new project",
   "lessons.addProject.blurb": "Create or import a project — each gets its own terminal, tabs, and file tree.",
+  "lessons.tour.title": "Quick tour",
+  "lessons.tour.blurb": "What's where: projects, tabs, files, models, mail and settings — one stop at a time.",
+  "lessons.tourRemote.title": "Tour: other machines",
+  "lessons.tourRemote.blurb": "Everything that reaches past this computer: SSH projects, VPN, compute machines, containers, sessions and your phone.",
   "lessons.addProject.pillStripTitle": "Your projects live here",
   "lessons.addProject.pillStripBody": "Every active project shows up as a pill in this strip. Click one to switch to it — each project keeps its own terminal, tabs, and file tree.",
   "lessons.addProject.addButtonTitle": "The + button",

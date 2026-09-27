@@ -564,10 +564,8 @@ export const dict: Dict = {
   "settings.hintsOnboarding": "Hinweise & Einführung",
   "settings.showHints": "Kontextbezogene Hinweise anzeigen",
   "settings.howToStart": "Erste Schritte...",
-  "settings.takeTour": "Tour starten",
   "settings.lessons": "Lektionen",
   "settings.checkForUpdates": "Nach Aktualisierungen suchen",
-  "settings.takeAdvancedTour": "Erweiterte Tour",
   "settings.advancedOptions": "Erweiterte Optionen",
   "settings.resetHints": "Hinweise zurücksetzen",
 
@@ -921,7 +919,7 @@ export const dict: Dict = {
 
   "help.title": "Eldrun-Hilfe",
   "help.intro":
-    "Ein kurzer Überblick, was jeder Teil von Eldrun tut. Toolbar-Schaltflächen zeigen ihre Tastenkürzel per Hover – oder nimm die geführte Variante: Tour starten, die erweiterte Tour und die Lektionen liegen alle im Einstellungen-Menü.",
+    "Ein kurzer Überblick, was jeder Teil von Eldrun tut. Toolbar-Schaltflächen zeigen ihre Tastenkürzel per Hover – oder nimm die geführte Variante: Die Lektionen im Einstellungen-Menü beginnen mit einer kurzen Tour.",
   "help.workspaceLayout.title": "Arbeitsbereich-Layout",
   "help.workspaceLayout.introMac":
     "Eldrun hält deine KI-unterstützte Entwicklung in einem einzigen Fenster. Bewege den Mauszeiger an einen Bildschirmrand, um die Panels einzublenden, und drücke F11 für Vollbild.",
@@ -1025,7 +1023,7 @@ export const dict: Dict = {
     "Eldrun erfasst die aktive Zeit pro Projekt, und eine private Tagesübersicht ergänzt genutzte Agenten, gestellte Prompts, Dateiänderungen und Commits. Beides bleibt auf diesem Rechner.",
   "help.settingsExtras.item4.term": "Einstieg",
   "help.settingsExtras.item4.desc":
-    "Erste Schritte, Tour starten, die erweiterte Tour für andere Rechner und die Lektionen – je eine geführte Anleitung pro Aufgabe – lassen sich alle im Einstellungen-Menü erneut öffnen.",
+    "Erste Schritte und die Lektionen – eine kurze Tour, eine Tour für die Arbeit auf anderen Rechnern und je eine geführte Anleitung pro Aufgabe – lassen sich alle im Einstellungen-Menü erneut öffnen.",
 
   "globalApps.title": "Globale Apps",
   "globalApps.help": "Externe Programme, an die Eldrun übergeben kann. Der Browser öffnet Weblinks aus PDFs.",
@@ -6513,13 +6511,15 @@ export const dict: Dict = {
     "Fahre über die Uhr für die heutigen Summen – Eldrun protokolliert, wie lange du in jedem Projekt arbeitest. Klicke dort auf den Timer, um zu pausieren, rechtsklicke ihn für die Aktivitätsansicht, und lies die Tagesübersicht für Prompts, Dateiänderungen und Commits.",
   "tour.settingsFocusTitle": "Einstellungen und Fokusmodus",
   "tour.settingsFocusBody":
-    "Theme, Git, Agenten, Tastenkürzel und der Funktionsleitfaden liegen hinter Einstellungen – zusammen mit dieser Tour, den Lektionen und der erweiterten Tour für die Arbeit auf anderen Rechnern. {tip}",
+    "Theme, Git, Agenten, Tastenkürzel und der Funktionsleitfaden liegen hinter Einstellungen – zusammen mit den Lektionen, wo diese Tour, eine Tour für die Arbeit auf anderen Rechnern und je eine Anleitung pro Aufgabe warten. {tip}",
+  "tour.settingsTask": "Lass den Zeiger auf dem ⚙-Zahnrad ruhen, um sein Menü zu öffnen — dort liegen die Lektionen.",
+  "tour.settingsTaskHint": "Das Zahnrad sitzt oben rechts in der Kopfleiste. Darüberfahren öffnet sein Menü; ein Klick öffnet die Einstellungen, wo die Lektionen unter Hinweise & Einführung liegen — beides zählt.",
   "tour.remoteProjectsTitle": "Auf entfernten Rechnern arbeiten",
   "tour.remoteProjectsBody":
     "Aktiviere im Dialog Neu/Importieren \"Remote-(SSH-)Projekt\", um ein Projekt auf einem anderen Rechner zu betreiben. Eldrun führt es über SSH und SFTP aus – Agenten-Tabs, Dateien und Git laufen auf dem Host, ohne lokale Einbindung und ohne dort etwas zu installieren.",
   "tour.advanced.introTitle": "Arbeiten auf anderen Rechnern",
   "tour.advanced.introBody":
-    "Diese zweite Tour behandelt die Teile von Eldrun, die über diesen Computer hinausreichen: Projekte auf einem SSH-Host, VPN-Tunnel, zusätzliche Rechenmaschinen, Container und VMs, lange Läufe und dein Telefon. Für lokales Arbeiten brauchst du davon nichts.",
+    "Diese Tour behandelt die Teile von Eldrun, die über diesen Computer hinausreichen: Projekte auf einem SSH-Host, VPN-Tunnel, zusätzliche Rechenmaschinen, Container und VMs, lange Läufe und dein Telefon. Für lokales Arbeiten brauchst du davon nichts.",
   "tour.advanced.extendTitle": "Ein lokales Projekt mit einem Host koppeln",
   "tour.advanced.extendBody":
     "Ein vorhandenes lokales Projekt lässt sich später auf einen Remote-Host erweitern. Der Ordner bleibt als Spiegel auf diesem Rechner, und Git-Lockstep trägt Commits zwischen beiden hin und her; Byte-Sync bewegt nur die nicht versionierten Pfade, die du ausdrücklich aufführst.",
@@ -6543,6 +6543,10 @@ export const dict: Dict = {
     "Zu jedem dieser Themen gibt es eine geführte Lektion im Einstellungen-Menü: SSH-Projekt über OpenVPN, Rechenmaschinen, Container, VM-Projekte, die SLURM-Pipeline, dauerhafte Sessions und das Koppeln eines Telefons.",
   "lessons.addProject.title": "Ein neues Projekt hinzufügen",
   "lessons.addProject.blurb": "Erstelle oder importiere ein Projekt – jedes erhält ein eigenes Terminal, eigene Tabs und einen eigenen Dateibaum.",
+  "lessons.tour.title": "Kurze Tour",
+  "lessons.tour.blurb": "Was liegt wo: Projekte, Tabs, Dateien, Modelle, Mail und Einstellungen – eine Station nach der anderen.",
+  "lessons.tourRemote.title": "Tour: andere Rechner",
+  "lessons.tourRemote.blurb": "Alles, was über diesen Computer hinausreicht: SSH-Projekte, VPN, Rechenmaschinen, Container, Sessions und dein Telefon.",
   "lessons.addProject.pillStripTitle": "Hier leben deine Projekte",
   "lessons.addProject.pillStripBody": "Jedes aktive Projekt erscheint als Pille in dieser Leiste. Klicke auf eine, um zu ihr zu wechseln – jedes Projekt behält sein eigenes Terminal, eigene Tabs und einen eigenen Dateibaum.",
   "lessons.addProject.addButtonTitle": "Die Schaltfläche +",

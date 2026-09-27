@@ -8,6 +8,8 @@ import {
   type TourCtx,
 } from "../../lib/tour";
 import { translate } from "../../lib/i18n";
+import { LESSONS, TOUR_LESSON_ID } from "../../lib/lessons";
+import { useTourStore } from "../../stores/tour";
 import { bubbleStyle } from "../../components/common/TourCoachmark";
 
 const empty: TourCtx = { projectCount: 0, activeId: null };
@@ -94,6 +96,27 @@ describe("tour catalogs", () => {
       i = nextEligibleIndex(ADVANCED_TOUR_STEPS, empty, i + 1);
     }
     expect(seen).toBe(ADVANCED_TOUR_STEPS.length);
+  });
+});
+
+// The tours live in the Lessons picker — one place to learn Eldrun — and the
+// quick tour is still what records onboarding as done.
+describe("tours as lessons", () => {
+  it("opens Basics with the quick tour and Advanced with the tour of other machines", () => {
+    expect(LESSONS[0].id).toBe(TOUR_LESSON_ID);
+    expect(LESSONS[0].steps).toBe(TOUR_STEPS);
+    const advanced = LESSONS.filter((l) => l.category === "advanced");
+    expect(advanced[0].steps).toBe(ADVANCED_TOUR_STEPS);
+  });
+
+  it("lets only the quick tour complete onboarding", () => {
+    expect(LESSONS.filter((l) => l.completesOnboarding).map((l) => l.id)).toEqual([TOUR_LESSON_ID]);
+    useTourStore.getState().start();
+    expect(useTourStore.getState().steps).toBe(TOUR_STEPS);
+    expect(useTourStore.getState().persistKey).toBe("tour_completed");
+    useTourStore.getState().startLesson(LESSONS.find((l) => l.steps === ADVANCED_TOUR_STEPS)!);
+    expect(useTourStore.getState().persistKey).toBeNull();
+    useTourStore.setState({ active: false });
   });
 });
 

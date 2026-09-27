@@ -104,11 +104,9 @@ describe("header settings menu", () => {
     expect(seen).toEqual(["updates"]);
   });
 
-  it("fires the how-to-start, tour, advanced-tour and lessons events", () => {
+  it("fires the how-to-start and lessons events", () => {
     const rows: [string, string][] = [
       ["How to start", "eldrun:open-how-to-start"],
-      ["Take a tour", "eldrun:start-tour"],
-      ["Advanced tour", "eldrun:start-advanced-tour"],
       ["Lessons", "eldrun:open-lessons"],
     ];
     for (const [label, event] of rows) {

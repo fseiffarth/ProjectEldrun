@@ -562,10 +562,8 @@ export const dict: Dict = {
   "settings.hintsOnboarding": "Sugerencias e introducción",
   "settings.showHints": "Mostrar sugerencias contextuales",
   "settings.howToStart": "Cómo empezar...",
-  "settings.takeTour": "Hacer un recorrido",
   "settings.lessons": "Lecciones",
   "settings.checkForUpdates": "Buscar actualizaciones",
-  "settings.takeAdvancedTour": "Recorrido avanzado",
   "settings.advancedOptions": "Opciones avanzadas",
   "settings.resetHints": "Restablecer sugerencias",
 
@@ -917,7 +915,7 @@ export const dict: Dict = {
 
   "help.title": "Ayuda de Eldrun",
   "help.intro":
-    "Una guía rápida de lo que hace cada parte de Eldrun. Pasa el cursor por los botones de la barra para ver sus atajos, o usa la versión guiada: el recorrido, el recorrido avanzado y las lecciones están en el menú Ajustes.",
+    "Una guía rápida de lo que hace cada parte de Eldrun. Pasa el cursor por los botones de la barra para ver sus atajos, o usa la versión guiada: las lecciones del menú Ajustes empiezan con un recorrido rápido.",
   "help.workspaceLayout.title": "Diseño del espacio de trabajo",
   "help.workspaceLayout.introMac":
     "Eldrun mantiene tu desarrollo asistido por IA en una sola ventana. Lleva el cursor a un borde de la pantalla para mostrar los paneles y pulsa F11 para pantalla completa.",
@@ -1021,7 +1019,7 @@ export const dict: Dict = {
     "Eldrun registra el tiempo activo por proyecto, y un resumen diario privado añade agentes usados, prompts hechos, cambios en archivos y commits. Ambos se quedan en esta máquina.",
   "help.settingsExtras.item4.term": "Primeros pasos",
   "help.settingsExtras.item4.desc":
-    "Cómo empezar, el recorrido, el recorrido avanzado para otras máquinas y las lecciones —una guía narrada por tarea— se reabren desde el menú Ajustes.",
+    "Cómo empezar y las lecciones —un recorrido rápido, un recorrido por el trabajo en otras máquinas y una guía narrada por tarea— se reabren desde el menú Ajustes.",
 
   "globalApps.title": "Apps globales",
   "globalApps.help": "Programas externos a los que Eldrun puede delegar. El navegador abre los enlaces web de los PDF.",
@@ -6508,13 +6506,15 @@ export const dict: Dict = {
     "Pasa el cursor por el reloj para ver los totales de hoy: Eldrun registra cuánto trabajas en cada proyecto. Haz clic en el temporizador para pausarlo, clic derecho para la vista de actividad, y consulta el resumen diario de prompts, cambios en archivos y commits.",
   "tour.settingsFocusTitle": "Ajustes y modo enfoque",
   "tour.settingsFocusBody":
-    "El tema, Git, los agentes, los atajos y la guía de funciones viven tras Ajustes, junto con este recorrido, las lecciones y el recorrido avanzado para trabajar en otras máquinas. {tip}",
+    "El tema, Git, los agentes, los atajos y la guía de funciones viven tras Ajustes, junto con las lecciones, donde esperan este recorrido, un recorrido por el trabajo en otras máquinas y una guía por tarea. {tip}",
+  "tour.settingsTask": "Deja el puntero sobre el engranaje ⚙ para abrir su menú: ahí están las lecciones.",
+  "tour.settingsTaskHint": "El engranaje está arriba a la derecha de la cabecera. Pasar el cursor abre su menú; un clic abre los Ajustes, donde las lecciones están en Sugerencias e introducción: cualquiera de los dos vale.",
   "tour.remoteProjectsTitle": "Trabaja en máquinas remotas",
   "tour.remoteProjectsBody":
     "En el diálogo Nuevo/Importar, activa \"Proyecto remoto (SSH)\" para alojar un proyecto en otra máquina. Eldrun lo ejecuta por SSH y SFTP: las pestañas de agente, los archivos y git corren en el host, sin montaje local y sin instalar nada allí.",
   "tour.advanced.introTitle": "Trabajar en otras máquinas",
   "tour.advanced.introBody":
-    "Este segundo recorrido cubre las partes de Eldrun que van más allá de este ordenador: proyectos alojados en un host SSH, túneles VPN, máquinas de cómputo adicionales, contenedores y VM, ejecuciones largas y tu teléfono. Nada de esto hace falta para trabajar en local.",
+    "Este recorrido cubre las partes de Eldrun que van más allá de este ordenador: proyectos alojados en un host SSH, túneles VPN, máquinas de cómputo adicionales, contenedores y VM, ejecuciones largas y tu teléfono. Nada de esto hace falta para trabajar en local.",
   "tour.advanced.extendTitle": "Emparejar un proyecto local con un host",
   "tour.advanced.extendBody":
     "Un proyecto local existente puede extenderse a un remoto más tarde. La carpeta se queda en esta máquina como espejo y el lockstep de git lleva los commits en ambos sentidos; la sincronización byte a byte mueve solo las rutas no versionadas que enumeres explícitamente.",
@@ -6538,6 +6538,10 @@ export const dict: Dict = {
     "Cada uno de estos temas tiene una lección guiada en el menú Ajustes: proyecto SSH por OpenVPN, máquinas de cómputo, contenedores, proyectos en VM, la canalización SLURM, sesiones persistentes y emparejar un teléfono.",
   "lessons.addProject.title": "Añade un nuevo proyecto",
   "lessons.addProject.blurb": "Crea o importa un proyecto: cada uno obtiene su propia terminal, pestañas y árbol de archivos.",
+  "lessons.tour.title": "Recorrido rápido",
+  "lessons.tour.blurb": "Qué está dónde: proyectos, pestañas, archivos, modelos, correo y ajustes, una parada cada vez.",
+  "lessons.tourRemote.title": "Recorrido: otras máquinas",
+  "lessons.tourRemote.blurb": "Todo lo que va más allá de este ordenador: proyectos SSH, VPN, máquinas de cómputo, contenedores, sesiones y tu teléfono.",
   "lessons.addProject.pillStripTitle": "Aquí viven tus proyectos",
   "lessons.addProject.pillStripBody": "Cada proyecto activo aparece como una píldora en esta franja. Haz clic en una para cambiar a ella: cada proyecto conserva su propia terminal, pestañas y árbol de archivos.",
   "lessons.addProject.addButtonTitle": "El botón +",

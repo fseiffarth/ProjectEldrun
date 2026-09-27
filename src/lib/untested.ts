@@ -239,7 +239,6 @@ export const UNTESTED = {
   "settings.rootMcpMail": { area: "layout", what: "SettingsPanel · Agents get Eldrun's mail tools" },
   "settings.rootMcpMailLocalOnly": { area: "layout", what: "SettingsPanel · Only local models get the mail tools" },
   "settings.rootMcpMailLocalRead": { area: "layout", what: "SettingsPanel · Local models may read the mails you share (marked only, loopback Ollama, writes staged after a read)" },
-  "settings.takeAdvancedTour": { area: "layout", what: "SettingsPanel · Advanced tour" },
   "settings.terminalWebgl": { area: "layout", what: "SettingsPanel · WebGL terminal renderer" },
   "settings.themeVars": { area: "layout", what: "SettingsPanel · Theme colors" },
   "settings.todoBoard": { area: "layout", what: "SettingsPanel · To-do board button in the header" },

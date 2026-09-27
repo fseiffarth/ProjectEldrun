@@ -67,7 +67,7 @@ export function LessonsMenu({ onClose }: { onClose: () => void }) {
                   className="lesson-item"
                   onClick={() => {
                     onClose();
-                    startLesson(lesson.steps);
+                    startLesson(lesson);
                   }}
                 >
                   <span className="lesson-item-title">{t(lesson.titleKey)}</span>

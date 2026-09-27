@@ -61,5 +61,5 @@ export function startLessonById(id: string, onClose: () => void): void {
   const lesson = LESSONS.find((l) => l.id === id);
   if (!lesson) return;
   onClose();
-  useTourStore.getState().startLesson(lesson.steps);
+  useTourStore.getState().startLesson(lesson);
 }

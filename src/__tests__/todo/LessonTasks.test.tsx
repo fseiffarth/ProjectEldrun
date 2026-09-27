@@ -45,7 +45,7 @@ const COPY = {
 
 function start(task: TourStep["task"]) {
   act(() => {
-    useTourStore.getState().startLesson(steps(task));
+    useTourStore.getState().startLesson({ steps: steps(task) });
   });
 }
 
