@@ -1473,6 +1473,13 @@ fn release_creds(project_id: Option<&str>) -> (Option<String>, Vec<String>) {
     }
 }
 
+/// The push button's `git push`. A branch with no upstream (created locally,
+/// or pushed once with an explicit refspec) would fail with "has no upstream
+/// branch"; `push.autoSetupRemote` pushes it to the same-named branch on the
+/// push remote and records that as its upstream, like `push -u`. A git older
+/// than 2.37 ignores the key and fails as before.
+const PUSH_ARGS: [&str; 3] = ["-c", "push.autoSetupRemote=true", "push"];
+
 /// `git push` in a local directory, authenticating an https remote with `token`
 /// when one is set — scoped to `project_id`'s token origins (see
 /// [`scoped_token_config`]). Hardened like every local git call, and gated on
@@ -1489,7 +1496,7 @@ fn push_local(
         let origins = crate::commands::git_hosting::token_origins(project_id, None);
         args.extend(scoped_token_config(&origins, "x-access-token"));
     }
-    args.push("push".to_string());
+    args.extend(PUSH_ARGS.map(str::to_string));
     let mut cmd = hooked_git_command_in(dir, &args);
     if let Some(tok) = token {
         cmd.env("ELDRUN_GIT_TOKEN", tok);
@@ -1566,7 +1573,7 @@ fn git_push_blocking(project_dir: String, project_id: Option<String>) -> Result<
             // the host, so the push runs there and authenticates with the host's
             // own git credentials/SSH keys. The local effective token does not
             // apply (it would be the wrong machine's secret) and is not forwarded.
-            None => crate::services::ssh_exec::run_git_remote(&target.spec, &["push".to_string()])?,
+            None => crate::services::ssh_exec::run_git_remote(&target.spec, &PUSH_ARGS.map(str::to_string))?,
         }
     } else {
         // Local project: effective per-project → global token (if any).
@@ -3719,6 +3726,36 @@ filename note.txt
         assert_eq!(statuses.get("src").map(String::as_str), Some("unpushed"));
         assert_eq!(statuses.get("pushed.txt"), None);
         assert_eq!(git_unpushed_commits_blocking(d).expect("unpushed").len(), 1);
+    }
+
+    #[test]
+    fn push_sets_the_upstream_of_a_branch_that_has_none() {
+        if !git_available() {
+            eprintln!("git not on PATH — skipping push_sets_the_upstream_of_a_branch_that_has_none");
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let remote = tmp.path().join("remote.git");
+        let dir = tmp.path().join("work");
+        fs::create_dir(&dir).expect("mkdir work");
+        let git = |cwd: &Path, args: &[&str]| {
+            crate::paths::command_no_window("git").args(args).current_dir(cwd).output().expect("git should run")
+        };
+        assert!(git(tmp.path(), &["init", "--bare", "remote.git"]).status.success());
+        init_repo(&dir);
+        assert!(git(&dir, &["checkout", "-b", "develop"]).status.success());
+        fs::write(dir.join("a.txt"), "a\n").expect("write");
+        assert!(git(&dir, &["add", "."]).status.success());
+        assert!(git(&dir, &["commit", "-m", "first"]).status.success());
+        assert!(git(&dir, &["remote", "add", "origin", remote.to_str().unwrap()]).status.success());
+
+        let d = dir.to_string_lossy().to_string();
+        git_push_blocking(d, None).expect("push without an upstream");
+        let upstream = git(&dir, &["rev-parse", "--abbrev-ref", "@{u}"]);
+        assert_eq!(String::from_utf8_lossy(&upstream.stdout).trim(), "origin/develop");
+        let pushed = git(&remote, &["rev-parse", "develop"]);
+        let head = git(&dir, &["rev-parse", "HEAD"]);
+        assert_eq!(pushed.stdout, head.stdout);
     }
 
     #[test]
