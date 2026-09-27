@@ -19,6 +19,11 @@ describe("Eldrun Mobile stored-session turns", () => {
     ]);
   });
 
+  it("marks only an answer that is a plan", () => {
+    const turns = transcriptTurns([prompt("plan it"), { ...answer("# Plan"), plan: true }, answer("ok"), { ...prompt("x"), plan: true }]);
+    expect(turns.map((turn) => turn.plan === true)).toEqual([false, true, false, false]);
+  });
+
   it("keeps each bubble's key and text when the oldest records drop off and new ones arrive", () => {
     const all = [
       prompt("one", "10:00:00"),

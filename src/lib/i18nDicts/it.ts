@@ -168,6 +168,7 @@ export const dict: Dict = {
   "mobile.transcript.answering": "Invio…",
   "mobile.transcript.prompt": "Il tuo prompt",
   "mobile.transcript.answer": "Risposta",
+  "mobile.transcript.plan": "Piano",
   "mobile.subagent.region": "Subagente",
   "mobile.subagent.main": "la conversazione principale",
   "mobile.subagent.back": "Torna a {name}",

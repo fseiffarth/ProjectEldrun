@@ -465,6 +465,9 @@ export interface TranscriptEntry {
   cut?: boolean;
   subagent?: string;
   role?: string;
+  /** On an `answer`: the plan the agent put up for approval (Claude's
+   * `ExitPlanMode`), set apart from its ordinary answers. */
+  plan?: boolean;
   /** Phone-only, never on the wire: a prompt sent from here that the session
    * has not recorded yet (`terminal/pendingPrompts`), by its id — and whether
    * the link failed to deliver it, or is trying again. */

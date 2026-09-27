@@ -197,6 +197,28 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith("add a clear button");
   });
 
+  it("sets a plan put up for approval apart from the answers around it", async () => {
+    localStorage.setItem("eldrun.mobile.view.claude-code", "focus");
+    vi.stubGlobal("fetch", sidecarFetch(() => ({
+      ...STORED,
+      entries: [
+        { kind: "prompt", text: "plan the merge", at: "2026-09-27T10:00:00Z" },
+        { kind: "answer", text: "Here is the plan.", at: "2026-09-27T10:00:01Z" },
+        { kind: "answer", text: "# Merge\n\n1. Move the search", plan: true, at: "2026-09-27T10:00:02Z" },
+      ],
+    })));
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+
+    const chat = screen.getByTestId("session-transcript");
+    const answers = [...chat.querySelectorAll(".readable-turn.agent.answer")];
+    expect(answers.map((bubble) => bubble.classList.contains("plan"))).toEqual([false, true]);
+    const plan = screen.getByRole("group", { name: "Plan" });
+    expect(plan).toBe(answers[1]);
+    expect(plan.querySelector(".transcript-plan-head")?.textContent).toMatch(/^Plan/);
+    expect(plan.querySelector("h1")?.textContent).toBe("Merge");
+  });
+
   it("lets a message's text be selected in part and copies only what is marked", async () => {
     localStorage.setItem("eldrun.mobile.view.claude-code", "focus");
     vi.stubGlobal("fetch", sidecarFetch(() => STORED));

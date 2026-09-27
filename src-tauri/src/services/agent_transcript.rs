@@ -85,6 +85,10 @@ pub struct TranscriptEntry {
     /// On an `agent` entry: the kind of subagent, as its CLI names it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// On an `answer` entry: the plan the agent put up for approval (Claude's
+    /// `ExitPlanMode`), which the phone sets apart from its ordinary answers.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub plan: bool,
 }
 
 /// What a tab's stored session answers with. Always a value, never an error:
@@ -669,6 +673,7 @@ fn parse_entries<'a>(
         for record in records {
             match record {
                 Record::Turn(role, raw) => entries.extend(transcript_entry(role, &raw, at.clone())),
+                Record::Plan(raw) => entries.extend(transcript_entry("answer", &raw, at.clone()).map(|entry| TranscriptEntry { plan: true, ..entry })),
                 Record::Spawn { call, task, kind } => {
                     if let Some(entry) = agent_entry(&task, kind.as_deref(), at.clone()) {
                         calls.push((entries.len(), call));
@@ -685,6 +690,8 @@ fn parse_entries<'a>(
 enum Record {
     /// A prompt or an answer.
     Turn(&'static str, String),
+    /// A plan put up for approval: an answer, marked as the plan.
+    Plan(String),
     /// A subagent spawned by tool call `call`, sent to do `task`.
     Spawn { call: String, task: String, kind: Option<String> },
 }
@@ -702,7 +709,7 @@ pub(crate) fn agent_entry(task: &str, kind: Option<&str>, at: Option<String>) ->
     if text.is_empty() && role.is_none() {
         return None;
     }
-    Some(TranscriptEntry { kind: "agent".to_string(), text, at, cut, subagent: None, role })
+    Some(TranscriptEntry { kind: "agent".to_string(), text, at, cut, role, ..Default::default() })
 }
 
 /// One turn as the phone shows it: `raw` cleaned (`clean_text`) and cut at
@@ -743,9 +750,10 @@ fn clean_text(raw: &str) -> Option<String> {
 /// A Claude record as turns: a `user` record that is a prompt (the same
 /// reading the last-prompt line makes — tool results, meta notes and
 /// reminders are not), a prompt the user queued mid-turn (the prompt chart's
-/// reading), or an `assistant` record's text blocks and the subagents its
-/// `Agent` calls spawned. Thinking and other tool-use blocks are stepped
-/// over, as is a sidechain (a subagent's) record.
+/// reading), or an `assistant` record's text blocks, the plan its
+/// `ExitPlanMode` call put up and the subagents its `Agent` calls spawned.
+/// Thinking and other tool-use blocks are stepped over, as is a sidechain (a
+/// subagent's) record.
 fn claude_records(value: &Value) -> Vec<Record> {
     let sidechain = value.get("isSidechain").and_then(Value::as_bool) == Some(true);
     match value.get("type").and_then(Value::as_str) {
@@ -771,7 +779,7 @@ fn claude_records(value: &Value) -> Vec<Record> {
                         .filter_map(|b| b.get("text").and_then(Value::as_str))
                         .collect::<Vec<_>>()
                         .join("\n\n"),
-                    blocks.iter().filter_map(claude_spawn).collect(),
+                    blocks.iter().filter_map(|b| claude_plan(b).or_else(|| claude_spawn(b))).collect(),
                 ),
                 _ => return Vec::new(),
             };
@@ -784,6 +792,17 @@ fn claude_records(value: &Value) -> Vec<Record> {
         }
         _ => Vec::new(),
     }
+}
+
+/// An `ExitPlanMode` `tool_use` block: the plan Claude put up for approval.
+fn claude_plan(block: &Value) -> Option<Record> {
+    if block.get("type").and_then(Value::as_str) != Some("tool_use")
+        || block.get("name").and_then(Value::as_str) != Some("ExitPlanMode")
+    {
+        return None;
+    }
+    let plan = block.get("input")?.get("plan")?.as_str()?.trim();
+    (!plan.is_empty()).then(|| Record::Plan(plan.to_string()))
 }
 
 /// A `tool_use` block that spawns a subagent — `Agent`, `Task` before it was
@@ -845,6 +864,32 @@ mod tests {
             .iter()
             .map(|e| (e.kind.as_str(), e.text.as_str()))
             .collect()
+    }
+
+    #[test]
+    fn a_claude_plan_put_up_for_approval_is_an_answer_marked_as_the_plan() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"plan the merge\"}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Here is the plan.\"},{\"type\":\"tool_use\",\"id\":\"toolu_P\",\"name\":\"ExitPlanMode\",\"input\":{\"plan\":\"# Merge\\n\\n1. Move the search\\n\"}}]}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_Q\",\"name\":\"ExitPlanMode\",\"input\":{\"plan\":\"  \"}}]}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Done.\"}]}}\n",
+            ),
+        )
+        .unwrap();
+        let read = read_transcript(&path, TranscriptKind::Claude, None, DEFAULT_LIMIT).unwrap();
+        assert_eq!(
+            kinds(&read),
+            vec![("prompt", "plan the merge"), ("answer", "Here is the plan."), ("answer", "# Merge\n\n1. Move the search"), ("answer", "Done.")]
+        );
+        // Only the plan is marked, and an empty one is no entry.
+        assert_eq!(read.entries.iter().map(|e| e.plan).collect::<Vec<_>>(), vec![false, false, true, false]);
+        let wire = serde_json::to_value(&read.entries[2]).unwrap();
+        assert_eq!(wire["plan"], true);
+        assert!(serde_json::to_value(&read.entries[1]).unwrap().get("plan").is_none());
     }
 
     #[test]

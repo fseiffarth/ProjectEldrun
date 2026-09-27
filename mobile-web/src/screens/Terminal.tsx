@@ -377,14 +377,19 @@ function SubagentCard({ turn, label, untested, onOpen }: {
  * out the same way as the screen's chat — bubbles on the right for the
  * reader's own prompts, the agent's answers on the left — from the record the
  * agent itself keeps, which reaches back past the pane's scrollback and
- * carries no tool status. `cut` marks text the desktop bounded. A subagent
- * the agent spawned is a card (`SubagentCard`) that opens its conversation.
+ * carries no tool status. `cut` marks text the desktop bounded. A plan the
+ * agent put up for approval is an answer bubble headed and outlined as the
+ * plan. A subagent the agent spawned is a card (`SubagentCard`) that opens
+ * its conversation.
  * What the agent sent to the phone sits after the record it followed
  * (`outboxPosts`), as picture messages. */
-const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promptLabel, agentLabel = "", agentUntested = "", onOpenAgent, onResend, posts, renderPost }: {
+const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promptLabel, planLabel = "", planUntested = "", agentLabel = "", agentUntested = "", onOpenAgent, onResend, posts, renderPost }: {
   entries: SessionTranscript["entries"];
   cutLabel: string;
   promptLabel: string;
+  /** The heading over a plan's bubble, and its untested mark. */
+  planLabel?: string;
+  planUntested?: string;
   agentLabel?: string;
   agentUntested?: string;
   onOpenAgent?: (turn: TranscriptTurn) => void;
@@ -417,7 +422,8 @@ const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promp
                 {isUntested("mobile.link.ack") && <em>Untested</em>}
               </small>}
         </div>
-      : <div className="readable-turn agent answer" {...hold(turn.key, () => turn.text)}>
+      : <div className={turn.plan ? "readable-turn agent answer plan" : "readable-turn agent answer"} role={turn.plan ? "group" : undefined} aria-label={turn.plan ? planLabel : undefined} {...hold(turn.key, () => turn.text)}>
+          {turn.plan && <small className="transcript-plan-head">{planLabel}{planUntested && <em> · {planUntested}</em>}</small>}
           <AnswerText text={turn.text} />
           {turn.cut && <small className="transcript-cut">{cutLabel}</small>}
         </div>}
@@ -2685,6 +2691,7 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
     current: false,
   }));
   const subagentUntested = isUntested("mobile.focus.subagents") ? t("mobile.focus.untested") : "";
+  const planUntested = isUntested("mobile.focus.planBubble") ? t("mobile.focus.untested") : "";
   /** Where the open subagent stands among its siblings, and the conversation
    * the bar goes back up to. */
   const subagentPosition = openStep ? siblingPosition(openStep) : { index: -1, count: 0 };
@@ -2720,7 +2727,7 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
       ? <div className="readable-empty"><strong>{t("mobile.subagent.empty")}</strong></div>
       : <div className="readable-lines chat transcript" data-testid="subagent-transcript">
           {subTranscript.truncated && <button className="readable-earlier" onClick={() => setSubLimit((limit) => limit + TRANSCRIPT_STEP)}>{t("mobile.transcript.earlier")}</button>}
-          <TranscriptTurns entries={subTranscript.entries} cutLabel={t("mobile.transcript.cut")} promptLabel={t("mobile.subagent.task")} agentLabel={t("mobile.subagent.region")} agentUntested={subagentUntested} onOpenAgent={openSubagentTurn} />
+          <TranscriptTurns entries={subTranscript.entries} cutLabel={t("mobile.transcript.cut")} promptLabel={t("mobile.subagent.task")} planLabel={t("mobile.transcript.plan")} planUntested={planUntested} agentLabel={t("mobile.subagent.region")} agentUntested={subagentUntested} onOpenAgent={openSubagentTurn} />
         </div>}
   </>;
   return <main className={`terminal-screen ${tab.kind}-tab`} style={viewportHeight ? { height: viewportHeight } : undefined}><header><button className="back" onClick={back}>‹</button><div className="terminal-title"><h1>{tab.label}</h1><small>{t(tab.kind === "agent" ? "mobile.focus.agentSession" : "mobile.focus.shellSession")}</small></div>{outbox.length > 0 && <button className="terminal-gallery" onClick={() => setGallery(true)} aria-label={t("mobile.outbox.galleryOpen", { count: outbox.length })} title={t("mobile.outbox.region")}><span aria-hidden="true">🖼</span><small>{outbox.length}</small></button>}<div className="terminal-view-switch" aria-label={t("mobile.focus.outputView")}><button className={view === "focus" ? "selected" : ""} aria-pressed={view === "focus"} aria-haspopup={chat ? "menu" : undefined} aria-expanded={chat ? focusMenu : undefined} onClick={() => {
@@ -2802,7 +2809,7 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
               ? <div className="readable-empty"><strong>{t("mobile.transcript.empty")}</strong><span>{t("mobile.transcript.emptyHint")}</span></div>
               : <div className="readable-lines chat transcript" data-testid="session-transcript">
                   {transcript?.truncated && !sinceClear && <button className="readable-earlier" onClick={() => setTranscriptLimit((limit) => limit + TRANSCRIPT_STEP)}>{t("mobile.transcript.earlier")}</button>}
-                  <TranscriptTurns entries={sessionEntries} cutLabel={t("mobile.transcript.cut")} promptLabel={t("mobile.transcript.prompt")} agentLabel={t("mobile.subagent.region")} agentUntested={subagentUntested} onOpenAgent={openSubagentTurn} onResend={resendPrompt} posts={chatPosts} renderPost={renderPost} />
+                  <TranscriptTurns entries={sessionEntries} cutLabel={t("mobile.transcript.cut")} promptLabel={t("mobile.transcript.prompt")} planLabel={t("mobile.transcript.plan")} planUntested={planUntested} agentLabel={t("mobile.subagent.region")} agentUntested={subagentUntested} onOpenAgent={openSubagentTurn} onResend={resendPrompt} posts={chatPosts} renderPost={renderPost} />
                   {liveQuestion && <div className="transcript-screen" role="group" aria-label={t("mobile.transcript.question")}>
                     <small>{t("mobile.transcript.question")}{isUntested("mobile.focus.onScreen") && <> · {t("mobile.focus.untested")}</>}</small>
                     {/* The screen the dialog was drawn onto, as the screen drew
