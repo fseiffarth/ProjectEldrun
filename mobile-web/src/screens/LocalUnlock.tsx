@@ -133,8 +133,8 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
   // turning, and one line says what the sheet is waiting for.
   const verifying = biometricBusy && !unlocked;
   const phase = unlocked ? " unlocked" : verifying ? " verifying" : "";
-  return <main className={`pair screen brand-screen local-unlock${phase}`}>
-    <BrandHead>{setup ? "Secure Eldrun Mobile" : "Eldrun Mobile locked"}{!setup && isUntested("mobile.link.silentResume") && <small className="untested"> Untested</small>}</BrandHead>
+  const content = <>
+    <BrandHead>{setup ? "Secure Eldrun Mobile" : "Eldrun Mobile locked"}{!setup && isUntested("mobile.link.silentResume") && <small className="untested"> Untested</small>}{!setup && isUntested("mobile.lock.homeSheet") && <small className="untested"> Untested</small>}</BrandHead>
     <p className="local-unlock-status" aria-live="polite">
       {unlocked ? "Unlocked" : verifying ? "Touch the fingerprint sensor" : ""}
       {verifying && isUntested("mobile.lock.brandedSheet") && <small className="untested"> Untested</small>}
@@ -179,5 +179,17 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
           {busy ? "Checking…" : "Unlock"}
         </button>}
     <p className="local-unlock-note">This local lock protects against casual access to an unlocked phone. It does not replace the phone’s own device lock or Eldrun’s paired-device authentication.</p>
-  </main>;
+  </>;
+  // Setup runs once, right after pairing, with no project data to stand
+  // behind it yet — its own full screen. The lock met on every later cold
+  // open or idle timeout rises as a sheet over the Home screen's shell
+  // instead, so the reader lands somewhere that already looks like where they
+  // are going rather than a screen unto itself.
+  if (setup) return <main className={`pair screen brand-screen local-unlock${phase}`}>{content}</main>;
+  return <div className="sheet-backdrop lock-sheet-backdrop" role="presentation">
+    <section className={`option-sheet brand-screen local-unlock-sheet local-unlock${phase}`} role="dialog" aria-modal="true" aria-label="Eldrun Mobile locked">
+      <span className="sheet-grip" aria-hidden="true" />
+      {content}
+    </section>
+  </div>;
 }

@@ -204,15 +204,17 @@ describe("Mobile local unlock — unlock", () => {
     let pass!: () => void;
     lock.biometric.mockReturnValueOnce(new Promise<void>((resolve) => { pass = resolve; }));
     const onUnlocked = vi.fn();
+    // The lock (setup === false) rises as a sheet over Home's shell rather
+    // than its own `<main>`, so the phase classes land on the sheet section.
     const { container } = render(<LocalUnlock setup={false} onUnlocked={onUnlocked} />);
-    const main = container.querySelector("main")!;
+    const sheet = container.querySelector(".local-unlock")!;
     fireEvent.click(await screen.findByRole("button", { name: "Unlock with fingerprint" }));
-    await waitFor(() => expect(main.classList.contains("verifying")).toBe(true));
+    await waitFor(() => expect(sheet.classList.contains("verifying")).toBe(true));
     expect(screen.getByText("Touch the fingerprint sensor")).toBeTruthy();
 
     act(() => pass());
-    await waitFor(() => expect(main.classList.contains("unlocked")).toBe(true));
-    expect(main.classList.contains("verifying")).toBe(false);
+    await waitFor(() => expect(sheet.classList.contains("unlocked")).toBe(true));
+    expect(sheet.classList.contains("verifying")).toBe(false);
     expect(screen.getByText("Unlocked")).toBeTruthy();
     expect(onUnlocked).not.toHaveBeenCalled();
     await waitFor(() => expect(onUnlocked).toHaveBeenCalledOnce(), { timeout: 3000 });

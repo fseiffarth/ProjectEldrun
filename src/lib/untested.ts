@@ -333,6 +333,7 @@ export const UNTESTED = {
   "mobile.link.slowConnectHint": { area: "mobile", what: "App · With Tailscale off on the phone, Connecting… asks after a few seconds whether Tailscale is on, and the failure splash names it in its title" },
   "mobile.link.unlockRetry": { area: "mobile", what: "App · Unlocking after the phone slept connects on the first try (a stale connection or a dropped request is retried inside Connecting…); the failure splash's Retry reconnects without a second fingerprint", tested: "2026-09-27" },
   "mobile.link.silentResume": { area: "mobile", what: "LocalUnlock · A sidecar restart or a lapsed session is renewed silently while the reader is active; a cold open always asks for the PIN" },
+  "mobile.lock.homeSheet": { area: "mobile", what: "LocalUnlock · The lock (not the once-only setup) rises as a sheet over the Home screen's own header shell, instead of its own full screen" },
   "mobile.lock.brandedSheet": { area: "mobile", what: "LocalUnlock · While the fingerprint sheet is up, the mark lifts above it with turning rings; a successful unlock flares it away" },
   "mobile.focus.noSessionYet": { area: "mobile", what: "Terminal · A tab created from the phone stays in the Reader and shows its stored session once the agent records one" },
   "mobile.calendar.manage": { area: "mobile", what: "Calendar · Edit a calendar's name and colour in a sheet; deletes ask in the option sheet" },

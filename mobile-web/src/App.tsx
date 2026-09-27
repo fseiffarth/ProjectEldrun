@@ -9,6 +9,7 @@ import { hasLocalUnlock } from "./localLock";
 import { isUntested } from "../../src/lib/untested";
 import { Pair } from "./screens/Pair";
 import { LocalUnlock } from "./screens/LocalUnlock";
+import { LockedHomeShell } from "./screens/LockedHomeShell";
 import { Home } from "./screens/Home";
 import { Project } from "./screens/Project";
 import { Terminal } from "./screens/Terminal";
@@ -355,7 +356,10 @@ export function App() {
   }
   if (auth === "unpaired") return <Pair onDone={begin} />;
   if (auth === "setup") return <LocalUnlock setup onUnlocked={() => setAuth("locked")} />;
-  if (auth === "locked") return <LocalUnlock setup={false} onUnlocked={() => { unlockedAt.current = Date.now(); resume(); }} />;
+  if (auth === "locked") return <>
+    <LockedHomeShell />
+    <LocalUnlock setup={false} onUnlocked={() => { unlockedAt.current = Date.now(); resume(); }} />
+  </>;
   // A terminal is the one full-bleed screen: it owns every pixel it can get,
   // and the tab bar would sit on the keyboard toolbar besides.
   if (terminal) return <Terminal tab={terminal.tab} pickModel={terminal.pickModel} back={() => setTerminal(null)} />;
