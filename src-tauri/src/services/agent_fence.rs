@@ -515,6 +515,12 @@ pub fn configured_read_only_paths() -> Vec<String> {
 /// directory`. Only hops under `home` matter (the host root is already visible
 /// read-only), and directories already covered by `visible` are skipped.
 ///
+/// A script's `#!` interpreter is followed the same way, and a Python entry
+/// point in a venv (`uv tool`, pipx — Mistral's `vibe`) brings the whole venv
+/// plus the base interpreter's prefix from `pyvenv.cfg`: the venv's
+/// `bin/python` links into `~/.local/share/uv/python/…`, and without it the
+/// kernel reports the missing interpreter as the script itself not found.
+///
 /// Pure over the filesystem: it reads links but never mounts anything, and a
 /// command that cannot be found on the host yields nothing — bubblewrap then
 /// reports the same not-found error the shell would.
@@ -525,6 +531,23 @@ pub(crate) fn command_bind_paths(
     home: &Path,
     visible: &[String],
 ) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    collect_command_bind_paths(cmd, path_dirs, home, visible, &mut out, 0);
+    // A venv root makes its own `bin/` hop redundant.
+    let all = out.clone();
+    out.retain(|d| !all.iter().any(|o| o != d && Path::new(d).starts_with(o)));
+    out
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+fn collect_command_bind_paths(
+    cmd: &str,
+    path_dirs: &[PathBuf],
+    home: &Path,
+    visible: &[String],
+    out: &mut Vec<String>,
+    depth: usize,
+) {
     let start = if cmd.contains('/') {
         Some(PathBuf::from(cmd))
     } else {
@@ -534,23 +557,23 @@ pub(crate) fn command_bind_paths(
             .find(|cand| cand.is_file())
     };
     let Some(mut cur) = start else {
-        return Vec::new();
+        return;
     };
-    let covered = |dir: &Path| {
-        visible
+    let push = |dir: &Path, out: &mut Vec<String>| {
+        let covered = visible
             .iter()
-            .any(|v| dir == Path::new(v) || dir.starts_with(v))
+            .any(|v| dir == Path::new(v) || dir.starts_with(v));
+        if dir.starts_with(home) && dir != home && !covered {
+            let dir = dir.to_string_lossy().into_owned();
+            if !out.contains(&dir) {
+                out.push(dir);
+            }
+        }
     };
-    let mut out: Vec<String> = Vec::new();
     // A symlink loop is not launchable anyway; bound the walk instead of hanging.
     for _ in 0..40 {
         if let Some(dir) = cur.parent() {
-            if dir.starts_with(home) && dir != home && !covered(dir) {
-                let dir = dir.to_string_lossy().into_owned();
-                if !out.contains(&dir) {
-                    out.push(dir);
-                }
-            }
+            push(dir, out);
         }
         match std::fs::read_link(&cur) {
             Ok(target) if target.is_absolute() => cur = target,
@@ -562,7 +585,61 @@ pub(crate) fn command_bind_paths(
             Err(_) => break,
         }
     }
-    out
+    if let Some(venv) = python_venv_root(&cur) {
+        push(&venv, out);
+        if let Some(prefix) = venv_base_prefix(&venv, home) {
+            push(&prefix, out);
+        }
+    }
+    // `#!/usr/bin/env node` → `node`; an interpreter chain deeper than this
+    // is not something an installer writes.
+    if depth < 4 {
+        if let Some(interp) = shebang_interpreter(&cur) {
+            collect_command_bind_paths(&interp, path_dirs, home, visible, out, depth + 1);
+        }
+    }
+}
+
+/// `<venv>` when `exe` sits in `<venv>/bin` next to a `pyvenv.cfg`.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+fn python_venv_root(exe: &Path) -> Option<PathBuf> {
+    let bin = exe.parent()?;
+    let venv = bin.parent()?;
+    (bin.file_name()? == "bin" && venv.join("pyvenv.cfg").is_file()).then(|| venv.to_path_buf())
+}
+
+/// The base interpreter's install prefix (`home = <prefix>/bin` in
+/// `pyvenv.cfg`): its stdlib sits in `<prefix>/lib`. Never the home itself or
+/// `~/.local`, which a venv made from a `pip --user` Python would name.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+fn venv_base_prefix(venv: &Path, home: &Path) -> Option<PathBuf> {
+    let cfg = std::fs::read_to_string(venv.join("pyvenv.cfg")).ok()?;
+    let bin = cfg.lines().find_map(|line| {
+        let (key, value) = line.split_once('=')?;
+        (key.trim() == "home").then(|| PathBuf::from(value.trim()))
+    })?;
+    let prefix = if bin.file_name()? == "bin" { bin.parent()? } else { &bin };
+    (prefix.is_absolute() && prefix != home && prefix != home.join(".local"))
+        .then(|| prefix.to_path_buf())
+}
+
+/// The interpreter a `#!` script names, as a path or (behind `env`) a bare
+/// command for `path_dirs`. Anything that is not a script yields nothing.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+fn shebang_interpreter(exe: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut head = [0u8; 256];
+    let n = std::fs::File::open(exe).ok()?.read(&mut head).ok()?;
+    let line = head[..n].strip_prefix(b"#!")?;
+    let line = &line[..line.iter().position(|b| *b == b'\n').unwrap_or(line.len())];
+    let line = std::str::from_utf8(line).ok()?;
+    let mut words = line.split_whitespace();
+    let interp = words.next()?;
+    if basename(interp) == "env" {
+        words.find(|w| !w.starts_with('-') && !w.contains('=')).map(str::to_string)
+    } else {
+        Some(interp.to_string())
+    }
 }
 
 /// Collapse `.` and `..` without touching the filesystem, so a relative link
@@ -2463,6 +2540,55 @@ mod tests {
         );
         assert!(command_bind_paths("no-such-agent", &dirs, &home, &[]).is_empty());
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Mistral's installer is `uv tool install mistral-vibe`: `~/.local/bin/vibe`
+    /// links to a script in the tool's venv, whose `#!` interpreter links into
+    /// uv's managed Python. Binding only the hop directories left the
+    /// interpreter dangling and the new tab failed with `vibe` not found.
+    #[cfg(unix)]
+    #[test]
+    fn command_bind_paths_bring_a_uv_tool_venv_and_its_python() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let bin = home.join(".local/bin");
+        let venv = home.join(".local/share/uv/tools/mistral-vibe");
+        let python = home.join(".local/share/uv/python/cpython-3.12.9-linux-x86_64-gnu");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(venv.join("bin")).unwrap();
+        std::fs::create_dir_all(venv.join("lib/python3.12/site-packages")).unwrap();
+        std::fs::create_dir_all(python.join("bin")).unwrap();
+        std::fs::write(python.join("bin/python3.12"), b"\x7fELF").unwrap();
+        std::os::unix::fs::symlink(python.join("bin/python3.12"), venv.join("bin/python")).unwrap();
+        std::fs::write(
+            venv.join("pyvenv.cfg"),
+            format!("home = {}\nimplementation = CPython\n", python.join("bin").display()),
+        )
+        .unwrap();
+        std::fs::write(
+            venv.join("bin/vibe"),
+            format!("#!{}\nimport sys\n", venv.join("bin/python").display()),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(venv.join("bin/vibe"), bin.join("vibe")).unwrap();
+
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        assert_eq!(
+            command_bind_paths("vibe", std::slice::from_ref(&bin), &home, std::slice::from_ref(&s(&bin))),
+            vec![s(&venv), s(&python)]
+        );
+        // `#!/usr/bin/env node` resolves the interpreter on PATH.
+        let node_bin = home.join(".nvm/versions/node/v22/bin");
+        std::fs::create_dir_all(&node_bin).unwrap();
+        std::fs::write(node_bin.join("node"), b"\x7fELF").unwrap();
+        let pkg = home.join(".npm-global/lib/node_modules/cli");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(pkg.join("cli.js"), "#!/usr/bin/env -S node --no-warnings\n").unwrap();
+        std::os::unix::fs::symlink(pkg.join("cli.js"), bin.join("cli")).unwrap();
+        assert_eq!(
+            command_bind_paths("cli", &[bin.clone(), node_bin.clone()], &home, &[s(&bin)]),
+            vec![s(&pkg), s(&node_bin)]
+        );
     }
 
     /// A CLI installed on the host by its native installer — a launcher link
