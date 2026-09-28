@@ -1397,6 +1397,17 @@
    the surrounding text. */
 .yaml-val-string { color: var(--success); }
 .yaml-val-other { color: var(--success); }
+/* The achromatic pair takes the code viewer's palette (see the plain
+   `dark`/`light` .tok-* block): its accent-secondary is a grey, which would
+   leave booleans indistinguishable from keys. */
+[data-theme="dark"] .yaml-val-number,
+[data-theme="dark"] .yaml-val-boolean { color: #79c0ff; }
+[data-theme="dark"] .yaml-val-string,
+[data-theme="dark"] .yaml-val-other { color: #a5d6ff; }
+[data-theme="light"] .yaml-val-number,
+[data-theme="light"] .yaml-val-boolean { color: #0550ae; }
+[data-theme="light"] .yaml-val-string,
+[data-theme="light"] .yaml-val-other { color: #0a3069; }
 
 .yaml-value-locked {
   color: var(--text-muted);
@@ -2591,7 +2602,7 @@
    green for strings (Helix's default uses grey there, too flat for this).
    `fancy_dark` carries the Helix dark-purple vibe; `fancy_light` drops the same
    hues darker so they stay legible on the light surface. Plain `dark`/`light`
-   keep the calm semantic colors above. */
+   get their own palette further down. */
 [data-theme="fancy_dark"] .tok-comment { color: #697c81; }   /* sirocco  */
 [data-theme="fancy_dark"] .tok-string  { color: #9fd86a; }   /* green    */
 [data-theme="fancy_dark"] .tok-keyword { color: #d9bfff; }   /* lilac    */
@@ -2631,6 +2642,56 @@
 [data-theme="fancy_light"] .tok-md-quote   { color: #6b7280; }  /* sirocco  */
 [data-theme="fancy_light"] .tok-md-list    { color: #8e24aa; }  /* lilac    */
 [data-theme="fancy_light"] .tok-md-hr      { color: #6b7280; }  /* sirocco  */
+
+/* Plain `dark`/`light`: the achromatic pair's accent IS the ink (white / black,
+   accent-secondary a grey), so the semantic mapping above renders keywords,
+   functions, types, tags and markdown headings as grey-on-black — only strings
+   and numbers kept a hue. Code is the one place colour carries meaning rather
+   than decoration, so these two take a GitHub-style syntax palette: their
+   --success/--warning/--danger are already GitHub's, and this is the same
+   family, so the viewer reads as belonging to the theme. The light column is
+   the same hues darkened to clear 4.5:1 on white. */
+[data-theme="dark"] .tok-comment { color: #8b949e; }  /* grey    */
+[data-theme="dark"] .tok-string  { color: #a5d6ff; }  /* sky     */
+[data-theme="dark"] .tok-keyword { color: #ff7b72; }  /* coral   */
+[data-theme="dark"] .tok-num     { color: #79c0ff; }  /* blue    */
+[data-theme="dark"] .tok-type    { color: #ffa657; }  /* orange  */
+[data-theme="dark"] .tok-func    { color: #d2a8ff; }  /* violet  */
+[data-theme="dark"] .tok-tag     { color: #7ee787; }  /* green   */
+[data-theme="dark"] .tok-attr    { color: #79c0ff; }  /* blue    */
+[data-theme="dark"] .tok-prop    { color: #7ee787; }  /* green   */
+[data-theme="dark"] .tok-overlay { color: #e3b341; }  /* amber   */
+
+[data-theme="dark"] .tok-md-heading { color: #79c0ff; }  /* blue    */
+[data-theme="dark"] .tok-md-strong  { color: #ffa657; }  /* orange  */
+[data-theme="dark"] .tok-md-em      { color: #d2a8ff; }  /* violet  */
+[data-theme="dark"] .tok-md-code    { color: #a5d6ff; }  /* sky     */
+[data-theme="dark"] .tok-md-link    { color: #7ee787; }  /* green   */
+[data-theme="dark"] .tok-md-url     { color: #8b949e; }  /* grey    */
+[data-theme="dark"] .tok-md-quote   { color: #8b949e; }  /* grey    */
+[data-theme="dark"] .tok-md-list    { color: #ff7b72; }  /* coral   */
+[data-theme="dark"] .tok-md-hr      { color: #8b949e; }  /* grey    */
+
+[data-theme="light"] .tok-comment { color: #6e7781; }  /* grey    */
+[data-theme="light"] .tok-string  { color: #0a3069; }  /* navy    */
+[data-theme="light"] .tok-keyword { color: #cf222e; }  /* red     */
+[data-theme="light"] .tok-num     { color: #0550ae; }  /* blue    */
+[data-theme="light"] .tok-type    { color: #953800; }  /* orange  */
+[data-theme="light"] .tok-func    { color: #8250df; }  /* violet  */
+[data-theme="light"] .tok-tag     { color: #116329; }  /* green   */
+[data-theme="light"] .tok-attr    { color: #0550ae; }  /* blue    */
+[data-theme="light"] .tok-prop    { color: #116329; }  /* green   */
+[data-theme="light"] .tok-overlay { color: #9a6700; }  /* amber   */
+
+[data-theme="light"] .tok-md-heading { color: #0550ae; }  /* blue    */
+[data-theme="light"] .tok-md-strong  { color: #953800; }  /* orange  */
+[data-theme="light"] .tok-md-em      { color: #8250df; }  /* violet  */
+[data-theme="light"] .tok-md-code    { color: #0a3069; }  /* navy    */
+[data-theme="light"] .tok-md-link    { color: #116329; }  /* green   */
+[data-theme="light"] .tok-md-url     { color: #6e7781; }  /* grey    */
+[data-theme="light"] .tok-md-quote   { color: #6e7781; }  /* grey    */
+[data-theme="light"] .tok-md-list    { color: #cf222e; }  /* red     */
+[data-theme="light"] .tok-md-hr      { color: #6e7781; }  /* grey    */
 
 /* #49 link-decoration + #45 ghost overlays: transparent <pre> layers aligned to
    the textarea exactly like .file-viewer-highlight, so only their styled spans
