@@ -11,6 +11,7 @@ import {
   type WindowState,
 } from "../types";
 import { applyLanguage, type Language } from "../lib/i18n";
+import { probeOsClock } from "../lib/osClock";
 import { mergeVerdicts, verdictsUnchanged, type PyMainCache } from "../lib/terminal/pythonMainCache";
 import { THEME_COLOR_RE, THEME_VAR_NAMES } from "../lib/theme/themeTokens";
 import {
@@ -558,6 +559,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   load: async (opts) => {
     const settings = await invoke<Settings>("get_settings");
+    // The default clock when `time_format_24h` is unset (`lib/timeFormat.ts`).
+    probeOsClock();
     applyTheme(settings.color_scheme ?? "fancy_dark");
     applyAccent(settings.ui_accent);
     applyThemeVars(settings.ui_theme_vars);

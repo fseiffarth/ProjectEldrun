@@ -672,7 +672,7 @@ export const dict: Dict = {
   "view.agenda": "Agenda",
   "view.tasks": "Aufgaben",
   "settings.clock24": "24-Stunden-Format",
-  "settings.clock24Help": "Aus zeigt AM/PM. Ohne eigene Wahl richtet sich das Format nach der Sprache — Englisch 12 Stunden, sonst 24.",
+  "settings.clock24Help": "Aus zeigt AM/PM. Ohne eigene Wahl richtet sich das Format nach der Uhr-Einstellung des Systems.",
   "settings.dayGridStart": "Tagesraster beginnt um",
   "settings.defaultReminder": "Standarderinnerung",
   "reminder.none": "Keine",

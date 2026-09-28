@@ -343,7 +343,8 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `lib/calendar/calendarClipboard.ts` | Copy/paste of an entry (pure): the copy keeps everything typed, drops identity (`id`/`uid`/`caldav_*`/`recurrence_id`) and the repeat rule; the paste rewrites only start/end. |
 | `lib/calendar/icsSafety.ts` | Lists what's in an `.ics` before import (alarms with actions, `ATTACH`, app-scheme links, …) — pure. Not a scanner. |
 | `lib/calendar/calendarTime.ts` | Calendar date math (local stamps, exclusive ends, overlap layout). `formatTime`/`formatStampTime` are the two clock renderers (via `lib/timeFormat`). |
-| `lib/timeFormat.ts` | The one 12h/24h answer (`Settings.time_format_24h`), read by every surface that prints a wall clock. |
+| `lib/timeFormat.ts` | The one 12h/24h answer (`Settings.time_format_24h`, else the OS clock, else the language), read by every surface that prints a wall clock. |
+| `lib/osClock.ts` | Probes the backend's `os_clock_format` once per window (from settings `load`); the OS default for `lib/timeFormat`. |
 | `lib/todoBoard.ts` | To-do board pure logic: bucketing, ordering, filters, badge + `urgentTodos`/`daysLate`, rails, drag geometry, deadline chip (`dueDelta`); whole-day vs timed `due`. |
 | `lib/calendar/recurrence.ts` | Recurrence expansion (`expandEvents`) + exdate/override editing. |
 | `lib/calendar/caldav.ts` | Typed invoke surface for CalDAV (`caldav_*`), no path args. `parseChanges` parses fetched resources with `lib/calendar/ics.ts` (one iCal parser), grouped by resource href. |

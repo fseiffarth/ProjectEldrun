@@ -62,7 +62,7 @@ import { agentWorktreeChoices, worktreeName, type GitWorktree } from "../../lib/
 import { cleanCloudTask, cloudLaunch, cloudLaunchesFor } from "../../lib/agents/cloudSessions";
 import { loginIdForCmd, signInLaunch } from "../../lib/agents/signInLaunch";
 import { useI18nStore, useT } from "../../lib/i18n";
-import { resolveUse24h } from "../../lib/timeFormat";
+import { readUse24h } from "../../lib/timeFormat";
 import { finishAlert } from "../../lib/alertDone";
 import { useAlertsFeed, type AlertsFeed } from "../files/useAlertsFeed";
 import { agentTurnEdges, type MobileAgentState } from "../../lib/mobileAgentTurns";
@@ -1911,8 +1911,7 @@ async function mailReply(
   const original = await mailBody(header.id, false).catch(() => null);
   const quoted = (original?.text ?? "").split("\n").map((line) => `> ${line}`).join("\n");
   const lang = useI18nStore.getState().lang;
-  const settings = useSettingsStore.getState().settings;
-  const use24h = resolveUse24h(settings?.time_format_24h, settings?.calendar_time_format_24h, lang);
+  const use24h = readUse24h();
   const intro = t("mail.quotedIntro", { date: formatMailDate(header.date, lang, use24h), sender: formatAddress(header.from) });
   try {
     const saved = await mailDraftSave({

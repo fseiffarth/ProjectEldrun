@@ -285,6 +285,9 @@ gtk = "0.18"
 webview2-com = "0.38"
 windows = { version = "0.61", features = [
     "Win32_Foundation",
+    # The user's regional time picture (`GetLocaleInfoEx`) for the default
+    # 12/24-hour clock (`commands/os_clock.rs`).
+    "Win32_Globalization",
     # Native screen capture (BitBlt the virtual screen → PNG) in `screenshot.rs`.
     "Win32_Graphics_Gdi",
     # Interface byte counters for the network pane (`GetIfTable2` + the Ndis

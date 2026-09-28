@@ -615,7 +615,7 @@ export const en = {
   "view.agenda": "Agenda",
   "view.tasks": "Tasks",
   "settings.clock24": "24-hour clock",
-  "settings.clock24Help": "Off shows AM/PM. Unset, this follows your language — 12-hour for English, 24-hour otherwise.",
+  "settings.clock24Help": "Off shows AM/PM. Unset, this follows your system's clock setting.",
   "settings.dayGridStart": "Day grid starts at",
   "settings.defaultReminder": "Default reminder",
   "reminder.none": "None",

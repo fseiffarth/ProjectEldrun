@@ -169,10 +169,10 @@ export interface Settings {
    *  Applied live via `lib/i18n` (`applyLanguage`); the backend round-trips it. */
   language?: "en" | "de" | "es" | "fr" | "it";
   /** App-wide clock: `true` = 24-hour, `false` = 12-hour AM/PM. **Unset is not
-   *  `false`** — it means "not chosen", and the clock is then derived from
-   *  `language` (English → 12-hour, the rest → 24-hour). Read through
-   *  `lib/timeFormat`'s `useUse24h()`, never off `settings` directly, or the
-   *  language default is what gets missed. */
+   *  `false`** — it means "not chosen", and the clock then follows the OS's
+   *  12/24-hour setting (`lib/osClock`), or `language` when the OS has no
+   *  opinion. Read through `lib/timeFormat`'s `useUse24h()`, never off
+   *  `settings` directly, or the default is what gets missed. */
   time_format_24h?: boolean;
   /** The MAIN window's UI zoom factor (helps on high-DPI/4K monitors). `1` (or
    *  unset) is 100% — the default look; applied as the webview's native zoom.

@@ -1007,9 +1007,9 @@ export function SettingsDialog({
   const currentTheme = (settings?.color_scheme ?? "fancy_dark") as Theme;
   const currentLang = (settings?.language ?? "en") as Language;
   // Through the hook, never off `settings`: unset means "not chosen", and only
-  // `resolveUse24h` knows that it then follows the language. Reading the raw key
-  // with a `?? false` would show the switch off for a German user whose clock is
-  // in fact 24-hour — a control lying about the state it is controlling.
+  // `resolveUse24h` knows that it then follows the OS. Reading the raw key with a
+  // `?? false` would show the switch off for a user whose desktop clock is in
+  // fact 24-hour — a control lying about the state it is controlling.
   const use24h = useUse24h();
 
   // Live power state for the Energy Saver help line.
@@ -1252,7 +1252,7 @@ export function SettingsDialog({
                   live as a calendar-only switch): a clock is not a property of
                   one feature, and reading 17:00 in the calendar beside 5:00 PM
                   on a to-do card is one app disagreeing with itself. Unset
-                  follows the UI language, which is why the help line says what
+                  follows the OS clock, which is why the help line says what
                   the default is rather than leaving the off position to imply
                   it — see `lib/timeFormat.ts`. */}
               <ToggleRow

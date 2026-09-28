@@ -38,6 +38,7 @@ only when breaking it does damage. The *why* goes in code comments or
 | `ssh.rs` | SSH commands for remote projects (`ssh_connect`, `ssh_default_dir`, `ssh_list_dir`, `ssh_tooling_status`) + explicit-click disconnects: `remote_kill_all_jobs` (`tmux kill-server`) and `ssh_close_master`. |
 | `remote.rs` | Pooled SSH/SFTP lifecycle (`remote_connect`/`remote_disconnect`), `remote_upload_file` (sanitized dest), and remote tmux commands (`remote_tmux_{list,kill,rename}`, per host) (#85). |
 | `openvpn.rs` | OpenVPN tunnel connect/store-config commands. |
+| `os_clock.rs` | `os_clock_format`: the OS's 12/24-hour clock (GNOME/Cinnamon switch, macOS override, Windows time picture) plus the time locale — the default for `lib/timeFormat`. |
 | `ollama.rs` | Ollama model list/pull/delete + cancellable streaming autocomplete; capability-based FIM with prose chat, semantic stream stops and seeded candidates. Server address only via `resolve_ollama_addr` (read per call); `https://` is an error, never a downgrade. |
 | `tex.rs` | TeX compile + SyncTeX (shell-escape defense). `compile_tex` is async (`spawn_blocking`); pdflatex full compiles use a cached-preamble `.fmt` keyed by preamble + local inputs. |
 | `synctex.rs` | Native SyncTeX reverse search from `.synctex(.gz)` (the CLI picks the wrong `.tex` file on margin clicks). |

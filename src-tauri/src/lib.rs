@@ -1336,6 +1336,7 @@ pub fn run() {
             commands::settings::save_settings,
             commands::settings::patch_settings,
             commands::settings::save_window_state,
+            commands::os_clock::os_clock_format,
             // Per-tab scheduled agent prompts. Definitions and receipts live in
             // local-only agent_tasks.json; the frontend owns wall-clock delivery.
             commands::agent_tasks::agent_schedules_list,

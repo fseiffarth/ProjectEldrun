@@ -36,6 +36,7 @@ pub mod net_usage;
 pub mod network;
 pub mod ollama;
 pub mod openvpn;
+pub mod os_clock;
 pub mod pdf_clip;
 pub mod power;
 pub mod presenter;
