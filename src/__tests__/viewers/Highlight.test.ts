@@ -48,7 +48,7 @@ describe("highlight", () => {
 
   it("marks plain-text inline tokens: urls, dates, quotes, levels, numbers", () => {
     const html = highlight(
-      'ERROR 2024-05-01 12:30 see https://x.org/a "quoted" TODO 42% WARN a@b.io',
+      'ERROR 2024-05-01 12:30 see https://x.org/a "quoted" TODO 42% WARN ada@example.com',
       "plain",
     )!;
     expect(html).toContain('<span class="tok-txt-bad">ERROR</span>');
@@ -58,7 +58,7 @@ describe("highlight", () => {
     expect(html).toContain('<span class="tok-txt-marker">TODO</span>');
     expect(html).toContain('<span class="tok-txt-num">42%</span>');
     expect(html).toContain('<span class="tok-txt-warn">WARN</span>');
-    expect(html).toContain('<span class="tok-txt-url">a@b.io</span>');
+    expect(html).toContain('<span class="tok-txt-url">ada@example.com</span>');
   });
 
   it("does not colour digits inside a word", () => {
