@@ -400,11 +400,12 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
         </label>}
         {/* Opening a session is what this screen is for, so it sits where the
             thumb already is rather than under however many cards the project has
-            (`NewTabSheet`). Disabled without the desktop, which is the same
-            condition the buttons down there carried — the notice below says why. */}
+            (`NewTabSheet`). It opens without the desktop too: sending a file
+            from the phone needs only this host, and the sheet holds its create
+            buttons instead — the notice below says why. */}
         <button
           className="primary new-tab"
-          disabled={creating || !detail?.desktop_available}
+          disabled={!detail}
           onClick={() => setNewTabOpen(true)}
           aria-haspopup="dialog"
           aria-expanded={newTabOpen}
@@ -513,7 +514,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     {newTabOpen && detail && <NewTabSheet
       projectId={id}
       agents={detail.agents}
-      busy={creating}
+      busy={creating || !detail.desktop_available}
       onClose={() => setNewTabOpen(false)}
       onPick={(kind, agent, mode, launch) => { setNewTabOpen(false); void create(kind, agent, mode, launch); }}
       onSendFile={() => { projectInbox.open(); setNewTabOpen(false); }}

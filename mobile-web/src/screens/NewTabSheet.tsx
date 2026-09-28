@@ -16,9 +16,9 @@ export interface NewTabLaunch {
 }
 
 /**
- * What the project header's ＋ opens: a shell, or one of the agents this
- * desktop offers, in the modes it offers them in — and, last, a document from
- * this phone into the project's inbox (`useProjectInbox`).
+ * What the project header's ＋ opens: a shell, a document from this phone into
+ * the project's inbox (`useProjectInbox`), or one of the agents this desktop
+ * offers, in the modes it offers them in.
  *
  * These are the buttons that used to stand at the foot of the project screen,
  * under every tab card. The sheet puts a shell action first and keeps the
@@ -45,6 +45,7 @@ export interface NewTabLaunch {
 export function NewTabSheet({ projectId, agents, busy, onPick, onSendFile, onClose }: {
   projectId: string;
   agents: AgentRow[];
+  /** A create in flight, or no desktop to answer one; the file row ignores it. */
   busy: boolean;
   onPick: (kind: "shell" | "agent", agent?: AgentRow, mode?: string, launch?: NewTabLaunch) => void;
   /** Opens the phone's file picker; runs inside the tap, which the picker needs. */
@@ -88,6 +89,15 @@ export function NewTabSheet({ projectId, agents, busy, onPick, onSendFile, onClo
       <p className="sheet-note">{t("mobile.newTab.note")}</p>
       <div className="create">
         <button className="primary" disabled={busy} onClick={() => onPick("shell")}>{t("mobile.newTab.shell")}</button>
+        {/* Right under the shell, not after the agents: at the foot of a
+            project with many agents it sat past the sheet's fold, and the
+            reader never found it. No desktop round trip — the sidecar writes
+            the file itself — so neither a create in flight nor an absent
+            desktop holds it back. */}
+        <button className="new-tab-file" onClick={onSendFile}>
+          <span><strong>{t("mobile.projectInbox.send")}{isUntested("mobile.project.sendFile") && <span className="untested">{t("mobile.newTab.untested")}</span>}</strong><small>{t("mobile.projectInbox.hint")}</small></span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m-5 5 5-5 5 5M5 20h14" /></svg>
+        </button>
         {linked.length > 0 && agents.length > 0 && <div className="new-tab-where" role="group" aria-label={t("mobile.newTab.where")}>
           <small>{t("mobile.newTab.where")}{isUntested("mobile.newTab.worktree") && <span className="untested">{t("mobile.newTab.untested")}</span>}</small>
           <button className={where === "" ? "selected" : ""} aria-pressed={where === ""} onClick={() => setWhere("")}>{t("mobile.newTab.projectFolder")}</button>
@@ -103,12 +113,6 @@ export function NewTabSheet({ projectId, agents, busy, onPick, onSendFile, onClo
         {agents.length === 0 && <p className="sheet-note">{t("mobile.newTab.noAgents")}</p>}
         {options.local && <LocalModelGroup local={options.local} busy={busy} onPick={(id) => onPick("agent", undefined, undefined, { local: id })} />}
         {options.sign_in.length > 0 && <SignInEntry rows={options.sign_in} onOpen={() => setSigningIn(true)} />}
-        {/* No desktop round trip: the sidecar writes the file itself, so this
-            is not held back while a create is in flight. */}
-        <button className="new-tab-file" onClick={onSendFile}>
-          <span><strong>{t("mobile.projectInbox.send")}{isUntested("mobile.project.sendFile") && <span className="untested">{t("mobile.newTab.untested")}</span>}</strong><small>{t("mobile.projectInbox.hint")}</small></span>
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m-5 5 5-5 5 5M5 20h14" /></svg>
-        </button>
       </div>
       </>}
     </section>

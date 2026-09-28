@@ -105,10 +105,26 @@ describe("Mobile project screen — the ＋", () => {
     expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/tabs"))).toBe(false);
   });
 
-  it("holds the ＋ while the desktop is away, which is what could answer it", async () => {
+  it("opens the ＋ while the desktop is away for a file, holding only the creates", async () => {
     serve({ ...DETAIL, desktop_available: false });
     render(<Project id="p" back={() => {}} terminal={() => {}} />);
     await screen.findByText(/Desktop unavailable/);
-    expect((screen.getByRole("button", { name: "New tab" }) as HTMLButtonElement).disabled).toBe(true);
+    const open = screen.getByRole("button", { name: "New tab" }) as HTMLButtonElement;
+    expect(open.disabled).toBe(false);
+    fireEvent.click(open);
+    expect((screen.getByRole("button", { name: "New shell" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: /Send a file from this phone/ }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("puts the phone file under the shell and asks for any file, not just media", async () => {
+    serve(DETAIL);
+    render(<Project id="p" back={() => {}} terminal={() => {}} />);
+    fireEvent.click(await screen.findByRole("button", { name: "New tab" }));
+    const shell = screen.getByRole("button", { name: "New shell" });
+    const file = screen.getByRole("button", { name: /Send a file from this phone/ });
+    // Straight after the shell, before any agent tile.
+    expect(shell.nextElementSibling).toBe(file);
+    // A bare input is media-only to Android Chrome: camera and photos, no files.
+    expect(screen.getByTestId("project-inbox-input").getAttribute("accept")).toContain("application/*");
   });
 });

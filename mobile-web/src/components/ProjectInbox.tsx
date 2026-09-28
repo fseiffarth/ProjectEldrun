@@ -1,5 +1,5 @@
 import { useRef, useState, type ReactNode } from "react";
-import { ApiError, MAX_INBOX_FILE, uploadToProjectInbox } from "../api";
+import { ANY_FILE_ACCEPT, ApiError, MAX_INBOX_FILE, uploadToProjectInbox } from "../api";
 import { useT, type TranslationKey } from "../../../src/lib/i18n";
 
 /** Why a file did not reach the project's inbox, by the desktop's code. */
@@ -66,7 +66,7 @@ export function useProjectInbox(projectId: string): { open: () => void; view: Re
   const copy = (reference: string) => { void navigator.clipboard?.writeText(`@${reference} `).catch(() => undefined); };
 
   const view = <>
-    <input ref={input} type="file" multiple hidden aria-hidden="true" tabIndex={-1} data-testid="project-inbox-input" onChange={(event) => { send(event.target.files); event.target.value = ""; }} />
+    <input ref={input} type="file" accept={ANY_FILE_ACCEPT} multiple hidden aria-hidden="true" tabIndex={-1} data-testid="project-inbox-input" onChange={(event) => { send(event.target.files); event.target.value = ""; }} />
     {uploads.map((upload) => {
       const close = <button onClick={() => dismiss(upload.id)} aria-label={t("mobile.sendToDesktop.dismiss", { name: upload.name })}>✕</button>;
       if (upload.state === "failed") return <div key={upload.id} className="inbox-upload error" role="alert"><strong>{upload.name}</strong><span>{upload.failure}</span>{close}</div>;
