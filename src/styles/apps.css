@@ -868,9 +868,12 @@
 .models-overlay-body :is(.dialog-scroll, .models-overlay-intro) {
   padding-inline: max(18px, calc((100% - 880px) / 2));
 }
-/* …except Agents & CLIs, whose cards tile across a wider column instead of
-   stacking in the reading one; its prose keeps the 880px measure. */
-.models-overlay-body .models-overlay-pane-agents :is(.dialog-scroll, .models-overlay-intro) {
+/* …except the sections behind the overview's tiles, whose cards tile across a
+   wider column in the same grid language instead of stacking in the reading
+   one; their prose keeps the 880px measure. */
+.models-overlay-body
+  :is(.models-overlay-pane-agents, .models-overlay-pane-models, .models-overlay-pane-ollama)
+  :is(.dialog-scroll, .models-overlay-intro) {
   padding-inline: max(18px, calc((100% - 1320px) / 2));
 }
 .models-overlay-pane-agents .dialog-scroll > .settings-list {
@@ -879,13 +882,97 @@
   align-items: start;
   gap: 12px;
 }
-.models-overlay-pane-agents .dialog-scroll > .settings-help {
+:is(.models-overlay-pane-agents, .models-overlay-pane-ollama) .dialog-scroll > .settings-help {
   max-width: 880px;
 }
-/* The Local models tab stacks the dropdown's own rows, which expect the
-   menu's column with a 1px gap, not a settings page's 12px. */
+/* The Local models tab stacks the dropdown's own bands and notices, which
+   expect the menu's column with a 1px gap, not a settings page's 12px. */
 .models-overlay-body .models-overlay-models {
   gap: 1px;
+}
+/* …and tiles its model lists (Running, On disk — `ModelCards`) and the
+   Machine meters as card grids. A card keeps the dropdown row's insides (name
+   line over chips and verbs); the grid gives it the overview tiles' border
+   and radius, and pins the verbs to the card's foot so a row of cards lines
+   its actions up. */
+.models-overlay-models .local-model-grid,
+.models-overlay-models .local-model-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 400px), 1fr));
+  align-items: stretch;
+  gap: 10px;
+  margin: 6px 0 8px;
+}
+.models-overlay-models :is(.local-model-row, .local-model-load-row) {
+  justify-content: space-between;
+  gap: 4px;
+  padding: 4px 2px 2px;
+  border-color: var(--control-border);
+  border-radius: var(--radius-lg);
+}
+/* Restated: the resting border above would otherwise outrank the row's own
+   accent hover (header-menus.css) at equal specificity. */
+.models-overlay-models :is(.local-model-row, .local-model-load-row):hover {
+  border-color: var(--accent);
+}
+.models-overlay-models .local-model-stats {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
+  padding: 0;
+}
+.models-overlay-models .local-model-stat {
+  gap: 8px;
+  padding: 12px 14px;
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-lg);
+}
+.models-overlay-models .local-model-meter {
+  height: 6px;
+}
+/* The Ollama tab: its lists (downloads, downloaded models, load-on-start, the
+   catalog) tile the same way. Anything in a list that is not a card — a
+   loading or end-of-results line, the lazy-load sentinel — spans the row. */
+.models-overlay-pane-ollama .dialog-scroll > .settings-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr));
+  align-items: stretch;
+  gap: 10px;
+}
+.models-overlay-pane-ollama .dialog-scroll > .settings-list.ollama-autostart-list {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
+  align-content: start;
+  gap: 6px;
+}
+.models-overlay-pane-ollama
+  .dialog-scroll
+  > .settings-list
+  > :not(.ollama-model-row, .ollama-catalog-row, .ollama-autostart-row) {
+  grid-column: 1 / -1;
+}
+.models-overlay-pane-ollama .ollama-model-row {
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 14px;
+  border-color: var(--control-border);
+  border-radius: var(--radius-lg);
+}
+/* The catalog's rows were divider-separated lines; as grid cells they take
+   the card chrome the downloaded models already wear, hover included. */
+.models-overlay-pane-ollama .ollama-catalog-row,
+.models-overlay-pane-ollama .ollama-catalog-row:last-child {
+  gap: 6px;
+  padding: 12px 14px;
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-lg);
+  transition: border-color var(--transition);
+}
+.models-overlay-pane-ollama :is(.ollama-model-row, .ollama-catalog-row):hover {
+  border-color: var(--accent);
+}
+.models-overlay-pane-ollama .ollama-catalog-tags {
+  margin-top: auto;
+  padding-top: 4px;
 }
 
 /* Split-scroll frame, generalized — the one Settings uses, made reusable so any

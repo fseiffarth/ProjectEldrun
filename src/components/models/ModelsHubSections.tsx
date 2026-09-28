@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { useSettingsStore } from "../../stores/settings";
 import { useOllamaAutoloadStore } from "../../stores/agents/ollamaAutoload";
 import { useOllamaUpgradeStore } from "../../stores/agents/ollamaUpgrade";
@@ -416,13 +417,23 @@ export function AgentChips({ agent: a, wiredClis }: { agent: HubAgentInfo; wired
 }
 
 /**
+ * One model list — Running or On disk. The overlay tiles its cards as a grid
+ * (`.local-model-grid`, the overview tiles' vocabulary); the dropdown keeps
+ * its single column, and its rows stay direct children of the menu there.
+ */
+function ModelCards({ grid, children }: { grid: boolean; children: ReactNode }) {
+  return grid ? <div className="local-model-grid">{children}</div> : <>{children}</>;
+}
+
+/**
  * The Local models section: the Manage / Install door, the update check and
  * version, the upgrade-restore and autoload notices, the downloads, then the
  * Running models (roles, Root, MCP, autostart, unload) with the iGPU notice
  * beside them, and the models On disk.
  *
- * `layout` only decides the door's untested pill (dropdown only; inside the
- * overlay the door is a tab switch). The "Local Models" band renders in both,
+ * `layout` decides the door's untested pill (dropdown only; inside the
+ * overlay the door is a tab switch) and whether the model lists tile as a card
+ * grid (overlay only, `ModelCards`). The "Local Models" band renders in both,
  * since it is what makes Running / On disk read as its parts. `onManageModels`
  * is the door — the dropdown opens the overlay's Ollama tab with it, the
  * overlay switches to that tab.
@@ -783,7 +794,8 @@ export function LocalModelsSection({
           {running.length === 0 ? (
             <div className="tab-new-menu-hint">{t("ollama.noModelLoaded")}</div>
           ) : (
-            running.map((m) => (
+            <ModelCards grid={layout === "overlay"}>
+            {running.map((m) => (
               <div key={m.name} className="local-model-row">
                 <button
                   className="tab-new-menu-item local-model-pick"
@@ -918,7 +930,8 @@ export function LocalModelsSection({
                   </div>
                 </div>
               </div>
-            ))
+            ))}
+            </ModelCards>
           )}
           {/* The resident model is on the CPU, this machine has a GPU, and
               the reason is the server's own integrated-GPU gate rather than
@@ -964,6 +977,7 @@ export function LocalModelsSection({
                   GPU / CPU verb, so a header repeating the verb said the
                   same thing one level up. */}
               <div className="tab-new-menu-group-label is-sub">{t("localModel.onDiskGroup")}</div>
+              <ModelCards grid={layout === "overlay"}>
               {available.map((m) => {
                 const st = loads[m.name];
                 return (
@@ -1099,6 +1113,7 @@ export function LocalModelsSection({
                   </div>
                 );
               })}
+              </ModelCards>
             </>
           )}
         </>
