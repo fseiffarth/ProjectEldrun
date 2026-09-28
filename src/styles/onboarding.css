@@ -210,7 +210,7 @@
   /* Fade in on appearance, then keep a slow accent breathing on the border so a
      freshly-surfaced hint draws the eye without nagging. Opacity-only entry so it
      never fights the inline/class positioning transforms (translateY/translateX).
-     Shares the pulse vocabulary of tab-working-pulse / side-panel-drop-pulse. */
+     Shares the pulse vocabulary of tab-new-hint-pulse / side-panel-drop-pulse. */
   animation: hint-bubble-in 0.24s ease-out,
     hint-bubble-breathe 2.4s ease-in-out 0.24s infinite;
 }

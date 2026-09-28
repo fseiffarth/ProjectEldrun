@@ -2062,16 +2062,28 @@
 }
 
 /* No tabs in this group yet: the + is the sole entry point, so breathe it in
-   the accent colour to invite a first tab. Reuses the working-tab pulse so the
-   cue matches the rest of the tab bar. Hovering cancels the pulse so it settles
-   into the normal affordance once the user reaches for it. */
+   the accent colour to invite a first tab. Hovering cancels the pulse so it
+   settles into the normal affordance once the user reaches for it. Opacity
+   only. (It used to borrow the working-tab pulse; that keyframe went when tab
+   status became a static ring, and left this + pointing at nothing.) */
 .tab-new-btn.empty-hint {
   color: var(--accent);
-  animation: tab-working-pulse 1.6s ease-in-out infinite;
+  animation: tab-new-hint-pulse 1.6s ease-in-out infinite;
 }
 
 .tab-new-btn.empty-hint:hover {
   animation: none;
+}
+
+@keyframes tab-new-hint-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tab-new-btn.empty-hint {
+    animation: none;
+  }
 }
 
 /* One popover/menu surface for the whole app: context menus, the generic
