@@ -13,28 +13,37 @@ import { fillsScreen, mayClearStrayFullscreen } from "../../lib/window/strayFull
 describe("mayClearStrayFullscreen", () => {
   it("clears an unexplained fullscreen — the state that makes a popout immovable", () => {
     expect(
-      mayClearStrayFullscreen({ platform: "linux", domFullscreen: false, presenting: 0 }),
+      mayClearStrayFullscreen({ platform: "linux", domFullscreen: false, presenting: 0, requested: false }),
     ).toBe(true);
     expect(
-      mayClearStrayFullscreen({ platform: "windows", domFullscreen: false, presenting: 0 }),
+      mayClearStrayFullscreen({ platform: "windows", domFullscreen: false, presenting: 0, requested: false }),
     ).toBe(true);
   });
 
   it("leaves the page's own fullscreen alone — a video is not a stray state", () => {
     expect(
-      mayClearStrayFullscreen({ platform: "linux", domFullscreen: true, presenting: 0 }),
+      mayClearStrayFullscreen({ platform: "linux", domFullscreen: true, presenting: 0, requested: false }),
     ).toBe(false);
   });
 
   it("leaves a talk in progress fullscreen", () => {
     expect(
-      mayClearStrayFullscreen({ platform: "linux", domFullscreen: false, presenting: 1 }),
+      mayClearStrayFullscreen({ platform: "linux", domFullscreen: false, presenting: 1, requested: false }),
+    ).toBe(false);
+  });
+
+  it("leaves the fullscreen mode the user asked for (F11 / the button)", () => {
+    expect(
+      mayClearStrayFullscreen({ platform: "linux", domFullscreen: false, presenting: 0, requested: true }),
+    ).toBe(false);
+    expect(
+      mayClearStrayFullscreen({ platform: "windows", domFullscreen: false, presenting: 0, requested: true }),
     ).toBe(false);
   });
 
   it("never touches macOS, where fullscreen is the platform's own Space", () => {
     expect(
-      mayClearStrayFullscreen({ platform: "macos", domFullscreen: false, presenting: 0 }),
+      mayClearStrayFullscreen({ platform: "macos", domFullscreen: false, presenting: 0, requested: false }),
     ).toBe(false);
   });
 
@@ -42,7 +51,7 @@ describe("mayClearStrayFullscreen", () => {
     // The tab holding the fullscreen element closed mid-video: WebKitGTK left the
     // toplevel fullscreen, but `document.fullscreenElement` is null again.
     expect(
-      mayClearStrayFullscreen({ platform: "linux", domFullscreen: false, presenting: 0 }),
+      mayClearStrayFullscreen({ platform: "linux", domFullscreen: false, presenting: 0, requested: false }),
     ).toBe(true);
   });
 });

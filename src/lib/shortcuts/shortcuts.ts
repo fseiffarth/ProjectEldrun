@@ -460,6 +460,8 @@ export interface FixedKeyDef {
   keys: string;
   labelKey: TranslationKey;
   descKey: TranslationKey;
+  /** The pill's id in the untested register, as on `ShortcutDef`. */
+  untested?: UntestedId;
 }
 
 /**
@@ -486,6 +488,7 @@ export const FIXED_KEYS: FixedKeyDef[] = [
     keys: "F11",
     labelKey: "fixedKeys.osFullscreen.label",
     descKey: "fixedKeys.osFullscreen.desc",
+    untested: "fixedKeys.osFullscreen.label",
   },
   {
     // A getter, not a value: unlike the OS, the desktop is a backend answer

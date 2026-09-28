@@ -40,6 +40,7 @@ import {
   type TitlebarPress,
 } from "../../stores/detached";
 import { clearStrayFullscreen, windowFillsScreen } from "../../lib/window/strayFullscreen";
+import { toggleWindowFullscreen, useFullscreenMode } from "../../lib/window/fullscreenMode";
 import { FileDropContext, type FileDropController } from "../files/fileDropContext";
 import { fileDropPayloads } from "../tabs/commitFileDrop";
 import { TabPane } from "../tabs/TabPane";
@@ -353,7 +354,7 @@ export function DetachedCenterPanel({
   // user's overrides) so a rebound key behaves identically in both windows.
   //
   // Only the actions with a popout equivalent are wired: close tab, prev/next/
-  // cycle tab, cycle subwindow focus, and F11 OS-fullscreen. The rest are
+  // cycle tab, cycle subwindow focus, and F11 window fullscreen. The rest are
   // deliberately absent because the popout has no matching concept:
   // app-internal fullscreen, hide/close-subwindow (no such edit),
   // cycle-project / cycleProjectBack (a popout owns no project switcher), and
@@ -365,35 +366,15 @@ export function DetachedCenterPanel({
   const kbRef = useRef({ tree, focusedGroupId, onActivate, onClose, onFiles });
   kbRef.current = { tree, focusedGroupId, onActivate, onClose, onFiles };
   useEffect(() => {
-    const win = getCurrentWindow();
     const onKeyDown = async (e: KeyboardEvent) => {
-      // F11 — fill the screen, by MAXIMIZING rather than by real OS fullscreen
-      // on every platform but macOS. Handled before the editable-target guard so
-      // it works from a terminal too.
-      //
-      // Real fullscreen is a trap on a popout specifically, and it is the same
-      // one `restore_main_window` guards the main window against: a window the
-      // WM has put into `_NET_WM_STATE_FULLSCREEN` loses `_NET_WM_ACTION_MOVE`,
-      // so it refuses the `_NET_WM_MOVERESIZE` that `startDragging` sends and the
-      // titlebar/grip drag silently no-ops (observed under Muffin; KWin does the
-      // same, and Windows strips the styles native dragging relies on). A popout
-      // has no OS title bar, so nothing on screen distinguishes a fullscreen one
-      // from a merely large one — the window just stops being movable, with F11
-      // the only way back and no hint that it is the way back. Maximizing fills
-      // the monitor identically and stays draggable and edge-snappable.
-      //
-      // macOS keeps real fullscreen: its own Space is the platform-expected
-      // behaviour there, the same exclusion `restore_main_window` makes.
+      // F11 — this popout's fullscreen mode, the same toggle as the button in
+      // its `WindowControls`. Handled before the editable-target guard so it
+      // works from a terminal too. A fullscreen popout cannot be dragged (the WM
+      // takes MOVE off it); `lib/window/fullscreenMode` records that the user
+      // asked for it, so `DetachedApp`'s stray-fullscreen guard lets it stand.
       if (e.key === "F11") {
         e.preventDefault();
-        if (PLATFORM === "macos") {
-          const isFs = await win.isFullscreen();
-          void win.setFullscreen(!isFs);
-        } else if (await win.isMaximized()) {
-          void win.unmaximize();
-        } else {
-          void win.maximize();
-        }
+        void toggleWindowFullscreen();
         return;
       }
       // Never steal keys from a focused text field / xterm textarea (same rule
@@ -1258,6 +1239,9 @@ export function DetachedCenterPanel({
   // the frame aligned during the OS modal move loop (WebView2 can't repaint the
   // terminals fast enough); other engines don't need it.
   const beginNativeWindowMove = () => {
+    // In the user's fullscreen mode the WM refuses the move anyway; starting one
+    // would only arm the Windows move placeholder over a window that never moves.
+    if (useFullscreenMode.getState().on) return;
     if (PLATFORM === "windows") beginWindowMove();
     const win = getCurrentWindow();
     // A window the WM holds in fullscreen has no `_NET_WM_ACTION_MOVE`, so it
@@ -1271,7 +1255,7 @@ export function DetachedCenterPanel({
     //
     // Fired and NOT awaited, which is the whole shape of it. Waiting would put a
     // round trip in front of every drag of a window that merely fills its screen
-    // — a maximized popout, the ordinary result of F11, which Muffin moves
+    // — a maximized popout, which Muffin moves
     // perfectly well — to buy nothing in the case that is not stuck. Unawaited,
     // the ordinary drag is exactly as immediate as it was, the two requests reach
     // the WM in the order they were sent, and the worst case left is a stuck
@@ -1336,6 +1320,9 @@ export function DetachedCenterPanel({
     if (target.closest(".detached-titlebar-controls, .detached-titlebar-actions, button, .no-drag"))
       return;
     e.preventDefault();
+    // Fullscreen by the user's own choice: neither a move nor a snap-to-screen
+    // resize means anything until they leave it (F11 / the fullscreen button).
+    if (useFullscreenMode.getState().on) return;
     const prev = lastTitlebarPress.current;
     const press: TitlebarPress = { t: Date.now(), x: e.clientX, y: e.clientY };
     lastTitlebarPress.current = press;

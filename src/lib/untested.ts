@@ -257,6 +257,7 @@ export const UNTESTED = {
   // --- lib — Keyboard shortcuts and printing ------------------------
   "print.copiesField": { area: "lib", what: "print · Copies field in the print dialog" },
   "print.queueProgress": { area: "lib", what: "print · Print queue progress strip" },
+  "fixedKeys.osFullscreen.label": { area: "lib", what: "shortcuts · F11 and the window-controls fullscreen button: real fullscreen for the main window and every popout (Windows too, no longer maximize); a popout's stray-fullscreen guard leaves it alone" },
   "shortcut.cycleProjectBack": { area: "lib", what: "shortcuts · Cycle to previous project" },
   "shortcut.cycleBox": { area: "lib", what: "shortcuts · Cycle to next box" },
   "shortcut.cycleBoxBack": { area: "lib", what: "shortcuts · Cycle to previous box" },

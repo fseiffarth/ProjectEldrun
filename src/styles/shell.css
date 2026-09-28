@@ -295,6 +295,11 @@ select option {
   background: color-mix(in srgb, var(--wm-maximize) 20%, transparent);
   border-color: color-mix(in srgb, var(--wm-maximize) 45%, transparent);
 }
+.wm-fullscreen:hover,
+.wm-fullscreen[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--wm-maximize) 20%, transparent);
+  border-color: color-mix(in srgb, var(--wm-maximize) 45%, transparent);
+}
 .wm-close:hover,
 .vpn-indicator-close:hover,
 .vpn-prompt-close:hover,
@@ -319,6 +324,20 @@ select option {
   height: 9px;
   border-radius: 2px;
   border: 1.5px solid var(--wm-maximize);
+}
+
+/* Fullscreen glyph: four corner brackets, drawn as eight short bars. */
+.wm-fullscreen::before {
+  --wm-fs-c: linear-gradient(var(--wm-maximize), var(--wm-maximize));
+  content: "";
+  width: 11px;
+  height: 11px;
+  background:
+    var(--wm-fs-c) left top / 4px 1.5px, var(--wm-fs-c) left top / 1.5px 4px,
+    var(--wm-fs-c) right top / 4px 1.5px, var(--wm-fs-c) right top / 1.5px 4px,
+    var(--wm-fs-c) left bottom / 4px 1.5px, var(--wm-fs-c) left bottom / 1.5px 4px,
+    var(--wm-fs-c) right bottom / 4px 1.5px, var(--wm-fs-c) right bottom / 1.5px 4px;
+  background-repeat: no-repeat;
 }
 
 /* Close glyph: an × from two crossed bars. */

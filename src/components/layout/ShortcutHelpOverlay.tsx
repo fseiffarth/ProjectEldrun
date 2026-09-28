@@ -132,6 +132,7 @@ export function ShortcutHelpOverlay() {
                 <kbd>{k.keys}</kbd>
                 <span className="shortcut-help-label">
                   {t(k.labelKey)}
+                  {k.untested && <> <UntestedTag id={k.untested} /></>}
                   <span className="shortcut-help-desc"> — {t(k.descKey)}</span>
                 </span>
               </div>

@@ -1,8 +1,8 @@
 import { hasActiveModal } from "./useModalFocus";
 import { useEffect } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PLATFORM } from "../lib/window/dragPlatform";
 import { IS_MAC } from "../lib/platform";
+import { toggleWindowFullscreen } from "../lib/window/fullscreenMode";
 import { desktopOwnsSuperKey, probeSuperKeyOwnership } from "../lib/shortcuts/superKey";
 import { zoomChord } from "../lib/shortcuts/zoomChord";
 import { allGroups, findGroup, useTabsStore } from "../stores/tabs";
@@ -123,8 +123,6 @@ export const SUPER_RELEASE_SETTLE_MS = 150;
 
 export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
   useEffect(() => {
-    const win = getCurrentWindow();
-
     // Lone-Super press tracking (Linux only; see the binding in `onKeyDown`).
     let superHeld = false;
     let superChorded = false;
@@ -304,19 +302,12 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
       // Any other key while Super is down makes the press a chord, not a toggle.
       if (superHeld) superChorded = true;
 
-      // F11 — OS fullscreen toggle. On Windows, real fullscreen strips the
-      // window styles that Aero Snap and native title-bar dragging rely on (see
-      // AppShell's startup), so toggle MAXIMIZE there instead — same "fill the
-      // screen" effect, but the window stays snappable/draggable like other apps.
+      // F11 — the window's fullscreen mode, on every platform (the same toggle
+      // as the fullscreen button in `WindowControls`; see
+      // `lib/window/fullscreenMode` for why it is recorded).
       if (e.key === "F11") {
         e.preventDefault();
-        if (PLATFORM === "windows") {
-          if (await win.isMaximized()) win.unmaximize();
-          else win.maximize();
-        } else {
-          const isFs = await win.isFullscreen();
-          win.setFullscreen(!isFs);
-        }
+        void toggleWindowFullscreen();
         return;
       }
 

@@ -12,7 +12,7 @@ the place of Ctrl. **F1** opens the cheat sheet with every effective binding.
 
 | Key | Action |
 |---|---|
-| F11 | Toggle the app window's fullscreen |
+| F11 | Toggle fullscreen for the window you're in — the main window or a popout (same as the fullscreen button beside minimize) |
 | Super (Linux, when the desktop leaves it to the window) or F9 | Show/hide the side panels |
 | Esc | Leave a pane's in-app fullscreen; close dialogs |
 | Ctrl + / − / 0 | Zoom the interface in / out / reset |

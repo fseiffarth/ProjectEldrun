@@ -892,7 +892,7 @@ export const en = {
   "shortcutHelp.footer": "Rebind the chords in Settings → {panel}.",
   "fixedKeys.osFullscreen.label": "App window fullscreen",
   "fixedKeys.osFullscreen.desc":
-    "Toggle the OS window's fullscreen (maximize on Windows).",
+    "Toggle the window's fullscreen mode — the main window or the popout it is pressed in.",
   "fixedKeys.panels.label": "Toggle panels",
   "fixedKeys.panels.desc": "Show or hide the side panels while Eldrun is focused.",
   "fixedKeys.exitFullscreen.label": "Exit subwindow fullscreen",
@@ -3286,6 +3286,8 @@ export const en = {
   "projectHoverCard.cpuPrefix": "CPU:",
   "windowControls.minimize": "Minimize",
   "windowControls.maximize": "Maximize",
+  "windowControls.fullscreen": "Fullscreen (F11)",
+  "windowControls.exitFullscreen": "Exit fullscreen (F11)",
   "connTypeIcon.offlineSuffix": " (offline)",
   "connTypeIcon.ssidSuffix": " · {ssid}",
   "batteryIndicator.unknown": "Battery status unknown",

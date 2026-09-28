@@ -259,8 +259,9 @@ function StartupSplash({ ready }: { ready: boolean }) {
  */
 async function saveWindowGeometry(): Promise<void> {
   const win = getCurrentWindow();
-  // A fullscreen window's rect is just the monitor, not a restore geometry. macOS
-  // only — Linux/Windows never enter fullscreen (see the startup effect).
+  // A fullscreen window's rect is just the monitor, not a restore geometry —
+  // macOS's startup fullscreen, or the user's F11 / fullscreen-button mode
+  // (`lib/window/fullscreenMode`), whose own write this read reflects.
   if (await win.isFullscreen()) return;
   const [pos, size, maximized] = await Promise.all([
     win.outerPosition(),

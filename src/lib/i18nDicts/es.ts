@@ -894,7 +894,7 @@ export const dict: Dict = {
   "shortcutHelp.footer": "Reasigna las combinaciones en Ajustes → {panel}.",
   "fixedKeys.osFullscreen.label": "Pantalla completa de la ventana",
   "fixedKeys.osFullscreen.desc":
-    "Alterna la pantalla completa de la ventana del sistema (maximizar en Windows).",
+    "Alterna el modo de pantalla completa de la ventana — la principal o la ventana separada donde se pulsa.",
   "fixedKeys.panels.label": "Alternar paneles",
   "fixedKeys.panels.desc":
     "Muestra u oculta los paneles laterales mientras Eldrun tiene el foco.",
@@ -3163,6 +3163,8 @@ export const dict: Dict = {
   "projectHoverCard.cpuPrefix": "CPU:",
   "windowControls.minimize": "Minimizar",
   "windowControls.maximize": "Maximizar",
+  "windowControls.fullscreen": "Pantalla completa (F11)",
+  "windowControls.exitFullscreen": "Salir de pantalla completa (F11)",
   "connTypeIcon.offlineSuffix": " (sin conexión)",
   "connTypeIcon.ssidSuffix": " · {ssid}",
   "batteryIndicator.unknown": "Estado de la batería desconocido",

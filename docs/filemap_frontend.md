@@ -24,6 +24,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `src/lib/window/rendererWatchdog.ts` | Renderer memory watchdog: reloads a window whose webview renderer passes 4 GB. Per window (AppShell + DetachedApp); own renderer pid is probed, not asked; 10-min reload cooldown. Tests: `RendererWatchdog.test.ts`. |
 | `src/lib/window/dropClaim.ts` | Cross-window tab drops without desktop coordinates (native Wayland): the source broadcasts `DETACHED_DROP_PROBE` at release, the window that receives the pointer next answers `DETACHED_DROP_CLAIM` with the pane under it; main hosts popout-sourced probes in `CenterPanel`, `TabBar` consumes claims for its own. No claim → the tab stays. Tests: `DropClaim.test.ts`, `DetachedDropClaimHost.test.tsx`. |
 | `src/lib/window/unsavedWork.ts` | Per-heap registry of unsaved editor work; a popout answers the Wayland retire request (`detached-retire-request-<label>`) by flushing autosave and reporting clean/dirty. Tests: `DetachedRetire.test.ts`. |
+| `src/lib/window/fullscreenMode.ts` | The window's own fullscreen mode (F11 / `WindowControls` button, main + popouts); records the request so the stray guard spares it. Per window, never persisted. |
 | `src/lib/window/strayFullscreen.ts` | Clears a stray OS fullscreen (it silently makes a popout unmovable). `isFullscreen()` can't be trusted, so it clears unconditionally; judgement in pure `mayClearStrayFullscreen`. |
 | `src/types/index.ts` | Shared TypeScript types. |
 
@@ -35,7 +36,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `HeaderBar.tsx` | Window drag handle + the top bar's three zones: centre = project strip only; right = global apps (✉ 🗓 ☑), global menus (🧠 ⚙), then `header/StatusCluster`. |
 | `CenterPanel.tsx` | Tab/subwindow tiling host; keeps all panes mounted across scope switches. |
 | `DetachedCenterPanel.tsx` | Center-panel variant inside a detached OS window. Title-strip double-click = fit-to-this-screen (`snap_detached_window`); double-click counted from `pointerdown` because the WM grab eats `dblclick`. |
-| `DetachedApp.tsx` | Root component of a popped-out subwindow (#42). Holds the no-fullscreen guard (a fullscreen popout can't be moved): F11 maximizes here instead. |
+| `DetachedApp.tsx` | Root component of a popped-out subwindow (#42). Holds the stray-fullscreen guard (a fullscreen popout can't be moved); the user's own F11 / button fullscreen is exempt. |
 | `DetachedCloseChoice.tsx` | What the WM ✕ on a popout asks: dock tabs back, close them, or cancel. Portaled dialog → sets an explicit color. |
 | `ProjectSwitcher.tsx` | Thin composition root of the project bar: fixed `BoxScopeChip` segment, scrolling project strip, then + / search. Re-exports scaffold helpers. |
 | `ProjectSearch.tsx` *(in `projects/`)* | Inactive-project/box search box + results popover. |

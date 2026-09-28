@@ -897,7 +897,7 @@ export const dict: Dict = {
     "Die Kürzel lassen sich unter Einstellungen → {panel} neu belegen.",
   "fixedKeys.osFullscreen.label": "App-Fenster-Vollbild",
   "fixedKeys.osFullscreen.desc":
-    "Schaltet das Vollbild des OS-Fensters um (unter Windows: Maximieren).",
+    "Schaltet den Vollbildmodus des Fensters um — Hauptfenster oder das Popout, in dem die Taste gedrückt wird.",
   "fixedKeys.panels.label": "Panels umschalten",
   "fixedKeys.panels.desc":
     "Blendet die Seitenpanels ein oder aus, während Eldrun fokussiert ist.",
@@ -3173,6 +3173,8 @@ export const dict: Dict = {
   "projectHoverCard.cpuPrefix": "CPU:",
   "windowControls.minimize": "Minimieren",
   "windowControls.maximize": "Maximieren",
+  "windowControls.fullscreen": "Vollbild (F11)",
+  "windowControls.exitFullscreen": "Vollbild verlassen (F11)",
   "connTypeIcon.offlineSuffix": " (offline)",
   "connTypeIcon.ssidSuffix": " · {ssid}",
   "batteryIndicator.unknown": "Akkustatus unbekannt",

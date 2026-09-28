@@ -62,6 +62,7 @@ import { PLATFORM } from "../../lib/platform";
 import { useTabLandStore } from "../../stores/drag/tabLand";
 import { startFocusTracking, useQuiesce } from "../../stores/power";
 import { clearStrayFullscreen } from "../../lib/window/strayFullscreen";
+import { useFullscreenMode } from "../../lib/window/fullscreenMode";
 import { applyFastModeAttribute, useFastMode } from "../../lib/agents/fastMode";
 import { useRemoteStatusStore } from "../../stores/remote/remoteStatus";
 import { useProjectsStore } from "../../stores/projects";
@@ -191,12 +192,13 @@ export function DetachedApp({ param }: Props) {
   // main window and for its reason: a `_NET_WM_STATE_FULLSCREEN` window loses
   // `_NET_WM_ACTION_MOVE`, so the WM refuses the `_NET_WM_MOVERESIZE` that
   // `startDragging` sends and this popout can no longer be moved by its titlebar
-  // or by a tab bar's grip. Nothing here fullscreens a popout any more (F11
-  // maximizes — see `DetachedCenterPanel`), so this is the net under that: a
-  // window already stuck in the state when this build loads, or any future path
-  // into it, is released rather than left immovable with no visible cause. macOS
-  // is excluded for the same reason it is there — its own Space is the expected
-  // behaviour and `DeckPresenter`/F11 opt into it deliberately.
+  // or by a tab bar's grip. The one fullscreen a popout is meant to hold is the
+  // user's own fullscreen mode (F11 / the window-controls button), which is
+  // recorded (`lib/window/fullscreenMode`) and left alone; this is the net under
+  // everything else: a window already stuck in the state when this build loads,
+  // or any other path into it, is released rather than left immovable with no
+  // visible cause. macOS is excluded for the same reason it is there — its own
+  // Space is the expected behaviour and `DeckPresenter` opts into it deliberately.
   //
   // It runs CONTINUOUSLY, not only at mount, and that is the load-bearing part.
   // A mount-only check cannot see the one path that still fullscreens a popout
@@ -205,8 +207,7 @@ export function DetachedApp({ param }: Props) {
   // reloading, an HMR module swap in dev, a crash mid-talk — leaves the window
   // fullscreen with the guard long since finished. And a popout has no OS title
   // bar, so nothing on screen distinguishes that from a merely large window: it
-  // has simply stopped being movable, with no control anywhere that brings it back
-  // (F11 maximizes, and a maximize leaves a fullscreen window fullscreen).
+  // has simply stopped being movable, with nothing on screen that says so.
   // Observed live under Muffin — `_NET_WM_ALLOWED_ACTIONS` on the stuck popout had
   // lost `_NET_WM_ACTION_MOVE`, `_NET_WM_ACTION_RESIZE` and both MAXIMIZE atoms.
   //
@@ -440,6 +441,8 @@ export function DetachedApp({ param }: Props) {
       .catch(() => {});
     const flush = () => {
       if (!pos || !size) return;
+      // A fullscreen popout's rect is its monitor, not a place to reopen at.
+      if (useFullscreenMode.getState().on) return;
       // #238: a park (`hide()`) / unpark (`show()`) can fire Moved/Resized with
       // whatever geometry the WM used while the window was off screen. Persisting
       // that would move the popout on the next launch, so a flush is only taken

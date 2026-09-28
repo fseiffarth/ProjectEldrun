@@ -896,7 +896,7 @@ export const dict: Dict = {
     "Réattribuez les combinaisons dans Paramètres → {panel}.",
   "fixedKeys.osFullscreen.label": "Plein écran de la fenêtre",
   "fixedKeys.osFullscreen.desc":
-    "Bascule le plein écran de la fenêtre système (agrandir sous Windows).",
+    "Bascule le mode plein écran de la fenêtre — la fenêtre principale ou la fenêtre détachée où la touche est pressée.",
   "fixedKeys.panels.label": "Basculer les panneaux",
   "fixedKeys.panels.desc":
     "Affiche ou masque les panneaux latéraux quand Eldrun a le focus.",
@@ -3165,6 +3165,8 @@ export const dict: Dict = {
   "projectHoverCard.cpuPrefix": "CPU :",
   "windowControls.minimize": "Réduire",
   "windowControls.maximize": "Agrandir",
+  "windowControls.fullscreen": "Plein écran (F11)",
+  "windowControls.exitFullscreen": "Quitter le plein écran (F11)",
   "connTypeIcon.offlineSuffix": " (hors ligne)",
   "connTypeIcon.ssidSuffix": " · {ssid}",
   "batteryIndicator.unknown": "État de la batterie inconnu",

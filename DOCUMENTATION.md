@@ -584,7 +584,7 @@ keeps global `~/.vibe/config.toml` untouched.
 
 | Key | Behavior |
 |-----|----------|
-| `F11` | Toggle fullscreen. |
+| `F11` | Toggle fullscreen for the focused window (main or popout); also the fullscreen button in the window controls. |
 | `Super` | Toggle all panels (file panel, switcher). Only while Eldrun is focused. |
 | `Escape` | Close dialogs. |
 | `Enter` | Confirm create/import dialogs; activate a unique search result. |
