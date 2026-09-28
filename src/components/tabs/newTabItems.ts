@@ -368,7 +368,6 @@ export function agentMenuEntries(opts: {
     key: item.cmd,
     label: item.label,
     color: TAB_ACCENT[item.kind],
-    ...(item.cmd === "vibe" ? { untested: "agent.vibeResume" as const } : {}),
     shortcut: chordByKey.get(item.cmd),
     onPick: () => opts.pick(item),
   }));
@@ -396,7 +395,6 @@ export function agentMenuEntries(opts: {
         label: cloudLabel,
         dot: "☁",
         color: TAB_ACCENT.agent,
-        untested: "newTabMenu.cloudSession",
         moreTitle: cloudLabel,
         moreEntries: cloudEntries,
         onPick: () => {},

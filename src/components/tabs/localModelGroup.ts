@@ -142,7 +142,6 @@ export function localModelMenuGroup(opts: {
               key: "vibe",
               label: "Mistral",
               color: TAB_ACCENT["local_agent"],
-              untested: "agent.vibeLocalResume" as const,
               onPick: () => opts.onVibe(localModel),
             }]
           : []),
@@ -178,7 +177,6 @@ export function localModelMenuGroup(opts: {
             dot: "⏻",
             color: TAB_ACCENT["local_agent"],
             disabled: gpu.loading,
-            untested: "localModelGroup.1",
             onPick: gpu.load,
           }];
   }

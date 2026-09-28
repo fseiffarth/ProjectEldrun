@@ -1644,7 +1644,6 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                       label: closed.tab.label,
                       dot: "↺",
                       color: TAB_ACCENT[closed.tab.kind],
-                      untested: "tabBar.reopenClosed#2" as const,
                       shortcut: i === 0 ? ("reopenClosedTab" as const) : undefined,
                       onPick: () => {
                         setMenuPos(null);
@@ -1701,14 +1700,12 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                         label: t("newTabMenu.boxMemberFiles", { name: m.name }),
                         dot: "▤",
                         color: TAB_ACCENT.projectfiles,
-                        untested: "newTabMenu.boxMemberFiles#2",
                         onPick: () => handleAddBoxMemberFiles(m),
                       },
                       {
                         key: `boxshell:${m.id}`,
                         label: t("newTabMenu.boxMemberShell", { name: m.name }),
                         color: TAB_ACCENT.shell,
-                        untested: "newTabMenu.boxMemberShell#2",
                         onPick: () => handleAddBoxMemberShell(m),
                       },
                       ...(enabledAgents?.has("claude")
@@ -1716,7 +1713,6 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                             key: `boxagent:${m.id}`,
                             label: t("newTabMenu.boxMemberAgent", { name: m.name }),
                             color: TAB_ACCENT.agent,
-                            untested: "newTabMenu.boxMemberAgent",
                             onPick: () => handleAddBoxMemberAgent(m),
                           } satisfies AddMenuEntry]
                         : []),
@@ -1811,7 +1807,6 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   label: t("printing.title"),
                   dot: "⎙",
                   color: TAB_ACCENT.printing,
-                  untested: "printing.title#3",
                   onPick: handleAddPrinting,
                 }],
               },
@@ -1826,7 +1821,6 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   label: t("skillsLibrary.title"),
                   dot: "◧",
                   color: TAB_ACCENT.skillslibrary,
-                  untested: "skillsLibrary.title#2",
                   onPick: handleAddSkills,
                 }],
               },
@@ -1839,7 +1833,6 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   label: t("promptChart.heading"),
                   dot: "⧗",
                   color: TAB_ACCENT.promptchart,
-                  untested: "promptChart.heading#3",
                   onPick: handleAddPromptChart,
                 }],
               },
@@ -1851,7 +1844,6 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                       label: t("newTabMenu.browser"),
                       dot: "◎",
                       color: TAB_ACCENT.browser,
-                      untested: "newTabMenu.browser#2",
                       onPick: handleAddBrowser,
                     }],
                   } satisfies AddMenuGroup]

@@ -210,7 +210,6 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                   label: t("newTabMenu.hostSessionEntry", { label: item.label }),
                   dot: "⚠",
                   color: "var(--danger)",
-                  untested: "newTabMenu.hostSession" as const,
                   onPick: () => {
                     const spec = buildStaticTabSpec(item, projectCwd, "", t);
                     pickFixed({
@@ -234,7 +233,6 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                     label: t("newTabMenu.boxMemberFiles", { name: m.name }),
                     dot: "▤",
                     color: TAB_ACCENT.projectfiles,
-                    untested: "newTabMenu.boxMemberFiles",
                     onPick: () => {
                       onPick({
                         label: t("newTabMenu.boxMemberFiles", { name: m.name }),
@@ -251,7 +249,6 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                     key: `boxshell:${m.id}`,
                     label: t("newTabMenu.boxMemberShell", { name: m.name }),
                     color: TAB_ACCENT.shell,
-                    untested: "newTabMenu.boxMemberShell",
                     onPick: () => {
                       onPick({
                         label: t("newTabMenu.boxMemberShell", { name: m.name }),
@@ -309,7 +306,6 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                 key: "monitor",
                 label: t("newTabMenu.itemSystemMonitor"),
                 color: TAB_ACCENT.monitor,
-                untested: "newTabMenu.itemSystemMonitor",
                 onPick: () =>
                   pickFixed({
                     label: t("newTabMenu.itemSystemMonitor"),
@@ -335,7 +331,6 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                 key: "network",
                 label: t("newTabMenu.itemNetworkTraffic"),
                 color: TAB_ACCENT.network,
-                untested: "newTabMenu.itemNetworkTraffic",
                 onPick: () =>
                   pickFixed({
                     label: t("newTabMenu.itemNetworkTraffic"),
@@ -354,7 +349,6 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                   label: t("newTabMenu.itemProjects3d"),
                   dot: "◍",
                   color: TAB_ACCENT.projects3d,
-                  untested: "newTabMenu.itemProjects3d#root",
                   onPick: () =>
                     pickFixed({
                       label: t("newTabMenu.tabLabelProjects"),
@@ -372,7 +366,6 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
               label: t("printing.title"),
               dot: "⎙",
               color: TAB_ACCENT.printing,
-              untested: "printing.title#2",
               onPick: () =>
                 pickFixed({
                   label: t("printing.title"),
@@ -394,7 +387,6 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
               label: t("skillsLibrary.title"),
               dot: "◧",
               color: TAB_ACCENT.skillslibrary,
-              untested: "skillsLibrary.title",
               onPick: () =>
                 pickFixed({
                   label: t("skillsLibrary.title"),
@@ -414,7 +406,6 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
               label: t("promptChart.heading"),
               dot: "⧗",
               color: TAB_ACCENT.promptchart,
-              untested: "promptChart.heading#2",
               onPick: () =>
                 pickFixed({
                   label: t("promptChart.heading"),
@@ -432,7 +423,6 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                   label: t("newTabMenu.browser"),
                   dot: "◎",
                   color: TAB_ACCENT.browser,
-                  untested: "newTabMenu.browser",
                   onPick: () =>
                     pickFixed({
                       label: t("newTabMenu.browser"),
