@@ -41,7 +41,8 @@ vi.mock("../../stores/projects", () => {
   );
   return { useProjectsStore };
 });
-vi.mock("../../stores/tabs", () => {
+vi.mock("../../stores/tabs", async (importActual) => {
+  const actual = await importActual<Record<string, unknown>>();
   const state = {
     tabs: [] as Record<string, unknown>[],
     layout: null,
@@ -56,7 +57,7 @@ vi.mock("../../stores/tabs", () => {
     (sel?: (s: typeof state) => unknown) => (sel ? sel(state) : state),
     { getState: () => state },
   );
-  return { useTabsStore, findGroupOfTab: () => null, getDetachedViewerState: () => undefined };
+  return { ...actual, useTabsStore, findGroupOfTab: () => null, getDetachedViewerState: () => undefined };
 });
 
 // `tags` is a scalar-only list → the tree shows it as ONE editable comma line.

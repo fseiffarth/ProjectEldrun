@@ -92,7 +92,7 @@ const VIBE_SHORT = [
   "   > │   Complete sign-in             │",
   "     │   Waiting for                  │",
 ];
-const VIBE_URL = "https://console.mistral.ai/codestral/cli/authenticate?process_id=8885376c-b4d7-46ca-9341-8f6198ce40a8&complete_token=EzHIAV3LlTkTz0TTOtecBMTKY6gcsObV";
+const VIBE_URL = "https://console.mistral.ai/codestral/cli/authenticate?process_id=00000000-0000-4000-8000-000000000000&complete_token=example-token";
 
 describe("a sign-in link the CLI keeps to the desktop", () => {
   it("finds Vibe's copy key on screen, and by the CLI where the screen clips it", () => {

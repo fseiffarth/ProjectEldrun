@@ -16,6 +16,13 @@ bcc365a42430739a4581897421ecf6c5de48cb56:src-tauri/src/services/mobile_control/h
 bcc365a42430739a4581897421ecf6c5de48cb56:src-tauri/src/services/mobile_control/host.rs:generic-api-key:1396
 bcc365a42430739a4581897421ecf6c5de48cb56:src-tauri/src/services/mobile_control/host.rs:generic-api-key:1657
 bcc365a42430739a4581897421ecf6c5de48cb56:src-tauri/src/services/mobile_control/host.rs:generic-api-key:1668
+6e91414578ff4b408266b71e4a9b4a98d497e198:src-tauri/src/services/mobile_control/host.rs:generic-api-key:3663
+# src/__tests__/mobile/*.test.tsx: the same "0123456789abcdef" idempotency_key fixture
+e6696f9027558c775c38ecc16de42184330dcc02:src/__tests__/mobile/MobileLocalAgents.test.tsx:generic-api-key:48
+6e91414578ff4b408266b71e4a9b4a98d497e198:src/__tests__/mobile/MobileSignInCreate.test.tsx:generic-api-key:47
+# src/__tests__/mobile/MobileSignIn.test.tsx: a captured Mistral Vibe sign-in URL's
+# single-use complete_token, dead once that sign-in finished; replaced by a fake since
+6e91414578ff4b408266b71e4a9b4a98d497e198:src/__tests__/mobile/MobileSignIn.test.tsx:generic-api-key:95
 # src-tauri/src/services/openvpn.rs: test fixture: fake encrypted-key header with "base64==" body
 b9c4584fbcba4e241ff402ce7b3ff21a06baed2e:src-tauri/src/services/openvpn.rs:private-key:1862
 b9c4584fbcba4e241ff402ce7b3ff21a06baed2e:src-tauri/src/services/openvpn.rs:private-key:1873

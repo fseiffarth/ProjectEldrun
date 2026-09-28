@@ -55,7 +55,8 @@ const { addTabToScope, addTab, setActive, removeTab, setViewerState } = vi.hoist
   removeTab: vi.fn(),
   setViewerState: vi.fn(),
 }));
-vi.mock("../../stores/tabs", () => {
+vi.mock("../../stores/tabs", async (importActual) => {
+  const actual = await importActual<Record<string, unknown>>();
   const state = {
     tabs: [] as Record<string, unknown>[],
     layout: null,
@@ -71,6 +72,7 @@ vi.mock("../../stores/tabs", () => {
     { getState: () => state },
   );
   return {
+    ...actual,
     useTabsStore,
     findGroupOfTab: () => null,
     getDetachedViewerState: () => undefined,
