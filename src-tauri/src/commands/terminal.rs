@@ -559,8 +559,11 @@ pub async fn pty_spawn(
     // Never for the root console: `--remote-control` is what puts a session in
     // the Claude phone app, and the root scope's rights must not be reachable
     // from a phone by any route (it is absent from Eldrun Mobile's catalog too).
+    // Nor for a subcommand (`claude auth login`, a sign-in tab), which refuses
+    // the session's flags.
     if opts.cmd == "claude"
         && !root_agent
+        && !crate::services::agent_fence::runs_subcommand(&opts.args)
         && resolve_agent_remote_control(opts.project_id.as_deref())
         && !opts.args.iter().any(|a| a == "--remote-control")
     {
@@ -640,6 +643,7 @@ pub async fn pty_spawn(
     // Those, and a host CLI that is too old or not read yet, keep the typed line.
     let named = opts.cmd == "claude"
         && session_name.is_some()
+        && !crate::services::agent_fence::runs_subcommand(&opts.args)
         && crate::commands::agents::claude_takes_name_flag()
         && append_claude_name(&mut opts.args, session_name.as_deref());
 

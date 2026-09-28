@@ -85,6 +85,18 @@ pub struct CreateTabRequest {
     /// their command line. Bounded by [`MAX_CLOUD_TASK`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
+    /// A sign-in tab instead of a session: the CLI's own login command, in
+    /// the flow a phone can finish (`src/lib/agents/signInLaunch.ts`).
+    /// `"default"`, or `"alternate"` for the CLI's other way in (Claude's
+    /// Console account, Codex's browser redirect). Never with a worktree,
+    /// cloud or task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sign_in: Option<String>,
+    /// The agent tab whose CLI a sign-in is for, by tmux name, in place of
+    /// `agent_id`. Set by the sidecar alone (`POST /api/v1/tabs/{id}/sign-in`);
+    /// the phone's create route refuses a body carrying it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub like_tab: Option<String>,
     pub idempotency_key: String,
 }
 
@@ -104,6 +116,19 @@ impl CreateTabRequest {
             return false;
         }
         if self.worktree.is_some() && self.cloud.is_some() {
+            return false;
+        }
+        if let Some(way) = &self.sign_in {
+            if !agent
+                || (way != "default" && way != "alternate")
+                || self.worktree.is_some()
+                || self.cloud.is_some()
+                || self.task.is_some()
+            {
+                return false;
+            }
+        }
+        if self.like_tab.is_some() && (self.sign_in.is_none() || self.agent_id.is_some()) {
             return false;
         }
         if let Some(id) = &self.worktree {
@@ -151,6 +176,22 @@ pub struct MobileCloudLaunch {
     pub action: String,
     #[serde(default)]
     pub task: bool,
+}
+
+/// One agent the phone's ＋ can sign in to (`agent_id` is the catalog's
+/// opaque agent id). `signed_in` is `None` where Eldrun cannot tell (a CLI
+/// whose login it does not keep); `account` is the account the shared login
+/// names, when it names one; `alternate` names the CLI's other way in
+/// (`"console"`, `"browser"`) when it has one.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MobileSignInOption {
+    pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signed_in: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alternate: Option<String>,
 }
 
 /// Phone-editable schedule fields. Receipts and prefix commands are desktop-owned
@@ -1201,6 +1242,8 @@ pub enum DesktopResponse {
         worktrees: Vec<MobileWorktree>,
         #[serde(default)]
         cloud: Vec<MobileCloudLaunch>,
+        #[serde(default)]
+        sign_in: Vec<MobileSignInOption>,
     },
     Todo {
         board: TodoBoardSnapshot,
@@ -1841,16 +1884,27 @@ mod tests {
         let long = "x".repeat(super::MAX_CLOUD_TASK + 1);
         assert!(!ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "cloud": "new", "task": long, "idempotency_key": key})));
         assert!(!ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "worktree": "", "idempotency_key": key})));
+        // A sign-in tab: agent only, a known way, alone; `like_tab` only with it
+        // and in place of `agent_id`.
+        assert!(ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "sign_in": "default", "idempotency_key": key})));
+        assert!(ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "sign_in": "alternate", "idempotency_key": key})));
+        assert!(ok(json!({"project_id": "p", "kind": "agent", "like_tab": "t", "sign_in": "default", "idempotency_key": key})));
+        assert!(!ok(json!({"project_id": "p", "kind": "shell", "sign_in": "default", "idempotency_key": key})));
+        assert!(!ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "sign_in": "token", "idempotency_key": key})));
+        assert!(!ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "sign_in": "default", "cloud": "open", "idempotency_key": key})));
+        assert!(!ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "sign_in": "default", "worktree": "w1", "idempotency_key": key})));
+        assert!(!ok(json!({"project_id": "p", "kind": "agent", "like_tab": "t", "idempotency_key": key})));
+        assert!(!ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "like_tab": "t", "sign_in": "default", "idempotency_key": key})));
     }
 
     #[test]
     fn launch_options_round_trip_and_default() {
         let response: DesktopResponse = serde_json::from_value(json!({"status": "launch_options"}))
             .expect("empty launch options");
-        let DesktopResponse::LaunchOptions { worktrees, cloud } = response else {
+        let DesktopResponse::LaunchOptions { worktrees, cloud, sign_in } = response else {
             panic!("launch options");
         };
-        assert!(worktrees.is_empty() && cloud.is_empty());
+        assert!(worktrees.is_empty() && cloud.is_empty() && sign_in.is_empty());
         let request = DesktopRequest::LaunchOptions {
             request_id: "r".into(),
             project_id: "p".into(),

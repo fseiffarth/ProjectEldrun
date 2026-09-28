@@ -13,6 +13,7 @@ import {
   ApiError,
   api,
   attachDesktopImage,
+  closeTab,
   deleteOutboxFile,
   getAgentStatus,
   getTranscript,
@@ -20,6 +21,7 @@ import {
   listOutbox,
   MAX_INBOX_FILE,
   outboxFileUrl,
+  openSignInTab,
   recoverSession,
   reportSentPrompt,
   uploadToInbox,
@@ -88,7 +90,7 @@ import { afterClear, clearMark, type ClearMark } from "../terminal/clearedSessio
 import { ageLabel, sizeLabel } from "../terminal/fileLabels";
 import { resetText, StatusSheet } from "./StatusSheet";
 import { SignInSheet } from "./SignInSheet";
-import { readSignIn, signInCommand } from "../terminal/signIn";
+import { copiedSignIn, hasSignInTab, osc52Text, readHiddenSignIn, readSignedOut, readSignIn, signInAlternate, signInCommand, signInDone, type SignIn } from "../terminal/signIn";
 import { limitMeters, parseUsageReport, type LimitMeters } from "../../../shared/usageReport";
 import { isUntested } from "../../../src/lib/untested";
 import { draftPrefix, draftPrefixes, forgetSlashCommand, readSlashCommands, rememberSlashCommand, slashCli, slashSuggestions, toggleDraftPrefix, type SlashSuggestion } from "../slashCommands";
@@ -199,6 +201,11 @@ const NEWEST_SLACK = 4;
  * opens. Past it the sheet steps aside: the dialog — or the reason there is
  * none — is in the session output, and the arrow keys still answer it. */
 const MODEL_PICKER_WAIT = 6_000;
+/** How long after asking a CLI for its sign-in link (`askForLink`) its
+ * clipboard copy is taken as the answer. */
+const LINK_WAIT_MS = 5_000;
+/** `hiddenSignIn`'s value once the reader hid the hidden-link notice. */
+const HIDDEN_LINK = "\u0000hidden-link";
 /** How long the sheet waits, after a tap, for the step *after* the one it
  * answered: Codex follows the model list with a reasoning-level list, and that
  * one is drawn only once the session has read the Enter. Past it the dialog is
@@ -526,7 +533,16 @@ function QuestionList({ prompt, tabs, question, sent, sendingLabel, onPick }: {
 
 /** `pickModel`: the tab card's model was tapped, so the session opens with its
  * model picker already up — once, as soon as the session has drawn. */
-export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: () => void; pickModel?: boolean }) {
+export function Terminal({ tab, back, pickModel = false, signInTab = false, openTab }: {
+  tab: TabRow;
+  back: () => void;
+  pickModel?: boolean;
+  /** The tab exists only to sign its CLI in (`src/lib/agents/signInLaunch.ts`):
+   * the sign-in sheet is up from the start. */
+  signInTab?: boolean;
+  /** Shows another tab of the same project in place of this one. */
+  openTab?: (tab: TabRow, opts?: { signIn?: boolean }) => void;
+}) {
   const t = useT();
   const host = useRef<HTMLDivElement>(null);
   const wideHint = useRef<HTMLDivElement>(null);
@@ -597,9 +613,17 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
   /** The browser sign-in an agent is waiting on (`signIn.ts`): a notice over
    * the composer, and the sheet that finishes it from the phone. A notice the
    * reader hid stays hidden for that link only — a retry prints a new one. */
-  const signIn = useMemo(() => (tab.kind === "agent" ? readSignIn(liveScreen) : null), [tab.kind, liveScreen]);
-  const [signInSheet, setSignInSheet] = useState(false);
+  const screenSignIn = useMemo(() => (tab.kind === "agent" ? readSignIn(liveScreen) : null), [tab.kind, liveScreen]);
+  const [signInSheet, setSignInSheet] = useState(signInTab);
   const [hiddenSignIn, setHiddenSignIn] = useState("");
+  /** A sign-in whose page went to the desktop's browser with no link on
+   * screen (`readHiddenSignIn`): the link the CLI copied when the phone asked
+   * for it, and when it asked — an OSC 52 copy counts only as that answer. */
+  const [copiedLink, setCopiedLink] = useState<SignIn | null>(null);
+  const linkAsked = useRef(0);
+  const linkTimer = useRef(0);
+  const [linkAsking, setLinkAsking] = useState(false);
+  const [linkMissing, setLinkMissing] = useState(false);
   /** The absorbed earlier output, republished for render whenever it grows.
    * The log itself lives in a ref inside the terminal effect; this is only the
    * render snapshot (chunk references are stable, so revealing is cheap). */
@@ -658,6 +682,26 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
   /** The CLI this tab runs, as the composer's `/` menu keys its store, and the
    * slash commands this phone has sent that CLI before (`slashCommands.ts`). */
   const slashCliKey = slashCli(tab.agent_label ?? tab.label);
+  const hiddenLink = useMemo(
+    () => (tab.kind === "agent" && !screenSignIn ? readHiddenSignIn(liveScreen, slashCliKey) : null),
+    [tab.kind, screenSignIn, liveScreen, slashCliKey],
+  );
+  // The copied link lives as long as the page the CLI copied it from.
+  const signIn = screenSignIn ?? (hiddenLink ? copiedLink : null);
+  /** The session saying its sign-in went through, and a session asking for
+   * one — a failed turn's "Not logged in", a start screen's login choice —
+   * which the notice over the composer then offers to sign in for. */
+  const signedIn = useMemo(() => (tab.kind === "agent" ? signInDone(liveScreen) : false), [tab.kind, liveScreen]);
+  const signedOut = useMemo(
+    () => (tab.kind === "agent" && !signInTab && !signIn && !hiddenLink ? readSignedOut(liveScreen) : false),
+    [tab.kind, signInTab, signIn, hiddenLink, liveScreen],
+  );
+  const [signedOutHidden, setSignedOutHidden] = useState(false);
+  const [openingSignIn, setOpeningSignIn] = useState(false);
+  const [signInError, setSignInError] = useState("");
+  const signInKeys = useRef<Record<string, string>>({});
+  // A sign-in tab whose sheet the reader closed brings it back with the news.
+  useEffect(() => { if (signInTab && signedIn) setSignInSheet(true); }, [signInTab, signedIn]);
   const [usedSlash, setUsedSlash] = useState(() => readSlashCommands(slashCliKey));
   const [copied, setCopied] = useState(false);
   const [voiceAvailable] = useState(() => speechRecognitionSupported());
@@ -935,6 +979,24 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
       theme: { background: "#0b0d13", foreground: "#e7e9f2", cursor: "#0b0d13", cursorAccent: "#0b0d13" },
     });
     const fit = new FitAddon(); term.loadAddon(fit); term.open(host.current); fit.fit();
+    setCopiedLink(null);
+    setLinkAsking(false);
+    setLinkMissing(false);
+    linkAsked.current = 0;
+    // A clipboard copy the session makes is read only as the sign-in link the
+    // phone just asked for (`askForLink`); any other copy stays on the desktop.
+    // Guarded like the trim emitter below: a stand-in terminal has no parser.
+    term.parser?.registerOscHandler(52, (data) => {
+      if (Date.now() - linkAsked.current > LINK_WAIT_MS) return true;
+      const link = copiedSignIn(osc52Text(data) ?? "");
+      if (link) {
+        linkAsked.current = 0;
+        setLinkAsking(false);
+        setCopiedLink(link);
+        setSignInSheet(true);
+      }
+      return true;
+    });
     bracketedPaste.current = () => term.modes.bracketedPasteMode === true;
     // The history log needs to know when xterm trims scrollback (row indices
     // shift), and xterm has no public event for it — so this rides the internal
@@ -1465,6 +1527,7 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
       ws?.close();
       trimWatch?.dispose();
       term.dispose();
+      window.clearTimeout(linkTimer.current);
       clearInterval(ping);
       clearTimeout(resumeTimer);
       document.removeEventListener("visibilitychange", resume);
@@ -2244,14 +2307,69 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
     setAnswered(listedStep);
     setEffortStep(null);
   };
-  /** The Status sheet's Sign in: the CLI's own sign-in command, typed into
-   * the session like any slash command. What it prints next — a method list
-   * the reading view answers, then the link — reaches the notice above the
-   * composer; nothing here waits on it. */
+  /** The hidden-link notice's button: the key the CLI hands its link over
+   * on, answered by a clipboard copy the terminal above catches. */
+  const askForLink = () => {
+    if (!hiddenLink) return;
+    clearPending();
+    if (!type(hiddenLink.key)) return;
+    linkAsked.current = Date.now();
+    setLinkAsking(true);
+    setLinkMissing(false);
+    window.clearTimeout(linkTimer.current);
+    linkTimer.current = window.setTimeout(() => {
+      if (linkAsked.current === 0) return;
+      linkAsked.current = 0;
+      setLinkAsking(false);
+      setLinkMissing(true);
+    }, LINK_WAIT_MS);
+  };
+  /** The CLI's own sign-in command, typed into the session like any slash
+   * command, for a CLI the desktop has no sign-in tab for. What it prints
+   * next — a method list the reading view answers, then the link — reaches
+   * the notice above the composer; nothing here waits on it. */
   const startSignIn = (command: string) => {
     if (!sendAgentText(command)) return;
     setStatusSheet(false);
     setHiddenSignIn("");
+  };
+  /** A sign-in tab for this tab's CLI, beside it (`openSignInTab`), shown in
+   * place of this one. From a sign-in tab it is a retry, and replaces it. */
+  const openSignIn = async (alternate: boolean) => {
+    if (openingSignIn || !openTab) return;
+    const way = alternate ? "alternate" : "default";
+    const key = signInKeys.current[way] ?? crypto.randomUUID();
+    signInKeys.current[way] = key;
+    setOpeningSignIn(true);
+    setSignInError("");
+    try {
+      const body = await openSignInTab(tab.id, alternate, key);
+      delete signInKeys.current[way];
+      setStatusSheet(false);
+      if (signInTab) void closeTab(tab.id).catch(() => undefined);
+      openTab(body.tab, { signIn: true });
+    } catch (cause) {
+      setSignInError(describeFailure(cause));
+    } finally {
+      setOpeningSignIn(false);
+    }
+  };
+  /** How this CLI signs in from here: a sign-in tab where the desktop has a
+   * login command for it, else its slash command in this session. */
+  const typedSignIn = signInCommand(slashCliKey);
+  const signInWay = !connected || tab.kind !== "agent" ? null
+    : hasSignInTab(slashCliKey) && openTab
+      ? { hint: t("mobile.signIn.tabHint", { agent: agentLabel }), start: () => void openSignIn(false) }
+      : typedSignIn
+        ? { hint: t("mobile.signIn.startHint", { command: typedSignIn }), start: () => startSignIn(typedSignIn) }
+        : null;
+  /** Done in a sign-in tab: a login command's tab has served its purpose and
+   * closes; a CLI that signed in as it started stays, as the session it is. */
+  const finishSignIn = () => {
+    setSignInSheet(false);
+    if (!hasSignInTab(slashCliKey)) return;
+    void closeTab(tab.id).catch(() => undefined);
+    back();
   };
   const closeModelSheet = () => {
     // The dialog is the session's own and still open: close it there too,
@@ -2903,6 +3021,23 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
         <button className="primary" onClick={() => setSignInSheet(true)} aria-haspopup="dialog">{t("mobile.signIn.open")}</button>
         <button className="sign-in-hide" onClick={() => setHiddenSignIn(signIn.url)} aria-label={t("mobile.signIn.hide")} title={t("mobile.signIn.hide")}>✕</button>
       </div>}
+      {hiddenLink && !signIn && !signInSheet && hiddenSignIn !== HIDDEN_LINK && <div className="sign-in-notice" role="status">
+        <span>
+          {linkMissing ? t("mobile.signIn.noLink", { agent: agentLabel }) : t("mobile.signIn.onDesktop", { agent: agentLabel })}
+          {isUntested("mobile.signIn.hiddenLink") && <> · <em>{t("mobile.focus.untested")}</em></>}
+        </span>
+        <button className="primary" onClick={askForLink} disabled={!connected || linkAsking}>{linkAsking ? t("mobile.signIn.gettingLink") : t("mobile.signIn.getLink")}</button>
+        <button className="sign-in-hide" onClick={() => setHiddenSignIn(HIDDEN_LINK)} aria-label={t("mobile.signIn.hide")} title={t("mobile.signIn.hide")}>✕</button>
+      </div>}
+      {signedOut && signInWay && !signInSheet && !signedOutHidden && <div className="sign-in-notice" role="status">
+        <span>
+          {t("mobile.signIn.signedOutBanner", { agent: agentLabel })}
+          {isUntested("mobile.signIn.tab") && <> · <em>{t("mobile.focus.untested")}</em></>}
+        </span>
+        <button className="primary" onClick={signInWay.start} disabled={openingSignIn}>{openingSignIn ? t("mobile.signIn.opening") : t("mobile.signIn.open")}</button>
+        <button className="sign-in-hide" onClick={() => setSignedOutHidden(true)} aria-label={t("mobile.signIn.hide")} title={t("mobile.signIn.hide")}>✕</button>
+      </div>}
+      {signInError && !signInSheet && <div className="inbox-upload error" role="alert"><strong>{t("mobile.signIn.open")}</strong><span>{signInError}</span><button onClick={() => setSignInError("")} aria-label={t("mobile.signIn.hide")}>✕</button></div>}
       {(tab.kind === "agent" || status?.branch || contextLeft || shownLimits.session || shownLimits.week) && <div className="session-facts">
         {/* An agent tab's model, mode and status lead the row as tappable facts:
             the composer keeps the whole bar for the draft and its buttons. */}
@@ -3019,11 +3154,18 @@ export function Terminal({ tab, back, pickModel = false }: { tab: TabRow; back: 
       onPick={(key) => void applyMode(key)}
       onClose={() => { if (!switching) setModeSheet(false); }}
     />}
-    {statusSheet && <StatusSheet tab={tab} live={status} onLimits={setLimits} onClose={() => setStatusSheet(false)} signInCommand={connected ? signInCommand(slashCliKey) : null} onSignIn={startSignIn} />}
+    {statusSheet && <StatusSheet tab={tab} live={status} onLimits={setLimits} onClose={() => setStatusSheet(false)} signIn={signInWay} />}
     {signInSheet && <SignInSheet
       tabId={tab.id}
       agent={agentLabel}
       signIn={signIn}
+      done={signedIn && (signInTab || !signIn)}
+      ended={stoppedReason !== ""}
+      signInTab={signInTab}
+      alternate={signInTab ? signInAlternate(slashCliKey) : undefined}
+      error={signInError}
+      onRetry={signInTab && openTab ? (alternate) => void openSignIn(alternate) : undefined}
+      onFinish={finishSignIn}
       connected={connected}
       onType={(text) => {
         clearPending();

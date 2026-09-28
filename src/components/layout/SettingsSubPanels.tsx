@@ -55,6 +55,7 @@ import {
 import { formatTime } from "../../lib/calendar/calendarTime";
 import { useUse24h } from "../../lib/timeFormat";
 import { AGENT_FENCE_DEFAULT_PATHS, parseAgentFencePaths } from "../../lib/agents/agentFence";
+import { loginIdForCmd } from "../../lib/agents/signInLaunch";
 import { AGENT_ITEMS } from "../tabs/newTabItems";
 import { ErrorNote } from "../common/ErrorNote";
 
@@ -698,7 +699,7 @@ function AgentLoginsRows() {
   useEffect(refresh, []);
   const labels = useMemo(() => new Map(AGENT_ITEMS.map((a) => [a.cmd, a.label])), []);
   const registry = useMemo(
-    () => new Map(AGENT_ITEMS.map((a) => [a.cmd === "agy" ? "antigravity" : a.cmd === "cn" ? "continue" : a.cmd === "kiro-cli" ? "kiro" : a.cmd === "sweagent" ? "swe-agent" : a.cmd === "mini" ? "mini-swe-agent" : a.cmd === "qoder" ? "qoder" : a.cmd, a.label])),
+    () => new Map(AGENT_ITEMS.map((a) => [loginIdForCmd(a.cmd), a.label])),
     [],
   );
   if (!logins) return null;

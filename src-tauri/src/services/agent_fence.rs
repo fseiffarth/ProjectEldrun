@@ -1506,6 +1506,14 @@ pub fn wrap_pty_options_sandbox_exec(
     Ok(())
 }
 
+/// Whether an agent launch runs one of the CLI's subcommands (`claude auth
+/// login`, a sign-in tab) rather than a session: its first argument is not a
+/// flag. The session flags Eldrun adds (`--add-dir`, `--remote-control`,
+/// `--name`) belong to the session command, and a subcommand refuses them.
+pub fn runs_subcommand(args: &[String]) -> bool {
+    args.first().is_some_and(|arg| !arg.starts_with('-'))
+}
+
 pub fn box_root_arg(cmd: &str) -> Option<&'static str> {
     match basename(cmd) {
         "claude" => Some("--add-dir"),
@@ -1519,7 +1527,7 @@ pub fn box_root_arg(cmd: &str) -> Option<&'static str> {
 /// warning under read-only or managed permissions. Its mode belongs to Codex,
 /// so the outer fence supplies box access without adding that flag.
 pub fn add_box_root_args(opts: &mut PtyOptions, roots: &[PathBuf], own_dir: &Path) {
-    if roots.len() <= 1 {
+    if roots.len() <= 1 || runs_subcommand(&opts.args) {
         return;
     }
     let Some(flag) = box_root_arg(&opts.cmd) else {
@@ -2746,5 +2754,13 @@ mod tests {
         let mut one = opts("codex");
         add_box_root_args(&mut one, &roots, Path::new("/p"));
         assert!(one.args.is_empty());
+        // A sign-in tab runs a subcommand, which takes no session flags.
+        let mut login = opts("claude");
+        login.args = vec!["auth".into(), "login".into(), "--claudeai".into()];
+        add_box_root_args(&mut login, &roots, Path::new("/p"));
+        assert_eq!(login.args, vec!["auth", "login", "--claudeai"]);
+        assert!(runs_subcommand(&login.args));
+        assert!(!runs_subcommand(&["--resume".to_string(), "id".to_string()]));
+        assert!(!runs_subcommand(&[]));
     }
 }

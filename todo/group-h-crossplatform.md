@@ -3142,6 +3142,52 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ❌ Doesn't work on Windows
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
+  - **Rework 2026-09-28 — phone-only sign-in tabs** (✅ code-complete,
+    automated tests passing — `MobileSignInTab.test.tsx`,
+    `MobileSignInCreate.test.tsx`, `SignInLaunch.test.ts`,
+    `MobileLaunchOptions.test.tsx`, `mobile_control` host/protocol tests;
+    ⚠️ not verified on a phone). No TUI menu to find any more: a **sign-in
+    tab** runs the CLI's own login command in the flow a phone can finish
+    (`src/lib/agents/signInLaunch.ts`: Claude `auth login --claudeai`, or
+    `--console` as the other way in; Codex `login --device-auth`, or `login`
+    through the browser; Copilot `login --device-code`; Cursor `login`;
+    OpenCode `auth login`; Amp `login`; Gemini `NO_BROWSER`; the rest a plain
+    launch). Reached from Project ＋ → **Sign in to an agent** (each CLI's
+    shared-login state from `agent_auth`, Sign in / Sign in again / the other
+    way in), from an agent tab's new **"… needs you to sign in"** notice
+    (`readSignedOut`: Not logged in, Please run /login, Invalid API key, a
+    login-method screen), and from Status → Sign in. The sheet is now
+    numbered steps: one tap copies a device code and opens the page, a
+    **Paste the code / address** button reads the clipboard and sends it,
+    **Signed in ✓** with Done (which closes a login-command tab), and **Start
+    again** or the other way in when the login ended without success. New
+    routes: `POST /api/v1/tabs/{id}/sign-in`; `sign_in` on the create
+    request (`like_tab` sidecar-only); `sign_in` rows in launch-options.
+    Untested id `mobile.signIn.tab`. Needs the backend restarted (sidecar
+    routes + protocol fields); the PWA is rebuilt.
+    - Unverified CLI shapes: Codex `--device-auth` (the ChatGPT account may
+      need device-code sign-in allowed first — then use "Sign in through the
+      browser instead"), Cursor/OpenCode/Amp login output, what Claude's
+      `auth login` prints in the fence (expected: the manual URL + "Paste
+      code here if prompted").
+    - Switching accounts still needs Sign out on the desktop first (the
+      account guard refuses a different account's login).
+    - [ ] 🖐️ Manual phone QA — Project ＋ → Sign in to an agent: rows show
+      each CLI signed in / not. Claude → Sign in → the sheet waits, then
+      shows the page → open, approve, copy the code → back → Paste the code
+      → "Signed in to Claude ✓" → Done closes the tab and the row reads
+      Signed in. Copilot → Sign in → "Copy the code and open the page" →
+      paste on GitHub, approve → Signed in ✓. Codex → Sign in (device) or
+      "Sign in through the browser instead" → Finish. Then a Claude tab
+      that says "Not logged in" → notice → Sign in opens the sign-in tab.
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
 
 *Not coming to the phone (decided, not forgotten — see
 `docs/mobile_box_parity_plan.md`): editing a box from the phone (membership,

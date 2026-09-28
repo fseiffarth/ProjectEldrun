@@ -107,7 +107,7 @@ function withoutClosed(detail: ProjectDetail, closed: Map<string, number>): Proj
     : { ...detail, tabs: detail.tabs.filter((row) => !closed.has(row.id)) };
 }
 
-export function Project({ id, back, terminal }: { id: string; back: () => void; terminal: (tab: TabRow, opts?: { pickModel?: boolean }) => void }) {
+export function Project({ id, back, terminal }: { id: string; back: () => void; terminal: (tab: TabRow, opts?: { pickModel?: boolean; signIn?: boolean }) => void }) {
   const t = useT();
   const [detail, setDetail] = useState<ProjectDetail | null>(null);
   const [creating, setCreating] = useState(false);
@@ -268,13 +268,13 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
   }, [id]);
   const create = async (kind: "shell" | "agent", agent?: AgentRow, mode?: string, launch?: NewTabLaunch) => {
     setCreating(true); setError("");
-    const action = `${kind}:${agent?.id ?? ""}:${mode ?? ""}:${launch?.worktree ?? ""}:${launch?.cloud ?? ""}:${launch?.task ?? ""}`;
+    const action = `${kind}:${agent?.id ?? ""}:${mode ?? ""}:${launch?.worktree ?? ""}:${launch?.cloud ?? ""}:${launch?.task ?? ""}:${launch?.sign_in ?? ""}`;
     const idempotencyKey = pendingKeys.current.get(action) ?? crypto.randomUUID();
     pendingKeys.current.set(action, idempotencyKey);
     try {
       const body = await api<{ tab: TabRow }>(`/api/v1/projects/${encodeURIComponent(id)}/tabs`, { method: "POST", body: JSON.stringify({ project_id: id, kind, agent_id: agent?.id, mode, ...launch, idempotency_key: idempotencyKey }) });
       pendingKeys.current.delete(action);
-      terminal(body.tab);
+      terminal(body.tab, launch?.sign_in ? { signIn: true } : undefined);
     } catch (reason) { setError(describeFailure(reason)); void load(); } finally { setCreating(false); }
   };
   /** Drop the row here rather than reloading, and remember that it is gone: the

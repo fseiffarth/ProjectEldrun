@@ -67,6 +67,8 @@ const FAMILIES: [RegExp, string][] = [
   [/copilot/iu, "copilot"],
   [/cursor/iu, "cursor"],
   [/antigravity/iu, "antigravity"],
+  // The new-tab menu labels Mistral's `vibe` "Mistral".
+  [/mistral|\bvibe\b/iu, "vibe"],
 ];
 
 export function slashCli(agentLabel: string): string {

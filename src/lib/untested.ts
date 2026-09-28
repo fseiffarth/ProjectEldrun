@@ -321,6 +321,8 @@ export const UNTESTED = {
   // --- mobile — The phone PWA ---------------------------------------
   "mobile.boxAccess": { area: "mobile", what: "MobileSettings · Box access" },
   "mobile.signIn": { area: "mobile", what: "Terminal · Agent sign-in from the phone: notice + sheet for the CLI's login link (device code, paste-back code, localhost address relayed by the desktop), Status sheet Sign in button" },
+  "mobile.signIn.tab": { area: "mobile", what: "Project ＋ → Sign in to an agent (each CLI's login state, Sign in / other way in) and an agent tab's \"needs you to sign in\" notice: a sign-in tab running the CLI's own login command (Claude auth login, Codex login --device-auth, Copilot login --device-code, Cursor login, …), a step-by-step sheet with copy-and-open, one-tap Paste, Signed in ✓ and Start again" },
+  "mobile.signIn.hiddenLink": { area: "mobile", what: "Terminal · A CLI that opened its sign-in page in the desktop browser without printing the link (Mistral Vibe): notice with Get the link here, which presses the CLI's copy key and catches its OSC 52 clipboard copy into the sign-in sheet" },
   "mobile.composer.slash": { area: "mobile", what: "Terminal · Composer `/` menu: slash commands per CLI, the ones sent before first", tested: "2026-09-23" },
   "mobile.focus.messageMenu": { area: "mobile", what: "Terminal · Reader click-hold menu on a chat message (copy, read aloud)", tested: "2026-09-23" },
   "mobile.focus.selectText": { area: "mobile", what: "Terminal · Reader message menu → Select text: pick part of a chat message to copy" },

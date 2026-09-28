@@ -143,7 +143,7 @@ export function App() {
   const [auth, setAuth] = useState<"loading" | "paired" | "unpaired" | "setup" | "locked" | "unavailable">("loading");
   const [tab, setTab] = useState<Tab>("projects");
   const [projectView, setProjectView] = useState<ProjectView>({ kind: "home" });
-  const [terminal, setTerminal] = useState<{ project: string; tab: TabRow; pickModel?: boolean } | null>(null);
+  const [terminal, setTerminal] = useState<{ project: string; tab: TabRow; pickModel?: boolean; signIn?: boolean } | null>(null);
   const [todoCard, setTodoCard] = useState<string | undefined>(undefined);
   /** Why the last attempt failed, shown on the `unavailable` splash. */
   const [unavailable, setUnavailable] = useState<{ reason: UnavailableReason; detail?: string }>({ reason: "unreachable" });
@@ -341,7 +341,7 @@ export function App() {
     // (`onVisibility`) locked the app again seconds after it was unlocked.
   }, [reset, auth]);
 
-  const openTerminal = (project: string, next: TabRow, pickModel = false) => setTerminal({ project, tab: next, pickModel });
+  const openTerminal = (project: string, next: TabRow, pickModel = false, signIn = false) => setTerminal({ project, tab: next, pickModel, signIn });
   // A card named by an alert opens on the To-do tab; switching tabs by hand
   // clears it, so returning to the board later does not re-open the editor a
   // reader already closed.
@@ -390,13 +390,20 @@ export function App() {
   </>;
   // A terminal is the one full-bleed screen: it owns every pixel it can get,
   // and the tab bar would sit on the keyboard toolbar besides.
-  if (terminal) return <Terminal tab={terminal.tab} pickModel={terminal.pickModel} back={() => setTerminal(null)} />;
+  if (terminal) return <Terminal
+    key={terminal.tab.id}
+    tab={terminal.tab}
+    pickModel={terminal.pickModel}
+    signInTab={terminal.signIn}
+    openTab={(next, opts) => openTerminal(terminal.project, next, false, opts?.signIn)}
+    back={() => setTerminal(null)}
+  />;
   return <div className="tabbed">
     {tab === "todo" ? <Todo key={reseed} card={todoCard} />
       : tab === "mail" ? <Mail key={reseed} />
         : tab === "calendar" ? <Calendar key={reseed} />
           : projectView.kind === "project"
-            ? <Project id={projectView.id} back={() => setProjectView({ kind: "home" })} terminal={(row, opts) => openTerminal(projectView.id, row, opts?.pickModel)} />
+            ? <Project id={projectView.id} back={() => setProjectView({ kind: "home" })} terminal={(row, opts) => openTerminal(projectView.id, row, opts?.pickModel, opts?.signIn)} />
             : <Home
               open={(id) => setProjectView({ kind: "project", id })}
               // Straight into the session, leaving the Projects tab on its

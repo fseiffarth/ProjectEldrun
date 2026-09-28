@@ -952,6 +952,33 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .sign-in-code { display:flex; gap:8px; align-items:center; padding:10px 12px; border:1px solid #383c4d; border-radius:12px; background:#11141c; }
 .sign-in-code code { flex:1; font:700 1.45rem ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.14em; text-align:center; -webkit-user-select:all; user-select:all; }
 .sign-in-answer { padding-top:0; border-top:0; }
+/* The sheet as numbered steps: a round number, then what that step takes. */
+.sign-in-steps { display:grid; gap:14px; margin:0; padding:0; list-style:none; }
+.sign-in-steps > li { display:grid; grid-template-columns:28px minmax(0,1fr); gap:10px; align-items:start; }
+.sign-in-steps > li > div, .sign-in-steps > li > form { display:grid; gap:8px; min-width:0; }
+.sign-in-steps > li > p { margin:3px 0 0; color:#dfe3f0; font-size:.9rem; line-height:1.4; }
+.sign-in-step { display:grid; place-items:center; width:28px; height:28px; border-radius:50%; background:#29253d; color:#dcd6ff; font-weight:700; font-size:.85rem; }
+.sign-in-paste { min-height:48px; font-size:1rem; }
+.sign-in-more { color:#aeb4c8; font-size:.84rem; }
+.sign-in-more summary { padding:6px 0; cursor:pointer; }
+.sign-in-more button { margin-top:4px; }
+.sign-in-done { display:grid; justify-items:center; gap:8px; padding:12px 0 4px; text-align:center; }
+.sign-in-done strong { font-size:1.1rem; }
+.sign-in-tick { display:grid; place-items:center; width:52px; height:52px; border-radius:50%; background:#1d3a2c; color:#8ff0b8; font-size:1.7rem; font-weight:700; }
+.sign-in-waiting { display:grid; justify-items:center; gap:6px; padding:10px 0; text-align:center; }
+.sign-in-waiting p { margin:0; }
+.sign-in-spinner { width:26px; height:26px; border:3px solid #383c4d; border-top-color:#8c7df4; border-radius:50%; animation:sign-in-spin .9s linear infinite; }
+@keyframes sign-in-spin { to { transform:rotate(360deg); } }
+.sign-in-alternate { justify-self:center; border:0; background:transparent; color:#b9b0ff; font-size:.84rem; text-decoration:underline; }
+/* The ＋ sheet's sign-in list: one row per agent, its login state under it. */
+.sign-in-list { display:grid; gap:10px; }
+.sign-in-list h3 { margin:0; }
+.sign-in-agent { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:10px 12px; border:1px solid #383c4d; border-radius:12px; background:#11141c; }
+.sign-in-agent > span { display:grid; flex:1 1 auto; gap:2px; min-width:0; }
+.sign-in-agent small { font-size:.76rem; overflow-wrap:anywhere; }
+.sign-in-agent small.signed-in { color:#8ff0b8; }
+.sign-in-agent small.signed-out { color:#ffb4c0; }
+.sign-in-agent .sign-in-alternate { flex-basis:100%; justify-self:start; padding:2px 0; text-align:left; }
 .inbox-upload { display:flex; align-items:center; gap:8px; margin:6px 7px 0; padding:8px 10px; border-radius:9px; background:#211d35; color:#dcd6ff; font-size:.78rem; }
 .inbox-upload.error { background:#3b2027; color:#ffb4c0; }
 .inbox-upload strong { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:650; }

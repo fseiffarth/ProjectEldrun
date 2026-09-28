@@ -73,17 +73,17 @@ function plural(count: number, one: string, many = `${one}s`): string {
  * (model, mode, context) — free, and about *this* tab, where the quota panel is
  * about the whole account.
  */
-export function StatusSheet({ tab, live, onLimits, onClose, signInCommand, onSignIn }: {
+export function StatusSheet({ tab, live, onLimits, onClose, signIn }: {
   tab: TabRow;
   live: SessionStatus | null;
   /** Hands a fresh panel's 5h/week windows to the facts row, so a Refresh
    * here updates it without waiting for its own poll. */
   onLimits?: (limits: LimitMeters) => void;
   onClose: () => void;
-  /** The command that starts this CLI's sign-in (`signIn.ts`), when it has
-   * one and the session can take it; the sheet then offers Sign in. */
-  signInCommand?: string | null;
-  onSignIn?: (command: string) => void;
+  /** How this CLI signs in from here — a sign-in tab of its own, or its
+   * slash command typed into the session (`signIn.ts`) — when it can; the
+   * sheet then offers Sign in. */
+  signIn?: { hint: string; start: () => void } | null;
 }) {
   const t = useT();
   const [view, setView] = useState<"formatted" | "terminal">("formatted");
@@ -179,7 +179,7 @@ export function StatusSheet({ tab, live, onLimits, onClose, signInCommand, onSig
 
       <div className="mobile-schedule-actions">
         {usage?.cached && <span className="sheet-pending">Cached</span>}
-        {signInCommand && onSignIn && <button onClick={() => onSignIn(signInCommand)} title={t("mobile.signIn.startHint", { command: signInCommand })}>{t("mobile.signIn.start")}</button>}
+        {signIn && <button onClick={signIn.start} title={signIn.hint}>{t("mobile.signIn.start")}</button>}
         <button disabled={busy} onClick={() => void load(true)}>{busy ? "Reading…" : "Refresh"}</button>
         <button className="primary" onClick={onClose}>Done</button>
       </div>

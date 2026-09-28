@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getLaunchOptions, type AgentRow, type CloudLaunchRow, type LaunchOptions } from "../api";
+import { getLaunchOptions, type AgentRow, type CloudLaunchRow, type LaunchOptions, type SignInRow } from "../api";
 import { isUntested } from "../../../src/lib/untested";
 import { useT } from "../../../src/lib/i18n";
 
@@ -9,6 +9,8 @@ export interface NewTabLaunch {
   worktree?: string;
   cloud?: "new" | "open";
   task?: string;
+  /** A sign-in tab: the CLI's own login, in the flow a phone can finish. */
+  sign_in?: "default" | "alternate";
 }
 
 /**
@@ -27,6 +29,10 @@ export interface NewTabLaunch {
  * sheet is the plain one. A ☁ New for a CLI that takes its task on the command
  * line swaps the grid for a task box first.
  *
+ * "Sign in to an agent" lists every agent with the state of its shared login
+ * and opens a sign-in tab for the one picked (`src/lib/agents/signInLaunch.ts`)
+ * — the reader never has to find a login command or a menu row in a session.
+ *
  * Creating is the caller's: it owns the idempotency keys and the jump into the
  * new session, and the sheet closes on the tap rather than waiting for the
  * desktop, so a slow create is a screen the reader can still read.
@@ -41,7 +47,8 @@ export function NewTabSheet({ projectId, agents, busy, onPick, onSendFile, onClo
   onClose: () => void;
 }) {
   const t = useT();
-  const [options, setOptions] = useState<LaunchOptions>({ worktrees: [], cloud: [] });
+  const [options, setOptions] = useState<LaunchOptions>({ worktrees: [], cloud: [], sign_in: [] });
+  const [signingIn, setSigningIn] = useState(false);
   /** The picked worktree's id; "" is the project folder. */
   const [where, setWhere] = useState("");
   /** The ☁ New waiting on its task. */
@@ -63,7 +70,8 @@ export function NewTabSheet({ projectId, agents, busy, onPick, onSendFile, onClo
     <section className="option-sheet new-tab-sheet" role="dialog" aria-modal="true" aria-label={t("mobile.newTab.title")} onClick={(event) => event.stopPropagation()}>
       <span className="sheet-grip" aria-hidden="true" />
       <header><button className="sheet-close" onClick={onClose} aria-label={t("mobile.newTab.close")}>✕</button><h2>{t("mobile.newTab.title")}{isUntested("mobile.project.newTab") && <small>{t("mobile.newTab.untested")}</small>}</h2><span className="sheet-close" aria-hidden="true" /></header>
-      {asking ? <div className="mobile-schedule-form">
+      {signingIn ? <SignInList agents={agents} rows={options.sign_in} busy={busy} onPick={(agent, way) => onPick("agent", agent, undefined, { sign_in: way })} onBack={() => setSigningIn(false)} />
+      : asking ? <div className="mobile-schedule-form">
         <h3>{t("mobile.newTab.cloudTaskTitle", { agent: asking.agent.label })}{isUntested("mobile.newTab.cloud") && <span className="untested">{t("mobile.newTab.untested")}</span>}</h3>
         <p className="sheet-note">{t("mobile.newTab.cloudTaskHint")}</p>
         <textarea rows={4} maxLength={4000} value={task} autoFocus aria-label={t("mobile.newTab.cloudTaskTitle", { agent: asking.agent.label })} onChange={(event) => setTask(event.target.value)} />
@@ -88,6 +96,7 @@ export function NewTabSheet({ projectId, agents, busy, onPick, onSendFile, onClo
         {/* A desktop that reports no agents still opens shells — say so, rather
             than leaving the sheet looking half-loaded. */}
         {agents.length === 0 && <p className="sheet-note">{t("mobile.newTab.noAgents")}</p>}
+        {options.sign_in.length > 0 && <SignInEntry rows={options.sign_in} onOpen={() => setSigningIn(true)} />}
         {/* No desktop round trip: the sidecar writes the file itself, so this
             is not held back while a create is in flight. */}
         <button className="new-tab-file" onClick={onSendFile}>
@@ -97,5 +106,58 @@ export function NewTabSheet({ projectId, agents, busy, onPick, onSendFile, onClo
       </div>
       </>}
     </section>
+  </div>;
+}
+
+/** The ＋ sheet's way into the sign-in list, saying how many agents wait for
+ * a login. */
+function SignInEntry({ rows, onOpen }: { rows: SignInRow[]; onOpen: () => void }) {
+  const t = useT();
+  const missing = rows.filter((row) => row.signed_in === false).length;
+  return <button className="new-tab-file" onClick={onOpen}>
+    <span>
+      <strong>{t("mobile.signIn.listEntry")}{isUntested("mobile.signIn.tab") && <span className="untested">{t("mobile.newTab.untested")}</span>}</strong>
+      <small>{missing > 0 ? t("mobile.signIn.listMissing", { count: String(missing) }) : t("mobile.signIn.listHint")}</small>
+    </span>
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4M10 16l4-4-4-4M14 12H4" /></svg>
+  </button>;
+}
+
+/** Every agent the desktop can sign in, with its login state and a Sign in
+ * button — and, where the CLI has one, its other way in. */
+function SignInList({ agents, rows, busy, onPick, onBack }: {
+  agents: AgentRow[];
+  rows: SignInRow[];
+  busy: boolean;
+  onPick: (agent: AgentRow, way: "default" | "alternate") => void;
+  onBack: () => void;
+}) {
+  const t = useT();
+  const byId = new Map(rows.map((row) => [row.agent_id, row]));
+  const listed = agents.flatMap((agent) => {
+    const row = byId.get(agent.id);
+    return row ? [{ agent, row }] : [];
+  });
+  return <div className="sign-in-list">
+    <h3>{t("mobile.signIn.listTitle")}</h3>
+    <p className="sheet-note">{t("mobile.signIn.listNote")}</p>
+    {listed.map(({ agent, row }) => <div className="sign-in-agent" key={agent.id}>
+      <span>
+        <strong>{agent.label}</strong>
+        {row.signed_in !== undefined && <small className={row.signed_in ? "signed-in" : "signed-out"}>
+          {row.signed_in
+            ? row.account ? t("mobile.signIn.signedInAs", { account: row.account }) : t("mobile.signIn.signedIn")
+            : t("mobile.signIn.signedOut")}
+        </small>}
+      </span>
+      <button className={row.signed_in ? "" : "primary"} disabled={busy} onClick={() => onPick(agent, "default")}>
+        {row.signed_in ? t("mobile.signIn.again") : t("mobile.signIn.start")}
+      </button>
+      {row.alternate && <button className="sign-in-alternate" disabled={busy} onClick={() => onPick(agent, "alternate")}>
+        {row.alternate === "console" ? t("mobile.signIn.alternateConsole") : t("mobile.signIn.alternateBrowser")}
+      </button>}
+    </div>)}
+    <p className="sheet-note">{t("mobile.signIn.switchNote")}</p>
+    <div className="mobile-schedule-actions"><button onClick={onBack}>{t("mobile.signIn.back")}</button></div>
   </div>;
 }

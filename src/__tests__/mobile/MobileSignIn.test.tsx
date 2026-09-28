@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { pastedCallback, readSignIn, signInCommand } from "../../../mobile-web/src/terminal/signIn";
+import { copiedSignIn, osc52Text, pastedCallback, readHiddenSignIn, readSignIn, signInCommand } from "../../../mobile-web/src/terminal/signIn";
+import { slashCli } from "../../../mobile-web/src/slashCommands";
 import { SignInSheet } from "../../../mobile-web/src/screens/SignInSheet";
 import { slashSuggestions } from "../../../mobile-web/src/slashCommands";
 
@@ -62,6 +63,58 @@ describe("readSignIn", () => {
   it("keeps a sentence's punctuation and the next line's words out of the URL", () => {
     const signIn = readSignIn(rows("Go to https://example.com/device.", "Then come back"));
     expect(signIn?.url).toBe("https://example.com/device");
+  });
+});
+
+// Mistral Vibe 2.25.8's browser sign-in, as its Textual TUI draws it at 50x40
+// (the reading view keeps the text, not the box edges) — and at 44x14, where
+// the page scrolls its bottom half, hint included, off the screen.
+const VIBE_TALL = [
+  "     Launch browser",
+  "     Your browser should open automatically",
+  "     ┌────────────────────────────────────────┐",
+  "     │   Open browser                         │",
+  "     │   Browser opened                       │",
+  "     └────────────────────────────────────────┘",
+  "   > │   Complete sign-in                     │",
+  "     │   Waiting for authentication...        │",
+  "     If your browser did not open, copy this",
+  "     URL (press c).",
+  "     Press m to enter API key manually - Esc to",
+  "                       cancel",
+];
+const VIBE_SHORT = [
+  "     Launch browser",
+  "     Your browser should open",
+  "     automatically",
+  "     │   Open browser                 │",
+  "     │   Browser opened               │",
+  "   > │   Complete sign-in             │",
+  "     │   Waiting for                  │",
+];
+const VIBE_URL = "https://console.mistral.ai/codestral/cli/authenticate?process_id=8885376c-b4d7-46ca-9341-8f6198ce40a8&complete_token=EzHIAV3LlTkTz0TTOtecBMTKY6gcsObV";
+
+describe("a sign-in link the CLI keeps to the desktop", () => {
+  it("finds Vibe's copy key on screen, and by the CLI where the screen clips it", () => {
+    expect(readSignIn(rows(...VIBE_TALL))).toBeNull();
+    expect(readHiddenSignIn(rows(...VIBE_TALL), "agent")).toEqual({ key: "c" });
+    expect(readHiddenSignIn(rows(...VIBE_SHORT), slashCli("Mistral"))).toEqual({ key: "c" });
+    expect(readHiddenSignIn(rows(...VIBE_SHORT), "agent")).toBeNull();
+  });
+
+  it("lets go once the CLI says it is signed in, and ignores a screen with no browser", () => {
+    expect(readHiddenSignIn(rows(...VIBE_SHORT, "Signed in successfully."), "vibe")).toBeNull();
+    expect(readHiddenSignIn(rows("Copy this URL (press c)."), "vibe")).toBeNull();
+  });
+
+  it("reads the link out of the OSC 52 copy that answers", () => {
+    const copied = osc52Text(`c;${btoa(VIBE_URL)}`);
+    expect(copied).toBe(VIBE_URL);
+    expect(copiedSignIn(copied ?? "")).toEqual({ url: VIBE_URL, site: "console.mistral.ai", flow: "wait" });
+    expect(osc52Text("c;?")).toBeNull();
+    expect(osc52Text("c;@@@")).toBeNull();
+    expect(copiedSignIn("http://console.mistral.ai/x")).toBeNull();
+    expect(copiedSignIn(`${VIBE_URL} and more`)).toBeNull();
   });
 });
 

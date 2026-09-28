@@ -45,6 +45,7 @@ import {
   AGENT_ITEMS,
   SHELL_ITEMS,
   buildCloudTabSpec,
+  buildSignInTabSpec,
   buildStaticTabSpec,
   customAgentToItem,
   type StaticMenuItem,
@@ -52,6 +53,7 @@ import {
 import { worktreeAgentSpec } from "../tabs/agentWorktrees";
 import { agentWorktreeChoices, worktreeName, type GitWorktree } from "../../lib/agents/agentWorktrees";
 import { cleanCloudTask, cloudLaunch, cloudLaunchesFor } from "../../lib/agents/cloudSessions";
+import { loginIdForCmd, signInLaunch } from "../../lib/agents/signInLaunch";
 import { useI18nStore, useT } from "../../lib/i18n";
 import { resolveUse24h } from "../../lib/timeFormat";
 import { finishAlert } from "../../lib/alertDone";
@@ -85,10 +87,18 @@ interface CreateRequest {
   worktree?: string;
   cloud?: string;
   task?: string;
+  /** A sign-in tab (`lib/agents/signInLaunch`): "default" or "alternate". */
+  sign_in?: string;
+  /** The agent tab (tmux name) whose CLI to sign in, in place of `agent_id`;
+   *  only the sidecar sets it. */
+  like_tab?: string;
   idempotency_key: string;
 }
 interface MobileWorktree { id: string; label: string; branch?: string; main: boolean }
 interface MobileCloudLaunch { agent_id: string; action: string; task: boolean }
+interface MobileSignInOption { agent_id: string; signed_in?: boolean; account?: string; alternate?: string }
+/** One row of `agent_logins` (`services::agent_auth::LoginStatus`). */
+interface AgentLoginRow { id: string; signed_in: boolean; account: string | null; shared: boolean }
 interface TodoColumn { id: string; name: string; position: number; done: boolean; archived: boolean; overdue?: boolean; due_today?: boolean; color?: string }
 interface TodoSubtask { id: string; title: string; done: boolean }
 interface TodoTaskInput {
@@ -236,7 +246,7 @@ type DesktopResponse =
   | { status: "activity"; statuses: AgentTabStatus[]; prompts: AgentTabPrompts[] }
   | { status: "activated" }
   | { status: "created"; tmux_session: string }
-  | { status: "launch_options"; worktrees: MobileWorktree[]; cloud: MobileCloudLaunch[] }
+  | { status: "launch_options"; worktrees: MobileWorktree[]; cloud: MobileCloudLaunch[]; sign_in: MobileSignInOption[] }
   | { status: "todo"; board: TodoBoard }
   | { status: "alerts"; alerts: MobileAlerts }
   | { status: "calendar"; calendar: MobileCalendar }
@@ -652,7 +662,23 @@ async function create(request: CreateRequest, t: ReturnType<typeof useT>): Promi
   });
 
   let spec: Omit<TabEntry, "key">;
-  if (request.kind === "shell") {
+  if (request.sign_in) {
+    // Built-ins only, as for cloud: a custom agent's login is not ours to
+    // guess. The CLI is the phone's pick, or the one the named tab runs.
+    let item: StaticMenuItem | undefined;
+    if (request.like_tab) {
+      const tab = (useTabsStore.getState().tabsByScope[scope.id] ?? [])
+        .find((entry) => entry.tmuxSession === request.like_tab && entry.kind === "agent");
+      if (!tab) return { status: "error", code: "tab_not_found", message: "Tab is unavailable" };
+      item = AGENT_ITEMS.find((entry) => entry.cmd === tab.cmd);
+    } else {
+      const choice = (await agentChoices()).find((entry) => entry.public.id === request.agent_id);
+      if (!choice) return { status: "error", code: "unknown_agent", message: "Agent is unavailable" };
+      item = AGENT_ITEMS.includes(choice.item) ? choice.item : undefined;
+    }
+    if (!item) return { status: "error", code: "unsupported_sign_in", message: "Sign-in is unavailable for this agent" };
+    spec = buildSignInTabSpec(item, signInLaunch(item.cmd, request.sign_in === "alternate"), cwd, t);
+  } else if (request.kind === "shell") {
     if (request.agent_id || request.mode) {
       return { status: "error", code: "invalid_request", message: "Shell requests cannot name an agent or mode" };
     }
@@ -748,7 +774,34 @@ async function launchOptions(projectId: string): Promise<DesktopResponse> {
           task: launch.needsTask,
         })))
     : [];
-  return { status: "launch_options", worktrees, cloud };
+  return {
+    status: "launch_options",
+    worktrees,
+    cloud,
+    sign_in: await signInOptions(),
+  };
+}
+
+/** The agents the phone can open a sign-in tab for, each with the state of
+ * its shared login where Eldrun keeps one (`services::agent_auth`). Every
+ * built-in qualifies: one without a login command signs in as it starts. */
+async function signInOptions(): Promise<MobileSignInOption[]> {
+  // A login store that cannot be read leaves the states unknown, never the
+  // list — or the ＋ sheet's whole answer — empty.
+  const logins = await invoke<AgentLoginRow[] | null>("agent_logins").catch(() => null);
+  const byId = new Map((Array.isArray(logins) ? logins : []).map((row) => [row.id, row]));
+  return (await agentChoices())
+    .filter((choice) => AGENT_ITEMS.includes(choice.item))
+    .map((choice) => {
+      const login = byId.get(loginIdForCmd(choice.item.cmd));
+      const alternate = signInLaunch(choice.item.cmd).alternate?.kind;
+      return {
+        agent_id: choice.public.id,
+        ...(login?.shared ? { signed_in: login.signed_in } : {}),
+        ...(login?.shared && login.signed_in && login.account ? { account: login.account } : {}),
+        ...(alternate ? { alternate } : {}),
+      };
+    });
 }
 
 /** Make `scope` the one the desktop shows: a project is activated, a box is

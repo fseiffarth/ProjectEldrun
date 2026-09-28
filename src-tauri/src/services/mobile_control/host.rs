@@ -30,7 +30,7 @@ use super::{
     outbox,
     limits,
     protocol::{
-        clean_tab_color, CalendarAction, CreateTabRequest, DesktopRequest, DesktopResponse,
+        clean_tab_color, CalendarAction, CreateTabKind, CreateTabRequest, DesktopRequest, DesktopResponse,
         MailMarkAction, MobileCollectedPrompt, MobilePromptInput, MobileSchedule,
         MobileScheduleInput, PromptMutation, ScheduleMutation,
         TabPlace, TodoAction, MAX_CONTROL_MESSAGE, MAX_INPUT_FRAME, MAX_MAIL_REPLY_BYTES,
@@ -607,9 +607,12 @@ async fn create_tab(
     let Ok(mut request) = serde_json::from_slice::<CreateTabRequest>(&body) else {
         return api_error(StatusCode::BAD_REQUEST, "invalid_request");
     };
+    // `like_tab` names a tmux session, which only the sidecar may: the tab
+    // route below sets it from an opaque tab id.
     if request.project_id != project_id
         || request.idempotency_key.len() < 16
         || request.idempotency_key.len() > 128
+        || request.like_tab.is_some()
         || !request.launch_shape_ok()
     {
         return api_error(StatusCode::BAD_REQUEST, "invalid_request");
@@ -621,21 +624,34 @@ async fn create_tab(
         return api_error(StatusCode::NOT_FOUND, "project_not_found");
     };
     request.project_id = project.raw_id.clone();
-    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    create_through_desktop(&state, &project_id, request).await
+}
+
+/// Ask the desktop for the tab `request` describes and answer with its row
+/// once the catalog lists it. `project_id` is the scope's public id, which the
+/// new row is looked up under; the request already carries the raw one.
+async fn create_through_desktop(
+    state: &HostState,
+    project_id: &str,
+    request: CreateTabRequest,
+) -> (StatusCode, Json<serde_json::Value>) {
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
-    match admin::desktop_call(
-        &desktop_socket,
-        &DesktopRequest::Create {
-            request_id,
-            request,
-        },
-    )
-    .await
-    {
+    created_through_desktop(state, project_id, &DesktopRequest::Create { request_id, request }).await
+}
+
+/// Send a request the desktop answers with `Created` (a create, a reopen) and
+/// answer with the new tab's row once the catalog lists it.
+async fn created_through_desktop(
+    state: &HostState,
+    project_id: &str,
+    request: &DesktopRequest,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    match admin::desktop_call(&desktop_socket, request).await {
         Ok(DesktopResponse::Created { tmux_session }) => {
             for _ in 0..40 {
-                if let Ok(next) = catalog_fresh(&state) {
-                    if let Some(tab) = next.project(&project_id).and_then(|p| {
+                if let Ok(next) = catalog_fresh(state) {
+                    if let Some(tab) = next.project(project_id).and_then(|p| {
                         p.tabs
                             .iter()
                             .find(|t| t.tmux_name == tmux_session && t.public.available)
@@ -687,9 +703,13 @@ async fn launch_options(
     )
     .await
     {
-        Ok(DesktopResponse::LaunchOptions { worktrees, cloud }) => (
+        Ok(DesktopResponse::LaunchOptions {
+            worktrees,
+            cloud,
+            sign_in,
+        }) => (
             StatusCode::OK,
-            Json(json!({ "worktrees": worktrees, "cloud": cloud })),
+            Json(json!({ "worktrees": worktrees, "cloud": cloud, "sign_in": sign_in })),
         ),
         Ok(DesktopResponse::Error { code, .. }) => api_error(
             if code == "desktop_unavailable" {
@@ -1519,6 +1539,61 @@ async fn sign_in_callback(
         Ok(status) => (StatusCode::OK, Json(json!({ "delivered": true, "status": status }))),
         Err(code) => api_error(StatusCode::BAD_GATEWAY, code),
     }
+}
+
+/// `POST /api/v1/tabs/{id}/sign-in` — open a sign-in tab for the CLI this
+/// agent tab runs, beside it: the CLI's own login command in the flow a phone
+/// can finish (`src/lib/agents/signInLaunch.ts`), chosen by the desktop from
+/// the tab's command. The phone names the tab by opaque id and the way in
+/// (`alternate`); the tmux name it resolves to goes to the desktop alone.
+async fn sign_in_tab(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(tab_id): Path<String>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    if !exact_origin(&headers, &state) {
+        return api_error(StatusCode::FORBIDDEN, "invalid_origin");
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct SignInBody {
+        #[serde(default)]
+        alternate: bool,
+        idempotency_key: String,
+    }
+    let Ok(body) = serde_json::from_slice::<SignInBody>(&body) else {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    if body.idempotency_key.len() < 16 || body.idempotency_key.len() > 128 {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    let Ok(catalog_snapshot) = catalog(&state) else {
+        return api_error(StatusCode::SERVICE_UNAVAILABLE, "catalog_unavailable");
+    };
+    let Some((project, tab)) = catalog_snapshot.tab(&tab_id) else {
+        return api_error(StatusCode::NOT_FOUND, "tab_not_found");
+    };
+    if tab.public.kind != "agent" {
+        return api_error(StatusCode::BAD_REQUEST, "agent_tab_required");
+    }
+    let request = CreateTabRequest {
+        project_id: project.raw_id.clone(),
+        kind: CreateTabKind::Agent,
+        agent_id: None,
+        mode: None,
+        worktree: None,
+        cloud: None,
+        task: None,
+        sign_in: Some(if body.alternate { "alternate" } else { "default" }.to_string()),
+        like_tab: Some(tab.tmux_name.clone()),
+        idempotency_key: body.idempotency_key,
+    };
+    let project_id = project.public.id.clone();
+    create_through_desktop(&state, &project_id, request).await
 }
 
 /// `PUT /api/v1/tabs/{id}/order` — move one tab next to another, the phone's
@@ -2868,6 +2943,7 @@ fn router(state: HostState) -> Router {
         .route("/api/v1/tabs/{tab_id}/color", put(color_tab))
         .route("/api/v1/tabs/{tab_id}/order", put(order_tab))
         .route("/api/v1/tabs/{tab_id}/prompt", post(sent_prompt))
+        .route("/api/v1/tabs/{tab_id}/sign-in", post(sign_in_tab))
         .route("/api/v1/tabs/{tab_id}/sign-in-callback", post(sign_in_callback))
         .route(
             "/api/v1/tabs/{tab_id}/schedules",
@@ -3353,6 +3429,7 @@ mod tests {
             "/api/v1/tabs/anything/desktop-images",
             "/api/v1/tabs/anything/prompt",
             "/api/v1/tabs/anything/sign-in-callback",
+            "/api/v1/tabs/anything/sign-in",
             "/api/v1/projects/anything/prompts",
             "/api/v1/projects/anything/prompts/anything/send",
             "/api/v1/mail/folders/anything/messages/anything/mark",
@@ -3562,6 +3639,73 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "answered: {body}");
         assert_eq!(json(&body)["delivered"], true);
         assert!(!body.contains("secret"), "the listener's page stays on the desktop: {body}");
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_tab_is_asked_for_by_tab_id_and_never_names_a_session() {
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(32)).await.0;
+        let (_, _, projects_body) = host.send(get_as("/api/v1/projects", &cookie)).await;
+        let project_id = json(&projects_body)["projects"][0]["id"].as_str().expect("project id").to_string();
+        let (_, _, project_body) = host.send(get_as(&format!("/api/v1/projects/{project_id}"), &cookie)).await;
+        let tab_id = json(&project_body)["tabs"][0]["id"].as_str().expect("tab id").to_string();
+        let press = |uri: String, origin: &'static str, body: Value| {
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(header::ORIGIN, origin)
+                .header(header::COOKIE, cookie_pair(&cookie))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(&body).expect("body")))
+                .expect("request")
+        };
+        let route = format!("/api/v1/tabs/{tab_id}/sign-in");
+        let key = "0123456789abcdef";
+
+        let (status, _, _) = host
+            .send(press(route.clone(), "https://evil.example", json!({ "idempotency_key": key })))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _, body) = host
+            .send(press("/api/v1/tabs/not-a-tab/sign-in".into(), ORIGIN, json!({ "idempotency_key": key })))
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "answered: {body}");
+        // The phone names the tab and the way in, nothing else.
+        let (status, _, body) = host
+            .send(press(route.clone(), ORIGIN, json!({ "idempotency_key": key, "cmd": "sh" })))
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "answered: {body}");
+        let (status, _, body) = host
+            .send(press(route.clone(), ORIGIN, json!({ "idempotency_key": "short" })))
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "answered: {body}");
+
+        // Well formed, with no desktop window: unavailable, and nothing the
+        // desktop is addressed by comes back.
+        let (status, _, body) = host
+            .send(press(route, ORIGIN, json!({ "idempotency_key": key, "alternate": true })))
+            .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "answered: {body}");
+        assert_eq!(json(&body)["error"], "desktop_unavailable");
+        assert!(!body.contains(RAW_PROJECT));
+        assert!(!body.contains("eldrun-"));
+
+        // The create route will not take the session name from the phone.
+        let (status, _, body) = host
+            .send(press(
+                format!("/api/v1/projects/{project_id}/tabs"),
+                ORIGIN,
+                json!({
+                    "project_id": project_id,
+                    "kind": "agent",
+                    "like_tab": "eldrun-anything",
+                    "sign_in": "default",
+                    "idempotency_key": key,
+                }),
+            ))
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "answered: {body}");
+        assert_eq!(json(&body)["error"], "invalid_request");
     }
 
     #[tokio::test]

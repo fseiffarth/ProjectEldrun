@@ -28,7 +28,10 @@ export interface AgentRow { id: string; label: string; modes: ("plan" | "auto")[
 export interface WorktreeRow { id: string; label: string; branch?: string; main: boolean }
 /** One cloud launch an agent offers; `task` → it needs the task up front. */
 export interface CloudLaunchRow { agent_id: string; action: "new" | "open"; task: boolean }
-export interface LaunchOptions { worktrees: WorktreeRow[]; cloud: CloudLaunchRow[] }
+/** One agent the ＋ can open a sign-in tab for. `signed_in` is absent where
+ * the desktop cannot tell; `alternate` names the CLI's other way in. */
+export interface SignInRow { agent_id: string; signed_in?: boolean; account?: string; alternate?: "console" | "browser" }
+export interface LaunchOptions { worktrees: WorktreeRow[]; cloud: CloudLaunchRow[]; sign_in: SignInRow[] }
 
 /** `GET /api/v1/projects/{id}/launch-options` — asked when the ＋ sheet opens.
  * A desktop that predates the route answers 404; that reads as "project folder
@@ -36,9 +39,9 @@ export interface LaunchOptions { worktrees: WorktreeRow[]; cloud: CloudLaunchRow
 export async function getLaunchOptions(projectId: string, signal?: AbortSignal): Promise<LaunchOptions> {
   try {
     const body = await api<Partial<LaunchOptions>>(`/api/v1/projects/${encodeURIComponent(projectId)}/launch-options`, { signal });
-    return { worktrees: body.worktrees ?? [], cloud: body.cloud ?? [] };
+    return { worktrees: body.worktrees ?? [], cloud: body.cloud ?? [], sign_in: body.sign_in ?? [] };
   } catch (reason) {
-    if (reason instanceof ApiError && reason.status === 404) return { worktrees: [], cloud: [] };
+    if (reason instanceof ApiError && reason.status === 404) return { worktrees: [], cloud: [], sign_in: [] };
     throw reason;
   }
 }
@@ -405,6 +408,13 @@ export function reportSentPrompt(tabId: string, message: string): Promise<unknow
  * itself, so this works with the desktop window closed. */
 export function finishSignIn(tabId: string, url: string): Promise<{ delivered: boolean }> {
   return api(`/api/v1/tabs/${encodeURIComponent(tabId)}/sign-in-callback`, { method: "POST", body: JSON.stringify({ url }) });
+}
+
+/** `POST /api/v1/tabs/{id}/sign-in` — a sign-in tab for the CLI this agent
+ * tab runs, beside it; the desktop picks the login command from the tab's
+ * own. `alternate` asks for the CLI's other way in. */
+export function openSignInTab(tabId: string, alternate: boolean, idempotencyKey: string): Promise<{ tab: TabRow }> {
+  return api(`/api/v1/tabs/${encodeURIComponent(tabId)}/sign-in`, { method: "POST", body: JSON.stringify({ alternate, idempotency_key: idempotencyKey }) });
 }
 
 /** Which side of the anchor tab a dragged row lands on — the desktop's own

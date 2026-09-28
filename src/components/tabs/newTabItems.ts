@@ -9,6 +9,7 @@ import type { AddMenuEntry } from "./AddTabMenuList";
 import type { TranslationKey } from "../../lib/i18n";
 import { AGENT_TAB_ACTIONS, type AgentTabAction } from "../../lib/shortcuts/shortcuts";
 import { cloudLaunchesFor, type CloudLaunch } from "../../lib/agents/cloudSessions";
+import type { SignInLaunch } from "../../lib/agents/signInLaunch";
 
 /**
  * A static entry in the "new tab" add menu. Shared by the main-window `TabBar`
@@ -185,6 +186,30 @@ export function buildCloudTabSpec(
     cmd: item.cmd,
     args: launch.args(task),
     env: { ...(item.env ?? {}) },
+    cwd: projectCwd,
+    kind: item.kind,
+  };
+}
+
+/**
+ * The tab payload for a built-in agent's *sign-in* tab (see
+ * `lib/agents/signInLaunch`): the CLI's own login command, or a plain launch
+ * for a CLI that signs in when it starts. Like {@link buildCloudTabSpec} it
+ * mints no session id, so restore drops it rather than signing in again.
+ */
+export function buildSignInTabSpec(
+  item: StaticMenuItem,
+  launch: SignInLaunch,
+  projectCwd: string,
+  t: (key: TranslationKey, vars?: Record<string, string>) => string,
+): Omit<TabEntry, "key"> {
+  return {
+    label: launch.exits
+      ? t("newTabMenu.signInTabLabel", { agent: itemLabel(item, t) })
+      : itemLabel(item, t),
+    cmd: item.cmd,
+    args: [...launch.args],
+    env: { ...(item.env ?? {}), ...(launch.env ?? {}) },
     cwd: projectCwd,
     kind: item.kind,
   };

@@ -58,6 +58,12 @@ describe("Mobile bridge — launch options", () => {
           worktree("/projects/paper/.eldrun/worktrees/fix", "fix-build", false),
         ]);
       }
+      if (command === "agent_logins") {
+        return Promise.resolve([
+          { id: "claude", signed_in: true, account: "me@example.com", importable: false, blocked: null, shared: true },
+          { id: "gemini", signed_in: false, account: null, importable: false, blocked: null, shared: true },
+        ]);
+      }
       if (command === "mobile_opaque_id") {
         const { domain, value } = args as { domain: string; value: string };
         return Promise.resolve(`${domain}-${value.length}`);
@@ -88,6 +94,11 @@ describe("Mobile bridge — launch options", () => {
     expect(response.cloud).toEqual([
       { agent_id: "agent-6", action: "new", task: true },
       { agent_id: "agent-6", action: "open", task: false },
+    ]);
+    // Every agent can be signed in; the store says how each one stands.
+    expect(response.sign_in).toEqual([
+      { agent_id: "agent-6", signed_in: true, account: "me@example.com", alternate: "console" },
+      { agent_id: "agent-6", signed_in: false },
     ]);
   });
 

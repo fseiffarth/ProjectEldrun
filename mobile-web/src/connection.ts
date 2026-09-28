@@ -212,6 +212,7 @@ const FAILURE_TEXT: Record<string, string> = {
   desktop_error: "Eldrun on the desktop hit an error handling that.",
   launch_failed: "The desktop could not open that tab.",
   unknown_agent: "The desktop does not know that agent.",
+  unsupported_sign_in: "The desktop cannot sign that agent in from the phone.",
   unsupported_mode: "Agent mode is unavailable for that agent.",
   persist_failed: "The desktop could not save that.",
   calendar_unavailable: "The desktop's calendar could not be read.",
