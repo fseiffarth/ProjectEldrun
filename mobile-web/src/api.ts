@@ -278,8 +278,12 @@ const READ_RETRY_DELAY = 400;
 /** A deadline, ours or the caller's. `AbortSignal.timeout` rejects the fetch
  * with a `TimeoutError`, not an `AbortError`, so testing the name alone
  * reported every stalled request as `offline` — "is Tailscale on?" for what
- * was a slow answer. */
-function aborted(error: unknown): boolean {
+ * was a slow answer. The error's shape is still the browser's to choose — a
+ * phone reported "warm-up failed after 10000 ms", the deadline to the
+ * millisecond, as a failure — so the signal that carried the deadline is
+ * asked first: if it fired, this was a stall, whatever the rejection says. */
+function aborted(error: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) return true;
   return error instanceof DOMException && (error.name === "AbortError" || error.name === "TimeoutError");
 }
 
@@ -308,9 +312,10 @@ function withTimeout(signal: AbortSignal | null | undefined, ms: number): AbortS
 export function primeConnection(): void {
   const started = performance.now();
   traceConnect("warm-up sent");
-  void fetch("/healthz", { cache: "no-store", signal: AbortSignal.timeout(REQUEST_TIMEOUT) })
+  const signal = AbortSignal.timeout(REQUEST_TIMEOUT);
+  void fetch("/healthz", { cache: "no-store", signal })
     .then((response) => traceConnect(`warm-up ${response.status} after ${Math.round(performance.now() - started)} ms`))
-    .catch((error: unknown) => traceConnect(`warm-up ${aborted(error) ? "timed out" : "failed"} after ${Math.round(performance.now() - started)} ms`));
+    .catch((error: unknown) => traceConnect(`warm-up ${aborted(error, signal) ? "timed out" : "failed"} after ${Math.round(performance.now() - started)} ms`));
 }
 
 /**
@@ -341,18 +346,22 @@ export function connectTrace(): readonly string[] {
  * longer one (see `getAgentStatus`); everything else keeps `REQUEST_TIMEOUT`,
  * because a screen with no way back is worse than a failed request. */
 export async function api<T>(path: string, init?: RequestInit, timeoutMs = REQUEST_TIMEOUT, retried = false): Promise<T> {
-  const send = () => fetch(path, {
-    ...init,
-    credentials: "same-origin",
-    cache: "no-store",
-    signal: withTimeout(init?.signal, timeoutMs),
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
-  });
+  let signal: AbortSignal | undefined;
+  const send = () => {
+    signal = withTimeout(init?.signal, timeoutMs);
+    return fetch(path, {
+      ...init,
+      credentials: "same-origin",
+      cache: "no-store",
+      signal,
+      headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    });
+  };
   let response: Response;
   try {
     response = await send();
   } catch (error) {
-    if (aborted(error)) throw new ApiError(0, "timeout");
+    if (aborted(error, signal)) throw new ApiError(0, "timeout");
     // A read the network dropped before any answer — the browser abandons
     // what is in flight when the phone's network changes, which is what the
     // Tailscale app bringing its tunnel back after a wake looks like — goes
@@ -362,7 +371,7 @@ export async function api<T>(path: string, init?: RequestInit, timeoutMs = REQUE
     try {
       response = await send();
     } catch (again) {
-      throw new ApiError(0, aborted(again) ? "timeout" : "offline");
+      throw new ApiError(0, aborted(again, signal) ? "timeout" : "offline");
     }
   }
   let body: { error?: string } | undefined;
@@ -707,17 +716,18 @@ export async function deleteOutboxFile(scope: OutboxScope, name: string): Promis
  * and JSON body, mapping a refusal to the desktop's wire code. */
 async function postFile<T>(url: string, file: Blob, retried = false): Promise<[number, T | undefined]> {
   let response: Response;
+  const signal = AbortSignal.timeout(UPLOAD_TIMEOUT);
   try {
     response = await fetch(url, {
       method: "POST",
       body: file,
       credentials: "same-origin",
       cache: "no-store",
-      signal: AbortSignal.timeout(UPLOAD_TIMEOUT),
+      signal,
       headers: { "Content-Type": file.type || "application/octet-stream" },
     });
   } catch (error) {
-    if (aborted(error)) throw new ApiError(0, "timeout");
+    if (aborted(error, signal)) throw new ApiError(0, "timeout");
     throw new ApiError(0, "offline");
   }
   let body: (T & { error?: string }) | undefined;

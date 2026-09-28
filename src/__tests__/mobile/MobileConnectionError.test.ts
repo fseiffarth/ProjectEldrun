@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError } from "../../../mobile-web/src/api";
+import { ApiError, api } from "../../../mobile-web/src/api";
 import {
   classifyUnavailable,
   describeFailure,
@@ -160,5 +160,26 @@ describe("unavailableDetail", () => {
     expect(unavailableDetail(new ApiError(0, "offline"))).toBe("offline");
     expect(unavailableDetail(new ApiError(503, "desktop_unavailable"))).toBe("503 desktop_unavailable");
     expect(unavailableDetail(new Error("nope"))).toBeUndefined();
+  });
+});
+
+describe("api deadline", () => {
+  it("reports its own deadline as a timeout whatever the browser rejects with", async () => {
+    // A phone's trace read "warm-up failed after 10000 ms": the deadline fired,
+    // but the rejection was not the DOMException the name test expected, so the
+    // splash said "Can't reach your desktop" for what was a stall.
+    vi.spyOn(globalThis, "fetch").mockImplementation((_input, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new TypeError("Load failed")));
+    }));
+    const failure = await api("/api/v1/status", undefined, 20).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ApiError);
+    expect((failure as ApiError).code).toBe("timeout");
+    expect(classifyUnavailable(failure)).toBe("timeout");
+  });
+
+  it("still calls a failure before the deadline offline", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("Failed to fetch"));
+    const failure = await api("/api/v1/status", undefined, 5_000).catch((error: unknown) => error);
+    expect((failure as ApiError).code).toBe("offline");
   });
 });
