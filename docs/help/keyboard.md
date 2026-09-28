@@ -85,3 +85,18 @@ single keys, even while a terminal has focus:
 
 - Click a link to open it in your browser; **double-click** it to copy it to
   the clipboard instead.
+- **Select to copy**: drag over text and it is on the clipboard when you let
+  go (a toast confirms, or says the clipboard refused it). This works in agent
+  tabs too, even while the agent has the mouse. Alt+drag selects a rectangle.
+- **Right-click** on selected text copies it and clears the highlight; with
+  nothing selected, right-click goes to the program (Claude Code pastes).
+- **Ctrl+Shift+C** copies the selection, **Ctrl+Shift+V** pastes (in agent
+  tabs a double-click off a link pastes too). Plain Ctrl+C still interrupts
+  the program.
+- **Ctrl+Shift+X — keyboard select.** A cursor appears on the terminal cursor
+  (or on an existing mouse selection) with a legend at the bottom of the pane:
+  arrows or h/j/k/l move, Ctrl+←/→ jump by word, Home/End go to the line's
+  ends, PageUp/PageDown by a screen, g/G to the top/bottom of the scrollback.
+  Hold **Shift** while moving (or press **v**) to select, **V** for whole lines.
+  **Enter**, **y** or Ctrl+C copies (with nothing selected: the cursor's line),
+  **Esc** or **q** leaves. While it is on, no key reaches the program.

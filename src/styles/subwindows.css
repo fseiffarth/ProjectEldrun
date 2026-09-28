@@ -715,6 +715,15 @@
   border-radius: 3px;
 }
 
+/* Keyboard select's legend (TerminalView, Ctrl+Shift+X): the steering legend,
+   pinned to the bottom of its own pane instead of the window. */
+.steering-legend.terminal-key-select {
+  position: absolute;
+  bottom: 10px;
+  z-index: 5;
+  max-width: calc(100% - 24px);
+}
+
 /* Floating label following the pointer during a tab drag. */
 .tab-drag-ghost {
   position: fixed;

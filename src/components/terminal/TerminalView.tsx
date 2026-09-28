@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Terminal } from "@xterm/xterm";
 import { CanvasAddon } from "@xterm/addon-canvas";
 import { WebglAddon } from "@xterm/addon-webgl";
@@ -33,10 +34,12 @@ import { registerScheduledAgentInput } from "../../lib/agents/scheduledAgentInpu
 import { zoomChord } from "../../lib/shortcuts/zoomChord";
 import { terminalYieldsChord } from "../../lib/shortcuts/terminalTabChord";
 import type { ShortcutMap } from "../../lib/shortcuts/shortcuts";
-import { copyableSelection, installMouseModeGuard } from "../../lib/terminal/terminalSelection";
+import { copyableSelection, installMouseModeGuard, joinedSelectionText } from "../../lib/terminal/terminalSelection";
+import { keySelectHighlight, keySelectRange, keySelectStep, scrollToShow, startKeySelect, type KeySelectState } from "../../lib/terminal/keyboardSelect";
 import { findSignInRequest, findWrappedUrls, type SignInRequest } from "../../lib/terminal/terminalUrls";
 import { SIGN_IN_CARD_CLASS, TerminalSignInCard } from "./TerminalSignInCard";
 import { TerminalUndoClearCard } from "./TerminalUndoClearCard";
+import { UntestedTag } from "../common/UntestedTag";
 import { noteTypedClear, useAgentClearUndoStore } from "../../stores/agents/agentClearUndo";
 import { noteTypedLine } from "../../lib/agents/typedClear";
 import "@xterm/xterm/css/xterm.css";
@@ -455,6 +458,12 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   signInCopiedRef.current = t("terminal.signIn.copied");
   const linkCopiedRef = useRef(t("terminal.linkCopied"));
   linkCopiedRef.current = t("terminal.linkCopied");
+  // What a copy the clipboard refused says — a copy must never fail silently,
+  // or the user pastes the old contents and learns nothing.
+  const copyFailedRef = useRef(t("terminal.copyFailed"));
+  copyFailedRef.current = t("terminal.copyFailed");
+  // Keyboard select (Ctrl+Shift+X) is on: shows its key legend over the pane.
+  const [keySelecting, setKeySelecting] = useState(false);
 
   const focusedRef = useRef(focused);
   visibleRef.current = visible;
@@ -992,32 +1001,83 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // Copy-on-select: a mouse-made selection (drag, double/triple-click) copies
     // itself to the clipboard with no chord needed, matching most native
     // terminals. xterm fires `onSelectionChange` once, from inside its own
-    // mouseup handler, so the copy is made right there — while the release still
-    // counts as the user gesture the webview's clipboard API requires. (A timer
-    // after the release only worked while WebKit carried the gesture over into
-    // it.) Ctrl+Shift+C below stays as the explicit fallback.
+    // mouseup handler, so the copy is made right there. Right-click on a
+    // selection, Ctrl+Shift+C and keyboard select copy explicitly.
     //
     // The copied text rejoins the rows tmux and the agent CLIs wrapped
     // (`copyableSelection`); an Alt-drag column selection is copied as drawn.
-    // Every copy the user makes — drag, Shift+drag, Ctrl+Shift+C — goes through
-    // here so each one is announced in the same transient toast the OSC 52 path
-    // uses, and only once the clipboard actually took it.
+    // Every copy the user makes goes through here so each one is announced in
+    // the same transient toast the OSC 52 path uses, once the clipboard took it
+    // — and a refused one says so.
+    //
+    // Through the backend first, like OSC 52: the webview's `navigator.clipboard`
+    // writes only while WebKit still counts the press as a user gesture, and it
+    // dropped some mouse-up copies outright — the "copy works sometimes" report.
+    // The webview stays as the fallback (and for text past the backend's cap).
     const copyToClipboard = (text: string) => {
-      navigator.clipboard
-        ?.writeText(text)
-        .then(() => {
-          useProjectsStore.setState({ switchToast: copiedNoticeRef.current(text) });
-        })
-        .catch(() => {});
+      const copied = () => useProjectsStore.setState({ switchToast: copiedNoticeRef.current(text) });
+      invoke("copy_text_to_clipboard", { text })
+        .then(copied)
+        .catch(() => (navigator.clipboard ? navigator.clipboard.writeText(text).then(copied) : Promise.reject()))
+        .catch(() => useProjectsStore.setState({ switchToast: copyFailedRef.current }));
     };
     let columnSelect = false;
+    // Keyboard select (see lib/terminal/keyboardSelect): the cursor and anchor
+    // while the mode is on, drawn with xterm's own selection. Its steps are not
+    // copies, so copy-on-select stands aside until Enter copies the result.
+    let keySelect: KeySelectState | null = null;
     term.onSelectionChange(() => {
+      if (keySelect) return;
       const sel = copyableSelection(term, columnSelect);
       if (sel) copyToClipboard(sel);
     });
     // Mouse-mode escapes from the program would otherwise wipe a selection —
     // mid-drag included — whenever they arrive (see `installMouseModeGuard`).
     const mouseModeGuard = installMouseModeGuard(term);
+
+    const drawKeySelect = () => {
+      if (!keySelect) return;
+      const { column, row, length } = keySelectHighlight(keySelect, term.cols);
+      term.select(column, row, length);
+      const top = scrollToShow(keySelect.cursor.y, term.buffer.active.viewportY, term.rows);
+      if (top !== null) term.scrollToLine(top);
+    };
+    const enterKeySelect = () => {
+      const buf = term.buffer.active;
+      keySelect = startKeySelect({ x: buf.cursorX, y: buf.baseY + buf.cursorY }, term.getSelectionPosition(), term.cols);
+      setKeySelecting(true);
+      drawKeySelect();
+    };
+    const leaveKeySelect = () => {
+      if (!keySelect) return;
+      keySelect = null;
+      setKeySelecting(false);
+      term.clearSelection();
+    };
+    // Copy what keyboard select holds (the cursor's row when nothing is
+    // anchored) and leave the mode.
+    const copyKeySelect = () => {
+      if (!keySelect) return;
+      const buf = term.buffer.active;
+      const text = joinedSelectionText((y) => buf.getLine(y), term.cols, keySelectRange(keySelect, term.cols));
+      leaveKeySelect();
+      if (text.trim()) copyToClipboard(text);
+    };
+    const onKeySelectKey = (e: KeyboardEvent) => {
+      if (!keySelect || e.key === "Shift" || e.key === "Control" || e.key === "Alt" || e.key === "Meta") return;
+      const buf = term.buffer.active;
+      const step = keySelectStep(keySelect, e, {
+        cols: term.cols,
+        rows: term.rows,
+        length: buf.length,
+        lineText: (y) => buf.getLine(y)?.translateToString(true) ?? "",
+      });
+      if (step.kind === "move") {
+        keySelect = step.state;
+        drawKeySelect();
+      } else if (step.kind === "copy") copyKeySelect();
+      else if (step.kind === "exit") leaveKeySelect();
+    };
 
     // Paste the OS clipboard into the running program. `term.paste` rather than a
     // raw `writePtyInput`: it normalizes newlines to CR and — when the program
@@ -1077,6 +1137,15 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
 
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== "keydown") return true;
+      // Keyboard select owns every key while it is on: nothing reaches the
+      // program (so an arrow never moves the agent's own cursor) and nothing
+      // bubbles to the window's chords (Esc leaves the mode, not fullscreen).
+      if (keySelect) {
+        e.preventDefault();
+        e.stopPropagation();
+        onKeySelectKey(e);
+        return false;
+      }
       // Ctrl +/-/0 zoom (agent panes only). preventDefault stops WebKit's own
       // page-zoom; returning false stops xterm forwarding the chord to the PTY;
       // stopPropagation stops the WINDOW-level per-window zoom handler (useKeyboard
@@ -1120,6 +1189,11 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       if (e.code === "KeyV") {
         e.preventDefault();
         pasteClipboard();
+        return false;
+      }
+      if (e.code === "KeyX") {
+        e.preventDefault();
+        enterKeySelect();
         return false;
       }
       return true;
@@ -1548,8 +1622,30 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // it creates *inside* this container — so a "paste" press can be taken away
     // from the selection service entirely and a "select" press can be handed to it
     // wearing the modifier it looks for.
+    // Set by a right-click that copied: the `contextmenu` event that follows it
+    // belongs to that click and must neither open a menu nor reach xterm.
+    let swallowContextMenu = false;
     const onMouseDownCapture = (e: MouseEvent) => {
       if (fromSignInCard(e)) return;
+      swallowContextMenu = false;
+      // Right-click on selected text copies it and clears the highlight — the
+      // Windows Terminal / PuTTY gesture. With nothing selected the press goes
+      // on as before (to the program, which in Claude Code pastes).
+      if (e.button === 2 && (keySelect || term.hasSelection())) {
+        e.preventDefault();
+        e.stopPropagation();
+        swallowContextMenu = true;
+        if (keySelect) {
+          copyKeySelect();
+        } else {
+          const sel = copyableSelection(term, columnSelect);
+          term.clearSelection();
+          if (sel) copyToClipboard(sel);
+        }
+        return;
+      }
+      // Any other press hands selecting back to the mouse.
+      leaveKeySelect();
       // A plain double-click on a link copies it, and only that: no open, no
       // word selection, no agent-pane paste.
       if (hoveredLink && e.button === 0 && e.detail === 2 && !(e.shiftKey || e.ctrlKey || e.altKey || e.metaKey)) {
@@ -1587,12 +1683,32 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // Every pane, not just agent ones: whichever program grabbed the mouse owns
     // the right-click (see `suppressNativeContextMenu`). The element is captured
     // here so the cleanup detaches both listeners from the node it attached to.
+    // Capture phase, so the menu of a copying right-click is kept from xterm's
+    // own handler (which would re-select the word under the pointer) as well.
     const contextMenuTarget = containerRef.current;
     const onContextMenu = (e: MouseEvent) => {
       if (fromSignInCard(e)) return;
+      if (swallowContextMenu) {
+        swallowContextMenu = false;
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
       if (suppressNativeContextMenu(e, term.modes.mouseTrackingMode !== "none")) e.preventDefault();
     };
-    contextMenuTarget?.addEventListener("contextmenu", onContextMenu);
+    contextMenuTarget?.addEventListener("contextmenu", onContextMenu, true);
+    // A selection must survive the pointer resting on the pane. While the
+    // program tracks all motion (an agent TUI's hover), xterm reports every
+    // buttonless move to it as user input — and user input clears the
+    // selection, so a drag's highlight vanished as soon as the mouse moved on.
+    // Such moves are held back from xterm while text is selected; the program
+    // misses hover only until the selection is copied, typed over or clicked away.
+    const onMouseMoveCapture = (e: MouseEvent) => {
+      if (e.buttons === 0 && term.modes.mouseTrackingMode === "any" && (keySelect || term.hasSelection())) {
+        e.stopPropagation();
+      }
+    };
+    contextMenuTarget?.addEventListener("mousemove", onMouseMoveCapture, true);
 
     contextMenuTarget?.addEventListener("mousedown", onMouseDownCapture, true);
     if (zoomable) {
@@ -1618,7 +1734,8 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       signInWatch.dispose();
       if (signInScanTimer) clearTimeout(signInScanTimer);
       window.removeEventListener("resize", doFit);
-      contextMenuTarget?.removeEventListener("contextmenu", onContextMenu);
+      contextMenuTarget?.removeEventListener("contextmenu", onContextMenu, true);
+      contextMenuTarget?.removeEventListener("mousemove", onMouseMoveCapture, true);
       contextMenuTarget?.removeEventListener("mousedown", onMouseDownCapture, true);
       if (zoomable) {
         containerRef.current?.removeEventListener("wheel", onWheel);
@@ -1805,6 +1922,21 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     )}
     {undoClearOffered && !signIn && containerRef.current && (
       <TerminalUndoClearCard host={containerRef.current} ptyId={id} />
+    )}
+    {keySelecting && containerRef.current && createPortal(
+      // The keyboard-steering legend's look, pinned inside the pane.
+      <div className="steering-legend terminal-key-select" role="status">
+        <span className="steering-legend-title">
+          {t("terminal.keySelect.title")}
+          <UntestedTag id="terminal.keySelect.title" />
+        </span>
+        <span className="steering-legend-item"><kbd>←↑↓→</kbd>{t("terminal.keySelect.move")}</span>
+        <span className="steering-legend-item"><kbd>Shift</kbd><kbd>v</kbd>{t("terminal.keySelect.select")}</span>
+        <span className="steering-legend-item"><kbd>V</kbd>{t("terminal.keySelect.lines")}</span>
+        <span className="steering-legend-item"><kbd>Enter</kbd>{t("terminal.keySelect.copy")}</span>
+        <span className="steering-legend-item"><kbd>Esc</kbd>{t("terminal.keySelect.leave")}</span>
+      </div>,
+      containerRef.current,
     )}
     </>
   );

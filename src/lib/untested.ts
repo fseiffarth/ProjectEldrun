@@ -49,6 +49,7 @@ export const UNTESTED = {
   "agent.vibeResume": { area: "agents", what: "Mistral tab · exact conversation resume" },
   "agent.vibeLocalResume": { area: "agents", what: "Local Mistral model tab · exact conversation resume" },
   "terminal.signIn.title": { area: "agents", what: "Terminal sign-in card · open/copy an agent's login link, paste the code back; wrapped URLs click and copy whole" },
+  "terminal.keySelect.title": { area: "agents", what: "Terminal keyboard select (Ctrl+Shift+X) · arrows/hjkl move, Shift/v select, V lines, Enter/y/Ctrl+C copy, Esc leaves; right-click copies a selection; a selection survives hovering an agent TUI; copies go through the backend clipboard" },
 
   // --- browser — The built-in browser -------------------------------
   "browser.downloadTitle": { area: "browser", what: "BrowserDownloadDialog · Download this file?" },

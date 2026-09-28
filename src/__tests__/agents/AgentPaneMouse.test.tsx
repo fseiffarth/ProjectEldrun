@@ -55,8 +55,25 @@ const { termSpy } = vi.hoisted(() => ({
     seen: [] as MouseEvent[],
     // The key handler the pane attached — the Ctrl+Shift chords live there.
     keyHandler: null as null | ((e: KeyboardEvent) => boolean),
+    // Buttonless moves that reached xterm's own element.
+    moves: 0,
+    // The buffer rows keyboard select reads, the terminal cursor's row, and the
+    // last `term.select(column, row, length)` it drew.
+    lines: [] as string[],
+    cursorY: 0,
+    selected: null as null | { column: number; row: number; length: number },
   },
 }));
+
+/** An xterm buffer row holding `text`, 80 columns wide. */
+function fakeLine(text: string) {
+  const row = text.padEnd(80);
+  return {
+    isWrapped: false,
+    translateToString: (trim?: boolean, start = 0, end = 80) => (trim ? row.slice(start, end).trimEnd() : row.slice(start, end)),
+    getCell: (x: number) => ({ getChars: () => (row[x] === " " ? "" : row[x]), getWidth: () => 1 }),
+  };
+}
 
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
@@ -70,6 +87,7 @@ vi.mock("@xterm/xterm", () => ({
       const el = document.createElement("div");
       parent.appendChild(el);
       el.addEventListener("mousedown", (e) => termSpy.seen.push(e as MouseEvent));
+      el.addEventListener("mousemove", () => termSpy.moves++);
     }
     write() {}
     onData() {}
@@ -77,9 +95,24 @@ vi.mock("@xterm/xterm", () => ({
     onBell() {}
     onTitleChange() {}
     onSelectionChange(cb: () => void) { termSpy.onSelection = cb; }
-    buffer = { active: { length: 0, getLine: () => null } };
+    get buffer() {
+      return {
+        active: {
+          length: termSpy.lines.length,
+          viewportY: 0,
+          baseY: 0,
+          cursorX: 0,
+          cursorY: termSpy.cursorY,
+          getLine: (y: number) => (termSpy.lines[y] === undefined ? undefined : fakeLine(termSpy.lines[y])),
+        },
+      };
+    }
     attachCustomKeyEventHandler(h: (e: KeyboardEvent) => boolean) { termSpy.keyHandler = h; }
     getSelection() { return termSpy.selection; }
+    hasSelection() { return termSpy.selection !== "" || termSpy.selected !== null; }
+    clearSelection() { termSpy.selection = ""; termSpy.selected = null; }
+    select(column: number, row: number, length: number) { termSpy.selected = { column, row, length }; }
+    scrollToLine() {}
     getSelectionPosition() { return undefined; }
     focus() { termSpy.focus(); }
     paste(text: string) { termSpy.paste(text); }
@@ -152,6 +185,12 @@ describe("agent pane mouse gestures", () => {
     termSpy.mouseTrackingMode = "none";
     termSpy.selection = "";
     termSpy.onSelection = null;
+    termSpy.moves = 0;
+    termSpy.lines = [];
+    termSpy.cursorY = 0;
+    termSpy.selected = null;
+    invoke.mockReset();
+    invoke.mockImplementation(() => Promise.resolve(undefined));
     useProjectsStore.setState({ switchToast: null });
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -168,6 +207,9 @@ describe("agent pane mouse gestures", () => {
     });
   }
 
+  /** The texts the pane handed the backend clipboard. */
+  const backendCopies = () => invoke.mock.calls.filter(([cmd]) => cmd === "copy_text_to_clipboard").map(([, a]) => (a as { text: string }).text);
+
   it("copies a drag on mouse-up and says so", async () => {
     const writeText = vi.fn(() => Promise.resolve());
     Object.defineProperty(navigator, "clipboard", {
@@ -176,8 +218,10 @@ describe("agent pane mouse gestures", () => {
     });
     await agentPane("p:copy");
     await drag("one\ntwo\nthree");
-    // Copied inside the release itself, while it still counts as a user gesture.
-    expect(writeText).toHaveBeenCalledWith("one\ntwo\nthree");
+    // Through the backend, which needs no user gesture: the webview's own
+    // clipboard dropped some mouse-up copies ("copy works sometimes").
+    expect(backendCopies()).toEqual(["one\ntwo\nthree"]);
+    expect(writeText).not.toHaveBeenCalled();
     // Under an agent TUI the highlight is repainted away within milliseconds,
     // so the copy has to announce itself — in the same toast OSC 52 uses.
     expect(useProjectsStore.getState().switchToast).toBe("Copied 3 lines to the clipboard");
@@ -186,14 +230,125 @@ describe("agent pane mouse gestures", () => {
     expect(useProjectsStore.getState().switchToast).toBe("Copied 6 characters to the clipboard");
   });
 
-  it("says nothing when the clipboard refused the copy", async () => {
+  it("falls back to the webview clipboard when the backend has none", async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { readText: () => Promise.resolve(""), writeText },
+    });
+    invoke.mockImplementation((cmd) => (cmd === "copy_text_to_clipboard" ? Promise.reject(new Error("no display")) : Promise.resolve(undefined)));
+    await agentPane("p:fallback");
+    await drag("kept");
+    expect(writeText).toHaveBeenCalledWith("kept");
+    expect(useProjectsStore.getState().switchToast).toBe("Copied 4 characters to the clipboard");
+  });
+
+  it("says so when no clipboard took the copy", async () => {
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: { readText: () => Promise.resolve(""), writeText: () => Promise.reject(new Error("no focus")) },
     });
+    invoke.mockImplementation((cmd) => (cmd === "copy_text_to_clipboard" ? Promise.reject(new Error("no display")) : Promise.resolve(undefined)));
     await agentPane("p:refused");
     await drag("lost");
-    expect(useProjectsStore.getState().switchToast).toBeNull();
+    // Never silent: a user who pastes the old contents must know why.
+    expect(useProjectsStore.getState().switchToast).toBe("Couldn't copy: the clipboard refused the text");
+  });
+
+  it("right-click on a selection copies it, clears it, and opens no menu", async () => {
+    termSpy.mouseTrackingMode = "any";
+    const pane = await agentPane("p:rclick");
+    termSpy.selection = "picked";
+    const ev = press(pane, 1, { button: 2 });
+    await act(async () => {});
+    expect(backendCopies()).toEqual(["picked"]);
+    expect(termSpy.selection).toBe("");
+    expect(ev.defaultPrevented).toBe(true);
+    // Not reported to the program: Claude Code would paste on it.
+    expect(termSpy.seen).toHaveLength(0);
+    const menu = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 });
+    act(() => {
+      pane.firstElementChild!.dispatchEvent(menu);
+    });
+    expect(menu.defaultPrevented).toBe(true);
+  });
+
+  it("right-click with nothing selected still goes to the program", async () => {
+    termSpy.mouseTrackingMode = "any";
+    const pane = await agentPane("p:rclick-empty");
+    press(pane, 1, { button: 2 });
+    await act(async () => {});
+    expect(backendCopies()).toEqual([]);
+    expect(termSpy.seen).toHaveLength(1);
+  });
+
+  it("keeps hover moves from wiping a selection while the program tracks motion", async () => {
+    termSpy.mouseTrackingMode = "any";
+    const pane = await agentPane("p:hover");
+    const move = () =>
+      act(() => {
+        pane.firstElementChild!.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, buttons: 0 }));
+      });
+    move();
+    expect(termSpy.moves).toBe(1);
+    // xterm would report this move as user input, which clears its selection.
+    termSpy.selection = "held";
+    move();
+    expect(termSpy.moves).toBe(1);
+  });
+
+  describe("keyboard select (Ctrl+Shift+X)", () => {
+    const key = (init: KeyboardEventInit) => {
+      const ev = new KeyboardEvent("keydown", { cancelable: true, ...init });
+      let handled: boolean | undefined;
+      act(() => {
+        handled = termSpy.keyHandler?.(ev);
+      });
+      return { ev, handled };
+    };
+
+    it("walks a cursor, selects whole lines and copies them on Enter", async () => {
+      termSpy.lines = ["hello world", "second line"];
+      termSpy.cursorY = 1;
+      const pane = await agentPane("p:keysel");
+      expect(key({ code: "KeyX", key: "X", ctrlKey: true, shiftKey: true }).handled).toBe(false);
+      expect(pane.querySelector(".terminal-key-select")).not.toBeNull();
+      // The cursor alone, on the terminal cursor's cell.
+      expect(termSpy.selected).toEqual({ column: 0, row: 1, length: 1 });
+
+      // Keys belong to the mode: none reaches the program.
+      const v = key({ key: "V", shiftKey: true });
+      expect(v.handled).toBe(false);
+      expect(v.ev.defaultPrevented).toBe(true);
+      key({ key: "ArrowUp" });
+      expect(termSpy.selected).toEqual({ column: 0, row: 0, length: 160 });
+
+      key({ key: "Enter" });
+      await act(async () => {});
+      expect(backendCopies()).toEqual(["hello world\nsecond line"]);
+      expect(pane.querySelector(".terminal-key-select")).toBeNull();
+      // Out of the mode, keys go to the program again.
+      expect(key({ key: "a" }).handled).toBe(true);
+    });
+
+    it("Esc leaves without copying", async () => {
+      termSpy.lines = ["text"];
+      const pane = await agentPane("p:keysel-esc");
+      key({ code: "KeyX", key: "X", ctrlKey: true, shiftKey: true });
+      key({ key: "Escape" });
+      await act(async () => {});
+      expect(backendCopies()).toEqual([]);
+      expect(termSpy.selected).toBeNull();
+      expect(pane.querySelector(".terminal-key-select")).toBeNull();
+    });
+
+    it("a mouse press hands selecting back to the mouse", async () => {
+      termSpy.lines = ["text"];
+      const pane = await agentPane("p:keysel-click");
+      key({ code: "KeyX", key: "X", ctrlKey: true, shiftKey: true });
+      press(pane, 1);
+      expect(pane.querySelector(".terminal-key-select")).toBeNull();
+    });
   });
 
   it("double-click pastes the clipboard and never reaches xterm", async () => {

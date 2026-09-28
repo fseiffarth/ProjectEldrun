@@ -8,7 +8,8 @@
 //!   [`copy_png_bytes_to_clipboard`] put an image *on* the clipboard, so a
 //!   screenshot Eldrun files into the project — or a region selected in the PDF
 //!   viewer — is pasteable straight into a chat, an editor, or an agent tab.
-//!   [`copy_text_to_clipboard`] does the same for a terminal's OSC 52 text.
+//!   [`copy_text_to_clipboard`] does the same for terminal text: OSC 52
+//!   requests and the user's own copies out of a pane.
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -101,9 +102,10 @@ pub fn copy_image_to_clipboard(width: usize, height: usize, rgba: Vec<u8>) -> Re
     }
 }
 
-/// Longest text [`copy_text_to_clipboard`] takes. Its one caller, a terminal's
-/// OSC 52 request, is capped far below this already (`OSC52_MAX_CHARS`); this
-/// bounds what the command itself will hold and serve.
+/// Longest text [`copy_text_to_clipboard`] takes. A terminal's OSC 52 request
+/// is capped far below this already (`OSC52_MAX_CHARS`); a longer user copy
+/// falls back to the webview. This bounds what the command itself will hold
+/// and serve.
 const MAX_CLIPBOARD_TEXT: usize = 1 << 20;
 
 fn check_clipboard_text(text: &str) -> Result<(), String> {
@@ -116,10 +118,12 @@ fn check_clipboard_text(text: &str) -> Result<(), String> {
 /// Put text on the system clipboard.
 ///
 /// For a terminal program's OSC 52 copy request (tmux copy-mode, an agent
-/// CLI's own copy command). The webview's `navigator.clipboard` writes only
-/// while a click or key press is being handled, and an OSC 52 request arrives
-/// with PTY output — so there it was refused, silently. A copy the user makes
-/// with the mouse or Ctrl+Shift+C *is* such a gesture and stays in the webview.
+/// CLI's own copy command) and every copy the user makes in a terminal pane.
+/// The webview's `navigator.clipboard` writes only while WebKit still counts a
+/// click or key press as being handled: an OSC 52 request arrives with PTY
+/// output, so there it was always refused, and even mouse-up copies were
+/// dropped now and then — silently. The pane falls back to the webview only
+/// when this command fails.
 ///
 /// Serves the text the way [`copy_image_to_clipboard`] serves an image: on Linux
 /// a thread owns the selection until another app takes it over. It reports back

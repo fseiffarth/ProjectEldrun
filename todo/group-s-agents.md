@@ -2306,3 +2306,47 @@ unchanged; the new agents are additive.
       - [ ] ❌ Doesn't work on Windows
       - [ ] ✅ Works on macOS
       - [ ] ❌ Doesn't work on macOS
+
+2337. **Terminal copy is reliable, and has right-click and keyboard routes.**
+    "Sometimes copy works sometimes not" / "best would be a visual nice mouse
+    select or keyboard select of text then right click or auto copy" (user,
+    2026-09-28). Three causes and two missing routes:
+    - User copies went through the webview's `navigator.clipboard`, which WebKit
+      honours only while it still counts the press as a gesture, and it dropped
+      some mouse-up copies; a refusal showed nothing. Every user copy now goes
+      through the backend `copy_text_to_clipboard` like OSC 52 (webview only as
+      fallback) and a refused one says "Couldn't copy" (`terminal.copyFailed`).
+    - While the program tracks all motion (tmux / an agent's hover, mode 1003),
+      xterm reports every buttonless move to it as user input and clears the
+      selection on user input — the highlight vanished as soon as the mouse
+      moved. Such moves are held back from xterm while text is selected.
+    - Right-click on selected text copies it and clears it (Windows Terminal /
+      PuTTY); with nothing selected it still goes to the program.
+    - **Ctrl+Shift+X — keyboard select** (`lib/terminal/keyboardSelect.ts`): a
+      cursor over buffer + scrollback, Shift/`v` select, `V` lines, Enter/`y`/
+      Ctrl+C copy (no selection → the cursor's row), Esc/`q` leave, a legend at
+      the bottom of the pane (steering-legend look); starts from an existing
+      mouse selection so it can be refined. No key reaches the program in it.
+    Documented in `docs/help/keyboard.md` → In terminals. Frontend hot-reloads;
+    the backend change is doc comments only. Built 2026-09-28, **not
+    live-tested** (pill `terminal.keySelect.title`).
+    - [x] 🤖 Automated test — `KeyboardSelect` (walk, word/line/buffer jumps,
+      Shift anchors but not for G/$, v/V toggles, copied span, scroll),
+      `AgentPaneMouse` (backend copy, webview fallback, failure toast,
+      right-click copy + swallowed menu, right-click passthrough, hover guard,
+      Ctrl+Shift+X walk/copy/Esc/mouse exit).
+    - [ ] 🖐️ Manual test — in a Claude tab, drag across output ten times in a
+      row while it works: every drag toasts and pastes. After a drag, move the
+      mouse around the pane: the highlight stays. Right-click the highlight:
+      toast, highlight gone, no paste into Claude; right-click again pastes.
+      Ctrl+Shift+X: legend shows, arrows move a cell cursor, Shift+↑ selects,
+      PageUp scrolls back into history, Enter copies and the legend goes; Esc
+      leaves without copying; a click leaves too.
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
