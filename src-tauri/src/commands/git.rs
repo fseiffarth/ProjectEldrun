@@ -1613,6 +1613,9 @@ fn push_outcome(out: &std::process::Output, repo: Option<&std::path::Path>, befo
         if !landed {
             return Err(if stderr.is_empty() { stdout } else { stderr });
         }
+        if let Some(dir) = repo {
+            adopt_pushed_upstream(dir);
+        }
         return Ok("Pushed — the repository's pre-push hook re-pushed it itself.".to_string());
     }
     Ok(if stdout.is_empty() { stderr } else { stdout })
@@ -1624,6 +1627,19 @@ fn pushed_tip(dir: &std::path::Path) -> Option<String> {
     let d = dir.to_string_lossy();
     let base = unpushed_base(None, &d)?;
     rev_parse(dir, &base)
+}
+
+/// Record the upstream `push.autoSetupRemote` would have: a push the hook
+/// re-pushed "failed", so git never set one, and a branch without one can't
+/// be released or pushed by an agent (`services::git_release`). Only when
+/// the branch has none; the same-named remote-tracking ref the push moved.
+fn adopt_pushed_upstream(dir: &std::path::Path) {
+    let d = dir.to_string_lossy();
+    if rev_parse(dir, "@{u}").is_some() {
+        return;
+    }
+    let Some(tracking) = unpushed_base(None, &d) else { return };
+    let _ = run_git(None, &d, &["branch", &format!("--set-upstream-to={tracking}")]);
 }
 
 fn head_sha(dir: &std::path::Path) -> Option<String> {
@@ -3823,7 +3839,10 @@ filename note.txt
         assert!(git(&dir, &["add", "."]).status.success());
         assert!(git(&dir, &["commit", "-m", "first"]).status.success());
         assert!(git(&dir, &["remote", "add", "origin", remote.to_str().unwrap()]).status.success());
-        assert!(git(&dir, &["push", "-u", "origin", "develop"]).status.success());
+        // Pushed once without `-u`: every push so far went through the hook's
+        // re-push, so git never recorded an upstream.
+        assert!(git(&dir, &["push", "origin", "develop"]).status.success());
+        assert!(!git(&dir, &["rev-parse", "--verify", "-q", "@{u}"]).status.success());
         fs::write(dir.join("a.txt"), "b\n").expect("write");
         assert!(git(&dir, &["commit", "-am", "second"]).status.success());
 
@@ -3835,6 +3854,8 @@ filename note.txt
         assert!(push_outcome(&aborted, Some(&dir), before.clone()).is_err(), "nothing landed: a real failure");
         assert!(git(&dir, &["push", "origin", "HEAD"]).status.success());
         assert!(push_outcome(&aborted, Some(&dir), before).is_ok(), "HEAD landed on the remote");
+        let upstream = git(&dir, &["rev-parse", "--abbrev-ref", "@{u}"]);
+        assert_eq!(String::from_utf8_lossy(&upstream.stdout).trim(), "origin/develop", "the landed push records the upstream");
         // A failure with the tracking ref already at HEAD is not salvaged.
         let now = pushed_tip(&dir);
         assert!(push_outcome(&aborted, Some(&dir), now).is_err());
