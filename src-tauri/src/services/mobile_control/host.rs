@@ -31,7 +31,7 @@ use super::{
     outbox,
     limits,
     protocol::{
-        clean_tab_color, CalendarAction, CreateTabKind, CreateTabRequest, DesktopRequest, DesktopResponse,
+        clean_tab_color, git_dot, CalendarAction, CreateTabKind, CreateTabRequest, DesktopRequest, DesktopResponse,
         MailMarkAction, MobileCollectedPrompt, MobilePromptInput, MobileSchedule,
         MobileScheduleInput, PromptMutation, ScheduleMutation,
         TabPlace, TodoAction, MAX_CONTROL_MESSAGE, MAX_INPUT_FRAME, MAX_MAIL_REPLY_BYTES,
@@ -359,7 +359,7 @@ async fn projects(
     if view != "active" && view != "search" {
         return api_error(StatusCode::BAD_REQUEST, "invalid_view");
     }
-    let mut rows = catalog
+    let listed = catalog
         .projects
         .into_iter()
         .filter(|p| {
@@ -371,7 +371,31 @@ async fn projects(
                     || p.public.status == "active"
             }
         })
-        .map(|p| p.public)
+        .collect::<Vec<_>>();
+    // Each row's git dot, from the desktop's own pills. Only asked when a
+    // project is listed; a closed or older desktop leaves every row without one.
+    let git = if listed.iter().any(|p| p.public.kind == ScopeKind::Project) {
+        let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+        let request_id = Base64UrlUnpadded::encode_string(&random_16());
+        match admin::desktop_call(&desktop_socket, &DesktopRequest::GitStates { request_id }).await {
+            Ok(DesktopResponse::GitStates { states }) => states
+                .into_iter()
+                .filter_map(|row| git_dot(&row.state).map(|dot| (row.project_id, dot)))
+                .collect::<HashMap<_, _>>(),
+            _ => HashMap::new(),
+        }
+    } else {
+        HashMap::new()
+    };
+    let mut rows = listed
+        .into_iter()
+        .map(|p| {
+            let mut public = p.public;
+            if public.kind == ScopeKind::Project {
+                public.git = git.get(&p.raw_id).copied();
+            }
+            public
+        })
         .collect::<Vec<_>>();
     rows.sort_by_key(|p| {
         (
@@ -503,7 +527,7 @@ async fn project(
     // and on Windows the nominal path is never a file, so it was never told.
     // A closed desktop refuses the connect at once, on both.
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
-    let (desktop_available, agents, statuses, schedules, prompts, timings, closed) = match admin::desktop_call(
+    let (desktop_available, agents, statuses, schedules, prompts, timings, closed, git) = match admin::desktop_call(
         &desktop_socket,
         &DesktopRequest::Catalog {
             request_id,
@@ -519,9 +543,14 @@ async fn project(
             prompts,
             timings,
             closed,
-        }) => (true, agents, statuses, schedules, prompts, timings, closed),
-        _ => (false, vec![], vec![], vec![], vec![], vec![], vec![]),
+            git,
+        }) => (true, agents, statuses, schedules, prompts, timings, closed, git),
+        _ => (false, vec![], vec![], vec![], vec![], vec![], vec![], None),
     };
+    let mut public = project.public.clone();
+    if public.kind == ScopeKind::Project {
+        public.git = git.as_deref().and_then(git_dot);
+    }
     let closed = closed_tab_rows(closed);
     let mut timings = timings
         .into_iter()
@@ -576,7 +605,7 @@ async fn project(
     (
         StatusCode::OK,
         Json(
-            json!({ "project": project.public, "tabs": tabs, "desktop_available": desktop_available, "agents": agents, "closed": closed,
+            json!({ "project": public, "tabs": tabs, "desktop_available": desktop_available, "agents": agents, "closed": closed,
                 // Whether this project's 📁 answers (`files.rs`): the host-wide
                 // switch, and a project rather than a box or the root console.
                 "files": project.public.kind == ScopeKind::Project && files::files_open(&state.config.state_dir) }),
@@ -5461,6 +5490,53 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "answered: {body}");
         assert_eq!(json(&body)["desktop_available"], true, "{body}");
         drop(listener);
+    }
+
+    /// The desktop pill's git dot reaches the list row and the project screen
+    /// under the opaque id; the desktop's raw id and any level the phone does
+    /// not know stay behind.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_projects_git_dot_crosses_by_opaque_id_and_known_levels_only() {
+        use crate::services::mobile_control::protocol::ProjectGitState;
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(54)).await.0;
+        let socket = host.state.config.control_dir.join("desktop-control.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).expect("bind");
+        let desktop = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.expect("accept");
+                let request: DesktopRequest = admin::read_frame(&mut stream).await.expect("request");
+                let response = match request {
+                    DesktopRequest::GitStates { .. } => DesktopResponse::GitStates {
+                        states: vec![
+                            ProjectGitState { project_id: RAW_PROJECT.into(), state: "unpushed".into() },
+                            ProjectGitState { project_id: "not-listed".into(), state: "dirty".into() },
+                        ],
+                    },
+                    DesktopRequest::Catalog { .. } => serde_json::from_value(json!({
+                        "status": "catalog", "agents": [], "git": "a-level-from-the-future",
+                    }))
+                    .expect("catalog"),
+                    other => panic!("unexpected request {other:?}"),
+                };
+                admin::write_frame(&mut stream, &response).await.expect("answer");
+            }
+        });
+
+        let (status, _, body) = host.send(get_as("/api/v1/projects", &cookie)).await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        let row = &json(&body)["projects"][0];
+        assert_eq!(row["git"], "unpushed", "{body}");
+        assert!(!body.contains(RAW_PROJECT) && !body.contains("not-listed"), "{body}");
+
+        let opaque = row["id"].as_str().unwrap().to_string();
+        let (status, _, body) = host
+            .send(get_as(&format!("/api/v1/projects/{opaque}"), &cookie))
+            .await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert!(json(&body)["project"].get("git").is_none(), "unknown level dropped: {body}");
+        desktop.await.expect("fake desktop");
     }
 }
 

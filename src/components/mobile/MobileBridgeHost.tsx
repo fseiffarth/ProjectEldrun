@@ -66,6 +66,7 @@ import { readUse24h } from "../../lib/timeFormat";
 import { finishAlert } from "../../lib/alertDone";
 import { useAlertsFeed, type AlertsFeed } from "../files/useAlertsFeed";
 import { agentTurnEdges, type AgentTurnEdge, type MobileAgentState } from "../../lib/mobileAgentTurns";
+import { freshGitDot, gitDotRows, type MobileGitDot, type MobileGitStateRow } from "../../lib/mobileGitDots";
 import {
   desktopTimeZone,
   localOccurrenceKey,
@@ -231,6 +232,7 @@ type PromptMutation =
 type DesktopRequest =
 | { type: "catalog"; request_id: string; project_id?: string }
   | { type: "activity"; request_id: string }
+  | { type: "git_states"; request_id: string }
   | { type: "activate"; request_id: string; project_id: string }
   | { type: "create"; request_id: string; request: CreateRequest }
   | { type: "launch_options"; request_id: string; project_id: string }
@@ -263,8 +265,9 @@ type DesktopRequest =
   | { type: "desktop_images"; request_id: string; project_id: string }
   | { type: "attach_desktop_image"; request_id: string; project_id: string; image_id: string };
 type DesktopResponse =
-| { status: "catalog"; agents: CatalogAgent[]; statuses: AgentTabStatus[]; schedules: AgentTabSchedules[]; prompts: AgentTabPrompts[]; timings: AgentTabTiming[]; closed: ClosedAgentTabRow[] }
+| { status: "catalog"; agents: CatalogAgent[]; statuses: AgentTabStatus[]; schedules: AgentTabSchedules[]; prompts: AgentTabPrompts[]; timings: AgentTabTiming[]; closed: ClosedAgentTabRow[]; git?: MobileGitDot }
   | { status: "activity"; statuses: AgentTabStatus[]; prompts: AgentTabPrompts[] }
+  | { status: "git_states"; states: MobileGitStateRow[] }
   | { status: "activated" }
   | { status: "created"; tmux_session: string }
   | { status: "launch_options"; worktrees: MobileWorktree[]; cloud: MobileCloudLaunch[]; sign_in: MobileSignInOption[]; local?: MobileLocalLaunch }
@@ -2141,6 +2144,13 @@ async function agentTranscriptFor(
   return { status: "agent_transcript", transcript };
 }
 
+/** The project screen's git dot (`lib/mobileGitDots`). A box or the root
+ *  console has no dot of its own. */
+async function projectGitDot(projectId: string | undefined): Promise<MobileGitDot | undefined> {
+  const project = mobileScope(projectId)?.project;
+  return project ? freshGitDot(project) : undefined;
+}
+
 async function handleRequest(
   request: DesktopRequest,
   t: ReturnType<typeof useT>,
@@ -2155,8 +2165,10 @@ async function handleRequest(
       prompts: agentPrompts(request.project_id),
       timings: agentTimings(request.project_id),
       closed: closedAgentTabRows(request.project_id),
+      git: await projectGitDot(request.project_id),
     };
     case "activity": return { status: "activity", statuses: allAgentStatuses(), prompts: allAgentPrompts() };
+    case "git_states": return { status: "git_states", states: gitDotRows(allMobileScopes().flatMap((scope) => scope.project ?? [])) };
     case "activate": return activate(request.project_id);
     case "create": return create(request.request, t);
     case "launch_options": return launchOptions(request.project_id);

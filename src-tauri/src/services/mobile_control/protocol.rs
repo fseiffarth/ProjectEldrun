@@ -766,6 +766,14 @@ pub enum DesktopRequest {
     Activity {
         request_id: String,
     },
+    /// The desktop's git dot for every mobile-eligible project — unstaged,
+    /// staged-not-committed, committed-not-pushed — for the phone's project
+    /// list. Read from what the desktop's own pills already probed, so the
+    /// answer costs no git spawn; a project the desktop has not probed is left
+    /// out and the phone shows no dot, as the desktop does.
+    GitStates {
+        request_id: String,
+    },
     Activate {
         request_id: String,
         project_id: String,
@@ -1018,6 +1026,7 @@ impl DesktopRequest {
         match self {
             Self::Catalog { request_id, .. }
             | Self::Activity { request_id }
+            | Self::GitStates { request_id }
             | Self::Activate { request_id, .. }
             | Self::Create { request_id, .. }
             | Self::LaunchOptions { request_id, .. }
@@ -1065,6 +1074,9 @@ impl DesktopRequest {
             Self::MailMessage { .. } | Self::MailMark { .. } => 35,
             Self::MailReply { .. } => 65,
             Self::AgentStatus { .. } => 25,
+            // Rides on the project list, which answers without the desktop:
+            // a wedged window must not hold that list up for long.
+            Self::GitStates { .. } => 3,
             _ => 10,
         })
     }
@@ -1077,6 +1089,7 @@ impl DesktopRequest {
             Self::MailMessage { .. } | Self::MailMark { .. } => 30,
             Self::MailReply { .. } => 60,
             Self::AgentStatus { .. } => 20,
+            Self::GitStates { .. } => 2,
             _ => 8,
         })
     }
@@ -1255,6 +1268,28 @@ pub struct MobileInboxAttachment {
     pub size: u64,
 }
 
+/// One project's git dot (`stores/gitDirty.ts`). `state` stays a string on
+/// the wire so a desktop that learns another level cannot fail the whole
+/// answer; [`git_dot`] keeps only the levels the phone knows.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectGitState {
+    pub project_id: String,
+    pub state: String,
+}
+
+/// The phone-facing spelling of a desktop git dot: untracked or unstaged
+/// changes ▸ staged, not committed ▸ committed, not pushed ▸ a repo whose
+/// `.git` went missing. Clean and anything unknown read as no dot.
+pub fn git_dot(state: &str) -> Option<&'static str> {
+    match state {
+        "dirty" => Some("dirty"),
+        "staged" => Some("staged"),
+        "unpushed" => Some("unpushed"),
+        "broken" => Some("broken"),
+        _ => None,
+    }
+}
+
 /// What the desktop answers a [`DesktopRequest`] with.
 ///
 /// **This enum and everything it carries are deliberately NOT
@@ -1300,6 +1335,11 @@ pub enum DesktopResponse {
         /// for the phone's "Recently closed" row. Defaulted like the rest.
         #[serde(default)]
         closed: Vec<ClosedAgentTab>,
+        /// The project's git dot, as [`ProjectGitState::state`] spells it;
+        /// absent when clean, not a repo, or never probed. Defaulted like the
+        /// rest.
+        #[serde(default)]
+        git: Option<String>,
     },
     /// Answer to [`DesktopRequest::Activity`]: the agent tabs of every eligible
     /// project that are working, waiting on a decision, or done. Keyed by tmux
@@ -1312,6 +1352,12 @@ pub enum DesktopResponse {
         /// answer lists.
         #[serde(default)]
         prompts: Vec<AgentTabPrompts>,
+    },
+    /// Answer to [`DesktopRequest::GitStates`], keyed by the desktop's raw
+    /// project id; the sidecar maps each onto its opaque public id.
+    GitStates {
+        #[serde(default)]
+        states: Vec<ProjectGitState>,
     },
     Activated,
     Created {
@@ -1499,7 +1545,7 @@ impl TerminalEvent {
 mod tests {
     use super::{
         AgentTabPrompt, AgentTabPrompts, AgentTabSchedules, AgentTabStatus, AgentTabTiming, ClosedAgentTab, DesktopRequest,
-        DesktopResponse, MobileAlertItem,
+        DesktopResponse, git_dot, MobileAlertItem,
         MobileAlertsSnapshot,
         MobileMailView, MobilePromptInput, MobileScheduleInput, PromptMutation, ScheduleMutation,
     };
@@ -1553,8 +1599,10 @@ mod tests {
                 agent: "claude".into(),
                 closed_at: 1_700_000_200_000,
             }],
+            git: Some("unpushed".into()),
         };
         let response_json = serde_json::to_value(response).expect("serialize catalog response");
+        assert_eq!(response_json["git"], "unpushed");
         // A closed tab crosses by its opaque id and label only.
         assert_eq!(response_json["closed"][0]["id"], "0b8f6c1e-closed");
         assert_eq!(response_json["closed"][0]["label"], "claude 2");
@@ -1610,6 +1658,42 @@ mod tests {
         assert_eq!(agents.len(), 1, "the agent menu survives the unknown field");
         assert_eq!(statuses[0].status, "working");
         assert_eq!(statuses[0].working_at, Some(1_700_000_000_000));
+    }
+
+    #[test]
+    fn git_states_keep_only_the_levels_the_phone_knows() {
+        let request = serde_json::to_value(DesktopRequest::GitStates {
+            request_id: "request-2".into(),
+        })
+        .expect("serialize git states request");
+        assert_eq!(request["type"], "git_states");
+        // A newer desktop may name a level this sidecar never heard of; the
+        // answer still decodes, and the phone gets no dot for that row.
+        let response: DesktopResponse = serde_json::from_value(serde_json::json!({
+            "status": "git_states",
+            "states": [
+                { "project_id": "a", "state": "dirty" },
+                { "project_id": "b", "state": "diverged" },
+                { "project_id": "c", "state": "clean" },
+            ],
+        }))
+        .expect("decode git states");
+        let DesktopResponse::GitStates { states } = response else {
+            panic!("git states must decode as such");
+        };
+        let dots = states
+            .iter()
+            .map(|row| git_dot(&row.state))
+            .collect::<Vec<_>>();
+        assert_eq!(dots, vec![Some("dirty"), None, None]);
+        for level in ["dirty", "staged", "unpushed", "broken"] {
+            assert_eq!(git_dot(level), Some(level));
+        }
+        // A catalog from a desktop that predates the field has no dot.
+        let older: DesktopResponse =
+            serde_json::from_value(serde_json::json!({ "status": "catalog", "agents": [] }))
+                .expect("decode an older catalog");
+        assert!(matches!(older, DesktopResponse::Catalog { git: None, .. }));
     }
 
     #[test]

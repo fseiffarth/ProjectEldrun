@@ -113,6 +113,11 @@ pub struct PublicProject {
     /// A count and nothing else — deciding them is the desktop's alone.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pending_reviews: Option<usize>,
+    /// The desktop's git dot for a project (`protocol::git_dot`), filled in
+    /// per request from the desktop — never read from disk here. Absent when
+    /// clean, not a repo, never probed, or the desktop is closed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git: Option<&'static str>,
 }
 
 /// The one-line schedule summary the desktop's Agents view puts under an agent
@@ -714,6 +719,7 @@ fn resolve_scope(
         last_activity,
         pending_reviews: (source.kind == ScopeKind::Root)
             .then(|| crate::services::root_mcp_review::pending_count(state_dir)),
+        git: None,
     };
     Some(ResolvedProject {
         public,
