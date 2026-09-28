@@ -4,9 +4,8 @@ body { margin:0; min-height:100dvh; background:#000; }
 button,input,textarea,select { font:inherit; }
 button { color:inherit; }
 .screen { max-width:720px; min-height:100dvh; margin:auto; padding:max(22px,env(safe-area-inset-top)) 18px max(24px,env(safe-area-inset-bottom)); }
-header,.card,.settings-row,.agent-create,.mobile-build,.card-trailing { display:flex; align-items:center; gap:12px; }
+header,.card,.settings-row,.agent-create,.card-trailing { display:flex; align-items:center; gap:12px; }
 header { min-height:52px; justify-content:space-between; }
-.mobile-build { gap:8px; white-space:nowrap; }
 h1 { margin:0; font-size:1.35rem; }
 .pair { display:grid; align-content:center; gap:18px; max-width:440px; }
 label { display:grid; gap:7px; color:#b7bac8; }
@@ -233,12 +232,13 @@ small { color:#9498aa; }
 .home-screen { background:radial-gradient(ellipse 90% 250px at 50% 0,rgba(97,82,174,.16),transparent 78%); }
 .home-header { position:relative; gap:10px; min-height:70px; padding:9px 12px; border:1px solid #3a3c58; border-radius:18px; background:linear-gradient(125deg,rgba(50,44,76,.92),rgba(27,31,46,.95) 62%,rgba(25,37,54,.94)); box-shadow:0 10px 25px rgba(3,5,12,.2); }
 .home-brand { display:flex; flex:1; align-items:center; gap:8px; min-width:0; }
+.home-brand-copy { display:grid; gap:2px; min-width:0; }
 .home-brand strong { font-size:1.05rem; letter-spacing:.01em; white-space:nowrap; }
+.home-brand-copy small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-variant-numeric:tabular-nums; }
 .home-logo-frame { position:relative; display:grid; place-items:center; width:50px; height:47px; flex:0 0 auto; background:linear-gradient(135deg,#e7b369,#8b7df4 60%,#5abbe6); clip-path:polygon(25% 0,75% 0,100% 50%,75% 100%,25% 100%,0 50%); }
 .home-logo-frame::before { content:""; position:absolute; inset:1px; background:#1c1e30; clip-path:inherit; }
 .home-logo { position:relative; width:35px; height:35px; color:#f0efff; }
-.home-header .mobile-build { min-width:0; max-width:48%; }
-.home-header .mobile-build small { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.home-header > .lamp { flex:0 0 auto; }
 .home-project-card { border-color:#3b4055; border-radius:14px; background:linear-gradient(115deg,rgba(54,49,85,.42),rgba(28,31,43,.96) 38%); }
 .home-project-card:focus-within { border-color:#8d80ee; }
 .home-project-card .card { min-height:62px; }
@@ -248,7 +248,6 @@ small { color:#9498aa; }
   .home-brand strong { font-size:.9rem; }
   .home-logo-frame { width:43px; height:41px; }
   .home-logo { width:30px; height:30px; }
-  .home-header .mobile-build { max-width:42%; }
 }
 /* The four top-level sections. Fixed to the bottom edge so it survives the long
    scroll of a board or a month, centered on wide screens with the same 720px
@@ -457,7 +456,7 @@ button.mobile-alert-row { cursor:pointer; }
 .mobile-calendar-agenda article span { color:#aeb2c2; font-size:.86rem; }
 .mobile-calendar-agenda article.cancelled { opacity:.58; }
 .mobile-calendar-agenda article.cancelled strong { text-decoration:line-through; }
-@media (max-width:480px) { .mobile-build small { font-size:.72rem; } .mail-mobile-row > div { display:grid; gap:3px; } .mail-mobile-pager button { padding-inline:9px; } }
+@media (max-width:480px) { .mail-mobile-row > div { display:grid; gap:3px; } .mail-mobile-pager button { padding-inline:9px; } }
 @media (max-width:360px) { .projects-row { margin-top:14px; } .mobile-calendar-day { min-height:48px; } .mobile-tab { font-size:.68rem; } }
 /* While the full-bleed terminal is up: no document scroll to lose the header
    down (see the `terminal-open` effect in screens/Terminal.tsx). */

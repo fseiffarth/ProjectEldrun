@@ -257,11 +257,11 @@ export function Home({ open, openTab, todo, mail }: {
     <header className="home-header">
       <div className="home-brand" aria-label="Eldrun">
         <span className="home-logo-frame" aria-hidden="true"><EldrunMark className="home-logo" /></span>
-        <strong>Eldrun</strong>
+        <span className="home-brand-copy"><strong>Eldrun</strong><small>v{APP_VERSION}{BUILD_STAMP && ` · ${BUILD_STAMP}`}</small></span>
       </div>
       {/* The global views used to live here as a header rail; they are tabs of
           their own now, so the bar at the bottom of every screen carries them. */}
-      <div className="mobile-build"><small title="Bundle build time">Eldrun Mobile v{APP_VERSION}{BUILD_STAMP && ` · ${BUILD_STAMP}`}</small><span className={offline ? "lamp off" : "lamp"} /></div>
+      <span className={offline ? "lamp off" : "lamp"} />
     </header>
     <div className="projects-row">
       <h1>{view === "agents" ? "Agents" : "Projects"}</h1>

@@ -17,9 +17,8 @@ export function LockedHomeShell() {
     <header className="home-header">
       <div className="home-brand" aria-label="Eldrun">
         <span className="home-logo-frame" aria-hidden="true"><EldrunMark className="home-logo" /></span>
-        <strong>Eldrun</strong>
+        <span className="home-brand-copy"><strong>Eldrun</strong><small>v{APP_VERSION}{BUILD_STAMP && ` · ${BUILD_STAMP}`}</small></span>
       </div>
-      <div className="mobile-build"><small title="Bundle build time">Eldrun Mobile v{APP_VERSION}{BUILD_STAMP && ` · ${BUILD_STAMP}`}</small></div>
     </header>
     <div className="projects-row"><h1>Projects</h1></div>
   </main>;
