@@ -58,6 +58,9 @@ import { TabDropPlaceholder } from "../tabs/TabDropPlaceholder";
 import { NewTabMenu } from "../tabs/NewTabMenu";
 import { CustomAgentDialog } from "../tabs/CustomAgentDialog";
 import { TabColorPicker } from "../tabs/TabColorPicker";
+import { TabStackChip } from "../tabs/TabStackChip";
+import { stackNames, stripItems } from "../../lib/tabStacks";
+import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import { tabColorCss, type TabColor } from "../../lib/theme/tabColors";
 import { pickEdge } from "../tabs/dragGeometry";
 import {
@@ -80,6 +83,7 @@ import {
   allGroups,
   dividerFraction,
   findGroup,
+  findGroupOfTab,
   isPtyTabKind,
   type DetachedDockTarget,
   type DropEdge,
@@ -162,6 +166,9 @@ interface Props {
    *  edit. Streamed like the rename above rather than applied here: the colour
    *  lives on the tab payload the MAIN window owns and persists. */
   onSetColor?: (key: string, color: TabColor | undefined) => void;
+  /** Put a tab into a tab group of its bar, or take it out — the `setStack`
+   *  edit, streamed like the colour above. */
+  onSetStack?: (key: string, stack: string | undefined) => void;
   /** Split `key` into a new pane at `edge` of `targetGroupId`, inside the popout
    *  (a tab dragged onto a group BODY's edge). */
   onSplit: (key: string, targetGroupId: string, edge: DropEdge) => void;
@@ -207,6 +214,7 @@ export function DetachedCenterPanel({
   onReorder,
   onRename,
   onSetColor,
+  onSetStack,
   onSplit,
   onResize,
   onMove,
@@ -219,6 +227,8 @@ export function DetachedCenterPanel({
   const [agentDialogOpen, setAgentDialogOpen] = useState(false);
   const [scheduleDialogKey, setScheduleDialogKey] = useState<string | null>(null);
   const [tabMenu, setTabMenu] = useState<{ key: string; x: number; y: number } | null>(null);
+  // Right-click on a tab-group chip: rename / ungroup.
+  const [stackMenu, setStackMenu] = useState<{ x: number; y: number; name: string; groupId: string } | null>(null);
   const tabMenuRef = useRef<HTMLDivElement>(null);
   // Dismiss this strip's tab context menu on an outside click or Escape, the way
   // the main window's `TabBar` does. It used to close only when one of its rows
@@ -690,12 +700,15 @@ export function DetachedCenterPanel({
       for (const [gid, bar] of barRefs.current) {
         const br = bar.getBoundingClientRect();
         if (!inside(br)) continue;
-        const tabEls = Array.from(bar.querySelectorAll<HTMLElement>(".tab"));
-        let slot = tabEls.length;
-        for (let i = 0; i < tabEls.length; i++) {
-          const r = tabEls[i].getBoundingClientRect();
+        // By `data-tab-index`, not DOM position: a tab-group chip stands for
+        // several tabs (same rule as the main window's CenterPanel).
+        const tabEls = Array.from(bar.querySelectorAll<HTMLElement>(".tab[data-tab-index]"));
+        const count = Number(bar.dataset.tabCount);
+        let slot = Number.isFinite(count) ? count : tabEls.length;
+        for (const el of tabEls) {
+          const r = el.getBoundingClientRect();
           if (clientX < r.left + r.width / 2) {
-            slot = i;
+            slot = Number(el.dataset.tabIndex);
             break;
           }
         }
@@ -1431,6 +1444,7 @@ export function DetachedCenterPanel({
           }}
           className={`tab-bar detached-drag-handle${isDropTarget ? " drop-target" : ""}`}
           data-group-id={group.id}
+          data-tab-count={orderedTabs.length}
           onPointerDown={(e) => onGroupBarPointerDown(e, group)}
         >
           {/* Move grip — the sole tab-bar handle for moving/docking this popout
@@ -1457,14 +1471,11 @@ export function DetachedCenterPanel({
           {isDropTarget && orderedTabs.length === 0 && (
             <Fragment key="drop-marker">{dropPlaceholder}</Fragment>
           )}
-          {orderedTabs.map((tab, index) => {
-            const isActive = tab.key === group.activeKey;
-            const isDragging = dragKey === tab.key;
+          {stripItems(orderedTabs).map((item) => {
             // The placeholder slot previewing where the dragged tab will land —
-            // shown immediately before the tab at the resolved insertion index.
-            const showMarkerBefore = isDropTarget && localReorder === index;
-            // A tab freshly dropped into this bar plays the drop-in landing once.
-            const landing = !isDragging && landedKey === tab.key;
+            // shown immediately before the tab (or group chip) at the resolved
+            // insertion index.
+            const showMarkerBefore = isDropTarget && localReorder === item.index;
             // The same status ring the main-window strip draws, from the same
             // two maps and by the same rules (#234) — working wins; working and
             // finished are about unread output so they never show on the tab you
@@ -1473,25 +1484,67 @@ export function DetachedCenterPanel({
             // the main window mirrored over (`applyDetachedStatus`); before this
             // group the popout's strip rendered no state at all, so a popped-out
             // agent finishing its turn said nothing in either window.
+            const stateOf = (tab: TabEntry) => {
+              const ptyId = `${scope}:${tab.key}`;
+              const isActive = tab.key === group.activeKey;
+              const working = isPtyTabKind(tab.kind) && !isActive && !!busyByTab[ptyId];
+              const rawAttn =
+                tab.kind === "agent" || tab.kind === "local_agent"
+                  ? attentionByTab[ptyId] ?? null
+                  : null;
+              const attn = !isActive || rawAttn === "decision" ? rawAttn : null;
+              return working
+                ? busyStateClass(busyKindByTab[ptyId], tab.kind)
+                : attn === "decision"
+                  ? " needs-decision"
+                  : attn === "done"
+                    ? " finished"
+                    : "";
+            };
+            if (item.type === "stack") {
+              return (
+                <Fragment key={`stack:${item.name}`}>
+                  {showMarkerBefore && dropPlaceholder}
+                  <TabStackChip
+                    name={item.name}
+                    index={item.index}
+                    members={item.members.map((m) => ({ ...m, stateClass: stateOf(m.tab) }))}
+                    activeKey={group.activeKey}
+                    suppressed={dragKey !== null || !!addMenu || !!tabMenu || !!stackMenu}
+                    onActivate={onActivate}
+                    onCloseTab={onClose}
+                    onTabContextMenu={(e, key) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setHoverTab(null);
+                      setTabMenu({ key, x: e.clientX, y: e.clientY });
+                    }}
+                    onStackContextMenu={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setHoverTab(null);
+                      setTabMenu(null);
+                      if (onSetStack) {
+                        setStackMenu({ x: e.clientX, y: e.clientY, name: item.name, groupId: group.id });
+                      }
+                    }}
+                  />
+                </Fragment>
+              );
+            }
+            const { tab, index } = item;
+            const isActive = tab.key === group.activeKey;
+            const isDragging = dragKey === tab.key;
+            // A tab freshly dropped into this bar plays the drop-in landing once.
+            const landing = !isDragging && landedKey === tab.key;
             const ptyId = `${scope}:${tab.key}`;
-            const working = isPtyTabKind(tab.kind) && !isActive && !!busyByTab[ptyId];
-            const rawAttn =
-              tab.kind === "agent" || tab.kind === "local_agent"
-                ? attentionByTab[ptyId] ?? null
-                : null;
-            const attn = !isActive || rawAttn === "decision" ? rawAttn : null;
-            const stateClass = working
-              ? busyStateClass(busyKindByTab[ptyId], tab.kind)
-              : attn === "decision"
-                ? " needs-decision"
-                : attn === "done"
-                  ? " finished"
-                  : "";
+            const stateClass = stateOf(tab);
             return (
               <Fragment key={tab.key}>
                 {showMarkerBefore && dropPlaceholder}
                 <div
                   className={`tab ${isActive ? "active" : ""}${stateClass}${tabColorCss(tab.color) ? " has-tab-color" : ""}${isDragging ? " dragging" : ""}${landing ? " landing" : ""}`}
+                  data-tab-index={index}
                   // A user colour (#264) fills the same `--tab-accent` slot the
                   // main window's strip uses, so one CSS rule colours the tab
                   // in either window. This strip sets no kind colour of its own,
@@ -1955,6 +2008,58 @@ export function DetachedCenterPanel({
               onPick={(color) => onSetColor(tabMenu.key, color)}
             />
           )}
+          {onSetStack && (() => {
+            // Tab groups are per bar: offer the groups of the bar this tab is in.
+            const home = findGroupOfTab(tree, tabMenu.key)?.group;
+            const own = byKey.get(tabMenu.key)?.stack;
+            const barTabs = (home?.tabKeys ?? [])
+              .map((k) => byKey.get(k))
+              .filter((tb): tb is TabEntry => tb != null);
+            return (
+              <>
+                {stackNames(barTabs)
+                  .filter((name) => name !== own)
+                  .map((name) => (
+                    <button
+                      key={`stack:${name}`}
+                      className="tab-new-menu-item"
+                      onClick={() => {
+                        onSetStack(tabMenu.key, name);
+                        setTabMenu(null);
+                      }}
+                    >
+                      <span className="tab-new-menu-dot tab-new-menu-dot--accent">▤</span>
+                      {t("tabStack.addTo", { name })}
+                    </button>
+                  ))}
+                <button
+                  className="tab-new-menu-item"
+                  onClick={() => {
+                    const key = tabMenu.key;
+                    setTabMenu(null);
+                    const name = window.prompt(t("tabStack.nameLabel"), "");
+                    if (name?.trim()) onSetStack(key, name.trim());
+                  }}
+                >
+                  <span className="tab-new-menu-dot tab-new-menu-dot--accent">▤</span>
+                  {t("tabStack.newGroup")}
+                  <UntestedTag id="tabStack.newGroup" />
+                </button>
+                {own && (
+                  <button
+                    className="tab-new-menu-item"
+                    onClick={() => {
+                      onSetStack(tabMenu.key, undefined);
+                      setTabMenu(null);
+                    }}
+                  >
+                    <span className="tab-new-menu-dot tab-new-menu-dot--accent">▭</span>
+                    {t("tabStack.remove")}
+                  </button>
+                )}
+              </>
+            );
+          })()}
           {(() => {
             const tab = byKey.get(tabMenu.key);
             return tab && (tab.kind === "agent" || tab.kind === "local_agent") ? (
@@ -1967,6 +2072,42 @@ export function DetachedCenterPanel({
         </div>,
         document.body,
       )}
+      {stackMenu && onSetStack && (() => {
+        const home = findGroup(tree, stackMenu.groupId);
+        const members = (home?.tabKeys ?? []).filter((k) => byKey.get(k)?.stack === stackMenu.name);
+        return (
+          <ContextMenuPortal
+            x={stackMenu.x}
+            y={stackMenu.y}
+            onClose={() => setStackMenu(null)}
+            className="tab-new-menu"
+          >
+            <button
+              className="tab-new-menu-item"
+              onClick={() => {
+                setStackMenu(null);
+                const next = window.prompt(t("tabStack.nameLabel"), stackMenu.name);
+                if (next?.trim() && next.trim() !== stackMenu.name) {
+                  for (const key of members) onSetStack(key, next.trim());
+                }
+              }}
+            >
+              <span className="tab-new-menu-dot tab-new-menu-dot--accent">✎</span>
+              {t("tabStack.rename")}
+            </button>
+            <button
+              className="tab-new-menu-item"
+              onClick={() => {
+                setStackMenu(null);
+                for (const key of members) onSetStack(key, undefined);
+              }}
+            >
+              <span className="tab-new-menu-dot tab-new-menu-dot--accent">▭</span>
+              {t("tabStack.ungroup")}
+            </button>
+          </ContextMenuPortal>
+        );
+      })()}
       {scheduleDialogKey && (() => {
         const tab = byKey.get(scheduleDialogKey);
         return tab ? <AgentScheduleDialog scope={scope} tab={tab} onClose={() => setScheduleDialogKey(null)} /> : null;

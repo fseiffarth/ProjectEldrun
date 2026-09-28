@@ -51,6 +51,9 @@ import { BOX_SCOPE_PREFIX } from "../../lib/terminal/ptyId";
 import { CustomAgentDialog } from "./CustomAgentDialog";
 import { reseedDetached, startDetachedDropSession } from "./detachedDropTargets";
 import { TabHoverCard } from "./TabHoverCard";
+import { TabStackChip, type StackMember } from "./TabStackChip";
+import { stackNames, stripItems } from "../../lib/tabStacks";
+import { useDialogs } from "../common/PromptDialogs";
 import { useFastMode } from "../../lib/agents/fastMode";
 import {
   TabSourceBadge,
@@ -192,6 +195,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   const setActive = useTabsStore((s) => s.setActive);
   const renameTab = useTabsStore((s) => s.renameTab);
   const setTabColor = useTabsStore((s) => s.setTabColor);
+  const setTabStack = useTabsStore((s) => s.setTabStack);
   const addTab = useTabsStore((s) => s.addTab);
   const duplicateTab = useTabsStore((s) => s.duplicateTab);
   const ensureTab = useTabsStore((s) => s.ensureTab);
@@ -310,6 +314,10 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // #56: Shift+right-click on a tab enters inline rename mode for that key (no
   // menu, no prompt dialog). The label becomes a focused, text-selected <input>.
   const [editingKey, setEditingKey] = useState<string | null>(null);
+  // Right-click on a tab-group chip: its own menu (rename / ungroup / close).
+  const [stackMenu, setStackMenu] = useState<{ x: number; y: number; name: string } | null>(null);
+  // Naming a new tab group, renaming one, or renaming a tab hidden in one.
+  const { promptText, dialogs } = useDialogs();
   // The manage-custom-agents dialog the "+" menu's "Add custom…" opens.
   const [agentDialogOpen, setAgentDialogOpen] = useState(false);
   const [scheduleDialogKey, setScheduleDialogKey] = useState<string | null>(null);
@@ -759,6 +767,78 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   }
 
   // Right-click a tab → context menu; Shift+right-click → straight to rename.
+  // Whole-tab status ring (no dot, no width change, nothing animated —
+  // see `--status-*` in themes.css):
+  //  - working (green, dotted): PTY producing sustained output.
+  //  - finished (green, solid): an agent you're not looking at went quiet
+  //    with no prompt — the same work as above, done, its result unread.
+  //  - needs-decision (amber, solid): an agent went quiet with a
+  //    choice/permission prompt on its screen. Its own colour because it
+  //    is the one state that is about you rather than about the agent.
+  // Working wins. Working and finished are about output you HAVEN'T seen, so
+  // they never show on the viewed tab — its screen says it better. A pending
+  // decision is the exception: it's about an agent that is BLOCKED, and it
+  // stays blocked whether or not you're looking at it. The lamp holds until
+  // the prompt is answered, so a tab left on screen mid-prompt while you work
+  // elsewhere in the window still says so.
+  function tabStateClass(tab: TabEntry): string {
+    const isActive = tab.key === activeKey;
+    const ptyId = `${scope}:${tab.key}`;
+    const working = isPtyTabKind(tab.kind) && !isActive && !!busyByTab[ptyId];
+    const rawAttn =
+      tab.kind === "agent" || tab.kind === "local_agent"
+        ? attentionByTab[ptyId] ?? null
+        : null;
+    const attn = !isActive || rawAttn === "decision" ? rawAttn : null;
+    return working
+      ? busyStateClass(busyKindByTab[ptyId], tab.kind)
+      : attn === "decision"
+        ? " needs-decision"
+        : attn === "done"
+          ? " finished"
+          : "";
+  }
+
+  // Tab groups (`lib/tabStacks`): a tab joins one by name. "New tab group…"
+  // asks for the name; the group appears as a chip in the tab's place.
+  async function newStackFor(key: string) {
+    setTabMenu(null);
+    const name = await promptText({
+      title: t("tabStack.newTitle"),
+      label: t("tabStack.nameLabel"),
+      confirmLabel: t("tabStack.create"),
+    });
+    if (name) setTabStack(key, name);
+  }
+  async function renameStack(name: string) {
+    setStackMenu(null);
+    const next = await promptText({
+      title: t("tabStack.renameTitle"),
+      label: t("tabStack.nameLabel"),
+      initial: name,
+      unchanged: name,
+    });
+    if (!next) return;
+    for (const tb of tabs) if (tb.stack === name) setTabStack(tb.key, next);
+  }
+  function ungroupStack(name: string) {
+    setStackMenu(null);
+    for (const tb of tabs) if (tb.stack === name) setTabStack(tb.key, undefined);
+  }
+  // A tab folded into a chip has no label on screen to edit inline, so its
+  // rename goes through a dialog instead.
+  async function renameHiddenTab(key: string) {
+    const tab = tabs.find((tb) => tb.key === key);
+    if (!tab) return;
+    const label = await promptText({
+      title: t("common.rename"),
+      label: t("tabBar.renameAriaLabel"),
+      initial: tab.label,
+      unchanged: tab.label,
+    });
+    if (label) renameTab(key, label);
+  }
+
   function onTabContextMenu(event: React.MouseEvent, key: string, index: number) {
     event.preventDefault();
     event.stopPropagation();
@@ -768,6 +848,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
     }
     setMenuPos(null); // close the add (+) menu if it was open
     setHoverTab(null); // and the hover card, so it doesn't sit atop the menu
+    setStackMenu(null);
     focusGroup(groupId);
     setTabMenu({ x: event.clientX, y: event.clientY, key, index });
   }
@@ -1217,6 +1298,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
     <div
       className={`tab-bar${isDropTarget ? " drop-target" : ""}`}
       data-group-id={groupId}
+      data-tab-count={tabs.length}
       onPointerDown={onBarPointerDown}
     >
       {/* Explicit detach grip — the sole handle for popping this subwindow out.
@@ -1249,40 +1331,59 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
       {isDropTarget && tabs.length === 0 && (
         <Fragment key="drop-marker">{dropPlaceholder}</Fragment>
       )}
-      {tabs.map((tab, index) => {
+      {stripItems(tabs).map((item) => {
+        // The placeholder slot previewing where the dragged tab will land — shown
+        // immediately before the tab (or group chip) at the resolved insertion
+        // index. A chip stands at its first member's index, and the reorder
+        // target is read off `data-tab-index`, so a drop lands beside the chip.
+        const showMarkerBefore = isDropTarget && reorderIndex === item.index;
+        if (item.type === "stack") {
+          const members: StackMember[] = item.members.map((m) => ({
+            ...m,
+            stateClass: tabStateClass(m.tab),
+          }));
+          return (
+            <Fragment key={`stack:${item.name}`}>
+              {showMarkerBefore && dropPlaceholder}
+              <TabStackChip
+                name={item.name}
+                index={item.index}
+                members={members}
+                activeKey={activeKey}
+                suppressed={dragKey !== null || menuOpen || !!tabMenu || !!stackMenu}
+                onActivate={(key) => {
+                  focusGroup(groupId);
+                  setGroupActive(groupId, key);
+                }}
+                onCloseTab={(key) => closeTabWithConfirm(key)}
+                onTabContextMenu={(e, key, index) => {
+                  // No Shift shortcut here: inline rename needs a label on
+                  // screen, and this tab's is folded into the chip.
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setMenuPos(null);
+                  setHoverTab(null);
+                  focusGroup(groupId);
+                  setTabMenu({ x: e.clientX, y: e.clientY, key, index });
+                }}
+                onStackContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setMenuPos(null);
+                  setHoverTab(null);
+                  setTabMenu(null);
+                  focusGroup(groupId);
+                  setStackMenu({ x: e.clientX, y: e.clientY, name: item.name });
+                }}
+              />
+            </Fragment>
+          );
+        }
+        const { tab, index } = item;
         const isActive = tab.key === activeKey;
         const isDragging = dragKey === tab.key;
-        // The placeholder slot previewing where the dragged tab will land — shown
-        // immediately before the tab occupying the resolved insertion index.
-        const showMarkerBefore = isDropTarget && reorderIndex === index;
-        // Whole-tab status ring (no dot, no width change, nothing animated —
-        // see `--status-*` in themes.css):
-        //  - working (green, dotted): PTY producing sustained output.
-        //  - finished (green, solid): an agent you're not looking at went quiet
-        //    with no prompt — the same work as above, done, its result unread.
-        //  - needs-decision (amber, solid): an agent went quiet with a
-        //    choice/permission prompt on its screen. Its own colour because it
-        //    is the one state that is about you rather than about the agent.
-        // Working wins. Working and finished are about output you HAVEN'T seen, so
-        // they never show on the viewed tab — its screen says it better. A pending
-        // decision is the exception: it's about an agent that is BLOCKED, and it
-        // stays blocked whether or not you're looking at it. The lamp holds until
-        // the prompt is answered, so a tab left on screen mid-prompt while you work
-        // elsewhere in the window still says so.
-        const ptyId = `${scope}:${tab.key}`;
-        const working = isPtyTabKind(tab.kind) && !isActive && !!busyByTab[ptyId];
-        const rawAttn =
-          tab.kind === "agent" || tab.kind === "local_agent"
-            ? attentionByTab[ptyId] ?? null
-            : null;
-        const attn = !isActive || rawAttn === "decision" ? rawAttn : null;
-        const stateClass = working
-          ? busyStateClass(busyKindByTab[ptyId], tab.kind)
-          : attn === "decision"
-            ? " needs-decision"
-            : attn === "done"
-              ? " finished"
-              : "";
+        // The status ring — see `tabStateClass`.
+        const stateClass = tabStateClass(tab);
         // Expose the kind colour to CSS on every tab (not just the active one)
         // so the top stripe reads as the tab-group colour consistently — plain
         // themes draw the rail above, fancy themes move it below. Inactive tabs
@@ -1796,8 +1897,10 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
           <button
             className="tab-new-menu-item"
             onClick={() => {
-              setEditingKey(tabMenu.key);
+              const key = tabMenu.key;
               setTabMenu(null);
+              if (tabs.some((tb) => tb.key === key && tb.stack)) void renameHiddenTab(key);
+              else setEditingKey(key);
             }}
           >
             <span className="tab-new-menu-dot tab-new-menu-dot--accent">✎</span>
@@ -1810,6 +1913,50 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             current={tabs.find((tab) => tab.key === tabMenu.key)?.color}
             onPick={(color) => setTabColor(tabMenu.key, color)}
           />
+          {/* Tab groups: join one of this bar's groups, start a new one, or
+              leave the one it is in. */}
+          {(() => {
+            const own = tabs.find((tb) => tb.key === tabMenu.key)?.stack;
+            return (
+              <>
+                {stackNames(tabs)
+                  .filter((name) => name !== own)
+                  .map((name) => (
+                    <button
+                      key={`stack:${name}`}
+                      className="tab-new-menu-item"
+                      onClick={() => {
+                        setTabStack(tabMenu.key, name);
+                        setTabMenu(null);
+                      }}
+                    >
+                      <span className="tab-new-menu-dot tab-new-menu-dot--accent">▤</span>
+                      {t("tabStack.addTo", { name })}
+                    </button>
+                  ))}
+                <button
+                  className="tab-new-menu-item"
+                  onClick={() => void newStackFor(tabMenu.key)}
+                >
+                  <span className="tab-new-menu-dot tab-new-menu-dot--accent">▤</span>
+                  {t("tabStack.newGroup")}
+                  <UntestedTag id="tabStack.newGroup" />
+                </button>
+                {own && (
+                  <button
+                    className="tab-new-menu-item"
+                    onClick={() => {
+                      setTabStack(tabMenu.key, undefined);
+                      setTabMenu(null);
+                    }}
+                  >
+                    <span className="tab-new-menu-dot tab-new-menu-dot--accent">▭</span>
+                    {t("tabStack.remove")}
+                  </button>
+                )}
+              </>
+            );
+          })()}
           {tabs.some((tab) => tab.key === tabMenu.key && canDuplicateTab(tab)) && (
             <button
               className="tab-new-menu-item"
@@ -1879,10 +2026,45 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
           </button>
         </ContextMenuPortal>
       )}
+      {stackMenu && (
+        <ContextMenuPortal
+          x={stackMenu.x}
+          y={stackMenu.y}
+          onClose={() => setStackMenu(null)}
+          className="tab-new-menu"
+        >
+          <button
+            className="tab-new-menu-item"
+            onClick={() => void renameStack(stackMenu.name)}
+          >
+            <span className="tab-new-menu-dot tab-new-menu-dot--accent">✎</span>
+            {t("tabStack.rename")}
+          </button>
+          <button
+            className="tab-new-menu-item"
+            onClick={() => ungroupStack(stackMenu.name)}
+          >
+            <span className="tab-new-menu-dot tab-new-menu-dot--accent">▭</span>
+            {t("tabStack.ungroup")}
+          </button>
+          <button
+            className="tab-new-menu-item"
+            onClick={() => {
+              const name = stackMenu.name;
+              setStackMenu(null);
+              tabs.filter((tb) => tb.stack === name).forEach((tb) => closeTabWithConfirm(tb.key));
+            }}
+          >
+            <span className="tab-new-menu-dot tab-new-menu-dot--danger">×</span>
+            {t("tabStack.closeAll")}
+          </button>
+        </ContextMenuPortal>
+      )}
+      {dialogs}
       {/* Styled tab hover card (matches the project pill popup). Suppressed
           mid-drag and while a menu is open so it never overlaps them. The card
           derives its own content from the tab + this window's stores. */}
-      {hoverTab && !fastMode && dragKey === null && !menuOpen && !tabMenu && (() => {
+      {hoverTab && !fastMode && dragKey === null && !menuOpen && !tabMenu && !stackMenu && (() => {
         const tab = tabs.find((tb) => tb.key === hoverTab.key);
         if (!tab) return null;
         return (

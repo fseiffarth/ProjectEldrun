@@ -34,6 +34,10 @@ Settings → Agents → Manage CLIs (see `agent-clis`).
   window; drag it back to dock it.
 - Right-click a tab for Rename, Duplicate, Close, Close others, and its task.
   Shift+right-click renames inline; double-click also renames.
+- Group tabs: right-click a tab → New tab group… (or Add to group “…”). A
+  group folds into one chip in the bar; hover the chip to list its tabs and
+  click one to open it. Right-click the chip to rename, ungroup or close the
+  group. Groups are saved with the layout.
 
 Your layout is saved automatically per project.
 

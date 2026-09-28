@@ -50,6 +50,7 @@ import { useRemoteMachinesStore } from "./remote/remoteMachines";
 import { useBigFoldersStore } from "./bigFolders";
 import { resolveProjectDirectory, type ProjectBox, type ProjectEntry } from "../types";
 import { isTabColor, type TabColor } from "../lib/theme/tabColors";
+import { normalizeStackName } from "../lib/tabStacks";
 
 /** Parsed `?detached=<scope>:<groupId>` query. */
 export interface DetachedParam {
@@ -421,6 +422,9 @@ export type DetachedEdit =
   // lives on the tab payload the MAIN window persists, so the popout forwards it
   // the way it forwards a rename.
   | { kind: "setColor"; key: string; color: TabColor | undefined }
+  // A tab joining or leaving a tab group (`TabEntry.stack`) — payload-only,
+  // forwarded like the colour.
+  | { kind: "setStack"; key: string; stack: string | undefined }
   | { kind: "close"; key: string }
   | { kind: "reorder"; tabKeys: string[] }
   // Multi-host: change WHERE a locatable tab runs (local mirror / primary / a
@@ -599,6 +603,7 @@ export function applyEditToSubtree(
       return subtree;
     case "rename":
     case "setColor":
+    case "setStack":
     case "setViewerState":
     case "setTmuxName":
     case "setFolder":
@@ -633,6 +638,17 @@ export function applyColorToTabs(
 ): TabEntry[] {
   const next = isTabColor(color) ? color : undefined;
   return tabs.map((t) => (t.key === key && t.color !== next ? { ...t, color: next } : t));
+}
+
+/** Apply a `setStack` edit to a tab payload list (popout-side optimistic
+ *  update, so the chip regroups before the main window re-seeds). Pure. */
+export function applyStackToTabs(
+  tabs: TabEntry[],
+  key: string,
+  stack: string | undefined,
+): TabEntry[] {
+  const next = normalizeStackName(stack);
+  return tabs.map((t) => (t.key === key && t.stack !== next ? { ...t, stack: next } : t));
 }
 
 /** Apply a `setLocation` edit to a tab payload list (popout-side optimistic

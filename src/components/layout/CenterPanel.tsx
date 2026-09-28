@@ -452,14 +452,18 @@ function CenterPanelImpl() {
   const resolveTarget = useCallback(
     (x: number, y: number) => {
       const setTarget = useDragStore.getState().setTarget;
-      const computeReorderIndex = (tabBar: Element, px: number): number => {
-        const tabEls = tabBar.querySelectorAll(".tab");
-        let slot = tabEls.length;
-        tabEls.forEach((el, i) => {
+      // The slot is the `data-tab-index` of the first tab right of the pointer's
+      // midpoint — NOT its DOM position: a tab-group chip stands for several
+      // tabs, so DOM order and tab order part ways once a bar has one.
+      const computeReorderIndex = (tabBar: HTMLElement, px: number): number => {
+        const tabEls = tabBar.querySelectorAll<HTMLElement>(".tab[data-tab-index]");
+        const count = Number(tabBar.dataset.tabCount);
+        const end = Number.isFinite(count) ? count : tabEls.length;
+        for (const el of tabEls) {
           const r = el.getBoundingClientRect();
-          if (slot === tabEls.length && px < r.left + r.width / 2) slot = i;
-        });
-        return slot;
+          if (px < r.left + r.width / 2) return Number(el.dataset.tabIndex);
+        }
+        return end;
       };
       const el = document.elementFromPoint(x, y);
       const tabBar = el?.closest(".tab-bar");

@@ -465,6 +465,8 @@ export const UNTESTED = {
   "tabBar.1": { area: "tabs", what: "TabBar · Duplicate tab" },
   "tabBar.2": { area: "tabs", what: "TabBar · Schedule prompt…" },
   "tabColor.menu": { area: "tabs", what: "TabColorPicker · Colour" },
+  "tabStack.newGroup": { area: "tabs", what: "TabBar · tab right-click New tab group… / Add to group / Remove from group: grouped tabs fold into one chip, kept after a relaunch" },
+  "tabStackChip.1": { area: "tabs", what: "TabStackChip · hovering a tab-group chip lists its tabs; a click on one activates it, × closes it; right-click the chip to rename, ungroup or close the group" },
   "tabLocalityBadges.1": { area: "tabs", what: "TabLocalityBadges · Run on machine" },
 
   // --- todo — The to-do board ---------------------------------------

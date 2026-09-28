@@ -1304,6 +1304,66 @@
   outline: none;
 }
 
+/* ── Tab groups (`lib/tabStacks`, TabStackChip) ─────────────────────────────
+   Tabs sharing a group name fold into ONE chip in the strip: the name as a
+   tinted lozenge in the group's accent (its current or first tab's colour),
+   the current member's label beside it when the group holds the viewed tab,
+   and a member count. Hovering drops the member list below (`.tab-stack-menu`,
+   the shared menu chrome). The chip is a `.tab`, so the active rule, the
+   status ring and the reorder slot all apply to it unchanged. */
+.tab-stack-name {
+  flex-shrink: 0;
+  max-width: 14em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--tab-accent, var(--accent)) 24%, transparent);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.tab-stack-current {
+  max-width: 16em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tab-stack-count {
+  flex-shrink: 0;
+  min-width: 16px;
+  padding: 0 4px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 14px;
+  text-align: center;
+  color: var(--text-muted);
+}
+.tab.tab-stack.stack-open .tab-stack-name {
+  background: color-mix(in srgb, var(--tab-accent, var(--accent)) 40%, transparent);
+}
+
+.tab-stack-menu {
+  min-width: 200px;
+  max-width: 360px;
+}
+.tab-stack-row-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tab-new-menu-item.tab-stack-row.active {
+  border-color: var(--accent);
+}
+.tab-stack-row .tab-stack-row-close { opacity: 0.55; }
+.tab-stack-row:hover .tab-stack-row-close { opacity: 1; }
+/* The status glyphs outside a `.tab`: same colours as the ring's. */
+.tab-stack-row .tab-status-mark.working { --tab-status-color: var(--status-working); }
+.tab-stack-row .tab-status-mark.needs-decision,
+.tab-stack-row .tab-status-mark.decision { --tab-status-color: var(--status-decision); }
+.tab-stack-row .tab-status-mark.done { --tab-status-color: var(--status-done); }
+
 /* ── Tab status ring ─────────────────────────────────────────────────────
    A tab shows agent state as a RING, drawn on an `::after` overlay so it never
    changes the tab's width and the text stays crisp. Three states from two

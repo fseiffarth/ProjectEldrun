@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { restoredAgentCwd } from "../lib/agents/agentWorktrees";
 import { isTabColor, type TabColor } from "../lib/theme/tabColors";
+import { normalizeStackName, stackJoinOrder } from "../lib/tabStacks";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import type { InternalViewer } from "../lib/viewers/fileUtils";
@@ -680,6 +681,13 @@ export interface TabEntry {
   // verbatim by `duplicateSpec`, since a colour DESCRIBES a tab rather than
   // identifying it.
   color?: TabColor;
+  // The tab group (in this bar) this tab belongs to, by name — see
+  // `lib/tabStacks`. Every tab of a bar carrying the same name collapses into
+  // one chip that lists them on hover. Absent = an ordinary tab. Persisted (a
+  // grouping that a relaunch forgets is no grouping), copied by
+  // `duplicateSpec` (a copy lands beside its original), and normalized on the
+  // way in from disk, where it is attacker-controlled text.
+  stack?: string;
   // The root console's **Host session** (`docs/context/agent_authority.md`):
   // this agent tab runs unfenced, with the user's full rights, in Eldrun's
   // `host` agent home. Only ever set by the console's own "Host session" menu
@@ -804,6 +812,9 @@ export type DetachedEditPayload =
   // like the rename beside it rather than applied locally: a popout's store
   // holds no tabs, and the colour lives on the payload the MAIN window persists.
   | { kind: "setColor"; key: string; color: TabColor | undefined }
+  // Join a tab to the named tab group in its bar, or leave it (`undefined`).
+  // Forwarded for the same reason as the colour above.
+  | { kind: "setStack"; key: string; stack: string | undefined }
   // Multi-host: change where a locatable tab runs; applied to the payload here so
   // the main window's flat pane layer (which owns the popout's PTY) respawns it.
   | { kind: "setLocation"; key: string; location: TabLocation }
@@ -897,6 +908,8 @@ export interface SavedTabEntry {
   hostBoundUid?: string;
   // Persisted user-chosen tab colour (see TabEntry.color).
   color?: TabColor;
+  // Persisted tab-group name (see TabEntry.stack).
+  stack?: string;
   mobileRequestHash?: string;
   // Persisted Host session marker (see TabEntry.hostSession).
   hostSession?: boolean;
@@ -951,6 +964,7 @@ export function toSavedTabEntry(t: TabEntry): SavedTabEntry {
     ephemeral: t.ephemeral,
     autoContinue: t.autoContinue,
     color: t.color,
+    stack: t.stack,
     hostSession: t.hostSession || undefined,
   };
 }
@@ -1109,6 +1123,11 @@ interface TabsStore {
   // through, since the project it is looking at need not be the one the window
   // is showing. Falls through to `setTabColor` when they are the same scope.
   setTabColorInScope: (scope: string, key: string, color: TabColor | undefined) => void;
+  // Put one tab into the named tab group of its bar, or take it out with
+  // `undefined` (see TabEntry.stack). A tab joining a group that already has
+  // members is moved to sit right after them. Forwards from a popout like the
+  // colour above.
+  setTabStack: (key: string, stack: string | undefined) => void;
   // Turn auto-continue on or off for ONE agent tab in `scope` (see
   // TabEntry.autoContinue). Scoped like the rename above, because the Agents
   // view is rendered for a scope that need not be the active one.
@@ -2596,6 +2615,29 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
   },
 
+  setTabStack: (key, stack) => {
+    const next = normalizeStackName(stack);
+    const ctx = getDetachedWindowContext();
+    if (ctx) {
+      ctx.pushEdit({ kind: "setStack", key, stack: next });
+      return;
+    }
+    const owner = scopeOfTab(get(), key);
+    set((s) => {
+      const { tabs, layout, focusedGroupId } = scopeState(s, owner);
+      if (!tabs.some((t) => t.key === key && t.stack !== next)) return {};
+      const nextTabs = tabs.map((t) => (t.key === key ? { ...t, stack: next } : t));
+      let nextLayout = layout;
+      const home = next ? findGroupOfTab(layout, key) : null;
+      if (next && home && layout) {
+        const stackOf = (k: string) => nextTabs.find((t) => t.key === k)?.stack;
+        const order = stackJoinOrder(home.group.tabKeys, key, next, stackOf);
+        if (order) nextLayout = mapGroup(layout, home.group.id, (g) => ({ ...g, tabKeys: order }));
+      }
+      return writeScope(s, owner, nextTabs, nextLayout, focusedGroupId);
+    });
+  },
+
   setTabColorInScope: (scope, key, color) => {
     if (scope === get().scope) {
       get().setTabColor(key, color);
@@ -4046,6 +4088,16 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
           }
           break;
         }
+        case "setStack": {
+          // From the popout channel: normalized here, not trusted as sent.
+          const stack = normalizeStackName(edit.stack);
+          if (nextTabs) {
+            nextTabs = nextTabs.map((t) =>
+              t.key === edit.key && t.stack !== stack ? { ...t, stack } : t,
+            );
+          }
+          break;
+        }
         case "setLocation": {
           // Locality lives on the payload; the popout's pane is owned by THIS
           // (main) window's flat pane layer, so updating it here respawns that
@@ -4743,6 +4795,8 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         // rather than trusted: this layout is a file on disk, and an id that is
         // not in `TAB_COLORS` would reach `--tab-accent` as raw CSS.
         color: isTabColor(t.color) ? t.color : undefined,
+        // Its tab group, likewise from the file: plain text, capped.
+        stack: normalizeStackName(t.stack),
       };
     });
 
