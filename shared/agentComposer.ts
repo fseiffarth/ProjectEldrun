@@ -13,12 +13,16 @@ const ENCODER = new TextEncoder();
 /**
  * Sanitize text before it becomes terminal input. Newlines are preserved, while
  * every other C0/DEL byte is removed so a stored message cannot smuggle a key
- * press or close its own bracketed-paste run.
+ * press or close its own bracketed-paste run. Blank lines before the first
+ * words go, like the trailing ones: typed, the first of them is a lone Ctrl-J
+ * into an empty composer, which an agent can read as a submit of nothing —
+ * the phone showed the prompt as sent while the agent never got it.
  */
 export function sanitizeAgentMessage(draft: string): string {
   const text = draft
     .replace(/\r\n?/g, "\n")
     .replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, "")
+    .replace(/^\s*\n/, "")
     .replace(/\s+$/, "");
   if (!text.trim()) return "";
   return text;
