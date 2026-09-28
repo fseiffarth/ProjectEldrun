@@ -1036,14 +1036,14 @@
   background: var(--bg-hover);
 }
 
-/* Pinned is carried by OPACITY ALONE — the same mechanism the comment above
-   already established as this button's (chosen when the pin was a colour
-   emoji that ignored `color`; kept for the drawn pin). So there is no fill and no frame
-   to be theme-dependent, and nothing that can collide with a pure-black or
-   pure-white accent. `aria-pressed` on the button carries the state for anyone
-   the 0.55→1 step does not reach. */
+/* Pinned wakes the pin to full opacity AND paints it accent: the drawn pin is
+   currentColor line-art, so the colour alone says "pinned" at a glance where
+   the 0.55→1 step alone was too quiet next to the flip. Still no fill and no
+   frame, so nothing theme-dependent beyond the accent the hover already uses.
+   `aria-pressed` on the button carries the state for anyone colour misses. */
 .side-panel-pin.pinned {
   opacity: 1;
+  color: var(--accent);
 }
 
 /* The Files (Project) tab: the side panel's file view hosted in a pane. The
