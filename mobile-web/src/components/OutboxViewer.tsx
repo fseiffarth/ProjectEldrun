@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type PointerEvent } from "react";
 import { useT } from "../../../src/lib/i18n";
-import { outboxFileUrl, type OutboxFile, type OutboxScope } from "../api";
+import { viewerFileUrl, type OutboxFile, type ViewerScope } from "../api";
 import { shareAs, useOutboxShare } from "../outboxShare";
 import { sizeLabel } from "../terminal/fileLabels";
 import { isUntested } from "../../../src/lib/untested";
@@ -85,7 +85,9 @@ function shownSize(img: HTMLImageElement | null, stage: Size): Size {
  * picture is at its fitted size; zoomed in, a drag moves the picture.
  */
 export function OutboxViewer({ scope, file, pictures, onStep, onClose }: {
-  scope: OutboxScope;
+  /** Where the bytes come from: the outbox, or the project's own tree (the
+   * read-only file browser, `ProjectFiles`) — the same viewer for both. */
+  scope: ViewerScope;
   file: OutboxFile;
   /** The pictures to step through, in the gallery's order (newest first).
    * Left out, or when `file` is not among them, the viewer shows one file. */
@@ -95,10 +97,10 @@ export function OutboxViewer({ scope, file, pictures, onStep, onClose }: {
   onClose: () => void;
 }) {
   const t = useT();
-  const url = outboxFileUrl(scope, file.name);
+  const url = viewerFileUrl(scope, file);
   const isImage = file.kind.startsWith("image/");
   const steps = isImage && onStep ? pictures ?? [] : [];
-  const index = steps.findIndex((picture) => picture.name === file.name);
+  const index = steps.findIndex((picture) => (picture.ref ?? picture.name) === (file.ref ?? file.name));
   // Newest first, so "next" is the older picture — the way the grid reads.
   const previous = index > 0 ? steps[index - 1] : null;
   const next = index >= 0 && index < steps.length - 1 ? steps[index + 1] : null;
@@ -152,7 +154,7 @@ export function OutboxViewer({ scope, file, pictures, onStep, onClose }: {
     // Warm the neighbours, so a step lands on a picture rather than a blank
     // while it loads over the phone's radio.
     for (const neighbour of [previous, next]) {
-      if (neighbour) new Image().src = outboxFileUrl(scope, neighbour.name);
+      if (neighbour) new Image().src = viewerFileUrl(scope, neighbour);
     }
   }, [scope, previous, next]);
 
@@ -252,7 +254,7 @@ export function OutboxViewer({ scope, file, pictures, onStep, onClose }: {
             && <span className="untested">{t("mobile.outbox.untested")}</span>}
         </small>
       </div>
-      <a href={outboxFileUrl(scope, file.name, true)} download={file.name}>{t("mobile.outbox.save")}</a>
+      <a href={viewerFileUrl(scope, file, true)} download={file.name}>{t("mobile.outbox.save")}</a>
       {shareable && <button disabled={sharing.busy === file.name} onClick={() => void sharing.share(file)}>
         {t(sharing.ready === file.name ? "mobile.outbox.shareReady" : "mobile.outbox.share")}
       </button>}

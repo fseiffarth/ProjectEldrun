@@ -367,6 +367,8 @@ export const UNTESTED = {
   "mobile.mailActions": { area: "mobile", what: "MobileSettings · Mark read and star from the phone" },
   "mobile.mailRead": { area: "mobile", what: "MobileSettings · Read mail on the phone" },
   "mobile.mailReply": { area: "mobile", what: "MobileSettings · Reply from the phone" },
+  "mobile.projectFiles": { area: "mobile", what: "MobileSettings · Project files on the phone (host-wide switch, default off; the sidecar reads it per request)" },
+  "mobile.files.browse": { area: "mobile", what: "ProjectFiles · 📁 in the project header: walk the project's folders read-only by sealed token, open a picture/text in the outbox viewer (Save, Share, step through a folder's pictures), a PDF in the browser" },
   "mobile.rootAccess": { area: "mobile", what: "MobileSettings · Root console on the phone (switch, review gate, pending count on the phone's row)" },
   "mobile.outbox.gallery": { area: "mobile", what: "OutboxGallery · Files the agent sent to the phone, from the 🖼 on the Focus screen and the project screen's header (no shelf under the tab cards any more), Save on every tile" },
   "mobile.outbox.share": { area: "mobile", what: "OutboxGrid/OutboxViewer · Share a file to Signal, WhatsApp, … from its tile or full screen; the button shows at once, a .md goes as .md.txt, a slow download asks for a second tap (Share now)" },

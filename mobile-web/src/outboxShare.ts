@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 
-import { outboxFileUrl, type OutboxFile, type OutboxScope } from "./api";
+import { viewerFileUrl, type OutboxFile, type ViewerScope } from "./api";
 
 /** The extension a kind the sidecar sniffs travels under. */
 const EXTENSION: Record<string, string> = {
@@ -55,7 +55,7 @@ type Held = { key: string; file: Promise<File>; loaded: boolean };
  * browser refuses the share; the file is then held, and the button asks for a
  * second tap (`ready`), which shares at once. One file is held at a time.
  */
-export function useOutboxShare(scope: OutboxScope) {
+export function useOutboxShare(scope: ViewerScope) {
   const held = useRef<Held | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [ready, setReady] = useState<string | null>(null);
@@ -63,12 +63,12 @@ export function useOutboxShare(scope: OutboxScope) {
 
   /** The shareable bytes, fetched once and held until another file is. */
   const load = useCallback((file: OutboxFile, as: { name: string; type: string }) => {
-    const key = `${file.name}@${file.modified}`;
+    const key = `${file.ref ?? file.name}@${file.modified}`;
     if (held.current?.key !== key) {
       const entry: Held = {
         key,
         loaded: false,
-        file: fetch(outboxFileUrl(scope, file.name)).then(async (response) => {
+        file: fetch(viewerFileUrl(scope, file)).then(async (response) => {
           if (!response.ok) throw new Error("read_failed");
           const prepared = new File([await response.blob()], as.name, { type: as.type });
           entry.loaded = true;

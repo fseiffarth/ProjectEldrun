@@ -248,6 +248,30 @@ when its old chunk is gone.
 
 ## D. Read-only file browsing
 
+> **Re-evaluated and built 2026-09-28 (todo 31bo, never live).** Since this
+> section was written the phone grew the outbox (`mobile_control/outbox.rs`,
+> `OutboxViewer`), boxes and the root console as scopes, and host-wide gates
+> in `eldrun_mobile_host` that the sidecar reads itself (`root_access`). The
+> build follows D.2's sealed tokens and D.3's routes, with these changes:
+>
+> - **One host-wide switch, not a per-project flag.** `eldrun_mobile_host.
+>   project_files` (default off), beside the mail and root switches in Mobile
+>   settings. A second checkbox on every project row doubled the list for
+>   little: a phone shell reads the whole machine anyway, and the per-project
+>   consent is the Mobile switch that already puts a project on the phone.
+> - **The outbox's viewer, not a text-only view.** The file route answers
+>   bytes typed by `outbox::classify` (pictures, PDF, inert text, or an
+>   attachment), up to `MAX_OUTBOX_FILE`; a longer text answers its first
+>   `MAX_OUTBOX_FILE` bytes. The phone opens it in `OutboxViewer`, so Save and
+>   Share come with it. Still nothing in the project can be changed.
+> - **Projects only.** Boxes and the root console answer `files_unavailable`;
+>   a box's members are projects of their own.
+> - **Symlinks are not listed at all**, and a token whose path crosses one is
+>   refused (the canonical path must equal root + the sealed relative path).
+> - Routes: `GET /api/v1/projects/{id}/files[?dir=<token>]` and
+>   `GET /api/v1/projects/{id}/files/raw?f=<token>[&download=1]`; the project
+>   detail carries `files: bool` so the phone shows its 📁 only when on.
+
 Downloads already exist for explicitly sent outbox files (`docs/mobile_send_plan.md`).
 This section concerns browsing beyond that outbox.
 

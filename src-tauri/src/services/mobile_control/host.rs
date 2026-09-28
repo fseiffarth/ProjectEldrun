@@ -25,7 +25,8 @@ use super::{
     admin,
     auth::AuthStore,
     config::{verify_tailscale_serve, HostConfig},
-    discovery::{Catalog, CatalogCache, PublicTab, TabPrompt, TabSchedules},
+    discovery::{Catalog, CatalogCache, PublicTab, ScopeKind, TabPrompt, TabSchedules},
+    files,
     inbox,
     outbox,
     limits,
@@ -575,7 +576,10 @@ async fn project(
     (
         StatusCode::OK,
         Json(
-            json!({ "project": project.public, "tabs": tabs, "desktop_available": desktop_available, "agents": agents, "closed": closed }),
+            json!({ "project": project.public, "tabs": tabs, "desktop_available": desktop_available, "agents": agents, "closed": closed,
+                // Whether this project's 📁 answers (`files.rs`): the host-wide
+                // switch, and a project rather than a box or the root console.
+                "files": project.public.kind == ScopeKind::Project && files::files_open(&state.config.state_dir) }),
         ),
     )
 }
@@ -3073,6 +3077,151 @@ async fn outbox_bytes(root: PathBuf, name: String, download: bool) -> Response<B
     }
 }
 
+/// The root and raw id a file-browser request reads by (`files.rs`). Closed —
+/// `files_off` — unless the host-wide switch is on, read per request; a box
+/// or the root console is `files_unavailable`.
+fn files_scope(
+    state: &HostState,
+    project_id: &str,
+) -> Result<(PathBuf, String), (StatusCode, Json<serde_json::Value>)> {
+    if !files::files_open(&state.config.state_dir) {
+        return Err(api_error(StatusCode::NOT_FOUND, "files_off"));
+    }
+    let catalog = catalog(state)?;
+    let Some(project) = catalog.project(project_id) else {
+        return Err(api_error(StatusCode::NOT_FOUND, "project_not_found"));
+    };
+    if project.public.kind != ScopeKind::Project {
+        return Err(api_error(StatusCode::NOT_FOUND, "files_unavailable"));
+    }
+    Ok((project.root.clone(), project.raw_id.clone()))
+}
+
+fn files_error(error: files::FilesError) -> (StatusCode, Json<serde_json::Value>) {
+    api_error(
+        match error {
+            files::FilesError::Unavailable => StatusCode::CONFLICT,
+            files::FilesError::NotFound => StatusCode::NOT_FOUND,
+            files::FilesError::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            files::FilesError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        },
+        error.code(),
+    )
+}
+
+/// The relative path a request's token seals, or `file_not_found` — a forged,
+/// replayed or stale token reads exactly like a path that is not there.
+fn files_rel(
+    state: &HostState,
+    raw_id: &str,
+    token: Option<&String>,
+) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+    let Some(token) = token else {
+        return Ok(String::new());
+    };
+    let key = state.auth.lock().unwrap_or_else(PoisonError::into_inner).host_key().to_vec();
+    files::unseal(&key, raw_id, token).ok_or_else(|| api_error(StatusCode::NOT_FOUND, "file_not_found"))
+}
+
+/// `GET /api/v1/projects/{project_id}/files[?dir=<token>]` — one folder of the
+/// project, read-only: sealed tokens, leaf names, kind, size, mtime. No `dir`
+/// is the project root. No path appears in the answer.
+async fn project_files_list(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(project_id): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    let (root, raw_id) = match files_scope(&state, &project_id) {
+        Ok(scope) => scope,
+        Err(error) => return error,
+    };
+    let rel = match files_rel(&state, &raw_id, query.get("dir")) {
+        Ok(rel) => rel,
+        Err(error) => return error,
+    };
+    let key = state.auth.lock().unwrap_or_else(PoisonError::into_inner).host_key().to_vec();
+    // A directory walk that opens every kept file to type it: off the executor.
+    let listed = tokio::task::spawn_blocking(move || files::list(&root, &rel, &key, &raw_id))
+        .await
+        .unwrap_or_else(|error| Err(files::FilesError::Io(error.to_string())));
+    match listed {
+        Ok(listing) => (StatusCode::OK, Json(json!(listing))),
+        Err(error) => files_error(error),
+    }
+}
+
+/// `GET /api/v1/projects/{project_id}/files/raw?f=<token>[&download=1]` — one
+/// file's bytes, typed by its head as the outbox types them (active formats are
+/// inert text), for the same viewer. Read-only: there is no write route.
+async fn project_files_raw(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(project_id): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response<Body> {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error.into_response();
+    }
+    let (root, raw_id) = match files_scope(&state, &project_id) {
+        Ok(scope) => scope,
+        Err(error) => return error.into_response(),
+    };
+    let Some(token) = query.get("f") else {
+        return api_error(StatusCode::NOT_FOUND, "file_not_found").into_response();
+    };
+    let rel = match files_rel(&state, &raw_id, Some(token)) {
+        Ok(rel) => rel,
+        Err(error) => return error.into_response(),
+    };
+    let leaf = rel.rsplit('/').next().unwrap_or_default().to_string();
+    let read = tokio::task::spawn_blocking(move || files::read(&root, &rel))
+        .await
+        .unwrap_or_else(|error| Err(files::FilesError::Io(error.to_string())));
+    let download = query.get("download").is_some_and(|v| v == "1");
+    match read {
+        Ok((bytes, kind)) => Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, kind)
+            .header(header::CONTENT_LENGTH, bytes.len())
+            .header(
+                header::CONTENT_DISPOSITION,
+                if kind == "application/octet-stream" || download {
+                    attachment_disposition(&leaf)
+                } else {
+                    "inline".into()
+                },
+            )
+            .body(Body::from(bytes))
+            .unwrap_or_else(|_| {
+                api_error(StatusCode::INTERNAL_SERVER_ERROR, "read_failed").into_response()
+            }),
+        Err(error) => files_error(error).into_response(),
+    }
+}
+
+/// `attachment` with the leaf as the saved name. A project file's name is any
+/// UTF-8 (unlike an outbox leaf), so it goes as RFC 6266's `filename*`, with a
+/// plain-ASCII `filename` beside it for a browser that reads only that.
+fn attachment_disposition(name: &str) -> String {
+    let ascii: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
+        .collect();
+    let mut encoded = String::new();
+    for byte in name.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    format!("attachment; filename=\"{ascii}\"; filename*=UTF-8''{encoded}")
+}
+
 async fn static_asset(Path(path): Path<String>) -> Response<Body> {
     asset_response(&format!("/{path}"))
 }
@@ -3229,6 +3378,8 @@ fn router(state: HostState) -> Router {
             "/api/v1/tabs/{tab_id}/outbox/{name}",
             get(outbox_file).delete(outbox_delete),
         )
+        .route("/api/v1/projects/{project_id}/files", get(project_files_list))
+        .route("/api/v1/projects/{project_id}/files/raw", get(project_files_raw))
         .route(
             "/api/v1/projects/{project_id}/outbox",
             get(project_outbox_list),
@@ -5046,6 +5197,78 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
         let (status, _, _) = host.send(get_as(&list, "not-a-session")).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn the_file_browser_is_off_by_default_and_reads_by_sealed_token_only() {
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(35)).await.0;
+        let (_, _, body) = host
+            .send(get_as("/api/v1/projects?view=search&q=aurora", &cookie))
+            .await;
+        let project_id = json(&body)["projects"][0]["id"]
+            .as_str()
+            .expect("opaque project id")
+            .to_string();
+        let base = format!("/api/v1/projects/{project_id}/files");
+        std::fs::create_dir_all(host.root.join("src")).unwrap();
+        std::fs::write(host.root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(host.root.join(".env"), "SECRET=1").unwrap();
+
+        // The switch is off: the detail says so and both routes are closed.
+        let (_, _, body) = host.send(get_as(&format!("/api/v1/projects/{project_id}"), &cookie)).await;
+        assert_eq!(json(&body)["files"], false);
+        let (status, _, body) = host.send(get_as(&base, &cookie)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "answered: {body}");
+        assert_eq!(json(&body)["error"], "files_off");
+
+        std::fs::write(
+            host.state.config.state_dir.join("settings.json"),
+            serde_json::json!({ "eldrun_mobile_host": { "enabled": true, "project_files": true } }).to_string(),
+        )
+        .unwrap();
+        let (_, _, body) = host.send(get_as(&format!("/api/v1/projects/{project_id}"), &cookie)).await;
+        assert_eq!(json(&body)["files"], true);
+
+        let (status, _, body) = host.send(get_as(&base, &cookie)).await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        let root = json(&body);
+        assert_eq!(root["entries"][0]["name"], "src");
+        assert_eq!(root["entries"][0]["kind"], "dir");
+        assert!(!body.contains(".env"), "hidden names are not listed: {body}");
+        assert!(!body.contains(RAW_PROJECT));
+        assert!(!body.contains(host.root.to_str().unwrap()));
+        let src = root["entries"][0]["token"].as_str().unwrap().to_string();
+
+        let (status, _, body) = host.send(get_as(&format!("{base}?dir={src}"), &cookie)).await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert!(!body.contains("src/"), "no path in the answer: {body}");
+        let file = json(&body)["entries"][0].clone();
+        assert_eq!(file["name"], "main.rs");
+        let token = file["token"].as_str().unwrap().to_string();
+
+        let (status, headers, body) = host.send(get_as(&format!("{base}/raw?f={token}"), &cookie)).await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(body, "fn main() {}\n");
+        assert_eq!(headers.get(header::CONTENT_TYPE).unwrap(), "text/plain; charset=utf-8");
+        assert_eq!(headers.get(header::CONTENT_DISPOSITION).unwrap(), "inline");
+        let (_, headers, _) = host.send(get_as(&format!("{base}/raw?f={token}&download=1"), &cookie)).await;
+        assert_eq!(
+            headers.get(header::CONTENT_DISPOSITION).unwrap(),
+            "attachment; filename=\"main.rs\"; filename*=UTF-8''main.rs"
+        );
+
+        // A folder's token is not a file, a forged token is not a path, and
+        // there is nothing to write with.
+        for refused in [format!("{base}/raw?f={src}"), format!("{base}/raw?f=AAAA"), format!("{base}/raw"), format!("{base}?dir=AAAA")] {
+            let (status, _, body) = host.send(get_as(&refused, &cookie)).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{refused} answered: {body}");
+            assert_eq!(json(&body)["error"], "file_not_found");
+        }
+        let (status, _, _) = host.send(get_as(&base, "not-a-session")).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, _, _) = host.send(get_as("/api/v1/projects/not-a-project/files", &cookie)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

@@ -260,7 +260,7 @@ export function MobileSettings() {
    * read by the desktop bridge alone — the sidecar never sees mail settings.
    * They ride on the stored host settings untouched otherwise, so flipping one
    * never re-verifies Serve or restarts the host. */
-  const setMailGate = async (gate: "mail_read" | "mail_actions" | "mail_reply" | "root_access", on: boolean) => {
+  const setMailGate = async (gate: "mail_read" | "mail_actions" | "mail_reply" | "root_access" | "project_files", on: boolean) => {
     setError(null);
     try {
       await updateSettings({
@@ -303,6 +303,7 @@ export function MobileSettings() {
           mail_actions: stored?.mail_actions,
           mail_reply: stored?.mail_reply,
           root_access: stored?.root_access,
+          project_files: stored?.project_files,
         },
       });
       await invoke("mobile_host_apply", { enabled });
@@ -381,6 +382,7 @@ export function MobileSettings() {
           mail_actions: stored?.mail_actions,
           mail_reply: stored?.mail_reply,
           root_access: stored?.root_access,
+          project_files: stored?.project_files,
         },
       });
     } catch (reason) {
@@ -429,6 +431,7 @@ export function MobileSettings() {
           mail_actions: stored?.mail_actions,
           mail_reply: stored?.mail_reply,
           root_access: stored?.root_access,
+          project_files: stored?.project_files,
         },
       });
       await invoke("mobile_host_apply", { enabled: false });
@@ -641,6 +644,13 @@ export function MobileSettings() {
       <p className="settings-help">
         {t("mobile.projectAccessHelp")}
       </p>
+      <ToggleRow
+        label={<>{t("mobile.projectFiles")} <UntestedTag id="mobile.projectFiles" /></>}
+        checked={stored?.project_files ?? false}
+        disabled={busy}
+        onChange={(event) => void setMailGate("project_files", event.target.checked)}
+      />
+      <p className="settings-help">{t("mobile.projectFilesHelp")}</p>
       {eligible.length > 0 && <input
         className="mobile-project-access-search"
         value={projectSearch}

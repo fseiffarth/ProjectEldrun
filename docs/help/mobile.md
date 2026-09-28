@@ -1,14 +1,15 @@
 ---
 id: mobile
 title: Eldrun Mobile (phone companion)
-keywords: [mobile, phone, tailscale, tailnet, pair, pairing, remote control, pwa, revoke, push, notifications, reminders, agent, question, connecting, not connecting, stuck, force stop, version]
+keywords: [mobile, phone, files, browse, project files, read-only, tailscale, tailnet, pair, pairing, remote control, pwa, revoke, push, notifications, reminders, agent, question, connecting, not connecting, stuck, force stop, version]
 ---
 
 Eldrun Mobile is a small companion web app for your phone. It shows the
 projects you opted in, their agent and shell tabs, and one tab at a time as a
 live terminal you can type into — plus a to-do board, read-only mail and a
-calendar. It is a remote control, not a phone-sized Eldrun: no file viewer,
-editor, git, browser or settings.
+calendar, and — if you allow it — a read-only look at your projects' files.
+It is a remote control, not a phone-sized Eldrun: no editor, git, browser or
+settings.
 
 ## Requirements
 
@@ -38,6 +39,21 @@ reopen, because the phone attaches to its terminal session.
   Eldrun must be up.
 - A paired phone types into a terminal exactly like your keyboard: keep agent
   approval modes conservative while Mobile is on.
+
+## Project files on the phone
+
+Switch on **Project files on the phone** under **Project access** (off by
+default) and each project's screen on the phone gets a 📁 in its header:
+walk its folders and open a file — pictures and text full screen, PDFs in the
+browser, with Save and Share. It is read-only: nothing can be changed, moved
+or deleted from there.
+
+- It covers the projects switched on for Mobile, not boxes or the root
+  console.
+- `.git`, `.eldrun` and `.env…` are left out, symbolic links are not shown or
+  followed, and a folder shows its first 500 entries.
+- Files up to 24 MiB open; a longer text file shows its first 24 MiB.
+- Switching it off closes the 📁 within seconds, without restarting the host.
 
 ## Notifications on the phone
 

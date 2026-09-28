@@ -85,7 +85,9 @@ export interface ProjectPromptList { prompts: ProjectPrompt[] }
 /** An agent tab closed in the project this desktop session, newest first — an
  * opaque id and its label, reopened by `reopenTab`. */
 export interface ClosedTabRow { id: string; label: string; agent: string; closed_at: number }
-export interface ProjectDetail { project: ProjectRow; tabs: TabRow[]; desktop_available: boolean; agents: AgentRow[]; closed?: ClosedTabRow[] }
+/** `files`: whether the read-only file browser answers for this project
+ * (the desktop's switch is on, and it is a project, not a box or root). */
+export interface ProjectDetail { project: ProjectRow; tabs: TabRow[]; desktop_available: boolean; agents: AgentRow[]; closed?: ClosedTabRow[]; files?: boolean }
 export interface TodoColumn { id: string; name: string; position: number; done: boolean; archived: boolean; intake: boolean; overdue: boolean; due_today: boolean; color?: string }
 export interface TodoSubtask { id: string; title: string; done: boolean }
 export interface TodoTaskInput {
@@ -685,7 +687,12 @@ export async function attachDesktopImage(tabId: string, imageId: string): Promis
  * (`outbox.rs`) — the mirror of the inbox. `name` is the leaf the desktop
  * validated and the only thing the phone hands back; `kind` is what the
  * bytes say, not the extension; `modified` is unix seconds. */
-export interface OutboxFile { name: string; kind: string; size: number; modified: number }
+export interface OutboxFile {
+  name: string; kind: string; size: number; modified: number;
+  /** What the file is fetched by when that is not its name: a project file's
+   * sealed token (`ProjectFileEntry.token`). Outbox files have none. */
+  ref?: string;
+}
 
 /** Which door onto one project's outbox a read goes through: the session the
  * files were sent from (the Focus screen), or the project itself (the project
@@ -711,6 +718,33 @@ export async function listOutbox(scope: OutboxScope, signal?: AbortSignal): Prom
  * session cookie rides along and the CSP's `img-src 'self'` lets it render. */
 export function outboxFileUrl(scope: OutboxScope, name: string, download = false): string {
   return `${outboxBase(scope)}/${encodeURIComponent(name)}${download ? "?download=1" : ""}`;
+}
+
+/** Where the full-screen viewer reads a file from: one project's outbox (by
+ * its tab or the project), or — `files` — the project's own tree through the
+ * read-only file browser, where a file is fetched by its sealed `ref`. */
+export type ViewerScope = OutboxScope | { files: string };
+
+/** The URL one file loads from, for whichever door `scope` names. */
+export function viewerFileUrl(scope: ViewerScope, file: OutboxFile, download = false): string {
+  if ("files" in scope) {
+    return `/api/v1/projects/${encodeURIComponent(scope.files)}/files/raw?f=${encodeURIComponent(file.ref ?? "")}${download ? "&download=1" : ""}`;
+  }
+  return outboxFileUrl(scope, file.name, download);
+}
+
+/** One row of a project folder (`files.rs`): `token` is a sealed path the
+ * phone can only hand back, `kind` is `"dir"` or the media type the file's
+ * first bytes announce, `modified` is unix seconds. */
+export interface ProjectFileEntry { token: string; name: string; kind: string; size: number; modified: number }
+export interface ProjectFileListing { entries: ProjectFileEntry[]; truncated: boolean }
+
+/** `GET /api/v1/projects/{id}/files[?dir=<token>]` — one folder of the
+ * project, read-only; no `dir` is the project's root. Answers only while the
+ * desktop's "Project files on the phone" switch is on (`files_off` else). */
+export async function listProjectFiles(projectId: string, dir: string | undefined, signal?: AbortSignal): Promise<ProjectFileListing> {
+  const query = dir ? `?dir=${encodeURIComponent(dir)}` : "";
+  return api<ProjectFileListing>(`/api/v1/projects/${encodeURIComponent(projectId)}/files${query}`, { signal });
 }
 
 /** `DELETE …/outbox/{name}` — drop one of those files. The sidecar deletes

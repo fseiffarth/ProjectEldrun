@@ -23,7 +23,7 @@ pub const MAX_LISTED: usize = 40;
 /// The longest leaf that crosses.
 const MAX_NAME: usize = 120;
 /// Enough of a file to tell its format.
-const SNIFF_BYTES: usize = 4096;
+pub const SNIFF_BYTES: usize = 4096;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct OutboxFile {
@@ -124,11 +124,22 @@ fn probe(dir: &Path, name: &str) -> Option<(fs::File, fs::Metadata, &'static str
     if !valid_name(name) {
         return None;
     }
-    let path = dir.join(name);
-    // `symlink_metadata` does not follow: a link inside the outbox is refused
-    // as such, wherever it points.
-    let meta = fs::symlink_metadata(&path).ok()?;
-    if !meta.is_file() || meta.len() == 0 || meta.len() > MAX_OUTBOX_FILE {
+    let (file, meta, kind) = open_sniffed(&dir.join(name))?;
+    if meta.len() == 0 || meta.len() > MAX_OUTBOX_FILE {
+        return None;
+    }
+    Some((file, meta, kind))
+}
+
+/// Opens a regular file without following a link at its leaf, and classifies
+/// its first bytes — the one way a phone-facing read opens a file, shared with
+/// the project file browser (`files.rs`). The descriptor comes back positioned
+/// after the head; `rewind` before reading the whole of it.
+pub fn open_sniffed(path: &Path) -> Option<(fs::File, fs::Metadata, &'static str)> {
+    // `symlink_metadata` does not follow: a link is refused as such, wherever
+    // it points.
+    let meta = fs::symlink_metadata(path).ok()?;
+    if !meta.is_file() {
         return None;
     }
     let mut options = fs::OpenOptions::new();
@@ -141,9 +152,9 @@ fn probe(dir: &Path, name: &str) -> Option<(fs::File, fs::Metadata, &'static str
         use std::os::windows::fs::OpenOptionsExt;
         options.custom_flags(0x0020_0000); // FILE_FLAG_OPEN_REPARSE_POINT
     }
-    let mut file = options.open(&path).ok()?;
+    let mut file = options.open(path).ok()?;
     let meta = file.metadata().ok()?;
-    if !meta.is_file() || meta.len() == 0 || meta.len() > MAX_OUTBOX_FILE {
+    if !meta.is_file() {
         return None;
     }
     let mut head = [0u8; SNIFF_BYTES];
@@ -159,7 +170,7 @@ fn probe(dir: &Path, name: &str) -> Option<(fs::File, fs::Metadata, &'static str
     Some((file, meta, kind))
 }
 
-fn unix_secs(time: SystemTime) -> u64 {
+pub fn unix_secs(time: SystemTime) -> u64 {
     time.duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 

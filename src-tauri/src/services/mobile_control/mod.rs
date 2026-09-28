@@ -9,6 +9,7 @@ pub mod admin;
 pub mod auth;
 pub mod config;
 pub mod discovery;
+pub mod files;
 pub mod host;
 pub mod inbox;
 pub mod live_pwa;

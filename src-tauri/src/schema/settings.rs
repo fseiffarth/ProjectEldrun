@@ -60,6 +60,11 @@ pub struct EldrunMobileHostSettings {
     /// which also holds the review gate) and repeated by the desktop bridge.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_access: Option<bool>,
+    /// May a paired phone browse and read (never change) the files of its
+    /// Mobile projects? Default off. Read by the sidecar per request
+    /// (`mobile_control::files::files_open`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_files: Option<bool>,
 }
 
 /// Cloud completion authority lives in Eldrun's settings, never project.json.

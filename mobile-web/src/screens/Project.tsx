@@ -15,6 +15,7 @@ import { ScheduleSheet } from "./ScheduleSheet";
 import { AgentStatusMark } from "../components/AgentStatusPill";
 import { OutboxGallery } from "../components/OutboxGallery";
 import { OutboxViewer } from "../components/OutboxViewer";
+import { ProjectFiles } from "../components/ProjectFiles";
 import { tabColorCss } from "../tabColors";
 import { useT } from "../../../src/lib/i18n";
 import { isUntested } from "../../../src/lib/untested";
@@ -151,6 +152,9 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
   const [galleryOpen, setGalleryOpen] = useState(false);
   /** The file open full screen (a picture or a text preview). */
   const [fileOpen, setFileOpen] = useState<OutboxFile | null>(null);
+  /** The read-only file browser (📁), there when the desktop's "Project
+   * files on the phone" switch is on (`detail.files`). */
+  const [filesOpen, setFilesOpen] = useState(false);
   const outboxScope = useMemo(() => ({ project: id }), [id]);
   /** The pictures among them, which the full-screen viewer steps through. */
   const outboxPictures = useMemo(() => outbox.filter((file) => file.kind.startsWith("image/")), [outbox]);
@@ -406,6 +410,16 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
           aria-label={t("mobile.outbox.galleryOpen", { count: outbox.length })}
           title={t("mobile.outbox.region")}
         ><span aria-hidden="true">🖼</span><small>{outbox.length}</small></button>}
+        {/* The project's own tree, read-only — the same pill as the 🖼 beside
+            it, shown only while the desktop's switch is on. */}
+        {detail?.files && <button
+          className="terminal-gallery"
+          onClick={() => setFilesOpen(true)}
+          aria-haspopup="dialog"
+          aria-expanded={filesOpen}
+          aria-label={t("mobile.files.button")}
+          title={t("mobile.files.button")}
+        ><span aria-hidden="true">📁</span></button>}
         {tabs.length > 1 && <label className="activity-sort in-header">
           <span>Sort</span>
           <select aria-label="Sort tabs" value={sort} onChange={(event) => { if (isAgentSort(event.target.value)) chooseSort(event.target.value); }}>
@@ -555,6 +569,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     {/* The viewer covers the phone; the gallery stays open behind it, so
         closing the file comes back to the list it was opened from. */}
     {galleryOpen && !fileOpen && <OutboxGallery scope={outboxScope} files={outbox} onOpen={openFile} onDetails={setFileOpen} onDelete={removeFile} onClose={() => setGalleryOpen(false)} />}
+    {filesOpen && detail?.files && <ProjectFiles key={id} projectId={id} label={detail.project.label} onClose={() => setFilesOpen(false)} />}
     {fileOpen && <OutboxViewer key={`${id}/${fileOpen.name}`} scope={outboxScope} file={fileOpen} pictures={outboxPictures} onStep={setFileOpen} onClose={() => setFileOpen(null)} />}
   </main>;
 }

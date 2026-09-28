@@ -150,6 +150,9 @@ export interface Settings {
      * sidecar also holds it closed while root-agent writes are not staged
      * behind the fence (`docs/context/root_console.md`, "On the phone"). */
     root_access?: boolean;
+    /** A paired phone may browse and read (never change) its Mobile projects'
+     * files. Unset is off; read by the sidecar per request. */
+    project_files?: boolean;
   };
   /** Show Eldrun Mobile's host-connection control in the desktop header. This
    * defaults to on when Mobile itself is enabled; an explicit false hides it. */
