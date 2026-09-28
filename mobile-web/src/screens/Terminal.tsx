@@ -1994,13 +1994,29 @@ export function Terminal({ tab, back, pickModel = false, signInTab = false, open
     const bracketed = bracketsAgentMessage(tab.agent_label ?? tab.label, bracketedPaste.current());
     return deliver(agentInputWrites(text, bracketed), prompt);
   };
-  /** Once dictated words have left the composer — sent or cleared — "Heard:"
-   * stops quoting them. They stay counted as inserted: a recognizer that is
-   * still listening reads them back, and they must not return to the draft.
-   * Listening itself goes on. */
+  /** Once dictated words have left the composer by its ✕, "Heard:" stops
+   * quoting them. They stay counted as inserted: the recognizer, still
+   * listening, reads them back, and they must not return to the draft. */
   const forgetDictation = () => {
     voiceProgress.current = settleDictation(voiceProgress.current);
     setVoicePreview("");
+  };
+  /** Send ends the dictation, and a start still being prepared with it. It is
+   * aborted, not stopped: a stop lets the recognizer finalize what it still
+   * holds, and those words would land in the draft just emptied. */
+  const endDictation = () => {
+    voiceRequest.current += 1;
+    setPreparingVoice(false);
+    const active = recognition.current;
+    recognition.current = undefined;
+    if (active) {
+      active.abort();
+      paintMicLevel(dictateButton.current, null);
+    }
+    voiceProgress.current = DICTATION_START;
+    setListening(false);
+    setVoicePreview("");
+    setVoiceStatus(null);
   };
   const submitDraft = () => {
     if (!connected || !draft.trim()) return;
@@ -2035,7 +2051,7 @@ export function Terminal({ tab, back, pickModel = false, signInTab = false, open
       void reportSentPrompt(tab.id, draft).catch(() => {});
     }
     setDraft("");
-    forgetDictation();
+    endDictation();
   };
   /** A prompt the link lost goes again, as the same bubble: the same words
    * into the agent's line editor (which is reset first, so a half-delivered
