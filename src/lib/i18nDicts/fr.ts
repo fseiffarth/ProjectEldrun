@@ -6827,7 +6827,7 @@ export const dict: Dict = {
   "lessons.keyboardSteering.cheatSheetTitle": "L'aide-mémoire F1",
   "lessons.keyboardSteering.cheatSheetBody": "F1 ouvre l'aide-mémoire des raccourcis à tout moment — sans passer par le mode pilotage (il est aussi dans le menu Paramètres). Il liste chaque raccourci effectif, groupé en navigation, onglets et sous-fenêtres, et pilotage ; il marque ceux que vous avez personnalisés et nomme les touches fixes. F1 lui-même est réassignable.",
   "lessons.keyboardSteering.projectCycleTitle": "Faire défiler les projets — et tout personnaliser",
-  "lessons.keyboardSteering.projectCycleBody": "Hors du mode pilotage, Ctrl+Maj+Tab passe au projet suivant et Ctrl+Maj+← au précédent — le même anneau que parcourent les chiffres. Chaque raccourci nommé dans cette leçon est une valeur par défaut : Paramètres → Raccourcis clavier les affiche groupés, avertit quand deux raccourcis entrent en collision, et « Tout réinitialiser » remet tout d'origine.",
+  "lessons.keyboardSteering.projectCycleBody": "Hors du mode pilotage, Ctrl+Maj+Tab passe au projet suivant et Alt+Maj+← au précédent — le même anneau que parcourent les chiffres. Chaque raccourci nommé dans cette leçon est une valeur par défaut : Paramètres → Raccourcis clavier les affiche groupés, avertit quand deux raccourcis entrent en collision, et « Tout réinitialiser » remet tout d'origine.",
   "lessons.yamlViewer.title": "Modifier YAML et JSON visuellement",
   "lessons.yamlViewer.blurb": "Ouvrez un fichier de configuration sous forme de cartes modifiables ou d'arborescence — commentaires et mise en forme survivent à chaque modification.",
   "lessons.yamlViewer.openYamlTitle": "Ouvrez un fichier .yaml, .yml ou .json",

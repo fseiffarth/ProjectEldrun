@@ -6825,7 +6825,7 @@ export const dict: Dict = {
   "lessons.keyboardSteering.cheatSheetTitle": "La guía con F1",
   "lessons.keyboardSteering.cheatSheetBody": "F1 abre la guía de atajos en cualquier momento — sin necesidad del modo de navegación (también está en el menú Ajustes). Lista cada combinación efectiva agrupada en navegación, pestañas y subventanas, y modo de navegación; marca las que has personalizado y nombra las teclas fijas. El propio F1 también es reasignable.",
   "lessons.keyboardSteering.projectCycleTitle": "Recorre proyectos — y hazlo tuyo",
-  "lessons.keyboardSteering.projectCycleBody": "Fuera del modo de navegación, Ctrl+Mayús+Tab pasa al proyecto siguiente y Ctrl+Mayús+← al anterior — el mismo anillo por el que saltan los dígitos. Cada combinación nombrada en esta lección es la predeterminada: Ajustes → Atajos de teclado las muestra agrupadas, avisa cuando dos combinaciones chocan y su \"Restablecer todo\" devuelve todo al estado de fábrica.",
+  "lessons.keyboardSteering.projectCycleBody": "Fuera del modo de navegación, Ctrl+Mayús+Tab pasa al proyecto siguiente y Alt+Mayús+← al anterior — el mismo anillo por el que saltan los dígitos. Cada combinación nombrada en esta lección es la predeterminada: Ajustes → Atajos de teclado las muestra agrupadas, avisa cuando dos combinaciones chocan y su \"Restablecer todo\" devuelve todo al estado de fábrica.",
   "lessons.yamlViewer.title": "Edita YAML y JSON visualmente",
   "lessons.yamlViewer.blurb": "Abre un archivo de configuración como tarjetas editables o un árbol; los comentarios y el formato sobreviven a cada edición.",
   "lessons.yamlViewer.openYamlTitle": "Abre un archivo .yaml, .yml o .json",

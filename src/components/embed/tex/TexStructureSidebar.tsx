@@ -27,7 +27,7 @@ export interface TexNavProps {
    *  `\input` there (absent when the reference's position is unknown). */
   upLabel?: string;
   upLine?: number;
-  /** Human labels of the two chords, for the titles ("Ctrl+Shift+↓"). */
+  /** Human labels of the two chords, for the titles ("Alt+Shift+↓"). */
   backChord?: string;
   upChord?: string;
 }

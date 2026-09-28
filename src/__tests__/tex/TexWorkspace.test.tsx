@@ -491,7 +491,7 @@ describe("TeX workspace — center switching + SyncTeX", () => {
     await waitFor(() => expect(vsOf()?.texActivePath).toBe(CHILD));
   });
 
-  it("(n) Ctrl+Shift+Up / Ctrl+Shift+Down drive up and back when focus is inside the workspace", async () => {
+  it("(n) Alt+Shift+Up / Alt+Shift+Down drive up and back when focus is inside the workspace", async () => {
     setupInvoke();
     const { tabKey, useTabsStore } = await renderWorkspace();
     const vsOf = () => useTabsStore.getState().tabs.find((t) => t.key === tabKey)?.viewerState;
@@ -513,21 +513,21 @@ describe("TeX workspace — center switching + SyncTeX", () => {
       if (r) jumps.push(r.line);
     });
     await act(async () => {
-      fireEvent.keyDown(editor!, { key: "ArrowUp", ctrlKey: true, shiftKey: true });
+      fireEvent.keyDown(editor!, { key: "ArrowUp", altKey: true, shiftKey: true });
     });
     await waitFor(() => expect(vsOf()?.texActivePath).toBe(MAIN));
     unsub();
     expect(jumps).toEqual([3]);
 
-    // Ctrl+Shift+Down retraces the step.
+    // Alt+Shift+Down retraces the step.
     await act(async () => {
-      fireEvent.keyDown(document.querySelector(".tex-workspace")!, { key: "ArrowDown", ctrlKey: true, shiftKey: true });
+      fireEvent.keyDown(document.querySelector(".tex-workspace")!, { key: "ArrowDown", altKey: true, shiftKey: true });
     });
     await waitFor(() => expect(vsOf()?.texActivePath).toBe(CHILD));
 
     // Outside the workspace the chord is nobody's: the center stays put.
     await act(async () => {
-      fireEvent.keyDown(document.body, { key: "ArrowUp", ctrlKey: true, shiftKey: true });
+      fireEvent.keyDown(document.body, { key: "ArrowUp", altKey: true, shiftKey: true });
     });
     expect(vsOf()?.texActivePath).toBe(CHILD);
   });

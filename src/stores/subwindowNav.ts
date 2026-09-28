@@ -1,7 +1,8 @@
 import { create } from "zustand";
 
 /**
- * Transient state for keyboard-driven subwindow navigation (Shift+↑/↓).
+ * Transient state for keyboard-driven subwindow navigation (Ctrl+Shift+↑/↓ by
+ * default, rebindable).
  *
  * Kept separate from the tabs store so entering/stepping the preview doesn't
  * churn the layout tree or move the real focus — focus only commits (via

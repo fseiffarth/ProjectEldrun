@@ -124,31 +124,35 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     group: "navigation",
     default: { key: "Tab", ctrl: true, shift: true },
   },
+  // Ctrl+Shift, not plain Shift: a plain Shift+Arrow is an agent CLI's own
+  // chord (Codex uses it for in-terminal selection/navigation), and a pane
+  // terminal already hands prevTab/nextTab over via `terminalMayTakeChord` —
+  // that handoff must not eat a chord the agent inside wants for itself.
   {
     action: "prevTab",
     labelKey: "shortcut.prevTab",
     group: "tabs",
-    default: { key: "ArrowLeft", shift: true },
+    default: { key: "ArrowLeft", ctrl: true, shift: true },
     untested: "shortcut.prevTab",
   },
   {
     action: "nextTab",
     labelKey: "shortcut.nextTab",
     group: "tabs",
-    default: { key: "ArrowRight", shift: true },
+    default: { key: "ArrowRight", ctrl: true, shift: true },
     untested: "shortcut.nextTab",
   },
   {
     action: "subwindowUp",
     labelKey: "shortcut.subwindowUp",
     group: "navigation",
-    default: { key: "ArrowUp", shift: true },
+    default: { key: "ArrowUp", ctrl: true, shift: true },
   },
   {
     action: "subwindowDown",
     labelKey: "shortcut.subwindowDown",
     group: "navigation",
-    default: { key: "ArrowDown", shift: true },
+    default: { key: "ArrowDown", ctrl: true, shift: true },
   },
   {
     action: "cycleTabs",
@@ -206,13 +210,13 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     default: { key: " ", ctrl: true, shift: true },
     untested: "shortcut.steeringMode",
   },
-  // Backward twin of cycleProject. Ctrl distinguishes it from prevTab's
-  // Shift+← default.
+  // Backward twin of cycleProject. Alt (not Ctrl) distinguishes it from
+  // prevTab's Ctrl+Shift+← default.
   {
     action: "cycleProjectBack",
     labelKey: "shortcut.cycleProjectBack",
     group: "navigation",
-    default: { key: "ArrowLeft", ctrl: true, shift: true },
+    default: { key: "ArrowLeft", alt: true, shift: true },
     untested: "shortcut.cycleProjectBack",
   },
   // The boxes' twin of the project cycle: walk the box pills in the leading
@@ -297,22 +301,22 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   // inside a workspace tab, so the workspace itself listens — on its own root
   // element, which is what scopes them to "the TeX viewer has focus" and lets
   // them work from the editor's textarea, where the global hook's editable-
-  // target guard would drop them. Ctrl+Shift+Arrow collides with no default
-  // here: the subwindow-cycling arrows are Shift-only, and the workspace
-  // consumes the chord (preventDefault) so the textarea's own paragraph-
-  // selection never runs.
+  // target guard would drop them. Alt+Shift+Arrow collides with no default
+  // here (Ctrl+Shift+Arrow is now subwindowUp/subwindowDown's), and the
+  // workspace consumes the chord (preventDefault) so the textarea's own
+  // paragraph-selection never runs.
   {
     action: "texUp",
     labelKey: "shortcut.texUp",
     group: "tex",
-    default: { key: "ArrowUp", ctrl: true, shift: true },
+    default: { key: "ArrowUp", alt: true, shift: true },
     untested: "shortcut.texUp",
   },
   {
     action: "texBack",
     labelKey: "shortcut.texBack",
     group: "tex",
-    default: { key: "ArrowDown", ctrl: true, shift: true },
+    default: { key: "ArrowDown", alt: true, shift: true },
     untested: "shortcut.texBack",
   },
   // The build itself. Listened for the same way as the two navigation steps

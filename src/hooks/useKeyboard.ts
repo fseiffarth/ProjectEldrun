@@ -97,15 +97,17 @@ export function isEditableTarget(target: EventTarget | null): boolean {
  *   - Ctrl+Enter           → toggle fullscreen for the focused subwindow
  *   - Escape               → exit fullscreen (when active) [fixed]
  *   - Shift+Ctrl+Tab       → cycle to the next active project
- *   - Shift+Left/Right     → previous / next tab within the focused subwindow,
+ *   - Ctrl+Shift+Left/Right → previous / next tab within the focused subwindow,
  *                            from a focused pane terminal too (terminalTabChord)
- *   - Shift+Up/Down        → cycle the focused subwindow (numbered preview shown
+ *                            — plain Shift+Arrow is left alone because an agent
+ *                            CLI inside the terminal (e.g. Codex) uses it itself
+ *   - Ctrl+Shift+Up/Down    → cycle the focused subwindow (numbered preview shown
  *                            while Shift is held; focus commits on Shift release)
  *   - Shift+Tab            → cycle tabs within the focused subwindow
  *   - Shift+Ctrl+W         → close the focused subwindow
  *   - Ctrl+W               → close the active tab
  *   - Ctrl+Shift+T         → reopen the last closed agent tab
- *   - Shift+Ctrl+←         → cycle to the previous active project
+ *   - Alt+Shift+←          → cycle to the previous active project
  *   - F1                   → open the shortcut cheat sheet (window event)
  *   - Ctrl+Shift+Space     → toggle keyboard steering mode (see below)
  *   - Ctrl+Shift+R         → open / close the root console
@@ -513,10 +515,11 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
         return;
       }
 
-      // Cycle the focused subwindow. Enters a Shift-held preview: the frame moves
-      // to the previewed group and numbered badges show over every subwindow;
-      // focus only commits on Shift release (keyup below). Numbering is anchored
-      // to the committed focus (id 0), so stepping wraps in document order.
+      // Cycle the focused subwindow. Enters a Shift-held preview (default chord
+      // Ctrl+Shift+↑/↓): the frame moves to the previewed group and numbered
+      // badges show over every subwindow; focus only commits on Shift release
+      // (keyup below), Ctrl included or not. Numbering is anchored to the
+      // committed focus (id 0), so stepping wraps in document order.
       const down = is("subwindowDown");
       if (down || is("subwindowUp")) {
         const ids = allGroups(tabs.layout).map((g) => g.id);

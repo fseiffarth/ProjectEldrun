@@ -8728,7 +8728,7 @@ function TexWorkspaceView({
   }, [upTarget, goTo]);
   const upLabel = upTarget ? basename(upTarget.path) : undefined;
 
-  // The two chords (Ctrl+Shift+↑ / Ctrl+Shift+↓ by default, rebindable in the
+  // The two chords (Alt+Shift+↑ / Alt+Shift+↓ by default, rebindable in the
   // Keyboard Shortcuts panel). Listened for on the workspace's own root rather
   // than in `useKeyboard`: they mean nothing outside a workspace tab, so the
   // scope is "focus is somewhere in this workspace" — the editor's textarea,

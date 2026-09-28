@@ -6830,7 +6830,7 @@ export const dict: Dict = {
   "lessons.keyboardSteering.cheatSheetTitle": "Die F1-Übersicht",
   "lessons.keyboardSteering.cheatSheetBody": "F1 öffnet die Tastenkürzel-Übersicht jederzeit – ganz ohne Steuerungsmodus (sie steht auch im Einstellungen-Menü). Sie listet jede wirksame Belegung gruppiert nach Navigation, Tabs & Unterfenster und Steuerung, markiert die von dir angepassten und nennt die festen Tasten. Auch F1 selbst lässt sich umbelegen.",
   "lessons.keyboardSteering.projectCycleTitle": "Projekte durchschalten – und alles anpassen",
-  "lessons.keyboardSteering.projectCycleBody": "Außerhalb des Steuerungsmodus wechselt Strg+Umschalt+Tab zum nächsten Projekt und Strg+Umschalt+← zum vorherigen – derselbe Ring, in dem auch die Ziffern springen. Jede in dieser Lektion genannte Kombination ist ein Standard: Einstellungen → Tastenkürzel zeigt sie gruppiert, warnt, wenn zwei Kombinationen kollidieren, und „Alle zurücksetzen“ stellt den Auslieferungszustand wieder her.",
+  "lessons.keyboardSteering.projectCycleBody": "Außerhalb des Steuerungsmodus wechselt Strg+Umschalt+Tab zum nächsten Projekt und Alt+Umschalt+← zum vorherigen – derselbe Ring, in dem auch die Ziffern springen. Jede in dieser Lektion genannte Kombination ist ein Standard: Einstellungen → Tastenkürzel zeigt sie gruppiert, warnt, wenn zwei Kombinationen kollidieren, und „Alle zurücksetzen“ stellt den Auslieferungszustand wieder her.",
   "lessons.yamlViewer.title": "YAML & JSON visuell bearbeiten",
   "lessons.yamlViewer.blurb": "Öffne eine Konfigurationsdatei als bearbeitbare Karten oder Baum – Kommentare und Formatierung überleben jede Bearbeitung.",
   "lessons.yamlViewer.openYamlTitle": "Öffne eine .yaml-, .yml- oder .json-Datei",

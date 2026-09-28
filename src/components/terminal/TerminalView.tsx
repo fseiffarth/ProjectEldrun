@@ -1090,9 +1090,10 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         applyFontSize(zoom === "in" ? cur + 1 : zoom === "out" ? cur - 1 : DEFAULT_FONT_SIZE, true);
         return false;
       }
-      // Shift+←/→ (as bound): the pane's previous / next tab. Left unhandled so
-      // xterm neither sends it to the PTY nor cancels it, and the window's
-      // keyboard handler steps the tab (lib/shortcuts/terminalTabChord).
+      // Ctrl+Shift+←/→ (as bound): the pane's previous / next tab. Left unhandled
+      // so xterm neither sends it to the PTY nor cancels it, and the window's
+      // keyboard handler steps the tab (lib/shortcuts/terminalTabChord). Plain
+      // Shift+←/→ is deliberately left alone — an agent CLI (Codex) uses it.
       const overrides = useSettingsStore.getState().settings?.keyboard_shortcuts as ShortcutMap | undefined;
       if (terminalYieldsChord(e, overrides)) return false;
       // Shift+Tab in a Codex pane. xterm.js would send the legacy backtab, which

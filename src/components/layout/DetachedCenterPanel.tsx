@@ -395,7 +395,7 @@ export function DetachedCenterPanel({
       // the main window applies) — otherwise typing in a terminal would trip the
       // nav chords. The one exception is the macOS ⌘W family
       // (`editorMayTakeChord`), so ⌘W closes a tab from a focused terminal here
-      // too, while ⌃W / Ctrl+W still reach it — and Shift+←/→, which a pane
+      // too, while ⌃W / Ctrl+W still reach it — and Ctrl+Shift+←/→, which a pane
       // terminal hands over (`terminalMayTakeChord`).
       const editable = isEditableTarget(e.target);
       if (editable && !isMacCommandChord(e) && !isPaneTerminalTarget(e.target)) return;
@@ -1943,8 +1943,8 @@ export function DetachedCenterPanel({
         {/* Focus frame: the accent outline around the current subwindow (tab bar
             + pane region, sidebar excluded), drawn here (above the opaque panes)
             for the same reason as the split preview — an in-body frame would be
-            hidden. Mirrors the main window's `FocusFrameOverlay` (minus Shift+↑/↓
-            nav, which isn't wired here). Falls back to the pane rect if the
+            hidden. Mirrors the main window's `FocusFrameOverlay` (minus
+            Ctrl+Shift+↑/↓ nav, which isn't wired here). Falls back to the pane rect if the
             whole-subwindow box wasn't measured. */}
         {windowFocused &&
           focusedGroupId &&

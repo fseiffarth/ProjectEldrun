@@ -1,12 +1,13 @@
 /**
- * Shift+←/→ step the focused pane's tabs from a focused terminal too.
+ * Ctrl+Shift+←/→ step the focused pane's tabs from a focused terminal too.
  *
  * Every other nav chord stays the terminal's while xterm's helper textarea has
  * focus; the two tab steps are handed to the window (the terminal leaves them
  * unhandled — `terminalYieldsChord` — and the keyboard hook admits them —
  * `terminalMayTakeChord`). Shift+Tab stays the terminal's (the agents' mode
- * cycle), other fields keep Shift+Arrow for selection, and the root console's
- * terminals keep it too.
+ * cycle), plain Shift+Arrow stays the terminal's too (an agent CLI, e.g.
+ * Codex, uses it itself), other fields keep it for selection, and the root
+ * console's terminals keep it too.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, cleanup, act } from "@testing-library/react";
@@ -75,15 +76,25 @@ describe("tab steps from a focused terminal", () => {
     useSettingsStore.setState({ settings: null });
   });
 
-  it("Shift+→ and Shift+← step the pane's tabs and claim the key", () => {
+  it("Ctrl+Shift+→ and Ctrl+Shift+← step the pane's tabs and claim the key", () => {
+    twoTabs();
+    render(<Harness />);
+    const ta = terminalTextarea();
+    const before = activeKey();
+    const ev = press(ta, { key: "ArrowRight", ctrlKey: true, shiftKey: true });
+    expect(ev.defaultPrevented).toBe(true);
+    expect(activeKey()).not.toBe(before);
+    press(ta, { key: "ArrowLeft", ctrlKey: true, shiftKey: true });
+    expect(activeKey()).toBe(before);
+  });
+
+  it("leaves plain Shift+Arrow to the terminal (an agent CLI's own chord)", () => {
     twoTabs();
     render(<Harness />);
     const ta = terminalTextarea();
     const before = activeKey();
     const ev = press(ta, { key: "ArrowRight", shiftKey: true });
-    expect(ev.defaultPrevented).toBe(true);
-    expect(activeKey()).not.toBe(before);
-    press(ta, { key: "ArrowLeft", shiftKey: true });
+    expect(ev.defaultPrevented).toBe(false);
     expect(activeKey()).toBe(before);
   });
 
@@ -96,18 +107,18 @@ describe("tab steps from a focused terminal", () => {
     expect(activeKey()).toBe(before);
   });
 
-  it("leaves Shift+Arrow to any other text field", () => {
+  it("leaves Ctrl+Shift+Arrow to any other text field", () => {
     twoTabs();
     render(<Harness />);
     const input = document.createElement("input");
     document.body.appendChild(input);
     const before = activeKey();
-    const ev = press(input, { key: "ArrowRight", shiftKey: true });
+    const ev = press(input, { key: "ArrowRight", ctrlKey: true, shiftKey: true });
     expect(ev.defaultPrevented).toBe(false);
     expect(activeKey()).toBe(before);
   });
 
-  it("leaves Shift+Arrow to a root console terminal", () => {
+  it("leaves Ctrl+Shift+Arrow to a root console terminal", () => {
     twoTabs();
     render(<Harness />);
     const overlay = document.createElement("div");
@@ -115,9 +126,9 @@ describe("tab steps from a focused terminal", () => {
     document.body.appendChild(overlay);
     const ta = terminalTextarea(overlay);
     const before = activeKey();
-    press(ta, { key: "ArrowRight", shiftKey: true });
+    press(ta, { key: "ArrowRight", ctrlKey: true, shiftKey: true });
     expect(activeKey()).toBe(before);
-    expect(terminalYieldsChord(new KeyboardEvent("keydown", { key: "ArrowRight", shiftKey: true }), null)).toBe(false);
+    expect(terminalYieldsChord(new KeyboardEvent("keydown", { key: "ArrowRight", ctrlKey: true, shiftKey: true }), null)).toBe(false);
   });
 
   it("the terminal yields the chord as bound, not the default", () => {
@@ -127,10 +138,10 @@ describe("tab steps from a focused terminal", () => {
       Object.defineProperty(ev, "target", { value: ta });
       return ev;
     };
-    expect(terminalYieldsChord(key({ key: "ArrowRight", shiftKey: true }), null)).toBe(true);
-    expect(terminalYieldsChord(key({ key: "ArrowUp", shiftKey: true }), null)).toBe(false);
+    expect(terminalYieldsChord(key({ key: "ArrowRight", ctrlKey: true, shiftKey: true }), null)).toBe(true);
+    expect(terminalYieldsChord(key({ key: "ArrowUp", ctrlKey: true, shiftKey: true }), null)).toBe(false);
     const rebound = { prevTab: { key: "ArrowLeft", alt: true } };
     expect(terminalYieldsChord(key({ key: "ArrowLeft", altKey: true }), rebound)).toBe(true);
-    expect(terminalYieldsChord(key({ key: "ArrowLeft", shiftKey: true }), rebound)).toBe(false);
+    expect(terminalYieldsChord(key({ key: "ArrowLeft", ctrlKey: true, shiftKey: true }), rebound)).toBe(false);
   });
 });

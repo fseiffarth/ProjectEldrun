@@ -1380,7 +1380,7 @@ function CenterPanelImpl() {
           a subwindow body. Coordinates come from the same measured group rects. */}
       <SplitPreviewOverlay groupRects={groupRects} />
 
-      {/* Focus frame (always) + Shift+↑/↓ subwindow numbering (transient), drawn
+      {/* Focus frame (always) + Ctrl+Shift+↑/↓ subwindow numbering (transient), drawn
           above the pane layer for the same reason as the split preview — the
           opaque panes (z-index:2) would otherwise cover an in-body frame. */}
       <FocusFrameOverlay
@@ -1461,7 +1461,7 @@ export function SplitPreviewOverlay({ groupRects }: { groupRects: Record<string,
  * The focused-subwindow marker, drawn above the pane layer (see the render site
  * for why). Two roles:
  *  - Always: a light accent frame around the focused subwindow's pane rect.
- *  - While Shift+↑/↓ subwindow-nav is active: the frame follows the previewed
+ *  - While Ctrl+Shift+↑/↓ subwindow-nav is active: the frame follows the previewed
  *    group and every subwindow shows a numbered badge — the committed focus is
  *    0, others numbered in document order (wrapping) so ↑/↓ read as relative
  *    steps. Focus commits (moving the frame's committed home) on Shift release.

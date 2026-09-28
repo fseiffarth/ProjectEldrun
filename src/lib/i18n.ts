@@ -7168,7 +7168,7 @@ export const en = {
   "lessons.keyboardSteering.cheatSheetTitle": "The F1 cheat sheet",
   "lessons.keyboardSteering.cheatSheetBody": "F1 opens the shortcut cheat sheet any time — steering mode not required (it's in the Settings menu too). It lists every effective binding grouped into navigation, tabs & subwindows, and steering, marks the ones you've customized, and names the fixed keys. F1 itself is rebindable.",
   "lessons.keyboardSteering.projectCycleTitle": "Cycle projects — and make it yours",
-  "lessons.keyboardSteering.projectCycleBody": "Outside steering mode, Ctrl+Shift+Tab cycles to the next project and Ctrl+Shift+← to the previous one — the same ring the digits jump around. Every chord named in this lesson is a default: Settings → Keyboard Shortcuts shows them grouped, warns when two chords collide, and its Reset all puts everything back to stock.",
+  "lessons.keyboardSteering.projectCycleBody": "Outside steering mode, Ctrl+Shift+Tab cycles to the next project and Alt+Shift+← to the previous one — the same ring the digits jump around. Every chord named in this lesson is a default: Settings → Keyboard Shortcuts shows them grouped, warns when two chords collide, and its Reset all puts everything back to stock.",
   "lessons.yamlViewer.title": "Edit YAML & JSON visually",
   "lessons.yamlViewer.blurb": "Open a config file as editable cards or a tree — comments and formatting survive every edit.",
   "lessons.yamlViewer.openYamlTitle": "Open a .yaml, .yml, or .json file",

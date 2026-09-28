@@ -22,7 +22,7 @@ the place of Ctrl. **F1** opens the cheat sheet with every effective binding.
 | Default | Action |
 |---|---|
 | Ctrl+Shift+Tab | Next project |
-| Ctrl+Shift+← | Previous project |
+| Alt+Shift+← | Previous project |
 | Ctrl+Shift+PageDown / PageUp | Next / previous box |
 | Ctrl+Shift+R | Open / close the root console |
 | Ctrl+Shift+Space | Enter keyboard steering mode |
@@ -32,9 +32,9 @@ the place of Ctrl. **F1** opens the cheat sheet with every effective binding.
 
 | Default | Action |
 |---|---|
-| Shift+← / Shift+→ | Previous / next tab in the pane — from a focused terminal too (a program in it then never gets these keys) |
+| Ctrl+Shift+← / Ctrl+Shift+→ | Previous / next tab in the pane — from a focused terminal too (a program in it then never gets these keys; plain Shift+←/→ is left to it, e.g. an agent CLI's own use of it) |
 | Shift+Tab | Cycle tabs in the pane |
-| Shift+↑ / Shift+↓ | Cycle pane focus up / down |
+| Ctrl+Shift+↑ / Ctrl+Shift+↓ | Cycle pane focus up / down |
 | Ctrl+Enter | Toggle the focused pane's fullscreen |
 | Shift+F | Toggle the pane's docked file viewer |
 | Ctrl+Shift+H | Hide the focused pane |
@@ -78,8 +78,8 @@ single keys, even while a terminal has focus:
 - **Ctrl+Space** asks the local model for an autocomplete suggestion (when
   autocomplete is on for that file type). Tab accepts it, Alt+→ takes one
   word, Shift+Tab cycles the length (sentence → block → scope), Esc dismisses.
-- TeX workspace: Ctrl+Shift+B saves and compiles; Ctrl+Shift+↑ goes up to the
-  parent document; Ctrl+Shift+↓ goes back to the previous file.
+- TeX workspace: Ctrl+Shift+B saves and compiles; Alt+Shift+↑ goes up to the
+  parent document; Alt+Shift+↓ goes back to the previous file.
 
 ## In terminals
 

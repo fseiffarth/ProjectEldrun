@@ -1,10 +1,12 @@
-/** Shift+←/→ (`prevTab` / `nextTab`, or whatever they are rebound to) step the
- *  focused pane's tabs from a focused terminal too. Every other nav chord stays
- *  the terminal's while it has focus (`useKeyboard.isEditableTarget`); these two
- *  are admitted because the hands are in a terminal when the next tab is
- *  wanted. The cost: a program in the terminal (vim, micro, Emacs) never sees
- *  them. Shift+Tab (`cycleTabs`) is deliberately not one of them — it is the
- *  agent CLIs' mode cycle.
+/** Ctrl+Shift+←/→ (`prevTab` / `nextTab`, or whatever they are rebound to) step
+ *  the focused pane's tabs from a focused terminal too. Every other nav chord
+ *  stays the terminal's while it has focus (`useKeyboard.isEditableTarget`);
+ *  these two are admitted because the hands are in a terminal when the next
+ *  tab is wanted. The cost: a program in the terminal (vim, micro, Emacs)
+ *  never sees them — which is also why the default isn't plain Shift+Arrow:
+ *  an agent CLI in the terminal (Codex) uses that itself. Shift+Tab
+ *  (`cycleTabs`) is deliberately not one of them — it is the agent CLIs' mode
+ *  cycle.
  *
  *  Two halves: `TerminalView` leaves the chord unhandled (`terminalYieldsChord`)
  *  so xterm neither sends it to the PTY nor cancels the event, and the window's
