@@ -1,15 +1,19 @@
 import { useEffect, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 
 import { resolveProjectDirectory, type CalendarTask, type TaskColumn } from "../../types";
 import { useCalendarStore } from "../../stores/calendar/calendar";
 import { useProjectsStore } from "../../stores/projects";
 import { useTodoStore } from "../../stores/todo";
+import { useTabsStore } from "../../stores/tabs";
+import { jumpToTab } from "../../lib/shortcuts/tabJump";
 import { addDays, datePart, formatTime, timePart, toStamp } from "../../lib/calendar/calendarTime";
 import {
   addSubtask,
   dueDelta,
   dueDeltaKey,
   isOverdue,
+  linkedTabOf,
   moveSubtask,
   priorityBucket,
   removeSubtask,
@@ -124,6 +128,10 @@ export function TodoCard({ task, columns, onPointerDown, onEdit, onOpenMail }: P
   const openSteps = (!!steps && !collapsed) || composing;
   const tags = task.tags ?? [];
   const project = task.project_id ? projects.find((p) => p.id === task.project_id) : null;
+  // The tab this card was made from (the tab carries the link — see
+  // `TabEntry.todoId`). Shallow-compared, so the card re-renders only when the
+  // answer changes, not on every tab write.
+  const linkedTab = useTabsStore(useShallow((s) => linkedTabOf(s.tabsByScope, task.id)));
 
   const commitTitle = async () => {
     const next = draft.trim();
@@ -446,7 +454,7 @@ export function TodoCard({ task, columns, onPointerDown, onEdit, onOpenMail }: P
         </div>
       )}
 
-      {(task.project_id || task.mail || task.file) && (
+      {(task.project_id || task.mail || task.file || linkedTab) && (
         <div className="todo-card-foot">
           {task.project_id && (
             <button
@@ -487,6 +495,20 @@ export function TodoCard({ task, columns, onPointerDown, onEdit, onOpenMail }: P
               }}
             >
               <PinIcon /> {basename(task.file.path)}{task.file.line != null ? `:${task.file.line}` : ""}
+            </button>
+          )}
+          {linkedTab && (
+            <button
+              type="button"
+              className="todo-card-mail todo-card-tab"
+              onPointerDown={stop}
+              title={t("todoCard.openTab")}
+              onClick={() => {
+                useTodoStore.getState().closeOverlay();
+                jumpToTab(linkedTab.scope, linkedTab.key);
+              }}
+            >
+              ▭ {linkedTab.label}
             </button>
           )}
         </div>

@@ -307,6 +307,29 @@
   color: var(--danger);
 }
 
+/* Important / Urgent tabs of this project (PillTabMarks): the mail client's
+   marks and colours — `!` amber, `!!` red — kept on hover like the fence glyph. */
+.pill-tab-marks,
+.pill-tab-marks:hover {
+  width: auto;
+  min-width: 18px;
+  padding: 0 3px;
+  gap: 1px;
+  font-weight: 800;
+  letter-spacing: -0.06em;
+  color: var(--warning);
+}
+.pill-tab-marks.urgent,
+.pill-tab-marks.urgent:hover {
+  color: var(--danger);
+}
+.pill-tab-marks-count {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0;
+  color: var(--text-muted);
+}
+
 /* ── Box scope chip ─────────────────────────────────────────────────── */
 /* The ONE boxes control (components/projects/BoxScopeChip.tsx), pinned beside
    the root pill and outside the scrolling strip. Deliberately the .root-pill
@@ -1734,6 +1757,46 @@
   font-weight: 700;
   letter-spacing: 0.04em;
   flex-shrink: 0;
+}
+/* A tab's Important / Urgent mark (TabMarkBadge) — the mail client's glyphs
+   and colours — and its to-do card link. */
+.tab-mark-glyph {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.06em;
+  color: var(--warning);
+}
+.tab-mark-glyph.urgent {
+  color: var(--danger);
+}
+.tab-todo-link {
+  flex-shrink: 0;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 11px;
+  line-height: 1;
+}
+button.tab-todo-link {
+  cursor: var(--cur-pointer, pointer);
+}
+/* The tab menu's mark rows: the glyph in the dot's slot, a check on the set one. */
+.tab-mark-menu-glyph {
+  flex: 0 0 16px;
+  text-align: center;
+  font-weight: 800;
+  letter-spacing: -0.06em;
+  color: var(--warning);
+}
+.tab-mark-menu-item.urgent .tab-mark-menu-glyph {
+  color: var(--danger);
+}
+.tab-mark-menu-check {
+  margin-left: auto;
+  color: var(--accent);
 }
 .tab-source { cursor: var(--cur-default, default); }
 .tab-locality.local,

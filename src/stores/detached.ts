@@ -25,6 +25,7 @@ import {
   moveKeyInTree,
   allGroups,
   isPtyTabKind,
+  normalizeTodoId,
   type DetachedGroup,
   type DropEdge,
   type LayoutNode,
@@ -51,6 +52,7 @@ import { useBigFoldersStore } from "./bigFolders";
 import { resolveProjectDirectory, type ProjectBox, type ProjectEntry } from "../types";
 import { isTabColor, type TabColor } from "../lib/theme/tabColors";
 import { normalizeStackName } from "../lib/tabStacks";
+import { isTabMark, type TabMark } from "../lib/tabMarks";
 
 /** Parsed `?detached=<scope>:<groupId>` query. */
 export interface DetachedParam {
@@ -425,6 +427,10 @@ export type DetachedEdit =
   // A tab joining or leaving a tab group (`TabEntry.stack`) — payload-only,
   // forwarded like the colour.
   | { kind: "setStack"; key: string; stack: string | undefined }
+  // A tab's Important / Urgent mark and its to-do card link
+  // (`TabEntry.mark` / `.todoId`) — payload-only, forwarded like the colour.
+  | { kind: "setMark"; key: string; mark: TabMark | undefined }
+  | { kind: "setTodo"; key: string; todoId: string | undefined }
   | { kind: "close"; key: string }
   | { kind: "reorder"; tabKeys: string[] }
   // Multi-host: change WHERE a locatable tab runs (local mirror / primary / a
@@ -604,6 +610,8 @@ export function applyEditToSubtree(
     case "rename":
     case "setColor":
     case "setStack":
+    case "setMark":
+    case "setTodo":
     case "setViewerState":
     case "setTmuxName":
     case "setFolder":
@@ -649,6 +657,26 @@ export function applyStackToTabs(
 ): TabEntry[] {
   const next = normalizeStackName(stack);
   return tabs.map((t) => (t.key === key && t.stack !== next ? { ...t, stack: next } : t));
+}
+
+/** Apply a `setMark` / `setTodo` edit to a tab payload list (popout-side
+ *  optimistic update, so the tab's glyph flips before the re-seed). Pure. */
+export function applyMarkToTabs(
+  tabs: TabEntry[],
+  key: string,
+  mark: TabMark | undefined,
+): TabEntry[] {
+  const next = isTabMark(mark) ? mark : undefined;
+  return tabs.map((t) => (t.key === key && t.mark !== next ? { ...t, mark: next } : t));
+}
+
+export function applyTodoToTabs(
+  tabs: TabEntry[],
+  key: string,
+  todoId: string | undefined,
+): TabEntry[] {
+  const next = normalizeTodoId(todoId);
+  return tabs.map((t) => (t.key === key && t.todoId !== next ? { ...t, todoId: next } : t));
 }
 
 /** Apply a `setLocation` edit to a tab payload list (popout-side optimistic

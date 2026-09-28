@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { restoredAgentCwd } from "../lib/agents/agentWorktrees";
 import { isTabColor, type TabColor } from "../lib/theme/tabColors";
 import { normalizeStackName, stackJoinOrder } from "../lib/tabStacks";
+import { isTabMark, type TabMark } from "../lib/tabMarks";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import type { InternalViewer } from "../lib/viewers/fileUtils";
@@ -58,6 +59,12 @@ function withRunHostDefault(
   return pref ? { ...tab, location: pref } : tab;
 }
 
+/** A persisted `todoId` as a usable card id, or `undefined`. The layout file is
+ *  on disk, so it is capped and must look like the backend's ids. */
+export function normalizeTodoId(value: unknown): string | undefined {
+  return typeof value === "string" && /^[A-Za-z0-9_.@-]{1,128}$/.test(value) ? value : undefined;
+}
+
 /**
  * The launch spec for a COPY of `tab` — what "Duplicate" means, kept pure and
  * separate from the store action so it is testable and so the rule lives in one
@@ -81,6 +88,8 @@ function withRunHostDefault(
  *   against a specific uid; the caller re-registers one and passes it back in
  *   (a store action cannot await). Without it the copy simply runs inside the
  *   project's container, which is the safe direction (`lib/remote/hostBound.ts`).
+ * - `mark` and `todoId` are dropped: the card is the original's, and a copied
+ *   Urgent would double what the project pill says needs attention.
  */
 export function duplicateSpec(tab: TabEntry): Omit<TabEntry, "key"> {
   const {
@@ -90,6 +99,8 @@ export function duplicateSpec(tab: TabEntry): Omit<TabEntry, "key"> {
     tmuxAttach: _attach,
     hostBoundUid: _hostBound,
     scheduleTargetId: _scheduleTarget,
+    mark: _mark,
+    todoId: _todo,
     ...rest
   } = tab;
   if (!sessionId) return rest;
@@ -688,6 +699,17 @@ export interface TabEntry {
   // `duplicateSpec` (a copy lands beside its original), and normalized on the
   // way in from disk, where it is attacker-controlled text.
   stack?: string;
+  // Important / Urgent, from the tab's right-click menu (`lib/tabMarks`):
+  // shown on the tab and summed up on its project's pill. Persisted, validated
+  // on the way in from disk, and dropped by `duplicateSpec` — a copy is a new
+  // tab, and doubling the pill's count would overstate what needs attention.
+  mark?: TabMark;
+  // The to-do board card this tab was linked to by its menu's "Create to-do
+  // card" (a `CalendarTask.id`). The link lives here rather than on the card
+  // because a tab's key is re-minted on every restore; the card finds its tab
+  // by searching for this id. Persisted; dropped by `duplicateSpec` (one card,
+  // one tab).
+  todoId?: string;
   // The root console's **Host session** (`docs/context/agent_authority.md`):
   // this agent tab runs unfenced, with the user's full rights, in Eldrun's
   // `host` agent home. Only ever set by the console's own "Host session" menu
@@ -815,6 +837,8 @@ export type DetachedEditPayload =
   // Join a tab to the named tab group in its bar, or leave it (`undefined`).
   // Forwarded for the same reason as the colour above.
   | { kind: "setStack"; key: string; stack: string | undefined }
+  | { kind: "setMark"; key: string; mark: TabMark | undefined }
+  | { kind: "setTodo"; key: string; todoId: string | undefined }
   // Multi-host: change where a locatable tab runs; applied to the payload here so
   // the main window's flat pane layer (which owns the popout's PTY) respawns it.
   | { kind: "setLocation"; key: string; location: TabLocation }
@@ -910,6 +934,10 @@ export interface SavedTabEntry {
   color?: TabColor;
   // Persisted tab-group name (see TabEntry.stack).
   stack?: string;
+  // Persisted Important / Urgent mark (see TabEntry.mark).
+  mark?: TabMark;
+  // Persisted to-do card link (see TabEntry.todoId).
+  todoId?: string;
   mobileRequestHash?: string;
   // Persisted Host session marker (see TabEntry.hostSession).
   hostSession?: boolean;
@@ -965,6 +993,8 @@ export function toSavedTabEntry(t: TabEntry): SavedTabEntry {
     autoContinue: t.autoContinue,
     color: t.color,
     stack: t.stack,
+    mark: t.mark,
+    todoId: t.todoId,
     hostSession: t.hostSession || undefined,
   };
 }
@@ -1128,6 +1158,12 @@ interface TabsStore {
   // members is moved to sit right after them. Forwards from a popout like the
   // colour above.
   setTabStack: (key: string, stack: string | undefined) => void;
+  // Mark one tab Important / Urgent, or clear it with `undefined` (see
+  // TabEntry.mark). Writes the scope that owns the tab; forwards from a popout.
+  setTabMark: (key: string, mark: TabMark | undefined) => void;
+  // Link one tab to a to-do card, or unlink it with `undefined` (see
+  // TabEntry.todoId). Same scope and popout rules as `setTabMark`.
+  setTabTodo: (key: string, todoId: string | undefined) => void;
   // Turn auto-continue on or off for ONE agent tab in `scope` (see
   // TabEntry.autoContinue). Scoped like the rename above, because the Agents
   // view is rendered for a scope that need not be the active one.
@@ -2638,6 +2674,48 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
   },
 
+  setTabMark: (key, mark) => {
+    const next = isTabMark(mark) ? mark : undefined;
+    const ctx = getDetachedWindowContext();
+    if (ctx) {
+      ctx.pushEdit({ kind: "setMark", key, mark: next });
+      return;
+    }
+    const owner = scopeOfTab(get(), key);
+    set((s) => {
+      const { tabs, layout, focusedGroupId } = scopeState(s, owner);
+      if (!tabs.some((t) => t.key === key && t.mark !== next)) return {};
+      return writeScope(
+        s,
+        owner,
+        tabs.map((t) => (t.key === key ? { ...t, mark: next } : t)),
+        layout,
+        focusedGroupId,
+      );
+    });
+  },
+
+  setTabTodo: (key, todoId) => {
+    const next = normalizeTodoId(todoId);
+    const ctx = getDetachedWindowContext();
+    if (ctx) {
+      ctx.pushEdit({ kind: "setTodo", key, todoId: next });
+      return;
+    }
+    const owner = scopeOfTab(get(), key);
+    set((s) => {
+      const { tabs, layout, focusedGroupId } = scopeState(s, owner);
+      if (!tabs.some((t) => t.key === key && t.todoId !== next)) return {};
+      return writeScope(
+        s,
+        owner,
+        tabs.map((t) => (t.key === key ? { ...t, todoId: next } : t)),
+        layout,
+        focusedGroupId,
+      );
+    });
+  },
+
   setTabColorInScope: (scope, key, color) => {
     if (scope === get().scope) {
       get().setTabColor(key, color);
@@ -4098,6 +4176,25 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
           }
           break;
         }
+        case "setMark": {
+          // From the popout channel: validated, not trusted as sent.
+          const mark = isTabMark(edit.mark) ? edit.mark : undefined;
+          if (nextTabs) {
+            nextTabs = nextTabs.map((t) =>
+              t.key === edit.key && t.mark !== mark ? { ...t, mark } : t,
+            );
+          }
+          break;
+        }
+        case "setTodo": {
+          const todoId = normalizeTodoId(edit.todoId);
+          if (nextTabs) {
+            nextTabs = nextTabs.map((t) =>
+              t.key === edit.key && t.todoId !== todoId ? { ...t, todoId } : t,
+            );
+          }
+          break;
+        }
         case "setLocation": {
           // Locality lives on the payload; the popout's pane is owned by THIS
           // (main) window's flat pane layer, so updating it here respawns that
@@ -4797,6 +4894,8 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         color: isTabColor(t.color) ? t.color : undefined,
         // Its tab group, likewise from the file: plain text, capped.
         stack: normalizeStackName(t.stack),
+        mark: isTabMark(t.mark) ? t.mark : undefined,
+        todoId: normalizeTodoId(t.todoId),
       };
     });
 

@@ -58,6 +58,8 @@ import { TabDropPlaceholder } from "../tabs/TabDropPlaceholder";
 import { NewTabMenu } from "../tabs/NewTabMenu";
 import { CustomAgentDialog } from "../tabs/CustomAgentDialog";
 import { TabColorPicker } from "../tabs/TabColorPicker";
+import { TabMarkBadge } from "../tabs/TabMarkBadge";
+import { TabMarkMenuItems } from "../tabs/TabMarkMenuItems";
 import { TabStackChip } from "../tabs/TabStackChip";
 import { stackNames, stripItems } from "../../lib/tabStacks";
 import { ContextMenuPortal } from "../common/ContextMenuPortal";
@@ -1587,6 +1589,7 @@ export function DetachedCenterPanel({
                 >
                   <TabStatusMark stateClass={stateClass} />
                   <span className="tab-label">{tab.label}</span>
+                  <TabMarkBadge tab={tab} inPopout />
                   {(tab.kind === "agent" || tab.kind === "local_agent") && tab.scheduleTargetId && (() => {
                     const enabled = (schedulesByTarget[scheduleCacheKey(scope, tab.scheduleTargetId)] ?? [])
                       .filter((schedule) => schedule.enabled);
@@ -2006,6 +2009,14 @@ export function DetachedCenterPanel({
             <TabColorPicker
               current={byKey.get(tabMenu.key)?.color}
               onPick={(color) => onSetColor(tabMenu.key, color)}
+            />
+          )}
+          {byKey.get(tabMenu.key) && (
+            <TabMarkMenuItems
+              tab={byKey.get(tabMenu.key)!}
+              scope={scope}
+              inPopout
+              onDone={() => setTabMenu(null)}
             />
           )}
           {onSetStack && (() => {

@@ -16,6 +16,7 @@ import {
 } from "../../types";
 import { useTimerStore } from "../../stores/timer";
 import { PillStatusBars } from "./PillStatusBars";
+import { PillTabMarks } from "./PillTabMarks";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { cmdToKind, isResumableAgentTab, isRestorableTab, useTabsStore } from "../../stores/tabs";
@@ -1820,7 +1821,7 @@ export function ProjectPill({
   const startPillDrag = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
     const pressed = e.target as HTMLElement;
-    if (pressed.closest(".pill-close-btn, .header-conn-lamps, .pill-fence-glyph")) return;
+    if (pressed.closest(".pill-close-btn, .header-conn-lamps, .pill-fence-glyph, .pill-tab-marks")) return;
     // Ctrl/Cmd-click toggles the multi-selection (3b): no drag, no activation —
     // the whole gesture is the selection toggle. The suppressed native click
     // never reaches pill-main's onClick, so nothing else fires.
@@ -2883,6 +2884,8 @@ export function ProjectPill({
             ))}
           </span>
         )}
+        {/* Important / Urgent tabs of this project (tab right-click menu). */}
+        <PillTabMarks scope={project.id} />
         {/* VM state glyph (`docs/vm_projects_plan.md`): the standard remote
             lamps already say "connected" — this adds the one thing they can't,
             whether the machine itself is up. Click opens the VM dialog. */}

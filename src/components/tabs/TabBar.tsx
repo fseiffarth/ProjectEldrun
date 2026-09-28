@@ -38,6 +38,8 @@ import {
 import { AddTabMenuList, type AddMenuEntry, type AddMenuGroup } from "./AddTabMenuList";
 import { localModelMenuGroup, useLocalModelPlacement } from "./localModelGroup";
 import { TabColorPicker } from "./TabColorPicker";
+import { TabMarkBadge } from "./TabMarkBadge";
+import { TabMarkMenuItems } from "./TabMarkMenuItems";
 import { tabColorCss } from "../../lib/theme/tabColors";
 import { useAddTabMenuData } from "./useAddTabMenuData";
 import {
@@ -1462,6 +1464,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             ) : (
               <span className="tab-label">{tab.label}</span>
             )}
+            <TabMarkBadge tab={tab} />
             {tab.hostSession && (
               <span className="tab-host-session" title={t("tab.hostSessionBadgeTitle")}>
                 {t("tab.hostSessionBadge")}
@@ -1913,6 +1916,13 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             current={tabs.find((tab) => tab.key === tabMenu.key)?.color}
             onPick={(color) => setTabColor(tabMenu.key, color)}
           />
+          {/* Important / Urgent, and the to-do card link. */}
+          {(() => {
+            const menuTab = tabs.find((tb) => tb.key === tabMenu.key);
+            return menuTab ? (
+              <TabMarkMenuItems tab={menuTab} scope={scope} onDone={() => setTabMenu(null)} />
+            ) : null;
+          })()}
           {/* Tab groups: join one of this bar's groups, start a new one, or
               leave the one it is in. */}
           {(() => {

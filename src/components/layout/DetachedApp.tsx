@@ -31,6 +31,8 @@ import {
   DETACHED_ZOOM,
   applyEditToSubtree,
   applyColorToTabs,
+  applyMarkToTabs,
+  applyTodoToTabs,
   applyStackToTabs,
   applyRenameToTabs,
   applyLocationToTabs,
@@ -666,6 +668,10 @@ export function DetachedApp({ param }: Props) {
       setTabs((ts) => applyColorToTabs(ts, edit.key, edit.color));
     } else if (edit.kind === "setStack") {
       setTabs((ts) => applyStackToTabs(ts, edit.key, edit.stack));
+    } else if (edit.kind === "setMark") {
+      setTabs((ts) => applyMarkToTabs(ts, edit.key, edit.mark));
+    } else if (edit.kind === "setTodo") {
+      setTabs((ts) => applyTodoToTabs(ts, edit.key, edit.todoId));
     } else if (edit.kind === "setLocation") {
       // Optimistic: flip the badge now; the main window respawns the pane on the
       // new host and re-derives the same payload.

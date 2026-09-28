@@ -38,6 +38,14 @@ Settings → Agents → Manage CLIs (see `agent-clis`).
   group folds into one chip in the bar; hover the chip to list its tabs and
   click one to open it. Right-click the chip to rename, ungroup or close the
   group. Groups are saved with the layout.
+- Mark a tab: right-click → **Important** (`!`) or **Urgent** (`!!`); pick it
+  again to clear. The mark shows on the tab, and the project's pill shows the
+  most pressing one with a count — click it to jump to that tab. Marks are
+  saved with the layout.
+- To-do card from a tab (to-do board switched on): right-click → **Create to-do
+  card** files a card titled after the tab under its project and opens it. The
+  tab then shows ☑ (click to open the card) and the card shows the tab (click
+  to go to it). Right-click again to open or unlink the card.
 
 Your layout is saved automatically per project.
 
