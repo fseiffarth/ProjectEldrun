@@ -1,61 +1,41 @@
 import { create } from "zustand";
 
 /**
- * Open/closed state and the active tab of the **Models & agents overlay**
+ * Open/closed state and the current view of the **Models & agents overlay**
  * (`components/models/ModelsOverlay`), opened by a click on the header's
  * processor-chip button (`layout/LocalModelMenu`) or one of its dropdown's
  * doors.
  *
+ * The overlay is a grid of sections, not a tab strip: a plain open lands on
+ * the overview (`"home"`, one tile per section with its live summary), a tile
+ * opens its section, and the bar's back button returns to the grid. A door
+ * deep-links straight into its section.
+ *
  * A store rather than a prop for the reason the other header overlays use one:
  * the button lives in the header and the overlay is mounted at the shell. It
- * holds no data copies — the panes read their own (Settings' panels, the
+ * holds no data copies — the sections read their own (Settings' panels, the
  * skills library) or the shared `stores/agents/ollamaActivity`.
  */
-export type ModelsOverlayTab = "agents" | "models" | "ollama" | "skills";
+export type ModelsOverlaySection = "agents" | "models" | "ollama" | "skills";
+export type ModelsOverlayView = "home" | ModelsOverlaySection;
 
-export const MODELS_OVERLAY_TABS: readonly ModelsOverlayTab[] = ["agents", "models", "ollama", "skills"];
-
-const TAB_KEY = "eldrun.modelsOverlayTab";
-
-function readTab(): ModelsOverlayTab {
-  try {
-    const raw = localStorage.getItem(TAB_KEY);
-    if (raw && (MODELS_OVERLAY_TABS as readonly string[]).includes(raw)) return raw as ModelsOverlayTab;
-  } catch {
-    // Storage unavailable — the first tab is the answer.
-  }
-  return "agents";
-}
-
-function writeTab(tab: ModelsOverlayTab) {
-  try {
-    localStorage.setItem(TAB_KEY, tab);
-  } catch {
-    // Storage unavailable — the tab still holds for this session.
-  }
-}
+export const MODELS_OVERLAY_SECTIONS: readonly ModelsOverlaySection[] = ["agents", "models", "ollama", "skills"];
 
 interface ModelsOverlayState {
   open: boolean;
-  /** Initial: the last tab from localStorage, else "agents". */
-  tab: ModelsOverlayTab;
-  /** No argument keeps the current (last) tab; a tab deep-links to it. */
-  openOverlay: (tab?: ModelsOverlayTab) => void;
-  /** Switches and remembers the tab. */
-  setTab: (tab: ModelsOverlayTab) => void;
+  /** The overview grid, or one section. */
+  view: ModelsOverlayView;
+  /** No argument opens the overview grid; a section deep-links to it. */
+  openOverlay: (section?: ModelsOverlaySection) => void;
+  /** Switches the view (a tile, the back button, a door inside a section). */
+  show: (view: ModelsOverlayView) => void;
   close: () => void;
 }
 
 export const useModelsOverlayStore = create<ModelsOverlayState>((set) => ({
   open: false,
-  tab: readTab(),
-  openOverlay: (tab) => {
-    if (tab) writeTab(tab);
-    set((s) => ({ open: true, tab: tab ?? s.tab }));
-  },
-  setTab: (tab) => {
-    writeTab(tab);
-    set({ tab });
-  },
+  view: "home",
+  openOverlay: (section) => set({ open: true, view: section ?? "home" }),
+  show: (view) => set({ view }),
   close: () => set({ open: false }),
 }));

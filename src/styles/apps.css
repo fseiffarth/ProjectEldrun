@@ -868,6 +868,20 @@
 .models-overlay-body :is(.dialog-scroll, .models-overlay-intro) {
   padding-inline: max(18px, calc((100% - 880px) / 2));
 }
+/* …except Agents & CLIs, whose cards tile across a wider column instead of
+   stacking in the reading one; its prose keeps the 880px measure. */
+.models-overlay-body .models-overlay-pane-agents :is(.dialog-scroll, .models-overlay-intro) {
+  padding-inline: max(18px, calc((100% - 1320px) / 2));
+}
+.models-overlay-pane-agents .dialog-scroll > .settings-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr));
+  align-items: start;
+  gap: 12px;
+}
+.models-overlay-pane-agents .dialog-scroll > .settings-help {
+  max-width: 880px;
+}
 /* The Local models tab stacks the dropdown's own rows, which expect the
    menu's column with a 1px gap, not a settings page's 12px. */
 .models-overlay-body .models-overlay-models {

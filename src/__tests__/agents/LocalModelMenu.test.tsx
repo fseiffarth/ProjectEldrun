@@ -170,7 +170,7 @@ beforeEach(() => {
   resetOllamaStatusPoller();
   resetOllamaAutoload();
   __resetOllamaActivityForTests();
-  useModelsOverlayStore.setState({ open: false, tab: "agents" });
+  useModelsOverlayStore.setState({ open: false, view: "home" });
   useHeaderHoverMenuStore.setState({ openId: null });
   useSettingsStore.setState({
     settings: { ollama_model: "qwen:7b", ollama_roles: {} },
@@ -277,10 +277,10 @@ describe("LocalModelMenu button and the Models & agents overlay", () => {
     const spy = vi.spyOn(window, "dispatchEvent");
     const { wrap } = await renderInstalled();
     const door = async (label: string, tab: string) => {
-      act(() => useModelsOverlayStore.setState({ open: false, tab: "models" }));
+      act(() => useModelsOverlayStore.setState({ open: false, view: "models" }));
       await hover(wrap);
       fireEvent.click(await within(wrap).findByText(label));
-      expect(useModelsOverlayStore.getState()).toMatchObject({ open: true, tab });
+      expect(useModelsOverlayStore.getState()).toMatchObject({ open: true, view: tab });
       expect(wrap.querySelector(".local-model-menu")).toBeNull();
     };
     await door("Manage CLIs…", "agents");
@@ -298,7 +298,7 @@ describe("LocalModelMenu button and the Models & agents overlay", () => {
     const wrap = view.container.querySelector(".global-apps-menu") as HTMLElement;
     fireEvent.mouseEnter(wrap);
     fireEvent.click(await screen.findByText("Install Ollama…"));
-    expect(useModelsOverlayStore.getState()).toMatchObject({ open: true, tab: "ollama" });
+    expect(useModelsOverlayStore.getState()).toMatchObject({ open: true, view: "ollama" });
   });
 
   it("does not reveal the dropdown on hover while the overlay is open", async () => {

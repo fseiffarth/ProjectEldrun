@@ -11,8 +11,8 @@ their conversations after a restart where the CLI allows it.
 
 ## Install an agent CLI
 
-1. Click the **Models & agents** button in the header (chip icon) — it opens
-   on the **Agents & CLIs** tab — or hover it and pick **Manage CLIs…**. The
+1. Click the **Models & agents** button in the header (chip icon) and pick
+   the **Agents & CLIs** tile — or hover it and pick **Manage CLIs…**. The
    same list is also in **Settings → Agents → Manage CLIs**.
 2. Find the agent. Installed ones are listed first; use the search box for
    the rest.
@@ -155,7 +155,7 @@ is not adopted until you sign out first.
 ## Custom agents and skills
 
 - `+` → **Add agent…** registers any command as a custom agent.
-- **Skills library…** (the Models & agents window's **Skills** tab, or the
+- **Skills library…** (the Models & agents window's **Skills** tile, or the
   `+` menu) installs reusable
   Agent Skills into one project (`.claude/skills/`) or for every project on
   this machine (`~/.claude/skills/`).

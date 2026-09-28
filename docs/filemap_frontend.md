@@ -124,7 +124,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `browser/useBrowserEvents.ts` | Backend browser events installed once per window (refcount + generation counter). |
 | `browser/BrowserDownloadHost.tsx` | The one download-consent dialog mount per window (`AppShell` + `DetachedApp`); owns the event listeners. |
 | `skills/SkillsLibraryTab.tsx` / `skills/SkillsLibraryView.tsx` | Skills Library (`docs/skills_plan.md`): browse git-hosted skills, preview, copy into `.claude/skills/` or `~/.claude/skills/`. Install only from the preview panel. The machine-level door is the Skills tab of `models/ModelsOverlay` (`projectDir` null, `visible` gated). |
-| `models/ModelsOverlay.tsx` | Models & agents overlay (`ModelsOverlayHost`, AppShell): header chip-button click. Four fixed tabs — Settings' `AgentsPanel` (+ `AgentChips`), Local models (hub sections), `OllamaPanel`, skills library; panes mount on first visit, then stay `hidden`. Never redirects to Settings. |
+| `models/ModelsOverlay.tsx` | Models & agents overlay (`ModelsOverlayHost`, AppShell): header chip-button click. Opens on a grid of four section tiles with live summaries (no tab strip); a tile opens Settings' `AgentsPanel` (+ `AgentChips`, cards tiled), Local models (hub sections), `OllamaPanel` or the skills library, the bar's back button returns; sections mount on first visit, then stay `hidden`. Never redirects to Settings. |
 | `models/useModelsHub.ts` | The dropdown's logic, shared with the overlay: `useModelsHub(active)` (agents, GPU/machine poll, load/unload, pulls, update check, upgrade, role/Root/MCP toggles) + `useAutoloadNotice`. |
 | `models/ModelsHubSections.tsx` | The dropdown's markup, shared: `AgentChips`, `LocalModelsSection` (`layout` menu/overlay), `MachineMeters`, `MODEL_ROLES`. Keeps the dropdown pixel-identical. |
 | `printing/PrintManagerPane.tsx` | Native print manager tab: printers, queues, make default / pause / test page / cancel. Machine-scoped (no project props), singleton per scope; `visible` gates polling. |
@@ -247,7 +247,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `todo.ts` | To-do board session state only (overlay flag, filters — never persisted, drag, optimistic overlay, mail cache, `collapsedSteps`, `focusTaskId`). |
 | `browser.ts` | In-app browser store (#61). Nothing reaches the network on its own (`load`/`openLive` only, both clicks), actions tolerate a rejected invoke, downloads refused by default. |
 | `mail.ts` | Global mail store. Every action tolerates a rejected invoke (lands in `error`); `checkMail` and a debounced typed folder search can reach a server. Owns list order and the search coverage flags (`searchRemote`, `searchPartial`). |
-| `modelsOverlay.ts` | Models & agents overlay: `open` + `tab` (last tab remembered in localStorage). No data copies. |
+| `modelsOverlay.ts` | Models & agents overlay: `open` + `view` (`home` grid or a section; a plain open shows the grid, doors deep-link). No data copies. |
 | `agents/ollamaActivity.ts` | Local-model session facts shared by dropdown and overlay: `installed`, `models`, downloads/paused/loads, update verdicts, server version; ref-counted `initLocalModelEvents`. |
 | `alarms.ts` | Reminder ticker: fires an OS notification + the in-app popup, exactly once each; a calendar with `alerts_off` is recorded as fired but never shown. |
 | `linkRouting.ts` | Routing of clicked links/URIs to viewers or external apps. |

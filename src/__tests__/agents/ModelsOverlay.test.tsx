@@ -3,21 +3,24 @@
  * processor-chip button opens. Settings' panels and the skills library are
  * stubbed — what is locked in here is the overlay's own contract:
  *
- *  - closed, it renders nothing; open, it is a labelled dialog;
- *  - four tabs; a visited pane stays mounted (install logs are component
- *    state) and is `hidden` when not shown;
+ *  - closed, it renders nothing; open, it is a labelled dialog that lands on
+ *    a grid of four section tiles (no tab strip), each with a live summary;
+ *  - a tile opens its section, the bar's back button returns to the grid and
+ *    hands focus back to the tile just left; a visited section stays mounted
+ *    (install logs are component state) and is `hidden` when not shown;
+ *  - arrow keys move between tiles;
  *  - Escape closes unless something inside took it, the root console is up on
  *    top of it, or the key was aimed outside its frame; only a press on the
  *    backdrop itself dismisses;
- *  - `openOverlay(tab)` deep-links, and its own doors (Manage local models…,
- *    the autostart notice's "Ollama…") switch to the Ollama tab — never out
- *    to Settings;
- *  - a pull started before it opened already shows on the Local models tab
- *    (the shared `stores/agents/ollamaActivity`), which reads the models but
- *    not the agents it doesn't show, and lays out as the dropdown does:
- *    the Local Models band, then Machine;
- *  - the Agents tab re-reads which CLIs the root MCP server is wired to when
- *    the agent registry changes.
+ *  - `openOverlay(section)` deep-links, and its own doors (Manage local
+ *    models…, the autostart notice's "Ollama…") switch to the Ollama section —
+ *    never out to Settings;
+ *  - a pull started before it opened already shows in Local models (the
+ *    shared `stores/agents/ollamaActivity`), which reads the models but not
+ *    the agents it doesn't show, and lays out as the dropdown does: the Local
+ *    Models band, then Machine;
+ *  - the Agents section re-reads which CLIs the root MCP server is wired to
+ *    when the agent registry changes.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, fireEvent, cleanup, act, waitFor, within } from "@testing-library/react";
@@ -26,6 +29,8 @@ const h = vi.hoisted(() => ({
   skillsVisible: [] as boolean[],
   agentsPanelMounts: 0,
   machine: { supported: false } as Record<string, unknown>,
+  agents: [] as unknown[],
+  skills: [] as unknown[],
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve(null)) }));
@@ -73,11 +78,13 @@ const invokeMock = vi.mocked(invoke);
 const calls = (cmd: string) => invokeMock.mock.calls.filter(([c]) => c === cmd);
 
 beforeEach(() => {
-  // The tab and the frame persist; keep each test from reading the last one's.
+  // The frame persists; keep each test from reading the last one's.
   localStorage.clear();
   h.skillsVisible.length = 0;
   h.agentsPanelMounts = 0;
   h.machine = { supported: false };
+  h.agents = [];
+  h.skills = [];
   useRootOverlayStore.setState({ open: false });
   invokeMock.mockReset();
   invokeMock.mockImplementation(((cmd: string) => {
@@ -94,7 +101,8 @@ beforeEach(() => {
           capabilities: ["completion", "tools"],
         },
       ]);
-    if (cmd === "list_agents") return Promise.resolve([]);
+    if (cmd === "list_agents") return Promise.resolve(h.agents);
+    if (cmd === "skills_list_installed") return Promise.resolve(h.skills);
     if (cmd === "ollama_status") return Promise.resolve("loaded");
     if (cmd === "machine_load_snapshot") return Promise.resolve(h.machine);
     if (cmd === "gpu_memory_snapshot") return Promise.resolve([]);
@@ -103,7 +111,7 @@ beforeEach(() => {
   __resetOllamaActivityForTests();
   resetOllamaStatusPoller();
   resetOllamaAutoload();
-  useModelsOverlayStore.setState({ open: false, tab: "agents" });
+  useModelsOverlayStore.setState({ open: false, view: "home" });
   useSettingsStore.setState({ settings: { ollama_model: "qwen:7b" } } as never);
 });
 
@@ -112,61 +120,106 @@ afterEach(() => {
   resetOllamaStatusPoller();
 });
 
-const open = (tab?: "agents" | "models" | "ollama" | "skills") =>
-  act(() => useModelsOverlayStore.getState().openOverlay(tab));
+
+const open = (section?: "agents" | "models" | "ollama" | "skills") =>
+  act(() => useModelsOverlayStore.getState().openOverlay(section));
 
 const pane = (id: string) => document.getElementById(`models-overlay-pane-${id}`);
+const tile = (name: string) => screen.getByRole("button", { name });
+const back = () => screen.getByRole("button", { name: "All sections" });
 
 describe("ModelsOverlay", () => {
-  it("renders nothing while closed and a labelled dialog when open", () => {
+  it("renders nothing while closed and opens on a grid of section tiles", () => {
     const { container } = render(<ModelsOverlayHost />);
     expect(container.innerHTML).toBe("");
     open();
     expect(screen.getByRole("dialog", { name: "Models & agents" })).toBeTruthy();
-    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual([
+    expect(screen.queryAllByRole("tab")).toHaveLength(0);
+    const tiles = [...container.ownerDocument.querySelectorAll(".models-home-grid .models-tile")];
+    expect(tiles.map((el) => el.getAttribute("aria-label"))).toEqual([
       "Agents & CLIs",
       "Local models",
       "Ollama",
-      expect.stringContaining("Skills"),
+      "Skills",
     ]);
+    // The grid lands focus on its first tile; no section is mounted yet.
+    expect(document.activeElement).toBe(tile("Agents & CLIs"));
+    expect(pane("agents")).toBeNull();
+    expect(screen.queryByRole("button", { name: "All sections" })).toBeNull();
   });
 
-  it("switches tabs and keeps a visited pane mounted, hidden", () => {
+  it("shows each section's live state on its tile", async () => {
+    h.agents = [
+      { id: "claude", label: "Claude Code", bin: "claude", installed: true },
+      { id: "codex", label: "Codex", bin: "codex", installed: true },
+      { id: "gemini", label: "Gemini CLI", bin: "gemini", installed: false },
+    ];
+    h.skills = [{ name: "pdf-tools", description: "" }];
+    useOllamaActivityStore.setState({ installed: true, downloads: { "mistral:7b": { pct: 10 } } });
     render(<ModelsOverlayHost />);
-    open("agents");
+    open();
+    const agents = tile("Agents & CLIs");
+    expect(await within(agents).findByText("2 installed")).toBeTruthy();
+    expect(within(agents).getByText("Claude Code")).toBeTruthy();
+    expect(within(agents).queryByText("Gemini CLI")).toBeNull();
+    const models = tile("Local models");
+    expect(await within(models).findByText("1 on disk · 1 in memory")).toBeTruthy();
+    expect(within(models).getByText("qwen:7b")).toBeTruthy();
+    expect(within(models).getByText("1 downloading")).toBeTruthy();
+    expect(within(tile("Ollama")).getByText("Running")).toBeTruthy();
+    expect(await within(tile("Skills")).findByText("1 installed")).toBeTruthy();
+    expect(within(tile("Skills")).getByText("pdf-tools")).toBeTruthy();
+  });
+
+  it("says what is missing when nothing is installed yet", async () => {
+    render(<ModelsOverlayHost />);
+    open();
+    expect(await within(tile("Agents & CLIs")).findByText("No agent CLI installed yet")).toBeTruthy();
+    expect(within(tile("Local models")).getByText("Install Ollama first")).toBeTruthy();
+    expect(within(tile("Ollama")).getByText("Not installed")).toBeTruthy();
+    expect(await within(tile("Skills")).findByText("No personal skills yet")).toBeTruthy();
+  });
+
+  it("opens a section from its tile and keeps a visited one mounted, hidden", () => {
+    render(<ModelsOverlayHost />);
+    open();
+    fireEvent.click(tile("Agents & CLIs"));
+    expect(useModelsOverlayStore.getState().view).toBe("agents");
     expect(pane("agents")?.hidden).toBe(false);
-    expect(pane("ollama")).toBeNull();
-    fireEvent.mouseDown(screen.getByRole("tab", { name: "Ollama" }), { button: 0 });
+    expect(document.activeElement).toBe(back());
+    // Back to the grid: the section is kept, and focus returns to its tile.
+    fireEvent.click(back());
+    expect(useModelsOverlayStore.getState().view).toBe("home");
+    expect(pane("agents")?.hidden).toBe(true);
+    expect(document.activeElement).toBe(tile("Agents & CLIs"));
+    fireEvent.click(tile("Ollama"));
     expect(pane("ollama")?.hidden).toBe(false);
     expect(pane("agents")?.hidden).toBe(true);
-    expect(screen.getByRole("tab", { name: "Ollama" }).getAttribute("aria-selected")).toBe("true");
-    // Back again: the agents pane was kept, never remounted.
-    fireEvent.mouseDown(screen.getByRole("tab", { name: "Agents & CLIs" }), { button: 0 });
+    fireEvent.click(back());
+    fireEvent.click(tile("Agents & CLIs"));
     expect(pane("agents")?.hidden).toBe(false);
     expect(h.agentsPanelMounts).toBe(1);
-    expect(useModelsOverlayStore.getState().tab).toBe("agents");
-    expect(localStorage.getItem("eldrun.modelsOverlayTab")).toBe("agents");
   });
 
-  it("activates a tab from the keyboard and roves focus with the arrows", () => {
+  it("moves between tiles with the arrow keys and Home / End", () => {
     render(<ModelsOverlayHost />);
-    open("agents");
-    const agentsTab = screen.getByRole("tab", { name: "Agents & CLIs" });
-    expect(document.activeElement).toBe(agentsTab);
-    fireEvent.keyDown(agentsTab, { key: "ArrowRight" });
-    const modelsTab = screen.getByRole("tab", { name: "Local models" });
-    expect(document.activeElement).toBe(modelsTab);
-    expect(modelsTab.tabIndex).toBe(0);
-    expect(agentsTab.tabIndex).toBe(-1);
-    // Arrowing moves focus only; Enter activates.
-    expect(useModelsOverlayStore.getState().tab).toBe("agents");
-    fireEvent.keyDown(modelsTab, { key: "Enter" });
-    expect(useModelsOverlayStore.getState().tab).toBe("models");
+    open();
+    const first = tile("Agents & CLIs");
+    fireEvent.keyDown(first, { key: "ArrowRight" });
+    expect(document.activeElement).toBe(tile("Local models"));
+    fireEvent.keyDown(document.activeElement!, { key: "End" });
+    expect(document.activeElement).toBe(tile("Skills"));
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowRight" });
+    expect(document.activeElement).toBe(tile("Skills"));
+    fireEvent.keyDown(document.activeElement!, { key: "Home" });
+    expect(document.activeElement).toBe(first);
+    // Moving focus opens nothing.
+    expect(useModelsOverlayStore.getState().view).toBe("home");
   });
 
   it("closes on Escape unless something inside already took it", () => {
     render(<ModelsOverlayHost />);
-    open();
+    open("agents");
     const ev = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
     ev.preventDefault();
     act(() => {
@@ -191,22 +244,12 @@ describe("ModelsOverlay", () => {
     expect(useModelsOverlayStore.getState().open).toBe(true);
     // The root console open above it: its Escape, not ours — even from inside.
     act(() => useRootOverlayStore.setState({ open: true }));
-    fireEvent.keyDown(screen.getByRole("tab", { name: "Agents & CLIs" }), { key: "Escape" });
+    fireEvent.keyDown(tile("Agents & CLIs"), { key: "Escape" });
     expect(useModelsOverlayStore.getState().open).toBe(true);
     act(() => useRootOverlayStore.setState({ open: false }));
     // Inside the frame (or on <body>) it is ours.
-    fireEvent.keyDown(screen.getByRole("tab", { name: "Agents & CLIs" }), { key: "Escape" });
+    fireEvent.keyDown(tile("Agents & CLIs"), { key: "Escape" });
     expect(useModelsOverlayStore.getState().open).toBe(false);
-  });
-
-  it("moves strip focus to the ends with Home / End", () => {
-    render(<ModelsOverlayHost />);
-    open("agents");
-    fireEvent.keyDown(screen.getByRole("tab", { name: "Agents & CLIs" }), { key: "End" });
-    expect(document.activeElement?.id).toBe("models-overlay-tab-skills");
-    fireEvent.keyDown(document.activeElement!, { key: "Home" });
-    expect(document.activeElement?.id).toBe("models-overlay-tab-agents");
-    expect(useModelsOverlayStore.getState().tab).toBe("agents");
   });
 
   it("closes on a backdrop press, not on one inside the window", () => {
@@ -218,15 +261,26 @@ describe("ModelsOverlay", () => {
     expect(useModelsOverlayStore.getState().open).toBe(false);
   });
 
-  it("deep-links to a tab", () => {
-    render(<ModelsOverlayHost />);
+  it("deep-links to a section, named in the bar's trail", () => {
+    const { container } = render(<ModelsOverlayHost />);
     open("ollama");
     expect(screen.getByTestId("ollama-panel")).toBeTruthy();
     expect(pane("agents")).toBeNull();
-    expect(screen.getByRole("tab", { name: "Ollama" }).getAttribute("aria-selected")).toBe("true");
+    expect(container.ownerDocument.querySelector(".models-home")).toBeNull();
+    expect(container.ownerDocument.querySelector("[aria-current='page']")?.textContent).toBe("Ollama");
+    expect(document.activeElement).toBe(back());
   });
 
-  it("switches to the Ollama tab from its own doors, never out to Settings", async () => {
+  it("a plain open after a deep link lands on the grid again", () => {
+    render(<ModelsOverlayHost />);
+    open("skills");
+    act(() => useModelsOverlayStore.getState().close());
+    open();
+    expect(useModelsOverlayStore.getState().view).toBe("home");
+    expect(tile("Skills")).toBeTruthy();
+  });
+
+  it("switches to the Ollama section from its own doors, never out to Settings", async () => {
     useOllamaActivityStore.setState({ installed: true });
     useOllamaAutoloadStore.setState({
       phase: "skipped",
@@ -239,14 +293,16 @@ describe("ModelsOverlay", () => {
       render(<ModelsOverlayHost />);
       open("models");
       fireEvent.click(await within(pane("models")!).findByText("Manage local models…"));
-      expect(useModelsOverlayStore.getState().tab).toBe("ollama");
+      expect(useModelsOverlayStore.getState().view).toBe("ollama");
       expect(pane("ollama")?.hidden).toBe(false);
       expect(screen.getByTestId("ollama-panel")).toBeTruthy();
-      // Back to Local models: the autostart notice's chip is the same door.
-      fireEvent.mouseDown(screen.getByRole("tab", { name: "Local models" }), { button: 0 });
+      // Back to Local models by way of the grid: the autostart notice's chip
+      // is the same door.
+      fireEvent.click(back());
+      fireEvent.click(tile("Local models"));
       expect(pane("models")?.hidden).toBe(false);
       fireEvent.click(await within(pane("models")!).findByText("Ollama…"));
-      expect(useModelsOverlayStore.getState()).toMatchObject({ open: true, tab: "ollama" });
+      expect(useModelsOverlayStore.getState()).toMatchObject({ open: true, view: "ollama" });
       expect(pane("ollama")?.hidden).toBe(false);
       const settingsEvents = spy.mock.calls.filter(([e]) => (e as Event).type === "eldrun:open-settings");
       expect(settingsEvents).toHaveLength(0);
@@ -255,27 +311,15 @@ describe("ModelsOverlay", () => {
     }
   });
 
-  it("points aria-controls only at panes that are rendered", () => {
-    render(<ModelsOverlayHost />);
-    open("agents");
-    const ollamaTab = screen.getByRole("tab", { name: "Ollama" });
-    expect(screen.getByRole("tab", { name: "Agents & CLIs" }).getAttribute("aria-controls")).toBe(
-      "models-overlay-pane-agents",
-    );
-    expect(ollamaTab.hasAttribute("aria-controls")).toBe(false);
-    fireEvent.mouseDown(ollamaTab, { button: 0 });
-    expect(ollamaTab.getAttribute("aria-controls")).toBe("models-overlay-pane-ollama");
-  });
-
   it("passes the skills library its visibility", () => {
     render(<ModelsOverlayHost />);
     open("skills");
     expect(h.skillsVisible[h.skillsVisible.length - 1]).toBe(true);
-    fireEvent.mouseDown(screen.getByRole("tab", { name: "Ollama" }), { button: 0 });
+    fireEvent.click(back());
     expect(h.skillsVisible[h.skillsVisible.length - 1]).toBe(false);
   });
 
-  it("shows a pull started before it opened on the Local models tab", async () => {
+  it("shows a pull started before it opened in Local models", async () => {
     useOllamaActivityStore.setState({ installed: true, downloads: { "mistral:7b": { pct: 40 } } });
     render(<ModelsOverlayHost />);
     open("models");
@@ -284,11 +328,11 @@ describe("ModelsOverlay", () => {
     // Becoming visible reads the list, as a hover does.
     expect(await screen.findByText("qwen:7b")).toBeTruthy();
     expect(calls("list_ollama_models_detailed").length).toBeGreaterThan(0);
-    // …but not the agents: this tab doesn't show them.
+    // …but not the agents: this section doesn't show them.
     expect(calls("list_agents")).toHaveLength(0);
   });
 
-  it("lays the Local models tab out as the dropdown: Local Models band, then Machine", async () => {
+  it("lays Local models out as the dropdown: Local Models band, then Machine", async () => {
     h.machine = {
       supported: true,
       cpu_percent: 10,
