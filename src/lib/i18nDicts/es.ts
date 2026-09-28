@@ -3139,6 +3139,7 @@ export const dict: Dict = {
   "terminal.clipboardSetByProgram": "Portapapeles establecido por el programa de esta terminal",
   "terminal.copiedLines": "{n} líneas copiadas al portapapeles",
   "terminal.copiedChars": "{n} caracteres copiados al portapapeles",
+  "terminal.linkCopied": "Enlace copiado al portapapeles",
   "terminal.silentStartPending": "{program} aún se está iniciando: Eldrun no ha recibido respuesta del inicio tras {s} segundos. Si sigue en blanco, cierra la pestaña y ábrela de nuevo.",
   "terminal.silentStartNoOutput": "{program} se inició, pero no ha mostrado nada en {s} segundos.",
   "terminal.silentStartShell": "la shell",

@@ -3139,6 +3139,7 @@ export const dict: Dict = {
   "terminal.clipboardSetByProgram": "Appunti impostati dal programma in questo terminale",
   "terminal.copiedLines": "{n} righe copiate negli appunti",
   "terminal.copiedChars": "{n} caratteri copiati negli appunti",
+  "terminal.linkCopied": "Link copiato negli appunti",
   "terminal.silentStartPending": "{program} è ancora in avvio: Eldrun non ha ricevuto risposta dall'avvio dopo {s} secondi. Se la scheda resta vuota, chiudila e riaprila.",
   "terminal.silentStartNoOutput": "{program} è stato avviato, ma non mostra nulla da {s} secondi.",
   "terminal.silentStartShell": "la shell",

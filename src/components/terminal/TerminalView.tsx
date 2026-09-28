@@ -48,6 +48,9 @@ const PTY_DECODER = new TextDecoder();
 const SIGN_IN_SCROLLBACK_ROWS = 20;
 /** How far above a hovered row a hard-wrapped URL may have started. */
 const WRAPPED_URL_LOOKBACK_ROWS = 40;
+/** How long a click on a link waits before opening it: a second click in that
+ *  time makes it a double-click, which copies the link instead. */
+const LINK_OPEN_DELAY_MS = 300;
 
 /** Whether a pane-level mouse event came from the sign-in card, which the
  *  terminal's own mouse handling must leave alone. */
@@ -441,6 +444,8 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   const dismissedSignIns = useRef(new Set<string>());
   const signInCopiedRef = useRef(t("terminal.signIn.copied"));
   signInCopiedRef.current = t("terminal.signIn.copied");
+  const linkCopiedRef = useRef(t("terminal.linkCopied"));
+  linkCopiedRef.current = t("terminal.linkCopied");
 
   const focusedRef = useRef(focused);
   visibleRef.current = visible;
@@ -492,7 +497,35 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     });
 
     const fit = new FitAddon();
-    const links = new WebLinksAddon();
+    // A click on a link opens it once the double-click window has passed; a
+    // double-click copies it instead (see `onMouseDownCapture`, which takes the
+    // second press away from xterm and from the agent pane's paste). xterm
+    // activates a link on each release, so the double-click's second release
+    // (`detail` 2) is ignored here. The hovered link is tracked because the
+    // second press has to know it is on one before xterm sees it.
+    let hoveredLink: string | null = null;
+    let linkOpenTimer: ReturnType<typeof setTimeout> | null = null;
+    const cancelLinkOpen = () => {
+      if (linkOpenTimer) clearTimeout(linkOpenTimer);
+      linkOpenTimer = null;
+    };
+    const activateLink = (event: MouseEvent, url: string) => {
+      if (event.detail > 1) return;
+      cancelLinkOpen();
+      linkOpenTimer = setTimeout(() => {
+        linkOpenTimer = null;
+        void invoke("open_external_url", { url }).catch(() => {});
+      }, LINK_OPEN_DELAY_MS);
+    };
+    const linkHover = {
+      hover: (_e: MouseEvent, url: string) => {
+        hoveredLink = url;
+      },
+      leave: () => {
+        hoveredLink = null;
+      },
+    };
+    const links = new WebLinksAddon(activateLink, linkHover);
     // A URL an agent CLI cut across rows with hard newlines (a sign-in link,
     // above all) is one link on every row it covers, opened whole. Registered
     // before the web-links addon because the first provider with a link at the
@@ -509,7 +542,9 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
           hits.map((u) => ({
             range: { start: { x: u.start.x + 1, y: u.start.y + 1 }, end: { x: u.end.x, y: u.end.y + 1 } },
             text: u.url,
-            activate: () => void invoke("open_external_url", { url: u.url }).catch(() => {}),
+            activate: activateLink,
+            hover: (e: MouseEvent) => linkHover.hover(e, u.url),
+            leave: linkHover.leave,
           })),
         );
       },
@@ -1497,6 +1532,17 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // wearing the modifier it looks for.
     const onMouseDownCapture = (e: MouseEvent) => {
       if (fromSignInCard(e)) return;
+      // A plain double-click on a link copies it, and only that: no open, no
+      // word selection, no agent-pane paste.
+      if (hoveredLink && e.button === 0 && e.detail === 2 && !(e.shiftKey || e.ctrlKey || e.altKey || e.metaKey)) {
+        e.preventDefault();
+        e.stopPropagation();
+        cancelLinkOpen();
+        invoke("copy_text_to_clipboard", { text: hoveredLink })
+          .then(() => useProjectsStore.setState({ switchToast: linkCopiedRef.current }))
+          .catch(() => {});
+        return;
+      }
       const action = agentMouseDownAction(e, term.modes.mouseTrackingMode !== "none", zoomable);
       if (e.button === 0 && action !== "paste") {
         // Read before the "select" branch below re-defines a modifier on the
@@ -1550,6 +1596,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       oscHandler.dispose();
       mouseModeGuard.dispose();
       wrappedLinks.dispose();
+      cancelLinkOpen();
       signInWatch.dispose();
       if (signInScanTimer) clearTimeout(signInScanTimer);
       window.removeEventListener("resize", doFit);

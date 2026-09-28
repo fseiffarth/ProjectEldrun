@@ -3149,6 +3149,7 @@ export const dict: Dict = {
   "terminal.clipboardSetByProgram": "Zwischenablage vom Programm in diesem Terminal gesetzt",
   "terminal.copiedLines": "{n} Zeilen in die Zwischenablage kopiert",
   "terminal.copiedChars": "{n} Zeichen in die Zwischenablage kopiert",
+  "terminal.linkCopied": "Link in die Zwischenablage kopiert",
   "terminal.silentStartPending": "{program} startet noch: Eldrun hat nach {s} Sekunden keine Rückmeldung vom Start. Bleibt der Tab leer, schließe ihn und öffne ihn erneut.",
   "terminal.silentStartNoOutput": "{program} wurde gestartet, zeigt aber seit {s} Sekunden nichts an.",
   "terminal.silentStartShell": "die Shell",

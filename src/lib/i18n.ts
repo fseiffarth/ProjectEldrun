@@ -3262,6 +3262,7 @@ export const en = {
   "terminal.clipboardSetByProgram": "Clipboard set by the program in this terminal",
   "terminal.copiedLines": "Copied {n} lines to the clipboard",
   "terminal.copiedChars": "Copied {n} characters to the clipboard",
+  "terminal.linkCopied": "Link copied to the clipboard",
   "terminal.silentStartPending": "Still starting {program}: Eldrun has not heard back from the launch after {s} seconds. If this stays blank, close the tab and open it again.",
   "terminal.silentStartNoOutput": "{program} was started but has shown nothing for {s} seconds.",
   "terminal.silentStartShell": "the shell",

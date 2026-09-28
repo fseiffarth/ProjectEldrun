@@ -92,10 +92,27 @@ vi.mock("@xterm/xterm", () => ({
   },
 }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} dispose() {} } }));
-vi.mock("@xterm/addon-web-links", () => ({ WebLinksAddon: class {} }));
+// The link handler and hover callbacks the pane hands the web-links addon.
+const { linkSpy } = vi.hoisted(() => ({
+  linkSpy: {
+    activate: null as null | ((e: MouseEvent, url: string) => void),
+    options: null as null | { hover?: (e: MouseEvent, url: string) => void; leave?: () => void },
+  },
+}));
+vi.mock("@xterm/addon-web-links", () => ({
+  WebLinksAddon: class {
+    constructor(activate: typeof linkSpy.activate, options: typeof linkSpy.options) {
+      linkSpy.activate = activate;
+      linkSpy.options = options;
+    }
+  },
+}));
 vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 vi.mock("../../stores/settings", () => ({
-  useSettingsStore: vi.fn((sel: (s: object) => unknown) => sel({ settings: { color_scheme: "dark" } })),
+  useSettingsStore: Object.assign(
+    vi.fn((sel: (s: object) => unknown) => sel({ settings: { color_scheme: "dark" } })),
+    { getState: () => ({ settings: { color_scheme: "dark" } }) },
+  ),
   resolveTheme: (s: string) => s,
 }));
 
@@ -247,5 +264,68 @@ describe("agent pane mouse gestures", () => {
     await act(async () => {});
     expect(termSpy.paste).not.toHaveBeenCalled();
     expect(termSpy.seen.some((e) => e.detail === 2)).toBe(true);
+  });
+});
+
+describe("terminal links", () => {
+  const URL = "https://example.org/a";
+  const click = (detail: number) => new MouseEvent("mouseup", { button: 0, detail });
+  const calls = (cmd: string) => invoke.mock.calls.filter((c) => c[0] === cmd);
+
+  beforeEach(() => {
+    invoke.mockClear();
+    termSpy.paste.mockClear();
+    termSpy.seen.length = 0;
+    termSpy.mouseTrackingMode = "none";
+    useProjectsStore.setState({ switchToast: null });
+  });
+
+  it("a click opens the link in the real browser", async () => {
+    vi.useFakeTimers();
+    try {
+      await agentPane("p:link-open");
+      linkSpy.activate?.(click(1), URL);
+      // Held back for the double-click window, then opened through the backend
+      // (the webview's own `window.open` does nothing).
+      expect(calls("open_external_url")).toHaveLength(0);
+      vi.advanceTimersByTime(400);
+      expect(calls("open_external_url")).toEqual([["open_external_url", { url: URL }]]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a double-click copies the link instead: no open, no paste, no word-select", async () => {
+    vi.useFakeTimers();
+    try {
+      const pane = await agentPane("p:link-copy");
+      linkSpy.options?.hover?.(click(0), URL);
+      press(pane, 1);
+      linkSpy.activate?.(click(1), URL);
+      const ev = press(pane, 2);
+      linkSpy.activate?.(click(2), URL);
+      await act(async () => {
+        vi.advanceTimersByTime(400);
+      });
+
+      expect(calls("copy_text_to_clipboard")).toEqual([["copy_text_to_clipboard", { text: URL }]]);
+      expect(useProjectsStore.getState().switchToast).toBe("Link copied to the clipboard");
+      expect(calls("open_external_url")).toHaveLength(0);
+      expect(termSpy.paste).not.toHaveBeenCalled();
+      expect(termSpy.seen.some((e) => e.detail === 2)).toBe(false);
+      expect(ev.defaultPrevented).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("off a link, a double-click is still the pane's own gesture", async () => {
+    const pane = await agentPane("p:link-off");
+    linkSpy.options?.hover?.(click(0), URL);
+    linkSpy.options?.leave?.();
+    press(pane, 2);
+    await act(async () => {});
+    expect(calls("copy_text_to_clipboard")).toHaveLength(0);
+    expect(termSpy.paste).toHaveBeenCalled();
   });
 });

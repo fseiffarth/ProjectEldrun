@@ -66,3 +66,8 @@ single keys, even while a terminal has focus:
   word, Shift+Tab cycles the length (sentence → block → scope), Esc dismisses.
 - TeX workspace: Ctrl+Shift+B saves and compiles; Ctrl+Shift+↑ goes up to the
   parent document; Ctrl+Shift+↓ goes back to the previous file.
+
+## In terminals
+
+- Click a link to open it in your browser; **double-click** it to copy it to
+  the clipboard instead.
