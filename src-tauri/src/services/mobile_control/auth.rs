@@ -16,7 +16,11 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
 
-use super::{protocol::AdminDevice, store};
+use super::{
+    protocol::AdminDevice,
+    push::{Delivery, Notice, PushPrefs, PushStore},
+    store,
+};
 
 type HmacSha256 = Hmac<Sha256>;
 const DEVICE_SCHEMA: u32 = 1;
@@ -130,6 +134,9 @@ pub struct AuthStore {
     challenges: HashMap<String, Challenge>,
     sessions: HashMap<String, Session>,
     attempts: HashMap<String, VecDeque<u64>>,
+    /// Web Push subscriptions, held here so revocation drops them in the same
+    /// call (`push.rs`).
+    push: PushStore,
 }
 
 impl AuthStore {
@@ -173,6 +180,7 @@ impl AuthStore {
         } else {
             DeviceFile::default()
         };
+        let push = PushStore::open(control_dir)?;
         Ok(Self {
             control_dir: control_dir.to_path_buf(),
             origin,
@@ -182,6 +190,7 @@ impl AuthStore {
             challenges: HashMap::new(),
             sessions: HashMap::new(),
             attempts: HashMap::new(),
+            push,
         })
     }
 
@@ -416,6 +425,7 @@ impl AuthStore {
         self.sessions.retain(|_, s| s.device_id != device_id);
         self.challenges.retain(|_, c| c.device_id != device_id);
         self.save_devices()?;
+        self.push.forget_device(device_id)?;
         self.audit("revoked", Some(device_id));
         Ok(())
     }
@@ -426,6 +436,7 @@ impl AuthStore {
         self.challenges.clear();
         self.pairing = None;
         self.save_devices()?;
+        self.push.forget_all()?;
         let next = random_bytes::<32>()?;
         let key_path = self.control_dir.join("host.key");
         // Written beside and renamed over, never truncated in place: a crash
@@ -437,6 +448,47 @@ impl AuthStore {
         self.host_key = next.to_vec();
         self.audit("forgot_all", None);
         Ok(())
+    }
+
+    pub fn push(&self) -> &PushStore {
+        &self.push
+    }
+
+    /// Store this paired device's push subscription.
+    pub fn push_subscribe(
+        &mut self,
+        device_id: &str,
+        endpoint: &str,
+        p256dh: &str,
+        auth: &str,
+        prefs: PushPrefs,
+    ) -> Result<(), String> {
+        if !self.devices.devices.iter().any(|d| d.id == device_id) {
+            return Err("unknown device".into());
+        }
+        self.push.subscribe(device_id, endpoint, p256dh, auth, prefs)?;
+        self.audit("push_subscribed", Some(device_id));
+        Ok(())
+    }
+
+    pub fn push_unsubscribe(&mut self, device_id: &str) -> Result<(), String> {
+        self.push.forget_device(device_id)?;
+        self.audit("push_unsubscribed", Some(device_id));
+        Ok(())
+    }
+
+    /// The encrypted posts for one notice, to every paired device that
+    /// subscribed. The desktop's tag carries raw desktop ids, so the phone
+    /// gets a keyed digest of it — stable, so a repeat replaces rather than
+    /// stacks, and meaningless off this host.
+    pub fn push_deliveries(&mut self, notice: &Notice) -> Result<Vec<Delivery>, String> {
+        let tag = Base64UrlUnpadded::encode_string(&self.keyed(b"push-tag", notice.tag.as_bytes())[..12]);
+        let paired: Vec<String> = self.devices.devices.iter().map(|d| d.id.clone()).collect();
+        self.push.deliveries(notice, &tag, &paired)
+    }
+
+    pub fn push_forget_endpoint(&mut self, endpoint: &str) {
+        self.push.forget_endpoint(endpoint);
     }
 
     fn audit(&self, event: &str, device_id: Option<&str>) {

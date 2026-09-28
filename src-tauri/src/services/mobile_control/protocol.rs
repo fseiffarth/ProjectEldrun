@@ -1400,6 +1400,22 @@ pub enum AdminRequest {
     Revoke { device_id: String },
     ForgetAll,
     Shutdown,
+    /// A calendar reminder for every subscribed phone (`push.rs`). Answered
+    /// `Ok` as soon as it is queued; delivery happens after, off the admin
+    /// plane.
+    Notify {
+        kind: super::push::NoticeKind,
+        title: String,
+        body: String,
+        tag: String,
+    },
+    /// An agent tab's turn edge, seen by the desktop. The sidecar resolves the
+    /// tmux name through its own catalog — the name never reaches a phone —
+    /// and stays quiet for a tab a phone is attached to.
+    AgentTurn {
+        tmux_session: String,
+        status: super::push::AgentTurn,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

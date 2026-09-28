@@ -4,7 +4,8 @@ import { EldrunMark } from "./EldrunMark";
 import { hasPairedDevice, logoutAuth, resumeAuth } from "./auth";
 import { connectTrace, primeConnection, setUnauthorizedHandler, traceConnect, type TabRow } from "./api";
 import { classifyUnavailable, describeUnavailable, unavailableDetail, type UnavailableReason } from "./connection";
-import { forgetLastPlace, rememberLastPlace, restoreLastPlace, type LastPlace, type MobileSection } from "./lastPlace";
+import { forgetLastPlace, parsePlace, rememberLastPlace, resolvePlace, restoreLastPlace, type LastPlace, type MobileSection, type RestoredPlace } from "./lastPlace";
+import { refreshPush } from "./push";
 import { hasLocalUnlock } from "./localLock";
 import { isUntested } from "../../src/lib/untested";
 import { Pair } from "./screens/Pair";
@@ -58,6 +59,31 @@ const TABS: { id: Tab; icon: string; label: string }[] = [
  * would have on its own.
  */
 const LOCK_AFTER_IDLE_MS = 180_000;
+/**
+ * The place a tapped notification asked for — the Calendar, or an agent's tab
+ * (`sw.js` opens `/?open=projects&project=…&tab=…` when no window is running).
+ * Read once and taken out of the address bar, so a reload lands where the
+ * reader is rather than where the notification was.
+ */
+function takeLaunchPlace(): LastPlace | null {
+  try {
+    const url = new URL(window.location.href);
+    const open = url.searchParams.get("open");
+    if (open === null) return null;
+    const place = parsePlace({
+      section: open,
+      projectId: url.searchParams.get("project") ?? undefined,
+      tabId: url.searchParams.get("tab") ?? undefined,
+    });
+    for (const key of ["open", "project", "tab"]) url.searchParams.delete(key);
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    return place;
+  } catch {
+    return null;
+  }
+}
+const launchPlace = takeLaunchPlace();
+
 /** What counts as someone being there. Streamed terminal output does not. */
 const ACTIVITY_EVENTS = ["pointerdown", "keydown", "input", "touchstart", "touchmove", "wheel", "scroll"] as const;
 
@@ -158,6 +184,9 @@ export function App() {
    * Retry signs in again without asking for it a second time while this is
    * recent; past the idle window it goes back through the lock. */
   const unlockedAt = useRef(0);
+  /** A place a tapped notification asked for, waiting on the unlock; it wins
+   * over the remembered place, because it is what the reader just chose. */
+  const pendingPlace = useRef<LastPlace | null>(launchPlace);
   /** One renewal at a time: every request that met the same 401 waits on it. */
   const renewing = useRef<Promise<boolean> | null>(null);
   // Everything the tab bar navigates between, back at its starting point. Used
@@ -169,6 +198,18 @@ export function App() {
     setTerminal(null);
     setTodoCard(undefined);
   }, []);
+  /** Stand where `place` says, from the section's root. */
+  const goTo = useCallback((place: RestoredPlace) => {
+    reset();
+    setTab(place.section);
+    // Leaving the Projects tab pointed at the restored project keeps a
+    // terminal's back chevron meaningful rather than dumping the reader
+    // on the project list.
+    if (place.projectId) {
+      setProjectView({ kind: "project", id: place.projectId });
+      if (place.tab) setTerminal({ project: place.projectId, tab: place.tab });
+    }
+  }, [reset]);
   const fail = useCallback((reason: UnavailableReason, detail?: string) => {
     setUnavailable({ reason, detail });
     setAuth("unavailable");
@@ -178,18 +219,12 @@ export function App() {
     setAuth("loading");
     void resumeAuth().then(async (result) => {
       if (result.kind === "paired") {
-        const restored = await restoreLastPlace();
+        const pending = pendingPlace.current;
+        pendingPlace.current = null;
+        const restored = pending ? await resolvePlace(pending) : await restoreLastPlace();
         reset();
-        if (restored) {
-          setTab(restored.section);
-          // Leaving the Projects tab pointed at the restored project keeps a
-          // terminal's back chevron meaningful rather than dumping the reader
-          // on the project list.
-          if (restored.projectId) {
-            setProjectView({ kind: "project", id: restored.projectId });
-            if (restored.tab) setTerminal({ project: restored.projectId, tab: restored.tab });
-          }
-        }
+        if (restored) goTo(restored);
+        void refreshPush().catch(() => undefined);
       } else if (result.kind === "unpaired") {
         forgetLastPlace();
       } else {
@@ -198,7 +233,7 @@ export function App() {
       }
       setAuth(result.kind);
     }).catch((error: unknown) => fail(classifyUnavailable(error), unavailableDetail(error)));
-  }, [reset, fail]);
+  }, [reset, goTo, fail]);
 
   const begin = useCallback(() => {
     setAuth("loading");
@@ -238,6 +273,22 @@ export function App() {
     if (auth !== "paired") return;
     rememberLastPlace(currentPlace(tab, projectView, terminal));
   }, [auth, tab, projectView, terminal]);
+
+  // A notification tapped while a window is already open: `sw.js` focuses it
+  // and says where to go. Locked, it waits for the unlock like a cold open.
+  useEffect(() => {
+    if (!("serviceWorker" in navigator)) return;
+    const onMessage = (event: MessageEvent) => {
+      const data = event.data as { type?: unknown } | null;
+      if (data?.type !== "eldrun-open") return;
+      const place = parsePlace(data);
+      if (!place) return;
+      if (authRef.current === "paired") void resolvePlace(place).then(goTo);
+      else pendingPlace.current = place;
+    };
+    navigator.serviceWorker.addEventListener("message", onMessage);
+    return () => navigator.serviceWorker.removeEventListener("message", onMessage);
+  }, [goTo]);
 
   useEffect(() => {
     // A 401 mid-session: the sidecar restarted (its sessions live in memory,

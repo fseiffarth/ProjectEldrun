@@ -16,6 +16,8 @@ import { useT } from "../../../src/lib/i18n";
 import { SpeechLangSheet, speechLangSummary } from "../components/SpeechLangPicker";
 import { SendToDesktop } from "../components/SendToDesktop";
 import { readSpeechLang, type SpeechLang } from "../speechLang";
+import { NotificationsSheet, pushSummary } from "../components/NotificationsSheet";
+import { getPushState, pushSupport, type HostPushState } from "../push";
 
 const BUILD_STAMP = formatBuildStamp();
 
@@ -144,6 +146,12 @@ export function Home({ open, openTab, todo, mail }: {
    * fix it mid-answer has already been read to in the wrong voice. */
   const [speechLang, setSpeechLang] = useState<SpeechLang>(() => readSpeechLang());
   const [speechLangSheet, setSpeechLangSheet] = useState(false);
+  const [pushSheet, setPushSheet] = useState(false);
+  const [push, setPush] = useState<HostPushState | null>(null);
+  useEffect(() => {
+    if (pushSupport() !== "supported") return;
+    getPushState().then(setPush, () => undefined);
+  }, []);
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<ProjectRow[]>([]);
   /** Whether any list has come back yet. Until it has, an empty `rows` is
@@ -312,8 +320,13 @@ export function Home({ open, openTab, todo, mail }: {
           <span><strong>{t("mobile.speech.language")}{isUntested("mobile.speech.language") && <span className="untested">Untested</span>}</strong><small>{speechLangSummary(speechLang, t)}</small></span>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
         </button></li>
+        <li><button aria-haspopup="dialog" aria-expanded={pushSheet} onClick={() => setPushSheet(true)}>
+          <span><strong>{t("mobile.push.title")}{isUntested("mobile.push.title") && <span className="untested">Untested</span>}</strong><small>{pushSummary(push, t)}</small></span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
+        </button></li>
       </ul>
     </section>
     {speechLangSheet && <SpeechLangSheet chosen={speechLang} onChoose={setSpeechLang} onClose={() => setSpeechLangSheet(false)} />}
+    {pushSheet && <NotificationsSheet onChange={setPush} onClose={() => setPushSheet(false)} />}
   </main>;
 }

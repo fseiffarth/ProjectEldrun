@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { invoke } from "@tauri-apps/api/core";
 import {
   isPermissionGranted,
   requestPermission,
@@ -80,6 +81,23 @@ let timer: ReturnType<typeof setInterval> | null = null;
 /** Whether the OS has granted notification permission (asked once, lazily). */
 let osPermission: boolean | null = null;
 
+/** A reminder as one notification's title and body — the OS toast and the
+ * phone's push notice say the same thing. */
+function alarmNotice(alarm: DueAlarm): { title: string; body: string } {
+  const lang = useI18nStore.getState().lang;
+  const t = (key: Parameters<typeof translate>[1], params?: Record<string, string | number>) =>
+    translate(lang, key, params);
+  const when = alarm.allDay
+    ? t("alarms.today")
+    // The imperative read, not the hook — this runs outside React, and the
+    // notification is one string built once rather than a subscription.
+    : formatStampTime(alarm.start, readUse24h()) || describeLead(alarm.minutesBefore, t);
+  return {
+    title: alarm.title || t("alarms.defaultEventTitle"),
+    body: [when, alarm.location].filter(Boolean).join(" · "),
+  };
+}
+
 async function notifyOs(alarm: DueAlarm) {
   try {
     if (osPermission === null) {
@@ -87,23 +105,24 @@ async function notifyOs(alarm: DueAlarm) {
       if (!osPermission) osPermission = (await requestPermission()) === "granted";
     }
     if (!osPermission) return;
-
-    const lang = useI18nStore.getState().lang;
-    const t = (key: Parameters<typeof translate>[1], params?: Record<string, string | number>) =>
-      translate(lang, key, params);
-    const when = alarm.allDay
-      ? t("alarms.today")
-      // The imperative read, not the hook — this runs outside React, and the
-      // notification is one string built once rather than a subscription.
-      : formatStampTime(alarm.start, readUse24h()) || describeLead(alarm.minutesBefore, t);
-    sendNotification({
-      title: alarm.title || t("alarms.defaultEventTitle"),
-      body: [when, alarm.location].filter(Boolean).join(" · "),
-    });
+    sendNotification(alarmNotice(alarm));
   } catch {
     // No OS notification (permission denied, no daemon, headless CI). The in-app
     // popup still shows, so the reminder is not lost — this channel is additive.
   }
+}
+
+/**
+ * The same reminder as a push notice on every phone that switched reminders
+ * on (Eldrun Mobile's Calendar → Reminders). The sidecar holds the
+ * subscriptions and encrypts per phone; with Mobile off or no phone
+ * subscribed the call has nowhere to go, which is not an error here.
+ */
+function notifyPhone(alarm: DueAlarm) {
+  const notice = alarmNotice(alarm);
+  void invoke("mobile_admin", {
+    request: { type: "notify", kind: "calendar", title: notice.title, body: notice.body, tag: alarm.key },
+  }).catch(() => undefined);
 }
 
 /**
@@ -112,8 +131,9 @@ async function notifyOs(alarm: DueAlarm) {
  * A single ticker scans the calendar for reminders that have come due and shows
  * each one **twice over**: an OS notification (which reaches the user when Eldrun
  * is not focused, or not even visible) and an in-app popup (which offers snooze
- * and dismiss). Both channels are driven from one fire-once record, so a reminder
- * cannot double-show or re-show after a restart.
+ * and dismiss) — plus a push notice to a subscribed phone. All channels are
+ * driven from one fire-once record, so a reminder cannot double-show or re-show
+ * after a restart.
  */
 export const useAlarmStore = create<AlarmStore>((set, get) => ({
   active: [],
@@ -164,7 +184,10 @@ export const useAlarmStore = create<AlarmStore>((set, get) => ({
 
     // Fresh reminders get both channels; a woken snooze is already known to the
     // user, so it only comes back to the popup.
-    for (const alarm of due) void notifyOs(alarm);
+    for (const alarm of due) {
+      void notifyOs(alarm);
+      notifyPhone(alarm);
+    }
 
     // A muted calendar's reminders are recorded as fired without being shown:
     // switching alerts back on should not replay up to a day of stale ones.

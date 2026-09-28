@@ -9,7 +9,44 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use super::{
     auth::AuthStore,
     protocol::{AdminRequest, AdminResponse, DesktopRequest, DesktopResponse, MAX_CONTROL_MESSAGE},
+    push::{self, AgentTabRef, Notice, NoticeKind},
 };
+
+/// Resolves a tmux session to the agent tab a phone knows it as.
+pub type AgentTabLookup = Arc<dyn Fn(&str) -> Option<AgentTabRef> + Send + Sync>;
+
+/// Everything the admin plane answers from, shared by every transport.
+#[derive(Clone)]
+pub struct AdminContext {
+    pub auth: Arc<Mutex<AuthStore>>,
+    pub port: u16,
+    pub origin: Option<String>,
+    pub shutdown: tokio::sync::watch::Sender<bool>,
+    /// The sidecar's catalog, for agent notices. `None` answers every agent
+    /// turn with nothing sent.
+    pub agent_tab: Option<AgentTabLookup>,
+}
+
+/// Encrypt `notice` for every subscribed phone and send it off the admin
+/// plane: a slow push service must not hold the desktop's call, and nothing it
+/// answers changes the reply.
+fn queue_notice(auth: &Arc<Mutex<AuthStore>>, notice: &Notice) -> AdminResponse {
+    let deliveries = match auth.lock().unwrap_or_else(PoisonError::into_inner).push_deliveries(notice) {
+        Ok(deliveries) => deliveries,
+        Err(message) => return AdminResponse::Error { message },
+    };
+    if !deliveries.is_empty() {
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let auth = auth.clone();
+            runtime.spawn(async move {
+                for endpoint in push::send(deliveries).await {
+                    auth.lock().unwrap_or_else(PoisonError::into_inner).push_forget_endpoint(&endpoint);
+                }
+            });
+        }
+    }
+    AdminResponse::Ok
+}
 
 pub async fn write_frame<T: serde::Serialize>(
     stream: &mut (impl AsyncWriteExt + Unpin),
@@ -42,18 +79,13 @@ pub async fn read_frame<T: serde::de::DeserializeOwned>(
 }
 
 /// The admin plane's request/response mapping, shared by every transport.
-fn admin_response(
-    request: Result<AdminRequest, String>,
-    auth: &Arc<Mutex<AuthStore>>,
-    port: u16,
-    origin: Option<String>,
-    shutdown: &tokio::sync::watch::Sender<bool>,
-) -> AdminResponse {
+fn admin_response(request: Result<AdminRequest, String>, context: &AdminContext) -> AdminResponse {
+    let auth = &context.auth;
     match request {
         Ok(AdminRequest::Status) => AdminResponse::Host {
             running: true,
-            port,
-            origin,
+            port: context.port,
+            origin: context.origin.clone(),
             version: Some(env!("CARGO_PKG_VERSION").into()),
         },
         Ok(AdminRequest::PairingCode) => match auth.lock().unwrap_or_else(PoisonError::into_inner).create_pairing_code() {
@@ -72,8 +104,28 @@ fn admin_response(
             Err(message) => AdminResponse::Error { message },
         },
         Ok(AdminRequest::Shutdown) => {
-            let _ = shutdown.send(true);
+            let _ = context.shutdown.send(true);
             AdminResponse::Ok
+        }
+        // An agent notice carries a tab the sidecar resolved itself; one
+        // composed by the caller could point a tap anywhere.
+        Ok(AdminRequest::Notify { kind: NoticeKind::Agent, .. }) => AdminResponse::Error {
+            message: "agent notices go through agent_turn".into(),
+        },
+        Ok(AdminRequest::Notify { kind, title, body, tag }) => queue_notice(
+            auth,
+            &Notice { kind, status: None, title, body, tag, target: None },
+        ),
+        Ok(AdminRequest::AgentTurn { tmux_session, status }) => {
+            // Resolved before the auth lock is taken: the lookup reads the
+            // host key through it.
+            let tab = context.agent_tab.as_ref().and_then(|lookup| lookup(&tmux_session));
+            match tab {
+                // A tab no phone can reach, or one a phone is looking at.
+                None => AdminResponse::Ok,
+                Some(tab) if tab.attached => AdminResponse::Ok,
+                Some(tab) => queue_notice(auth, &tab.notice(&tmux_session, status)),
+            }
         }
         Err(message) => AdminResponse::Error { message },
     }
@@ -89,13 +141,7 @@ fn trusted_peer(stream: &tokio::net::UnixStream) -> bool {
 }
 
 #[cfg(unix)]
-pub async fn serve(
-    socket: &Path,
-    auth: Arc<Mutex<AuthStore>>,
-    port: u16,
-    origin: Option<String>,
-    shutdown: tokio::sync::watch::Sender<bool>,
-) -> Result<(), String> {
+pub async fn serve(socket: &Path, context: AdminContext) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
     let _ = std::fs::remove_file(socket);
     let listener =
@@ -113,9 +159,7 @@ pub async fn serve(
         if !trusted_peer(&stream) {
             continue;
         }
-        let auth = auth.clone();
-        let origin = origin.clone();
-        let shutdown = shutdown.clone();
+        let context = context.clone();
         tokio::spawn(async move {
             let request = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
@@ -123,7 +167,7 @@ pub async fn serve(
             )
             .await
             .unwrap_or_else(|_| Err("control message timed out".into()));
-            let response = admin_response(request, &auth, port, origin, &shutdown);
+            let response = admin_response(request, &context);
             let _ = write_frame(&mut stream, &response).await;
         });
     }
@@ -220,13 +264,7 @@ pub mod pipe {
 }
 
 #[cfg(windows)]
-pub async fn serve(
-    socket: &Path,
-    auth: Arc<Mutex<AuthStore>>,
-    port: u16,
-    origin: Option<String>,
-    shutdown: tokio::sync::watch::Sender<bool>,
-) -> Result<(), String> {
+pub async fn serve(socket: &Path, context: AdminContext) -> Result<(), String> {
     use tokio::net::windows::named_pipe::ServerOptions;
     let name = pipe::pipe_name(socket);
     let token = pipe::create_token(socket)?;
@@ -246,9 +284,7 @@ pub async fn serve(
             continue;
         };
         let mut stream = std::mem::replace(&mut server, next);
-        let auth = auth.clone();
-        let origin = origin.clone();
-        let shutdown = shutdown.clone();
+        let context = context.clone();
         let token = token.clone();
         tokio::spawn(async move {
             let presented = tokio::time::timeout(
@@ -267,20 +303,14 @@ pub async fn serve(
             )
             .await
             .unwrap_or_else(|_| Err("control message timed out".into()));
-            let response = admin_response(request, &auth, port, origin, &shutdown);
+            let response = admin_response(request, &context);
             let _ = write_frame(&mut stream, &response).await;
         });
     }
 }
 
 #[cfg(not(any(unix, windows)))]
-pub async fn serve(
-    _: &Path,
-    _: Arc<Mutex<AuthStore>>,
-    _: u16,
-    _: Option<String>,
-    _: tokio::sync::watch::Sender<bool>,
-) -> Result<(), String> {
+pub async fn serve(_: &Path, _: AdminContext) -> Result<(), String> {
     Err("Eldrun Mobile host is not supported on this platform".into())
 }
 
@@ -513,8 +543,25 @@ mod frame_tests {
             .expect("auth store");
         let auth = Arc::new(Mutex::new(auth));
         let (shutdown, watch) = tokio::sync::watch::channel(false);
-        let respond =
-            |request| admin_response(request, &auth, 8443, Some("https://desk.example".into()), &shutdown);
+        let looked_up = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen = looked_up.clone();
+        let context = AdminContext {
+            auth: auth.clone(),
+            port: 8443,
+            origin: Some("https://desk.example".into()),
+            shutdown,
+            agent_tab: Some(Arc::new(move |tmux: &str| {
+                seen.lock().unwrap().push(tmux.to_string());
+                (tmux == "eldrun-watched").then(|| AgentTabRef {
+                    project_id: "p".into(),
+                    project_label: "Aurora".into(),
+                    tab_id: "t".into(),
+                    tab_label: "Claude".into(),
+                    attached: true,
+                })
+            })),
+        };
+        let respond = |request| admin_response(request, &context);
 
         match respond(Ok(AdminRequest::Status)) {
             AdminResponse::Host { running, port, origin, version } => {
@@ -534,6 +581,38 @@ mod frame_tests {
             respond(Ok(AdminRequest::PairingCode)),
             AdminResponse::PairingCode { code, expires_at } if code.len() == 8 && expires_at > 0
         ));
+        // No phone subscribed: a notice is accepted and goes nowhere.
+        assert!(matches!(
+            respond(Ok(AdminRequest::Notify {
+                kind: push::NoticeKind::Calendar,
+                title: "Standup".into(),
+                body: "09:00".into(),
+                tag: "event@2026-09-28T09:00@15".into(),
+            })),
+            AdminResponse::Ok
+        ));
+        // A caller cannot compose an agent notice of its own.
+        assert!(matches!(
+            respond(Ok(AdminRequest::Notify {
+                kind: push::NoticeKind::Agent,
+                title: "x".into(),
+                body: "y".into(),
+                tag: "z".into(),
+            })),
+            AdminResponse::Error { .. }
+        ));
+        // Agent turns go through the sidecar's own lookup: an unknown session
+        // and a tab a phone is attached to both send nothing, quietly.
+        for tmux in ["eldrun-unknown", "eldrun-watched"] {
+            assert!(matches!(
+                respond(Ok(AdminRequest::AgentTurn {
+                    tmux_session: tmux.into(),
+                    status: push::AgentTurn::Question,
+                })),
+                AdminResponse::Ok
+            ));
+        }
+        assert_eq!(*looked_up.lock().unwrap(), ["eldrun-unknown", "eldrun-watched"]);
         assert!(matches!(respond(Ok(AdminRequest::ForgetAll)), AdminResponse::Ok));
         assert!(matches!(
             respond(Err("control message timed out".into())),

@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, type CalendarAction, type MobileCalendar, type MobileCalendarEvent, type MobileCalendarEventInput, type MobileCalendarInfo } from "../api";
 import { OptionSheet } from "../components/OptionSheet";
 import { describeFailure } from "../connection";
+import { NotificationsSheet } from "../components/NotificationsSheet";
+import { useT } from "../../../src/lib/i18n";
 import { isUntested } from "../../../src/lib/untested";
 
 /** A destructive act waiting on a second tap: the shared option sheet, with
@@ -50,10 +52,12 @@ export const defaultEnd = (stamp: string) => { const m = /^(\d{4}-\d{2}-\d{2})T(
 type Editing = { event?: MobileCalendarEvent; draft: MobileCalendarEventInput } | null;
 
 export function Calendar() {
+  const t = useT();
   const [month, setMonth] = useState(monthOf); const [selected, setSelected] = useState(today);
   const [data, setData] = useState<MobileCalendar | null>(null); const [editing, setEditing] = useState<Editing>(null);
   const [manage, setManage] = useState(false); const [busy, setBusy] = useState(false); const [error, setError] = useState("");
   const [confirm, setConfirm] = useState<Confirm | null>(null);
+  const [reminders, setReminders] = useState(false);
   const load = useCallback(async () => { setBusy(true); setError(""); try { const { calendar } = await api<{ calendar: MobileCalendar }>(`/api/v1/calendar?month=${month}`); setData(calendar); setSelected((d) => d.startsWith(month) ? d : `${month}-01`); } catch (e) { setError(describeFailure(e)); } finally { setBusy(false); } }, [month]);
   useEffect(() => { void load(); }, [load]);
   const mutate = async (action: CalendarAction) => { setBusy(true); setError(""); try { const { calendar } = await api<{ calendar: MobileCalendar }>(`/api/v1/calendar?month=${month}`, { method: "POST", body: JSON.stringify(action) }); setData(calendar); return true; } catch (e) { setError(describeFailure(e)); return false; } finally { setBusy(false); } };
@@ -64,7 +68,7 @@ export function Calendar() {
   const open = (event: MobileCalendarEvent) => { if (event.calendar_id) setEditing({ event, draft: inputOf(event, event.calendar_id) }); };
   return <main className="screen mobile-calendar-screen">
     <header><h1>Calendar</h1><button onClick={() => void load()} disabled={busy}>↻</button></header>
-    <div className="mobile-calendar-actions"><button className="primary" disabled={busy || !data?.calendars.some((c) => !c.readonly)} onClick={() => setEditing({ draft: blankEvent(selected, data?.calendars ?? []) })}>+ Event</button><button disabled={busy} onClick={() => setManage(true)}>Calendars</button></div>
+    <div className="mobile-calendar-actions"><button className="primary" disabled={busy || !data?.calendars.some((c) => !c.readonly)} onClick={() => setEditing({ draft: blankEvent(selected, data?.calendars ?? []) })}>+ Event</button><button disabled={busy} onClick={() => setManage(true)}>Calendars</button><button onClick={() => setReminders(true)}>{t("mobile.push.reminders")}{isUntested("mobile.calendar.push") && <> <span className="untested">Untested</span></>}</button></div>
     {error && <p className="error">{error}</p>}
     <div className="mobile-calendar-nav"><button onClick={() => setMonth((m) => addMonths(m, -1))} disabled={busy}>‹</button><strong>{label}</strong><button onClick={() => setMonth((m) => addMonths(m, 1))} disabled={busy}>›</button></div>
     <section className="mobile-calendar-grid" aria-label={label}>{Array.from({ length: 7 }, (_, i) => <span className="mobile-calendar-weekday" key={NAMES[(i + weekStart) % 7]}>{NAMES[(i + weekStart) % 7]}</span>)}{days.map((date) => { const rows = events(date); return <button className={`mobile-calendar-day${date.startsWith(month) ? "" : " outside"}${date === selected ? " selected" : ""}${date === today() ? " today" : ""}`} key={date} onClick={() => setSelected(date)}><span>{Number(date.slice(-2))}</span><i className="mobile-calendar-dots">{rows.slice(0, 3).map((event, i) => <b key={`${event.id}-${i}`} style={{ backgroundColor: event.color }} />)}</i></button>; })}</section>
@@ -73,6 +77,7 @@ export function Calendar() {
     {editing && <EventEditor editing={editing} calendars={data?.calendars ?? []} busy={busy} close={() => setEditing(null)} save={async (event) => { const eventId = editing.event?.id; const ok = await mutate(eventId ? { type: "update_event", event_id: eventId, event } : { type: "create_event", event }); if (ok) setEditing(null); }} remove={editing.event ? () => { const eventId = editing.event?.id; if (!eventId) return; setConfirm({ title: `Delete “${editing.event?.title || "Untitled event"}”?`, note: editing.event?.recurring ? "This deletes the whole recurring series." : "This removes the event from the desktop's calendar too.", label: "Delete event", run: async () => { if (await mutate({ type: "delete_event", event_id: eventId })) setEditing(null); } }); } : undefined} />}
     {manage && <CalendarManager calendars={data?.calendars ?? []} busy={busy} mutate={mutate} confirm={setConfirm} close={() => setManage(false)} />}
     {confirm && <ConfirmSheet confirm={confirm} busy={busy} onClose={() => setConfirm(null)} />}
+    {reminders && <NotificationsSheet onClose={() => setReminders(false)} />}
   </main>;
 }
 

@@ -1,7 +1,7 @@
 ---
 id: mobile
 title: Eldrun Mobile (phone companion)
-keywords: [mobile, phone, tailscale, tailnet, pair, pairing, remote control, pwa, revoke]
+keywords: [mobile, phone, tailscale, tailnet, pair, pairing, remote control, pwa, revoke, push, notifications, reminders, agent, question]
 ---
 
 Eldrun Mobile is a small companion web app for your phone. It shows the
@@ -38,6 +38,34 @@ reopen, because the phone attaches to its terminal session.
   Eldrun must be up.
 - A paired phone types into a terminal exactly like your keyboard: keep agent
   approval modes conservative while Mobile is on.
+
+## Notifications on the phone
+
+On the phone, open **This phone → Notifications** (or **Calendar → Reminders**)
+and choose what reaches you, even with Eldrun Mobile closed:
+
+- **Calendar reminders** — each reminder of the desktop calendar. A tap opens
+  the Calendar.
+- **Agents** — *When one needs your answer* (an agent tab waiting on a
+  question or approval), or *Also when one finishes a turn*. A tap opens that
+  tab. A tab you have open on the phone right then does not notify, and one
+  tab notifies at most every 30 seconds.
+- **What a notification shows** — *Names and details* (event title, time and
+  place; project and tab), or *Only that something wants you*, for a lock
+  screen others can see.
+
+Eldrun must be running on the desktop: it is what notices the reminder or the
+agent's turn.
+
+- This is the one Mobile feature that leaves your tailnet: notifications travel
+  through your phone browser's push service (Google, Apple, Mozilla or
+  Microsoft). Each one is encrypted to your phone first, so the service cannot
+  read it.
+- On iPhone, add Eldrun Mobile to the Home Screen and open it from there;
+  Safari tabs cannot receive notifications.
+- A calendar whose alerts are switched off on the desktop stays silent on the
+  phone too. Revoking a phone stops its notifications at once.
+- Only agent tabs of projects (and boxes) the phone may reach notify.
 
 ## If a phone goes missing
 

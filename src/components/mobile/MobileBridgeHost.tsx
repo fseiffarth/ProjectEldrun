@@ -65,6 +65,7 @@ import { useI18nStore, useT } from "../../lib/i18n";
 import { resolveUse24h } from "../../lib/timeFormat";
 import { finishAlert } from "../../lib/alertDone";
 import { useAlertsFeed, type AlertsFeed } from "../files/useAlertsFeed";
+import { agentTurnEdges, type MobileAgentState } from "../../lib/mobileAgentTurns";
 import {
   desktopTimeZone,
   localOccurrenceKey,
@@ -466,6 +467,34 @@ function mobileAgentState(ptyId: string): "working" | "question" | "done" | "idl
   if (doneAt !== undefined && doneAt > (lastTabReadAt(ptyId) ?? 0)) return "done";
   return "idle";
 }
+
+/**
+ * Every phone-reachable agent tab's state, by tmux session — the snapshot the
+ * push edges are found between. Root's tabs are included on its switch alone:
+ * `mobileRootScope`'s review probe is a backend call, too costly per activity
+ * change, and the sidecar's catalog (`discovery::root_open`) is what decides
+ * whether a notice names a root tab at all.
+ */
+function agentTurnSnapshot(): Map<string, MobileAgentState> {
+  const scopes = [
+    ...useProjectsStore.getState().projects.flatMap((entry) => mobileScope(entry.id) ?? []),
+    ...useBoxesStore.getState().boxes.flatMap((entry) => mobileScope(boxScopeId(entry.id)) ?? []),
+  ].map((scope) => scope.id);
+  if (useSettingsStore.getState().settings?.eldrun_mobile_host?.root_access === true) scopes.push(ROOT_SCOPE);
+  const tabsByScope = useTabsStore.getState().tabsByScope;
+  const snapshot = new Map<string, MobileAgentState>();
+  for (const scopeId of scopes) {
+    for (const tab of tabsByScope[scopeId] ?? []) {
+      if (isAgentKind(tab.kind) && tab.tmuxSession) snapshot.set(tab.tmuxSession, mobileAgentState(`${scopeId}:${tab.key}`));
+    }
+  }
+  return snapshot;
+}
+
+/** How long activity changes are gathered before one comparison. Short
+ * enough that a question reaches the phone at once; long enough that a burst
+ * of output does not walk every tab of every scope per chunk. */
+const AGENT_TURN_SETTLE_MS = 500;
 
 /** The model tag a phone card shows for `tab`, with both of its sources asked
  * to re-read for the next poll. A local-model tab whose session names no model
@@ -2159,6 +2188,32 @@ export function MobileBridgeHost() {
   const tRef = useRef(t);
   alertsRef.current = alerts;
   tRef.current = t;
+  // Agent-turn push notices: a tab that starts waiting on an answer, or
+  // finishes a turn, is reported to the sidecar, which decides which phones
+  // hear of it. Only while the host is on — with no phone there is no one to
+  // tell, and no reason to watch.
+  useEffect(() => {
+    if (!mobileHostOn) return;
+    let last = agentTurnSnapshot();
+    let timer: number | undefined;
+    const compare = () => {
+      timer = undefined;
+      const next = agentTurnSnapshot();
+      for (const edge of agentTurnEdges(last, next)) {
+        void invoke("mobile_admin", {
+          request: { type: "agent_turn", tmux_session: edge.tmuxSession, status: edge.status },
+        }).catch(() => undefined);
+      }
+      last = next;
+    };
+    const unsubscribe = useActivityStore.subscribe(() => {
+      timer ??= window.setTimeout(compare, AGENT_TURN_SETTLE_MS);
+    });
+    return () => {
+      unsubscribe();
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [mobileHostOn]);
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;

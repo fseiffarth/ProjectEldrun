@@ -37,6 +37,7 @@ use super::{
         MAX_TAB_LABEL, TERMINAL_PROTOCOL,
     },
     pty_bridge::{self, TerminalRegistry},
+    push::{AgentTabRef, PushPrefs},
     sign_in,
     live_pwa, MOBILE_ASSETS,
 };
@@ -126,6 +127,18 @@ struct MailReplyBody {
 #[serde(deny_unknown_fields)]
 struct AlertResolveBody {
     alert_id: String,
+}
+
+/// A phone's Web Push subscription: `PushSubscription.toJSON()`'s endpoint and
+/// keys, and what the phone wants to be told (`push::PushPrefs`).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PushBody {
+    endpoint: String,
+    p256dh: String,
+    auth: String,
+    #[serde(flatten)]
+    prefs: PushPrefs,
 }
 
 #[derive(Deserialize, Default)]
@@ -946,6 +959,102 @@ async fn alerts_resolve(
         ),
         _ => api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable"),
     }
+}
+
+/// This device's push state and the key it must subscribe with. The endpoint
+/// goes back only to the device that registered it, so the phone can tell a
+/// browser-rotated subscription from the one on file.
+fn push_state(state: &HostState, device_id: &str) -> (StatusCode, Json<serde_json::Value>) {
+    let auth = state.auth.lock().unwrap_or_else(PoisonError::into_inner);
+    let push = auth.push();
+    let subscription = push.subscription(device_id);
+    (
+        StatusCode::OK,
+        Json(json!({
+            "vapid_public_key": push.public_key(),
+            "subscribed": subscription.is_some(),
+            "details": subscription.is_some_and(|s| s.details),
+            "calendar": subscription.is_some_and(|s| s.calendar),
+            "agents": subscription.map(|s| s.agents).unwrap_or_default(),
+            "endpoint": subscription.map(|s| s.endpoint.clone()),
+        })),
+    )
+}
+
+async fn push_get(State(state): State<HostState>, headers: HeaderMap) -> impl IntoResponse {
+    match authenticate(&headers, &state) {
+        Ok(device_id) => push_state(&state, &device_id),
+        Err(error) => error,
+    }
+}
+
+/// Subscribe this phone to push notices. The only route that makes the host
+/// talk to anything off the tailnet, so the endpoint must name a push vendor
+/// (`push::endpoint_origin`) before it is stored.
+async fn push_put(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> impl IntoResponse {
+    let device_id = match authenticate(&headers, &state) {
+        Ok(device_id) => device_id,
+        Err(error) => return error,
+    };
+    if !exact_origin(&headers, &state) {
+        return api_error(StatusCode::FORBIDDEN, "invalid_origin");
+    }
+    let Ok(request) = serde_json::from_slice::<PushBody>(&body) else {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    let stored = state
+        .auth
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push_subscribe(&device_id, &request.endpoint, &request.p256dh, &request.auth, request.prefs);
+    if stored.is_err() {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_push_subscription");
+    }
+    push_state(&state, &device_id)
+}
+
+async fn push_delete(State(state): State<HostState>, headers: HeaderMap) -> impl IntoResponse {
+    let device_id = match authenticate(&headers, &state) {
+        Ok(device_id) => device_id,
+        Err(error) => return error,
+    };
+    if !exact_origin(&headers, &state) {
+        return api_error(StatusCode::FORBIDDEN, "invalid_origin");
+    }
+    if state
+        .auth
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push_unsubscribe(&device_id)
+        .is_err()
+    {
+        return api_error(StatusCode::SERVICE_UNAVAILABLE, "push_unavailable");
+    }
+    push_state(&state, &device_id)
+}
+
+/// The agent tab a tmux session is, as the phone knows it — for an agent-turn
+/// notice (`AdminRequest::AgentTurn`). Only a tab the catalog already offers a
+/// phone resolves, so a notice can never name one the phone could not open.
+fn agent_tab_ref(state: &HostState, tmux_session: &str) -> Option<AgentTabRef> {
+    let catalog = catalog(state).ok()?;
+    catalog.projects.iter().find_map(|project| {
+        project
+            .tabs
+            .iter()
+            .find(|tab| tab.tmux_name == tmux_session && tab.public.kind == "agent")
+            .map(|tab| AgentTabRef {
+                project_id: project.public.id.clone(),
+                project_label: project.public.label.clone(),
+                tab_id: tab.public.id.clone(),
+                tab_label: tab.public.label.clone(),
+                attached: state.terminal_registry.is_busy(tmux_session),
+            })
+    })
 }
 
 fn valid_calendar_month(value: &str) -> bool {
@@ -3028,6 +3137,7 @@ fn router(state: HostState) -> Router {
         .route("/api/v1/todo", get(todo).post(todo_mutate))
         .route("/api/v1/alerts", get(alerts).post(alerts_resolve))
         .route("/api/v1/calendar", get(calendar).post(calendar_mutate))
+        .route("/api/v1/push", get(push_get).put(push_put).delete(push_delete))
         .route("/api/v1/mail", get(mail_overview))
         .route("/api/v1/mail/folders/{folder_id}", get(mail_folder))
         .route(
@@ -3149,9 +3259,16 @@ pub async fn run(state_dir: PathBuf) -> Result<(), String> {
     let admin_path = config.control_dir.join("admin.sock");
     let admin_origin = Some(config.origin.clone());
     let port = config.host.port;
-    let admin_shutdown = shutdown_tx.clone();
+    let lookup_state = state.clone();
+    let admin_context = admin::AdminContext {
+        auth,
+        port,
+        origin: admin_origin,
+        shutdown: shutdown_tx.clone(),
+        agent_tab: Some(Arc::new(move |tmux: &str| agent_tab_ref(&lookup_state, tmux))),
+    };
     tokio::spawn(async move {
-        let _ = admin::serve(&admin_path, auth, port, admin_origin, admin_shutdown).await;
+        let _ = admin::serve(&admin_path, admin_context).await;
     });
     let publisher_shutdown = shutdown_tx.clone();
     let publisher_origin = config.origin.clone();
@@ -3469,6 +3586,7 @@ mod tests {
         "/api/v1/todo",
         "/api/v1/alerts",
         "/api/v1/calendar",
+        "/api/v1/push",
         "/api/v1/mail",
         "/api/v1/mail/folders/anything",
         "/api/v1/mail/folders/anything/messages/anything",
@@ -3528,6 +3646,65 @@ mod tests {
         assert!(MOBILE_PERMISSIONS_POLICY.contains("camera=()"));
         assert!(!MOBILE_PERMISSIONS_POLICY.contains("microphone=()"));
         assert!(!MOBILE_PERMISSIONS_POLICY.contains("microphone=(*"));
+    }
+
+    fn push_request(method: &str, origin: &str, cookie: &str, body: &Value) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri("/api/v1/push")
+            .header(header::ORIGIN, origin)
+            .header(header::COOKIE, cookie_pair(cookie))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(serde_json::to_vec(body).expect("body")))
+            .expect("request")
+    }
+
+    /// A phone subscribes only from the exact origin, only to a push vendor's
+    /// endpoint, and loses the subscription the moment it is revoked.
+    #[tokio::test]
+    async fn push_subscriptions_are_origin_checked_vendor_only_and_die_with_the_device() {
+        let host = Fixture::bare();
+        let (cookie, device_id) = host.pair_device(&signing_key(44)).await;
+        let (status, _, body) = host.send(get_as("/api/v1/push", &cookie)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let state = json(&body);
+        assert_eq!(state["subscribed"], false);
+        let vapid = Base64UrlUnpadded::decode_vec(state["vapid_public_key"].as_str().expect("key"))
+            .expect("base64url key");
+        assert_eq!(vapid.len(), 65);
+
+        use p256::elliptic_curve::sec1::ToEncodedPoint;
+        let phone = p256::SecretKey::from_slice(&[5u8; 32]).expect("phone key");
+        let subscription = |endpoint: &str| {
+            serde_json::json!({
+                "endpoint": endpoint,
+                "p256dh": Base64UrlUnpadded::encode_string(
+                    phone.public_key().to_encoded_point(false).as_bytes(),
+                ),
+                "auth": Base64UrlUnpadded::encode_string(&[3u8; 16]),
+                "details": true,
+                "calendar": true,
+                "agents": "questions",
+            })
+        };
+        let good = subscription("https://fcm.googleapis.com/fcm/send/phone");
+        let (status, _, _) = host
+            .send(push_request("PUT", "https://evil.example", &cookie, &good))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _, _) = host
+            .send(push_request("PUT", ORIGIN, &cookie, &subscription("https://evil.example/push")))
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        let (status, _, body) = host.send(push_request("PUT", ORIGIN, &cookie, &good)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(json(&body)["subscribed"], true);
+        assert_eq!(json(&body)["details"], true);
+        assert_eq!(json(&body)["agents"], "questions");
+
+        host.state.auth.lock().unwrap().revoke(&device_id).expect("revoke");
+        assert!(host.state.auth.lock().unwrap().push().subscription(&device_id).is_none());
     }
 
     #[tokio::test]

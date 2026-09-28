@@ -36,6 +36,26 @@ independent of all of them and touches only the PWA's own lock.
 
 ## A. Agent-turn push notifications
 
+> **Channel landed 2026-09-28, calendar reminders first (todo 31bm).** The push
+> transport below is built — `mobile_control/push.rs` (VAPID + RFC 8291,
+> vendor-host allowlist, no redirects, 410 → drop), `push.json` inside
+> `AuthStore` so revoke/forget-all drop subscriptions, `GET/PUT/DELETE
+> /api/v1/push`, admin `notify`, `sw.js` handlers — and its first sender is
+> the desktop reminder engine (`stores/calendar/alarms.ts`), not agent edges.
+> Deviations: one route (`/api/v1/push`) instead of three; a per-device
+> *details* choice (the calendar analogue of the project-label opt-in); no
+> desktop-side switch — the phone's own Reminders sheet is the opt-in.
+>
+> **Agent edges landed the same day (todo 31bn)**, as A.4 describes:
+> `MobileBridgeHost` diffs `mobileAgentState` snapshots (`lib/mobileAgentTurns`:
+> into `question`, `working → done`; never a first sighting) and sends admin
+> `agent_turn { tmux_session, status }`; the sidecar resolves the tab through
+> its catalog (`host::agent_tab_ref`), stays quiet while `TerminalRegistry`
+> says a phone holds it, and keeps one notice per tab per 30 s. Per-phone
+> choices replace the single toggle: `calendar`, `agents` (off / questions /
+> all) and `details` (which also carries the project/tab names — A.3's
+> label opt-in). A tap lands on the tab through `lastPlace::resolvePlace`.
+
 ### A.1 Goal
 
 When an agent tab transitions to `question` (and optionally `done`), the

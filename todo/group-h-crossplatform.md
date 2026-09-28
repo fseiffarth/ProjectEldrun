@@ -3228,6 +3228,70 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
 
+- [~] **31bm — Calendar reminders as push notifications on the phone** (2026-09-28;
+  ✅ code-complete, automated tests passing — `push.rs` (RFC 8291 worked
+  example byte for byte, VAPID JWT verifies, host allowlist, revoke/forget-all
+  coupling), host route test, `CalendarAlarmPush.test.ts`,
+  `MobileCalendarReminders.test.tsx`; ⚠️ never sent through a real push
+  service or shown on a phone). Calendar → **Reminders** sheet on the phone:
+  Off / On, with event details / On, without details. The desktop's reminder
+  engine sends each fresh reminder (not snooze wake-ups, not muted calendars)
+  through admin `notify`; the sidecar encrypts per phone and POSTs to the
+  vendor push service; `sw.js` shows it and a tap opens Calendar. First use of
+  the Web Push channel from `docs/eldrun_mobile_future_plan.md` §A — agent
+  `question`/`done` edges can ride it next.
+  - Needs the sidecar updated (Settings → Mobile offers it after a rebuild)
+    and the PWA rebuilt (`npm run mobile:bundle`). Untested id
+    `mobile.calendar.push`.
+  - Open: whether Apple accepts the VAPID `sub` (the project's GitHub URL);
+    whether iOS delivers while the Home Screen app is fully closed.
+  - [ ] 🖐️ Manual phone QA — phone Calendar → Reminders → On, with event
+    details → allow notifications. On the desktop make an event 16 min out
+    with a 15-minute reminder; close Eldrun Mobile on the phone; within a
+    minute of the reminder the phone shows title · time · place. Tap → app
+    unlocks onto Calendar. Switch to "without details" → next reminder says
+    only "Calendar reminder". Revoke the phone on the desktop → no more.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
+- [~] **31bn — Agent questions and finished turns as push notifications** (2026-09-28;
+  ✅ code-complete, automated tests passing — `push.rs` (per-phone choices,
+  decrypted payloads carry only opaque ids when details are off, per-tab
+  cooldown), admin `agent_turn` test (unknown / phone-attached tab send
+  nothing), `MobileAgentTurnEdges.test.ts`, `MobileCalendarReminders.test.tsx`;
+  ⚠️ never shown on a phone). Rides 31bm's channel. The desktop bridge diffs
+  each phone-reachable agent tab's state (the one the phone's lists show) and
+  reports *into question* and *working → done*; the sidecar resolves the tab
+  through its catalog, skips it while a phone holds its terminal, and sends at
+  most one notice per tab per 30 s. The Reminders sheet became **This phone →
+  Notifications** (also Calendar → Reminders): Calendar on/off · Agents off /
+  questions / also finished turns · names and details or not. A tap opens the
+  agent's tab (after the unlock when locked). Untested id `mobile.push.title`.
+  - Needs the sidecar updated and the PWA rebuilt, like 31bm.
+  - Known: a finished turn on the tab in view on the desktop still notifies
+    (the desktop cannot tell whether anyone is at it); a notice without
+    details is English only (the service worker has no i18n).
+  - [ ] 🖐️ Manual phone QA — This phone → Notifications → Agents → When one
+    needs your answer. Leave the phone locked; in a phone-reachable project
+    have Claude ask a permission question → notification "Aurora · Claude —
+    Needs your answer" within seconds; tap → unlock → that tab. With the tab
+    open on the phone, the next question does not notify. Switch to "Also when
+    one finishes a turn" → a finished turn notifies. Revoke → nothing.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
 *Not coming to the phone (decided, not forgotten — see
 `docs/mobile_box_parity_plan.md`): editing a box from the phone (membership,
 rename, Dissolve), listing a box's members as project rows, a per-member

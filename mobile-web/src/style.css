@@ -816,6 +816,8 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .sheet-close { width:42px; flex:0 0 auto; padding:7px 0; border:0; border-radius:10px; background:transparent; color:#c9cddb; font-size:1.05rem; }
 .sheet-note { margin:0; padding:2px 6px 4px; color:#9da3b6; font-size:.84rem; overflow-wrap:anywhere; }
 .sheet-note.error { color:#ffb4c0; }
+.notifications-group { display:grid; gap:6px; }
+.notifications-group h3 { margin:4px 6px 0; color:#9da3b6; font-size:.78rem; font-weight:600; letter-spacing:.04em; text-transform:uppercase; }
 .option-list { display:grid; gap:3px; margin:0; padding:0; list-style:none; }
 .option-list button { display:flex; align-items:center; gap:12px; width:100%; padding:13px 14px; border:0; border-radius:13px; background:#1e2230; text-align:left; }
 .option-list button.current { color:#8fb6ff; background:#1c2336; }

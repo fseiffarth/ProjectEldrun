@@ -1798,6 +1798,7 @@ dependencies = [
 name = "eldrun"
 version = "0.1.88"
 dependencies = [
+ "aes-gcm",
  "ammonia",
  "arboard",
  "argon2",

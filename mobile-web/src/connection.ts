@@ -216,6 +216,10 @@ const FAILURE_TEXT: Record<string, string> = {
   unsupported_mode: "Agent mode is unavailable for that agent.",
   persist_failed: "The desktop could not save that.",
   calendar_unavailable: "The desktop's calendar could not be read.",
+  // Reminders on this phone (`push.ts`).
+  invalid_push_subscription: "The desktop refused this browser's push subscription.",
+  push_unavailable: "The desktop could not change reminders for this phone.",
+  permission_denied: "Notifications are blocked for Eldrun Mobile in this phone's settings.",
   invalid_event: "The desktop rejected that event.",
   event_not_found: "That event is no longer in the calendar.",
   invalid_task: "The desktop rejected that card.",
