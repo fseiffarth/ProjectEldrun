@@ -828,10 +828,30 @@ function AgentGlobalRow() {
         </span>
       </div>
       {note && <p className="settings-help">{note}</p>}
+    </>
+  );
+}
+
+/** Codex auto-review (`approvals_reviewer` in the Eldrun-wide layer's Codex
+ *  config). On the Codex card, not under the fence settings: it is what makes
+ *  fenced Codex usable, so it sits where a Codex user looks. */
+function CodexAutoReviewToggle() {
+  const t = useT();
+  const [on, setOn] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const refresh = () => {
+    invoke<AgentGlobalLayer>("agent_global_status")
+      .then((l) => setOn(l.codexAutoReview))
+      .catch(() => setOn(null));
+  };
+  useEffect(refresh, []);
+  return (
+    <>
       <ToggleRow
         label={<>{t("settings.codexAutoReview")} <UntestedTag id="settings.codexAutoReview" /></>}
-        checked={layer?.codexAutoReview ?? false}
-        disabled={busy || !layer}
+        checked={on ?? false}
+        disabled={busy || on === null}
         onChange={(e) => {
           setNote(null);
           setBusy(true);
@@ -844,6 +864,7 @@ function AgentGlobalRow() {
         }}
       />
       <p className="settings-help">{t("settings.codexAutoReviewHelp")}</p>
+      {note && <p className="settings-help">{note}</p>}
     </>
   );
 }
@@ -2054,6 +2075,7 @@ export function AgentsPanel({
           )}
         </>
       )}
+      {a.id === "codex" && a.installed && <CodexAutoReviewToggle />}
       {a.id === "codex" && <CodexHookNotice />}
       {a.id === "claude" && <ClaudeRemoteControlNotice />}
       {a.installed && installedExtras?.(a)}

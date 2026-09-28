@@ -450,8 +450,8 @@ The way out that keeps a check on each escalation is Codex's own: auto-review
 (`approval_policy = "on-request"` with `approvals_reviewer = "auto_review"`),
 where a reviewer agent answers the sandbox-boundary requests instead of the
 user. Whether it covers the "sandbox failed, retry outside it" request fenced
-Codex raises is not confirmed. Manage CLIs has a switch for it under the
-global agent config (`agent_global::set_codex_auto_review`). The switch writes
+Codex raises is not confirmed. Manage CLIs has a switch for it on the Codex card
+(`agent_global::set_codex_auto_review`). The switch writes
 only `approvals_reviewer` into the layer's `.codex/config.toml`. The approval
 policy stays Codex's; auto-review needs `on-request`, Codex's default. So this
 is the user's own Codex config reaching every home, not a mode Eldrun picks.
