@@ -32,7 +32,7 @@ import { useSyncStore, isPathExcluded, dirSyncAggregate, type SyncFileState } fr
 import { confirmSyncTransfer } from "../../stores/remote/syncConfirm";
 import { useActivityStore } from "../../stores/activity";
 import { useFileClipboardStore } from "../../stores/fileClipboard";
-import { type FileEntry, type InternalViewer, type SortKey, fmtSize, fmtModified, visibleEntries, isHiddenByEnding, internalViewerFor, disabledViewers, fileEntriesEqual, stringMapsEqual, nextSelection, STANDARD_PROJECT_FILES } from "../../lib/viewers/fileUtils";
+import { type FileEntry, type InternalViewer, type SortKey, fmtSize, fmtModified, visibleEntries, sortEntries, isHiddenByEnding, internalViewerFor, disabledViewers, fileEntriesEqual, stringMapsEqual, nextSelection, STANDARD_PROJECT_FILES } from "../../lib/viewers/fileUtils";
 import {
   dropFileTreeSnapshot,
   fileTreeSnapshotKey,
@@ -902,7 +902,25 @@ export function FileTree({
     // switch is to see them in place, not to hide them.
     const regular = separateGitignored ? nonStandard.filter((e) => !isIgnored(e)) : nonStandard;
     const gitignored = separateGitignored ? nonStandard.filter(isIgnored) : [];
-    return { regular, standard, gitignored, hiddenExt };
+    // The listing gives every folder size 0, so "Size" must sort on the figure
+    // the row shows: the recursive walk, less its ignored bytes outside the
+    // gitignored / hidden-by-extension groups (mirrors `dirShown` in
+    // renderEntry). An unwalked or scan-excluded folder sorts last.
+    const bySize = (list: FileEntry[], subtractIgnored: boolean) =>
+      sortKey !== "size"
+        ? list
+        : sortEntries(list, "size", descending, (e) => {
+            if (!e.is_dir) return e.size;
+            const total = dirSizes[e.path];
+            if (total === undefined) return undefined;
+            return subtractIgnored ? total - (dirIgnoredBytes[e.path] ?? 0) : total;
+          });
+    return {
+      regular: bySize(regular, true),
+      standard: bySize(standard, true),
+      gitignored: bySize(gitignored, false),
+      hiddenExt: bySize(hiddenExt, false),
+    };
   }, [
     entries,
     relPath,
@@ -913,6 +931,8 @@ export function FileTree({
     dirIgnoredBytes,
     hiddenEndings,
     shownPaths,
+    sortKey,
+    descending,
   ]);
 
   // How many rows the tree will actually render, raised a page at a time by the

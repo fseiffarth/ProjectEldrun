@@ -18,6 +18,7 @@ import {
   joinRel,
   parentRel,
   relFromAbs,
+  sortEntries,
   stringMapsEqual,
   visibleEntries,
   type FileEntry,
@@ -122,10 +123,42 @@ describe("visibleEntries — ordering", () => {
     expect(names(visibleEntries(entries, { ...shown, descending: true }))).toEqual(["b", "c.ts", "a.ts"]);
   });
 
-  it("breaks a size tie by name, and descending flips the tie-break too", () => {
+  it("breaks a size tie A→Z in both directions", () => {
     const entries = [entry("b.ts", { size: 5 }), entry("a.ts", { size: 5 }), entry("c.ts", { size: 1 })];
     expect(names(visibleEntries(entries, { ...shown, sortKey: "size" }))).toEqual(["c.ts", "a.ts", "b.ts"]);
-    expect(names(visibleEntries(entries, { ...shown, sortKey: "size", descending: true }))).toEqual(["b.ts", "a.ts", "c.ts"]);
+    expect(names(visibleEntries(entries, { ...shown, sortKey: "size", descending: true }))).toEqual(["a.ts", "b.ts", "c.ts"]);
+  });
+
+  it("orders names naturally and case-insensitively", () => {
+    const entries = [entry("run10.log"), entry("Run2.log"), entry("run1.log")];
+    expect(names(visibleEntries(entries, shown))).toEqual(["run1.log", "Run2.log", "run10.log"]);
+    expect(names(visibleEntries(entries, { ...shown, descending: true }))).toEqual(["run10.log", "Run2.log", "run1.log"]);
+  });
+
+  it("sorts folders by their walked size, unwalked ones last in both directions", () => {
+    const entries = [
+      entry("small", { is_dir: true }),
+      entry("big", { is_dir: true }),
+      entry("unknown", { is_dir: true }),
+      entry("f.ts", { size: 1 }),
+    ];
+    const walked: Record<string, number> = { "/p/small": 10, "/p/big": 1000 };
+    const sizeOf = (e: FileEntry) => (e.is_dir ? walked[e.path] : e.size);
+    expect(names(sortEntries(entries, "size", false, sizeOf))).toEqual(["small", "big", "unknown", "f.ts"]);
+    expect(names(sortEntries(entries, "size", true, sizeOf))).toEqual(["big", "small", "unknown", "f.ts"]);
+    // Without walked sizes a folder's listed 0 is not a size: name order.
+    expect(names(visibleEntries(entries, { ...shown, sortKey: "size", descending: true }))).toEqual(["big", "small", "unknown", "f.ts"]);
+  });
+
+  it("type ignores a folder's dotted name and an extension's case", () => {
+    const entries = [
+      entry("v1.2", { is_dir: true }),
+      entry("a", { is_dir: true }),
+      entry("b.PDF"),
+      entry("a.txt"),
+      entry("a.pdf"),
+    ];
+    expect(names(visibleEntries(entries, { ...shown, sortKey: "type" }))).toEqual(["a", "v1.2", "a.pdf", "b.PDF", "a.txt"]);
   });
 
   it("orders unicode names by locale, not code point", () => {
@@ -133,9 +166,12 @@ describe("visibleEntries — ordering", () => {
     expect(names(visibleEntries(entries, shown))).toEqual(["a.md", "ä.md", "b.md", "Z.md"]);
   });
 
-  it("treats a missing timestamp as zero when sorting by modified", () => {
+  it("puts a missing timestamp last in both directions", () => {
     const entries = [entry("new.ts", { modified_secs: 10 }), entry("none.ts"), entry("old.ts", { modified_secs: 5 })];
-    expect(names(visibleEntries(entries, { ...shown, sortKey: "modified" }))).toEqual(["none.ts", "old.ts", "new.ts"]);
+    expect(names(visibleEntries(entries, { ...shown, sortKey: "modified" }))).toEqual(["old.ts", "new.ts", "none.ts"]);
+    expect(names(visibleEntries(entries, { ...shown, sortKey: "modified", descending: true }))).toEqual(["new.ts", "old.ts", "none.ts"]);
+    // SFTP has no creation time: everything ties, so name order.
+    expect(names(visibleEntries(entries, { ...shown, sortKey: "created", descending: true }))).toEqual(["new.ts", "none.ts", "old.ts"]);
   });
 });
 

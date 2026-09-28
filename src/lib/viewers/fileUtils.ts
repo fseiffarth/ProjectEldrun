@@ -562,22 +562,65 @@ export function isHiddenByEnding(
   return endings.some((ending) => entry.name.toLowerCase().endsWith(ending));
 }
 
-function compareEntries(a: FileEntry, b: FileEntry, sortKey: SortKey, descending: boolean): number {
+/**
+ * A folder's size for sorting. Listings carry `size: 0` for every folder (its
+ * recursive size is a separate, async walk), so by default a folder's size is
+ * unknown; a caller that has walked folders passes `sizeOf` to sort on the
+ * same figure its rows show.
+ */
+export type EntrySizeOf = (entry: FileEntry) => number | undefined;
+
+const defaultSizeOf: EntrySizeOf = (e) => (e.is_dir ? undefined : e.size);
+
+/** Folders first, then by `sortKey`; see `compareEntries`. Returns a new array. */
+export function sortEntries(
+  entries: FileEntry[],
+  sortKey: SortKey,
+  descending: boolean,
+  sizeOf: EntrySizeOf = defaultSizeOf,
+): FileEntry[] {
+  return [...entries].sort((a, b) => compareEntries(a, b, sortKey, descending, sizeOf));
+}
+
+// Natural order ("file2" before "file10"), case-insensitive, like file managers.
+const NAME_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: "accent" });
+
+function compareNames(a: string, b: string): number {
+  return NAME_COLLATOR.compare(a, b) || (a < b ? -1 : a > b ? 1 : 0);
+}
+
+function compareEntries(
+  a: FileEntry,
+  b: FileEntry,
+  sortKey: SortKey,
+  descending: boolean,
+  sizeOf: EntrySizeOf = defaultSizeOf,
+): number {
   if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
 
-  let result = 0;
+  const byName = compareNames(a.name, b.name);
+  if (sortKey === "name") return descending ? -byName : byName;
+
+  let result: number;
   if (sortKey === "type") {
-    result = (a.extension ?? "").localeCompare(b.extension ?? "");
-  } else if (sortKey === "size") {
-    result = a.size - b.size;
-  } else if (sortKey === "created") {
-    result = (a.created_secs ?? 0) - (b.created_secs ?? 0);
-  } else if (sortKey === "modified") {
-    result = (a.modified_secs ?? 0) - (b.modified_secs ?? 0);
+    // A folder has no type; a dot in its name ("v1.2") is not an extension.
+    result = NAME_COLLATOR.compare(a.is_dir ? "" : a.extension ?? "", b.is_dir ? "" : b.extension ?? "");
+  } else {
+    const [x, y] =
+      sortKey === "size" ? [sizeOf(a), sizeOf(b)]
+      : sortKey === "created" ? [a.created_secs, b.created_secs]
+      : [a.modified_secs, b.modified_secs];
+    // An unknown value (an unwalked folder, no creation time over SFTP) sorts
+    // after every known one in both directions, rather than posing as 0.
+    if (x == null || y == null) {
+      if (x != null) return -1;
+      if (y != null) return 1;
+      return byName;
+    }
+    result = x - y;
   }
-  if (result === 0) {
-    result = a.name.toLowerCase().localeCompare(b.name.toLowerCase());
-  }
+  // Ties stay A→Z whichever way the key runs.
+  if (result === 0) return byName;
   return descending ? -result : result;
 }
 
