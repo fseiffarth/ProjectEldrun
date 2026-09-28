@@ -1,7 +1,7 @@
 ---
 id: mobile
 title: Eldrun Mobile (phone companion)
-keywords: [mobile, phone, tailscale, tailnet, pair, pairing, remote control, pwa, revoke, push, notifications, reminders, agent, question]
+keywords: [mobile, phone, tailscale, tailnet, pair, pairing, remote control, pwa, revoke, push, notifications, reminders, agent, question, connecting, not connecting, stuck, force stop, version]
 ---
 
 Eldrun Mobile is a small companion web app for your phone. It shows the
@@ -66,6 +66,31 @@ agent's turn.
 - A calendar whose alerts are switched off on the desktop stays silent on the
   phone too. Revoking a phone stops its notifications at once.
 - Only agent tabs of projects (and boxes) the phone may reach notify.
+
+## If the phone won't connect
+
+"Connecting to your workspace…" that never finishes, or a splash saying the
+desktop can't be reached or didn't answer, usually means the phone's own
+Tailscale is not carrying traffic:
+
+1. Open the Tailscale app on the phone (on Android the splash has an **Open
+   Tailscale** link) and check it is connected.
+2. If it already says connected, **force-stop** it — Android: Settings → Apps
+   → Tailscale → Force stop — and open it again. After the phone changes
+   networks Tailscale can stay "connected" while passing nothing, and its own
+   off/on switch does not clear that; a force stop (or restarting the phone)
+   does.
+3. Only one VPN runs at a time on a phone: another VPN app switched on
+   silently takes Tailscale's place.
+4. Still stuck: check the desktop is awake and Eldrun is running on it.
+
+To make it rarer on Android, set Tailscale's battery use to **Unrestricted**
+and turn on **Always-on VPN** for it.
+
+The splash also shows the phone app's version and build time (`v0.1.x ·
+dd-mm hh:mm`), the same line as the home screen's header. After the desktop
+updates, a build time older than the desktop's means the phone is still
+running an old copy: close and reopen the app.
 
 ## If a phone goes missing
 

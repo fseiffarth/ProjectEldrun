@@ -195,9 +195,9 @@ describe("a stuck tunnel", () => {
     }
   });
 
-  it("tells the reader to switch a connected Tailscale off and on", () => {
+  it("tells the reader to force-stop a connected Tailscale, not toggle it", () => {
     for (const reason of ["unreachable", "timeout"] as UnavailableReason[]) {
-      expect(describeUnavailable(reason).hint, reason).toMatch(/switch it off and on again/);
+      expect(describeUnavailable(reason).hint, reason).toMatch(/force-stop it/);
     }
   });
 

@@ -148,7 +148,7 @@ function SlowConnectHint() {
   if (!slow) return null;
   return <>
     <p className="splash-hint">
-      Taking a while. Check Tailscale is connected on this phone — if it already is, switch it off and on again.
+      Taking a while. Check Tailscale is connected on this phone — if it already is, force-stop the Tailscale app and open it again.
       {isUntested("mobile.link.slowConnectHint") && <> <span className="untested">Untested</span></>}
     </p>
     <OpenTailscale />
@@ -156,7 +156,7 @@ function SlowConnectHint() {
   </>;
 }
 
-/** One tap to the Tailscale app, where a stuck tunnel is switched off and on
+/** One tap back into the Tailscale app after force-stopping it
  * (`suspectsTunnel`). Android only; nothing is drawn where it cannot open. */
 function OpenTailscale() {
   const link = tailscaleAppLink();

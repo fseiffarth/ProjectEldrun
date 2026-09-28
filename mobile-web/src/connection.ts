@@ -96,7 +96,7 @@ export function describeUnavailable(reason: UnavailableReason): UnavailableCopy 
     case "unreachable":
       return {
         title: "Can't reach your desktop. Is Tailscale on?",
-        hint: "Nothing answered at your desktop's address. Open the Tailscale app on this phone and check it is connected. If it already says connected, switch it off and on again — after the phone changes networks its tunnel can stay \"connected\" and carry nothing. If that does not help, the desktop is asleep or shut down.",
+        hint: "Nothing answered at your desktop's address. Open the Tailscale app on this phone and check it is connected. If it already says connected, force-stop it (Settings → Apps → Tailscale → Force stop) and open it again — after the phone changes networks it can stay \"connected\" and carry nothing, and switching it off and on does not clear that. If that does not help, the desktop is asleep or shut down.",
       };
     // With Tailscale off, the desktop's 100.x address routes nowhere and the
     // request stalls instead of failing — so a timeout is the usual shape of
@@ -104,7 +104,7 @@ export function describeUnavailable(reason: UnavailableReason): UnavailableCopy 
     case "timeout":
       return {
         title: "Your desktop didn't answer. Is Tailscale on?",
-        hint: "Nothing came back in time. Open the Tailscale app on this phone and check it is connected — while it is off, requests to your desktop go nowhere. If it already says connected, switch it off and on again: after the phone changes networks its tunnel can stay \"connected\" and carry nothing. If that does not help, the desktop may be asleep or the signal weak.",
+        hint: "Nothing came back in time. Open the Tailscale app on this phone and check it is connected — while it is off, requests to your desktop go nowhere. If it already says connected, force-stop it (Settings → Apps → Tailscale → Force stop) and open it again: after the phone changes networks it can stay \"connected\" and carry nothing, and switching it off and on does not clear that. If that does not help, the desktop may be asleep or the signal weak.",
       };
     case "host_down":
       return {
@@ -300,8 +300,11 @@ export function localFailureText(reason: unknown): string {
  * can keep saying "connected" after a network change while it passes none of
  * the browser's traffic (2026-09-28: pings through the tunnel answered, not
  * one request reached the desktop for hours, a phone restart cleared it).
+ * Its own off/on switch did not: the phone kept the same disco key through
+ * it, so the engine — and the jam — survived, while the restart came back
+ * with a new one. Force-stopping the app ends the engine the same way.
  * Nothing in a web page can repair that, so these screens hand the reader the
- * fix: switch Tailscale off and on.
+ * fix.
  */
 export function suspectsTunnel(reason: UnavailableReason): boolean {
   return reason === "unreachable" || reason === "timeout";
