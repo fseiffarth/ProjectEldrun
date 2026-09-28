@@ -19,16 +19,10 @@ import { Todo } from "./screens/Todo";
 import { Mail } from "./screens/Mail";
 import { Calendar } from "./screens/Calendar";
 import { SECTION_GLYPH } from "./glyphs";
-import { formatBuildStamp } from "./buildInfo";
-// Kept in lockstep with Home's own build line (`Home.tsx`); the same reason
-// applies here too.
-import { version as APP_VERSION } from "../../package.json";
-
 /** The bundle this phone is running, on every splash: a connect that hangs or
  * fails is exactly when the reader needs to know whether the phone picked up
  * the desktop's current bundle or is booting a stale one out of the cache. */
-const BUILD_STAMP = formatBuildStamp();
-const SPLASH_VERSION = `v${APP_VERSION}${BUILD_STAMP && ` · ${BUILD_STAMP}`}`;
+import { BUNDLE_VERSION as SPLASH_VERSION } from "./buildInfo";
 
 /**
  * The four top-level sections. To-do, Calendar and Mail used to be pushed on

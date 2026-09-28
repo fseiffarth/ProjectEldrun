@@ -358,6 +358,7 @@ export const UNTESTED = {
   "mobile.lock.pinInstead": { area: "mobile", what: "LocalUnlock · While the fingerprint prompt is up, Use PIN instead withdraws it and brings the PIN field back, focused", tested: "2026-09-28" },
   "mobile.lock.reloadGrace": { area: "mobile", what: "LocalUnlock · Pull-to-refresh (dragging down from the top) on an unlocked, in-use phone app reloads straight back into the session, no PIN or fingerprint; opening the app afresh, or reloading after 15 s away, still asks", tested: "2026-09-28" },
   "mobile.lock.homeSheet": { area: "mobile", what: "LocalUnlock · The lock (not the once-only setup) rises as a sheet over the Home screen's own header shell, instead of its own full screen", tested: "2026-09-28" },
+  "mobile.lock.version": { area: "mobile", what: "LocalUnlock · The lock sheet (and the once-only PIN setup) ends with \"Eldrun Mobile v0.1.x · dd-mm hh:mm\", the bundle's version and build time" },
   "mobile.lock.brandedSheet": { area: "mobile", what: "LocalUnlock · While the fingerprint sheet is up, the mark lifts above it with turning rings; a successful unlock flares it away", tested: "2026-09-28" },
   "mobile.focus.noSessionYet": { area: "mobile", what: "Terminal · A tab created from the phone stays in the Reader and shows its stored session once the agent records one" },
   "mobile.calendar.push": { area: "mobile", what: "Calendar · Reminders button → Notifications sheet: desktop calendar reminders as Web Push notifications on the phone (with or without details); tap opens Calendar" },

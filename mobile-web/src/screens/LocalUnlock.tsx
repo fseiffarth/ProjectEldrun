@@ -3,6 +3,7 @@ import { MIN_NEW_PIN, configureLocalUnlock, localUnlockBiometricEnabled, localUn
 import { localFailureText } from "../connection";
 import { isUntested } from "../../../src/lib/untested";
 import { BrandHead } from "../components/BrandHead";
+import { BUNDLE_VERSION } from "../buildInfo";
 
 /** A ridge-arch fingerprint, drawn for this screen: open loops over a centre
  * stem, with the broken ridges on the right that make it read as a print
@@ -200,6 +201,7 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
           {busy ? "Checking…" : "Unlock"}
         </button>}
     <p className="local-unlock-note">This local lock protects against casual access to an unlocked phone. It does not replace the phone’s own device lock or Eldrun’s paired-device authentication.</p>
+    <p className="splash-version">Eldrun Mobile {BUNDLE_VERSION}{isUntested("mobile.lock.version") && <small className="untested"> Untested</small>}</p>
   </>;
   // Setup runs once, right after pairing, with no project data to stand
   // behind it yet — its own full screen. The lock met on every later cold
