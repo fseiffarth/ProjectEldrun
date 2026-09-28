@@ -354,10 +354,11 @@ does not have to ship a phone app for the agent you are running.
   screen reaches the whole gallery from its header as well as from the shelf
   under its tab cards. Share is available where the phone browser supports
   file sharing; stdin works with `command | eldrun-send -n tests.log`.
-- **Project files, read-only** (opt-in, off by default): a 📁 on the phone's
-  project screen walks the project's folders and opens files in the same
-  viewer. Folders and files travel as sealed tokens, never paths; `.git`,
-  `.eldrun`, `.env…` and symlinks are left out, and nothing can be changed.
+- **Project files, read-only** (opt-in, off by default): a left→right swipe on
+  the phone's project screen opens a drawer that walks the project's folders
+  and opens files in the same viewer. Folders and files travel as sealed
+  tokens, never paths; `.git`, `.eldrun`, `.env…` and symlinks are left out,
+  and nothing can be changed.
 - The phone gets a touch terminal (readable-screen mode, touch scrolling, a
   composer, voice input), a to-do board, Alerts with Done actions, opt-in mail
   flag/reply actions, last-tab restore, an offline app shell, and a local lock.

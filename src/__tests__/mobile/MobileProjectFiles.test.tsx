@@ -1,10 +1,10 @@
 /**
- * The project screen's read-only file browser (#31bo, `ProjectFiles`): a 📁 in
- * the header while the desktop's "Project files on the phone" switch is on,
+ * The project screen's read-only file browser (#31bo, `ProjectFiles`): a drawer
+ * a left→right swipe opens while the desktop's "Project files on the phone" switch is on,
  * folders walked by the sealed tokens the sidecar hands out — never a path —
  * and files opened in the outbox's viewer, fetched by their token.
  */
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Project } from "../../../mobile-web/src/screens/Project";
@@ -41,6 +41,29 @@ function hostWith(files: boolean) {
   });
 }
 
+/** A one-finger flick from `from` to `to`, dispatched the way `focusSwipe`
+ * listens: touch pointer events where the engine has them, touch events
+ * otherwise. */
+function swipe(target: Element, from: number, to: number) {
+  act(() => {
+    if ("PointerEvent" in window) {
+      const init = { bubbles: true, cancelable: true, pointerType: "touch", pointerId: 7, isPrimary: true, clientY: 300 };
+      target.dispatchEvent(new PointerEvent("pointerdown", { ...init, clientX: from }));
+      target.dispatchEvent(new PointerEvent("pointerup", { ...init, clientX: to }));
+    } else {
+      const touchEvent = (type: string, clientX: number) => {
+        const event = new Event(type, { bubbles: true, cancelable: true });
+        const touch = { identifier: 7, target, clientX, clientY: 300 };
+        Object.defineProperty(event, "touches", { value: type === "touchend" ? [] : [touch] });
+        Object.defineProperty(event, "changedTouches", { value: [touch] });
+        return event;
+      };
+      target.dispatchEvent(touchEvent("touchstart", from));
+      target.dispatchEvent(touchEvent("touchend", to));
+    }
+  });
+}
+
 describe("Mobile project — read-only file browser", () => {
   beforeEach(() => {
     localStorage.clear();
@@ -52,13 +75,13 @@ describe("Mobile project — read-only file browser", () => {
     vi.restoreAllMocks();
   });
 
-  it("has no 📁 while the desktop's switch is off", async () => {
+  it("opens nothing on a swipe while the desktop's switch is off", async () => {
     const fetch = hostWith(false);
     vi.stubGlobal("fetch", fetch);
     render(<Project id="p1" back={() => {}} terminal={() => {}} />);
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/v1/projects/p1", expect.anything()));
-    await screen.findByRole("heading", { name: "Alpha" });
-    expect(screen.queryByRole("button", { name: "Project files" })).toBeNull();
+    swipe(await screen.findByRole("heading", { name: "Alpha" }), 100, 300);
+    expect(screen.queryByRole("dialog", { name: "Files" })).toBeNull();
     expect(fetch.mock.calls.some(([url]) => String(url).includes("/files"))).toBe(false);
   });
 
@@ -67,7 +90,13 @@ describe("Mobile project — read-only file browser", () => {
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     render(<Project id="p1" back={() => {}} terminal={() => {}} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Project files" }));
+    const heading = await screen.findByRole("heading", { name: "Alpha" });
+    // The header has no button for it: the drawer is the swipe's alone.
+    expect(screen.queryByRole("button", { name: "Project files" })).toBeNull();
+    await waitFor(() => {
+      swipe(heading, 100, 300);
+      expect(screen.getByRole("dialog", { name: "Files" })).toBeTruthy();
+    });
     const sheet = screen.getByRole("dialog", { name: "Files" });
     expect(sheet.textContent).toContain("Read-only");
     await within(sheet).findByRole("button", { name: "Open the folder src" });
@@ -98,5 +127,19 @@ describe("Mobile project — read-only file browser", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Open README.md" }));
     const text = screen.getByRole("dialog", { name: "README.md" });
     await waitFor(() => expect(text.querySelector("pre")?.textContent).toBe("# Hello\n"));
+  });
+
+  it("puts the drawer away on a right-to-left swipe over it", async () => {
+    vi.stubGlobal("fetch", hostWith(true));
+    render(<Project id="p1" back={() => {}} terminal={() => {}} />);
+    const heading = await screen.findByRole("heading", { name: "Alpha" });
+    await waitFor(() => {
+      swipe(heading, 100, 300);
+      expect(screen.getByRole("dialog", { name: "Files" })).toBeTruthy();
+    });
+    const drawer = screen.getByRole("dialog", { name: "Files" });
+    await within(drawer).findByRole("button", { name: "Open the folder src" });
+    swipe(drawer, 300, 100);
+    expect(screen.queryByRole("dialog", { name: "Files" })).toBeNull();
   });
 });

@@ -3302,12 +3302,15 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   off) instead of a per-project flag; files open in the outbox's viewer.
   Untested ids `mobile.projectFiles`, `mobile.files.browse`.
   - Needs the sidecar updated and the PWA rebuilt (`npm run backend:stale`).
-  - [ ] 🖐️ Manual phone QA — switch it on; a Mobile project's screen shows 📁
-    in the header. Walk into `src/` and back by the trail; open a `.md` (text
+  - [ ] 🖐️ Manual phone QA — switch it on; on a Mobile project's screen a
+    left→right swipe slides the files drawer in from the left (no 📁 in the
+    header any more, 2026-09-28); a right→left swipe over it or a tap beside it
+    closes it, and a sideways drag on a card's ⠿ grip does not open it.
+    Walk into `src/` and back by the trail; open a `.md` (text
     preview), a `.png` (full screen, pinch, step to the folder's next picture,
     Save, Share), a PDF (browser tab). `.git`, `.env` and a symlink are not
-    listed. Switch it off on the desktop → within ~5 s the 📁 and an open files
-    sheet are gone; a folder opened meanwhile says it was switched off.
+    listed. Switch it off on the desktop → within ~5 s the swipe does nothing and
+    an open drawer is gone; a folder opened meanwhile says it was switched off.
     - [ ] ✅ Works on Linux (X11)
     - [ ] ❌ Doesn't work on Linux (X11)
     - [ ] ✅ Works on Linux (Wayland)

@@ -43,17 +43,18 @@ reopen, because the phone attaches to its terminal session.
 ## Project files on the phone
 
 Switch on **Project files on the phone** under **Project access** (off by
-default) and each project's screen on the phone gets a 📁 in its header:
-walk its folders and open a file — pictures and text full screen, PDFs in the
-browser, with Save and Share. It is read-only: nothing can be changed, moved
-or deleted from there.
+default) and a project's screen on the phone opens its files when you swipe
+from left to right across it — a drawer slides in from the left edge (swipe
+back, or tap beside it, to close it): walk its folders and open a file —
+pictures and text full screen, PDFs in the browser, with Save and Share. It is
+read-only: nothing can be changed, moved or deleted from there.
 
 - It covers the projects switched on for Mobile, not boxes or the root
   console.
 - `.git`, `.eldrun` and `.env…` are left out, symbolic links are not shown or
   followed, and a folder shows its first 500 entries.
 - Files up to 24 MiB open; a longer text file shows its first 24 MiB.
-- Switching it off closes the 📁 within seconds, without restarting the host.
+- Switching it off closes the drawer within seconds, without restarting the host.
 
 ## Notifications on the phone
 

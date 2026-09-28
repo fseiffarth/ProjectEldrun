@@ -1,6 +1,7 @@
 /**
  * The Focus view's sideways swipe: left→right reveals the agent's status
- * strip, right→left puts it away.
+ * strip, right→left puts it away. The project screen reads the same gesture
+ * for its files drawer (`ProjectFiles`), which slides in from the left.
  *
  * Every listener here is passive and nothing is ever prevented. The Focus view
  * is a reading surface whose vertical scroll and text selection are the
@@ -95,6 +96,10 @@ interface Gesture {
 export function installFocusSwipe(
   host: HTMLElement,
   handlers: { onSwipeRight: () => void; onSwipeLeft: () => void },
+  /** `ignore`: a selector whose elements never start a swipe — a control
+   * that owns its own drag (`touch-action:none`), or a sheet laid over the
+   * host that the swipe must not reach through. */
+  config: { ignore?: string } = {},
 ): () => void {
   let gesture: Gesture | null = null;
 
@@ -111,6 +116,7 @@ export function installFocusSwipe(
     if (x < SWIPE_EDGE_GUARD || x > window.innerWidth - SWIPE_EDGE_GUARD) return;
     const element = elementOf(target);
     if (element?.closest(EDITABLE)) return;
+    if (config.ignore && element?.closest(config.ignore)) return;
     gesture = { id, start: { x, y, t: now }, target: element, selection: currentSelection(), handedOff: false };
   };
 

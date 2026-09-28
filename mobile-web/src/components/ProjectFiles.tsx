@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useT, type TranslationKey } from "../../../src/lib/i18n";
 import { isUntested } from "../../../src/lib/untested";
 import { ApiError, listProjectFiles, viewerFileUrl, type OutboxFile, type ProjectFileEntry, type ProjectFileListing, type ViewerScope } from "../api";
 import { sizeLabel } from "../terminal/fileLabels";
+import { installFocusSwipe } from "../terminal/focusSwipe";
 import { OutboxViewer } from "./OutboxViewer";
 
 /** One folder on the way down: its sealed token (none for the project root)
@@ -31,6 +32,9 @@ function failureKey(reason: unknown): TranslationKey {
  *
  * The phone never holds a path: each folder and file is a sealed token the
  * sidecar handed out, and the trail across the top is the tokens walked so far.
+ *
+ * A drawer from the left edge: the project screen opens it on a left→right
+ * swipe, and a right→left swipe over it (or a tap beside it) puts it away.
  */
 export function ProjectFiles({ projectId, label, onClose }: {
   projectId: string;
@@ -45,6 +49,7 @@ export function ProjectFiles({ projectId, label, onClose }: {
   const [fileOpen, setFileOpen] = useState<OutboxFile | null>(null);
   const scope = useMemo<ViewerScope>(() => ({ files: projectId }), [projectId]);
   const here = trail[trail.length - 1];
+  const drawer = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -74,6 +79,13 @@ export function ProjectFiles({ projectId, label, onClose }: {
     return () => window.removeEventListener("keydown", onKey);
   }, [fileOpen, onClose]);
 
+  useEffect(() => {
+    // Remounted with the drawer after a file was viewed, hence `fileOpen`.
+    const host = drawer.current;
+    if (fileOpen || !host) return;
+    return installFocusSwipe(host, { onSwipeRight: () => {}, onSwipeLeft: onClose });
+  }, [fileOpen, onClose]);
+
   const open = (entry: ProjectFileEntry) => {
     if (entry.kind === "dir") {
       setTrail((current) => [...current, { token: entry.token, name: entry.name }]);
@@ -88,9 +100,8 @@ export function ProjectFiles({ projectId, label, onClose }: {
   if (fileOpen) {
     return <OutboxViewer key={fileOpen.ref} scope={scope} file={fileOpen} pictures={pictures} onStep={setFileOpen} onClose={() => setFileOpen(null)} />;
   }
-  return <div className="sheet-backdrop" role="presentation" onClick={onClose}>
-    <section className="option-sheet project-files" role="dialog" aria-modal="true" aria-label={t("mobile.files.title")} onClick={(event) => event.stopPropagation()}>
-      <span className="sheet-grip" aria-hidden="true" />
+  return <div className="sheet-backdrop files-drawer-backdrop" role="presentation" onClick={onClose}>
+    <section ref={drawer} className="option-sheet project-files" role="dialog" aria-modal="true" aria-label={t("mobile.files.title")} onClick={(event) => event.stopPropagation()}>
       <header>
         <button className="sheet-close" onClick={onClose} aria-label={t("mobile.files.close")}>✕</button>
         <h2>{t("mobile.files.title")} {isUntested("mobile.files.browse") && <small>{t("mobile.outbox.untested")}</small>}</h2>

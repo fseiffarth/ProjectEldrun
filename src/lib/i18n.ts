@@ -732,7 +732,6 @@ export const en = {
   "mobile.git.staged": "not committed",
   "mobile.git.unpushed": "not pushed",
   "mobile.git.broken": ".git missing",
-  "mobile.files.button": "Project files",
   "mobile.files.title": "Files",
   "mobile.files.close": "Close the files",
   "mobile.files.trail": "Folders",

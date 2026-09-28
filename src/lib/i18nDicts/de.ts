@@ -780,7 +780,6 @@ export const dict: Dict = {
   "mobile.git.staged": "nicht committet",
   "mobile.git.unpushed": "nicht gepusht",
   "mobile.git.broken": ".git fehlt",
-  "mobile.files.button": "Projektdateien",
   "mobile.files.title": "Dateien",
   "mobile.files.close": "Dateien schließen",
   "mobile.files.trail": "Ordner",

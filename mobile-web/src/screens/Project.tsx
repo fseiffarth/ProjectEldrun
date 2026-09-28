@@ -21,6 +21,7 @@ import { tabColorCss } from "../tabColors";
 import { useT } from "../../../src/lib/i18n";
 import { isUntested } from "../../../src/lib/untested";
 import { describeFailure } from "../connection";
+import { installFocusSwipe } from "../terminal/focusSwipe";
 
 /** The orders this list offers, in the words this screen can use for them. The
  * cross-project Agents list calls `native` "Status", because there the arrival
@@ -153,9 +154,20 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
   const [galleryOpen, setGalleryOpen] = useState(false);
   /** The file open full screen (a picture or a text preview). */
   const [fileOpen, setFileOpen] = useState<OutboxFile | null>(null);
-  /** The read-only file browser (📁), there when the desktop's "Project
-   * files on the phone" switch is on (`detail.files`). */
+  /** The read-only file browser, a drawer a left→right swipe over the screen
+   * slides in from the left, there when the desktop's "Project files on the
+   * phone" switch is on (`detail.files`). Swipe-only: the header's controls
+   * are this list's own. */
   const [filesOpen, setFilesOpen] = useState(false);
+  const screenRef = useRef<HTMLElement | null>(null);
+  const filesOffered = !!detail?.files;
+  useEffect(() => {
+    const host = screenRef.current;
+    if (!filesOffered || filesOpen || !host) return;
+    // Not from a card's grip (its drag is its own, `touch-action:none`), and
+    // not through a sheet laid over the list.
+    return installFocusSwipe(host, { onSwipeRight: () => setFilesOpen(true), onSwipeLeft: () => {} }, { ignore: ".tab-card-grip, .sheet-backdrop, [role='dialog']" });
+  }, [filesOffered, filesOpen]);
   const outboxScope = useMemo(() => ({ project: id }), [id]);
   /** The pictures among them, which the full-screen viewer steps through. */
   const outboxPictures = useMemo(() => outbox.filter((file) => file.kind.startsWith("image/")), [outbox]);
@@ -387,7 +399,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
       void load();
     } catch (reason) { setError(describeFailure(reason)); void load(); } finally { setActivating(false); }
   };
-  return <main className="screen project-screen">
+  return <main className="screen project-screen" ref={screenRef}>
     {/* Two rows: the chevron and the name on the first, so a long name keeps the
         whole width; this list's own controls on the second. On one line the
         gallery, the sort and ＋ squeezed the name down to a letter or two.
@@ -411,16 +423,6 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
           aria-label={t("mobile.outbox.galleryOpen", { count: outbox.length })}
           title={t("mobile.outbox.region")}
         ><span aria-hidden="true">🖼</span><small>{outbox.length}</small></button>}
-        {/* The project's own tree, read-only — the same pill as the 🖼 beside
-            it, shown only while the desktop's switch is on. */}
-        {detail?.files && <button
-          className="terminal-gallery"
-          onClick={() => setFilesOpen(true)}
-          aria-haspopup="dialog"
-          aria-expanded={filesOpen}
-          aria-label={t("mobile.files.button")}
-          title={t("mobile.files.button")}
-        ><span aria-hidden="true">📁</span></button>}
         {tabs.length > 1 && <label className="activity-sort in-header">
           <span>Sort</span>
           <select aria-label="Sort tabs" value={sort} onChange={(event) => { if (isAgentSort(event.target.value)) chooseSort(event.target.value); }}>
