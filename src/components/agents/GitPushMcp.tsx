@@ -81,16 +81,18 @@ export function GitPushProposalCard({ proposal, onDecided }: { proposal: GitPush
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [showOutput, setShowOutput] = useState(false);
-  const decide = async (approve: boolean) => {
+  const run = async (command: string, args: Record<string, unknown>) => {
     setBusy(true);
     setError("");
     try {
-      const next = await invoke<GitPushProposal>("git_push_mcp_decide", { id: proposal.id, approve });
+      const next = await invoke<GitPushProposal>(command, { id: proposal.id, ...args });
       onDecided?.(next);
     } catch (cause) { setError(String(cause)); }
     finally { setBusy(false); }
   };
+  const decide = (approve: boolean) => run("git_push_mcp_decide", { approve });
   const pending = proposal.status === "pending";
+  const finished = !pending && proposal.status !== "running";
   const release = proposal.kind === "release";
   const output = proposal.output || proposal.preflight_output;
   return <div className="git-push-proposal" data-status={proposal.status} onClick={(event) => event.stopPropagation()}>
@@ -123,16 +125,20 @@ export function GitPushProposalCard({ proposal, onDecided }: { proposal: GitPush
       <button className="settings-btn sm primary" disabled={busy} onClick={() => void decide(true)}>{t(release ? "gitPushMcp.release" : proposal.needs_url_confirm ? "gitPushMcp.confirmAndPush" : "gitPushMcp.push")}</button>
       <button className="settings-btn sm" disabled={busy} onClick={() => void decide(false)}>{t("gitPushMcp.dismiss")}</button>
     </div>}
+    {finished && <div className="git-push-proposal-actions">
+      <button className="settings-btn sm" disabled={busy} onClick={() => void run("git_push_mcp_clear", {})}>{t("gitPushMcp.dismiss")}</button>
+    </div>}
     {error && <small role="alert">{error}</small>}
   </div>;
 }
 
 /** Every proposal of a project that is still worth showing: pending and
- *  running ones, and the last decided ones until they age out. */
+ *  running ones, and the last decided ones until they age out or the user
+ *  dismisses them. */
 export function GitPushProposals({ projectId }: { projectId: string | null | undefined }) {
   const rows = useGitPushProposals(projectId);
   const [overrides, setOverrides] = useState<Record<string, GitPushProposal>>({});
-  const shown = rows.map((row) => overrides[row.id] ?? row).filter((row) => row.status !== "dismissed" && row.status !== "expired");
+  const shown = rows.map((row) => overrides[row.id] ?? row).filter((row) => !row.cleared && row.status !== "dismissed" && row.status !== "expired");
   if (shown.length === 0) return null;
   return <div className="git-push-proposals">
     {shown.map((row) => <GitPushProposalCard key={row.id} proposal={row} onDecided={(next) => setOverrides((prev) => ({ ...prev, [next.id]: next }))} />)}

@@ -1409,6 +1409,7 @@ pub fn run() {
             commands::projects::set_project_git_push_mcp,
             commands::root_mcp::git_push_mcp_proposals,
             commands::root_mcp::git_push_mcp_decide,
+            commands::root_mcp::git_push_mcp_clear,
             commands::projects::set_project_mobile_access,
             commands::projects::sandbox_preflight,
             commands::python::python_interpreters,

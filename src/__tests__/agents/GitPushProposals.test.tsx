@@ -13,7 +13,7 @@ const row: GitPushProposal = {
   url: "https://github.com/o/r.git", head: "abcdef0123456789", remote_sha: "0123456789abcdef",
   commits: ["abc1234 Fix the thing", "def5678 chore: bump version to v0.1.2"], diffstat: "2 files changed",
   note: "the fix for #12", needs_url_confirm: true, created_at: "2026-09-25T12:00:00+02:00", status: "pending",
-  category: null, message: "", output: "", preflight_output: "pre-push: bumped version to v0.1.2",
+  category: null, message: "", output: "", preflight_output: "pre-push: bumped version to v0.1.2", cleared: false,
   state: { branch: "develop", head: "abcdef0123456789", remote: "origin", upstream: "origin/develop", url: null, remote_sha: null, ahead: 2, behind: 0 },
 };
 beforeEach(() => { invoke.mockReset(); });
@@ -52,6 +52,18 @@ it("lists a project's proposals from the backend and hides dismissed ones", asyn
   expect(buttons).toHaveLength(2);
   fireEvent.click(buttons[1]);
   expect(screen.getByText("privacy-check: match in foo.txt")).toBeTruthy();
+});
+
+it("closes a finished card through the clear command and hides cleared rows", async () => {
+  const failed: GitPushProposal = { ...row, status: "failed", category: "diverged", message: "The remote moved in the meantime." };
+  invoke.mockResolvedValueOnce([failed, { ...row, id: "push-d", status: "pushed", cleared: true }]);
+  await act(async () => { render(<GitPushProposals projectId="p" />); });
+  expect(screen.getAllByText(/^Agent push ·/)).toHaveLength(1);
+  expect(screen.queryByRole("button", { name: "Push" })).toBeNull();
+  invoke.mockResolvedValueOnce({ ...failed, cleared: true });
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Dismiss" })); });
+  expect(invoke).toHaveBeenCalledWith("git_push_mcp_clear", { id: "push-a" });
+  expect(screen.queryByText(/^Agent push ·/)).toBeNull();
 });
 
 it("renders a release request with its tag and releases through the same decide command", async () => {

@@ -674,6 +674,13 @@ pub async fn git_push_mcp_decide(app: AppHandle, id: String, approve: bool) -> R
     let _ = app.emit(crate::services::git_push_mcp::CHANGED_EVENT, ());
     result
 }
+/// Close a finished (pushed, failed, dismissed, expired) proposal's card.
+#[tauri::command]
+pub fn git_push_mcp_clear(app: AppHandle, id: String) -> Result<crate::services::git_push_mcp::Proposal, String> {
+    let result = crate::services::git_push_mcp::clear(&id);
+    let _ = app.emit(crate::services::git_push_mcp::CHANGED_EVENT, ());
+    result
+}
 
 fn path_serves(path: &str, caller: root_mcp::Caller) -> bool {
     match path {

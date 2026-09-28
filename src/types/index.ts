@@ -1086,6 +1086,8 @@ export interface GitPushProposal {
   message: string;
   output: string;
   preflight_output: string;
+  /** The user closed the finished card (`git_push_mcp_clear`). */
+  cleared: boolean;
   state: { branch: string | null; head: string | null; remote: string | null; upstream: string | null; url: string | null; remote_sha: string | null; ahead: number; behind: number };
 }
 

@@ -84,7 +84,9 @@ card shows the *final* commit list, bump included; **apply** pushes at once.
 Approval binds the post-preflight SHA: a moved branch is `stale_approval`, a
 moved remote is re-checked for fast-forward. Unapproved proposals expire after
 24 h; records live 24 h in memory beside the tokens (neither survives a
-restart) and go with a revoked session. There is no typed notice into the
+restart) and go with a revoked session. Dismissing a *finished* card
+(`git_push_mcp_clear`) only sets `cleared`: the card hides it, while
+`git_push_status` still reports the outcome to the agent. There is no typed notice into the
 tab — the schedule lane types *prompts*, and a push outcome must not become one
 — so a `staged`/`running` result tells the agent to poll `git_push_status`.
 The audit ring keeps the session, tool and category; never the note or output.

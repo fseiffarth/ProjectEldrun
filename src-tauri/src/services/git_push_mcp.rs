@@ -636,6 +636,8 @@ pub struct Proposal {
     pub state: RepoState,
     /// What the hook printed on a successful preflight.
     pub preflight_output: String,
+    /// The user closed the finished card; `git_push_status` still reports it.
+    pub cleared: bool,
 }
 
 fn proposals() -> &'static Mutex<Vec<Proposal>> {
@@ -679,6 +681,7 @@ fn new_proposal(session: &Session, project: &str, dir: &Path, note: String) -> P
         kind: Kind::Push, tag: None, branch: None, remote: None, url: None, head: None, remote_sha: None, commits: Vec::new(), diffstat: String::new(), note,
         needs_url_confirm: false, created_at: chrono::Local::now().to_rfc3339(), created: Instant::now(), status: Status::Running,
         category: None, message: String::new(), output: String::new(), state: RepoState::default(), preflight_output: String::new(),
+        cleared: false,
     }
 }
 
@@ -828,6 +831,16 @@ pub fn decide(id: &str, approve: bool) -> Result<Proposal, String> {
     let plan = Plan { branch, remote, url, head, remote_sha: live_remote, default_branch: view.default_branch, commits: p.commits.clone(), diffstat: p.diffstat.clone(), needs_url_confirm: false };
     push_now(id, &plan, token.as_deref(), &origins);
     get(id).ok_or("proposal not found".into())
+}
+
+/// Close a finished card. The record stays, so the agent polling
+/// `git_push_status` still learns the outcome; only the card hides it.
+pub fn clear(id: &str) -> Result<Proposal, String> {
+    let out = update(id, |p| if !matches!(p.status, Status::Running | Status::Pending) { p.cleared = true; })
+        .ok_or("proposal not found")?;
+    if !out.cleared { return Err("this proposal is not finished yet".into()); }
+    changed();
+    Ok(out)
 }
 
 /// The worker behind `git_release`: decide the tag on the host and stage it.
@@ -1548,6 +1561,9 @@ mod tests {
         let id = test_proposal(&s, &work);
         set_pending(&id, &plan);
         assert_eq!(decide(&id, false).unwrap().status, Status::Dismissed);
+        // A finished card closes; the record stays for `git_push_status`.
+        assert!(clear(&id).unwrap().cleared);
+        assert!(proposals_for(None, Some("tab:approve")).iter().any(|p| p.id == id && p.cleared));
         // Approve for real, with the branch where the approval left it.
         let head = sh(&work, &["rev-parse", "HEAD"]);
         let id = test_proposal(&s, &work);
