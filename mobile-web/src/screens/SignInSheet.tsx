@@ -3,6 +3,7 @@ import { useT } from "../../../src/lib/i18n";
 import { isUntested } from "../../../src/lib/untested";
 import { finishSignIn } from "../api";
 import { describeFailure } from "../connection";
+import { selectSignature, type SelectOption, type SelectPrompt } from "../terminal/selectPrompt";
 import { pastedCallback, type SignIn } from "../terminal/signIn";
 
 type Outcome = { text: string; error?: boolean };
@@ -29,9 +30,11 @@ type Outcome = { text: string; error?: boolean };
  * the sheet then says so and offers Done. In a sign-in tab (`signInTab`, the
  * desktop's own login command for this CLI) the sheet is up from the start —
  * waiting for the link, then the steps — and a sign-in that ended without
- * success offers to start again, or the CLI's other way in.
+ * success offers to start again, or the CLI's other way in. A choice the CLI
+ * asks before its link (`choice`: Antigravity's "Select login method") is
+ * listed while the sheet waits, and a tap answers it in the session.
  */
-export function SignInSheet({ tabId, agent, signIn, done = false, ended = false, signInTab = false, alternate, error, connected, onType, onRetry, onFinish, onClose }: {
+export function SignInSheet({ tabId, agent, signIn, done = false, ended = false, signInTab = false, alternate, error, choice, connected, onType, onChoose, onRetry, onFinish, onClose }: {
   tabId: string;
   agent: string;
   signIn: SignIn | null;
@@ -45,10 +48,15 @@ export function SignInSheet({ tabId, agent, signIn, done = false, ended = false,
   alternate?: "console" | "browser";
   /** Why the last retry did not start. */
   error?: string;
+  /** A choice the session asks before it prints its link. */
+  choice?: SelectPrompt | null;
   connected: boolean;
   /** Types the code into the session and presses Enter; false when it did
    * not leave the phone. */
   onType: (text: string) => boolean;
+  /** Answers `choice` with the row tapped; false when it did not leave the
+   * phone. */
+  onChoose?: (option: SelectOption) => boolean;
   /** Starts the sign-in over in a new sign-in tab (the other way in when
    * `alternate`). */
   onRetry?: (alternate: boolean) => void;
@@ -66,6 +74,21 @@ export function SignInSheet({ tabId, agent, signIn, done = false, ended = false,
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const [copied, setCopied] = useState<"link" | "code" | null>(null);
   const [opened, setOpened] = useState(false);
+  // The row a tap answered `choice` with, while the session has not redrawn:
+  // nothing can be tapped twice. A choice still on screen a while later did
+  // not take the answer, and is offered again.
+  const [chosen, setChosen] = useState<{ signature: string; number: number } | null>(null);
+  useEffect(() => {
+    if (!chosen) return;
+    const retry = window.setTimeout(() => setChosen(null), 4000);
+    return () => window.clearTimeout(retry);
+  }, [chosen]);
+  const choiceSignature = choice ? selectSignature(choice) : "";
+  const choiceSent = chosen && chosen.signature === choiceSignature ? chosen.number : undefined;
+  const choose = (option: SelectOption) => {
+    if (!choice || choiceSent !== undefined || !onChoose) return;
+    if (onChoose(option)) setChosen({ signature: choiceSignature, number: option.number });
+  };
   // A clipboard the page can read from is a secure origin with the API; the
   // Paste button is offered only then, and the field always.
   const canPaste = typeof navigator !== "undefined" && typeof navigator.clipboard?.readText === "function";
@@ -214,7 +237,24 @@ export function SignInSheet({ tabId, agent, signIn, done = false, ended = false,
           <button onClick={() => copy("link", shown.url)}>{copied === "link" ? t("mobile.signIn.copied") : t("mobile.signIn.copyLink")}</button>
         </details>
       </> : !ended && <div className="sign-in-waiting" role="status">
-        {signInTab ? <>
+        {signInTab && choice && onChoose ? <>
+          <p>{t("mobile.signIn.choiceNote", { agent })}{isUntested("mobile.signIn.choice") && <> · <em>{t("mobile.focus.untested")}</em></>}</p>
+          {choice.title && <strong>{choice.title}</strong>}
+          <ul className="option-list question-list sign-in-choice">{choice.options.map((option) => <li key={option.number}>
+            <button
+              className={option.index === choice.current ? "current" : ""}
+              aria-current={option.index === choice.current || undefined}
+              disabled={!connected || choiceSent !== undefined}
+              onClick={() => choose(option)}>
+              <span>
+                <strong>{option.label}</strong>
+                {option.description && <small>{option.description}</small>}
+              </span>
+              {choiceSent === option.number && <span className="sheet-pending" role="status">{t("mobile.transcript.answering")}</span>}
+            </button>
+          </li>)}</ul>
+          <div className="mobile-schedule-actions"><button onClick={onClose}>{t("mobile.signIn.showSession")}</button></div>
+        </> : signInTab ? <>
           <span className="sign-in-spinner" aria-hidden="true" />
           <p>{t("mobile.signIn.starting", { agent })}</p>
           <p className="sheet-note">{t("mobile.signIn.startingNote", { agent })}</p>

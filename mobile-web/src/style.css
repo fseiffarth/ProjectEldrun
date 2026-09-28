@@ -1012,6 +1012,7 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .sign-in-tick { display:grid; place-items:center; width:52px; height:52px; border-radius:50%; background:#1d3a2c; color:#8ff0b8; font-size:1.7rem; font-weight:700; }
 .sign-in-waiting { display:grid; justify-items:center; gap:6px; padding:10px 0; text-align:center; }
 .sign-in-waiting p { margin:0; }
+.sign-in-waiting .sign-in-choice { justify-self:stretch; margin:4px 0; text-align:left; }
 .sign-in-spinner { width:26px; height:26px; border:3px solid #383c4d; border-top-color:#8c7df4; border-radius:50%; animation:sign-in-spin .9s linear infinite; }
 @keyframes sign-in-spin { to { transform:rotate(360deg); } }
 .sign-in-alternate { justify-self:center; border:0; background:transparent; color:#b9b0ff; font-size:.84rem; text-decoration:underline; }

@@ -2170,6 +2170,13 @@ export function Terminal({ tab, back, pickModel = false, signInTab = false, open
   const openCode = tab.kind === "agent" && isOpenCodeTab(agentLabel);
   const antigravity = tab.kind === "agent" && isAntigravityTab(agentLabel);
   const cursorAgent = tab.kind === "agent" && isCursorTab(agentLabel);
+  /** A choice a sign-in tab's CLI asks before it prints its link —
+   * Antigravity opens on "Select login method" — which the sign-in sheet,
+   * drawn over the session, answers while it waits. */
+  const signInChoice = useMemo(
+    () => (signInTab && signInSheet && !signIn && tab.kind === "agent" ? readSelectPrompt(liveScreen, agentLabel) : null),
+    [signInTab, signInSheet, signIn, tab.kind, liveScreen, agentLabel],
+  );
   /** The facts the session prints below its own input box — the facts row's
    * labels. Absent fields leave a button on its generic label. */
   const status = useMemo(
@@ -3248,6 +3255,12 @@ export function Terminal({ tab, back, pickModel = false, signInTab = false, open
       signInTab={signInTab}
       alternate={signInTab ? signInAlternate(slashCliKey) : undefined}
       error={signInError}
+      choice={signInChoice}
+      onChoose={(option) => {
+        if (!signInChoice) return false;
+        clearPending();
+        return deliver(selectKeys(signInChoice.current, option.index));
+      }}
       onRetry={signInTab && openTab ? (alternate) => void openSignIn(alternate) : undefined}
       onFinish={finishSignIn}
       connected={connected}

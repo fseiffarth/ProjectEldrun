@@ -146,6 +146,7 @@ export const en = {
   "mobile.signIn.done": "Done",
   "mobile.signIn.starting": "Starting {agent}'s sign-in…",
   "mobile.signIn.startingNote": "The sign-in page appears here in a moment. If {agent} asks something first, answer it in the session.",
+  "mobile.signIn.choiceNote": "{agent} asks this first. Pick one and its sign-in page follows.",
   "mobile.signIn.showSession": "Show the session",
   "mobile.signIn.ended": "{agent}'s sign-in ended without signing in. The code may have expired, or the page was declined.",
   "mobile.signIn.retry": "Start again",

@@ -146,6 +146,7 @@ export const dict: Dict = {
   "mobile.signIn.done": "Fertig",
   "mobile.signIn.starting": "Anmeldung bei {agent} wird gestartet…",
   "mobile.signIn.startingNote": "Die Anmeldeseite erscheint gleich hier. Fragt {agent} vorher etwas, antworte in der Sitzung.",
+  "mobile.signIn.choiceNote": "{agent} fragt zuerst das. Wähle eine Option, dann folgt die Anmeldeseite.",
   "mobile.signIn.showSession": "Sitzung zeigen",
   "mobile.signIn.ended": "Die Anmeldung bei {agent} endete ohne Erfolg. Der Code ist vielleicht abgelaufen oder die Seite wurde abgelehnt.",
   "mobile.signIn.retry": "Neu starten",

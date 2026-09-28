@@ -5,13 +5,32 @@
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { hasSignInTab, readSignedOut, signInAlternate, signInDone } from "../../../mobile-web/src/terminal/signIn";
+import { hasSignInTab, readSignedOut, readSignIn, signInAlternate, signInDone } from "../../../mobile-web/src/terminal/signIn";
+import { readSelectPrompt } from "../../../mobile-web/src/terminal/selectPrompt";
 import { SignInSheet } from "../../../mobile-web/src/screens/SignInSheet";
 import { NewTabSheet } from "../../../mobile-web/src/screens/NewTabSheet";
 
 const rows = (...texts: string[]) => texts.map((text) => ({ text }));
 const DEVICE = { url: "https://github.com/login/device", site: "github.com", flow: "device" as const, userCode: "ABCD-1234" };
 const CODE = { url: "https://claude.ai/oauth/authorize?client_id=x&response_type=code", site: "claude.ai", flow: "code" as const };
+/** Antigravity 1.2.9 signed out, as a 42-column pane shows it: it opens on a
+ * login-method menu, and prints its link only once one is chosen. */
+const AGY_MENU = rows(
+  "     ▄▀▀▄", "", " Welcome to the Antigravity CLI. You are c", "",
+  " Select login method:", " > 1. Google OAuth", "   2. Use a Google Cloud project", "",
+  "   ↑/↓ Navigate · enter Select",
+);
+const AGY_LINK = rows(
+  "     ▄▀▀▄", "", " Your browser should open automatically. I", "",
+  " https://accounts.google.com/o/oauth2/aut",
+  " h?access_type=offline&client_id=10710060",
+  " 60591-x.apps.googleusercontent.com&code_",
+  " challenge=abc&code_challenge_method=S256",
+  " &prompt=consent&redirect_uri=https%3A%2F",
+  " %2Fantigravity.google%2Foauth-callback&r",
+  " esponse_type=code&state=s1",
+  "", " If you aren't automatically redirected, p", "", " authorization code...", "", "", "  shift+up/down Navigate",
+);
 
 describe("reading a session's login state", () => {
   it("sees a session asking for a sign-in", () => {
@@ -33,6 +52,18 @@ describe("reading a session's login state", () => {
     expect(signInDone(rows("✓ Logged in as octocat"))).toBe(true);
     expect(signInDone(rows("Not logged in · Please run /login"))).toBe(false);
     expect(signInDone(rows("You aren't signed in yet"))).toBe(false);
+  });
+
+  it("reads Antigravity's login-method menu, and the link it prints once one is chosen", () => {
+    expect(readSignedOut(AGY_MENU)).toBe(true);
+    const menu = readSelectPrompt(AGY_MENU, "Google Antigravity");
+    expect(menu?.title).toBe("Select login method:");
+    expect(menu?.options.map((option) => option.label)).toEqual(["Google OAuth", "Use a Google Cloud project"]);
+    expect(menu?.current).toBe(0);
+    const link = readSignIn(AGY_LINK);
+    expect(link?.flow).toBe("code");
+    expect(link?.site).toBe("accounts.google.com");
+    expect(link?.url).toContain("state=s1");
   });
 
   it("knows which CLIs have a sign-in tab and another way in", () => {
@@ -81,6 +112,20 @@ describe("SignInSheet in a sign-in tab", () => {
     expect(screen.getByText("Signed in to Claude")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Done" }));
     expect(onFinish).toHaveBeenCalled();
+  });
+
+  it("answers a choice the CLI asks before its link, once, while it waits", () => {
+    const choice = readSelectPrompt(AGY_MENU, "Google Antigravity");
+    const onChoose = vi.fn(() => true);
+    const { rerender } = render(<SignInSheet tabId="t1" agent="Google Antigravity" signIn={null} signInTab choice={choice} connected onType={() => true} onChoose={onChoose} onClose={() => undefined} />);
+    expect(screen.getByRole("status").textContent).toContain("Google Antigravity asks this first");
+    fireEvent.click(screen.getByRole("button", { name: /Google OAuth/u }));
+    expect(onChoose).toHaveBeenCalledWith(expect.objectContaining({ index: 0, label: "Google OAuth" }));
+    expect(screen.getByRole("button", { name: /Use a Google Cloud project/u })).toHaveProperty("disabled", true);
+    fireEvent.click(screen.getByRole("button", { name: /Google OAuth/u }));
+    expect(onChoose).toHaveBeenCalledTimes(1);
+    rerender(<SignInSheet tabId="t1" agent="Google Antigravity" signIn={readSignIn(AGY_LINK)} signInTab connected onType={() => true} onChoose={onChoose} onClose={() => undefined} />);
+    expect(screen.getByRole("link").textContent).toContain("accounts.google.com");
   });
 
   it("offers to start again, or the other way in, once the sign-in ended without success", () => {
