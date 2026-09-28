@@ -69,6 +69,39 @@ jobs:
           echo "Scanning ${base}..${HEAD_SHA}"
           scripts/privacy-check.sh "$base" "$HEAD_SHA"
 
+  # gitleaks over the whole history, next to privacy-check.sh (which scans only
+  # the pushed range, for this repo's own private literals). The two overlap on
+  # purpose: gitleaks knows far more issuer token formats. Blocking: history is
+  # clean once .gitleaksignore's triaged false positives are applied, so a
+  # failure here is a new finding to look at, and the release job waits on it.
+  secrets:
+    name: secrets (gitleaks)
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0   # scan every commit, not just the tip
+
+      # The release binary, not gitleaks-action: the action needs a paid
+      # license key on organization accounts. Checksum pinned to the version.
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          set -euo pipefail
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL -o "$RUNNER_TEMP/$tarball" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$tarball"
+          echo "$GITLEAKS_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" gitleaks
+
+      # --redact keeps a real hit's value out of the public job log.
+      - name: Scan history for secrets
+        run: '"$RUNNER_TEMP/gitleaks" git . --redact --no-banner --verbose'
+
   # Mechanical quality gate (TODO group Y #163). Linux-only on purpose: neither
   # linter's verdict is platform-dependent, so running it three times would cost
   # three times as much to learn the same thing.
@@ -429,10 +462,11 @@ jobs:
   release:
     name: release
     runs-on: ubuntu-24.04
-    needs: [package, package-windows, package-macos]
+    needs: [secrets, package, package-windows, package-macos]
     if: >-
       always() &&
       startsWith(github.ref, 'refs/tags/v') &&
+      needs.secrets.result == 'success' &&
       (
         needs.package.result == 'success' ||
         needs.package-windows.result == 'success' ||

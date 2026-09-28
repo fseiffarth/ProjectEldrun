@@ -169,7 +169,7 @@ state-dir permissions).
   files; ASI02 Tool Misuse → Eldrun MCP scope; ASI03 Identity & Privilege Abuse
   → permission modes, token inheritance; ASI04 Supply Chain → updater,
   installers, dependency audit (`.github/workflows/security.yml`: cargo audit,
-  npm audit, CodeQL, gitleaks); ASI05 Unexpected Code Execution → the `.git`
+  npm audit, CodeQL; gitleaks gates the release in `ci-cd.yml`); ASI05 Unexpected Code Execution → the `.git`
   trust handoff, `~/.local/bin` planting; ASI10 Rogue Agents → scheduled and
   self-scheduled agents.
 - **IDEsaster** (30+ CVEs across AI IDEs, 2025) — its four vectors are all

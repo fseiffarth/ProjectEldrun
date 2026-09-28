@@ -187,9 +187,9 @@ queue before handing it to the unfenced login shell.
 
 1. **Dependency audit in CI — done 2026-09-18.** `.github/workflows/security.yml`
    runs `cargo audit` and `npm audit --omit=dev` on every push/PR and weekly,
-   as a blocking job, beside CodeQL (JS/TS, Rust, Actions → Security tab) and
-   a full-history gitleaks scan (`.gitleaksignore` holds triaged false
-   positives). The first findings (h2, rustls, quick-xml via
+   as a blocking job, beside CodeQL (JS/TS, Rust, Actions → Security tab). A
+   full-history gitleaks scan (`.gitleaksignore` holds triaged false
+   positives) runs in `ci-cd.yml`, where the release job waits on it. The first findings (h2, rustls, quick-xml via
    calamine/plist/xcb/wayland-scanner, dompurify, mermaid) were cleared when
    it landed. This matters
    most for the parsers facing untrusted input: ammonia/html5ever, the
