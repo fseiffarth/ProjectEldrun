@@ -78,7 +78,7 @@ import { useT, type TranslationKey } from "../../lib/i18n";
 import { useExperimental } from "../../lib/experimental";
 import { useProjectRemarksStore } from "../../stores/projectRemarks";
 import { RemarksPane } from "./RemarksPane";
-import { ArrowDownIcon, ArrowUpIcon, CheckIcon, CommentIcon, GearIcon, InboxIcon, SearchIcon, TrashIcon, WindowIcon } from "../common/icons/Icon";
+import { ArrowDownIcon, ArrowUpIcon, CheckIcon, CommentIcon, GearIcon, HexagonIcon, InboxIcon, SearchIcon, TrashIcon, WindowIcon } from "../common/icons/Icon";
 import { ErrorNote } from "../common/ErrorNote";
 
 /** How long the pointer must rest on a session row before its stats card opens
@@ -1376,13 +1376,17 @@ export function ProjectFilesView({
           // the one sentence saying this folder is the scratch area.
           title={isRootScope ? `${projectDir}\n${t("projectFilesView.rootScopeTitle")}` : undefined}
         >
-          {activeBox
-            ? `▣ ${activeBox.name}`
-            : project
-              ? project.name
-              : isRootScope
-                ? `✦ ${t("projectFilesView.rootScopeName")}`
-                : t("projectFilesView.filesFallbackName")}
+          {activeBox ? (
+            <>
+              <HexagonIcon /> {activeBox.name}
+            </>
+          ) : project ? (
+            project.name
+          ) : isRootScope ? (
+            `✦ ${t("projectFilesView.rootScopeName")}`
+          ) : (
+            t("projectFilesView.filesFallbackName")
+          )}
         </span>
         {isRootScope && <UntestedTag id="projectFilesView.1" />}
         {!activeBox && project && (

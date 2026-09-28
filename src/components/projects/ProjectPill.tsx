@@ -51,7 +51,7 @@ import { useBoxesStore } from "../../stores/boxes";
 import { boxColor } from "../../lib/theme/boxColor";
 import { bindDragRelease, dragPlatform } from "../../lib/window/dragPlatform";
 import { useT } from "../../lib/i18n";
-import { CheckboxIcon, PauseIcon, SquareIcon, UnlockIcon } from "../common/icons/Icon";
+import { BoxSwatch, CheckboxIcon, PauseIcon, SquareIcon, UnlockIcon } from "../common/icons/Icon";
 import {
   agentFenceInstallCommand,
   agentFenceMarkLevel,
@@ -2142,11 +2142,7 @@ export function ProjectPill({
                   <span className="context-menu-checkmark" aria-hidden>
                     {member ? <CheckboxIcon /> : <SquareIcon />}
                   </span>
-                  <span
-                    className="context-menu-box-swatch"
-                    style={{ background: boxColor(b) }}
-                    aria-hidden
-                  />
+                  <BoxSwatch className="context-menu-box-swatch" color={boxColor(b)} />
                   {b.name}
                 </button>
               );
@@ -2866,10 +2862,10 @@ export function ProjectPill({
                   the box's own pill wears in the leading segment, so a
                   member is matched to its box by eye, not by tooltip. */}
               {boxTags.map((b) => (
-                <span
+                <BoxSwatch
                   key={b.id}
                   className="project-pill-box-swatch"
-                  style={{ background: b.color }}
+                  color={b.color}
                   data-box-name={b.name}
                 />
               ))}

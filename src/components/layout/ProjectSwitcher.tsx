@@ -552,7 +552,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
             // `stationById` cannot carry precisely because it has no id.
             rootStation={steeringActive ? 1 : undefined}
           />
-          {/* Hairline between the fixed leading segment (★ · ▣) and the
+          {/* Hairline between the fixed leading segment (★ · ⬡) and the
               scrolling project strip, so the two zones read as two zones. */}
           {/* The pending-proposals count used to stand here as a second copy of
               the console's own badge. Eldrun's tools and what they propose are

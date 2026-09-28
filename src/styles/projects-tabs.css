@@ -357,11 +357,10 @@
 
 .box-chip-icon {
   font-size: 12px;
-  line-height: 1;
   color: var(--accent);
 }
 
-/* The mark the chip wears instead of ▣ when it names the root scope: the
+/* The mark the chip wears instead of the hexagon when it names the root scope: the
    app's own spark, the glyph its pinned pill carried before it folded in here,
    at 18px and without the pill's one-per-launch intro flourish (the chip
    re-mounts its star on every trip back to root, and a logo that replays its
@@ -462,7 +461,7 @@
 }
 
 .box-scope-pill .project-pill-box-swatch {
-  background: var(--box-color, var(--accent));
+  color: var(--box-color, var(--accent));
 }
 
 /* The box's slice is what the strip shows (its members), whether or not the
@@ -484,7 +483,7 @@
   box-shadow: inset 0 0 0 1px var(--box-color, var(--accent));
 }
 
-/* The hairline after the leading segment (★ · 🗑 · ▣ chip), before the scrolling
+/* The hairline after the leading segment (★ · 🗑 · ⬡ chip), before the scrolling
    project pills — the visible edge between the fixed zone and the strip that
    moves under it. It was literally white, which is a divider that only exists on
    a dark header: on any light theme it was a white line on a near-white bar, and
@@ -622,7 +621,8 @@
    render individually; the swatches + their tooltip are what say "also in a
    box"). One square per box, in the box's colour — the colour of the box's
    own pill in the leading segment — so which box a member belongs to is read
-   by eye across the row. Squares, where the category marks are round dots. */
+   by eye across the row. Hexagons (the box icon's shape), where the category
+   marks are round dots. */
 .project-pill-boxdot {
   display: inline-flex;
   align-items: center;
@@ -631,21 +631,24 @@
   flex-shrink: 0;
 }
 
-.project-pill-box-swatch {
-  width: 8px;
-  height: 8px;
+/* The hexagon's rim (`BoxSwatch`), the half-tone ring the square swatch wore
+   as a box-shadow, so a light box colour still holds its edge. */
+.box-swatch {
   flex-shrink: 0;
-  border-radius: 2px;
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-main) 50%, transparent);
+  stroke: color-mix(in srgb, var(--bg-main) 50%, transparent);
+}
+
+.project-pill-box-swatch {
+  width: 10px;
+  height: 9px;
 }
 
 /* The same swatch in a menu row (a pill's Boxes group), before the box's name. */
 .context-menu-box-swatch {
   display: inline-block;
-  width: 9px;
-  height: 9px;
+  width: 11px;
+  height: 10px;
   margin-right: 6px;
-  border-radius: 2px;
   vertical-align: middle;
 }
 

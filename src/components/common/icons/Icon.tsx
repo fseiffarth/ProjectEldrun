@@ -8,7 +8,7 @@
  * scales with that spot's `font-size` the way the glyph did. Each is
  * `aria-hidden`: the control around it carries the accessible name.
  */
-import type { ReactNode } from "react";
+import type { ReactNode, SVGProps } from "react";
 
 export interface IconProps {
   className?: string;
@@ -567,6 +567,45 @@ export function SquareIcon(p: IconProps) {
     <Frame {...p}>
       <rect x="4" y="4" width="16" height="16" rx="2.5" />
     </Frame>
+  );
+}
+
+/** A flat-top hexagon — a box of projects, in the shape of the logo's nodes. */
+export function HexagonIcon(p: IconProps) {
+  return (
+    <Frame {...p}>
+      <path d="M20.5 12l-4.25 7.36h-8.5L3.5 12l4.25-7.36h8.5z" />
+    </Frame>
+  );
+}
+
+/**
+ * A box's colour mark: the {@link HexagonIcon} filled with the box's colour
+ * (`currentColor`, so CSS can set it too) and rimmed like the logo's nodes.
+ * Cropped to the hexagon, so a small swatch is all mark and no margin.
+ */
+export function BoxSwatch({
+  className,
+  color,
+  ...rest
+}: { className?: string; color?: string } & SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 20 18"
+      className={className ? `box-swatch ${className}` : "box-swatch"}
+      style={color ? { color } : undefined}
+      aria-hidden="true"
+      focusable="false"
+      {...rest}
+    >
+      <path
+        d="M18.6 9l-4.3 7.45H5.7L1.4 9l4.3-7.45h8.6z"
+        fill="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+    </svg>
   );
 }
 

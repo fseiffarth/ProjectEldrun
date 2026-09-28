@@ -3,6 +3,7 @@ import type { ProjectBox, ProjectEntry } from "../../types";
 import { formatRemoteTarget, resolveLocalMirror } from "../../types";
 import { projectDirectory } from "./scaffold";
 import { useT } from "../../lib/i18n";
+import { HexagonIcon } from "../common/icons/Icon";
 
 type SearchRow =
   | { kind: "project"; project: ProjectEntry }
@@ -145,7 +146,7 @@ export function ProjectSearch({
                     onMouseEnter={() => setSelected(index)}
                   >
                     <span>
-                      <span className="project-box-badge" aria-hidden>▣</span> {row.box.name}
+                      <HexagonIcon className="project-box-badge" /> {row.box.name}
                     </span>
                     <small>
                       {t(row.box.member_ids.length === 1 ? "projectSearch.boxMemberOne" : "projectSearch.boxMemberMany", {

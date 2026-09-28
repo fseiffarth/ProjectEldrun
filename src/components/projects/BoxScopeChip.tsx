@@ -14,7 +14,7 @@ import { ScopeSetStatusBars } from "./PillStatusBars";
 import { MenuShortcut } from "../common/MenuShortcut";
 import { UntestedTag } from "../common/UntestedTag";
 import { BoxColorPicker } from "./BoxColorPicker";
-import { CheckboxIcon, SquareIcon } from "../common/icons/Icon";
+import { BoxSwatch, CheckboxIcon, HexagonIcon, SquareIcon } from "../common/icons/Icon";
 
 /** This chip's entry in the shared header hover-menu id (stores/headerHoverMenu). */
 const SCOPE_MENU_ID = "box-scope-chip";
@@ -289,9 +289,7 @@ export function BoxScopeChip({
           {naming === "root" ? (
             <StarIcon className="box-chip-star" />
           ) : (
-            <span className="box-chip-icon" aria-hidden>
-              ▣
-            </span>
+            <HexagonIcon className="box-chip-icon" />
           )}
           {chipLabel() && <span className="box-chip-label">{chipLabel()}</span>}
           {/* How many boxes have no pill on the row — whatever the chip is
@@ -374,9 +372,10 @@ export function BoxScopeChip({
                       onSelect(b.id);
                     }}
                   >
-                    {/* The members' swatch, not the ▣ glyph: the pill and
-                        its members' project pills wear the same mark. */}
-                    <span className="project-pill-box-swatch" aria-hidden />
+                    {/* The members' filled swatch, not the chip's outline
+                        hexagon: the pill and its members' project pills wear
+                        the same mark. */}
+                    <BoxSwatch className="project-pill-box-swatch" />
                     <span className="box-chip-label">{b.name}</span>
                   </button>
                 )}
@@ -463,11 +462,7 @@ export function BoxScopeChip({
                   onClick={() => pick(b.id)}
                   title={memberCountTitle(b)}
                 >
-                  <span
-                    className="project-pill-box-swatch"
-                    style={{ background: boxColor(b) }}
-                    aria-hidden
-                  />
+                  <BoxSwatch className="project-pill-box-swatch" color={boxColor(b)} />
                   <span className="box-chip-menu-name">{b.name}</span>
                   {/* Inert bars: the row is already a button, and picking the
                       box is the way in from here. */}
