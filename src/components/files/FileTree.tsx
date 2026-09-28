@@ -16,12 +16,15 @@ import { closeTabsForDeletedPath, retargetTabsForRenamedPath } from "./fileTabSy
 import {
   startCursorPoll,
   desktopCursor,
+  desktopCoordinatesSupported,
   snapshotFrame,
   physToClient,
   type PhysPoint,
   type WindowFrame,
 } from "../../lib/window/coords";
 import { bindDragRelease, dragPlatform, PLATFORM } from "../../lib/window/dragPlatform";
+import { newDropToken, probeDropTarget } from "../../lib/window/dropClaim";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useSettingsStore } from "../../stores/settings";
 import { useExperimental } from "../../lib/experimental";
 import { GIT_STATE_COLOR } from "../../lib/theme/gitColors";
@@ -2210,6 +2213,7 @@ export function FileTree({
     };
 
     const commitRelease = async (shiftKey: boolean) => {
+      const releasedAt = Date.now();
       // The OS owns the drag: it is dropping into an external app, and the
       // in-app drop targets don't apply. `eldrun:file-drag-ended` ends the
       // gesture instead (a stray pointerup here must not ALSO spawn a tab or a
@@ -2311,6 +2315,31 @@ export function FileTree({
         lastClient,
         viewport: { w: window.innerWidth, h: window.innerHeight },
       });
+      // No desktop geometry (native Wayland): `phys` is null, so the popout
+      // hit-test above could not run — but a popout may well be under the
+      // cursor. Ask this scope's windows to claim the release
+      // (`lib/window/dropClaim`), exactly as a tab dragged out of the bar does;
+      // the popout that receives the pointer answers with the pane under it.
+      if (outside && !shiftKey && !phys && !(await desktopCoordinatesSupported())) {
+        const scope = useTabsStore.getState().scope;
+        const claim = await probeDropTarget({
+          token: newDropToken(getCurrentWindow().label),
+          scope,
+          sourceLabel: getCurrentWindow().label,
+          tabKey: "",
+          label: d.label,
+          releasedAt,
+        });
+        if (claim?.groupId) {
+          commitFileDrop(d, projectId, projectDir, null, {
+            scope,
+            groupId: claim.groupId,
+            target: claim.target ?? undefined,
+          });
+          useDragStore.getState().end();
+          return;
+        }
+      }
       const detachBounds =
         outside && phys
           ? {
