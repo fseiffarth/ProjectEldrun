@@ -44,6 +44,9 @@ export interface SessionStatus {
   mode?: string;
   /** Remaining context, e.g. `85%` — a CLI that prints "used" is flipped. */
   context?: string;
+  /** A `/goal` is running: the session keeps taking turns until its condition
+   * is met. Present only while the footer says so. */
+  goal?: boolean;
 }
 
 export interface StatusLineLike { text: string; frameText?: string }
@@ -170,7 +173,17 @@ function remainingPercent(used: string): string {
   return `${Math.round(left * 10) / 10}%`;
 }
 
+/** A running goal, as the footers print it: Claude Code's `◎ /goal active
+ * (3m)` (2.1.283, beside the mode), Codex's `Pursuing goal (…)` (0.153). A
+ * paused or met goal says something else and is not one. Tested before the
+ * path, which would otherwise read `/goal` as a directory. */
+const GOAL_ACTIVE = /(?:^|\s)\/goal active\b|^pursuing goal\b/iu;
+
 function classify(segment: string, status: SessionStatus) {
+  if (GOAL_ACTIVE.test(segment)) {
+    status.goal = true;
+    return;
+  }
   // "ctx" is the short label Grok Build and many custom statuslines print.
   // A figure followed by "used" is flipped, so the chip always reads remaining.
   if (!status.context && /context|\bctx\b/iu.test(segment)) {

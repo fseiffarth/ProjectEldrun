@@ -464,6 +464,7 @@ export const UNTESTED = {
   "skillsLibrary.title#2": { area: "tabs", what: "TabBar · Skills Library" },
   "tabBar.1": { area: "tabs", what: "TabBar · Duplicate tab" },
   "tabBar.2": { area: "tabs", what: "TabBar · Schedule prompt…" },
+  "tabBar.modeMarks": { area: "tabs", what: "TabBar/popout strip · PLAN and GOAL pills on an agent tab while its own status line reads plan mode or a running /goal" },
   "tabColor.menu": { area: "tabs", what: "TabColorPicker · Colour" },
   "tabMark.menu": { area: "tabs", what: "TabBar/popout · tab right-click Important / Urgent: a !/!! glyph on the tab, and the project pill sums the marked tabs (click jumps to the most urgent); kept after a relaunch" },
   "tabTodo.create": { area: "tabs", what: "TabBar/popout · tab right-click Create to-do card (to-do board on): a card titled after the tab lands in the intake column and opens; the tab shows ☑ (opens the card), the card shows ▭ <tab> (jumps to the tab); Open / Unlink rows after" },

@@ -58,6 +58,7 @@ import { stackNames, stripItems } from "../../lib/tabStacks";
 import { useDialogs } from "../common/PromptDialogs";
 import { useFastMode } from "../../lib/agents/fastMode";
 import {
+  TabAgentModeMarks,
   TabSourceBadge,
   TabStatusMark,
   TabTexLinkBadge,
@@ -1465,6 +1466,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
               <span className="tab-label">{tab.label}</span>
             )}
             <TabMarkBadge tab={tab} />
+            <TabAgentModeMarks scope={scope} tab={tab} isActive={isActive} />
             {tab.hostSession && (
               <span className="tab-host-session" title={t("tab.hostSessionBadgeTitle")}>
                 {t("tab.hostSessionBadge")}
@@ -1501,14 +1503,15 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
               partner={texPdfPartner(texPdfTabs, tab)}
               onFocus={setActive}
             />
-            {/* There is deliberately no Plan/Auto badge here. An agent's
+            {/* There is deliberately no Plan/Auto TOGGLE here. An agent's
                 permission mode is the agent's own to set, through its own CLI
                 (Claude's shift+tab, Codex's mode picker) — Eldrun launches the
                 plain command and injects no mode flag. The badge that used to
                 sit here rewrote the tab's launch args, which respawned the PTY
                 on every flip; the mode a user sets inside the session still
                 survives a restart, because `services::agent_session` re-applies
-                the mode Claude's own hook recorded. */}
+                the mode Claude's own hook recorded. The PLAN/GOAL pills after
+                the label only SHOW what the session's status line says. */}
             {/* Locality badge — click to choose where this agent/shell tab runs:
                 the local mirror, the primary host, or (multi-host remote,
                 docs/multi_host_remote_plan.md) any worker machine. Only shown for

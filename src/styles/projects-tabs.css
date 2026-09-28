@@ -1798,6 +1798,25 @@ button.tab-todo-link {
   margin-left: auto;
   color: var(--accent);
 }
+/* An agent tab's own session mode, read off its status line (TabAgentModeMarks):
+   PLAN in the secondary accent (the phone's Mode chip is the same violet), GOAL
+   in the accent. The HOST pill's shape, outlined rather than filled so the red
+   HOST stays the one loud pill on the strip. */
+.tab-mode-mark {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 4px;
+  height: 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid currentColor;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+.tab-mode-mark.plan { color: var(--accent-secondary); }
+.tab-mode-mark.goal { color: var(--accent); }
 .tab-source { cursor: var(--cur-default, default); }
 .tab-locality.local,
 .tab-source.local { color: var(--success); }

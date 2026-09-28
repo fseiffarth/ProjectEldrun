@@ -42,7 +42,7 @@ import { CustomAgentDialog } from "../tabs/CustomAgentDialog";
 import { NewTabMenu } from "../tabs/NewTabMenu";
 import { TabScopeContext } from "../tabs/tabScopeContext";
 import { TabPane } from "../tabs/TabPane";
-import { TabStatusMark } from "../tabs/TabLocalityBadges";
+import { TabAgentModeMarks, TabStatusMark } from "../tabs/TabLocalityBadges";
 import { pickEdge, previewInset } from "../tabs/dragGeometry";
 import { dragPreviewLayout } from "../tabs/dragPreview";
 import { ContextMenuPortal } from "../common/ContextMenuPortal";
@@ -1039,6 +1039,7 @@ function GroupStrip({
           >
             <TabStatusMark stateClass={stateClass} />
             <span className="tab-label">{tab.label}</span>
+            <TabAgentModeMarks scope={ROOT_SCOPE} tab={tab} isActive={isActive} />
             {install && <UntestedTag id="rootConsole.installTabTitle" />}
             <button
               className="tab-close"

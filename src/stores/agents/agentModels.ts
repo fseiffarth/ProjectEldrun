@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
-import { claudeModelLabel, screenModelTag, shortModelName, textScreenModelTag } from "../../lib/agents/agentModel";
+import { claudeModelLabel, screenModelTag, shortModelName, textScreenModelTag, textScreenModeMarks, type AgentModeMarks } from "../../lib/agents/agentModel";
 import { isClaudeCommand } from "../../lib/terminal/terminalControl";
 import { AGENT_ITEMS } from "../../components/tabs/newTabItems";
 import { adoptTranscriptPrompts, adoptTypedPrompt, type TranscriptPrompt } from "../../lib/agents/prompt/adopt";
@@ -74,6 +74,14 @@ interface AgentModelsStore {
    *  rather than dropping the tag back to the transcript's older answer. Gone
    *  only when the session is. */
   screenByTab: Record<string, string>;
+  /** Composed PTY id → the plan / goal marks last read off the tab's screen —
+   *  the live tmux pane here, the shown xterm through `noteModes` (the tab
+   *  strip reads the tab in front every couple of seconds, which is where a
+   *  Shift+Tab lands). Sticky like `screenByTab`: an unreadable screen keeps
+   *  the last reading. Absent until a screen was read. */
+  modeByTab: Record<string, AgentModeMarks>;
+  /** Record a reading of one tab's marks, when it differs from the last. */
+  noteModes: (ptyId: string, marks: AgentModeMarks) => void;
   /** Re-read one tab's model off its live tmux screen, throttled unless
    *  `force`. A no-op for a tab with no local tmux session. */
   refreshScreen: (scope: string, tab: TabEntry, force?: boolean) => Promise<void>;
@@ -151,6 +159,12 @@ export const useAgentModelsStore = create<AgentModelsStore>((set, get) => ({
   promptByTab: {},
   recentByTab: {},
   screenByTab: {},
+  modeByTab: {},
+  noteModes: (ptyId, marks) => {
+    const known = get().modeByTab[ptyId];
+    if (known && known.plan === marks.plan && known.goal === marks.goal) return;
+    set((state) => ({ modeByTab: { ...state.modeByTab, [ptyId]: marks } }));
+  },
   refreshScreen: async (scope, tab, force = false) => {
     if (!isModelTaggedTab(tab) || !tab.tmuxSession) return;
     const ptyId = `${scope}:${tab.key}`;
@@ -163,15 +177,19 @@ export const useAgentModelsStore = create<AgentModelsStore>((set, get) => ({
     if (typeof screen !== "string") {
       // No session here (a remote tab, one that exited, a backend without the
       // command): nothing to stand in front of the xterm and the transcript.
-      if (known !== undefined) {
+      if (known !== undefined || get().modeByTab[ptyId] !== undefined) {
         set((state) => {
           const screenByTab = { ...state.screenByTab };
           delete screenByTab[ptyId];
-          return { screenByTab };
+          const modeByTab = { ...state.modeByTab };
+          delete modeByTab[ptyId];
+          return { screenByTab, modeByTab };
         });
       }
       return;
     }
+    const marks = textScreenModeMarks(screen, agentTabLabel(tab));
+    if (marks) get().noteModes(ptyId, marks);
     const tag = textScreenModelTag(screen, agentTabLabel(tab));
     if (!tag || tag === known) return;
     set((state) => ({ screenByTab: { ...state.screenByTab, [ptyId]: tag } }));

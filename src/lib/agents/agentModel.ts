@@ -51,9 +51,41 @@ export function screenModelTag(buffer: ReadableBufferLike, agentLabel?: string):
 /** `screenModelTag` over a plain-text screen — the rows `tmux capture-pane -p`
  * prints for the live pane (`local_tmux_screen`). */
 export function textScreenModelTag(screen: string, agentLabel?: string): string | undefined {
+  return screenModelTag(textBuffer(screen), agentLabel);
+}
+
+/** A `capture-pane -p` screen as the buffer shape the parsers read. */
+function textBuffer(screen: string): ReadableBufferLike {
   const rows = screen.replace(/\r/g, "").replace(/\n$/, "").split("\n");
-  return screenModelTag({
+  return {
     length: rows.length,
     getLine: (row) => (rows[row] === undefined ? undefined : { translateToString: () => rows[row] }),
-  }, agentLabel);
+  };
+}
+
+/** The session modes an agent tab is marked for: planning (the CLI's own plan
+ * mode) and a running `/goal`. Either, both or neither. */
+export interface AgentModeMarks { plan: boolean; goal: boolean }
+
+/** Rows read for the marks: the footer is the bottom of the screen, so a tall
+ * window's worth is plenty, and the read stays cheap enough for a timer. */
+const MARK_ROWS = 80;
+
+/**
+ * Which modes the session's own status line says it is in, read with the same
+ * parser as the model tag and the phone's Mode chip — so a tab is marked
+ * exactly when its footer says `plan mode on` or `/goal active`. `null` when
+ * the bottom of the screen is not the agent's input frame (a dialog, the
+ * `/model` picker): unreadable is not "neither", and the caller keeps what it
+ * last read.
+ */
+export function screenModeMarks(buffer: ReadableBufferLike, agentLabel?: string): AgentModeMarks | null {
+  const status = sessionStatus(readableScreen(buffer, MARK_ROWS).lines, agentLabel);
+  if (!status) return null;
+  return { plan: status.mode === "plan", goal: status.goal === true };
+}
+
+/** `screenModeMarks` over a plain-text screen (`local_tmux_screen`). */
+export function textScreenModeMarks(screen: string, agentLabel?: string): AgentModeMarks | null {
+  return screenModeMarks(textBuffer(screen), agentLabel);
 }

@@ -98,6 +98,7 @@ import {
 import { busyStateClass, useActivityStore } from "../../stores/activity";
 import { detachedNewTabCwd, type DetachedRemoteInfo } from "../../stores/detached";
 import {
+  TabAgentModeMarks,
   TabSourceBadge,
   TabStatusMark,
   TabTexLinkBadge,
@@ -1590,6 +1591,7 @@ export function DetachedCenterPanel({
                   <TabStatusMark stateClass={stateClass} />
                   <span className="tab-label">{tab.label}</span>
                   <TabMarkBadge tab={tab} inPopout />
+                  <TabAgentModeMarks scope={scope} tab={tab} isActive={isActive} />
                   {(tab.kind === "agent" || tab.kind === "local_agent") && tab.scheduleTargetId && (() => {
                     const enabled = (schedulesByTarget[scheduleCacheKey(scope, tab.scheduleTargetId)] ?? [])
                       .filter((schedule) => schedule.enabled);
