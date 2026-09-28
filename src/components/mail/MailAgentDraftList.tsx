@@ -21,7 +21,7 @@ export function MailAgentDraftList({
 }) {
   const t = useT();
   return (
-    <div className="mail-list mail-agent-draft-list">
+    <div className="mail-list mail-list-full mail-agent-draft-list">
       {drafts.length === 0 && <div className="mail-empty">{t("mail.noAgentDrafts")}</div>}
       <div className="mail-list-rows">
         {drafts.map((d) => {
