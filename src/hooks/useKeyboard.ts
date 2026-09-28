@@ -15,7 +15,13 @@ import {
   projectStations,
   useKeyboardSteeringStore,
 } from "../stores/keyboardSteering";
-import { openProjectShellInRootConsole, toggleRootConsole } from "../stores/rootOverlay";
+import {
+  openProjectShellInRootConsole,
+  toggleRootConsole,
+  useRootOverlayStore,
+} from "../stores/rootOverlay";
+import { newTabRequestFor, requestNewTab } from "../lib/shortcuts/newTabChord";
+import { isPaneTerminalTarget, terminalMayTakeChord } from "../lib/shortcuts/terminalTabChord";
 import {
   chordMatches,
   isLoneModifier,
@@ -90,7 +96,8 @@ export function isEditableTarget(target: EventTarget | null): boolean {
  *   - Ctrl+Enter           → toggle fullscreen for the focused subwindow
  *   - Escape               → exit fullscreen (when active) [fixed]
  *   - Shift+Ctrl+Tab       → cycle to the next active project
- *   - Shift+Left/Right     → previous / next tab within the focused subwindow
+ *   - Shift+Left/Right     → previous / next tab within the focused subwindow,
+ *                            from a focused pane terminal too (terminalTabChord)
  *   - Shift+Up/Down        → cycle the focused subwindow (numbered preview shown
  *                            while Shift is held; focus commits on Shift release)
  *   - Shift+Tab            → cycle tabs within the focused subwindow
@@ -101,6 +108,9 @@ export function isEditableTarget(target: EventTarget | null): boolean {
  *   - Ctrl+Shift+Space     → toggle keyboard steering mode (see below)
  *   - Ctrl+Shift+R         → open / close the root console
  *   - Ctrl+Shift+S         → root console shell at the active project's root
+ *   - Ctrl+Shift+N / M     → new shell / System Monitor tab in the focused pane
+ *   - Ctrl+1 … Ctrl+9      → new agent tab there: 1 = the default agent, 2–9
+ *                            the + menu's other agents in order
  *
  * Steering mode (`steeringMode` chord): a modal layer for the fixed keys in
  * `STEERING_KEYS`, captured on `document` in the CAPTURE phase so xterm never
@@ -171,6 +181,19 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
         e.stopPropagation();
         if (steering.active) steering.exit();
         openProjectShellInRootConsole();
+        return;
+      }
+      // A new tab in the focused pane, keyboard focus and all — from a focused
+      // terminal too, which is where the hands are when the next one is
+      // wanted. It lands in the workspace, so the root console steps aside.
+      // An agent number with no agent behind it passes the key on.
+      const newTab = newTabRequestFor(e, overrides);
+      if (newTab && requestNewTab(newTab)) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (steering.active) steering.exit();
+        const overlay = useRootOverlayStore.getState();
+        if (overlay.open) overlay.close();
         return;
       }
       if (!steering.active) return;
@@ -347,16 +370,17 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
       }
 
       // Don't steal keys from a focused text field (e.g. inline tab rename) —
-      // except the macOS ⌘W family, which `editorMayTakeChord` admits.
+      // except the macOS ⌘W family, which `editorMayTakeChord` admits, and the
+      // tab steps a pane terminal hands over (`terminalMayTakeChord`).
       const editable = isEditableTarget(e.target);
-      if (editable && !isMacCommandChord(e)) return;
+      if (editable && !isMacCommandChord(e) && !isPaneTerminalTarget(e.target)) return;
 
       // Resolve the configured chord for an action (user override or default).
-      // From an editable target only the close family may match.
+      // From an editable target only those exceptions may match.
       const overrides = useSettingsStore.getState().settings
         ?.keyboard_shortcuts as ShortcutMap | undefined;
       const is = (action: ShortcutAction) =>
-        (!editable || editorMayTakeChord(action, e)) &&
+        (!editable || editorMayTakeChord(action, e) || terminalMayTakeChord(action, e)) &&
         chordMatches(resolveChord(action, overrides), e);
 
       // Toggle app-internal fullscreen of the focused subwindow.

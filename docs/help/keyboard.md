@@ -32,7 +32,7 @@ the place of Ctrl. **F1** opens the cheat sheet with every effective binding.
 
 | Default | Action |
 |---|---|
-| Shift+← / Shift+→ | Previous / next tab in the pane |
+| Shift+← / Shift+→ | Previous / next tab in the pane — from a focused terminal too (a program in it then never gets these keys) |
 | Shift+Tab | Cycle tabs in the pane |
 | Shift+↑ / Shift+↓ | Cycle pane focus up / down |
 | Ctrl+Enter | Toggle the focused pane's fullscreen |
@@ -41,6 +41,19 @@ the place of Ctrl. **F1** opens the cheat sheet with every effective binding.
 | Ctrl+W | Close the active tab |
 | Ctrl+Shift+W | Close the focused pane |
 | Ctrl+Shift+Alt+W | Close all tabs in the project |
+
+## New tabs
+
+Each opens a tab in the focused pane of the main window and puts the cursor
+in it — from a focused terminal too. The + menu shows each chord beside its
+entry.
+
+| Default | Action |
+|---|---|
+| Ctrl+Shift+N | New shell |
+| Ctrl+Shift+M | System Monitor (focuses it if the pane's scope already has one) |
+| Ctrl+1 | New tab with your default agent (set in the 🧠 menu) |
+| Ctrl+2 … Ctrl+9 | The + menu's other agents, in the order it lists them |
 
 ## Steering mode
 

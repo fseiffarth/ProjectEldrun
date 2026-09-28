@@ -54,12 +54,30 @@ export type ShortcutAction =
   | "shortcutHelp"
   | "rootConsole"
   | "projectShell"
+  | "newShellTab"
+  | "newMonitorTab"
+  | AgentTabAction
   | "texUp"
   | "texBack"
   | "texCompile";
 
+/** The agent-tab chords, one per slot of the + menu's numbered agents
+ *  (`agentShortcutSlots`): slot 1 is the default agent, 2–9 the others. */
+export const AGENT_TAB_ACTIONS = [
+  "agentTab1",
+  "agentTab2",
+  "agentTab3",
+  "agentTab4",
+  "agentTab5",
+  "agentTab6",
+  "agentTab7",
+  "agentTab8",
+  "agentTab9",
+] as const;
+export type AgentTabAction = (typeof AGENT_TAB_ACTIONS)[number];
+
 /** Section ids for the cheat-sheet/settings grouping (`SHORTCUT_GROUPS`). */
-export type ShortcutGroup = "navigation" | "tabs" | "steering" | "tex";
+export type ShortcutGroup = "navigation" | "tabs" | "newTab" | "steering" | "tex";
 
 export interface ShortcutDef {
   action: ShortcutAction;
@@ -82,6 +100,7 @@ export interface ShortcutDef {
 export const SHORTCUT_GROUPS: { id: ShortcutGroup; labelKey: TranslationKey }[] = [
   { id: "navigation", labelKey: "shortcutHelp.group.navigation" },
   { id: "tabs", labelKey: "shortcutHelp.group.tabs" },
+  { id: "newTab", labelKey: "shortcutHelp.group.newTab" },
   { id: "steering", labelKey: "shortcutHelp.group.steering" },
   { id: "tex", labelKey: "shortcutHelp.group.tex" },
 ];
@@ -109,12 +128,14 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     labelKey: "shortcut.prevTab",
     group: "tabs",
     default: { key: "ArrowLeft", shift: true },
+    untested: "shortcut.prevTab",
   },
   {
     action: "nextTab",
     labelKey: "shortcut.nextTab",
     group: "tabs",
     default: { key: "ArrowRight", shift: true },
+    untested: "shortcut.nextTab",
   },
   {
     action: "subwindowUp",
@@ -233,6 +254,34 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     default: { key: "s", ctrl: true, shift: true },
     untested: "shortcut.projectShell",
   },
+  // New tabs in the focused pane of the main window, taken focus and all
+  // (`lib/shortcuts/newTabChord`): the + menu's Shell and System Monitor rows,
+  // and its agents by number. Same capture-phase handler as the two above, so
+  // they work from a focused terminal. Ctrl+Shift+N and +M are no terminal or
+  // editor chord here; Ctrl+1–9 shadows only the legacy control codes some
+  // terminals put on Ctrl+2–8, and is matched by physical key (`chordMatches`)
+  // so it works on layouts whose digit row types symbols.
+  {
+    action: "newShellTab",
+    labelKey: "shortcut.newShellTab",
+    group: "newTab",
+    default: { key: "n", ctrl: true, shift: true },
+    untested: "shortcut.newTabChords",
+  },
+  {
+    action: "newMonitorTab",
+    labelKey: "shortcut.newMonitorTab",
+    group: "newTab",
+    default: { key: "m", ctrl: true, shift: true },
+    untested: "shortcut.newTabChords",
+  },
+  ...AGENT_TAB_ACTIONS.map((action, i): ShortcutDef => ({
+    action,
+    labelKey: `shortcut.${action}`,
+    group: "newTab",
+    default: { key: String(i + 1), ctrl: true },
+    untested: "shortcut.newTabChords",
+  })),
   // The TeX workspace's two navigation steps (#tex-structure-up). Unlike every
   // chord above these are NOT handled by `useKeyboard`: they only mean anything
   // inside a workspace tab, so the workspace itself listens — on its own root
@@ -324,7 +373,7 @@ export function chordFromEvent(e: KeyboardEvent): ChordDescriptor | null {
  * calls for. Off macOS, modifiers are matched exactly as before.
  */
 export function chordMatches(chord: ChordDescriptor, e: KeyboardEvent): boolean {
-  if (normalizeKey(e.key) !== normalizeKey(chord.key)) return false;
+  if (normalizeKey(e.key) !== normalizeKey(chord.key) && !isDigitKeyOf(chord.key, e)) return false;
   if (e.shiftKey !== !!chord.shift) return false;
   if (e.altKey !== !!chord.alt) return false;
   if (IS_MAC) {
@@ -333,6 +382,13 @@ export function chordMatches(chord: ChordDescriptor, e: KeyboardEvent): boolean 
     return wantsPrimary === hasPrimary;
   }
   return e.ctrlKey === !!chord.ctrl && e.metaKey === !!chord.meta;
+}
+
+/** A digit chord also matches by physical key: AZERTY types `&` on the key
+ *  US calls `1`, and Shift turns every digit into a symbol, so `e.key` alone
+ *  would make Ctrl+1 unreachable there. */
+function isDigitKeyOf(key: string, e: KeyboardEvent): boolean {
+  return /^[0-9]$/.test(key) && (e.code === `Digit${key}` || e.code === `Numpad${key}`);
 }
 
 /** Human-readable label for a chord, e.g. "Shift+Ctrl+Tab" — or native mac

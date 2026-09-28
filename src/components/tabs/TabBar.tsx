@@ -28,17 +28,23 @@ import {
   SHELL_ITEMS,
   TAB_ACCENT,
   agentMenuEntries,
+  agentShortcutSlots,
   buildStaticTabSpec,
   compactAgentMenuEntries,
   isFileTabKind,
   itemLabel,
   type StaticMenuItem,
 } from "./newTabItems";
-import { AddTabMenuList } from "./AddTabMenuList";
+import { AddTabMenuList, type AddMenuEntry, type AddMenuGroup } from "./AddTabMenuList";
 import { localModelMenuGroup, useLocalModelPlacement } from "./localModelGroup";
 import { TabColorPicker } from "./TabColorPicker";
 import { tabColorCss } from "../../lib/theme/tabColors";
 import { useAddTabMenuData } from "./useAddTabMenuData";
+import {
+  NEW_TAB_SHORTCUT_EVENT,
+  type NewTabRequest,
+  type NewTabShortcutDetail,
+} from "../../lib/shortcuts/newTabChord";
 import { useAgentWorktreePicker } from "./agentWorktrees";
 import type { CloudLaunch } from "../../lib/agents/cloudSessions";
 import { BOX_SCOPE_PREFIX } from "../../lib/terminal/ptyId";
@@ -148,6 +154,9 @@ interface Props {
   filesReserveWidth?: number;
 }
 
+/** The + menu's one Shell row (the backend picks the OS shell). */
+const SHELL_ITEM = SHELL_ITEMS.find((i) => i.kind === "shell")!;
+
 export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth }: Props) {
   const t = useT();
   // Every control here has a keyboard twin in `useKeyboard`; the tooltip names
@@ -255,6 +264,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
     localModelOffInRoot,
     localDrivers,
     enabledAgents,
+    defaultAgentBin,
     vibeForLocalModel,
     compactAgentBins,
     customAgents,
@@ -618,6 +628,39 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
     });
     setMenuPos(null);
   }
+
+  // The new-tab chords (`lib/shortcuts/newTabChord`) when this is the pane
+  // they target: the + menu rows' own handlers, so a chord opens exactly the
+  // tab a click would. The new tab is active in the focused pane, which is what
+  // hands its terminal the keyboard. Latest-render handlers via the ref, one
+  // listener per bar.
+  const onNewTabChord = useRef<(request: NewTabRequest) => boolean>(() => false);
+  onNewTabChord.current = (request) => {
+    if (request.kind === "monitor") {
+      handleAddMonitor();
+      return true;
+    }
+    const item =
+      request.kind === "shell"
+        ? SHELL_ITEM
+        : agentShortcutSlots({
+            installedBuiltins: enabledAgents,
+            installedCmds: installedCustom,
+            customAgents,
+            defaultAgentBin,
+          })[request.slot]?.item;
+    if (!item) return false;
+    handleAdd(item);
+    return true;
+  };
+  useEffect(() => {
+    const onRequest = (e: Event) => {
+      const { request, groupId: target } = (e as CustomEvent<NewTabShortcutDetail>).detail;
+      if (target === groupId && onNewTabChord.current(request)) e.preventDefault();
+    };
+    window.addEventListener(NEW_TAB_SHORTCUT_EVENT, onRequest);
+    return () => window.removeEventListener(NEW_TAB_SHORTCUT_EVENT, onRequest);
+  }, [groupId]);
 
   async function handleOllamaModel(model: string) {
     setMenuPos(null);
@@ -1509,6 +1552,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   customAgents,
                   pick: handleAdd,
                   pickCloud: handleAddCloud,
+                  defaultAgentBin,
                   onAddCustom: () => {
                     setMenuPos(null);
                     setAgentDialogOpen(true);
@@ -1522,6 +1566,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                     customAgents,
                     pick: handleAdd,
                     pickCloud: handleAddCloud,
+                    defaultAgentBin,
                     onAddCustom: () => {
                       setMenuPos(null);
                       setAgentDialogOpen(true);
@@ -1537,7 +1582,10 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
               ...(boxMembers.length > 0
                 ? [{
                     label: t("newTabMenu.groupBoxMembers"),
-                    entries: boxMembers.flatMap((m) => [
+                    // Typed here and on the browser group below: through a
+                    // flatMap or a conditional spread the `untested` ids
+                    // otherwise widen to string and fail the whole list.
+                    entries: boxMembers.flatMap((m): AddMenuEntry[] => [
                       {
                         key: `boxfiles:${m.id}`,
                         label: t("newTabMenu.boxMemberFiles", { name: m.name }),
@@ -1560,7 +1608,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                             color: TAB_ACCENT.agent,
                             untested: "newTabMenu.boxMemberAgent",
                             onPick: () => handleAddBoxMemberAgent(m),
-                          }]
+                          } satisfies AddMenuEntry]
                         : []),
                     ]),
                   }]
@@ -1580,12 +1628,13 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
               }),
               {
                 label: t("newTabMenu.groupShell"),
-                entries: SHELL_ITEMS.filter((i) => i.kind === "shell").map((item) => ({
-                  key: item.cmd || "shell",
-                  label: itemLabel(item, t),
-                  color: TAB_ACCENT[item.kind],
-                  onPick: () => handleAdd(item),
-                })),
+                entries: [{
+                  key: "shell",
+                  label: itemLabel(SHELL_ITEM, t),
+                  color: TAB_ACCENT.shell,
+                  shortcut: "newShellTab",
+                  onPick: () => handleAdd(SHELL_ITEM),
+                }],
               },
               {
                 label: t("newTabMenu.groupFiles"),
@@ -1610,6 +1659,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                     key: "monitor",
                     label: t("newTabMenu.itemSystemMonitor"),
                     color: TAB_ACCENT.monitor,
+                    shortcut: "newMonitorTab",
                     onPick: handleAddMonitor,
                   },
                   {
@@ -1694,7 +1744,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                       untested: "newTabMenu.browser#2",
                       onPick: handleAddBrowser,
                     }],
-                  }]
+                  } satisfies AddMenuGroup]
                 : []),
               {
                 label: t("newTabMenu.groupProject"),

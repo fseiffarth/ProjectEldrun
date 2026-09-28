@@ -214,9 +214,10 @@ describe("'+ agent' asks which worktree", () => {
     await act(async () => {
       fireEvent.click(container.querySelector(".tab-new-btn")!);
     });
-    // Each row reads "<dot><label>" ("●Claude"); match the label after the dot.
+    // Each row reads "<dot><label>" ("●Claude"), then the default agent's
+    // Ctrl+1 hint; match the label after the dot.
     const claude = [...document.querySelectorAll(".tab-new-menu button")].find(
-      (el) => el.textContent?.endsWith("Claude"),
+      (el) => el.querySelector(".tab-new-menu-dot")?.nextSibling?.textContent === "Claude",
     )!;
     expect(claude).toBeTruthy();
     await act(async () => {

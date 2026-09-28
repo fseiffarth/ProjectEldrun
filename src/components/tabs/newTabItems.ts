@@ -7,6 +7,7 @@ import {
 import type { CustomAgent } from "../../types";
 import type { AddMenuEntry } from "./AddTabMenuList";
 import type { TranslationKey } from "../../lib/i18n";
+import { AGENT_TAB_ACTIONS, type AgentTabAction } from "../../lib/shortcuts/shortcuts";
 import { cloudLaunchesFor, type CloudLaunch } from "../../lib/agents/cloudSessions";
 
 /**
@@ -271,6 +272,38 @@ export function customAgentToItem(ca: CustomAgent): StaticMenuItem {
   };
 }
 
+/** One agent the Ctrl+1–9 chords open: its Agents-group row key and item. */
+export interface AgentShortcutSlot {
+  key: string;
+  item: StaticMenuItem;
+}
+
+/**
+ * The agents behind the Ctrl+1–9 chords, index 0 = Ctrl+1. Slot 1 is the
+ * default agent (`defaultAgentBin`), empty when it is not in the menu; slots
+ * 2–9 are the Agents group's other pickable rows in menu order. Shared by the
+ * rows' chord hints (`agentMenuEntries`) and the chord itself (`TabBar`), so the
+ * number shown is the agent opened.
+ */
+export function agentShortcutSlots(opts: {
+  installedBuiltins: Set<string> | null;
+  installedCmds: Set<string> | null;
+  customAgents: CustomAgent[];
+  defaultAgentBin: string;
+}): (AgentShortcutSlot | null)[] {
+  const rows: AgentShortcutSlot[] = [
+    ...AGENT_ITEMS.filter((item) => opts.installedBuiltins?.has(item.cmd)).map((item) => ({
+      key: item.cmd,
+      item,
+    })),
+    ...opts.customAgents
+      .filter((ca) => opts.installedCmds == null || opts.installedCmds.has(ca.cmd))
+      .map((ca) => ({ key: `custom:${ca.id}`, item: customAgentToItem(ca) })),
+  ];
+  const def = rows.find((row) => row.item.cmd === opts.defaultAgentBin) ?? null;
+  return [def, ...rows.filter((row) => row !== def)].slice(0, AGENT_TAB_ACTIONS.length);
+}
+
 /**
  * Build the "Agents" group's rows for the add-tab menu, shared by the main-window
  * `TabBar` and the popout's `NewTabMenu` so both list agents identically:
@@ -293,8 +326,17 @@ export function agentMenuEntries(opts: {
    *  "Cloud session" row (a scope where no cloud session makes sense). */
   pickCloud?: (item: StaticMenuItem, launch: CloudLaunch) => void;
   onAddCustom: () => void;
+  /** Where the Ctrl+1–9 chords work (the main window's panes), the default
+   *  agent's binary: each numbered row then shows its chord. */
+  defaultAgentBin?: string;
   t: (key: TranslationKey, vars?: Record<string, string>) => string;
 }): AddMenuEntry[] {
+  const chordByKey = new Map<string, AgentTabAction>();
+  if (opts.defaultAgentBin !== undefined) {
+    agentShortcutSlots({ ...opts, defaultAgentBin: opts.defaultAgentBin }).forEach((slot, i) => {
+      if (slot) chordByKey.set(slot.key, AGENT_TAB_ACTIONS[i]);
+    });
+  }
   const builtins = AGENT_ITEMS.filter((item) =>
     opts.installedBuiltins?.has(item.cmd),
   ).map((item) => ({
@@ -302,6 +344,7 @@ export function agentMenuEntries(opts: {
     label: item.label,
     color: TAB_ACCENT[item.kind],
     ...(item.cmd === "vibe" ? { untested: "agent.vibeResume" as const } : {}),
+    shortcut: chordByKey.get(item.cmd),
     onPick: () => opts.pick(item),
   }));
   // One row whose fly-out holds every installed built-in's cloud launches,
@@ -341,6 +384,7 @@ export function agentMenuEntries(opts: {
       label: missing ? `${ca.label} (${opts.t("globalApps.notFoundPlaceholder")})` : ca.label,
       color: TAB_ACCENT.agent,
       disabled: missing,
+      shortcut: chordByKey.get(`custom:${ca.id}`),
       onPick: () => opts.pick(customAgentToItem(ca)),
     };
   });

@@ -71,6 +71,7 @@ import {
   isEditableTarget,
   isMacCommandChord,
 } from "../../hooks/useKeyboard";
+import { isPaneTerminalTarget, terminalMayTakeChord } from "../../lib/shortcuts/terminalTabChord";
 import { useDragStore } from "../../stores/drag/drag";
 import { useTabLandStore } from "../../stores/drag/tabLand";
 import { useSettingsStore } from "../../stores/settings";
@@ -381,13 +382,14 @@ export function DetachedCenterPanel({
       // the main window applies) — otherwise typing in a terminal would trip the
       // nav chords. The one exception is the macOS ⌘W family
       // (`editorMayTakeChord`), so ⌘W closes a tab from a focused terminal here
-      // too, while ⌃W / Ctrl+W still reach it.
+      // too, while ⌃W / Ctrl+W still reach it — and Shift+←/→, which a pane
+      // terminal hands over (`terminalMayTakeChord`).
       const editable = isEditableTarget(e.target);
-      if (editable && !isMacCommandChord(e)) return;
+      if (editable && !isMacCommandChord(e) && !isPaneTerminalTarget(e.target)) return;
       const overrides = useSettingsStore.getState().settings
         ?.keyboard_shortcuts as ShortcutMap | undefined;
       const is = (action: ShortcutAction) =>
-        (!editable || editorMayTakeChord(action, e)) &&
+        (!editable || editorMayTakeChord(action, e) || terminalMayTakeChord(action, e)) &&
         chordMatches(resolveChord(action, overrides), e);
       const {
         tree: t,
