@@ -116,7 +116,7 @@ fn admin_response(request: Result<AdminRequest, String>, context: &AdminContext)
             auth,
             &Notice { kind, status: None, title, body, tag, target: None },
         ),
-        Ok(AdminRequest::AgentTurn { tmux_session, status }) => {
+        Ok(AdminRequest::AgentTurn { tmux_session, status, prompt }) => {
             // Resolved before the auth lock is taken: the lookup reads the
             // host key through it.
             let tab = context.agent_tab.as_ref().and_then(|lookup| lookup(&tmux_session));
@@ -124,7 +124,7 @@ fn admin_response(request: Result<AdminRequest, String>, context: &AdminContext)
                 // A tab no phone can reach, or one a phone is looking at.
                 None => AdminResponse::Ok,
                 Some(tab) if tab.attached => AdminResponse::Ok,
-                Some(tab) => queue_notice(auth, &tab.notice(&tmux_session, status)),
+                Some(tab) => queue_notice(auth, &tab.notice(&tmux_session, status, prompt.as_deref())),
             }
         }
         Err(message) => AdminResponse::Error { message },
@@ -608,6 +608,7 @@ mod frame_tests {
                 respond(Ok(AdminRequest::AgentTurn {
                     tmux_session: tmux.into(),
                     status: push::AgentTurn::Question,
+                    prompt: None,
                 })),
                 AdminResponse::Ok
             ));

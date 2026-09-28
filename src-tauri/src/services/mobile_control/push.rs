@@ -40,6 +40,9 @@ const RECORD_SIZE: u32 = 4096;
 /// reminder is refused.
 const MAX_TITLE_CHARS: usize = 160;
 const MAX_BODY_CHARS: usize = 240;
+/// The prompt a finished-turn notice quotes, clipped on its own so the closing
+/// quote survives the body's clip.
+const MAX_PROMPT_CHARS: usize = 200;
 const MAX_ENDPOINT_LEN: usize = 2048;
 /// A backstop, not a policy: the desktop fires one notice per reminder, so more
 /// than this in a minute is a runaway caller, not a busy calendar.
@@ -245,15 +248,23 @@ pub struct AgentTabRef {
 
 impl AgentTabRef {
     /// The notice for this tab's `turn`, keyed per tab so a finished turn
-    /// replaces the question it answered rather than stacking under it.
-    pub fn notice(&self, tmux_session: &str, turn: AgentTurn) -> Notice {
+    /// replaces the question it answered rather than stacking under it. A
+    /// finished turn names the prompt it answered when the desktop read one —
+    /// in the body, so only a phone that chose details ever sees it.
+    pub fn notice(&self, tmux_session: &str, turn: AgentTurn, prompt: Option<&str>) -> Notice {
+        let prompt = prompt
+            .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|text| !text.is_empty());
         Notice {
             kind: NoticeKind::Agent,
             status: Some(turn),
             title: format!("{} · {}", self.project_label, self.tab_label),
-            body: match turn {
-                AgentTurn::Question => "Needs your answer".into(),
-                AgentTurn::Done => "Finished its turn".into(),
+            body: match (turn, prompt) {
+                (AgentTurn::Question, _) => "Needs your answer".into(),
+                (AgentTurn::Done, Some(prompt)) => {
+                    format!("Finished “{}”", clip(&prompt, MAX_PROMPT_CHARS))
+                }
+                (AgentTurn::Done, None) => "Finished its turn".into(),
             },
             tag: format!("agent:{tmux_session}"),
             target: Some(NoticeTarget {
@@ -793,7 +804,7 @@ mod tests {
         }
         let paired: Vec<String> = (0..3).map(|i| format!("d{i}")).collect();
 
-        let question = agent_tab().notice("eldrun-raw-tmux", AgentTurn::Question);
+        let question = agent_tab().notice("eldrun-raw-tmux", AgentTurn::Question, None);
         let out = push.deliveries(&question, "k1", &paired).unwrap();
         assert_eq!(out.iter().map(|d| d.endpoint.as_str()).collect::<Vec<_>>(), [
             "https://fcm.googleapis.com/1",
@@ -808,12 +819,28 @@ mod tests {
         assert_eq!(full["body"], "Needs your answer");
 
         // Within the cooldown the same tab stays quiet, even for a new edge.
-        let done = agent_tab().notice("eldrun-raw-tmux", AgentTurn::Done);
+        let done = agent_tab().notice("eldrun-raw-tmux", AgentTurn::Done, Some("fix the\n  tests"));
         assert!(push.deliveries(&done, "k1", &paired).unwrap().is_empty());
-        // Another tab is not held back, and a finished turn reaches only "All".
+        // Another tab is not held back, and a finished turn reaches only "All",
+        // quoting the prompt it answered on one line.
         let out = push.deliveries(&done, "k2", &paired).unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].endpoint, "https://fcm.googleapis.com/2");
+        assert_eq!(open(&out[0].body, &phones[2].0, &auth_bytes)["body"], "Finished “fix the tests”");
+    }
+
+    #[test]
+    fn a_finished_turn_without_a_readable_prompt_says_so_plainly() {
+        for prompt in [None, Some("  \n ")] {
+            let done = agent_tab().notice("t", AgentTurn::Done, prompt);
+            assert_eq!(done.body, "Finished its turn");
+        }
+        let long = "x".repeat(1000);
+        let done = agent_tab().notice("t", AgentTurn::Done, Some(&long));
+        assert!(done.body.ends_with("…”"));
+        assert!(done.body.chars().count() <= MAX_BODY_CHARS);
+        // A question never quotes one.
+        assert_eq!(agent_tab().notice("t", AgentTurn::Question, Some("hi")).body, "Needs your answer");
     }
 
     #[test]

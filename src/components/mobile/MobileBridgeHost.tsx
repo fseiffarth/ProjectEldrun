@@ -65,7 +65,7 @@ import { useI18nStore, useT } from "../../lib/i18n";
 import { readUse24h } from "../../lib/timeFormat";
 import { finishAlert } from "../../lib/alertDone";
 import { useAlertsFeed, type AlertsFeed } from "../files/useAlertsFeed";
-import { agentTurnEdges, type MobileAgentState } from "../../lib/mobileAgentTurns";
+import { agentTurnEdges, type AgentTurnEdge, type MobileAgentState } from "../../lib/mobileAgentTurns";
 import {
   desktopTimeZone,
   localOccurrenceKey,
@@ -478,15 +478,20 @@ function mobileAgentState(ptyId: string): "working" | "question" | "done" | "idl
  * change, and the sidecar's catalog (`discovery::root_open`) is what decides
  * whether a notice names a root tab at all.
  */
-function agentTurnSnapshot(): Map<string, MobileAgentState> {
+/** The scopes whose agent tabs a phone can reach, and so hear about. */
+function agentTurnScopes(): string[] {
   const scopes = [
     ...useProjectsStore.getState().projects.flatMap((entry) => mobileScope(entry.id) ?? []),
     ...useBoxesStore.getState().boxes.flatMap((entry) => mobileScope(boxScopeId(entry.id)) ?? []),
   ].map((scope) => scope.id);
   if (useSettingsStore.getState().settings?.eldrun_mobile_host?.root_access === true) scopes.push(ROOT_SCOPE);
+  return scopes;
+}
+
+function agentTurnSnapshot(): Map<string, MobileAgentState> {
   const tabsByScope = useTabsStore.getState().tabsByScope;
   const snapshot = new Map<string, MobileAgentState>();
-  for (const scopeId of scopes) {
+  for (const scopeId of agentTurnScopes()) {
     for (const tab of tabsByScope[scopeId] ?? []) {
       if (isAgentKind(tab.kind) && tab.tmuxSession) snapshot.set(tab.tmuxSession, mobileAgentState(`${scopeId}:${tab.key}`));
     }
@@ -647,27 +652,59 @@ function projectAgentPrompts(projectId: string): AgentTabPrompts[] {
   return (useTabsStore.getState().tabsByScope[projectId] ?? []).flatMap((tab) => {
     if (!isAgentKind(tab.kind) || !tab.tmuxSession) return [];
     void models.refresh(projectId, tab);
-    const ptyId = `${projectId}:${tab.key}`;
-    const recent = models.recentByTab[ptyId] ?? [];
-    // An agent whose transcript is not read (OpenCode, Gemini, …) is known to
-    // have been asked what Eldrun itself sent it: the composers here and on the
-    // phone and the schedules all record into the prompt history.
-    const sent = historyPromptsOf(projectId, tab);
-    // Last, the prompt off the pane's own screen (`lib/agents/prompt/echo`); it
-    // carries no time, and a row without one is honest about that rather than
-    // inventing the read's. Not for OpenCode: its full-screen TUI has no prompt
-    // echo, and the reader took its panels for prompts.
-    const fallback = tab.cmd === "opencode" ? undefined : models.promptByTab[ptyId];
-    const promptTail = mergePromptRows(recent, sent);
-    const prompts: AgentTabPrompt[] = promptTail.length
-      ? promptTail
-      : sent.length
-        ? sent
-        : fallback
-          ? [{ text: fallback.slice(0, MOBILE_PROMPT_CHARS) }]
-          : [];
+    const prompts = tabPromptRows(projectId, tab);
     return prompts.length ? [{ tmux_session: tab.tmuxSession, prompts }] : [];
   });
+}
+
+/** One agent tab's prompt tail, newest last, from what the model store holds
+ * now — the caller decides whether to have it re-read first. */
+function tabPromptRows(projectId: string, tab: TabEntry): AgentTabPrompt[] {
+  const models = useAgentModelsStore.getState();
+  const ptyId = `${projectId}:${tab.key}`;
+  const recent = models.recentByTab[ptyId] ?? [];
+  // An agent whose transcript is not read (OpenCode, Gemini, …) is known to
+  // have been asked what Eldrun itself sent it: the composers here and on the
+  // phone and the schedules all record into the prompt history.
+  const sent = historyPromptsOf(projectId, tab);
+  // Last, the prompt off the pane's own screen (`lib/agents/prompt/echo`); it
+  // carries no time, and a row without one is honest about that rather than
+  // inventing the read's. Not for OpenCode: its full-screen TUI has no prompt
+  // echo, and the reader took its panels for prompts.
+  const fallback = tab.cmd === "opencode" ? undefined : models.promptByTab[ptyId];
+  const promptTail = mergePromptRows(recent, sent);
+  return promptTail.length
+    ? promptTail
+    : sent.length
+      ? sent
+      : fallback
+        ? [{ text: fallback.slice(0, MOBILE_PROMPT_CHARS) }]
+        : [];
+}
+
+/** The prompt the turn that just finished in `tmuxSession` answered, read
+ * fresh: the store's 10s floor could still hold the turn before a quick one. */
+async function finishedTurnPrompt(tmuxSession: string): Promise<string | undefined> {
+  const found = agentTurnScopes().flatMap((scopeId) =>
+    (useTabsStore.getState().tabsByScope[scopeId] ?? []).flatMap((tab) =>
+      isAgentKind(tab.kind) && tab.tmuxSession === tmuxSession ? [{ scopeId, tab }] : []))[0];
+  if (!found) return undefined;
+  await useAgentModelsStore.getState().refresh(found.scopeId, found.tab, true).catch(() => undefined);
+  const rows = tabPromptRows(found.scopeId, found.tab);
+  return rows[rows.length - 1]?.text;
+}
+
+/** Tell the sidecar about one turn edge. A finished turn carries its prompt;
+ * a backend or sidecar that predates the field refuses the request, and is
+ * told the bare edge instead (exported for tests). */
+export async function reportAgentTurn(edge: AgentTurnEdge): Promise<void> {
+  const send = (prompt?: string) => invoke<{ status?: string }>("mobile_admin", {
+    request: { type: "agent_turn", tmux_session: edge.tmuxSession, status: edge.status, ...(prompt ? { prompt } : {}) },
+  });
+  const prompt = edge.status === "done" ? await finishedTurnPrompt(edge.tmuxSession) : undefined;
+  if (!prompt) return void (await send());
+  const answer = await send(prompt).catch(() => undefined);
+  if (answer?.status !== "ok") await send();
 }
 
 function agentPrompts(projectId?: string): AgentTabPrompts[] {
@@ -2206,11 +2243,7 @@ export function MobileBridgeHost() {
     const compare = () => {
       timer = undefined;
       const next = agentTurnSnapshot();
-      for (const edge of agentTurnEdges(last, next)) {
-        void invoke("mobile_admin", {
-          request: { type: "agent_turn", tmux_session: edge.tmuxSession, status: edge.status },
-        }).catch(() => undefined);
-      }
+      for (const edge of agentTurnEdges(last, next)) void reportAgentTurn(edge).catch(() => undefined);
       last = next;
     };
     const unsubscribe = useActivityStore.subscribe(() => {

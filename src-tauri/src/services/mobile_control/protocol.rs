@@ -1419,6 +1419,11 @@ pub enum AdminRequest {
     AgentTurn {
         tmux_session: String,
         status: super::push::AgentTurn,
+        /// The prompt a finished turn answered, when the desktop could read
+        /// it. Left out when absent, so a sidecar predating it still takes the
+        /// edge.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt: Option<String>,
     },
 }
 
