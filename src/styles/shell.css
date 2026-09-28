@@ -190,20 +190,43 @@ select option {
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 22px;
+  gap: 3px;
+  height: 34px;
   color: var(--text-muted);
-  font-size: 14px;
   line-height: 1;
   user-select: none;
-  opacity: 0.6;
   cursor: var(--cur-grab, grab);
-  transition: opacity var(--transition), color var(--transition);
+  transition: color var(--transition);
 }
 .app-drag-grip:hover {
-  opacity: 1;
   color: var(--text-primary);
 }
 .app-drag-grip:active { cursor: var(--cur-grabbing, grabbing); }
+.app-drag-grip-mark {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 33px;
+  height: 30px;
+  flex: none;
+  color: var(--top-frame-text);
+  background: linear-gradient(135deg, #e7b369, var(--accent) 72%, #5abbe6);
+  clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
+}
+.app-drag-grip-mark::before {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  background: var(--top-frame-bg);
+  clip-path: inherit;
+}
+.app-drag-grip-mark svg {
+  position: relative;
+  width: 25px;
+  height: 25px;
+}
+.app-drag-grip-dots { font-size: 12px; opacity: .7; }
+.app-drag-grip:hover .app-drag-grip-dots { opacity: 1; }
 
 /* The project strip's track, and now nothing else's: the global buttons that
    used to share it moved to .header-right, so the one elastic thing in the bar
@@ -366,11 +389,8 @@ select option {
 .dialog-close-btn::after { transform: rotate(-45deg); }
 
 /* ── App logo ────────────────────────────────────────────────────────── */
-/* The Eldrun spark. It used to live in a pill of its own at the head of the
-   project row (`.root-pill`, with a one-per-launch intro animation); root now
-   folds into the scope chip beside the projects, so the mark is drawn
-   by `.box-chip-star` there and by `.detached-titlebar-logo` in a popout's
-   title bar. Nothing sizes it here any more — each host does. */
+/* The full mark now lives in the drag grip above; the cropped spark is still
+   used by the root scope chip and detached title bars. */
 
 /* ── Version / debug / conn-type ─────────────────────────────────────── */
 /* The release label lives at the bottom of the docked file viewer rather than

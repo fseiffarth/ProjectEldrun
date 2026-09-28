@@ -18,6 +18,7 @@ import { SendToDesktop } from "../components/SendToDesktop";
 import { readSpeechLang, type SpeechLang } from "../speechLang";
 import { NotificationsSheet, pushSummary } from "../components/NotificationsSheet";
 import { getPushState, pushSupport, type HostPushState } from "../push";
+import { EldrunMark } from "../EldrunMark";
 
 const BUILD_STAMP = formatBuildStamp();
 
@@ -252,10 +253,10 @@ export function Home({ open, openTab, todo, mail }: {
     writeOrder("projectOrder", next);
   };
   const drag = useRowDrag(listed.map((project) => project.id), moveProject, canReorder);
-  return <main className="screen">
+  return <main className="screen home-screen">
     <header className="home-header">
       <div className="home-brand" aria-label="Eldrun">
-        <img className="home-logo" src="/icons/icon.svg" alt="" />
+        <span className="home-logo-frame" aria-hidden="true"><EldrunMark className="home-logo" /></span>
         <strong>Eldrun</strong>
       </div>
       {/* The global views used to live here as a header rail; they are tabs of
@@ -294,7 +295,7 @@ export function Home({ open, openTab, todo, mail }: {
           opens the project, and the two must not be one gesture), which is the
           same shape — and so the same classes — the tab list already wears. */}
       <section className="cards">{listed.map((project) => <div
-        className={`tab-card one-row${drag.rowClass(project.id)}`}
+        className={`tab-card one-row home-project-card${drag.rowClass(project.id)}`}
         key={project.id}
         ref={drag.rowRef(project.id)}
       >

@@ -230,10 +230,26 @@ small { color:#9498aa; }
 /* The ＋ at the end of the project header. Square against the back chevron
    opposite it, and it never shrinks: the project's name is what gives way. */
 .new-tab { flex:0 0 auto; min-width:44px; padding:8px 12px; font-size:1.25rem; line-height:1.1; }
-.home-header { gap:10px; }
+.home-screen { background:radial-gradient(ellipse 90% 250px at 50% 0,rgba(97,82,174,.16),transparent 78%); }
+.home-header { position:relative; gap:10px; min-height:70px; padding:9px 12px; border:1px solid #3a3c58; border-radius:18px; background:linear-gradient(125deg,rgba(50,44,76,.92),rgba(27,31,46,.95) 62%,rgba(25,37,54,.94)); box-shadow:0 10px 25px rgba(3,5,12,.2); }
 .home-brand { display:flex; flex:1; align-items:center; gap:8px; min-width:0; }
-.home-brand strong { font-size:1.05rem; letter-spacing:.01em; }
-.home-logo { width:36px; height:36px; flex:0 0 auto; }
+.home-brand strong { font-size:1.05rem; letter-spacing:.01em; white-space:nowrap; }
+.home-logo-frame { position:relative; display:grid; place-items:center; width:50px; height:47px; flex:0 0 auto; background:linear-gradient(135deg,#e7b369,#8b7df4 60%,#5abbe6); clip-path:polygon(25% 0,75% 0,100% 50%,75% 100%,25% 100%,0 50%); }
+.home-logo-frame::before { content:""; position:absolute; inset:1px; background:#1c1e30; clip-path:inherit; }
+.home-logo { position:relative; width:35px; height:35px; color:#f0efff; }
+.home-header .mobile-build { min-width:0; max-width:48%; }
+.home-header .mobile-build small { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.home-project-card { border-color:#3b4055; border-radius:14px; background:linear-gradient(115deg,rgba(54,49,85,.42),rgba(28,31,43,.96) 38%); }
+.home-project-card:focus-within { border-color:#8d80ee; }
+.home-project-card .card { min-height:62px; }
+.home-project-card .count { border-radius:8px; background:#38305f; color:#ebe6ff; font-variant-numeric:tabular-nums; }
+.tab-card.one-row.home-project-card .tab-card-grip { border-radius:0 14px 14px 0; }
+@media (max-width:380px) {
+  .home-brand strong { font-size:.9rem; }
+  .home-logo-frame { width:43px; height:41px; }
+  .home-logo { width:30px; height:30px; }
+  .home-header .mobile-build { max-width:42%; }
+}
 /* The four top-level sections. Fixed to the bottom edge so it survives the long
    scroll of a board or a month, centered on wide screens with the same 720px
    measure as `.screen`, and kept under the modal backdrops (z-index 10/12) so an
@@ -241,8 +257,9 @@ small { color:#9498aa; }
    out of the viewport; without it the last card sits under the bar. */
 .mobile-tabbar { position:fixed; inset:auto 0 0 0; z-index:8; margin:0; gap:2px; padding:6px max(8px,calc((100vw - 720px) / 2)) max(6px,env(safe-area-inset-bottom)); border-top:1px solid #2b2f3f; background:rgba(13,15,21,.96); backdrop-filter:blur(10px); }
 .mobile-tab { flex:1; display:grid; justify-items:center; gap:3px; padding:7px 4px; border:0; border-radius:10px; background:transparent; color:#9498aa; font-size:.72rem; line-height:1.1; }
-.mobile-tab span { font-size:1.2rem; line-height:1.15; }
+.mobile-tab span { display:grid; place-items:center; width:35px; height:31px; font-size:1.2rem; line-height:1.15; }
 .mobile-tab.active { background:rgba(108,92,231,.18); color:#d7cffd; }
+.mobile-tab.active span { background:linear-gradient(135deg,rgba(231,179,105,.28),rgba(124,108,255,.45) 60%,rgba(90,187,230,.3)); clip-path:polygon(25% 0,75% 0,100% 50%,75% 100%,25% 100%,0 50%); }
 .tabbed > .screen { padding-bottom:calc(76px + max(24px,env(safe-area-inset-bottom))); }
 .projects-row { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:17px; }
 .projects-row h1 { font-size:1.2rem; }
