@@ -1,4 +1,7 @@
-![Eldrun logo](src/assets/logo-wordmark.svg)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="src/assets/logo-wordmark-white.svg">
+  <img alt="Eldrun logo" src="src/assets/logo-wordmark.svg">
+</picture>
 
 # You open projects not applications
 
