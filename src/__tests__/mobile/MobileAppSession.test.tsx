@@ -1,9 +1,10 @@
 /**
  * The session lifecycle as one state machine (`App.tsx`).
  *
- * Two facts pinned: a cold open always asks — the sessionStorage flag that
+ * Facts pinned: a cold open always asks — the sessionStorage flag that
  * used to let a restored page skip the lock is gone, so an app the OS killed
- * and reopened meets the PIN — and a 401 met while the reader is active is
+ * and reopened meets the PIN — while a pull-to-refresh of a page left
+ * unlocked seconds ago carries on without it; and a 401 met while the reader is active is
  * renewed silently with the device key, with the request that met it sent
  * again, no PIN in between. A renewal that fails puts the lock screen up.
  */
@@ -54,12 +55,36 @@ afterEach(() => {
   cleanup();
   fetchMock.mockReset();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("Eldrun Mobile session lifecycle", () => {
   it("asks for the lock on every cold open, whatever a restored page remembers", async () => {
     // The flag the old shortcut read. It must mean nothing now.
     sessionStorage.setItem("eldrun-mobile-local-unlocked", "1");
+    answers(ok);
+    render(<App />);
+    await screen.findByRole("button", { name: "Unlock now" });
+    expect(resumeAuth).not.toHaveBeenCalled();
+  });
+
+  it("carries on unlocked across a pull-to-refresh, and stamps the page it leaves", async () => {
+    vi.spyOn(performance, "getEntriesByType").mockReturnValue([{ type: "reload" } as PerformanceNavigationTiming]);
+    sessionStorage.setItem("eldrun.mobile.reloadGrace", String(Date.now() - 1_000));
+    answers(ok);
+    render(<App />);
+    await screen.findByText("Alpha");
+    expect(screen.queryByRole("button", { name: "Unlock now" })).toBeNull();
+    expect(resumeAuth).toHaveBeenCalledTimes(1);
+    expect(sessionStorage.getItem("eldrun.mobile.reloadGrace")).toBeNull();
+
+    window.dispatchEvent(new Event("pagehide"));
+    expect(sessionStorage.getItem("eldrun.mobile.reloadGrace")).toMatch(/^\d+$/);
+  });
+
+  it("asks on a reload whose stamp is stale", async () => {
+    vi.spyOn(performance, "getEntriesByType").mockReturnValue([{ type: "reload" } as PerformanceNavigationTiming]);
+    sessionStorage.setItem("eldrun.mobile.reloadGrace", String(Date.now() - 60_000));
     answers(ok);
     render(<App />);
     await screen.findByRole("button", { name: "Unlock now" });

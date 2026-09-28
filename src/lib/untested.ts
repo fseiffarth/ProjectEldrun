@@ -354,6 +354,7 @@ export const UNTESTED = {
   "mobile.link.unlockRetry": { area: "mobile", what: "App · Unlocking after the phone slept connects on the first try (a stale connection or a dropped request is retried inside Connecting…); the failure splash's Retry reconnects without a second fingerprint", tested: "2026-09-27" },
   "mobile.link.silentResume": { area: "mobile", what: "LocalUnlock · A sidecar restart or a lapsed session is renewed silently while the reader is active; a cold open always asks for the PIN" },
   "mobile.lock.pinInstead": { area: "mobile", what: "LocalUnlock · While the fingerprint prompt is up, Use PIN instead withdraws it and brings the PIN field back, focused" },
+  "mobile.lock.reloadGrace": { area: "mobile", what: "LocalUnlock · Pull-to-refresh (dragging down from the top) on an unlocked, in-use phone app reloads straight back into the session, no PIN or fingerprint; opening the app afresh, or reloading after 15 s away, still asks" },
   "mobile.lock.homeSheet": { area: "mobile", what: "LocalUnlock · The lock (not the once-only setup) rises as a sheet over the Home screen's own header shell, instead of its own full screen" },
   "mobile.lock.brandedSheet": { area: "mobile", what: "LocalUnlock · While the fingerprint sheet is up, the mark lifts above it with turning rings; a successful unlock flares it away" },
   "mobile.focus.noSessionYet": { area: "mobile", what: "Terminal · A tab created from the phone stays in the Reader and shows its stored session once the agent records one" },

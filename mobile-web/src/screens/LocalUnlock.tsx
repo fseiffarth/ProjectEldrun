@@ -152,7 +152,7 @@ export function LocalUnlock({ setup, onUnlocked }: { setup: boolean; onUnlocked:
   const verifying = biometricBusy && !unlocked;
   const phase = unlocked ? " unlocked" : verifying ? " verifying" : "";
   const content = <>
-    <BrandHead>{setup ? "Secure Eldrun Mobile" : "Eldrun Mobile locked"}{!setup && isUntested("mobile.link.silentResume") && <small className="untested"> Untested</small>}{!setup && isUntested("mobile.lock.homeSheet") && <small className="untested"> Untested</small>}</BrandHead>
+    <BrandHead>{setup ? "Secure Eldrun Mobile" : "Eldrun Mobile locked"}{!setup && isUntested("mobile.link.silentResume") && <small className="untested"> Untested</small>}{!setup && isUntested("mobile.lock.homeSheet") && <small className="untested"> Untested</small>}{!setup && isUntested("mobile.lock.reloadGrace") && <small className="untested"> Untested</small>}</BrandHead>
     <p className="local-unlock-status" aria-live="polite">
       {unlocked ? "Unlocked" : verifying ? "Touch the fingerprint sensor" : ""}
       {verifying && isUntested("mobile.lock.brandedSheet") && <small className="untested"> Untested</small>}

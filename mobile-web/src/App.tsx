@@ -7,6 +7,7 @@ import { classifyUnavailable, describeUnavailable, suspectsTunnel, tailscaleAppL
 import { forgetLastPlace, parsePlace, rememberLastPlace, resolvePlace, restoreLastPlace, type LastPlace, type MobileSection, type RestoredPlace } from "./lastPlace";
 import { refreshPush } from "./push";
 import { hasLocalUnlock } from "./localLock";
+import { noteUnlockedLeave, takeReloadGrace } from "./reloadGrace";
 import { isUntested } from "../../src/lib/untested";
 import { Pair } from "./screens/Pair";
 import { LocalUnlock } from "./screens/LocalUnlock";
@@ -103,8 +104,8 @@ const ACTIVITY_EVENTS = ["pointerdown", "keydown", "input", "touchstart", "touch
  * mark inside two counter-rotating orbit rings. It stood in as a `✦` glyph,
  * which is the one screen a phone reliably sees on every cold open — every cold
  * open asks for the PIN or fingerprint first, and re-authenticates from scratch
- * after it; a reload while the reader is active is the one return that skips
- * the lock, because the timer that would have locked died with the page.
+ * after it; a reload of a page left unlocked moments ago (pull-to-refresh) is
+ * the one return that skips the lock (`reloadGrace.ts`).
  *
  * Deliberately no minimum display time, unlike the desktop's: this is shown
  * while a real round trip to the sidecar is outstanding, so a fast answer
@@ -271,18 +272,22 @@ export function App() {
       if (!paired) {
         forgetLastPlace();
         setAuth("unpaired");
+      } else if (locked && takeReloadGrace()) {
+        // Pull-to-refresh on a page that was unlocked and in use seconds ago:
+        // the session carries on, signed in afresh with the device key.
+        unlockedAt.current = Date.now();
+        traceConnect("reloaded unlocked");
+        resume();
       } else {
-        // A cold open always asks. A sessionStorage flag used to let a page
-        // the browser restored skip the lock, which an app the OS had killed
-        // and reopened also carried — so whoever picked the phone up next
-        // walked straight in. `restoreLastPlace` still returns the reader to
-        // their tab once they have unlocked.
+        // Every other open asks: a launch, a page the browser restored, an app
+        // the OS killed and reopened. `restoreLastPlace` still returns the
+        // reader to their tab once they have unlocked.
         setAuth(locked ? "locked" : "setup");
       }
     // Both reads above are the phone's own key store, never the network, so a
     // rejection here is a blocked browser store rather than an absent host.
     }).catch(() => fail("storage_blocked"));
-  }, [fail]);
+  }, [resume, fail]);
   useEffect(() => begin(), [begin]);
 
   // Where the reader is standing, kept in the phone's own storage so the next
@@ -368,8 +373,9 @@ export function App() {
     // or fingerprint came back after every refresh. Time since the last touch or
     // keystroke is the measure instead, which covers both the phone left face-up
     // until its own screen saver takes it and the app left behind in the
-    // background. A reload is covered for free: the timer dies with the page, so
-    // the deferred lock never runs and the restored session resumes.
+    // background. A reload leaves a stamp on the way out (`pagehide`) so the
+    // next page can carry on unlocked — only while someone is here, since an
+    // idle page is one the timer is about to lock anyway.
     lastActive.current = Date.now();
     let timer = 0;
     const arm = () => {
@@ -403,10 +409,15 @@ export function App() {
     const options = { capture: true, passive: true } as const;
     for (const event of ACTIVITY_EVENTS) document.addEventListener(event, noteActivity, options);
     document.addEventListener("visibilitychange", onVisibility);
+    const onPageHide = () => {
+      if (authRef.current === "paired" && Date.now() - lastActive.current < LOCK_AFTER_IDLE_MS) noteUnlockedLeave();
+    };
+    window.addEventListener("pagehide", onPageHide);
     return () => {
       window.clearTimeout(timer);
       for (const event of ACTIVITY_EVENTS) document.removeEventListener(event, noteActivity, options);
       document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pagehide", onPageHide);
     };
     // `auth` is a dependency so that an unlock counts as activity. The default
     // unlock is the fingerprint sheet raised as the screen opens — OS UI that
