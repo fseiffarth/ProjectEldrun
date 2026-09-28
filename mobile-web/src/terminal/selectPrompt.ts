@@ -409,6 +409,26 @@ export function missingSelectRow(step: SelectStep, prompt: SelectPrompt): number
   return undefined;
 }
 
+/** Where to walk the highlight to reveal what `step` has not seen, half a
+ * window at a time rather than one row per round trip — Cursor draws
+ * thirty-nine models in a ten-row window, and a row-by-row reveal held the
+ * sheet for most of a minute.
+ *
+ * Half, not whole: the frame the walk lands on must still show a row the step
+ * already holds, whether the window scrolls just far enough to keep the
+ * highlight in view or centres it. A frame sharing no row with the step is
+ * read as the next step of a multi-step dialog (`sameSelectStep`), and what
+ * was revealed so far would be thrown away. */
+export function revealSelectRow(step: SelectStep, prompt: SelectPrompt): number | undefined {
+  const missing = missingSelectRow(step, prompt);
+  if (missing === undefined) return undefined;
+  const size = prompt.options.length;
+  const first = prompt.options[0].number;
+  if (missing < first) return Math.max(missing, first + 1 - Math.ceil(size / 2));
+  const total = size + (prompt.hidden ?? 0);
+  return Math.min(total, Math.max(missing, missing - 1 + Math.floor(size / 2)));
+}
+
 /** The keystrokes that move a dialog's highlight from `current` to `target` and
  * accept it — the same keys the on-screen arrow row sends, so a tapped row is
  * answered exactly as a walked one. */

@@ -53,9 +53,9 @@ import { sessionLimits } from "../terminal/sessionUsage";
 import { installFocusSwipe } from "../terminal/focusSwipe";
 import {
   mergeSelectRows,
-  missingSelectRow,
   readQuestionTabs,
   readSelectPrompt,
+  revealSelectRow,
   sameSelectStep,
   selectKeys,
   selectMoveKeys,
@@ -78,6 +78,7 @@ import {
   readAntigravityPicker,
   type AntigravityEffort,
 } from "../terminal/antigravity";
+import { isCursorTab, readCursorPicker } from "../terminal/cursorAgent";
 import { currentMode, modeChoices, modeFixed, shiftTabKey } from "../terminal/agentModes";
 import { agentInputWrites, bracketsAgentMessage } from "../terminal/composer";
 import { agentWork } from "../terminal/agentBusy";
@@ -2159,6 +2160,7 @@ export function Terminal({ tab, back, pickModel = false, signInTab = false, open
   const agentLabel = tab.agent_label ?? tab.label;
   const openCode = tab.kind === "agent" && isOpenCodeTab(agentLabel);
   const antigravity = tab.kind === "agent" && isAntigravityTab(agentLabel);
+  const cursorAgent = tab.kind === "agent" && isCursorTab(agentLabel);
   /** The facts the session prints below its own input box — the facts row's
    * labels. Absent fields leave a button on its generic label. */
   const status = useMemo(
@@ -2177,17 +2179,18 @@ export function Terminal({ tab, back, pickModel = false, signInTab = false, open
   const shownLimits = limits.session || limits.week ? limits : sessionLimits(storedUsage, new Date(Date.now()));
   /** The picker the model chip opened, read off the screen while the sheet is
    * up — a list of the session's own rows, not a list of models Eldrun
-   * believes in. Neither OpenCode's nor Antigravity's is the numbered dialog
-   * the others draw, so each is read by its own shape (`openCodeMini`,
-   * `antigravity`). */
+   * believes in. None of OpenCode's, Antigravity's or Cursor's is the numbered
+   * dialog the others draw, so each is read by its own shape (`openCodeMini`,
+   * `antigravity`, `cursorAgent`). */
   const picker = useMemo(
     () => {
       if (!modelSheet) return null;
       if (openCode) return readOpenCodePicker(liveScreen);
       if (antigravity) return readAntigravityPicker(liveScreen);
+      if (cursorAgent) return readCursorPicker(liveScreen);
       return readSelectPrompt(liveScreen, agentLabel);
     },
-    [modelSheet, openCode, antigravity, liveScreen, agentLabel],
+    [modelSheet, openCode, antigravity, cursorAgent, liveScreen, agentLabel],
   );
   /** The step the sheet is showing: the picker on screen, unless it is the one
    * a tap just answered and the session has not redrawn yet. */
@@ -2258,7 +2261,7 @@ export function Terminal({ tab, back, pickModel = false, signInTab = false, open
       }, MODEL_PICKER_WAIT);
       return () => window.clearTimeout(stuck);
     }
-    const target = missingSelectRow(listedStep, pickerStep) ?? reveal?.origin;
+    const target = revealSelectRow(listedStep, pickerStep) ?? reveal?.origin;
     if (target === undefined || target === pickerAt) {
       if (reveal) setReveal(null);
       return;
@@ -3181,6 +3184,7 @@ export function Terminal({ tab, back, pickModel = false, signInTab = false, open
       />
       : <OptionSheet
         title={shownStep?.title ?? "Select model"}
+        note={cursorAgent && isUntested("mobile.model.cursor") ? { text: t("mobile.focus.untested") } : undefined}
         options={pickerOptions}
         waiting={!connected
           ? "Waiting for the connection…"

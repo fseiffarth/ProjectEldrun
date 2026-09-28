@@ -343,6 +343,7 @@ export const UNTESTED = {
   "mobile.focus.pinnedPrompt": { area: "mobile", what: "Terminal · Reader pins the newest prompt at the top once its bubble scrolls away; tap scrolls back to it", tested: "2026-09-23" },
   "mobile.focus.workingFacts": { area: "mobile", what: "Terminal · Reader elapsed time and tokens while the agent works", tested: "2026-09-23" },
   "mobile.model.effort": { area: "mobile", what: "Terminal · Antigravity effort step in the model sheet", tested: "2026-09-23" },
+  "mobile.model.cursor": { area: "mobile", what: "Terminal · Cursor tab: the model chip lists Cursor's /model rows (all of them, past its ten-row window) and a tap applies the model" },
   "mobile.home.reorder": { area: "mobile", what: "Home · Drag to reorder the project list" },
   "mobile.home.recover": { area: "mobile", what: "Home · The project list loads again on its own after a failed load (page shown again, back online, slow retry)" },
   "mobile.link.ack": { area: "mobile", what: "Terminal · A prompt the link lost keeps its bubble, says Not delivered, and Resend delivers it once" },
