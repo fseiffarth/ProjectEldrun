@@ -15,11 +15,23 @@ import {
   type ShortcutMap,
 } from "./shortcuts";
 
-/** What a chord asks for. `slot` is 0-based: 0 = Ctrl+1. */
+/** What a chord asks for. `slot` is 0-based: 0 = Ctrl+1. `menu` (steering
+ *  mode's + key, no chord) opens — or, when open, closes — the pane's + menu. */
 export type NewTabRequest =
   | { kind: "shell" }
   | { kind: "monitor" }
-  | { kind: "agent"; slot: number };
+  | { kind: "agent"; slot: number }
+  | { kind: "menu" };
+
+/** Detail: {@link NewTabSlotsDetail}. The target pane's bar fills `labels`
+ *  in, synchronously, with the agents its Ctrl+1–9 would open. */
+export const NEW_TAB_SLOTS_EVENT = "eldrun:new-tab-slots";
+
+export interface NewTabSlotsDetail {
+  groupId: string;
+  /** Slot 0 = Ctrl+1; null for a number with no agent behind it. */
+  labels: (string | null)[] | null;
+}
 
 /** Detail: {@link NewTabShortcutDetail}. Cancelled (`preventDefault`) by the
  *  bar that opened the tab. */
@@ -50,12 +62,27 @@ export function newTabRequestFor(
  * no agent behind it, so the key can go on to wherever it was typed.
  */
 export function requestNewTab(request: NewTabRequest): boolean {
-  const tabs = useTabsStore.getState();
-  const groupId = tabs.focusedGroupId ?? allGroups(tabs.layout)[0]?.id;
+  const groupId = targetGroupId();
   if (!groupId) return false;
   const event = new CustomEvent<NewTabShortcutDetail>(NEW_TAB_SHORTCUT_EVENT, {
     detail: { request, groupId },
     cancelable: true,
   });
   return !window.dispatchEvent(event);
+}
+
+/** The pane a request goes to: the focused one, else the first. */
+function targetGroupId(): string | undefined {
+  const tabs = useTabsStore.getState();
+  return tabs.focusedGroupId ?? allGroups(tabs.layout)[0]?.id;
+}
+
+/** The agents the target pane's Ctrl+1–9 (and steering's 1–9) would open, by
+ *  label — asked of that pane's bar, which owns the installed-agent probes. */
+export function newTabSlotLabels(): (string | null)[] {
+  const groupId = targetGroupId();
+  if (!groupId) return [];
+  const detail: NewTabSlotsDetail = { groupId, labels: null };
+  window.dispatchEvent(new CustomEvent<NewTabSlotsDetail>(NEW_TAB_SLOTS_EVENT, { detail }));
+  return detail.labels ?? [];
 }

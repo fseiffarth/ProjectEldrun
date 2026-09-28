@@ -927,13 +927,106 @@ export const dict: Dict = {
   "shortcuts.fixedConflict": "{chord} ist durch eine feste Taste reserviert und wird nie ausgelöst",
 
   "steering.legendTitle": "Steuerung",
+
+  "steering.nextDecision.label": "Wartet auf Antwort",
+
+  "steering.nextDecision.desc": "Springt zum nächsten Tab, der auf deine Antwort wartet, in jedem Projekt (Umschalt: vorheriger).",
+
+  "steering.nextWorking.label": "Arbeitet",
+
+  "steering.nextWorking.desc": "Springt zum nächsten Tab, der gerade arbeitet, in jedem Projekt (Umschalt: vorheriger).",
+
+  "steering.nextDone.label": "Fertig",
+
+  "steering.nextDone.desc": "Springt zum nächsten fertigen, noch nicht angesehenen Tab, in jedem Projekt (Umschalt: vorheriger).",
+
+  "steering.level.projects": "Projekte",
+
+  "steering.level.panes": "Unterfenster",
+
+  "steering.level.tabs": "Tabs",
+
+  "steering.level.region": "In einer Fläche",
+
+  "steering.region.side": "Seitenpanel",
+
+  "steering.project.label": "Projekt wechseln",
+
+  "steering.project.desc": "Vorheriges / nächstes Projekt, Root-Terminal eingeschlossen — der Ring, den Strg+Umschalt+Tab durchläuft.",
+
+  "steering.into.label": "In die Fenster",
+
+  "steering.into.desc": "Hinunter zu den Unterfenstern des Projekts.",
+
+  "steering.newProject.label": "Neues Projekt",
+
+  "steering.newProject.desc": "Öffnet den Dialog „Neues Projekt“. Beendet den Steuerungsmodus.",
+
+  "steering.mail.label": "Mail",
+
+  "steering.mail.desc": "Öffnet das Mail-Overlay zum Durchlaufen mit den Pfeiltasten; Escape schließt es wieder.",
+
+  "steering.calendar.label": "Kalender",
+
+  "steering.calendar.desc": "Öffnet das Kalender-Overlay zum Durchlaufen mit den Pfeiltasten; Escape schließt es wieder.",
+
+  "steering.todo.label": "To-do",
+
+  "steering.todo.desc": "Öffnet das To-do-Board zum Durchlaufen mit den Pfeiltasten; Escape schließt es wieder.",
+
+  "steering.intoTabs.label": "In seine Tabs",
+
+  "steering.intoTabs.desc": "Hinunter zu den Tabs des fokussierten Unterfensters.",
+
+  "steering.up.label": "Eine Ebene hoch",
+
+  "steering.up.desc": "Zurück zu den Unterfenstern, von dort zu den Projekten.",
+
+  "steering.newShell.label": "Neue Shell",
+
+  "steering.newShell.desc": "Ein neuer Shell-Tab im fokussierten Unterfenster. Beendet dafür den Steuerungsmodus.",
+
+  "steering.newMonitor.label": "Neuer Monitor",
+
+  "steering.newMonitor.desc": "Ein neuer Systemmonitor-Tab im fokussierten Unterfenster. Beendet den Steuerungsmodus.",
+
+  "steering.newAgent.label": "Neuer Agent-Tab",
+
+  "steering.newAgent.desc": "Ein neuer Agent-Tab im fokussierten Unterfenster: 1 ist der Standard-Agent, 2–9 die weiteren des +-Menüs (die Legende nennt sie). Beendet den Steuerungsmodus.",
+
+  "steering.newTabMenu.label": "Alle Tab-Arten",
+
+  "steering.newTabMenu.desc": "Öffnet das +-Menü des fokussierten Unterfensters zum Durchlaufen mit den Pfeiltasten; Enter öffnet den Tab.",
+
+  "steering.work.label": "Hier arbeiten",
+
+  "steering.work.desc": "Beendet den Steuerungsmodus an Ort und Stelle.",
+
+  "steering.move.label": "Bewegen",
+
+  "steering.move.desc": "Bewegt die Markierung zum vorherigen / nächsten Bedienelement.",
+
+  "steering.sideView.label": "Ansicht wechseln",
+
+  "steering.sideView.desc": "Vorherige / nächste Ansicht des Seitenpanels: Dateien, Git, Apps, Agenten.",
+
+  "steering.press.label": "Drücken",
+
+  "steering.press.desc": "Drückt das markierte Element — in einem Textfeld endet der Steuerungsmodus, um dort zu tippen.",
+
+  "steering.sidePanel.label": "Seitenpanel",
+
+  "steering.sidePanel.desc": "Öffnet das Seitenpanel zum Durchlaufen mit den Pfeiltasten; Escape schließt es wieder.",
+
+  "steering.back.label": "Zurück",
+
+  "steering.back.desc": "Eine Ebene hoch — aus Panel, Overlay oder Menü heraus; was die Steuerung geöffnet hat, schließt sich.",
   "steering.jump.label": "Zu Projekt springen",
-  "steering.jump.desc":
-    "Aktiviert die nummerierte Station: 1 ist das Root-Terminal, 2 die erste Projekt-Pille. Beendet den Steuerungsmodus.",
-  "steering.focus.label": "Unterfenster fokussieren",
-  "steering.focus.desc": "Bewegt den Unterfenster-Fokus (Dokumentreihenfolge, umlaufend).",
+  "steering.jump.desc": "Aktiviert die nummerierte Station: 1 ist das Root-Terminal, 2 die erste Projekt-Pille.",
+  "steering.focus.label": "Unterfenster wechseln",
+  "steering.focus.desc": "Fokus auf das vorherige / nächste Unterfenster (Dokumentreihenfolge, umlaufend).",
   "steering.tabs.label": "Tab wechseln",
-  "steering.tabs.desc": "Nächster / vorheriger Tab im fokussierten Unterfenster.",
+  "steering.tabs.desc": "Vorheriger / nächster Tab im fokussierten Unterfenster — bei nur einem Unterfenster wechseln die Pfeile direkt die Tabs.",
   "steering.files.label": "Dateiansicht",
   "steering.files.desc": "Schaltet die angedockte Dateiansicht des fokussierten Unterfensters um.",
   "steering.panels.label": "Panels",
@@ -6821,19 +6914,19 @@ export const dict: Dict = {
   "lessons.arrangeTabs.outroTitle": "Das war's",
   "lessons.arrangeTabs.outroBody": "Ordne innerhalb einer Leiste neu an, lass auf einem Rand fallen, um zu teilen, oder in der Mitte, um zu verschmelzen, ziehe Dateien aus dem Baum herein, und ziehe Tabs heraus, um sie abzulösen oder auf ein anderes Fenster zu ziehen. Ordne frei um – dein Layout wird gespeichert.",
   "lessons.keyboardSteering.title": "Mit der Tastatur steuern",
-  "lessons.keyboardSteering.blurb": "Ein reiner Tastatur-Steuerungsmodus: mit Ziffern zu Projekten springen, den Unterfenster-Fokus bewegen, Tabs durchschalten – die Hände bleiben auf den Tasten.",
+  "lessons.keyboardSteering.blurb": "Ein reiner Tastatur-Steuerungsmodus: mit den Pfeilen von den Projekten hinunter zu Unterfenstern und Tabs, neue Tabs, Seitenpanel und Header-Apps öffnen — die Hände bleiben auf den Tasten.",
   "lessons.keyboardSteering.enterModeTitle": "In den Steuerungsmodus",
   "lessons.keyboardSteering.enterModeBody": "Drücke Strg+Umschalt+Leertaste und Eldrun wechselt in den Steuerungsmodus: unten in der Mitte erscheint eine Legende mit allen Tasten, und die ganze App gehorcht einzelnen Tastendrücken. Das funktioniert sogar, während ein Terminal den Fokus hat – kein Herausklicken nötig. Die Kombination ist nur der Standard; belege sie jederzeit unter Einstellungen → Tastenkürzel neu (auf dem Mac zählt ⌘ als Strg).",
   "lessons.keyboardSteering.enterModeTask": "Drücke Strg+Umschalt+Leertaste, um den Steuerungsmodus zu starten.",
   "lessons.keyboardSteering.enterModeTaskHint": "Die Legende unten im Fenster bestätigt, dass du drin bist. Schon umbelegt? Drücke deine eigene Kombination – oder klicke einfach auf Weiter.",
   "lessons.keyboardSteering.stationsTitle": "Ziffern springen zu Stationen",
   "lessons.keyboardSteering.stationsBody": "Im Steuerungsmodus ist jeder Arbeitsbereich eine nummerierte Station: 1 ist das Root-Terminal, ab 2 folgen deine Projekt-Pillen in der angezeigten Reihenfolge. Kleine Chips auf den Pillen zeigen die jeweilige Ziffer (die ersten neun Stationen bekommen eine). Drücke eine Ziffer und du bist dort.",
-  "lessons.keyboardSteering.moveFocusTitle": "Fokus und Tabs",
-  "lessons.keyboardSteering.moveFocusBody": "Die Pfeiltasten bewegen den Unterfenster-Fokus. Jedes Unterfenster trägt eine Plakette, die sagt, wie viele Pfeilschritte es entfernt ist – das fokussierte zeigt 0. Tab und Umschalt+Tab schalten durch die Tabs des fokussierten Unterfensters.",
-  "lessons.keyboardSteering.singleKeysTitle": "Einzeltasten",
-  "lessons.keyboardSteering.singleKeysBody": "Drei einzelne Tasten wirken auf das Fokussierte: F schaltet die angedockte Dateiansicht des Unterfensters um, P die Seitenpanels, und W schließt den aktiven Tab.",
+  "lessons.keyboardSteering.moveFocusTitle": "Ebenen: Projekte, Fenster, Tabs",
+  "lessons.keyboardSteering.moveFocusBody": "Die Steuerung beginnt bei den Projekten: ←/→ wechseln das Projekt, ↓ geht in seine Fenster. Dort wechseln ←/→ zwischen den Unterfenstern (jedes trägt ein Abzeichen mit seinem Abstand zum fokussierten), ↓ geht in die Tabs des fokussierten, und ↑ oder Escape führen wieder hinaus. Mit nur einem Unterfenster wechseln ←/→ direkt seine Tabs.",
+  "lessons.keyboardSteering.singleKeysTitle": "Aktionen mit einer Taste",
+  "lessons.keyboardSteering.singleKeysBody": "In einem Unterfenster wirken einzelne Tasten darauf: N öffnet eine Shell, M einen Systemmonitor, 1–9 einen Agenten (die Legende nennt sie), + das ganze Neuer-Tab-Menü; F schaltet die angedockte Dateiansicht um, W schließt den aktiven Tab. E öffnet das Seitenpanel, und oben bei den Projekten öffnen M, C und T Mail, Kalender und To-do-Board — ↑/↓ durchlaufen ihre Bedienelemente, Enter drückt eines. P schaltet die Seitenpanels um. Q, R und D springen zum nächsten Tab, der auf Antwort wartet, arbeitet oder fertig ist — in jedem Projekt; Umschalt geht zurück.",
   "lessons.keyboardSteering.exitsTitle": "Den Modus verlassen",
-  "lessons.keyboardSteering.exitsBody": "Escape oder Enter bringt dich zurück zu den normalen Tasten. Zwei Tasten verlassen den Modus mit Ziel: S öffnet die Einstellungen und ? die Tastenkürzel-Übersicht – beide beenden den Steuerungsmodus beim Öffnen.",
+  "lessons.keyboardSteering.exitsBody": "Enter auf einem Unterfenster oder Tab beendet die Steuerung genau dort; bei den Projekten tun das Escape oder Enter. Zwei Tasten beenden mit Ziel: S öffnet die Einstellungen, ? die Tastenkürzel-Übersicht.",
   "lessons.keyboardSteering.cheatSheetTitle": "Die F1-Übersicht",
   "lessons.keyboardSteering.cheatSheetBody": "F1 öffnet die Tastenkürzel-Übersicht jederzeit – ganz ohne Steuerungsmodus (sie steht auch im Einstellungen-Menü). Sie listet jede wirksame Belegung gruppiert nach Navigation, Tabs & Unterfenster und Steuerung, markiert die von dir angepassten und nennt die festen Tasten. Auch F1 selbst lässt sich umbelegen.",
   "lessons.keyboardSteering.projectCycleTitle": "Projekte durchschalten – und alles anpassen",

@@ -2,6 +2,25 @@ import { create } from "zustand";
 import { useProjectsStore } from "./projects";
 
 /**
+ * Where in the window steering is pointing. The mode is a small hierarchy the
+ * arrows walk: ↓ goes one level in, ↑ (or Escape) one level out.
+ *
+ *   projects — ←/→ switch the project (the station ring), ↓ into its windows
+ *   panes    — ←/→ step the subwindows (the tabs, when there is only one)
+ *   tabs     — ←/→ step the focused subwindow's tabs
+ *   region   — a keyboard cursor walking the controls of one surface that
+ *              has no tab bar: the side panel, the mail / calendar / to-do
+ *              overlays, or a pane's + menu (`SteeringRegion`)
+ */
+export type SteeringLevel = "projects" | "panes" | "tabs" | "region";
+
+/** The surfaces the region cursor can walk (see `lib/shortcuts/steeringRegion`). */
+export type SteeringRegion = "side" | "mail" | "calendar" | "todo" | "addTab";
+
+/** Every level but the region — where a region returns to. */
+export type SteeringBaseLevel = Exclude<SteeringLevel, "region">;
+
+/**
  * Transient state for keyboard steering mode (the `steeringMode` chord).
  *
  * `subwindowNav`'s sibling: kept out of the tabs store so entering/leaving the
@@ -9,8 +28,8 @@ import { useProjectsStore } from "./projects";
  * relaunch never starts steering. While `active`, `useKeyboard` swallows every
  * key in a capture-phase listener (nothing may leak to the terminal
  * underneath), `FocusFrameOverlay` shows the subwindow badges, the project
- * pills wear their station numbers, and the bottom legend renders from
- * `STEERING_KEYS`.
+ * pills wear their station numbers, and the bottom legend renders the current
+ * level's keys from `STEERING_KEYS`.
  *
  * `useKeyboard` mutates this imperatively via `getState()`; the overlays
  * subscribe reactively.
@@ -18,14 +37,39 @@ import { useProjectsStore } from "./projects";
 interface KeyboardSteeringState {
   /** Steering on → keys captured, badges/legend visible. */
   active: boolean;
+  level: SteeringLevel;
+  /** The surface the region cursor walks; set only while `level` is "region". */
+  region: SteeringRegion | null;
+  /** The level Escape returns to from a region. */
+  regionReturn: SteeringBaseLevel;
+  /** Enter the mode at the top: the project level. */
   enter: () => void;
   exit: () => void;
+  setLevel: (level: SteeringBaseLevel) => void;
+  enterRegion: (region: SteeringRegion) => void;
+  /** Leave the region for the level it was entered from. */
+  leaveRegion: () => void;
 }
 
-export const useKeyboardSteeringStore = create<KeyboardSteeringState>((set) => ({
+export const useKeyboardSteeringStore = create<KeyboardSteeringState>((set, get) => ({
   active: false,
-  enter: () => set({ active: true }),
-  exit: () => set({ active: false }),
+  level: "projects",
+  region: null,
+  regionReturn: "projects",
+  enter: () => set({ active: true, level: "projects", region: null }),
+  exit: () => set({ active: false, level: "projects", region: null }),
+  setLevel: (level) => set({ level, region: null }),
+  enterRegion: (region) => {
+    const { level, regionReturn } = get();
+    set({
+      level: "region",
+      region,
+      // Regions never nest: switching straight from one to another still
+      // returns to the base level the first was entered from.
+      regionReturn: level === "region" ? regionReturn : level,
+    });
+  },
+  leaveRegion: () => set({ level: get().regionReturn, region: null }),
 }));
 
 /**

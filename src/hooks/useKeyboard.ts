@@ -15,7 +15,26 @@ import { useSubwindowNavStore } from "../stores/subwindowNav";
 import {
   projectStations,
   useKeyboardSteeringStore,
+  type SteeringRegion,
 } from "../stores/keyboardSteering";
+import { useActivityStore } from "../stores/activity";
+import { jumpToTab } from "../lib/shortcuts/tabJump";
+import { nextStatusTab, statusTabs, type TabStatusKind } from "../lib/shortcuts/statusJump";
+import { useMailStore } from "../stores/mail";
+import { useCalendarStore } from "../stores/calendar/calendar";
+import { useTodoStore } from "../stores/todo";
+import { openProjectDialog } from "../lib/projects/projectDialogEvent";
+import { sidePanelViewKey, sidePanelViewPatch } from "../lib/projects/sidePanelView";
+import {
+  SIDE_PANEL_VIEWS,
+  activateRegionCursor,
+  clearRegionCursor,
+  moveRegionCursor,
+  placeRegionCursor,
+  regionRoot,
+  steeringAppEnabled,
+  type SteeringApp,
+} from "../lib/shortcuts/steeringRegion";
 import {
   openProjectShellInRootConsole,
   toggleRootConsole,
@@ -33,6 +52,9 @@ import {
 
 interface KeyboardOptions {
   onTogglePanels: () => void;
+  /** Open (showing the panels if they were hidden) or close the side panel —
+   *  steering's E key, and Escape back out of it. */
+  onSidePanel?: (open: boolean) => void;
 }
 
 /** The close actions a chord may still trigger while a text field or terminal
@@ -119,7 +141,10 @@ export function isEditableTarget(target: EventTarget | null): boolean {
  * Steering mode (`steeringMode` chord): a modal layer for the fixed keys in
  * `STEERING_KEYS`, captured on `document` in the CAPTURE phase so xterm never
  * sees them and the mode works FROM a focused terminal — the point is that the
- * hands never leave the keyboard. While active every key is swallowed.
+ * hands never leave the keyboard. While active every key is swallowed. The
+ * mode is a hierarchy (`SteeringLevel`): projects → subwindows → tabs, ↓ in and
+ * ↑/Escape out, plus a region cursor (`lib/shortcuts/steeringRegion`) for the
+ * side panel, the header apps and a pane's + menu.
  */
 /** `KeyboardEvent.key` of the Super/Windows/Command key, as the engines name it. */
 function isSuperKey(key: string): boolean {
@@ -135,7 +160,7 @@ function isSuperKey(key: string): boolean {
  */
 export const SUPER_RELEASE_SETTLE_MS = 150;
 
-export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
+export function useKeyboard({ onTogglePanels, onSidePanel }: KeyboardOptions) {
   useEffect(() => {
     // Lone-Super press tracking (Linux only; see the binding in `onKeyDown`).
     let superHeld = false;
@@ -156,9 +181,280 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
     // works from a focused terminal (the whole point). But it runs AFTER the
     // settings panel's chord-capture listener (window, capture phase), so
     // rebinding the steering chord itself still captures instead of toggling.
-    function onSteeringKeyDown(e: KeyboardEvent) {
-      if (hasActiveModal()) return;
+    // Steering's own bookkeeping, outside the store because nothing renders it:
+    // whether the side panel is open because steering opened it (Escape out of
+    // it closes it again), and the pending retry that lands the region cursor
+    // once a surface has mounted.
+    let panelOpenedBySteering = false;
+    let placeTimer: number | null = null;
+    const cancelPlace = () => {
+      if (placeTimer !== null) {
+        window.clearTimeout(placeTimer);
+        placeTimer = null;
+      }
+    };
+    // A surface steering just opened is not on screen yet (the panel mounts its
+    // tree on open, mail and the board are lazy chunks): try for about a second.
+    const placeCursorSoon = (region: SteeringRegion, tries = 20) => {
+      cancelPlace();
+      const root = regionRoot(region);
+      if (root && placeRegionCursor(root)) return;
+      if (tries <= 0) return;
+      placeTimer = window.setTimeout(() => {
+        placeTimer = null;
+        const s = useKeyboardSteeringStore.getState();
+        if (s.active && s.region === region) placeCursorSoon(region, tries - 1);
+      }, 50);
+    };
+    const exitSteering = () => {
+      cancelPlace();
+      clearRegionCursor();
+      panelOpenedBySteering = false;
+      useKeyboardSteeringStore.getState().exit();
+    };
+    // Escape out of a region: close what steering opened for it, back to the
+    // level it was entered from.
+    const leaveRegion = (region: SteeringRegion) => {
+      cancelPlace();
+      clearRegionCursor();
+      if (region === "side") {
+        if (panelOpenedBySteering) onSidePanel?.(false);
+        panelOpenedBySteering = false;
+      } else if (region === "addTab") {
+        // The menu request toggles; only send it while the menu is still up.
+        if (regionRoot("addTab")) requestNewTab({ kind: "menu" });
+      } else {
+        closeApp(region);
+      }
+      useKeyboardSteeringStore.getState().leaveRegion();
+    };
+    const enterRegion = (region: SteeringRegion) => {
+      clearRegionCursor();
+      useKeyboardSteeringStore.getState().enterRegion(region);
+      placeCursorSoon(region);
+    };
+    const openSidePanel = () => {
+      if (!regionRoot("side")) {
+        onSidePanel?.(true);
+        panelOpenedBySteering = true;
+      }
+      enterRegion("side");
+    };
+    const openApp = (app: SteeringApp) => {
+      if (!steeringAppEnabled(app, useSettingsStore.getState().settings)) return;
+      const store = appStore(app);
+      if (!store.overlayOpen) store.openOverlay();
+      enterRegion(app);
+    };
+
+    // The project level: ←/→ walk the station ring, ↓ goes into its windows.
+    function steerProjects(e: KeyboardEvent) {
       const steering = useKeyboardSteeringStore.getState();
+      if (e.key === "Escape" || e.key === "Enter") {
+        exitSteering();
+        return;
+      }
+      if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        cycleProject(e.key === "ArrowRight" ? 1 : -1);
+        return;
+      }
+      if (e.key === "ArrowDown") {
+        const tabs = useTabsStore.getState();
+        const first = allGroups(tabs.layout)[0]?.id;
+        if (!tabs.focusedGroupId && first) tabs.focusGroup(first);
+        steering.setLevel("panes");
+        return;
+      }
+      // 1–9 — jump to the Nth station of the SAME ring cycleProject walks:
+      // 1 = the root scope, 2 = the first project pill (display order) — the
+      // numbers the pill badges show. Stays on this level: ↓ goes in.
+      const digit = steeringDigit(e);
+      if (digit !== null) {
+        const target = projectStations()[digit - 1];
+        if (target !== undefined) {
+          const ps = useProjectsStore.getState();
+          if (target !== ps.activeId) void ps.setActive(target);
+        }
+        return;
+      }
+      switch (e.key.toLowerCase()) {
+        case "n": // new project — the + menu's New project dialog
+          exitSteering();
+          openProjectDialog("new");
+          return;
+        case "m":
+          openApp("mail");
+          return;
+        case "c":
+          openApp("calendar");
+          return;
+        case "t":
+          openApp("todo");
+          return;
+      }
+      steerCommon(e);
+    }
+
+    // The panes and tabs levels. With one subwindow there is nothing for ←/→
+    // to walk between, so they step its tabs at once.
+    function steerPanes(e: KeyboardEvent, level: "panes" | "tabs") {
+      const steering = useKeyboardSteeringStore.getState();
+      const tabs = useTabsStore.getState();
+      const ids = allGroups(tabs.layout).map((g) => g.id);
+      const walksPanes = level === "panes" && ids.length >= 2;
+      const focused = tabs.focusedGroupId;
+      const group = focused ? findGroup(tabs.layout, focused) : null;
+
+      if (e.key === "Escape" || e.key === "ArrowUp") {
+        steering.setLevel(level === "tabs" ? "panes" : "projects");
+        return;
+      }
+      // Enter: work here — steering steps aside, focus stays where it was put.
+      if (e.key === "Enter") {
+        exitSteering();
+        return;
+      }
+      if (e.key === "ArrowDown") {
+        if (walksPanes) steering.setLevel("tabs");
+        return;
+      }
+      if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        const fwd = e.key === "ArrowRight";
+        if (walksPanes) {
+          // Document order, wrapping, committed at once via focusGroup (no
+          // Shift-preview: the badges re-anchor each step).
+          const from = focused ? ids.indexOf(focused) : -1;
+          const base = from >= 0 ? from : 0;
+          tabs.focusGroup(ids[(base + (fwd ? 1 : -1) + ids.length) % ids.length]);
+        } else if (group && group.tabKeys.length > 1) {
+          const len = group.tabKeys.length;
+          const cur = group.activeKey ? group.tabKeys.indexOf(group.activeKey) : 0;
+          tabs.setGroupActive(group.id, group.tabKeys[(cur + (fwd ? 1 : -1) + len) % len]);
+        }
+        return;
+      }
+      // New tabs in the focused pane, the Ctrl+Shift+N / M / Ctrl+1–9 set
+      // without the modifiers; the new tab takes the keyboard, so steering
+      // steps aside. An agent number with nothing behind it does nothing.
+      const digit = steeringDigit(e);
+      if (digit !== null) {
+        if (requestNewTab({ kind: "agent", slot: digit - 1 })) exitSteering();
+        return;
+      }
+      if (e.key === "+" || e.key === "=") {
+        // The whole + menu, walked with the region cursor.
+        if (requestNewTab({ kind: "menu" })) enterRegion("addTab");
+        return;
+      }
+      switch (e.key.toLowerCase()) {
+        case "n":
+          if (requestNewTab({ kind: "shell" })) exitSteering();
+          return;
+        case "m":
+          if (requestNewTab({ kind: "monitor" })) exitSteering();
+          return;
+        case "f": // toggle the focused subwindow's docked file viewer
+          if (focused && group) tabs.setGroupFiles(focused, !group.filesOpen);
+          return;
+        case "w": // close the active tab
+          if (tabs.activeKey) closeTabWithConfirm(tabs.activeKey);
+          return;
+      }
+      steerCommon(e);
+    }
+
+    // The keys every tab-bar level shares.
+    function steerCommon(e: KeyboardEvent) {
+      const status = STATUS_KEYS[e.key.toLowerCase()];
+      if (status) {
+        // Next (Shift: previous) tab needing an answer / working / finished,
+        // in any project; steering follows it down to the tab level.
+        const activity = useActivityStore.getState();
+        const tabs = useTabsStore.getState();
+        const target = nextStatusTab(
+          statusTabs(status, activity.busyByTab, activity.attentionByTab, tabs.tabsByScope),
+          tabs.activeKey ? { scope: tabs.scope, key: tabs.activeKey } : null,
+          e.shiftKey ? -1 : 1,
+        );
+        if (target) {
+          jumpToTab(target.scope, target.key);
+          useKeyboardSteeringStore.getState().setLevel("tabs");
+        }
+        return;
+      }
+      switch (e.key.toLowerCase()) {
+        case "e":
+          openSidePanel();
+          return;
+        case "p": // toggle the side panels
+          onTogglePanels();
+          return;
+        case "s": // open settings — same door the header ⚙ menu fires
+          exitSteering();
+          window.dispatchEvent(new CustomEvent("eldrun:open-settings", { detail: "main" }));
+          return;
+        // Anything else: swallowed, mode stays on.
+      }
+    }
+
+    // The region cursor: ↑/↓ walk the surface's controls, Enter presses one.
+    function steerRegion(e: KeyboardEvent, region: SteeringRegion) {
+      if (e.key === "Escape") {
+        leaveRegion(region);
+        return;
+      }
+      const root = regionRoot(region);
+      if (!root) {
+        // Closed under the cursor (the pointer, the surface's own ×).
+        leaveRegion(region);
+        return;
+      }
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        cancelPlace();
+        moveRegionCursor(root, e.key === "ArrowDown" ? 1 : -1);
+        return;
+      }
+      if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        cancelPlace();
+        const delta = e.key === "ArrowRight" ? 1 : -1;
+        if (region === "side") {
+          stepSidePanelView(delta);
+          clearRegionCursor();
+          placeCursorSoon("side");
+        } else {
+          moveRegionCursor(root, delta);
+        }
+        return;
+      }
+      if (e.key === "Enter" || e.key === " ") {
+        const done = activateRegionCursor();
+        if (done === "type") {
+          exitSteering();
+        } else if (done === "press") {
+          // A pick that closed the surface: a + menu row has opened its tab,
+          // which now has the keyboard; anything else goes back a level.
+          window.requestAnimationFrame(() => {
+            const s = useKeyboardSteeringStore.getState();
+            if (!s.active || s.region !== region || regionRoot(region)) return;
+            if (region === "addTab") exitSteering();
+            else {
+              clearRegionCursor();
+              s.leaveRegion();
+            }
+          });
+        }
+        return;
+      }
+    }
+
+    function onSteeringKeyDown(e: KeyboardEvent) {
+      const steering = useKeyboardSteeringStore.getState();
+      if (hasActiveModal()) {
+        // A dialog owns the keyboard now (one steering opened, or any other);
+        // a legend still promising steering keys would be lying.
+        if (steering.active) exitSteering();
+        return;
+      }
       const overrides = useSettingsStore.getState().settings
         ?.keyboard_shortcuts as ShortcutMap | undefined;
 
@@ -166,7 +462,7 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
       if (chordMatches(resolveChord("steeringMode", overrides), e)) {
         e.preventDefault();
         e.stopPropagation();
-        if (steering.active) steering.exit();
+        if (steering.active) exitSteering();
         else steering.enter();
         return;
       }
@@ -176,14 +472,14 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
       if (chordMatches(resolveChord("rootConsole", overrides), e)) {
         e.preventDefault();
         e.stopPropagation();
-        if (steering.active) steering.exit();
+        if (steering.active) exitSteering();
         toggleRootConsole();
         return;
       }
       if (chordMatches(resolveChord("projectShell", overrides), e)) {
         e.preventDefault();
         e.stopPropagation();
-        if (steering.active) steering.exit();
+        if (steering.active) exitSteering();
         openProjectShellInRootConsole();
         return;
       }
@@ -195,7 +491,7 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
       if (newTab && requestNewTab(newTab)) {
         e.preventDefault();
         e.stopPropagation();
-        if (steering.active) steering.exit();
+        if (steering.active) exitSteering();
         const overlay = useRootOverlayStore.getState();
         if (overlay.open) overlay.close();
         return;
@@ -207,13 +503,13 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
         if (reopenClosedAgentTab(useTabsStore.getState().scope)) {
           e.preventDefault();
           e.stopPropagation();
-          if (steering.active) steering.exit();
+          if (steering.active) exitSteering();
           return;
         }
       }
       if (!steering.active) return;
 
-      // Lone modifiers pass through unswallowed so Shift+Tab still composes.
+      // Lone modifiers pass through unswallowed so a Shift+key still composes.
       if (isLoneModifier(e.key)) return;
 
       // The mode owns the keyboard: every non-modifier key below — mapped or
@@ -221,80 +517,26 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
       e.preventDefault();
       e.stopPropagation();
 
-      const tabs = useTabsStore.getState();
-
-      if (e.key === "Escape" || e.key === "Enter") {
-        steering.exit();
-        return;
-      }
-
-      // 1–9 — jump to the Nth station of the SAME ring cycleProject walks:
-      // 1 = the root scope, 2 = the first project pill (display order) — the
-      // numbers the pill badges show. Jumping leaves the mode.
-      if (/^[1-9]$/.test(e.key)) {
-        const target = projectStations()[Number(e.key) - 1];
-        steering.exit();
-        if (target !== undefined) {
-          const ps = useProjectsStore.getState();
-          if (target !== ps.activeId) void ps.setActive(target);
-        }
-        return;
-      }
-
-      // Arrows — move the subwindow focus in document order (↓/→ forward,
-      // ↑/← back), committing immediately via focusGroup (no Shift-preview:
-      // the badges re-anchor each step). Stays in the mode.
-      if (e.key.startsWith("Arrow")) {
-        const ids = allGroups(tabs.layout).map((g) => g.id);
-        const n = ids.length;
-        if (n >= 2) {
-          const fwd = e.key === "ArrowDown" || e.key === "ArrowRight";
-          const from = tabs.focusedGroupId ? ids.indexOf(tabs.focusedGroupId) : -1;
-          const base = from >= 0 ? from : 0;
-          tabs.focusGroup(ids[(base + (fwd ? 1 : -1) + n) % n]);
-        }
-        return;
-      }
-
-      const focused = tabs.focusedGroupId;
-      const group = focused ? findGroup(tabs.layout, focused) : null;
-
-      // Tab / Shift+Tab — next / previous tab in the focused subwindow.
-      if (e.key === "Tab") {
-        if (group && group.tabKeys.length > 1) {
-          const len = group.tabKeys.length;
-          const cur = group.activeKey ? group.tabKeys.indexOf(group.activeKey) : 0;
-          const next = group.tabKeys[(cur + (e.shiftKey ? -1 : 1) + len) % len];
-          tabs.setGroupActive(group.id, next);
-        }
-        return;
-      }
-
-      // ? — the shortcut cheat sheet (its host listens for the event; part of
-      // the later steering work). Opening an overlay leaves the mode.
+      // ? — the shortcut cheat sheet, from every level (its host listens for
+      // the event). Opening an overlay leaves the mode.
       if (e.key === "?") {
-        steering.exit();
+        exitSteering();
         window.dispatchEvent(new Event("eldrun:open-shortcut-help"));
         return;
       }
 
-      switch (e.key.toLowerCase()) {
-        case "f": // toggle the focused subwindow's docked file viewer
-          if (focused && group) tabs.setGroupFiles(focused, !group.filesOpen);
+      switch (steering.level) {
+        case "projects":
+          steerProjects(e);
           return;
-        case "p": // toggle the side panels
-          onTogglePanels();
+        case "panes":
+        case "tabs":
+          steerPanes(e, steering.level);
           return;
-        case "w": // close the active tab
-          if (tabs.activeKey) closeTabWithConfirm(tabs.activeKey);
+        case "region":
+          if (steering.region) steerRegion(e, steering.region);
+          else steering.setLevel(steering.regionReturn);
           return;
-        case "s": // open settings — same door the header ⚙ menu fires
-          steering.exit();
-          window.dispatchEvent(
-            new CustomEvent("eldrun:open-settings", { detail: "main" }),
-          );
-          return;
-        // Anything else: swallowed above, mode stays on.
       }
     }
 
@@ -582,8 +824,7 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
       if (nav.active) nav.end();
       // Steering must not survive a window blur either — coming back to a
       // window silently swallowing every key would read as a hung app.
-      const steering = useKeyboardSteeringStore.getState();
-      if (steering.active) steering.exit();
+      if (useKeyboardSteeringStore.getState().active) exitSteering();
     }
 
     // Which desktop is running decides whether the bare Super key is ours (see
@@ -597,12 +838,65 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
     window.addEventListener("blur", onBlur);
     return () => {
       cancelSuperToggle();
+      cancelPlace();
       document.removeEventListener("keydown", onSteeringKeyDown, true);
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onBlur);
     };
-  }, [onTogglePanels]);
+  }, [onTogglePanels, onSidePanel]);
+}
+
+/** Steering's status-jump letters (`STEERING_KEYS`' Q / R / D rows). */
+const STATUS_KEYS: Record<string, TabStatusKind | undefined> = {
+  q: "decision",
+  r: "working",
+  d: "done",
+};
+
+/** A steering digit 1–9, by character or by physical key — AZERTY types `&`
+ *  on the key US calls 1 (`chordMatches`' reason for the same fallback). */
+function steeringDigit(e: KeyboardEvent): number | null {
+  if (/^[1-9]$/.test(e.key)) return Number(e.key);
+  const m = /^(?:Digit|Numpad)([1-9])$/.exec(e.code);
+  return m ? Number(m[1]) : null;
+}
+
+/** The overlay store behind a header app — the same `openOverlay` /
+ *  `closeOverlay` its header button calls. */
+function appStore(app: SteeringApp): {
+  overlayOpen: boolean;
+  openOverlay: () => void;
+  closeOverlay: () => void;
+} {
+  switch (app) {
+    case "mail":
+      return useMailStore.getState();
+    case "calendar":
+      return useCalendarStore.getState();
+    case "todo":
+      return useTodoStore.getState();
+  }
+}
+
+function closeApp(app: SteeringApp) {
+  const store = appStore(app);
+  if (store.overlayOpen) store.closeOverlay();
+}
+
+/** Put the side panel on the next / previous of its views — the settings patch
+ *  its switcher and edge rail write. */
+function stepSidePanelView(delta: 1 | -1) {
+  const settings = useSettingsStore.getState().settings;
+  const key = sidePanelViewKey(
+    useProjectsStore.getState().activeId,
+    useTabsStore.getState().scope,
+  );
+  const current = settings?.side_panel_view_by_project?.[key] ?? settings?.side_panel_view ?? "files";
+  const at = SIDE_PANEL_VIEWS.indexOf(current);
+  const n = SIDE_PANEL_VIEWS.length;
+  const next = SIDE_PANEL_VIEWS[at < 0 ? 0 : (at + delta + n) % n];
+  void useSettingsStore.getState().updateSettings(sidePanelViewPatch(next, key, settings));
 }
 
 /**

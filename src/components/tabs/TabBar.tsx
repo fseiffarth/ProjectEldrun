@@ -44,8 +44,10 @@ import { tabColorCss } from "../../lib/theme/tabColors";
 import { useAddTabMenuData } from "./useAddTabMenuData";
 import {
   NEW_TAB_SHORTCUT_EVENT,
+  NEW_TAB_SLOTS_EVENT,
   type NewTabRequest,
   type NewTabShortcutDetail,
+  type NewTabSlotsDetail,
 } from "../../lib/shortcuts/newTabChord";
 import { useAgentWorktreePicker } from "./agentWorktrees";
 import type { CloudLaunch } from "../../lib/agents/cloudSessions";
@@ -651,20 +653,25 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // hands its terminal the keyboard. Latest-render handlers via the ref, one
   // listener per bar.
   const onNewTabChord = useRef<(request: NewTabRequest) => boolean>(() => false);
+  const agentSlots = useRef<() => ReturnType<typeof agentShortcutSlots>>(() => []);
+  agentSlots.current = () =>
+    agentShortcutSlots({
+      installedBuiltins: enabledAgents,
+      installedCmds: installedCustom,
+      customAgents,
+      defaultAgentBin,
+    });
   onNewTabChord.current = (request) => {
     if (request.kind === "monitor") {
       handleAddMonitor();
       return true;
     }
+    if (request.kind === "menu") {
+      openAddMenu();
+      return true;
+    }
     const item =
-      request.kind === "shell"
-        ? SHELL_ITEM
-        : agentShortcutSlots({
-            installedBuiltins: enabledAgents,
-            installedCmds: installedCustom,
-            customAgents,
-            defaultAgentBin,
-          })[request.slot]?.item;
+      request.kind === "shell" ? SHELL_ITEM : agentSlots.current()[request.slot]?.item;
     if (!item) return false;
     handleAdd(item);
     return true;
@@ -674,8 +681,18 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
       const { request, groupId: target } = (e as CustomEvent<NewTabShortcutDetail>).detail;
       if (target === groupId && onNewTabChord.current(request)) e.preventDefault();
     };
+    // Steering's legend names the agents behind 1–9 for the focused pane.
+    const onSlots = (e: Event) => {
+      const detail = (e as CustomEvent<NewTabSlotsDetail>).detail;
+      if (detail.groupId !== groupId) return;
+      detail.labels = agentSlots.current().map((slot) => slot?.item.label ?? null);
+    };
     window.addEventListener(NEW_TAB_SHORTCUT_EVENT, onRequest);
-    return () => window.removeEventListener(NEW_TAB_SHORTCUT_EVENT, onRequest);
+    window.addEventListener(NEW_TAB_SLOTS_EVENT, onSlots);
+    return () => {
+      window.removeEventListener(NEW_TAB_SHORTCUT_EVENT, onRequest);
+      window.removeEventListener(NEW_TAB_SLOTS_EVENT, onSlots);
+    };
   }, [groupId]);
 
   async function handleOllamaModel(model: string) {

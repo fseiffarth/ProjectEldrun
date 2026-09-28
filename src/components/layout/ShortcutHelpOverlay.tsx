@@ -6,6 +6,7 @@ import {
   FIXED_KEYS,
   SHORTCUT_DEFS,
   SHORTCUT_GROUPS,
+  STEERING_CONTEXTS,
   STEERING_KEYS,
   chordLabel,
   resolveChord,
@@ -115,15 +116,26 @@ export function ShortcutHelpOverlay() {
                 chord: chordLabel(resolveChord("steeringMode", overrides)),
               })}
             </p>
-            {STEERING_KEYS.map((k) => (
-              <div className="shortcut-help-row" key={k.labelKey}>
-                <kbd>{k.keys}</kbd>
-                <span className="shortcut-help-label">
-                  {t(k.labelKey)}
-                  <span className="shortcut-help-desc"> — {t(k.descKey)}</span>
-                </span>
-              </div>
-            ))}
+            {/* One block per level, each key under the first level it acts on
+                (E, P, S and ? work on every tab-bar level; they are listed once). */}
+            {STEERING_CONTEXTS.map((level) => {
+              const rows = STEERING_KEYS.filter((k) => k.levels[0] === level.id);
+              if (rows.length === 0) return null;
+              return (
+                <div className="shortcut-help-steering-level" key={level.id}>
+                  <h4>{t(level.labelKey)}</h4>
+                  {rows.map((k) => (
+                    <div className="shortcut-help-row" key={`${k.keys}|${k.labelKey}`}>
+                      <kbd>{k.keys}</kbd>
+                      <span className="shortcut-help-label">
+                        {t(k.labelKey)}
+                        <span className="shortcut-help-desc"> — {t(k.descKey)}</span>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
           </section>
           <section className="shortcut-help-section">
             <h3>{t("shortcutHelp.fixedTitle")}</h3>

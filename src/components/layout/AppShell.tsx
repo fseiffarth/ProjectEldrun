@@ -1010,6 +1010,16 @@ export function AppShell() {
         hidden ? t("appShell.panelsHiddenToast", { key: livePanelToggleKey() }) : null,
       );
     },
+    // Steering's E: the panel on its remembered view, panels shown if they
+    // were hidden. Closing leaves a pinned panel where it is.
+    onSidePanel: (open) => {
+      if (open) {
+        setPanelsHidden(false);
+        openPanel();
+      } else if (!panelPinned) {
+        setPanelOpen(false);
+      }
+    },
   });
 
   const revealPanel = panelTarget && !panelsHidden && (panelOpen || panelPinned);

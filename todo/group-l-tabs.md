@@ -243,6 +243,38 @@ correctness/UX work atop the same layout model #42 detaches.*
       - [ ] ✅ Works on macOS
       - [ ] ❌ Doesn't work on macOS
 
+213a. **Live-QA steering levels, new-tab keys, region cursor and status
+    jumps.** ✅ Implemented · 🧪 Awaiting live QA (2026-09-28). Steering is
+    now a hierarchy: it opens on the projects (←/→ switch project, 1–9 jump,
+    ↓ in), then subwindows (←/→ between them; with one subwindow ←/→ step its
+    tabs), then tabs (↓ in, ↑/Esc back out). Inside a pane: N shell, M monitor,
+    1–9 agents (the legend names them), + opens the pane's + menu. On the
+    projects: N new-project dialog, M/C/T mail/calendar/to-do (only when
+    enabled). E opens the side panel. In a panel/overlay/menu a highlight
+    walks with ↑/↓, Enter presses (a text field gets the caret and steering
+    exits), ←/→ switch the side panel's view, Esc closes what steering opened.
+    Q/R/D (Shift: back) jump to the next tab needing an answer / working /
+    done in any project. Verify: the highlight is visible and lands on real
+    controls in each surface (file tree rows, git view, mail list, calendar,
+    board, + menu rows and fly-outs); Enter on a + menu row opens that tab;
+    the legend's title names the level and its counts match the pill bars.
+    *Files: `src/hooks/useKeyboard.ts`, `src/stores/keyboardSteering.ts`,
+    `src/lib/shortcuts/steeringRegion.ts` / `statusJump.ts` / `shortcuts.ts`
+    (`STEERING_KEYS`), `src/components/layout/SteeringLegend.tsx`,
+    `src/components/tabs/TabBar.tsx` (`menu` request, slot labels).*
+    - [x] 🤖 Automated test — `src/__tests__/shell/SteeringLevels.test.tsx`
+      (levels, new-tab requests, station digits, status jumps, legend table,
+      region cursor with a faked layout).
+    - [ ] 🖐️ Manual test
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
+
 215. **Live-QA one-click installs in the root console.** ✅ Implemented · 🧪
     Awaiting live QA. Every one-click install (`runInstallInTab`: Ollama/agent
     CLI installs, the LaTeX/MiKTeX prompt, `gh`/`glab` install + auth login,

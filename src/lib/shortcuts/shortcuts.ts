@@ -515,6 +515,27 @@ export function isFixedChord(chord: ChordDescriptor): boolean {
   }) !== null;
 }
 
+/** The levels of steering mode (`stores/keyboardSteering`'s `SteeringLevel`,
+ *  restated so this table stays free of store imports). */
+export type SteeringContext = "projects" | "panes" | "tabs" | "region";
+
+export const STEERING_CONTEXTS: { id: SteeringContext; labelKey: TranslationKey }[] = [
+  { id: "projects", labelKey: "steering.level.projects" },
+  { id: "panes", labelKey: "steering.level.panes" },
+  { id: "tabs", labelKey: "steering.level.tabs" },
+  { id: "region", labelKey: "steering.level.region" },
+];
+
+/**
+ * When a key is listed beyond its levels:
+ *   stepsPanes — the panes level with two or more subwindows (←/→ walk them)
+ *   stepsTabs  — the tabs level, or the panes level with one subwindow, where
+ *                ←/→ step its tabs instead
+ *   sideRegion — the region cursor is in the side panel (←/→ switch its view)
+ *   mail / calendar / todo — that header app is switched on
+ */
+export type SteeringCondition = "stepsPanes" | "stepsTabs" | "sideRegion" | "mail" | "calendar" | "todo";
+
 /** One fixed key (or key family) inside steering mode. `keys` is display text
  *  (already glyphs, never translated); the two i18n keys carry the short
  *  legend label and the longer help/lesson description. */
@@ -522,6 +543,48 @@ export interface SteeringKeyDef {
   keys: string;
   labelKey: TranslationKey;
   descKey: TranslationKey;
+  /** The levels whose legend lists the key. */
+  levels: readonly SteeringContext[];
+  when?: SteeringCondition;
+  /** The legend spells the key family out as one entry per agent: the focused
+   *  pane's 1–9 (`newTabSlotLabels`). */
+  agentSlots?: true;
+  /** A status jump: the legend lists it, with its count, only while some tab
+   *  is in that state (`lib/shortcuts/statusJump`). */
+  status?: "decision" | "working" | "done";
+}
+
+/** What the legend knows about the moment, for `steeringKeysFor`. */
+export interface SteeringLegendState {
+  level: SteeringContext;
+  sideRegion: boolean;
+  multiPane: boolean;
+  apps: { mail: boolean; calendar: boolean; todo: boolean };
+  /** How many tabs, in every scope, need an answer / work / finished unseen. */
+  statusCounts: { decision: number; working: number; done: number };
+}
+
+function steeringConditionHolds(cond: SteeringCondition, s: SteeringLegendState): boolean {
+  switch (cond) {
+    case "stepsPanes":
+      return s.level === "panes" && s.multiPane;
+    case "stepsTabs":
+      return s.level === "tabs" || (s.level === "panes" && !s.multiPane);
+    case "sideRegion":
+      return s.sideRegion;
+    default:
+      return s.apps[cond];
+  }
+}
+
+/** The keys that act right now — the legend's rows, in table order. */
+export function steeringKeysFor(s: SteeringLegendState): SteeringKeyDef[] {
+  return STEERING_KEYS.filter(
+    (k) =>
+      k.levels.includes(s.level) &&
+      (!k.when || steeringConditionHolds(k.when, s)) &&
+      (!k.status || s.statusCounts[k.status] > 0),
+  );
 }
 
 /** One fixed, non-rebindable key handled directly in `useKeyboard`. Same shape
@@ -583,21 +646,53 @@ export const FIXED_KEYS: FixedKeyDef[] = [
   },
 ];
 
+const PANE_LEVELS: readonly SteeringContext[] = ["panes", "tabs"];
+const BASE_LEVELS: readonly SteeringContext[] = ["projects", "panes", "tabs"];
+const ALL_LEVELS: readonly SteeringContext[] = ["projects", "panes", "tabs", "region"];
+
 /**
- * The FIXED in-steering-mode keys, in display order — the one source of truth
- * for the legend overlay, the shortcut cheat sheet, and any lesson surface.
- * `useKeyboard`'s steering handler is the acting counterpart; the two must
- * stay in step. Digit mapping: 1 = root scope, 2 = the first project pill
- * (display order) — the same ring `cycleProject` walks.
+ * The FIXED in-steering-mode keys, grouped by the level they act on, in display
+ * order — the one source of truth for the legend overlay (which shows the
+ * current level's, `steeringKeysFor`), the shortcut cheat sheet, and any lesson
+ * surface. `useKeyboard`'s steering handler is the acting counterpart; the two
+ * must stay in step. Digit mapping on the project level: 1 = root scope, 2 =
+ * the first project pill (display order) — the same ring `cycleProject` walks.
+ * Letters mean one thing per level, so N is a new project up top and a new
+ * shell inside a pane.
  */
 export const STEERING_KEYS: SteeringKeyDef[] = [
-  { keys: "1–9", labelKey: "steering.jump.label", descKey: "steering.jump.desc" },
-  { keys: "↑ ↓ ← →", labelKey: "steering.focus.label", descKey: "steering.focus.desc" },
-  { keys: "Tab / Shift+Tab", labelKey: "steering.tabs.label", descKey: "steering.tabs.desc" },
-  { keys: "F", labelKey: "steering.files.label", descKey: "steering.files.desc" },
-  { keys: "P", labelKey: "steering.panels.label", descKey: "steering.panels.desc" },
-  { keys: "W", labelKey: "steering.closeTab.label", descKey: "steering.closeTab.desc" },
-  { keys: "S", labelKey: "steering.settings.label", descKey: "steering.settings.desc" },
-  { keys: "?", labelKey: "steering.help.label", descKey: "steering.help.desc" },
-  { keys: "Esc / Enter", labelKey: "steering.exit.label", descKey: "steering.exit.desc" },
+  // Projects.
+  { keys: "← →", labelKey: "steering.project.label", descKey: "steering.project.desc", levels: ["projects"] },
+  { keys: "1–9", labelKey: "steering.jump.label", descKey: "steering.jump.desc", levels: ["projects"] },
+  { keys: "↓", labelKey: "steering.into.label", descKey: "steering.into.desc", levels: ["projects"] },
+  { keys: "N", labelKey: "steering.newProject.label", descKey: "steering.newProject.desc", levels: ["projects"] },
+  { keys: "M", labelKey: "steering.mail.label", descKey: "steering.mail.desc", levels: ["projects"], when: "mail" },
+  { keys: "C", labelKey: "steering.calendar.label", descKey: "steering.calendar.desc", levels: ["projects"], when: "calendar" },
+  { keys: "T", labelKey: "steering.todo.label", descKey: "steering.todo.desc", levels: ["projects"], when: "todo" },
+  // Subwindows and their tabs.
+  { keys: "← →", labelKey: "steering.focus.label", descKey: "steering.focus.desc", levels: ["panes"], when: "stepsPanes" },
+  { keys: "← →", labelKey: "steering.tabs.label", descKey: "steering.tabs.desc", levels: PANE_LEVELS, when: "stepsTabs" },
+  { keys: "↓", labelKey: "steering.intoTabs.label", descKey: "steering.intoTabs.desc", levels: ["panes"], when: "stepsPanes" },
+  { keys: "↑", labelKey: "steering.up.label", descKey: "steering.up.desc", levels: PANE_LEVELS },
+  { keys: "N", labelKey: "steering.newShell.label", descKey: "steering.newShell.desc", levels: PANE_LEVELS },
+  { keys: "M", labelKey: "steering.newMonitor.label", descKey: "steering.newMonitor.desc", levels: PANE_LEVELS },
+  { keys: "1–9", labelKey: "steering.newAgent.label", descKey: "steering.newAgent.desc", levels: PANE_LEVELS, agentSlots: true },
+  { keys: "+", labelKey: "steering.newTabMenu.label", descKey: "steering.newTabMenu.desc", levels: PANE_LEVELS },
+  { keys: "F", labelKey: "steering.files.label", descKey: "steering.files.desc", levels: PANE_LEVELS },
+  { keys: "W", labelKey: "steering.closeTab.label", descKey: "steering.closeTab.desc", levels: PANE_LEVELS },
+  { keys: "Enter", labelKey: "steering.work.label", descKey: "steering.work.desc", levels: PANE_LEVELS },
+  // The region cursor (side panel, header apps, + menu).
+  { keys: "↑ ↓", labelKey: "steering.move.label", descKey: "steering.move.desc", levels: ["region"] },
+  { keys: "← →", labelKey: "steering.sideView.label", descKey: "steering.sideView.desc", levels: ["region"], when: "sideRegion" },
+  { keys: "Enter", labelKey: "steering.press.label", descKey: "steering.press.desc", levels: ["region"] },
+  // Wherever the tab bars are. Shift walks the status jumps backwards.
+  { keys: "Q", labelKey: "steering.nextDecision.label", descKey: "steering.nextDecision.desc", levels: BASE_LEVELS, status: "decision" },
+  { keys: "R", labelKey: "steering.nextWorking.label", descKey: "steering.nextWorking.desc", levels: BASE_LEVELS, status: "working" },
+  { keys: "D", labelKey: "steering.nextDone.label", descKey: "steering.nextDone.desc", levels: BASE_LEVELS, status: "done" },
+  { keys: "E", labelKey: "steering.sidePanel.label", descKey: "steering.sidePanel.desc", levels: BASE_LEVELS },
+  { keys: "P", labelKey: "steering.panels.label", descKey: "steering.panels.desc", levels: BASE_LEVELS },
+  { keys: "S", labelKey: "steering.settings.label", descKey: "steering.settings.desc", levels: BASE_LEVELS },
+  { keys: "?", labelKey: "steering.help.label", descKey: "steering.help.desc", levels: ALL_LEVELS },
+  { keys: "Esc", labelKey: "steering.back.label", descKey: "steering.back.desc", levels: ["panes", "tabs", "region"] },
+  { keys: "Esc / Enter", labelKey: "steering.exit.label", descKey: "steering.exit.desc", levels: ["projects"] },
 ];

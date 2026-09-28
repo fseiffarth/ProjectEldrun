@@ -925,13 +925,106 @@ export const dict: Dict = {
   "shortcuts.fixedConflict": "{chord} está reservado por una tecla fija y nunca se activará",
 
   "steering.legendTitle": "Navegación",
+
+  "steering.nextDecision.label": "Espera respuesta",
+
+  "steering.nextDecision.desc": "Salta a la siguiente pestaña que espera tu respuesta, en cualquier proyecto (Mayús: anterior).",
+
+  "steering.nextWorking.label": "Trabajando",
+
+  "steering.nextWorking.desc": "Salta a la siguiente pestaña que está trabajando, en cualquier proyecto (Mayús: anterior).",
+
+  "steering.nextDone.label": "Terminada",
+
+  "steering.nextDone.desc": "Salta a la siguiente pestaña terminada y aún no vista, en cualquier proyecto (Mayús: anterior).",
+
+  "steering.level.projects": "Proyectos",
+
+  "steering.level.panes": "Subventanas",
+
+  "steering.level.tabs": "Pestañas",
+
+  "steering.level.region": "Dentro de una superficie",
+
+  "steering.region.side": "Panel lateral",
+
+  "steering.project.label": "Cambiar de proyecto",
+
+  "steering.project.desc": "Proyecto anterior / siguiente, terminal raíz incluida — el anillo que recorre Ctrl+Mayús+Tab.",
+
+  "steering.into.label": "A las ventanas",
+
+  "steering.into.desc": "Baja a las subventanas del proyecto.",
+
+  "steering.newProject.label": "Nuevo proyecto",
+
+  "steering.newProject.desc": "Abre el diálogo «Nuevo proyecto». Sale del modo de navegación.",
+
+  "steering.mail.label": "Correo",
+
+  "steering.mail.desc": "Abre la superposición del correo para recorrerla con las flechas; Escape la vuelve a cerrar.",
+
+  "steering.calendar.label": "Calendario",
+
+  "steering.calendar.desc": "Abre la superposición del calendario para recorrerla con las flechas; Escape la vuelve a cerrar.",
+
+  "steering.todo.label": "Tareas",
+
+  "steering.todo.desc": "Abre el tablero de tareas para recorrerlo con las flechas; Escape lo vuelve a cerrar.",
+
+  "steering.intoTabs.label": "A sus pestañas",
+
+  "steering.intoTabs.desc": "Baja a las pestañas de la subventana enfocada.",
+
+  "steering.up.label": "Subir un nivel",
+
+  "steering.up.desc": "Vuelve a las subventanas y, desde ahí, a los proyectos.",
+
+  "steering.newShell.label": "Nuevo shell",
+
+  "steering.newShell.desc": "Una nueva pestaña de shell en la subventana enfocada. Sale del modo de navegación para ella.",
+
+  "steering.newMonitor.label": "Nuevo monitor",
+
+  "steering.newMonitor.desc": "Una nueva pestaña de Monitor del sistema en la subventana enfocada. Sale del modo de navegación.",
+
+  "steering.newAgent.label": "Nueva pestaña de agente",
+
+  "steering.newAgent.desc": "Una nueva pestaña de agente en la subventana enfocada: 1 es el agente predeterminado, 2–9 los demás del menú + (la leyenda los nombra). Sale del modo de navegación.",
+
+  "steering.newTabMenu.label": "Todos los tipos de pestaña",
+
+  "steering.newTabMenu.desc": "Abre el menú + de la subventana enfocada para recorrerlo con las flechas; Intro abre la pestaña.",
+
+  "steering.work.label": "Trabajar aquí",
+
+  "steering.work.desc": "Sale del modo de navegación donde estás.",
+
+  "steering.move.label": "Mover",
+
+  "steering.move.desc": "Mueve el resaltado al control anterior / siguiente.",
+
+  "steering.sideView.label": "Cambiar vista",
+
+  "steering.sideView.desc": "Vista anterior / siguiente del panel lateral: Archivos, Git, Apps, Agentes.",
+
+  "steering.press.label": "Pulsar",
+
+  "steering.press.desc": "Pulsa el control resaltado — en un campo de texto, sale del modo de navegación para escribir en él.",
+
+  "steering.sidePanel.label": "Panel lateral",
+
+  "steering.sidePanel.desc": "Abre el panel lateral para recorrerlo con las flechas; Escape lo vuelve a cerrar.",
+
+  "steering.back.label": "Atrás",
+
+  "steering.back.desc": "Sube un nivel — fuera de un panel, superposición o menú, cerrando lo que abrió la navegación.",
   "steering.jump.label": "Saltar a proyecto",
-  "steering.jump.desc":
-    "Activa la estación numerada: 1 es el terminal raíz, 2 la primera píldora de proyecto. Sale del modo de navegación.",
-  "steering.focus.label": "Enfocar subventana",
-  "steering.focus.desc": "Mueve el foco entre subventanas (orden del documento, cíclico).",
+  "steering.jump.desc": "Activa la estación numerada: 1 es la terminal raíz, 2 la primera píldora de proyecto.",
+  "steering.focus.label": "Cambiar subventana",
+  "steering.focus.desc": "Mueve el foco a la subventana anterior / siguiente (orden del documento, cíclico).",
   "steering.tabs.label": "Cambiar pestaña",
-  "steering.tabs.desc": "Pestaña siguiente / anterior en la subventana enfocada.",
+  "steering.tabs.desc": "Pestaña anterior / siguiente en la subventana enfocada — con una sola subventana, las flechas cambian de pestaña directamente.",
   "steering.files.label": "Visor de archivos",
   "steering.files.desc": "Alterna el visor de archivos acoplado de la subventana enfocada.",
   "steering.panels.label": "Paneles",
@@ -6816,19 +6909,19 @@ export const dict: Dict = {
   "lessons.arrangeTabs.outroTitle": "Eso es todo",
   "lessons.arrangeTabs.outroBody": "Reordena dentro de una barra, suelta en un borde para dividir o en el centro para fusionar, trae archivos desde el árbol y arrastra pestañas fuera para desprenderlas o llevarlas a otra ventana. Reorganiza libremente: tu diseño se guarda.",
   "lessons.keyboardSteering.title": "Maneja Eldrun con el teclado",
-  "lessons.keyboardSteering.blurb": "Un modo de navegación solo con teclado: salta a proyectos por dígito, mueve el foco entre subventanas, cambia de pestaña — las manos nunca dejan las teclas.",
+  "lessons.keyboardSteering.blurb": "Un modo de navegación solo con teclado: de los proyectos a las subventanas y pestañas con las flechas, abre pestañas nuevas, el panel lateral y las apps de la cabecera — las manos no dejan las teclas.",
   "lessons.keyboardSteering.enterModeTitle": "Entra en el modo de navegación",
   "lessons.keyboardSteering.enterModeBody": "Pulsa Ctrl+Mayús+Espacio y Eldrun pasa al modo de navegación: abajo en el centro aparece una leyenda con todas las teclas, y toda la app responde a pulsaciones sueltas. Funciona incluso con una terminal enfocada — sin salir de ella con el ratón. Esa combinación es solo la predeterminada; reasígnala cuando quieras en Ajustes → Atajos de teclado (en un Mac, ⌘ cuenta como Ctrl).",
   "lessons.keyboardSteering.enterModeTask": "Pulsa Ctrl+Mayús+Espacio para entrar en el modo de navegación.",
   "lessons.keyboardSteering.enterModeTaskHint": "La leyenda en la parte inferior de la ventana confirma que estás dentro. ¿Ya la reasignaste? Pulsa la tuya — o simplemente haz clic en Siguiente.",
   "lessons.keyboardSteering.stationsTitle": "Los dígitos saltan a estaciones",
   "lessons.keyboardSteering.stationsBody": "En el modo de navegación cada espacio de trabajo es una estación numerada: 1 es la terminal raíz, y del 2 en adelante van tus píldoras de proyecto en el orden en que se muestran. Unas fichas pequeñas sobre las píldoras muestran su dígito (las nueve primeras estaciones reciben uno). Pulsa un dígito y ya estás allí.",
-  "lessons.keyboardSteering.moveFocusTitle": "Foco y pestañas",
-  "lessons.keyboardSteering.moveFocusBody": "Las flechas mueven el foco entre subventanas. Cada subventana lleva una insignia que dice a cuántos pasos de flecha está — la enfocada marca 0. Tab y Mayús+Tab recorren las pestañas de la subventana enfocada.",
-  "lessons.keyboardSteering.singleKeysTitle": "Teclas sueltas",
-  "lessons.keyboardSteering.singleKeysBody": "Tres teclas sueltas actúan sobre lo enfocado: F alterna el visor de archivos acoplado de la subventana, P alterna los paneles laterales y W cierra la pestaña activa.",
+  "lessons.keyboardSteering.moveFocusTitle": "Niveles: proyectos, ventanas, pestañas",
+  "lessons.keyboardSteering.moveFocusBody": "La navegación empieza en los proyectos: ←/→ cambian de proyecto, ↓ entra en sus ventanas. Ahí, ←/→ pasan de una subventana a otra (cada una lleva una insignia con su distancia a la enfocada), ↓ entra en las pestañas de la enfocada, y ↑ o Escape vuelven a subir. Con una sola subventana, ←/→ cambian de pestaña directamente.",
+  "lessons.keyboardSteering.singleKeysTitle": "Acciones de una tecla",
+  "lessons.keyboardSteering.singleKeysBody": "Dentro de una subventana, teclas sueltas actúan sobre ella: N abre un shell, M un Monitor del sistema, 1–9 un agente (la leyenda los nombra), + todo el menú de pestaña nueva; F alterna el visor de archivos acoplado, W cierra la pestaña activa. E abre el panel lateral, y en los proyectos M, C y T abren el correo, el calendario y el tablero de tareas — ↑/↓ recorren sus controles e Intro pulsa uno. P alterna los paneles laterales. Q, R y D saltan a la siguiente pestaña que espera respuesta, trabaja o ha terminado — en cualquier proyecto; Mayús vuelve atrás.",
   "lessons.keyboardSteering.exitsTitle": "Salir del modo",
-  "lessons.keyboardSteering.exitsBody": "Escape o Enter te devuelven a las teclas normales. Dos teclas salen con destino: S abre los Ajustes y ? abre la guía de atajos — ambas dejan el modo de navegación al abrirse.",
+  "lessons.keyboardSteering.exitsBody": "Intro sobre una subventana o pestaña sale de la navegación justo ahí; en los proyectos lo hacen Escape o Intro. Dos teclas salen con destino: S abre los Ajustes y ? la guía de atajos.",
   "lessons.keyboardSteering.cheatSheetTitle": "La guía con F1",
   "lessons.keyboardSteering.cheatSheetBody": "F1 abre la guía de atajos en cualquier momento — sin necesidad del modo de navegación (también está en el menú Ajustes). Lista cada combinación efectiva agrupada en navegación, pestañas y subventanas, y modo de navegación; marca las que has personalizado y nombra las teclas fijas. El propio F1 también es reasignable.",
   "lessons.keyboardSteering.projectCycleTitle": "Recorre proyectos — y hazlo tuyo",

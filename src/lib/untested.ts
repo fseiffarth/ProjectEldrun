@@ -273,6 +273,7 @@ export const UNTESTED = {
   "shortcut.nextTab": { area: "lib", what: "shortcuts · Ctrl+Shift+→ next tab, from a focused terminal too (not the root console's)" },
   "shortcut.shortcutHelp": { area: "lib", what: "shortcuts · Open shortcut help" },
   "shortcut.steeringMode": { area: "lib", what: "shortcuts · Enter keyboard steering mode" },
+  "steering.levels": { area: "lib", what: "steering · levels: ←/→ projects, ↓ subwindows (←/→ tabs with one), ↓ tabs, ↑/Esc back; N/M/1–9/+ new tabs (legend names the agents); N new project, M/C/T mail/calendar/to-do, E side panel — ↑/↓ walk the highlight, Enter presses, ←/→ switch panel view" },
   "shortcut.reopenClosedTab": { area: "lib", what: "shortcuts · Ctrl+Shift+T reopens the last closed agent tab where it sat, resuming its conversation; in a popout (from a focused terminal too) it reopens the newest tab closed there into that popout" },
   "shortcut.texBack": { area: "lib", what: "shortcuts · TeX workspace: back to the previous file" },
   "shortcut.texCompile": { area: "lib", what: "shortcuts · TeX workspace: save and compile the document" },

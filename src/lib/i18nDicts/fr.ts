@@ -926,13 +926,106 @@ export const dict: Dict = {
   "shortcuts.fixedConflict": "{chord} est réservé par une touche fixe et ne se déclenchera jamais",
 
   "steering.legendTitle": "Pilotage",
+
+  "steering.nextDecision.label": "Attend une réponse",
+
+  "steering.nextDecision.desc": "Aller à l'onglet suivant qui attend votre réponse, dans n'importe quel projet (Maj : précédent).",
+
+  "steering.nextWorking.label": "En cours",
+
+  "steering.nextWorking.desc": "Aller à l'onglet suivant en cours de travail, dans n'importe quel projet (Maj : précédent).",
+
+  "steering.nextDone.label": "Terminé",
+
+  "steering.nextDone.desc": "Aller à l'onglet suivant terminé et pas encore consulté, dans n'importe quel projet (Maj : précédent).",
+
+  "steering.level.projects": "Projets",
+
+  "steering.level.panes": "Sous-fenêtres",
+
+  "steering.level.tabs": "Onglets",
+
+  "steering.level.region": "Dans une surface",
+
+  "steering.region.side": "Panneau latéral",
+
+  "steering.project.label": "Changer de projet",
+
+  "steering.project.desc": "Projet précédent / suivant, terminal racine compris — l'anneau que parcourt Ctrl+Maj+Tab.",
+
+  "steering.into.label": "Dans les fenêtres",
+
+  "steering.into.desc": "Descend vers les sous-fenêtres du projet.",
+
+  "steering.newProject.label": "Nouveau projet",
+
+  "steering.newProject.desc": "Ouvre la boîte « Nouveau projet ». Quitte le mode pilotage.",
+
+  "steering.mail.label": "Courrier",
+
+  "steering.mail.desc": "Ouvre la surcouche du courrier, à parcourir avec les flèches ; Échap la referme.",
+
+  "steering.calendar.label": "Calendrier",
+
+  "steering.calendar.desc": "Ouvre la surcouche du calendrier, à parcourir avec les flèches ; Échap la referme.",
+
+  "steering.todo.label": "À faire",
+
+  "steering.todo.desc": "Ouvre le tableau des tâches, à parcourir avec les flèches ; Échap le referme.",
+
+  "steering.intoTabs.label": "Dans ses onglets",
+
+  "steering.intoTabs.desc": "Descend vers les onglets de la sous-fenêtre focalisée.",
+
+  "steering.up.label": "Remonter d'un niveau",
+
+  "steering.up.desc": "Retour aux sous-fenêtres, puis de là aux projets.",
+
+  "steering.newShell.label": "Nouveau shell",
+
+  "steering.newShell.desc": "Un nouvel onglet shell dans la sous-fenêtre focalisée. Quitte le mode pilotage pour lui.",
+
+  "steering.newMonitor.label": "Nouveau moniteur",
+
+  "steering.newMonitor.desc": "Un nouvel onglet Moniteur système dans la sous-fenêtre focalisée. Quitte le mode pilotage.",
+
+  "steering.newAgent.label": "Nouvel onglet agent",
+
+  "steering.newAgent.desc": "Un nouvel onglet agent dans la sous-fenêtre focalisée : 1 est l'agent par défaut, 2–9 les autres du menu + (la légende les nomme). Quitte le mode pilotage.",
+
+  "steering.newTabMenu.label": "Tous les types d'onglet",
+
+  "steering.newTabMenu.desc": "Ouvre le menu + de la sous-fenêtre focalisée, à parcourir avec les flèches ; Entrée ouvre l'onglet.",
+
+  "steering.work.label": "Travailler ici",
+
+  "steering.work.desc": "Quitte le mode pilotage sur place.",
+
+  "steering.move.label": "Déplacer",
+
+  "steering.move.desc": "Déplace la surbrillance vers le contrôle précédent / suivant.",
+
+  "steering.sideView.label": "Changer de vue",
+
+  "steering.sideView.desc": "Vue précédente / suivante du panneau latéral : Fichiers, Git, Apps, Agents.",
+
+  "steering.press.label": "Appuyer",
+
+  "steering.press.desc": "Appuie sur le contrôle en surbrillance — dans un champ de texte, quitte le mode pilotage pour y taper.",
+
+  "steering.sidePanel.label": "Panneau latéral",
+
+  "steering.sidePanel.desc": "Ouvre le panneau latéral, à parcourir avec les flèches ; Échap le referme.",
+
+  "steering.back.label": "Retour",
+
+  "steering.back.desc": "Remonte d'un niveau — hors d'un panneau, d'une surcouche ou d'un menu, en refermant ce que le pilotage a ouvert.",
   "steering.jump.label": "Aller au projet",
-  "steering.jump.desc":
-    "Active la station numérotée : 1 est le terminal racine, 2 la première pastille de projet. Quitte le mode pilotage.",
-  "steering.focus.label": "Focus sous-fenêtre",
-  "steering.focus.desc": "Déplace le focus entre les sous-fenêtres (ordre du document, en boucle).",
+  "steering.jump.desc": "Active la station numérotée : 1 est le terminal racine, 2 la première pastille de projet.",
+  "steering.focus.label": "Changer de sous-fenêtre",
+  "steering.focus.desc": "Déplace le focus vers la sous-fenêtre précédente / suivante (ordre du document, en boucle).",
   "steering.tabs.label": "Changer d'onglet",
-  "steering.tabs.desc": "Onglet suivant / précédent dans la sous-fenêtre focalisée.",
+  "steering.tabs.desc": "Onglet précédent / suivant dans la sous-fenêtre focalisée — avec une seule sous-fenêtre, les flèches changent directement d'onglet.",
   "steering.files.label": "Visionneuse de fichiers",
   "steering.files.desc": "Bascule la visionneuse de fichiers ancrée de la sous-fenêtre focalisée.",
   "steering.panels.label": "Panneaux",
@@ -6818,19 +6911,19 @@ export const dict: Dict = {
   "lessons.arrangeTabs.outroTitle": "C'est tout",
   "lessons.arrangeTabs.outroBody": "Réorganisez au sein d'une barre, déposez sur un bord pour diviser ou au centre pour fusionner, amenez des fichiers depuis l'arborescence, et glissez des onglets vers l'extérieur pour les détacher ou vers une autre fenêtre. Réorganisez librement — votre disposition est enregistrée.",
   "lessons.keyboardSteering.title": "Piloter au clavier",
-  "lessons.keyboardSteering.blurb": "Un mode pilotage tout-clavier : sauter vers un projet par chiffre, déplacer le focus des sous-fenêtres, faire défiler les onglets — les mains ne quittent jamais les touches.",
+  "lessons.keyboardSteering.blurb": "Un mode pilotage tout-clavier : des projets aux sous-fenêtres et aux onglets avec les flèches, ouvrir de nouveaux onglets, le panneau latéral et les apps de l'en-tête — les mains restent sur les touches.",
   "lessons.keyboardSteering.enterModeTitle": "Entrer en mode pilotage",
   "lessons.keyboardSteering.enterModeBody": "Appuyez sur Ctrl+Maj+Espace et Eldrun passe en mode pilotage : une légende apparaît en bas au centre avec toutes les touches, et toute l'application répond à de simples frappes. Cela fonctionne même quand un terminal a le focus — inutile d'en sortir à la souris. Ce raccourci n'est que la valeur par défaut ; réassignez-le à tout moment dans Paramètres → Raccourcis clavier (sur Mac, ⌘ vaut Ctrl).",
   "lessons.keyboardSteering.enterModeTask": "Appuyez sur Ctrl+Maj+Espace pour entrer en mode pilotage.",
   "lessons.keyboardSteering.enterModeTaskHint": "La légende en bas de la fenêtre confirme que vous y êtes. Raccourci déjà réassigné ? Appuyez sur le vôtre — ou cliquez simplement sur Suivant.",
   "lessons.keyboardSteering.stationsTitle": "Les chiffres mènent aux stations",
   "lessons.keyboardSteering.stationsBody": "En mode pilotage, chaque espace de travail est une station numérotée : 1 est le terminal racine, et à partir de 2 viennent vos pastilles de projet dans l'ordre affiché. De petites puces sur les pastilles affichent leur chiffre (les neuf premières stations en reçoivent un). Appuyez sur un chiffre et vous y êtes.",
-  "lessons.keyboardSteering.moveFocusTitle": "Focus et onglets",
-  "lessons.keyboardSteering.moveFocusBody": "Les flèches déplacent le focus entre les sous-fenêtres. Chaque sous-fenêtre porte un badge indiquant à combien de pas de flèche elle se trouve — celle qui a le focus affiche 0. Tab et Maj+Tab font défiler les onglets de la sous-fenêtre focalisée.",
-  "lessons.keyboardSteering.singleKeysTitle": "Touches uniques",
-  "lessons.keyboardSteering.singleKeysBody": "Trois touches seules agissent sur ce qui a le focus : F bascule la visionneuse de fichiers ancrée de la sous-fenêtre, P bascule les panneaux latéraux, et W ferme l'onglet actif.",
+  "lessons.keyboardSteering.moveFocusTitle": "Niveaux : projets, fenêtres, onglets",
+  "lessons.keyboardSteering.moveFocusBody": "Le pilotage commence sur les projets : ←/→ changent de projet, ↓ entre dans ses fenêtres. Là, ←/→ passent d'une sous-fenêtre à l'autre (chacune porte un badge indiquant sa distance à la sous-fenêtre focalisée), ↓ entre dans les onglets de celle-ci, et ↑ ou Échap remontent. Avec une seule sous-fenêtre, ←/→ changent directement d'onglet.",
+  "lessons.keyboardSteering.singleKeysTitle": "Actions en une touche",
+  "lessons.keyboardSteering.singleKeysBody": "Dans une sous-fenêtre, des touches simples agissent sur elle : N ouvre un shell, M un Moniteur système, 1–9 un agent (la légende les nomme), + tout le menu de nouvel onglet ; F bascule la visionneuse de fichiers ancrée, W ferme l'onglet actif. E ouvre le panneau latéral, et au niveau des projets M, C et T ouvrent le courrier, le calendrier et le tableau des tâches — ↑/↓ parcourent leurs contrôles et Entrée en actionne un. P bascule les panneaux latéraux. Q, R et D vont à l'onglet suivant qui attend une réponse, travaille ou a terminé — dans n'importe quel projet ; Maj revient en arrière.",
   "lessons.keyboardSteering.exitsTitle": "Quitter le mode",
-  "lessons.keyboardSteering.exitsBody": "Échap ou Entrée vous ramène aux touches normales. Deux touches sortent avec une destination : S ouvre les Paramètres et ? ouvre l'aide-mémoire des raccourcis — les deux quittent le mode pilotage en s'ouvrant.",
+  "lessons.keyboardSteering.exitsBody": "Entrée sur une sous-fenêtre ou un onglet quitte le pilotage sur place ; au niveau des projets, Échap ou Entrée le font. Deux touches sortent avec une destination : S ouvre les Paramètres, et ? l'aide-mémoire des raccourcis.",
   "lessons.keyboardSteering.cheatSheetTitle": "L'aide-mémoire F1",
   "lessons.keyboardSteering.cheatSheetBody": "F1 ouvre l'aide-mémoire des raccourcis à tout moment — sans passer par le mode pilotage (il est aussi dans le menu Paramètres). Il liste chaque raccourci effectif, groupé en navigation, onglets et sous-fenêtres, et pilotage ; il marque ceux que vous avez personnalisés et nomme les touches fixes. F1 lui-même est réassignable.",
   "lessons.keyboardSteering.projectCycleTitle": "Faire défiler les projets — et tout personnaliser",

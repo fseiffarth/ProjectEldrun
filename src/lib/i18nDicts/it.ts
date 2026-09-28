@@ -925,13 +925,106 @@ export const dict: Dict = {
   "shortcuts.fixedConflict": "{chord} è riservato a un tasto fisso e non verrà mai attivato",
 
   "steering.legendTitle": "Navigazione",
+
+  "steering.nextDecision.label": "Attende risposta",
+
+  "steering.nextDecision.desc": "Vai alla prossima scheda che attende la tua risposta, in qualsiasi progetto (Maiusc: precedente).",
+
+  "steering.nextWorking.label": "Al lavoro",
+
+  "steering.nextWorking.desc": "Vai alla prossima scheda che sta lavorando, in qualsiasi progetto (Maiusc: precedente).",
+
+  "steering.nextDone.label": "Finita",
+
+  "steering.nextDone.desc": "Vai alla prossima scheda finita e non ancora vista, in qualsiasi progetto (Maiusc: precedente).",
+
+  "steering.level.projects": "Progetti",
+
+  "steering.level.panes": "Sottofinestre",
+
+  "steering.level.tabs": "Schede",
+
+  "steering.level.region": "Dentro una superficie",
+
+  "steering.region.side": "Pannello laterale",
+
+  "steering.project.label": "Cambia progetto",
+
+  "steering.project.desc": "Progetto precedente / successivo, terminale root incluso — l'anello che percorre Ctrl+Maiusc+Tab.",
+
+  "steering.into.label": "Nelle finestre",
+
+  "steering.into.desc": "Scende alle sottofinestre del progetto.",
+
+  "steering.newProject.label": "Nuovo progetto",
+
+  "steering.newProject.desc": "Apre la finestra «Nuovo progetto». Esce dalla modalità di navigazione.",
+
+  "steering.mail.label": "Posta",
+
+  "steering.mail.desc": "Apre l'overlay della posta da percorrere con le frecce; Esc lo richiude.",
+
+  "steering.calendar.label": "Calendario",
+
+  "steering.calendar.desc": "Apre l'overlay del calendario da percorrere con le frecce; Esc lo richiude.",
+
+  "steering.todo.label": "Attività",
+
+  "steering.todo.desc": "Apre la bacheca delle attività da percorrere con le frecce; Esc la richiude.",
+
+  "steering.intoTabs.label": "Nelle sue schede",
+
+  "steering.intoTabs.desc": "Scende alle schede della sottofinestra a fuoco.",
+
+  "steering.up.label": "Su di un livello",
+
+  "steering.up.desc": "Torna alle sottofinestre e, da lì, ai progetti.",
+
+  "steering.newShell.label": "Nuova shell",
+
+  "steering.newShell.desc": "Una nuova scheda shell nella sottofinestra a fuoco. Esce dalla modalità di navigazione per lei.",
+
+  "steering.newMonitor.label": "Nuovo monitor",
+
+  "steering.newMonitor.desc": "Una nuova scheda Monitor di sistema nella sottofinestra a fuoco. Esce dalla modalità di navigazione.",
+
+  "steering.newAgent.label": "Nuova scheda agente",
+
+  "steering.newAgent.desc": "Una nuova scheda agente nella sottofinestra a fuoco: 1 è l'agente predefinito, 2–9 gli altri del menu + (la legenda li nomina). Esce dalla modalità di navigazione.",
+
+  "steering.newTabMenu.label": "Tutti i tipi di scheda",
+
+  "steering.newTabMenu.desc": "Apre il menu + della sottofinestra a fuoco da percorrere con le frecce; Invio apre la scheda.",
+
+  "steering.work.label": "Lavora qui",
+
+  "steering.work.desc": "Esce dalla modalità di navigazione dove sei.",
+
+  "steering.move.label": "Sposta",
+
+  "steering.move.desc": "Sposta l'evidenziazione al controllo precedente / successivo.",
+
+  "steering.sideView.label": "Cambia vista",
+
+  "steering.sideView.desc": "Vista precedente / successiva del pannello laterale: File, Git, App, Agenti.",
+
+  "steering.press.label": "Premi",
+
+  "steering.press.desc": "Preme il controllo evidenziato — in un campo di testo esce dalla modalità di navigazione per scriverci.",
+
+  "steering.sidePanel.label": "Pannello laterale",
+
+  "steering.sidePanel.desc": "Apre il pannello laterale da percorrere con le frecce; Esc lo richiude.",
+
+  "steering.back.label": "Indietro",
+
+  "steering.back.desc": "Su di un livello — fuori da pannello, overlay o menu, chiudendo ciò che la navigazione ha aperto.",
   "steering.jump.label": "Vai al progetto",
-  "steering.jump.desc":
-    "Attiva la stazione numerata: 1 è il terminale radice, 2 la prima pillola di progetto. Esce dalla modalità di navigazione.",
-  "steering.focus.label": "Focus sottofinestra",
-  "steering.focus.desc": "Sposta il focus tra le sottofinestre (ordine del documento, ciclico).",
+  "steering.jump.desc": "Attiva la stazione numerata: 1 è il terminale root, 2 la prima pillola di progetto.",
+  "steering.focus.label": "Cambia sottofinestra",
+  "steering.focus.desc": "Sposta il focus alla sottofinestra precedente / successiva (ordine del documento, ciclico).",
   "steering.tabs.label": "Cambia scheda",
-  "steering.tabs.desc": "Scheda successiva / precedente nella sottofinestra a fuoco.",
+  "steering.tabs.desc": "Scheda precedente / successiva nella sottofinestra a fuoco — con una sola sottofinestra le frecce cambiano subito scheda.",
   "steering.files.label": "Visore file",
   "steering.files.desc": "Attiva/disattiva il visore file agganciato della sottofinestra a fuoco.",
   "steering.panels.label": "Pannelli",
@@ -6816,19 +6909,19 @@ export const dict: Dict = {
   "lessons.arrangeTabs.outroTitle": "Tutto qui",
   "lessons.arrangeTabs.outroBody": "Riordina all'interno di una barra, rilascia su un bordo per dividere o al centro per unire, porta dentro file dall'albero, e trascina le schede fuori per staccarle o su un'altra finestra. Riorganizza liberamente: il layout viene salvato.",
   "lessons.keyboardSteering.title": "Guida Eldrun dalla tastiera",
-  "lessons.keyboardSteering.blurb": "Una modalità di navigazione solo tastiera: salta ai progetti con le cifre, sposta il focus delle sottofinestre, scorri le schede — le mani non lasciano mai i tasti.",
+  "lessons.keyboardSteering.blurb": "Una modalità di navigazione solo tastiera: dai progetti alle sottofinestre e alle schede con le frecce, apri nuove schede, il pannello laterale e le app dell'intestazione — le mani restano sui tasti.",
   "lessons.keyboardSteering.enterModeTitle": "Entra nella modalità di navigazione",
   "lessons.keyboardSteering.enterModeBody": "Premi Ctrl+Maiusc+Spazio ed Eldrun passa alla modalità di navigazione: in basso al centro appare una legenda con tutti i tasti, e l'intera app risponde a singole pressioni. Funziona anche mentre un terminale ha il focus — senza uscirne col mouse. Quella combinazione è solo il valore predefinito; riassegnala quando vuoi in Impostazioni → Scorciatoie da tastiera (su Mac, ⌘ vale come Ctrl).",
   "lessons.keyboardSteering.enterModeTask": "Premi Ctrl+Maiusc+Spazio per entrare nella modalità di navigazione.",
   "lessons.keyboardSteering.enterModeTaskHint": "La legenda in fondo alla finestra conferma che sei dentro. L'hai già riassegnata? Premi la tua combinazione — o fai semplicemente clic su Avanti.",
   "lessons.keyboardSteering.stationsTitle": "Le cifre saltano alle stazioni",
   "lessons.keyboardSteering.stationsBody": "Nella modalità di navigazione ogni spazio di lavoro è una stazione numerata: 1 è il terminale radice, e dal 2 in poi vengono le tue pillole di progetto nell'ordine in cui sono mostrate. Piccoli contrassegni sulle pillole mostrano la cifra di ciascuna (le prime nove stazioni ne ricevono una). Premi una cifra e sei lì.",
-  "lessons.keyboardSteering.moveFocusTitle": "Focus e schede",
-  "lessons.keyboardSteering.moveFocusBody": "I tasti freccia spostano il focus tra le sottofinestre. Ogni sottofinestra porta un distintivo che dice a quanti passi di freccia si trova — quella a fuoco segna 0. Tab e Maiusc+Tab scorrono le schede della sottofinestra a fuoco.",
-  "lessons.keyboardSteering.singleKeysTitle": "Tasti singoli",
-  "lessons.keyboardSteering.singleKeysBody": "Tre tasti singoli agiscono su ciò che è a fuoco: F attiva/disattiva il visore file agganciato della sottofinestra, P i pannelli laterali, e W chiude la scheda attiva.",
+  "lessons.keyboardSteering.moveFocusTitle": "Livelli: progetti, finestre, schede",
+  "lessons.keyboardSteering.moveFocusBody": "La navigazione parte dai progetti: ←/→ cambiano progetto, ↓ entra nelle sue finestre. Lì ←/→ passano da una sottofinestra all'altra (ognuna porta un badge con la sua distanza da quella a fuoco), ↓ entra nelle schede di quella a fuoco, e ↑ o Esc risalgono. Con una sola sottofinestra ←/→ cambiano subito scheda.",
+  "lessons.keyboardSteering.singleKeysTitle": "Azioni a un tasto",
+  "lessons.keyboardSteering.singleKeysBody": "Dentro una sottofinestra singoli tasti agiscono su di essa: N apre una shell, M un Monitor di sistema, 1–9 un agente (la legenda li nomina), + l'intero menu nuova scheda; F attiva/disattiva il visore file agganciato, W chiude la scheda attiva. E apre il pannello laterale, e sui progetti M, C e T aprono posta, calendario e bacheca attività — ↑/↓ ne percorrono i controlli e Invio ne preme uno. P attiva/disattiva i pannelli laterali. Q, R e D vanno alla prossima scheda che attende risposta, lavora o ha finito — in qualsiasi progetto; Maiusc torna indietro.",
   "lessons.keyboardSteering.exitsTitle": "Uscire dalla modalità",
-  "lessons.keyboardSteering.exitsBody": "Esc o Invio ti riportano ai tasti normali. Due tasti escono con una destinazione: S apre le Impostazioni e ? apre il riepilogo delle scorciatoie — entrambi lasciano la modalità di navigazione all'apertura.",
+  "lessons.keyboardSteering.exitsBody": "Invio su una sottofinestra o scheda esce dalla navigazione proprio lì; sui progetti lo fanno Esc o Invio. Due tasti escono con una destinazione: S apre le Impostazioni e ? il riepilogo delle scorciatoie.",
   "lessons.keyboardSteering.cheatSheetTitle": "Il riepilogo con F1",
   "lessons.keyboardSteering.cheatSheetBody": "F1 apre il riepilogo delle scorciatoie in qualsiasi momento — senza bisogno della modalità di navigazione (è anche nel menu Impostazioni). Elenca ogni combinazione effettiva raggruppata in navigazione, schede e sottofinestre, e modalità di navigazione; contrassegna quelle che hai personalizzato e nomina i tasti fissi. Lo stesso F1 è riassegnabile.",
   "lessons.keyboardSteering.projectCycleTitle": "Scorri i progetti — e personalizza tutto",

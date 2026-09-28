@@ -1100,6 +1100,17 @@
   text-transform: uppercase;
   color: var(--accent-secondary);
 }
+.shortcut-help-steering-level {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.shortcut-help-steering-level h4 {
+  margin: 4px 0 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
 .shortcut-help-intro {
   margin: 0;
   font-size: var(--text-base);
