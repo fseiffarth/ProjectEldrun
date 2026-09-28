@@ -1387,6 +1387,36 @@
   color: var(--status-shell-working);
 }
 
+/* A root-console tab a one-click install opened (`runInstallInTab`): an accent
+   ring that breathes until the tab is clicked, so the install stands out among
+   the console's other tabs. It is `::before` so it stacks with a status ring
+   (`::after`) rather than replacing it, and only its OPACITY animates — a solid
+   border, nothing blurred (WebKitGTK software path). */
+.tab.install-pending {
+  position: relative;
+  z-index: 0;
+}
+.tab.install-pending::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  border: 2px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  animation: tab-install-pulse 1.4s ease-in-out infinite;
+}
+@keyframes tab-install-pulse {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tab.install-pending::before {
+    animation: none;
+  }
+}
+
 /* ── Project pill status bars ────────────────────────────────────────────
    A strip of little bars along the pill's bottom edge — ONE PER NON-IDLE TAB of
    that project, so the switcher shows both what a project's tabs are doing and

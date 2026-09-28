@@ -1,5 +1,5 @@
 import { useProjectsStore } from "../stores/projects";
-import { openTabInRootConsole } from "../stores/rootOverlay";
+import { openTabInRootConsole, useRootOverlayStore } from "../stores/rootOverlay";
 import { IS_WINDOWS, IS_MAC } from "./platform";
 import type { TranslationKey } from "./i18n";
 
@@ -58,7 +58,9 @@ export function providerAuthLoginCmd(provider: GitHostProvider): string {
  * **root console** (`layout/RootOverlay`), which floats over whatever is open
  * with the install's tab in front, so the user watches the install — and answers
  * its prompts — right where they clicked. The console's panes are attach-only
- * views, so closing it leaves the install running in its root tab.
+ * views, so closing it leaves the install running in its root tab. That tab
+ * pulses in the console's strip until the user clicks it, so it stands out
+ * among the console's other tabs.
  */
 export type InstallShellKind = "bash" | "powershell" | "default";
 
@@ -90,7 +92,7 @@ export function runInstallInTab(
     cwd: rootDir, // empty resolves to ~/eldrun/root on the backend
     kind: "shell",
     initialInput: command,
-  });
+  }, (tab) => useRootOverlayStore.getState().markInstallTab(tab.key));
 }
 
 /**

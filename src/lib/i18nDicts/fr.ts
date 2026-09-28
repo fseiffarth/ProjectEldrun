@@ -7317,6 +7317,7 @@ export const dict: Dict = {
   "shortcut.rootConsole": "Ouvrir / fermer la console racine",
   "shortcut.projectShell": "Ouvrir un shell à la racine du projet dans la console racine",
   "rootConsole.title": "Console racine",
+  "rootConsole.installTabTitle": "Ouvert pour votre installation — cliquez pour arrêter la pulsation",
   "rootConsole.rightsBadge": "⚿ Outils Eldrun",
   "rootConsole.rightsLocalOnly": "Seuls les onglets de modèles locaux ouverts ici reçoivent les outils propres à Eldrun (MCP) : vos projets, le calendrier et le tableau des tâches. Les agents cloud et ceux d'un projet ne les reçoivent pas.",
   "rootConsole.rightsOn": "Les agents ouverts ici reçoivent les outils propres à Eldrun (MCP) : vos projets, le calendrier et le tableau des tâches. Les agents d'un projet ne les reçoivent pas.",

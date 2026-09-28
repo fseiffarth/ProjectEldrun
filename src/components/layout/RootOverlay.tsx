@@ -1000,6 +1000,10 @@ function GroupStrip({
   const busyKindByTab = useActivityStore((s) => s.busyKindByTab);
   const attentionByTab = useActivityStore((s) => s.attentionByTab);
   const clearAttention = useActivityStore((s) => s.clearAttention);
+  // Tabs a one-click install opened pulse until clicked, so the user can tell
+  // which of the console's tabs is running what they just asked for.
+  const installTabs = useRootOverlayStore((s) => s.installTabs);
+  const clearInstallTab = useRootOverlayStore((s) => s.clearInstallTab);
   return (
     <div className="tab-strip" ref={stripRef}>
       {tabs.map((tab) => {
@@ -1017,27 +1021,32 @@ function GroupStrip({
             : attn === "done"
               ? " finished"
               : "";
+        const install = !!installTabs[tab.key];
         return (
           <div
             key={tab.key}
-            className={`tab ${isActive ? "active" : ""}${stateClass}${
+            className={`tab ${isActive ? "active" : ""}${stateClass}${install ? " install-pending" : ""}${
               draggingKey === tab.key ? " dragging" : ""
             }`}
+            title={install ? t("rootConsole.installTabTitle") : undefined}
             onPointerDown={(e) => onTabPointerDown(e, tab, groupId)}
             onMouseDown={() => {
               if (isActive) clearAttention(ptyId);
+              if (install) clearInstallTab(tab.key);
               if (groupId === EMPTY_GROUP_ID) return;
               useTabsStore.getState().setGroupActiveInScope(ROOT_SCOPE, groupId, tab.key);
             }}
           >
             <TabStatusMark stateClass={stateClass} />
             <span className="tab-label">{tab.label}</span>
+            {install && <UntestedTag id="rootConsole.installTabTitle" />}
             <button
               className="tab-close"
               title={t("detachedTabs.closeTab")}
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
+                clearInstallTab(tab.key);
                 useTabsStore.getState().removeTabInScope(ROOT_SCOPE, tab.key);
               }}
             >

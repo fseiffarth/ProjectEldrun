@@ -7320,6 +7320,7 @@ export const dict: Dict = {
   "shortcut.rootConsole": "Root-Konsole öffnen / schließen",
   "shortcut.projectShell": "Shell im Projektverzeichnis in der Root-Konsole öffnen",
   "rootConsole.title": "Root-Konsole",
+  "rootConsole.installTabTitle": "Für deine Installation geöffnet — klicken beendet das Pulsieren",
   "rootConsole.rightsBadge": "⚿ Eldrun-Werkzeuge",
   "rootConsole.rightsLocalOnly": "Nur hier geöffnete Tabs mit lokalem Modell erhalten Eldruns eigene Werkzeuge (MCP): deine Projekte, den Kalender und das To-do-Board. Cloud-Agenten und die Agenten eines Projekts erhalten sie nicht.",
   "rootConsole.rightsOn": "Hier geöffnete Agenten erhalten Eldruns eigene Werkzeuge (MCP): deine Projekte, den Kalender und das To-do-Board. Die Agenten eines Projekts erhalten sie nicht.",

@@ -194,6 +194,14 @@ interface RootOverlayState {
   setFrame: (frame: RootOverlayFrame) => void;
   /** ⤢ / ⤡, and a double-click on the title bar. */
   toggleFilled: () => void;
+  /** Root tabs a one-click install opened (`runInstallInTab`), keyed by tab
+   *  key. The console's strip pulses them so the user can tell which of its
+   *  tabs is the one running what they just clicked. Session-only on purpose:
+   *  after a relaunch it is just a root shell. */
+  installTabs: Record<string, true>;
+  markInstallTab: (key: string) => void;
+  /** The user clicked the tab (they found it) or closed it. */
+  clearInstallTab: (key: string) => void;
 }
 
 export const useRootOverlayStore = create<RootOverlayState>((set) => ({
@@ -214,6 +222,15 @@ export const useRootOverlayStore = create<RootOverlayState>((set) => ({
       const filled = !s.filled;
       writePersistedFrame({ frame: s.frame, filled });
       return { filled };
+    }),
+  installTabs: {},
+  markInstallTab: (key) => set((s) => ({ installTabs: { ...s.installTabs, [key]: true } })),
+  clearInstallTab: (key) =>
+    set((s) => {
+      if (!s.installTabs[key]) return s;
+      const installTabs = { ...s.installTabs };
+      delete installTabs[key];
+      return { installTabs };
     }),
 }));
 
