@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ViewerHeader } from "./FileViewerPane";
 import { useT } from "../../lib/i18n";
+import { cellToneColor } from "../../lib/viewers/table";
 
 /** One page of a table, mirroring the backend `SqlitePage` struct. */
 type SqlitePage = {
@@ -157,8 +158,10 @@ export function SqliteView({
                       background: active
                         ? "var(--bg-elevated, rgba(255,255,255,0.08))"
                         : "transparent",
+                      // The open table in the theme's document blue where it has
+                      // one (plain `dark`/`light`); see `cellToneColor` for the grid.
                       color: active
-                        ? "var(--text-primary)"
+                        ? "var(--doc-blue, var(--text-primary))"
                         : "var(--text-secondary, #8b949e)",
                       fontWeight: active ? 600 : 400,
                     }}
@@ -232,6 +235,7 @@ export function SqliteView({
                                 borderRight: "1px solid var(--border-color)",
                                 fontWeight: 600,
                                 whiteSpace: "nowrap",
+                                color: "var(--doc-blue, currentColor)",
                               }}
                             >
                               {col}
@@ -251,6 +255,7 @@ export function SqliteView({
                                   borderRight: "1px solid var(--border-color)",
                                   whiteSpace: "pre",
                                   verticalAlign: "top",
+                                  color: cellToneColor(cell),
                                 }}
                               >
                                 {cell}

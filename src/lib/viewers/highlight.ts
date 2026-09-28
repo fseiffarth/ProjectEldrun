@@ -531,11 +531,66 @@ function texCommentEnvEnd(code: string, afterCmd: number): number | null {
   return end === -1 ? code.length : end + closer.length;
 }
 
+/** Sectioning commands: the command stays a keyword, but also carries
+ *  `tok-section` so a theme can set the title argument after it apart as a
+ *  heading (`.tok-section + .tok-arg`). */
+const TEX_SECTION_CMDS = new Set([
+  "\\part", "\\chapter", "\\section", "\\subsection", "\\subsubsection",
+  "\\paragraph", "\\subparagraph", "\\frametitle", "\\title",
+]);
+
+/**
+ * The offset of the math closer `close` (`$`, `$$`, `\)` or `\]`) at or after
+ * `from`, or -1 when the math is never closed. An escaped character (`\$`) is
+ * stepped over, a `%` comment is skipped to its line end (a `$` in it closes
+ * nothing), and a blank line gives up — TeX ends the paragraph there, and a
+ * stray `$` being typed must not paint the rest of the file as math.
+ */
+function texMathEnd(code: string, from: number, close: string): number {
+  const n = code.length;
+  for (let i = from; i < n; i++) {
+    const c = code[i];
+    if (c === "\\") {
+      if (close.length === 2 && close[0] === "\\" && code[i + 1] === close[1]) return i;
+      i += 1;
+      continue;
+    }
+    if (c === "%") {
+      const nl = code.indexOf("\n", i);
+      if (nl === -1) return -1;
+      i = nl - 1;
+      continue;
+    }
+    if (c === "$" && close[0] === "$") {
+      if (close === "$") return i;
+      if (code[i + 1] === "$") return i;
+    }
+    if (c === "\n") {
+      let j = i + 1;
+      while (j < n && (code[j] === " " || code[j] === "\t")) j += 1;
+      if (code[j] === "\n") return -1;
+    }
+  }
+  return -1;
+}
+
+/** A closed math run as `tok-math`, delimiters included. The body is
+ *  re-scanned like an argument, so `\frac` inside still colours as a command
+ *  and a number as a number; the span only supplies the math colour around
+ *  them. */
+function texMathSpan(open: string, inner: string, close: string, depth: number): string {
+  return `<span class="tok-math">${escapeHtml(open)}${
+    depth < TEX_ARG_MAX_DEPTH ? scanTex(inner, depth + 1) : escapeHtml(inner)
+  }${escapeHtml(close)}</span>`;
+}
+
 /** Tokenize LaTeX/TeX: `%` line comments and `\begin{comment}` blocks, `\control`
  *  sequences, the environment name inside `\begin{…}`/`\end{…}`, a command's
- *  brace arguments (italic), and bare numbers. Math stays plain text so commands
- *  inside `$…$` (e.g. `\frac`) still colour as commands. `depth` is the brace-nesting level the argument
- *  scanner recurses at — callers outside this file always start at 0. */
+ *  brace arguments (italic), bare numbers, and math (`$…$`, `$$…$$`, `\(…\)`,
+ *  `\[…\]`) as one `tok-math` run whose body is re-scanned, so commands inside
+ *  (e.g. `\frac`) still colour as commands. `depth` is the brace-nesting level
+ *  the argument scanner recurses at — callers outside this file always start
+ *  at 0. */
 function scanTex(code: string, depth = 0): string {
   let out = "";
   let i = 0;
@@ -580,7 +635,20 @@ function scanTex(code: string, depth = 0): string {
         }
       }
 
-      out += span("keyword", cmd);
+      // `\(…\)` / `\[…\]`: math, the same as `$…$` / `$$…$$` below.
+      if (cmd === "\\(" || cmd === "\\[") {
+        const close = cmd === "\\(" ? "\\)" : "\\]";
+        const end = texMathEnd(code, j, close);
+        if (end !== -1) {
+          out += texMathSpan(cmd, code.slice(j, end), close, depth);
+          i = end + 2;
+          continue;
+        }
+      }
+
+      out += TEX_SECTION_CMDS.has(cmd)
+        ? `<span class="tok-keyword tok-section">${escapeHtml(cmd)}</span>`
+        : span("keyword", cmd);
       i = j;
 
       // `\begin{env}` / `\end{env}` → colour the environment name as a type. Not
@@ -627,6 +695,22 @@ function scanTex(code: string, depth = 0): string {
       continue;
     }
 
+    // Inline `$…$` or display `$$…$$` math. An unclosed opener stays plain —
+    // both dollars of an unclosed `$$`, so the second is not retried as an
+    // inline opener that would pair with some later `$`.
+    if (c === "$") {
+      const open = code[i + 1] === "$" ? "$$" : "$";
+      const end = texMathEnd(code, i + open.length, open);
+      if (end !== -1) {
+        out += texMathSpan(open, code.slice(i + open.length, end), open, depth);
+        i = end + open.length;
+      } else {
+        out += escapeHtml(open);
+        i += open.length;
+      }
+      continue;
+    }
+
     if (isDigit(c)) {
       const [num, next] = readNumber(code, i);
       out += span("num", num);
@@ -639,6 +723,86 @@ function scanTex(code: string, depth = 0): string {
   }
 
   return out;
+}
+
+/** One inline token of plain text, tried in order at each position: a URL or
+ *  e-mail address, an ISO date/time or a clock time, a double-quoted run, a
+ *  TODO-style marker, a log level, a number. Each alternative is its own group
+ *  so the match says which it was (see `PLAIN_GROUP_CLASS`). The open-ended
+ *  runs (an address's parts, a quote's body) are length-capped: a file can be
+ *  one 200k-character line, and an uncapped run retried from every start
+ *  position would scan it quadratically. */
+const PLAIN_TOKEN = new RegExp(
+  [
+    /(https?:\/\/[^\s<>"'`)\]]+|\b[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63}){1,8})/.source,
+    /(\b\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?\b|\b\d{1,2}:\d{2}(?::\d{2})?\b)/.source,
+    /("[^"\n]{0,200}"|\u201c[^\u201d\n]{0,200}\u201d)/.source,
+    /\b(TODO|FIXME|XXX|HACK|NOTE)\b/.source,
+    /\b(ERROR|FATAL|CRITICAL|FAIL(?:ED|URE)?)\b/.source,
+    /\b(WARN(?:ING)?)\b/.source,
+    /\b(INFO|OK|PASS(?:ED)?)\b/.source,
+    /\b(DEBUG|TRACE)\b/.source,
+    /(?<![\w.])(\d+(?:[.,]\d+)*%?)(?![\w.]\w)/.source,
+  ].join("|"),
+  "g",
+);
+const PLAIN_GROUP_CLASS = [
+  "txt-url", "txt-date", "txt-string", "txt-marker",
+  "txt-bad", "txt-warn", "txt-info", "txt-debug", "txt-num",
+];
+
+function scanPlainInline(text: string): string {
+  let out = "";
+  let last = 0;
+  PLAIN_TOKEN.lastIndex = 0;
+  for (let m = PLAIN_TOKEN.exec(text); m; m = PLAIN_TOKEN.exec(text)) {
+    const g = m.findIndex((v, k) => k > 0 && v !== undefined);
+    out += escapeHtml(text.slice(last, m.index)) + span(PLAIN_GROUP_CLASS[g - 1], m[0]);
+    last = m.index + m[0].length;
+  }
+  return out + escapeHtml(text.slice(last));
+}
+
+const PLAIN_RULE = /^\s*(?:={3,}|-{3,}|\*{3,}|_{3,})\s*$/;
+const PLAIN_ATX = /^\s{0,3}#{1,6}\s+\S/;
+const PLAIN_LIST = /^(\s*)([-*+\u2022]|\d{1,3}[.)])(\s+)/;
+const PLAIN_KEY = /^(\s*)([A-Za-z_][\w.-]{0,40})(\s*[:=])(?=\s)/;
+
+/**
+ * Plain text (`.txt`, `.log`, anything unrecognised): no grammar to follow, so
+ * only what reads unambiguously as structure is marked — a heading (`# Title`,
+ * or a line underlined with `===`/`---`), the underline or a `***` rule itself,
+ * a list bullet, a leading `key:`/`key =`, and the inline tokens above. The
+ * classes (`tok-txt-*`) carry colour only in a theme that styles them, so
+ * elsewhere a text file still reads as uncoloured.
+ */
+function scanPlain(code: string): string {
+  const lines = code.split("\n");
+  return lines
+    .map((line, k) => {
+      if (PLAIN_RULE.test(line)) return span("txt-rule", line);
+      const next = lines[k + 1];
+      const underlined =
+        next !== undefined && /^\s*(?:={3,}|-{3,})\s*$/.test(next) && line.trim() !== "";
+      if (underlined || PLAIN_ATX.test(line)) return span("txt-heading", line);
+      const list = PLAIN_LIST.exec(line);
+      if (list) {
+        const head = list[0].length;
+        return (
+          escapeHtml(list[1]) + span("txt-list", list[2]) + escapeHtml(list[3]) +
+          scanPlainInline(line.slice(head))
+        );
+      }
+      const key = PLAIN_KEY.exec(line);
+      if (key) {
+        return (
+          escapeHtml(key[1]) + span("txt-key", key[2]) + escapeHtml(key[3]) +
+          scanPlainInline(line.slice(key[0].length))
+        );
+      }
+      return scanPlainInline(line);
+    })
+    .join("\n");
 }
 
 const isWordChar = (c: string | undefined) => !!c && /[A-Za-z0-9]/.test(c);
@@ -789,12 +953,12 @@ export const HIGHLIGHT_MAX_CHARS = 200_000;
 
 /**
  * Highlight `code` for `lang`, returning safe HTML, or `null` when there is
- * nothing to do — an unknown/`"plain"` language or a file over
- * `HIGHLIGHT_MAX_CHARS` — so the caller can render the raw text instead.
+ * nothing to do — a file over `HIGHLIGHT_MAX_CHARS` — so the caller can render
+ * the raw text instead. `"plain"` gets the light prose tokenizer.
  */
 export function highlight(code: string, lang: Lang): string | null {
-  if (lang === "plain") return null;
   if (code.length > HIGHLIGHT_MAX_CHARS) return null;
+  if (lang === "plain") return scanPlain(code);
   if (lang === "markup") return scanMarkup(code);
   if (lang === "tex") return scanTex(code);
   if (lang === "markdown") return scanMarkdown(code);

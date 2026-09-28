@@ -28,9 +28,48 @@ describe("languageForPath", () => {
 });
 
 describe("highlight", () => {
-  it("returns null for plain language and oversized input", () => {
-    expect(highlight("anything", "plain")).toBeNull();
+  it("returns null for oversized input, plain text included", () => {
     expect(highlight("x".repeat(HIGHLIGHT_MAX_CHARS + 1), "js")).toBeNull();
+    expect(highlight("x".repeat(HIGHLIGHT_MAX_CHARS + 1), "plain")).toBeNull();
+  });
+
+  it("leaves prose in plain text untouched but escaped", () => {
+    expect(highlight("just <words> here", "plain")).toBe("just &lt;words&gt; here");
+  });
+
+  it("marks plain-text structure: headings, rules, bullets, keys", () => {
+    const html = highlight("Title\n=====\n# Notes\n- item 3\nname: Ada", "plain")!;
+    expect(html).toContain('<span class="tok-txt-heading">Title</span>');
+    expect(html).toContain('<span class="tok-txt-rule">=====</span>');
+    expect(html).toContain('<span class="tok-txt-heading"># Notes</span>');
+    expect(html).toContain('<span class="tok-txt-list">-</span> item <span class="tok-txt-num">3</span>');
+    expect(html).toContain('<span class="tok-txt-key">name</span>: Ada');
+  });
+
+  it("marks plain-text inline tokens: urls, dates, quotes, levels, numbers", () => {
+    const html = highlight(
+      'ERROR 2024-05-01 12:30 see https://x.org/a "quoted" TODO 42% WARN a@b.io',
+      "plain",
+    )!;
+    expect(html).toContain('<span class="tok-txt-bad">ERROR</span>');
+    expect(html).toContain('<span class="tok-txt-date">2024-05-01 12:30</span>');
+    expect(html).toContain('<span class="tok-txt-url">https://x.org/a</span>');
+    expect(html).toContain('<span class="tok-txt-string">&quot;quoted&quot;</span>');
+    expect(html).toContain('<span class="tok-txt-marker">TODO</span>');
+    expect(html).toContain('<span class="tok-txt-num">42%</span>');
+    expect(html).toContain('<span class="tok-txt-warn">WARN</span>');
+    expect(html).toContain('<span class="tok-txt-url">a@b.io</span>');
+  });
+
+  it("does not colour digits inside a word", () => {
+    expect(highlight("v1.2 abc123", "plain")).toBe("v1.2 abc123");
+  });
+
+  it("stays fast on one huge line with unclosed quotes and at-less words", () => {
+    const line = ('"' + "a".repeat(50)).repeat(3000);
+    const t0 = performance.now();
+    expect(highlight(line, "plain")).not.toBeNull();
+    expect(performance.now() - t0).toBeLessThan(2000);
   });
 
   it("wraps keywords, strings, comments, and numbers in token spans", () => {
@@ -69,7 +108,7 @@ describe("highlight", () => {
 
   it("highlights TeX commands, comments, and environment names", () => {
     const html = highlight("\\section{Intro} % note\n\\begin{itemize}", "tex")!;
-    expect(html).toContain('<span class="tok-keyword">\\section</span>');
+    expect(html).toContain('<span class="tok-keyword tok-section">\\section</span>');
     expect(html).toContain('<span class="tok-comment">% note</span>');
     expect(html).toContain('<span class="tok-keyword">\\begin</span>');
     expect(html).toContain('<span class="tok-type">itemize</span>');
@@ -120,9 +159,34 @@ describe("highlight", () => {
   });
 
   it("renders a TeX command's brace argument italic, braces excluded", () => {
+    const html = highlight("\\emph{Intro}", "tex")!;
+    expect(html).toBe(
+      '<span class="tok-keyword">\\emph</span>{<span class="tok-arg">Intro</span>}',
+    );
+  });
+
+  it("tags a sectioning command so its title can read as a heading", () => {
     const html = highlight("\\section{Intro}", "tex")!;
     expect(html).toBe(
-      '<span class="tok-keyword">\\section</span>{<span class="tok-arg">Intro</span>}',
+      '<span class="tok-keyword tok-section">\\section</span>{<span class="tok-arg">Intro</span>}',
+    );
+  });
+
+  it("wraps TeX math in one token and keeps tokenizing inside it", () => {
+    const html = highlight("a $\\frac{1}{2}$ b", "tex")!;
+    expect(html).toContain('<span class="tok-math">$<span class="tok-keyword">\\frac</span>');
+    expect(html).toContain('<span class="tok-num">1</span>');
+    expect(html).toContain("$</span> b");
+    expect(highlight("$$x$$", "tex")).toBe('<span class="tok-math">$$x$$</span>');
+    expect(highlight("\\[x\\]", "tex")).toBe('<span class="tok-math">\\[x\\]</span>');
+    expect(highlight("\\(x\\)", "tex")).toBe('<span class="tok-math">\\(x\\)</span>');
+  });
+
+  it("leaves an unclosed or paragraph-spanning dollar plain", () => {
+    expect(highlight("costs $5\n\nlater $x", "tex")).not.toContain("tok-math");
+    expect(highlight("\\$5 and \\$6", "tex")).not.toContain("tok-math");
+    expect(highlight("$a % $ in a comment\nb$", "tex")).toContain(
+      '<span class="tok-comment">% $ in a comment</span>',
     );
   });
 

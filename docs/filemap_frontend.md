@@ -327,7 +327,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `lib/viewers/yaml.ts` | YAML/JSON tree model + edit ops (pure): every edit is a surgical splice, never re-serialization; block and flow (JSON) syntax both first-class and preserved. |
 | `lib/viewers/tex/bib.ts` | BibTeX model + edit ops (pure), the one `.bib` reader (`tex.ts`'s `parseBibEntries` adapts it). All ops splice by source offsets, never re-serialize. |
 | `lib/viewers/yamlGrid.ts` | YAML/JSON card-grid helpers (pure): `hasCards`, node classification; edits delegate to `yaml.ts` splices. Also the tabular model (`gridModelFor`/`hasGrid`). |
-| `lib/viewers/table.ts` | CSV/TSV model + edit ops (pure): separator sniffed by parse rectangularity (`sniffDelimiter`); table is a view on the text (cells carry source spans). |
+| `lib/viewers/table.ts` | CSV/TSV model + edit ops (pure): separator sniffed by parse rectangularity (`sniffDelimiter`); table is a view on the text (cells carry source spans). `cellTone`/`cellToneColor` colour CSV and SQLite cells via `--doc-*` with a no-op fallback. |
 | `lib/viewers/gif.ts` | Pure GIF decoder (LZW, interlace, disposal): full-canvas RGBA per frame (bounded by `maxPixelBytes`), delays stored as authored, <20 ms played as 100 ms. |
 | `lib/viewers/pageModel.ts` | Page-arrangement model (`PageRef{id,src,page,rot,marks?,notes?}`) for print preview and PDF rail: move/delete/rotate/duplicate/insert, pure. Marks/notes ride on the entry. |
 | `lib/viewers/pdfPrintLayout.ts` | `layoutPrintPdf`: the print preview's sheets (order, turns, selection, copies, paper, margins, scale, page numbers) rebuilt as a vector PDF from pdf-lib form XObjects, for `printPdfNative`. Geometry mirrors `buildOptionsCss`. |
