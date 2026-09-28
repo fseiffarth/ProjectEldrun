@@ -278,7 +278,7 @@ mod tests {
         fs::write(root.join("README.md"), "# Hello\n").unwrap();
         fs::write(root.join("b.txt"), "b").unwrap();
         fs::write(root.join("plot.png"), PNG).unwrap();
-        fs::write(root.join(".env.local"), "SECRET=1").unwrap();
+        fs::write(root.join(".env.local"), "HIDDEN=1").unwrap();
         fs::write(root.join(".gitignore"), "target\n").unwrap();
         fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
         fs::write(root.join("src/deep/notes.txt"), "deep").unwrap();

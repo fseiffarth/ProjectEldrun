@@ -5213,7 +5213,7 @@ mod tests {
         let base = format!("/api/v1/projects/{project_id}/files");
         std::fs::create_dir_all(host.root.join("src")).unwrap();
         std::fs::write(host.root.join("src/main.rs"), "fn main() {}\n").unwrap();
-        std::fs::write(host.root.join(".env"), "SECRET=1").unwrap();
+        std::fs::write(host.root.join(".env"), "HIDDEN=1").unwrap();
 
         // The switch is off: the detail says so and both routes are closed.
         let (_, _, body) = host.send(get_as(&format!("/api/v1/projects/{project_id}"), &cookie)).await;
