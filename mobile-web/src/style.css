@@ -67,7 +67,7 @@ nav button,.keys button { flex:1; }
 /* Project rows also use this shell for their reorder grip. The layered card
    treatment below belongs to the project screen's agent tab overview only. */
 .tab-card { position:relative; display:grid; border:1px solid #383c4d; border-radius:11px; background:rgba(28,31,43,.92); }
-.project-screen .tab-card { overflow:hidden; border-color:#363c50; border-radius:18px; background:linear-gradient(155deg, #222637, #1a1d2b 76%); box-shadow:0 8px 24px rgba(0,0,0,.15); }
+.project-screen .tab-card { border-color:#363c50; border-radius:18px; background:linear-gradient(155deg, #222637, #1a1d2b 76%); box-shadow:0 8px 24px rgba(0,0,0,.15); }
 .project-screen .tab-card:focus-within { border-color:#8578ed; }
 .tab-card .card { border:0; background:transparent; }
 /* #264 — a tab the user has coloured. The desktop spends the tab's bottom rule
@@ -112,15 +112,24 @@ nav button,.keys button { flex:1; }
 .tab-card-main.unavailable > span { opacity:.45; }
 .tab-card-open { position:absolute; inset:0; padding:0; border:0; border-radius:18px; background:transparent; }
 .tab-card-open:disabled { opacity:1; }
-.tab-card-name { position:relative; z-index:1; justify-self:start; min-width:0; margin:-4px -6px; padding:4px 6px; border:0; border-radius:6px; background:transparent; text-align:left; }
+.tab-card-name { position:relative; z-index:1; justify-self:start; min-width:0; margin:0 -6px; padding:4px 6px; border:0; border-radius:6px; background:transparent; line-height:20px; text-align:left; }
 .tab-card-name strong { font-size:1.02rem; letter-spacing:-.02em; overflow-wrap:anywhere; }
 .tab-card-name:active,.tab-card-model:active { background:#343a52; }
 /* The name and model share a row when there is room, then wrap without
    truncating the tab name. The stronger selector overrides the generic card. */
 .tab-card-head .tab-card-main .tab-card-title { display:flex; align-items:center; flex-wrap:wrap; gap:8px; min-width:0; }
+/* The head's top row — dot, name, ✕ — shares one centre line, 30px down: the
+   dot is 60px tall from the top, the ✕ 40px under a 10px margin, and the name's
+   first line is a 28px box (the name's 20px line plus its 4px tap padding, the
+   model pill 16px plus its 5px padding and border) under the card's 16px top
+   padding. So the body sits at the top rather than centred in the head, and a
+   name that wraps grows downward from that line instead of dropping below it. */
+.tab-card-head .tab-card-main { align-items:flex-start; }
+.tab-card-head .tab-card-main .tab-card-title > strong { line-height:28px; }
+.tab-card-head .tab-card-main > .card-trailing { align-self:flex-start; min-height:28px; }
 /* The model is a quiet button: it still opens the picker, but the session name
    and live state carry the stronger visual weight. */
-.tab-card-main .tab-card-model { position:relative; z-index:1; display:inline-block; flex:0 1 auto; max-width:100%; margin:0; padding:5px 8px; border:1px solid #414861; border-radius:8px; background:#2b3145; color:#b6bdd8; font-size:.72rem; font-weight:600; text-align:left; text-transform:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.tab-card-main .tab-card-model { position:relative; z-index:1; display:inline-block; flex:0 1 auto; max-width:100%; margin:0; padding:5px 8px; border:1px solid #414861; border-radius:8px; background:#2b3145; color:#b6bdd8; font-size:.72rem; font-weight:600; line-height:16px; text-align:left; text-transform:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .tab-card-main .tab-card-model:disabled { opacity:1; }
 .tab-card-grip { position:relative; z-index:1; flex:0 0 auto; width:44px; padding:0; border:0; border-left:1px solid #2d3040; border-radius:0 11px 0 0; background:transparent; color:#6f7488; font-size:1.05rem; touch-action:none; cursor:grab; }
 .project-screen .tab-card-grip { border-left-color:#34394d; border-radius:0 18px 0 0; color:#848ba4; }
@@ -177,6 +186,13 @@ nav button,.keys button { flex:1; }
    ? and ✓, so it is set smaller — the same correction the desktop makes. */
 .agent-status-glyph { font-size:.85em; line-height:1; }
 .agent-status.working .agent-status-glyph { font-size:.7em; }
+/* The project screen's tab cards carry the glyph alone, as a disc centred on
+   the card's left border, half over the page gutter. The card no longer clips
+   (`overflow` was only rounding what its own radii already round), so the disc
+   can stand out past the edge; its dark ring parts it from the border line and
+   the tab colour running through it. Taps pass through to the card. */
+.tab-card > .tab-card-status { position:absolute; top:50%; left:-12px; z-index:2; display:grid; place-items:center; width:22px; height:22px; padding:0; border:1.5px solid currentColor; border-radius:50%; box-shadow:0 0 0 2px #000; font-size:.72rem; line-height:1; transform:translateY(-50%); pointer-events:none; }
+.tab-card > .tab-card-status.working { font-size:.56rem; }
 small { color:#9498aa; }
 .count { min-width:34px; text-align:center; padding:6px; border-radius:0; background:#312a57; }
 .notice,.error { padding:12px; border-radius:10px; }
@@ -712,6 +728,7 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .composer-dictate,.composer-bar .send-icon { display:grid; place-items:center; width:40px; min-width:40px; height:40px; padding:0; border:0; border-radius:10px; }
 .composer-add { display:grid; place-items:center; flex:0 0 auto; width:36px; height:36px; padding:0; border:0; border-radius:50%; background:transparent; color:#c8cdda; }
 .composer-spacer { flex:1 0 0; }
+.composer-chips { display:flex; flex:1 1 0; min-width:0; align-items:center; justify-content:space-evenly; }
 /* Plan / Goal: lead the draft with `/plan` or `/goal`; lit while it does.
    Clear, right of them, sends `/clear` at once. */
 .composer-prefix { flex:0 0 auto; height:30px; padding:0 11px; border:1px solid #3a3f55; border-radius:15px; background:transparent; color:#c8cdda; font:inherit; font-size:.8rem; }

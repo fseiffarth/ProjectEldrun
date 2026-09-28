@@ -12,7 +12,7 @@ import { useProjectInbox } from "../components/ProjectInbox";
 import { PromptsSheet } from "./PromptsSheet";
 import { RenameSheet } from "./RenameSheet";
 import { ScheduleSheet } from "./ScheduleSheet";
-import { AgentStatusPill } from "../components/AgentStatusPill";
+import { AgentStatusMark } from "../components/AgentStatusPill";
 import { OutboxGallery } from "../components/OutboxGallery";
 import { OutboxViewer } from "../components/OutboxViewer";
 import { tabColorCss } from "../tabColors";
@@ -457,8 +457,8 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
           </span>
         </span>
         {/* A shell card is one row, so its › stays here; an agent card carries
-            the same cluster on its foot instead, out of the ✕'s reach. */}
-        {tab.kind !== "agent" && <span className="card-trailing">{tab.agent_status && <AgentStatusPill status={tab.agent_status} />}<span>›</span></span>}
+            it on its foot instead, out of the ✕'s reach. */}
+        {tab.kind !== "agent" && <span className="card-trailing"><span>›</span></span>}
       </div>
       {/* Close is the card's top-right ✕, where a phone looks for it; every tab
           the phone lists offers it, shell included. */}
@@ -481,14 +481,18 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
       {tab.kind === "agent" && <div className="tab-card-foot">
         <button className="tab-card-icon accent" onClick={() => setScheduleTab({ tab })} aria-haspopup="dialog" aria-expanded={scheduleTab?.tab.id === tab.id} aria-label={`Scheduled prompts for ${tab.label}`} title="Scheduled prompts"><span aria-hidden="true">◷</span></button>
         <small className="tab-card-when" title={tab.schedules?.next ? `Next run ${tab.schedules.next.replace("T", " ")} (desktop time)` : undefined}>{scheduleLine(tab.schedules)}</small>
-        {/* The state and the › that says the card opens, at the card's
-            bottom-right corner. They read the same as on a shell card's right
-            edge, a whole card away from the ✕ a thumb must not find here. */}
-        <span className="card-trailing">{tab.agent_status && <AgentStatusPill status={tab.agent_status} />}<span>›</span></span>
+        {/* The › that says the card opens, at the card's bottom-right
+            corner: the same as on a shell card's right edge, a whole card away
+            from the ✕ a thumb must not find here. */}
+        <span className="card-trailing"><span>›</span></span>
       </div>}
       {/* Last, so it lies over the whole card: a tap anywhere the controls above
           have not claimed — the › on the foot included — opens the session. */}
       <button className="tab-card-open" disabled={!tab.available} onClick={() => terminal(tab)} aria-label={`Open ${tab.label}`} />
+      {/* The agent's state is the desktop's bare glyph — ▶ working, ? asking,
+          ✓ done — set on the card's left border, where it reads down the list
+          at a glance without spending a row's width on a worded pill. */}
+      {tab.agent_status && <AgentStatusMark status={tab.agent_status} />}
     </div>)}</section>
     {/* Agent tabs closed on either surface, newest first: a tap reopens one
         on the desktop, resuming its conversation, and its card comes back. */}
