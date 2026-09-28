@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { invokeTrusted } from "../../lib/execTrust";
 import { GitHistory } from "./GitHistory";
 import { GitChangeTree, type ChangeScope } from "./GitChangeTree";
@@ -86,6 +87,8 @@ import { ErrorNote } from "../common/ErrorNote";
  *  long enough that a mouse merely passing over the list never triggers it. */
 const TOOLTIP_DWELL_MS = 400;
 const MOBILE_STATUS_POLL_MS = 15_000;
+/** Git view re-read cadence: nothing watches the repo while that view shows. */
+const GIT_VIEW_POLL_MS = 5_000;
 
 interface MobileHostStatus {
   running: boolean;
@@ -1204,6 +1207,42 @@ export function ProjectFilesView({
       setUnpushedCommits([]);
     }
   }, [active, effectiveGitRoot, remoteBlocked]);
+
+  // The counts are one `git status` reading; nothing above re-reads them when
+  // the repo moves under the view (an agent's or a terminal's add/commit/
+  // checkout), so a bar read mid-edit went on offering "Add 163" after the
+  // tree was clean. Follow the file tree's `fs-change` (its watch covers the
+  // repo's index/HEAD/refs, `fs_watch.rs`), and in the Git view — which mounts
+  // no tree, and must not steal the backend's single watch slot from one shown
+  // elsewhere — re-read on entry and on a slow poll while it is on screen.
+  useEffect(() => {
+    if (!active || !effectiveGitRoot || remoteBlocked) return;
+    const root = effectiveGitRoot;
+    const local = !project?.remote;
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    if (local) {
+      void listen("fs-change", () => refreshGit(root)).then((un) => {
+        if (cancelled) un();
+        else unlisten = un;
+      });
+    }
+    let poll: ReturnType<typeof setInterval> | null = null;
+    if (view === "git") {
+      refreshGit(root);
+      if (local) {
+        poll = setInterval(() => {
+          if (document.visibilityState === "visible") refreshGit(root);
+        }, GIT_VIEW_POLL_MS);
+      }
+    }
+    return () => {
+      cancelled = true;
+      unlisten?.();
+      if (poll) clearInterval(poll);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, effectiveGitRoot, remoteBlocked, project?.remote, view]);
 
   // The gear dialog belongs to the project it was opened on; a project switch
   // reloads the filters under it, so close it rather than let it re-target.
