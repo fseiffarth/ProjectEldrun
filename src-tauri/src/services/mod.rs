@@ -30,6 +30,9 @@ pub mod agent_versions;
 // decision and root computation stay AppHandle-free; terminal spawn only applies
 // the resulting bubblewrap argv.
 pub mod agent_fence;
+// Landlock's abstract-socket scope (X11, D-Bus) the fence enters before bwrap.
+#[cfg(target_os = "linux")]
+pub mod fence_scope;
 // The Claude credential mirror: one Eldrun-owned inode mounted into every
 // fenced/contained tab in place of `~/.claude/.credentials.json`, kept in step
 // with the host file by in-place writes — a file bind mount pins an inode, and

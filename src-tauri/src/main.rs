@@ -11,6 +11,13 @@ fn main() {
         };
         std::process::exit(eldrun_lib::services::agent_shim::run(cli, rest));
     }
+    // `eldrun --fence-scope <bwrap> [args…]`: the agent fence's step before
+    // bwrap (`services::fence_scope`) — enters the Landlock scope and execs.
+    #[cfg(target_os = "linux")]
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--fence-scope")) {
+        let args: Vec<std::ffi::OsString> = std::env::args_os().skip(2).collect();
+        std::process::exit(eldrun_lib::services::fence_scope::run(&args));
+    }
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--mobile-host")) {
         let state_dir = eldrun_lib::storage::state_dir();
         let runtime = tokio::runtime::Builder::new_multi_thread()

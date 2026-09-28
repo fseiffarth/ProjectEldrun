@@ -1044,19 +1044,27 @@ pub(crate) fn keyring_seccomp_filter() -> Option<Vec<u8>> {
 /// only as a descriptor, and no spawn path here can pass one (portable-pty
 /// closes inherited descriptors, tmux starts the command from its server), so
 /// the shell opens it at the last moment and `exec`s: the process is bwrap from
-/// then on. `$1` is the filter file, `$0` bwrap, the rest bwrap's argv.
+/// then on. `$1` is the filter file, `$0` the program, the rest its argv.
 #[cfg(any(target_os = "linux", test))]
-const SECCOMP_LAUNCHER: &str = "f=$1; shift; exec \"$0\" --seccomp 9 \"$@\" 9<\"$f\"";
+const SECCOMP_LAUNCHER: &str = "f=$1; shift; exec \"$0\" \"$@\" 9<\"$f\"";
 
-/// `(cmd, args)` that run bwrap with `argv` under [`keyring_seccomp_filter`].
+/// `(cmd, args)` that run bwrap with `argv` under [`keyring_seccomp_filter`],
+/// through `scope_helper` (`services::fence_scope`, `--fence-scope`) when
+/// there is one; the helper execs bwrap with descriptor 9 still open.
 #[cfg(any(target_os = "linux", test))]
-pub(crate) fn seccomp_launcher(bwrap: &str, filter: &Path, argv: Vec<String>) -> (String, Vec<String>) {
-    let mut args = vec![
-        "-c".to_string(),
-        SECCOMP_LAUNCHER.to_string(),
-        bwrap.to_string(),
-        filter.to_string_lossy().into_owned(),
-    ];
+pub(crate) fn seccomp_launcher(
+    bwrap: &str,
+    scope_helper: Option<&str>,
+    filter: &Path,
+    argv: Vec<String>,
+) -> (String, Vec<String>) {
+    let filter = filter.to_string_lossy().into_owned();
+    let mut args = vec!["-c".to_string(), SECCOMP_LAUNCHER.to_string()];
+    match scope_helper {
+        Some(helper) => args.extend([helper.to_string(), filter, "--fence-scope".into(), bwrap.to_string()]),
+        None => args.extend([bwrap.to_string(), filter]),
+    }
+    args.extend(["--seccomp".to_string(), "9".to_string()]);
     args.extend(argv);
     ("/bin/sh".to_string(), args)
 }
@@ -1247,7 +1255,8 @@ pub fn wrap_pty_options_bwrap(
     // Last: overlapping roots and allowlists must not reopen private stores.
     mask_private_state(&mut args, &storage::state_dir(), &support_mounts);
     let filter = write_keyring_filter()?;
-    (opts.cmd, opts.args) = seccomp_launcher(&bwrap.to_string_lossy(), &filter, args);
+    let scope = crate::services::fence_scope::helper_for(&bwrap);
+    (opts.cmd, opts.args) = seccomp_launcher(&bwrap.to_string_lossy(), scope.as_deref(), &filter, args);
     opts.env
         .insert("ELDRUN_AGENT_FENCE".to_string(), "1".to_string());
     // Keep the CLI's login in its file: the keyring is not reachable here.
@@ -1680,7 +1689,8 @@ pub fn one_shot_command(scope_id: &str, cmd: &str, args: &[String], cwd: &Path) 
     guard_git_control(&mut argv, crate::services::git_guard::guard_paths(&roots, Some(cwd)));
     mask_private_state(&mut argv, &storage::state_dir(), &[]);
     let filter = write_keyring_filter()?;
-    let (cmd, argv) = seccomp_launcher(&bwrap.to_string_lossy(), &filter, argv);
+    let scope = crate::services::fence_scope::helper_for(&bwrap);
+    let (cmd, argv) = seccomp_launcher(&bwrap.to_string_lossy(), scope.as_deref(), &filter, argv);
     let mut command = crate::paths::command_no_window(cmd);
     command.args(argv);
     command.env("ELDRUN_AGENT_FENCE", "1");
@@ -1980,7 +1990,7 @@ mod tests {
         std::fs::write(&fake, "#!/bin/sh\ncat <&9 >\"$OUT/fd9\"\nprintf '%s\\n' \"$@\" >\"$OUT/args\"\n").unwrap();
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
         let argv = vec!["--ro-bind".to_string(), "/a b".to_string(), "--".to_string(), "it's".to_string()];
-        let (cmd, args) = seccomp_launcher(&fake.to_string_lossy(), &filter, argv);
+        let (cmd, args) = seccomp_launcher(&fake.to_string_lossy(), None, &filter, argv.clone());
         assert_eq!(cmd, "/bin/sh");
         let status = std::process::Command::new(cmd).args(args).env("OUT", dir.path()).status().unwrap();
         assert!(status.success());
@@ -1988,6 +1998,16 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(dir.path().join("args")).unwrap(),
             "--seccomp\n9\n--ro-bind\n/a b\n--\nit's\n"
+        );
+        // With the scope helper, it runs first and is handed bwrap and fd 9.
+        std::fs::remove_file(dir.path().join("fd9")).unwrap();
+        let (cmd, args) = seccomp_launcher("/usr/bin/bwrap", Some(&fake.to_string_lossy()), &filter, argv);
+        let status = std::process::Command::new(cmd).args(args).env("OUT", dir.path()).status().unwrap();
+        assert!(status.success());
+        assert_eq!(std::fs::read(dir.path().join("fd9")).unwrap(), b"program bytes");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("args")).unwrap(),
+            "--fence-scope\n/usr/bin/bwrap\n--seccomp\n9\n--ro-bind\n/a b\n--\nit's\n"
         );
     }
 

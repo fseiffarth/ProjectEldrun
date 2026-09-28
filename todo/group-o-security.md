@@ -1112,6 +1112,34 @@ Evidence and the focused fixes are in
     by copies. Tests: in-place and rename, refused account both ways, Host
     home, migration, directories.
 
+- [x] **High on X11 hosts: fenced agents reached the host's abstract sockets.**
+  bubblewrap unshares only the pid namespace, so `@/tmp/.X11-unix/X0`, the
+  systemd/D-Bus buses and IDE daemons stayed reachable; with `xhost +local:`
+  or `+si:localuser:$USER` (or cookie-less `startx`) a fenced agent could log
+  keystrokes and type into unfenced windows. Wayland sockets were already
+  hidden by the private `/run`.
+  - **Fixed 2026-09-28 (not live).** `services::fence_scope`: the launcher
+    runs `eldrun --fence-scope`, which enters Landlock's
+    `LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET` and execs bwrap. Skipped below
+    Landlock ABI 6 (Linux 6.12) and for a setuid bwrap; fails closed where
+    used. Checked from a fenced tab: the XWayland socket answered before
+    (refused only by its cookie) and gave `EPERM` inside the scope.
+  - [x] 🤖 Automated test — `the_scope_refuses_outside_abstract_sockets_only`
+    (skips below ABI 6), `the_helper_is_the_running_binary_even_once_replaced`,
+    `a_setuid_bwrap_gets_no_helper`, the launcher's helper case.
+  - [ ] 🖐️ Manual test — after a restart onto this build, open a new agent
+    tab and run `python3 -c 'import socket; socket.socket(1).connect(b"\0/tmp/.X11-unix/X0")'`
+    → `PermissionError`; the agent itself starts, signs in and answers, and
+    a headless browser/Playwright run inside it still works.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
 ### Safe for everyone — non-expert users (2026-09-24)
 
 Plan: `docs/safe_for_everyone_plan.md`. Goal: every "⚠️ yours" row in

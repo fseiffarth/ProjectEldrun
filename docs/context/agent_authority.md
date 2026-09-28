@@ -169,7 +169,19 @@ seccomp filter makes `add_key`/`request_key`/`keyctl` fail with `EPERM`, and
 `/proc/keys` is masked) because Eldrun's saved secrets are cached there in the
 login session keyring every process inherits — the private `/run` alone hid
 only the Secret Service, and until 2026-09-25 a fenced agent could read every
-saved SSH, VPN and mail password; and `$HOME` is not the user's home
+saved SSH, VPN and mail password; abstract Unix sockets outside the fence
+are refused (`services::fence_scope`, since 2026-09-28): bubblewrap unshares
+only the pid namespace, so the host's network namespace — and with it
+`@/tmp/.X11-unix/X0`, the systemd/D-Bus buses and IDE daemons — stayed
+reachable, and on an X11 host that ran `xhost +local:` or
+`+si:localuser:$USER` a fenced agent could log keystrokes and type into
+unfenced windows. Eldrun's own binary (`eldrun --fence-scope`) enters
+Landlock's `LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET` and execs bwrap; sockets the
+agent creates itself still work and the network is untouched. It is
+best-effort per host — skipped below Landlock ABI 6 (Linux 6.12) or for a
+setuid bwrap, where `no_new_privs` would strip bwrap's privileges — and fails
+closed where used. `--unshare-net` would have closed the same hole but cut
+the agents off the network; and `$HOME` is not the user's home
 at all but the scope's **Eldrun-owned agent home**
 (`services::agent_home`, `<state_dir>/agent-homes/<project_key(scope)>/`),
 bound over the home path. The owning project is mounted read-write. If it
