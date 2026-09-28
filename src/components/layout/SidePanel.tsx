@@ -51,8 +51,11 @@ interface Props {
   onMouseLeave?: () => void;
 }
 
+/** The hidden-pane statuses: the tab ring's four words. */
+type HiddenStatus = "working" | "needs-decision" | "finished" | "interrupted";
+
 /** A hidden subwindow's tab is invisible to the tab bar, so it can't paint its
- *  own glow — this is the same working/needs-decision/finished precedence
+ *  own glow — this is the same working/needs-decision/finished/interrupted precedence
  *  `TabBar` uses for the live tab glow, applied here to a hidden group's tab
  *  chips (and rolled up for the group's row) so a hidden pane doesn't go dark
  *  just because it's parked. */
@@ -61,27 +64,29 @@ function hiddenTabStatus(
   ptyId: string,
   busyByTab: Record<string, boolean>,
   attentionByTab: Record<string, AttentionKind>,
-): "working" | "needs-decision" | "finished" | null {
+): HiddenStatus | null {
   if (!kind) return null;
   if (isPtyTabKind(kind) && busyByTab[ptyId]) return "working";
   if (kind === "agent" || kind === "local_agent") {
     const attn = attentionByTab[ptyId];
     if (attn === "decision") return "needs-decision";
     if (attn === "done") return "finished";
+    if (attn === "interrupted") return "interrupted";
   }
   return null;
 }
 
 /** Roll several tab statuses up into one, most urgent first — a decision still
  *  waiting on the user outranks a tab merely working, which outranks one that's
- *  just finished unseen. Mirrors `attentionByScope`'s decision-over-done
+ *  just finished unseen, which outranks one the user cut off. Mirrors `attentionByScope`'s decision-over-done
  *  precedence, extended with `working` for the row-level dot. */
 function rollUpStatus(
-  statuses: Array<"working" | "needs-decision" | "finished" | null>,
-): "working" | "needs-decision" | "finished" | null {
+  statuses: Array<HiddenStatus | null>,
+): HiddenStatus | null {
   if (statuses.includes("needs-decision")) return "needs-decision";
   if (statuses.includes("working")) return "working";
   if (statuses.includes("finished")) return "finished";
+  if (statuses.includes("interrupted")) return "interrupted";
   return null;
 }
 
@@ -340,7 +345,9 @@ export function SidePanel({
                   ? "sidePanel.hiddenWaiting"
                   : hiddenStatus.overall === "working"
                     ? "sidePanel.hiddenWorking"
-                    : "sidePanel.hiddenFinished",
+                    : hiddenStatus.overall === "interrupted"
+                      ? "sidePanel.hiddenInterrupted"
+                      : "sidePanel.hiddenFinished",
               )}
             />
           )}

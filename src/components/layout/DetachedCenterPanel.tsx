@@ -95,7 +95,7 @@ import {
   type TabEntry,
   type TabLocation,
 } from "../../stores/tabs";
-import { busyStateClass, useActivityStore } from "../../stores/activity";
+import { attentionStateClass, busyStateClass, useActivityStore } from "../../stores/activity";
 import { detachedNewTabCwd, type DetachedRemoteInfo } from "../../stores/detached";
 import {
   TabAgentModeMarks,
@@ -1498,11 +1498,7 @@ export function DetachedCenterPanel({
               const attn = !isActive || rawAttn === "decision" ? rawAttn : null;
               return working
                 ? busyStateClass(busyKindByTab[ptyId], tab.kind)
-                : attn === "decision"
-                  ? " needs-decision"
-                  : attn === "done"
-                    ? " finished"
-                    : "";
+                : attentionStateClass(attn);
             };
             if (item.type === "stack") {
               return (

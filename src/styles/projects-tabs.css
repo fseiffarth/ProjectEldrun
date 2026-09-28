@@ -1386,6 +1386,7 @@
 .tab-stack-row .tab-status-mark.needs-decision,
 .tab-stack-row .tab-status-mark.decision { --tab-status-color: var(--status-decision); }
 .tab-stack-row .tab-status-mark.done { --tab-status-color: var(--status-done); }
+.tab-stack-row .tab-status-mark.interrupted { --tab-status-color: var(--status-interrupted); }
 
 /* ── Tab status ring ─────────────────────────────────────────────────────
    A tab shows agent state as a RING, drawn on an `::after` overlay so it never
@@ -1398,6 +1399,8 @@
    - needs-decision (amber, solid): agent gone quiet with a choice/permission
      prompt on screen — shown on the viewed tab too, since an agent blocked on
      you stays blocked while you look at it.
+   - interrupted (`--status-interrupted`, solid): the user cut the agent's turn
+     off; held until its next turn starts, left off the viewed tab.
    Working and finished clear the moment the tab is viewed; a pending decision
    clears when it is ANSWERED.
 
@@ -1414,14 +1417,16 @@
    puts the ring above the tab's (transparent) background and below its label. */
 .tab.working,
 .tab.needs-decision,
-.tab.finished {
+.tab.finished,
+.tab.interrupted {
   position: relative;
   z-index: 0;
 }
 
 .tab.working::after,
 .tab.needs-decision::after,
-.tab.finished::after {
+.tab.finished::after,
+.tab.interrupted::after {
   content: "";
   position: absolute;
   inset: 0;
@@ -1446,9 +1451,10 @@
 }
 .tab.needs-decision { --tab-status-color: var(--status-decision); }
 .tab.finished { --tab-status-color: var(--status-done); }
+.tab.interrupted { --tab-status-color: var(--status-interrupted); }
 
 /* The glyph leading the label (`TabStatusMark`): ▶ working, ? decision,
-   ✓ finished — the ring's state named, in the ring's own colour, so it no longer
+   ✓ finished, ■ interrupted — the ring's state named, in the ring's own colour, so it no longer
    has to be read from hue and stroke alone. Static, like the ring. */
 .tab-status-mark {
   flex-shrink: 0;
@@ -1624,6 +1630,10 @@
 
 .pill-status-bar.finished {
   background-color: var(--status-done);
+}
+
+.pill-status-bar.interrupted {
+  background-color: var(--status-interrupted);
 }
 
 /* Nothing in the agent-status vocabulary animates any more (see the

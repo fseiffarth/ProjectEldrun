@@ -11,7 +11,7 @@ import {
   type RootOverlayFrame,
 } from "../../stores/rootOverlay";
 import { useProjectsStore } from "../../stores/projects";
-import { busyStateClass, useActivityStore } from "../../stores/activity";
+import { attentionStateClass, busyStateClass, useActivityStore } from "../../stores/activity";
 import { useCalendarStore } from "../../stores/calendar/calendar";
 import { useSettingsStore } from "../../stores/settings";
 import {
@@ -1016,11 +1016,7 @@ function GroupStrip({
         const attn = !isActive || rawAttn === "decision" ? rawAttn : null;
         const stateClass = working
           ? busyStateClass(busyKindByTab[ptyId], tab.kind)
-          : attn === "decision"
-            ? " needs-decision"
-            : attn === "done"
-              ? " finished"
-              : "";
+          : attentionStateClass(attn);
         const install = !!installTabs[tab.key];
         return (
           <div

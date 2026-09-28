@@ -15,6 +15,7 @@ export function statusBarKinds(c: TabStatusCounts): string[] {
     ...Array<string>(c.working).fill("working"),
     ...Array<string>(c.decision).fill("needs-decision"),
     ...Array<string>(c.done).fill("finished"),
+    ...Array<string>(c.interrupted).fill("interrupted"),
   ];
   return kinds.slice(0, MAX_STATUS_BARS);
 }
@@ -28,6 +29,7 @@ export function statusBarTitle(
   if (c.working) parts.push(t("pill.statusWorking", { count: c.working }));
   if (c.decision) parts.push(t("pill.statusWaiting", { count: c.decision }));
   if (c.done) parts.push(t("pill.statusFinished", { count: c.done }));
+  if (c.interrupted) parts.push(t("pill.statusInterrupted", { count: c.interrupted }));
   return parts.join(" · ");
 }
 
@@ -36,6 +38,7 @@ const BAR_TITLE_KEY: Record<StatusTab["state"], TranslationKey> = {
   working: "pill.statusTabWorking",
   "needs-decision": "pill.statusTabWaiting",
   finished: "pill.statusTabFinished",
+  interrupted: "pill.statusTabInterrupted",
 };
 
 /** The order the bars are drawn in — the same one `computeStatusScopes` builds
@@ -45,6 +48,7 @@ const STATE_ORDER: Record<StatusTab["state"], number> = {
   working: 0,
   "needs-decision": 1,
   finished: 2,
+  interrupted: 3,
 };
 
 /** One bar: which tab of which scope, in what state, under what name. */
@@ -66,10 +70,11 @@ export interface StatusBarItem {
 /** The tally the tooltip spells out. Derived from the untruncated items, so the
  *  sentence stays true for a scope with more busy tabs than the strip draws. */
 function tallyItems(items: StatusBarItem[]): TabStatusCounts {
-  const tally: TabStatusCounts = { working: 0, decision: 0, done: 0 };
+  const tally: TabStatusCounts = { working: 0, decision: 0, done: 0, interrupted: 0 };
   for (const item of items) {
     if (item.state === "working") tally.working++;
     else if (item.state === "needs-decision") tally.decision++;
+    else if (item.state === "interrupted") tally.interrupted++;
     else tally.done++;
   }
   return tally;
@@ -155,7 +160,8 @@ function itemsForScope(
 /**
  * One little bar per non-idle tab along the bottom edge of a pill, so a glance
  * at the switcher says how many tabs of each scope are working (green dots),
- * finished unseen (green, solid) or waiting on a decision (amber) — nothing
+ * finished unseen (green, solid), waiting on a decision (amber) or cut off
+ * mid-turn (the interrupted colour) — nothing
  * animated, the tab ring's own vocabulary (`--status-*`).
  *
  * Each bar is a **button that opens its own tab** — the strip already knows

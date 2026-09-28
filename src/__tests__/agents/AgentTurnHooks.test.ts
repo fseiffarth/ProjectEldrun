@@ -8,11 +8,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   _clearPtyActivityForTest,
   agentDeliveryReady,
+  attentionStateClass,
   agentDeliveryTurn,
   isInterruptInput,
   noteAgentTurn,
   notePtyOutput,
   notePtySpawn,
+  noteTurnCutOff,
   noteUserInput,
   useActivityStore,
 } from "../../stores/activity";
@@ -219,9 +221,88 @@ describe("activity store — hook verdicts", () => {
     expect(isInterruptInput("\x03")).toBe(true);
     noteUserInput(PTY, true);
     state().recompute();
-    // Back on the bytes, which show nothing sustained.
+    // Back on the bytes, which show nothing sustained — and the cut-off turn
+    // is marked as such rather than going quiet like a finished one.
     expect(busy()).toBe(false);
+    expect(attention()).toBe("interrupted");
+  });
+
+  it("marks a turn cut off mid-work interrupted until the agent's next turn", () => {
+    noteUserInput(PTY);
+    noteAgentTurn(PTY, "working");
+    noteUserInput(PTY, true);
+    state().recompute();
+    expect(attention()).toBe("interrupted");
+    expect(state().statusTabsByScope["proj-a"]).toEqual([{ key: "agent-1", state: "interrupted" }]);
+    expect(state().statusCountsByScope["proj-a"]).toEqual({ working: 0, decision: 0, done: 0, interrupted: 1 });
+    // A state, not a call for attention: the project's rollup does not glow.
+    expect(state().attentionByScope["proj-a"]).toBeUndefined();
+
+    // Claude's idle notice a minute later is not a finished turn, typing a
+    // draft is not a new one, and looking at the tab does not undo the cut.
+    vi.advanceTimersByTime(60_000);
+    noteAgentTurn(PTY, "done");
+    noteUserInput(PTY);
+    state().clearAttention(PTY);
+    state().recompute();
+    expect(attention()).toBe("interrupted");
+
+    // The next prompt going in is.
+    noteAgentTurn(PTY, "working");
+    state().recompute();
     expect(attention()).toBeUndefined();
+    expect(busy()).toBe(true);
+  });
+
+  it("marks an answer-by-Escape to a pending prompt interrupted, but not a cleared composer", () => {
+    noteAgentTurn(PTY, "decision");
+    noteUserInput(PTY, true);
+    state().recompute();
+    expect(attention()).toBe("interrupted");
+
+    _clearPtyActivityForTest();
+    noteUserInput(PTY);
+    noteAgentTurn(PTY, "working");
+    noteAgentTurn(PTY, "done");
+    noteUserInput(PTY, true); // Ctrl+C on an idle composer clears the line
+    state().recompute();
+    expect(attention()).toBe("done");
+
+    _clearPtyActivityForTest();
+    noteUserInput(PTY, true); // no verdict and nothing on the wire
+    state().recompute();
+    expect(attention()).toBeUndefined();
+  });
+
+  it("drops the interrupted mark when the session ends", () => {
+    noteAgentTurn(PTY, "working");
+    noteUserInput(PTY, true);
+    noteAgentTurn(PTY, "idle");
+    state().recompute();
+    expect(attention()).toBeUndefined();
+  });
+
+  it("starts a tab whose last run died mid-turn out interrupted", () => {
+    notePtySpawn(PTY);
+    noteTurnCutOff(PTY);
+    // The resumed session replays its transcript: not work anybody asked for.
+    notePtyOutput(PTY, "resumed conversation\r\n");
+    vi.advanceTimersByTime(60_000);
+    noteAgentTurn(PTY, "done"); // the idle notice
+    state().recompute();
+    expect(attention()).toBe("interrupted");
+    noteAgentTurn(PTY, "working");
+    state().recompute();
+    expect(attention()).toBeUndefined();
+    noteTurnCutOff("not-a-pty-id");
+    expect(state().attentionByTab["not-a-pty-id"]).toBeUndefined();
+  });
+
+  it("names the interrupted state for the strips", () => {
+    expect(attentionStateClass("interrupted")).toBe(" interrupted");
+    expect(attentionStateClass("decision")).toBe(" needs-decision");
+    expect(attentionStateClass("done")).toBe(" finished");
+    expect(attentionStateClass(null)).toBe("");
   });
 
   it("drops a working verdict that outlived all paint, and a session's end retires any verdict", () => {
@@ -279,6 +360,28 @@ describe("activity store — the bytes under the verdicts", () => {
     state().recompute();
     expect(busy()).toBe(false);
     expect(attention()).toBe("done");
+  });
+
+  it("marks a hook-free agent interrupted on Escape mid-work, until it works again", () => {
+    noteUserInput(PTY);
+    vi.advanceTimersByTime(200);
+    notePtyOutput(PTY, "› fix the tests\r\n• Working (0s • esc to interrupt)\r\n");
+    codexWorks(4050);
+    state().recompute();
+    expect(busy()).toBe(true);
+    noteUserInput(PTY, true);
+    vi.advanceTimersByTime(3000);
+    state().recompute();
+    expect(busy()).toBe(false);
+    expect(attention()).toBe("interrupted");
+    // The next prompt's work retires it.
+    noteUserInput(PTY);
+    vi.advanceTimersByTime(200);
+    notePtyOutput(PTY, "› go on\r\n• Working (0s • esc to interrupt)\r\n");
+    codexWorks(4050);
+    state().recompute();
+    expect(busy()).toBe(true);
+    expect(attention()).toBeUndefined();
   });
 
   it("never lights working for the user typing a prompt, however long", () => {

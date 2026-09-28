@@ -371,17 +371,23 @@ export function TabStatusMark({ stateClass }: { stateClass: string }) {
       ? "decision"
       : stateClass.includes("finished")
         ? "done"
-        : null;
+        : stateClass.includes("interrupted")
+          ? "interrupted"
+          : null;
   if (!state) return null;
   // ▶ is emoji-capable: pinned to text presentation (U+FE0E) so no window's
   // font fallback swaps it for a colour emoji that ignores the ring's colour.
-  const glyph = state === "working" ? "▶\uFE0E" : state === "decision" ? "?" : "✓";
+  // ■ (the stop square) is not, so it needs no pin.
+  const glyph =
+    state === "working" ? "▶\uFE0E" : state === "decision" ? "?" : state === "interrupted" ? "■" : "✓";
   const label = t(
     state === "working"
       ? "tabBar.statusWorking"
       : state === "decision"
         ? "tabBar.statusDecision"
-        : "tabBar.statusDone",
+        : state === "interrupted"
+          ? "tabBar.statusInterrupted"
+          : "tabBar.statusDone",
   );
   const shellLabel = t("tabBar.statusRunning");
   // `shell` alone: the command IS what the tab is doing, so the one mark is the

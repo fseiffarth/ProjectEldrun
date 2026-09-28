@@ -46,7 +46,7 @@ import {
   type HostConnState,
 } from "./remote/remoteStatus";
 import { BOX_SCOPE_PREFIX, boxFolderOfScope, useBoxesStore } from "./boxes";
-import { useActivityStore, noteUserInput, type BusyKind } from "./activity";
+import { useActivityStore, noteTurnCutOff, noteUserInput, type AttentionKind, type BusyKind } from "./activity";
 import { bumpUsage } from "./usage";
 import { useRemoteMachinesStore } from "./remote/remoteMachines";
 import { useBigFoldersStore } from "./bigFolders";
@@ -168,8 +168,9 @@ export interface DetachedActivityEnvelope {
   ptyId: string;
   /** `interrupt` is input that cuts the agent off (a bare Escape, Ctrl+C) —
    *  the one keystroke the classifier reads differently (see
-   *  `activity.noteUserInput`). */
-  kind: "input" | "interrupt" | "seen" | "bell";
+   *  `activity.noteUserInput`). `cutoff` is a spawn that found the tab's
+   *  previous process died mid-turn (`activity.noteTurnCutOff`). */
+  kind: "input" | "interrupt" | "seen" | "bell" | "cutoff";
 }
 
 /**
@@ -186,7 +187,7 @@ export interface DetachedUsageEnvelope {
 
 /**
  * Group B #234 — main → detached: the classified status of THIS popout's tabs
- * (working / needs-decision / finished), namespaced per label like the seed. The
+ * (working / needs-decision / finished / interrupted), namespaced per label like the seed. The
  * popout's own activity store has no PTY history to classify from, so the main
  * window — which sees every PTY's output — mirrors its verdict over, and the
  * popout's strip paints the same lamps `TabBar` does.
@@ -197,7 +198,8 @@ export type DetachedTabStatus =
   | "working-shell"
   | "working-both"
   | "needs-decision"
-  | "finished";
+  | "finished"
+  | "interrupted";
 export interface DetachedStatusPayload {
   scope: string;
   /** tab key → status; a tab with nothing to say is absent. */
@@ -958,7 +960,7 @@ export function statusForEntry(
   entry: DetachedGroup,
   tabs: TabEntry[],
   busyByTab: Record<string, boolean>,
-  attentionByTab: Record<string, "decision" | "done">,
+  attentionByTab: Record<string, AttentionKind>,
   busyKindByTab: Record<string, BusyKind> = {},
 ): Record<string, DetachedTabStatus> {
   const out: Record<string, DetachedTabStatus> = {};
@@ -978,6 +980,7 @@ export function statusForEntry(
     const attn = attentionByTab[ptyId];
     if (attn === "decision") out[key] = "needs-decision";
     else if (attn === "done") out[key] = "finished";
+    else if (attn === "interrupted") out[key] = "interrupted";
   }
   return out;
 }
@@ -1123,6 +1126,7 @@ export async function listenDetachedHost(): Promise<() => void> {
     else if (kind === "interrupt") noteUserInput(ptyId, true);
     else if (kind === "seen") useActivityStore.getState().clearAttention(ptyId);
     else if (kind === "bell") useActivityStore.getState().noteBell(ptyId);
+    else if (kind === "cutoff") noteTurnCutOff(ptyId);
   });
 
   // #234: a popout's usage counters land in the one accumulator that is flushed.

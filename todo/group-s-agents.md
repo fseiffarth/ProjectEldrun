@@ -2350,3 +2350,49 @@ unchanged; the new agents are additive.
       - [ ] ❌ Doesn't work on Windows
       - [ ] ✅ Works on macOS
       - [ ] ❌ Doesn't work on macOS
+
+2338. **Interrupted marker on agent tabs.** An interrupted turn fires no Stop, so
+    after Esc / Ctrl+C an agent tab used to look exactly like an idle one. Now an
+    interrupt key that lands on a turn in flight (a `working` or `decision` hook
+    verdict, or bytes reading as working for a hookless agent) marks the tab
+    **interrupted**: a solid ring and a ■ mark in `--status-interrupted` (the
+    theme's danger colour), a bar on the project pill, the hidden-pane chips and
+    the popout strip. Like finished it is left off the viewed tab; unlike it,
+    looking does not clear it — the agent's next turn does (a `working` or
+    `decision` hook, working bytes on a hookless tab, or the session ending).
+    Claude's idle notice a minute later (`done`) does not. An interrupt on an
+    idle composer (clearing the line) marks nothing. Not rolled into the
+    project-level attention glow, not counted in the usage recap. Phone-side
+    interrupts are not seen (the phone types into its own tmux client).
+    **Across a quit or crash:** a quit SIGKILLs agents, so the tab's
+    `<uid>.turn` record keeps the `working`/`decision` its last hook wrote;
+    `agent_turn::bind_tab` reads it before clearing it at the respawn and
+    `pty_spawn` answers `interrupted: true`, so the restored tab starts out
+    marked (`activity.noteTurnCutOff`). Backend part needs a restart. Files:
+    `stores/activity.ts` (`interruptedByPty`, `attentionStateClass`),
+    `stores/detached.ts`, `TabBar.tsx`, `RootOverlay.tsx`,
+    `DetachedCenterPanel.tsx`, `TabLocalityBadges.tsx`, `TabStackChip.tsx`,
+    `SidePanel.tsx`, `PillStatusBars.tsx`, `themes.css`, `projects-tabs.css`,
+    `files-panel.css`, `services/agent_turn.rs`, `commands/terminal.rs`,
+    `TerminalView.tsx`. Implemented 2026-09-28, **not live-tested**.
+    - [x] 🤖 Automated test — `AgentTurnHooks` (interrupted cases), `PillRunningIndicator`,
+      `agent_turn::tests::a_leftover_record_mid_turn_reads_as_cut_off`
+    - [ ] 🖐️ Manual test — (1) In a Claude tab send a prompt, press Esc while it
+      works, switch to another tab → the Claude tab's ring and mark show
+      interrupted (■), and the project pill has an interrupted bar. (2) Wait
+      past a minute → still interrupted (not finished). (3) Go back, type a new
+      prompt and send it → the mark clears and working shows. (4) Ctrl+C on an
+      idle Claude composer → no mark. (5) Esc on a permission prompt → marked
+      interrupted. (6) Same with Codex (Esc mid-turn), and a Gemini tab (bytes
+      only). (7) A popped-out agent tab and a tab in a hidden subwindow show the
+      same mark. (8) With a Claude tab mid-turn, quit Eldrun and start it
+      again → that tab comes back marked interrupted; a tab that had finished
+      comes back unmarked.
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS

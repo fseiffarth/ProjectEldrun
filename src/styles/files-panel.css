@@ -902,6 +902,9 @@
 .hidden-sw-icon.finished {
   color: var(--status-done);
 }
+.hidden-sw-icon.interrupted {
+  color: var(--status-interrupted);
+}
 .hidden-sw-status-dot {
   flex-shrink: 0;
   width: 6px;
@@ -922,6 +925,9 @@
 }
 .hidden-sw-status-dot.finished {
   background: var(--status-done);
+}
+.hidden-sw-status-dot.interrupted {
+  background: var(--status-interrupted);
 }
 .hidden-sw-chips {
   display: flex;
@@ -969,6 +975,10 @@
 .hidden-sw-chip.finished {
   border-color: var(--status-done);
   background: color-mix(in srgb, var(--status-done) 12%, var(--bg-main));
+}
+.hidden-sw-chip.interrupted {
+  border-color: var(--status-interrupted);
+  background: color-mix(in srgb, var(--status-interrupted) 12%, var(--bg-main));
 }
 .hidden-sw-chip:hover {
   border-color: var(--accent);

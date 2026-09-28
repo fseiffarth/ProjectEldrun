@@ -86,7 +86,7 @@ import { closeTabWithConfirm } from "../../lib/remote/closeRemoteTab";
 import { reopenClosedAgentTab, useClosedAgentTabs } from "../../stores/agents/closedAgentTabs";
 import { registerHostBoundTab } from "../../lib/remote/hostBound";
 import { localLaunchTabSpec, vibeLocalTabSpec } from "../../lib/agents/localTabSpec";
-import { busyStateClass, useActivityStore } from "../../stores/activity";
+import { attentionStateClass, busyStateClass, useActivityStore } from "../../stores/activity";
 import { UntestedTag } from "../common/UntestedTag";
 import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import { MenuShortcut } from "../common/MenuShortcut";
@@ -762,6 +762,9 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   //  - needs-decision (amber, solid): an agent went quiet with a
   //    choice/permission prompt on its screen. Its own colour because it
   //    is the one state that is about you rather than about the agent.
+  //  - interrupted (`--status-interrupted`, solid): you cut the agent's
+  //    turn off; it holds until the next turn starts. Like finished, it is
+  //    left off the viewed tab, whose screen already says "interrupted".
   // Working wins. Working and finished are about output you HAVEN'T seen, so
   // they never show on the viewed tab — its screen says it better. A pending
   // decision is the exception: it's about an agent that is BLOCKED, and it
@@ -777,13 +780,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
         ? attentionByTab[ptyId] ?? null
         : null;
     const attn = !isActive || rawAttn === "decision" ? rawAttn : null;
-    return working
-      ? busyStateClass(busyKindByTab[ptyId], tab.kind)
-      : attn === "decision"
-        ? " needs-decision"
-        : attn === "done"
-          ? " finished"
-          : "";
+    return working ? busyStateClass(busyKindByTab[ptyId], tab.kind) : attentionStateClass(attn);
   }
 
   // Tab groups (`lib/tabStacks`): a tab joins one by name. "New tab group…"

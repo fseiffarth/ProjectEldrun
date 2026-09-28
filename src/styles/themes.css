@@ -105,6 +105,10 @@
      busy agent part at a glance; same dotted stroke, since it is still the
      "not finished yet" state. */
   --status-shell-working: var(--info);
+  /* An agent turn the user cut off (Esc / Ctrl+C mid-turn): neither finished
+     nor waiting, so neither of the agent colours. Solid, like the other two
+     states the agent is no longer working in. */
+  --status-interrupted: var(--danger);
   /* Header logo: pure black on light themes, pure white on dark. Defaulted on
      :root so the plain `dark` theme inherits #fff without redeclaring it. */
   --logo-color: #fff;

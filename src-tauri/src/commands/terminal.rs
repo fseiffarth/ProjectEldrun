@@ -63,6 +63,9 @@ pub struct PtySpawned {
     /// The session name rode in on the launch argv (Claude's `--name`), so the
     /// tab must not also type its `/rename` line.
     pub named: bool,
+    /// The tab's previous process died mid-turn (`agent_turn::bind_tab`): the
+    /// tab starts out marked interrupted.
+    pub interrupted: bool,
 }
 
 /// Append Claude's `--name=<name>` to a launch argv, unless there is no name
@@ -502,9 +505,10 @@ pub async fn pty_spawn(
     // The agent's hooks report its turn state under its tab uid; bind that uid
     // to this PTY so the report reaches the tab's own marks, and drop any
     // record a previous run of the same tab left behind (see agent_turn).
-    if let Some(uid) = opts.env.get("ELDRUN_TAB_UID").cloned() {
-        crate::services::agent_turn::bind_tab(&uid, &opts.id, opts.project_id.as_deref());
-    }
+    let interrupted = match opts.env.get("ELDRUN_TAB_UID").cloned() {
+        Some(uid) => crate::services::agent_turn::bind_tab(&uid, &opts.id, opts.project_id.as_deref()),
+        None => false,
+    };
 
     // Codex resume, without the hook. Codex will not run Eldrun's SessionStart
     // hook until the user trusts it (`/hooks`), and an untrusted hook fails
@@ -788,7 +792,7 @@ pub async fn pty_spawn(
             None => crate::services::agent_fence::untrack_host_agent_tab(&spawned_tab_id),
         }
     }
-    result.map(|()| PtySpawned { named })
+    result.map(|()| PtySpawned { named, interrupted })
 }
 
 /// Honest per-scope fence status for the project-pill menu.  This performs no

@@ -16,7 +16,7 @@ export interface StackMember {
   tab: TabEntry;
   /** Position in the bar's ordered tabs. */
   index: number;
-  /** The tab's status-ring class (`busyStateClass` / needs-decision / finished). */
+  /** The tab's status-ring class (`busyStateClass` / `attentionStateClass`). */
   stateClass: string;
 }
 
@@ -38,7 +38,7 @@ interface Props {
  *  pending decision is about the user, so it outranks work in progress. */
 function stackStateClass(members: StackMember[]): string {
   const pick = (needle: string) => members.find((m) => m.stateClass.includes(needle))?.stateClass;
-  return pick("needs-decision") ?? pick("working") ?? pick("finished") ?? "";
+  return pick("needs-decision") ?? pick("working") ?? pick("finished") ?? pick("interrupted") ?? "";
 }
 
 /**

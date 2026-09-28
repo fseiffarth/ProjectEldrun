@@ -95,9 +95,13 @@ fn bindings() -> &'static Mutex<HashMap<String, String>> {
 /// forget any turn record an earlier run of that tab left behind — a resumable
 /// tab keeps its uid across relaunches, and a `working` written before a crash
 /// or quit would otherwise be the first thing the watcher reports for it.
-pub fn bind_tab(uid: &str, pty_id: &str, project_id: Option<&str>) {
+///
+/// Returns whether that record held a turn still in flight: the previous
+/// process of this tab died mid-turn (a quit SIGKILLs agents, so no `Stop` or
+/// `SessionEnd` ever overwrote it), and the tab starts out interrupted.
+pub fn bind_tab(uid: &str, pty_id: &str, project_id: Option<&str>) -> bool {
     if uid.is_empty() || uid.chars().any(|c| !(c.is_ascii_alphanumeric() || c == '-')) {
-        return;
+        return false;
     }
     // One PTY, one uid: a respawn under a new uid must not leave the old key
     // pointing at this PTY, nor its turn state and job flag behind it.
@@ -105,7 +109,20 @@ pub fn bind_tab(uid: &str, pty_id: &str, project_id: Option<&str>) {
     bindings().lock().unwrap().insert(uid.to_string(), pty_id.to_string());
     states().lock().unwrap().remove(uid);
     jobs().lock().unwrap().remove(uid);
+    let cut_off = records_hold_turn_in_flight(&record_paths(uid, project_id));
     clear_record(uid, project_id);
+    cut_off
+}
+
+/// Whether any of a tab's turn records says `working` or `decision` — a turn
+/// begun and never ended.
+fn records_hold_turn_in_flight(paths: &[PathBuf]) -> bool {
+    paths.iter().any(|p| {
+        std::fs::read_to_string(p)
+            .ok()
+            .and_then(|text| parse_turn_record(&text))
+            .is_some_and(|state| matches!(state, TurnState::Working | TurnState::Decision))
+    })
 }
 
 /// Drop the binding(s) of a PTY that is gone, and whatever was recorded about
@@ -542,13 +559,27 @@ mod tests {
     }
 
     #[test]
+    fn a_leftover_record_mid_turn_reads_as_cut_off() {
+        let dir = std::env::temp_dir().join(format!("eldrun-turn-{}-{}", std::process::id(), line!()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("a.turn");
+        let slice = dir.join("b.turn");
+        assert!(!records_hold_turn_in_flight(&[root.clone(), slice.clone()]));
+        for (word, cut) in [("working 1", true), ("decision 2", true), ("done 3", false), ("idle 4", false), ("", false)] {
+            std::fs::write(&slice, word).unwrap();
+            assert_eq!(records_hold_turn_in_flight(&[root.clone(), slice.clone()]), cut, "{word:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn rebinding_a_pty_forgets_its_previous_uid_and_refuses_a_bad_one() {
         let pty = "proj-b:agent-turn-2";
         bind_tab("old-uid-2", pty, None);
         bind_tab("new-uid-2", pty, None);
         assert_eq!(pty_for("old-uid-2"), None);
         assert_eq!(pty_for("new-uid-2").as_deref(), Some(pty));
-        bind_tab("../escape", pty, None);
+        assert!(!bind_tab("../escape", pty, None));
         assert_eq!(pty_for("../escape"), None);
         assert_eq!(pty_for("new-uid-2").as_deref(), Some(pty));
         on_tab_gone(pty);
