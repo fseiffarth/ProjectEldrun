@@ -6427,6 +6427,7 @@ export const en = {
   "fileViewer.shellEscapeNotePost": "flags are always stripped — Eldrun never enables them.",
   "fileViewer.syncMissMsg": "PDF updated — SyncTeX couldn't locate the cursor in it (no match on that line), so the PDF kept its position. Put the caret in body text and recompile to jump there.",
   "fileViewer.syncUnavailMsg": "PDF updated — but jump-to-cursor is unavailable because SyncTeX didn't run. If you just changed Eldrun, rebuild and restart it; otherwise check that the `synctex` tool is installed.",
+  "fileViewer.syncNoPdfMsg": "Nothing to jump to yet — this document hasn't been compiled, so there is no PDF. Compile it first; Ctrl+click then shows that spot in the PDF. (Ctrl+click an \\input{…} path itself to open that file.)",
   "fileViewer.compileUnchangedMsg": "Nothing changed since the last build — every source on disk still matches the previous run, so the PDF was left as it was. If you expected new content, check that every edited file was saved.",
   "fileViewer.compileDriverNote": "latexmk reported a problem, but the engine still produced the PDF — usually configuration rather than an error in the document (warnings treated as errors in a `latexmkrc`, an unresolved reference, a bibliography step). What it said:",
   "fileViewer.shellEscapeWarnPre": "This compile ran with LaTeX shell-escape (",

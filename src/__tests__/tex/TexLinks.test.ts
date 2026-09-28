@@ -20,6 +20,7 @@ import {
   resolveTexRef,
   resolveTexRefAsync,
   texRefRanges,
+  texRefHitRanges,
   texRefCreation,
   texPathExists,
   createTexRefFile,
@@ -28,6 +29,29 @@ import {
 } from "../../lib/viewers/tex/tex";
 
 const MAIN = "/home/u/proj/paper.tex";
+
+describe("texRefHitRanges", () => {
+  it("covers the rest of the command around the underlined path, all following the same ref", () => {
+    const src = "x \\includegraphics[width=3cm]{fig/a} y";
+    const hits = texRefHitRanges(src);
+    const tokens = texRefRanges(src);
+    // Hit ranges plus the token range tile the whole command exactly.
+    const all = [...hits, ...tokens].sort((a, b) => a.start - b.start);
+    expect(src.slice(all[0].start, all[all.length - 1].end)).toBe("\\includegraphics[width=3cm]{fig/a}");
+    for (let i = 1; i < all.length; i++) expect(all[i].start).toBe(all[i - 1].end);
+    expect(hits.every((h) => h.hit)).toBe(true);
+    // Every hit range's start (its `data-off`) resolves to the same reference.
+    for (const h of hits) {
+      expect(findTexRefAt(src, h.start)).toEqual({ command: "includegraphics", token: "fig/a" });
+    }
+  });
+
+  it("keeps the commas between tokens clickable, and skips a commented-out ref", () => {
+    const src = "\\bibliography{a, b}\n% \\input{old}\n";
+    const hits = texRefHitRanges(src).map((h) => src.slice(h.start, h.end));
+    expect(hits).toEqual(["\\bibliography{", ", ", "}"]);
+  });
+});
 
 describe("findTexRefAt", () => {
   it("finds an \\input under the caret and returns its token", () => {

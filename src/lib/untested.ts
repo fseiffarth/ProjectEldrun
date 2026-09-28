@@ -94,6 +94,7 @@ export const UNTESTED = {
   "fileViewer.autocompleteLabel": { area: "embed", what: "FileViewerPane · Autocomplete" },
   "fileViewer.beamerToggle": { area: "embed", what: "FileViewerPane · Beamer" },
   "fileViewer.compileUnchangedMsg": { area: "embed", what: "FileViewerPane · Nothing changed since the last build — every source on disk still matches the previous ru…" },
+  "fileViewer.syncNoPdfMsg": { area: "embed", what: "FileViewerPane · Ctrl+click before any compile: \"hasn't been compiled\" note (+ Ctrl+click anywhere on \\input{…} opens it)" },
   "fileViewer.texPreviewLabel": { area: "embed", what: "FileViewerPane · Preview" },
   "fileViewerPane.1": { area: "embed", what: "FileViewerPane · Interactive session…" },
   "fileViewerPane.2": { area: "embed", what: "FileViewerPane · Add file remark…" },

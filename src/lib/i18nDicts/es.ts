@@ -6085,6 +6085,7 @@ export const dict: Dict = {
   "fileViewer.shellEscapeNotePost": "los flags siempre se eliminan — Eldrun nunca los habilita.",
   "fileViewer.syncMissMsg": "PDF actualizado — SyncTeX no pudo ubicar el cursor en él (sin coincidencia en esa línea), así que el PDF mantuvo su posición. Coloca el cursor en el texto y recompila para saltar ahí.",
   "fileViewer.syncUnavailMsg": "PDF actualizado — pero el salto al cursor no está disponible porque SyncTeX no se ejecutó. Si acabas de cambiar Eldrun, recompílalo y reinícialo; de lo contrario, verifica que la herramienta `synctex` esté instalada.",
+  "fileViewer.syncNoPdfMsg": "Aún no hay adónde saltar — este documento no se ha compilado, así que no hay PDF. Compílalo primero; después Ctrl+clic mostrará ese punto en el PDF. (Ctrl+clic sobre la ruta de un \\input{…} abre ese archivo.)",
   "fileViewer.compileUnchangedMsg": "Nada cambió desde la última compilación: cada fuente en disco sigue coincidiendo con la ejecución anterior, así que el PDF quedó como estaba. Si esperabas contenido nuevo, comprueba que cada archivo editado se haya guardado.",
   "fileViewer.compileDriverNote": "latexmk informó de un problema, pero el motor generó el PDF de todos modos: suele ser configuración y no un error del documento (avisos tratados como errores en un `latexmkrc`, una referencia sin resolver, un paso bibliográfico). Lo que dijo:",
   "fileViewer.shellEscapeWarnPre": "Esta compilación se ejecutó con shell-escape de LaTeX (",

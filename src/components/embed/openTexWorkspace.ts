@@ -1,4 +1,5 @@
-import { orderedTabKeys, useTabsStore, type TabEntry } from "../../stores/tabs";
+import { ROOT_SCOPE, orderedTabKeys, useTabsStore, type TabEntry } from "../../stores/tabs";
+import { useRootOverlayStore } from "../../stores/rootOverlay";
 import {
   centerTexWorkspace,
   compileTexWorkspace,
@@ -164,9 +165,16 @@ export async function focusTexWorkspaceForSource(sourcePath: string): Promise<bo
   const root = await resolveTexRoot(sourcePath);
   if (centerTexWorkspace(root, sourcePath)) return true;
   const store = useTabsStore.getState();
-  const existing = store.tabs.find(
-    (t) => t.kind === "embed" && t.viewer === "texworkspace" && t.embedPath === root,
-  );
+  const isWorkspace = (t: TabEntry) =>
+    t.kind === "embed" && t.viewer === "texworkspace" && t.embedPath === root;
+  // The root console's tabs are on screen too while it floats over a project
+  // (the same rule as `tabKeyForPath`): missing its workspace here sent every
+  // reverse click from a console PDF to the standalone open, one more tab each.
+  const existing =
+    store.tabs.find(isWorkspace) ??
+    (useRootOverlayStore.getState().open
+      ? store.tabsByScope[ROOT_SCOPE]?.find(isWorkspace)
+      : undefined);
   if (!existing) return false;
   const detachedGroups = store.detachedGroupsByScope[existing.scope ?? store.scope] ?? [];
   if (detachedGroups.some((g) => orderedTabKeys(g.subtree).includes(existing.key))) {

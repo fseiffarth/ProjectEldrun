@@ -2423,8 +2423,12 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
 
   // The current-scope variant of `addTabToScope`. One implementation: the two
   // were near-identical copies and had already drifted (only this one threaded
-  // `seeded` through).
-  addTab: (tab, opts) => get().addTabToScope(get().scope, tab, opts),
+  // `seeded` through). In a popout the "current scope" is the popout's own
+  // (`ctx.scope`): its heap's `scope` never leaves the store default `"root"`,
+  // so every plain `addTab` there — a Ctrl+clicked `\input`, a followed link —
+  // used to be shipped as an add-to-ROOT, one fresh copy per click.
+  addTab: (tab, opts) =>
+    get().addTabToScope(getDetachedWindowContext()?.scope ?? get().scope, tab, opts),
 
   addTabToScope: (scope, tab, opts) => {
     // Popout heap (#231): this store owns no layout, so a tab minted here would

@@ -217,6 +217,7 @@ import {
   addTexChildFile,
   type TexRefCreation,
   texRefRanges,
+  texRefHitRanges,
   synctexViewBest,
   pickSyncRect,
   sourceColumnFraction,
@@ -859,8 +860,13 @@ export function openLinkedFile(
   resolved: { path: string; viewer: InternalViewer; label: string; mdGraphOriginKey?: string },
 ) {
   const store = useTabsStore.getState();
+  // A `.tex` editor tab that healed into a workspace (`FileViewerPane`) is
+  // still this file's tab: matching only `viewer: "tex"` answered every later
+  // open of that document with one more copy.
   const sameFile = (t: TabEntry) =>
-    t.kind === "embed" && t.viewer === resolved.viewer && t.embedPath === resolved.path;
+    t.kind === "embed" &&
+    t.embedPath === resolved.path &&
+    (t.viewer === resolved.viewer || (resolved.viewer === "tex" && t.viewer === "texworkspace"));
   const tab = {
     label: resolved.label,
     cmd: "",
@@ -2101,7 +2107,10 @@ export function useReadonlyFile(path: string) {
  * surrounding text is escaped and emitted plain (transparent), so only the link
  * spans paint. SECURITY: every run of source text is HTML-escaped before output.
  */
-export function decorateLinkRanges(source: string, ranges: { start: number; end: number }[]): string {
+export function decorateLinkRanges(
+  source: string,
+  ranges: { start: number; end: number; hit?: boolean }[],
+): string {
   if (ranges.length === 0) return escapeHtmlText(source);
   const sorted = [...ranges].sort((a, b) => a.start - b.start);
   let out = "";
@@ -2113,7 +2122,10 @@ export function decorateLinkRanges(source: string, ranges: { start: number; end:
     // the link by the span it lands on rather than by `selectionStart` — a
     // modified click does not reposition a textarea's caret, so the caret is
     // stale exactly when the follow needs it.
-    out += `<span class="file-link" data-off="${r.start}">${escapeHtmlText(source.slice(r.start, r.end))}</span>`;
+    // A `hit` range is clickable but not a link to look at (the rest of an
+    // `\input{…}` around its underlined path): same hit box, no underline.
+    const cls = r.hit ? "file-link-hit" : "file-link";
+    out += `<span class="${cls}" data-off="${r.start}">${escapeHtmlText(source.slice(r.start, r.end))}</span>`;
     pos = r.end;
   }
   out += escapeHtmlText(source.slice(pos));
@@ -2866,7 +2878,7 @@ function CodeEditor({
   editorApiRef?: React.MutableRefObject<EditorApi | null>;
   /** When set, returns the source ranges to decorate as clickable file links
    *  (#49). Currently the LaTeX viewer's `\input{…}`/`\includegraphics{…}` args. */
-  linkRanges?: (source: string) => { start: number; end: number }[];
+  linkRanges?: (source: string) => { start: number; end: number; hit?: boolean }[];
   /** Undo/redo handlers (#46) — wired to Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y. */
   undo?: () => void;
   redo?: () => void;
@@ -2978,7 +2990,7 @@ function CodeEditor({
         return;
       }
       let hit: DOMRect | null = null;
-      for (const span of layer.querySelectorAll<HTMLElement>(".file-link")) {
+      for (const span of layer.querySelectorAll<HTMLElement>(".file-link, .file-link-hit")) {
         const r = span.getBoundingClientRect();
         if (linkRectHit(r, x, y)) {
           hit = r;
@@ -2999,7 +3011,7 @@ function CodeEditor({
   const linkOffsetAt = useCallback((x: number, y: number): number | null => {
     const layer = linkLayerRef.current;
     if (!layer) return null;
-    for (const span of layer.querySelectorAll<HTMLElement>(".file-link")) {
+    for (const span of layer.querySelectorAll<HTMLElement>(".file-link, .file-link-hit")) {
       const r = span.getBoundingClientRect();
       if (linkRectHit(r, x, y)) {
         const off = span.getAttribute("data-off");
@@ -9352,7 +9364,11 @@ function TexView({
   // #49 + #tex-ref-jump: decorate every `\input{…}`/`\includegraphics{…}` path and
   // every `\ref{…}`/`\cite{…}` key so both read as the clickable links they are.
   const linkRanges = useCallback(
-    (source: string) => [...texRefRanges(source), ...texKeyRefRanges(source)],
+    (source: string) => [
+      ...texRefRanges(source),
+      ...texRefHitRanges(source),
+      ...texKeyRefRanges(source),
+    ],
     [],
   );
 
@@ -9397,8 +9413,10 @@ function TexView({
   // failure (the PDF is always shown/refreshed regardless). `"miss"` = SyncTeX
   // ran but found no box for that line (the PDF kept its position); `"unavail"` =
   // SyncTeX could not run at all (tool absent, or a backend not yet rebuilt), the
-  // case that used to masquerade as a miss. Auto-cleared by the effect below.
-  const [syncNote, setSyncNote] = useState<null | "miss" | "unavail">(null);
+  // case that used to masquerade as a miss; `"noPdf"` = a Ctrl/⌘+click forward
+  // search before the document was ever compiled, so there is no PDF to jump
+  // into yet. Auto-cleared by the effect below.
+  const [syncNote, setSyncNote] = useState<null | "miss" | "unavail" | "noPdf">(null);
   // The last build finished without running an engine (latexmk found every
   // source unchanged) — a success that produced nothing new. Cleared by the
   // next build; shown until then so it explains the PDF the reader is looking at.
@@ -9592,6 +9610,12 @@ function TexView({
     async (caret: number) => {
       const pdf = targetPdf();
       setSyncNote(null);
+      // Not compiled yet: say so, rather than letting SyncTeX fail on the
+      // missing PDF and read as "SyncTeX didn't run".
+      if (!(await texPathExists(pdf, scope))) {
+        setSyncNote("noPdf");
+        return;
+      }
       const { line, column } = offsetToLineCol(draftRef.current, caret);
       const phrase = phraseAt(draftRef.current, caret) ?? undefined;
       // Try every spelling SyncTeX might have stored the source under. `null` here
@@ -9608,7 +9632,7 @@ function TexView({
         setSyncNote(recs === null ? "unavail" : "miss");
       }
     },
-    [targetPdf, path, openPdf, rootDir],
+    [targetPdf, path, openPdf, rootDir, scope],
   );
 
   // Ctrl/⌘+click in the editor: follow a `\input{…}`-style reference when the
@@ -9647,6 +9671,11 @@ function TexView({
       // #54: pass the compiler options. The backend filters extra_flags so none
       // can ever enable shell-escape (compile_args_never_enable_shell_escape).
       const flags = extraFlags.trim().split(/\s+/).filter(Boolean);
+      // A compile the reader asked for always builds: latexmk's `-g` overrides
+      // its "every source unchanged, nothing to do" no-op, which otherwise hands
+      // back the old PDF (say after an \input'd file changed outside Eldrun or a
+      // package was updated). The direct-engine path always runs the engine.
+      if (cap?.latexmk && !flags.some((f) => /^-g+$/.test(f))) flags.unshift("-g");
       const res = await invokeTrusted<TexCompileResult>("compile_tex", {
         path: target,
         engine: engine || null,
@@ -9732,6 +9761,7 @@ function TexView({
     engine,
     outDir,
     extraFlags,
+    cap?.latexmk,
     openPdf,
     rootDir,
     t,
@@ -10079,7 +10109,14 @@ function TexView({
       )}
       {syncNote && (
         <div className="file-viewer-tex-sync-miss" role="status">
-          {t(syncNote === "unavail" ? "fileViewer.syncUnavailMsg" : "fileViewer.syncMissMsg")}
+          {t(
+            syncNote === "noPdf"
+              ? "fileViewer.syncNoPdfMsg"
+              : syncNote === "unavail"
+                ? "fileViewer.syncUnavailMsg"
+                : "fileViewer.syncMissMsg",
+          )}
+          {syncNote === "noPdf" && <UntestedTag id="fileViewer.syncNoPdfMsg" />}
         </div>
       )}
       {shellEscape && (
