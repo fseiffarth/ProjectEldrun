@@ -3320,6 +3320,28 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ✅ Works on macOS
     - [ ] ❌ Doesn't work on macOS
 
+- [~] **31bp — The phone's host updates itself at launch** (2026-09-28;
+  ✅ code-complete, unit test `a_launch_updates_a_host_that_is_behind_…`;
+  ⚠️ never seen live). `start_host_on_launch` reinstalls the sidecar copy
+  (`mobile_host_apply`) when this version has no copy, the copy is an earlier
+  build, or the answering host reports another version; on failure it starts
+  the old copy as before. Why: 31bo's project files stayed invisible behind an old copy
+  until Update host was clicked. A debug window copies its ~700 MB image on
+  each launch that is behind.
+  - [ ] 🖐️ Manual QA — with Mobile on, relaunch Eldrun after a new build →
+    `journalctl --user -u eldrun-mobile-host` shows a restart right after the
+    launch, Settings → Mobile no longer offers Update host, and a new route
+    (e.g. 31bo's project files) works without clicking anything. Relaunch again with no new
+    build → no restart.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
+
 *Not coming to the phone (decided, not forgotten — see
 `docs/mobile_box_parity_plan.md`): editing a box from the phone (membership,
 rename, Dissolve), listing a box's members as project rows, a per-member

@@ -109,6 +109,11 @@ dd-mm hh:mm`), the same line as the home screen's header. After the desktop
 updates, a build time older than the desktop's means the phone is still
 running an old copy: close and reopen the app.
 
+The desktop keeps the phone's server up to date by itself: each time Eldrun
+starts, a server older than Eldrun is replaced (phones reconnect within
+seconds). If that fails — Tailscale down, say — the old server keeps running
+and **Settings → Mobile → Update host** does it by hand.
+
 ## If a phone goes missing
 
 The header's Mobile button shows the host status. **Revoke** drops one device;
