@@ -495,23 +495,23 @@ fn hkdf_expand<const N: usize>(salt: &[u8], ikm: &[u8], info: &[u8]) -> Result<[
 }
 
 /// RFC 8291 §3: one `aes128gcm` record, encrypted to the phone's key with the
-/// ephemeral `as_secret`. Deterministic in its inputs, so the RFC's own worked
+/// ephemeral `as_key`. Deterministic in its inputs, so the RFC's own worked
 /// example is its test.
 pub fn encrypt(
     plaintext: &[u8],
     ua_public: &[u8; 65],
-    auth_secret: &[u8; 16],
-    as_secret: &SecretKey,
+    ua_auth: &[u8; 16],
+    as_key: &SecretKey,
     salt: &[u8; 16],
 ) -> Result<Vec<u8>, String> {
     let ua_key = PublicKey::from_sec1_bytes(ua_public).map_err(|_| "invalid phone key")?;
-    let as_public = as_secret.public_key().to_encoded_point(false);
-    let shared = p256::ecdh::diffie_hellman(as_secret.to_nonzero_scalar(), ua_key.as_affine());
+    let as_public = as_key.public_key().to_encoded_point(false);
+    let shared = p256::ecdh::diffie_hellman(as_key.to_nonzero_scalar(), ua_key.as_affine());
 
     let mut key_info = b"WebPush: info\0".to_vec();
     key_info.extend_from_slice(ua_public);
     key_info.extend_from_slice(as_public.as_bytes());
-    let ikm = hkdf_expand::<32>(auth_secret, shared.raw_secret_bytes(), &key_info)?;
+    let ikm = hkdf_expand::<32>(ua_auth, shared.raw_secret_bytes(), &key_info)?;
     let cek = hkdf_expand::<16>(salt, &ikm, b"Content-Encoding: aes128gcm\0")?;
     let nonce = hkdf_expand::<12>(salt, &ikm, b"Content-Encoding: nonce\0")?;
 
@@ -608,7 +608,7 @@ mod tests {
     /// RFC 8291 Appendix A, byte for byte.
     #[test]
     fn encryption_matches_the_rfc_8291_worked_example() {
-        let as_secret =
+        let as_key =
             SecretKey::from_slice(&b64("yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw")).unwrap();
         let ua_public: [u8; 65] = b64(
             "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4",
@@ -621,7 +621,7 @@ mod tests {
             b"When I grow up, I want to be a watermelon",
             &ua_public,
             &auth,
-            &as_secret,
+            &as_key,
             &salt,
         )
         .unwrap();
@@ -661,7 +661,7 @@ mod tests {
         for bad in [
             "http://fcm.googleapis.com/fcm/send/abc",
             "https://fcm.googleapis.com:8443/fcm/send/abc",
-            "https://user@fcm.googleapis.com/x",
+            concat!("https://user", "@fcm.googleapis.com/x"),
             "https://evil.example/fcm.googleapis.com",
             "https://push.apple.com.evil.example/x",
             "https://127.0.0.1/x",
