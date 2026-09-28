@@ -2330,6 +2330,48 @@ async fn prompt_send(
     .await
 }
 
+/// `POST /api/v1/tabs/{id}/undo-clear` — the phone's Undo after a Clear: the
+/// desktop types the resume of the conversation the tab's last `/clear` ended
+/// (`DesktopRequest::UndoClear`). The session id never reaches the phone; a
+/// session that has moved on answers `409 nothing_to_undo`.
+async fn undo_clear(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(tab_id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(error) = mutation_guard(&headers, &state) {
+        return error;
+    }
+    let (project_id, tmux_session) = match agent_tab_target(&state, &tab_id) {
+        Ok(target) => target,
+        Err(error) => return error,
+    };
+    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    let request_id = Base64UrlUnpadded::encode_string(&random_16());
+    match admin::desktop_call(
+        &desktop_socket,
+        &DesktopRequest::UndoClear {
+            request_id,
+            project_id,
+            tmux_session,
+        },
+    )
+    .await
+    {
+        Ok(DesktopResponse::Seen) => (StatusCode::OK, Json(json!({ "undone": true }))),
+        Ok(DesktopResponse::Error { code, .. }) => api_error(
+            match code.as_str() {
+                "desktop_unavailable" | "tab_not_ready" => StatusCode::SERVICE_UNAVAILABLE,
+                "tab_not_found" => StatusCode::NOT_FOUND,
+                "nothing_to_undo" | "remote_tab" => StatusCode::CONFLICT,
+                _ => StatusCode::BAD_REQUEST,
+            },
+            &code,
+        ),
+        _ => api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable"),
+    }
+}
+
 /// Tell the desktop a phone had this agent tab on screen, so its activity
 /// store marks the tab's output read (see `clearAttention`). Fire-and-forget:
 /// nothing in the terminal path may wait on the desktop, which is why this
@@ -3032,6 +3074,7 @@ fn router(state: HostState) -> Router {
         .route("/api/v1/tabs/{tab_id}/color", put(color_tab))
         .route("/api/v1/tabs/{tab_id}/order", put(order_tab))
         .route("/api/v1/tabs/{tab_id}/prompt", post(sent_prompt))
+        .route("/api/v1/tabs/{tab_id}/undo-clear", post(undo_clear))
         .route("/api/v1/tabs/{tab_id}/sign-in", post(sign_in_tab))
         .route("/api/v1/tabs/{tab_id}/sign-in-callback", post(sign_in_callback))
         .route(

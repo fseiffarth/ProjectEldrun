@@ -411,6 +411,14 @@ export function reportSentPrompt(tabId: string, message: string): Promise<unknow
   return api(`/api/v1/tabs/${encodeURIComponent(tabId)}/prompt`, { method: "POST", body: JSON.stringify({ message }) });
 }
 
+/** `POST /api/v1/tabs/{id}/undo-clear` — take back this agent tab's last
+ * `/clear`: the desktop types the resume of the conversation it ended (the
+ * session id never comes here). `409 nothing_to_undo` once the session has
+ * moved on. A bridge call, so it needs desktop Eldrun open. */
+export function undoClear(tabId: string): Promise<{ undone: boolean }> {
+  return api(`/api/v1/tabs/${encodeURIComponent(tabId)}/undo-clear`, { method: "POST" });
+}
+
 /** `POST /api/v1/tabs/{id}/sign-in-callback` — the address the phone's
  * browser ended on after an agent's sign-in redirected it to `localhost`,
  * for the desktop to deliver to the CLI waiting there. The sidecar does it

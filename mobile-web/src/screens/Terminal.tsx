@@ -24,6 +24,7 @@ import {
   openSignInTab,
   recoverSession,
   reportSentPrompt,
+  undoClear,
   uploadToInbox,
   type DesktopImage,
   type OutboxFile,
@@ -178,6 +179,12 @@ const AGENT_SUBMIT_GAP = 200;
  * "Where should the new conversation run?" picker, which the button's single
  * Enter leaves waiting on the desktop (2026-09-23). */
 const NEW_CONVERSATION_COMMAND = "/clear";
+/** How long an Undo that found no clear recorded yet waits before its one
+ * retry: the desktop's hook writes the record as Claude starts the new chat. */
+const UNDO_CLEAR_RETRY = 1_200;
+/** When the Reader reads the session again after an Undo: a relaunched agent
+ * takes a few seconds to come back onto the conversation it resumes. */
+const UNDO_RELOADS = [2_000, 5_000, 10_000];
 const CODEX_AGENT = /codex/iu;
 
 /** Session lines the phone keeps. Matches the desktop sidecar's replay depth
@@ -780,6 +787,14 @@ export function Terminal({ tab, back, pickModel = false, signInTab = false, open
    * (`clearedSession.ts`): until the new chat has a transcript of its own, what
    * the desktop answers with is the conversation just cleared. */
   const [clearedAt, setClearedAt] = useState<ClearMark | null>(null);
+  /** A clear from here that can still be taken back: the Clear chip reads
+   * Undo until the new chat is given a prompt (Claude only — the desktop
+   * types the resume of the conversation cleared, `undoClear`). */
+  const [undoable, setUndoable] = useState(false);
+  /** Why the last Undo did nothing, shown under the composer. */
+  const [undoNote, setUndoNote] = useState<TranslationKey | "">("");
+  /** Bumped to make the Reader read the stored session again at once. */
+  const [transcriptReload, setTranscriptReload] = useState(0);
   /** The new-conversation button was tapped while Codex worked — Codex refuses
    * `/clear` then, and says so only on the desktop's screen. */
   const [clearRefused, setClearRefused] = useState(false);
@@ -879,6 +894,8 @@ export function Terminal({ tab, back, pickModel = false, signInTab = false, open
     setPending([]);
     setClearedAt(null);
     setClearRefused(false);
+    setUndoable(false);
+    setUndoNote("");
     setFocusSource("session");
     setFocusMenu(false);
     setStatusStrip(false);
@@ -1610,6 +1627,9 @@ export function Terminal({ tab, back, pickModel = false, signInTab = false, open
           if (stopped || controller.signal.aborted) return;
           // A malformed answer is a failed read: keep what is shown.
           if (!next || typeof next !== "object" || next.unchanged) return;
+          // A forced full read (after an Undo) answers the same session: keep
+          // what is shown, but ask by its version again from here on.
+          transcriptVersion.current = next.version;
           setTranscript((current) => current && sameTranscript(current, next) ? current : next);
         },
         () => {},
@@ -1624,7 +1644,7 @@ export function Terminal({ tab, back, pickModel = false, signInTab = false, open
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", read);
     };
-  }, [tab.id, tab.kind, view, transcriptLimit]);
+  }, [tab.id, tab.kind, view, transcriptLimit, transcriptReload]);
   useEffect(() => {
     if (!sessionFocus || screenTick === 0) return;
     const timer = window.setTimeout(() => {
@@ -1994,6 +2014,9 @@ export function Terminal({ tab, back, pickModel = false, signInTab = false, open
       rememberSlashCommand(slashCliKey, draft);
       setUsedSlash(readSlashCommands(slashCliKey));
     } else {
+      // The new chat has a prompt now: resuming the old one would leave it.
+      setUndoable(false);
+      setUndoNote("");
       const sent = pendingPrompt(id, draft, storedEntries);
       setPending((current) => [...current, sent].slice(-MAX_PENDING));
       // The phone knows the words before they leave; the desktop records them
@@ -2027,7 +2050,47 @@ export function Terminal({ tab, back, pickModel = false, signInTab = false, open
    * and refused it — then the conversation goes on, and so does the chat. */
   const startedOver = () => {
     setPending([]);
-    if (!codexBusy()) setClearedAt(clearMark(transcript?.entries ?? []));
+    setUndoNote("");
+    if (codexBusy()) return;
+    setClearedAt(clearMark(transcript?.entries ?? []));
+    // Every agent Eldrun resumes can take the clear back — the desktop decides
+    // how, and says so when a tab is not one of them. Aider resumes nothing.
+    setUndoable(slashCliKey !== "aider");
+  };
+  /** The Undo chip: the desktop brings back the conversation just cleared —
+   * in-session for Claude, by relaunching the tab onto it for the others, as a
+   * restart of Eldrun would. Claude's hook records the clear a moment after the
+   * command lands, so a tap that beats it is tried once more. */
+  const undoClearConversation = () => {
+    setUndoable(false);
+    setUndoNote("");
+    const attempt = (retry: boolean): void => {
+      undoClear(tab.id)
+        .then(() => {
+          // The cleared conversation is the session read again, all of it:
+          // read it afresh now, and again while a relaunched agent comes up.
+          setClearedAt(null);
+          transcriptVersion.current = undefined;
+          setTranscriptReload((count) => count + 1);
+          for (const delay of UNDO_RELOADS) {
+            window.setTimeout(() => {
+              transcriptVersion.current = undefined;
+              setTranscriptReload((count) => count + 1);
+            }, delay);
+          }
+        })
+        .catch((error) => {
+          const code = error instanceof ApiError ? error.code : "";
+          if (code === "nothing_to_undo" && retry) {
+            window.setTimeout(() => attempt(false), UNDO_CLEAR_RETRY);
+            return;
+          }
+          setUndoNote(code === "nothing_to_undo" ? "mobile.composer.undoGone"
+            : code === "remote_tab" ? "mobile.composer.undoRemote"
+            : "mobile.composer.undoFailed");
+        });
+    };
+    attempt(true);
   };
   /** The bar's Clear chip sends the selected CLI's new-conversation command at
    * once — no confirm dialog. The draft is left alone. A Codex that is working
@@ -3011,6 +3074,7 @@ export function Terminal({ tab, back, pickModel = false, signInTab = false, open
       {tab.kind === "agent" && voiceLine && <div className={voiceProblem ? "voice-feedback error" : "voice-feedback"} role={voiceProblem ? "alert" : "status"} aria-live="polite">{voiceLine}{listening && !voiceProblem && !voicePreview && isUntested("mobile.voice.keepListening") && <em>{t("mobile.focus.untested")}</em>}</div>}
       {stoppedReason && <div className="voice-feedback error" role="alert">{stoppedReason}{isUntested("mobile.link.failureText") && <em> · {t("mobile.focus.untested")}</em>}</div>}
       {sendFailed && !stoppedReason && <div className="voice-feedback error" role="alert">That did not reach the desktop — the connection dropped. Send it again once it is back.</div>}
+      {undoNote && <div className="voice-feedback" role="status">{t(undoNote)}</div>}
       {clearRefused && liveBusy && <div className="voice-feedback" role="status">{t("mobile.composer.clearBusy")}{isUntested("mobile.composer.clearBusy") && <> · <em>{t("mobile.focus.untested")}</em></>}</div>}
       {lastSent && !sessionShown && <div className="last-sent"><span>Sent</span><p>{lastSent}</p></div>}
       {uploads.map((upload) => upload.failure
@@ -3087,8 +3151,12 @@ export function Terminal({ tab, back, pickModel = false, signInTab = false, open
               const plan = command === "/plan";
               return <button key={command} className={`composer-prefix${activePrefix === command ? " active" : ""}`} disabled={!connected} aria-pressed={activePrefix === command} onPointerDown={(event) => event.preventDefault()} onClick={() => togglePrefix(command)} title={t(plan ? "mobile.composer.planHint" : "mobile.composer.goalHint")}>{t(plan ? "mobile.composer.plan" : "mobile.composer.goal")}</button>;
             })}
-            {/* Clear sends /clear at once, draft or not; the draft stays. */}
-            <button className="composer-prefix" disabled={!connected} onPointerDown={(event) => event.preventDefault()} onClick={clearConversation} aria-label={t("mobile.composer.clearChat")} title={t("mobile.composer.clearChat")}>{t("mobile.composer.clearChip")}</button>
+            {/* Clear sends /clear at once, draft or not; the draft stays. Right
+                after one it reads Undo, until the new chat gets a prompt. */}
+            {undoable
+              ? <button className="composer-prefix" disabled={!connected} onPointerDown={(event) => event.preventDefault()} onClick={undoClearConversation} aria-label={t("mobile.composer.undoClearHint")} title={t("mobile.composer.undoClearHint")}>{t("mobile.composer.undoClear")}</button>
+              : <button className="composer-prefix" disabled={!connected} onPointerDown={(event) => event.preventDefault()} onClick={clearConversation} aria-label={t("mobile.composer.clearChat")} title={t("mobile.composer.clearChat")}>{t("mobile.composer.clearChip")}</button>}
+            {undoable && isUntested("mobile.composer.undoClear") && <em className="composer-untested">{t("mobile.focus.untested")}</em>}
             {(prefixCommands.length > 0 && isUntested("mobile.composer.prefix") || isUntested("mobile.composer.clearChip")) && <em className="composer-untested">{t("mobile.focus.untested")}</em>}
           </>}
           <span className="composer-spacer" />

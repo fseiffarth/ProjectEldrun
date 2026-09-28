@@ -214,6 +214,7 @@ function TabPaneImpl({
           hostSession={!!tab.hostSession}
           kind={tab.kind}
           scheduleTargetId={tab.scheduleTargetId}
+          relaunchSeq={tab.relaunchSeq ?? 0}
           zoomable={zoomable}
           visible={visible}
           focused={focused}

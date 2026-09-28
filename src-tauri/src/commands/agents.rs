@@ -1435,6 +1435,25 @@ pub async fn agent_tab_transcript(
     .unwrap_or_else(|_| AgentTranscript::unavailable("read_failed"))
 }
 
+/// How to take back the tab's last `/clear` (`services::agent_session::undo_clear_plan`):
+/// Claude types `/resume <id>` of the conversation it ended; Codex has its
+/// record pointed back at that conversation and is relaunched onto it. `None`
+/// once there is nothing to undo, or for an agent this does not know — the
+/// window relaunches the other resumable agents on their own resume flag.
+#[tauri::command]
+pub async fn agent_tab_undo_clear(
+    agent: String,
+    project_id: Option<String>,
+    session_id: String,
+) -> Option<crate::services::agent_session::UndoClearPlan> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::agent_session::undo_clear_plan(&agent, project_id.as_deref(), &session_id)
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 /// Read `agent`'s own usage panel by running its CLI's print mode once.
 ///
 /// Free in every sense that matters: the run is client-side (Claude's envelope

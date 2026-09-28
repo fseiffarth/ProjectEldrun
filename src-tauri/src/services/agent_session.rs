@@ -1267,6 +1267,15 @@ pub fn read_live_session_and_source_for(
     project_id: Option<&str>,
     uid: &str,
 ) -> Option<(String, Option<String>)> {
+    let dir = live_record_dir(project_id, uid)?;
+    let id = read_live_session_in(&dir, uid)?;
+    Some((id, read_live_source_in(&dir, uid)))
+}
+
+/// The root holding `uid`'s current session record: of the shared root and the
+/// project's own slice, the one whose record was written last (see
+/// [`read_live_session_for`]).
+fn live_record_dir(project_id: Option<&str>, uid: &str) -> Option<PathBuf> {
     let root = live_sessions_dir();
     let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
     let mut consider = |dir: &std::path::Path| {
@@ -1283,9 +1292,90 @@ pub fn read_live_session_and_source_for(
     if let Some(pid) = project_id {
         consider(&project_live_sessions_dir(pid));
     }
-    let (_, dir) = best?;
-    let id = read_live_session_in(&dir, uid)?;
-    Some((id, read_live_source_in(&dir, uid)))
+    best.map(|(_, dir)| dir)
+}
+
+/// Suffix of the record the hook writes beside a tab's session record when a
+/// `/clear` rolls it: the id of the conversation that clear ended. Written
+/// before the source and the new id, so a reader that sees `clear` sees it.
+pub const LIVE_CLEARED_SUFFIX: &str = ".prev";
+
+/// The Claude conversation the tab's last `/clear` ended, while taking it back
+/// is still an undo: the current session is the one that clear started (the
+/// source beside the winning record says `clear` — the undo's own `/resume`, or
+/// any later start, moves it on), and the cleared conversation's transcript is
+/// on disk to resume.
+pub fn cleared_session_for(project_id: Option<&str>, uid: &str) -> Option<String> {
+    let dir = live_record_dir(project_id, uid)?;
+    let roots = claude_projects_roots(project_id);
+    cleared_session_in(&dir, uid, |id| roots.iter().any(|root| claude_session_exists(root, id)))
+}
+
+/// How the window takes back a tab's last `/clear`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum UndoClearPlan {
+    /// Type this into the running session (Claude's `/resume <id>`).
+    Type { command: String },
+    /// Relaunch the tab the way a restart of Eldrun does: its resume resolves
+    /// through the record, which now names the cleared conversation.
+    Relaunch,
+}
+
+/// The undo for `agent`'s tab keyed `uid`, or `None` when there is nothing to
+/// take back. Claude resumes in-session by id. Codex's in-session `/resume` is a
+/// picker, so its record is pointed back at the conversation the clear ended
+/// (when the clear moved it at all — a Codex that reports no id for the new
+/// chat before its first prompt leaves the record where it was) and the tab is
+/// relaunched onto it, as `resolve_codex_session` does at every spawn. Every
+/// other resumable agent is relaunched by the window on its own resume flag,
+/// with nothing to prepare here.
+pub fn undo_clear_plan(agent: &str, project_id: Option<&str>, uid: &str) -> Option<UndoClearPlan> {
+    match agent {
+        "claude" => cleared_session_for(project_id, uid)
+            .map(|id| UndoClearPlan::Type { command: format!("/resume {id}") }),
+        "codex" => {
+            let roots = [
+                paths::home_dir().join(".codex").join("sessions"),
+                codex_sessions_root(project_id),
+            ];
+            let stores = crate::services::codex_store::state_dbs(Some(project_id.unwrap_or("root")));
+            let exists = |id: &str| {
+                roots.iter().any(|root| codex_session_log(root, id).is_some())
+                    || stores.iter().any(|db| crate::services::codex_store::thread_exists(db, id))
+            };
+            if let Some(dir) = live_record_dir(project_id, uid) {
+                if let Some(cleared) = cleared_session_in(&dir, uid, exists) {
+                    restore_cleared_in(&dir, uid, &cleared).ok()?;
+                }
+            }
+            Some(UndoClearPlan::Relaunch)
+        }
+        _ => None,
+    }
+}
+
+/// Point `uid`'s record back at `cleared` and call its start a resume, so the
+/// relaunch resumes that conversation and no second undo is offered for it.
+fn restore_cleared_in(dir: &std::path::Path, uid: &str, cleared: &str) -> std::io::Result<()> {
+    std::fs::write(dir.join(format!("{uid}{LIVE_SOURCE_SUFFIX}")), "resume")?;
+    write_live_session_in(dir, uid, cleared)
+}
+
+/// Testable core of [`cleared_session_for`] against the record's directory.
+fn cleared_session_in(
+    dir: &std::path::Path,
+    uid: &str,
+    session_exists: impl Fn(&str) -> bool,
+) -> Option<String> {
+    let live = read_live_session_in(dir, uid)?;
+    if read_live_source_in(dir, uid).as_deref() != Some("clear") {
+        return None;
+    }
+    // Same guard as the id record: the hook wrote it from agent-visible JSON.
+    let raw = std::fs::read_to_string(dir.join(format!("{uid}{LIVE_CLEARED_SUFFIX}"))).ok()?;
+    let cleared = raw.trim().to_string();
+    (is_uuidish(&cleared) && cleared != live && session_exists(&cleared)).then_some(cleared)
 }
 
 /// The `SessionStart` source recorded beside `uid`'s session record in `dir`.
@@ -1802,6 +1892,11 @@ fn posix_hook_script_body(live_dir: &str) -> String {
          \x20 SessionEnd) turn=idle ;;\n\
          esac\n\
          [ -n \"$turn\" ] && printf '%s %s' \"$turn\" \"$(date +%s)\" > \"$dir/$ELDRUN_TAB_UID.turn\"\n\
+         # A /clear keeps the id of the conversation it ended, so the clear can be\n\
+         # undone by resuming it; written before the source that says clear.\n\
+         if [ \"$event\" = SessionStart ] && [ \"$src\" = clear ] && [ \"$sid\" != \"${{cur:-$ELDRUN_TAB_UID}}\" ]; then\n\
+         \x20 printf '%s' \"${{cur:-$ELDRUN_TAB_UID}}\" > \"$dir/$ELDRUN_TAB_UID.prev\"\n\
+         fi\n\
          # A start also records how the session came about (startup / resume /\n\
          # clear / compact), written BEFORE the id so a reader that sees the new\n\
          # id sees the source that produced it.\n\
@@ -1899,6 +1994,12 @@ fn hook_script_body(live_dir: &str) -> String {
          \x20 'SessionEnd' {{ $turn = 'idle' }}\r\n\
          }}\r\n\
          if ($turn -ne '') {{ [IO.File]::WriteAllText(($rec + '.turn'), ($turn + ' ' + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds())) }}\r\n\
+         # A /clear keeps the id of the conversation it ended (see the POSIX twin).\r\n\
+         if (($event -eq 'SessionStart') -and $ms.Success -and ($ms.Groups[1].Value -eq 'clear')) {{\r\n\
+         \x20 $was = $cur\r\n\
+         \x20 if ($was -eq '') {{ $was = $uid }}\r\n\
+         \x20 if ($sid -ne $was) {{ [IO.File]::WriteAllText(($rec + '.prev'), $was) }}\r\n\
+         }}\r\n\
          if (($event -eq 'SessionStart') -or ($event -eq 'Stop')) {{\r\n\
          \x20 if (($event -eq 'SessionStart') -and $ms.Success) {{ [IO.File]::WriteAllText(($rec + '.src'), $ms.Groups[1].Value) }}\r\n\
          \x20 [IO.File]::WriteAllText($rec, $sid)\r\n\
@@ -2637,6 +2738,35 @@ mod tests {
         assert_eq!(read_live_source_in(&own, uid), None);
         assert_eq!(read_live_source_in(&own, "not-a-uid"), None);
 
+        // "Undo clear" names the cleared conversation only while the session is
+        // the one that clear started, the record is an id, and its transcript
+        // is there to resume.
+        let cleared = "dddddddd-4444-4444-4444-444444444444";
+        let prev_path = own.join(format!("{uid}{LIVE_CLEARED_SUFFIX}"));
+        assert_eq!(cleared_session_in(&own, uid, |_| true), None);
+        std::fs::write(&prev_path, format!("{cleared}\n")).unwrap();
+        assert_eq!(cleared_session_in(&own, uid, |_| true), None, "source is not clear");
+        std::fs::write(own.join(format!("{uid}{LIVE_SOURCE_SUFFIX}")), "clear").unwrap();
+        assert_eq!(cleared_session_in(&own, uid, |_| true).as_deref(), Some(cleared));
+        assert_eq!(cleared_session_in(&own, uid, |id| id != cleared), None, "no transcript");
+        std::fs::write(&prev_path, contained_id).unwrap();
+        assert_eq!(cleared_session_in(&own, uid, |_| true), None, "that is the live session");
+        std::fs::write(&prev_path, "../../etc/passwd").unwrap();
+        assert_eq!(cleared_session_in(&own, uid, |_| true), None);
+        std::fs::write(own.join(format!("{uid}{LIVE_SOURCE_SUFFIX}")), "resume").unwrap();
+
+        // Codex's undo points the record back at the cleared conversation and
+        // calls it a resume: the relaunch resumes it, and no second undo is left.
+        std::fs::write(own.join(format!("{uid}{LIVE_SOURCE_SUFFIX}")), "clear").unwrap();
+        std::fs::write(&prev_path, cleared).unwrap();
+        restore_cleared_in(&own, uid, cleared).unwrap();
+        assert_eq!(read_live_session_in(&own, uid).as_deref(), Some(cleared));
+        assert_eq!(read_live_source_in(&own, uid).as_deref(), Some("resume"));
+        assert_eq!(cleared_session_in(&own, uid, |_| true), None);
+        // An agent without an id to resume by gets no plan from here; the window
+        // relaunches it on its own resume flag.
+        assert_eq!(undo_clear_plan("gemini", None, uid), None);
+
         // The project id is reduced to exactly one path-safe component.
         assert_eq!(sanitize_project_key("my proj/../x"), "my_proj____x");
         assert_eq!(sanitize_project_key(""), "x");
@@ -2778,13 +2908,19 @@ mod tests {
         let (rec, _) = run_hook(&script, &live, uid, claude, true, &start(cleared, "clear"));
         assert_eq!(rec.as_deref(), Some(cleared));
         assert_eq!(source().as_deref(), Some("clear"));
+        // The conversation the clear ended is kept beside it, for "Undo clear".
+        let prev = || std::fs::read_to_string(live.join(format!("{uid}{LIVE_CLEARED_SUFFIX}"))).ok();
+        assert_eq!(prev().as_deref(), Some(uid));
+        assert_eq!(cleared_session_in(&live, uid, |_| true).as_deref(), Some(uid));
         let (rec, mode) = run_hook(&script, &live, uid, claude, true, &stop(cleared, "plan"));
         assert_eq!(rec.as_deref(), Some(cleared));
         assert_eq!(mode.as_deref(), Some("plan"));
         // …and the launch id itself is always the tab's (a relaunch on `--resume
-        // <launch>` after a lost record).
+        // <launch>` after a lost record) — that resume is also the undo, after
+        // which there is no clear left to take back.
         let (rec, _) = run_hook(&script, &live, uid, claude, true, &start(uid, "resume"));
         assert_eq!(rec.as_deref(), Some(uid));
+        assert_eq!(cleared_session_in(&live, uid, |_| true), None);
         // A `resume` start to another conversation is the user's choice.
         let (rec, _) = run_hook(&script, &live, uid, claude, true, &start(nested, "resume"));
         assert_eq!(rec.as_deref(), Some(nested));

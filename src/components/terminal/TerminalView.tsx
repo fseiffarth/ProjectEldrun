@@ -36,6 +36,9 @@ import type { ShortcutMap } from "../../lib/shortcuts/shortcuts";
 import { copyableSelection, installMouseModeGuard } from "../../lib/terminal/terminalSelection";
 import { findSignInRequest, findWrappedUrls, type SignInRequest } from "../../lib/terminal/terminalUrls";
 import { SIGN_IN_CARD_CLASS, TerminalSignInCard } from "./TerminalSignInCard";
+import { TerminalUndoClearCard } from "./TerminalUndoClearCard";
+import { noteTypedClear, useAgentClearUndoStore } from "../../stores/agents/agentClearUndo";
+import { noteTypedLine } from "../../lib/agents/typedClear";
 import "@xterm/xterm/css/xterm.css";
 
 // Hoisted to module scope: keystroke input fires this on every key, so we reuse
@@ -142,6 +145,8 @@ interface Props {
   kind?: TabKind;
   /** Stable local-only target id for per-tab scheduled prompts. */
   scheduleTargetId?: string;
+  /** Bumped to respawn the PTY in place (`relaunchTabInScope`). */
+  relaunchSeq?: number;
 }
 
 function terminalTheme(scheme: string | undefined) {
@@ -383,7 +388,7 @@ function readAgentFontSize(): number {
   return DEFAULT_FONT_SIZE;
 }
 
-export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, localOnly = false, sandbox = false, projectId = null, remoteHostId = null, tmuxSession = null, tmuxAttach = null, hostBoundUid = null, hostSession = false, visible, focused, attachOnly = false, zoomable = false, persistOnUnmount = false, kind: declaredKind, scheduleTargetId }: Props) {
+export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, localOnly = false, sandbox = false, projectId = null, remoteHostId = null, tmuxSession = null, tmuxAttach = null, hostBoundUid = null, hostSession = false, visible, focused, attachOnly = false, zoomable = false, persistOnUnmount = false, kind: declaredKind, scheduleTargetId, relaunchSeq = 0 }: Props) {
   const viewerId = useRef(crypto.randomUUID()).current;
   const viewerUpdateSeq = useRef(0);
   const colorScheme = useSettingsStore((s) => s.settings?.color_scheme);
@@ -443,6 +448,8 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   // The sign-in link the program on screen is waiting on (see
   // `TerminalSignInCard`), and the links the user already closed the card for.
   const [signIn, setSignIn] = useState<SignInRequest | null>(null);
+  // The session in this pane was just cleared: offer to take it back.
+  const undoClearOffered = useAgentClearUndoStore((state) => !!state.cleared[id]);
   const dismissedSignIns = useRef(new Set<string>());
   const signInCopiedRef = useRef(t("terminal.signIn.copied"));
   signInCopiedRef.current = t("terminal.signIn.copied");
@@ -869,6 +876,9 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       if (!isTerminalAutoReply(data)) {
         noteUserInput(id, isInterruptInput(data));
         if (noteInput(id, data) > 0) countSubmit();
+        // A typed `/clear` (or `/new`) offers "Undo clear" — the one way the
+        // window learns of it from an agent whose hooks say nothing.
+        if ((kind === "agent" || kind === "local_agent") && noteTypedLine(id, data)) noteTypedClear(id);
       }
       writePtyInput(id, PTY_ENCODER.encode(data)).catch(console.error);
     };
@@ -1678,7 +1688,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       fitRef.current = null;
       openedRef.current = false;
     };
-  }, [id, cmd, cwd, initialInput, argsKey, envKey, localOnly, sandbox, projectId, remoteHostId, tmuxSession, tmuxAttach, hostBoundUid, hostSession, attachOnly, zoomable, persistOnUnmount, declaredKind, scheduleTargetId]);
+  }, [id, cmd, cwd, initialInput, argsKey, envKey, localOnly, sandbox, projectId, remoteHostId, tmuxSession, tmuxAttach, hostBoundUid, hostSession, attachOnly, zoomable, persistOnUnmount, declaredKind, scheduleTargetId, relaunchSeq]);
 
   // Re-theme a LIVE, OPEN terminal. Both halves of that guard are load-bearing,
   // and `termRef.current` alone was neither: assigning `options.theme` makes
@@ -1791,6 +1801,9 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         }}
         onDismiss={() => dismissSignIn(signIn.url)}
       />
+    )}
+    {undoClearOffered && !signIn && containerRef.current && (
+      <TerminalUndoClearCard host={containerRef.current} ptyId={id} />
     )}
     </>
   );

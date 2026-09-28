@@ -43,6 +43,22 @@ card of the same tab, joined to the first by an edge the history draws itself
 The frontend's `tab.sessionId` stays the launch id throughout; nothing pushes
 the live id into the window, and nothing needs to.
 
+A `clear` start also writes `live_sessions/<key>.prev` — the id the clear
+rolled away from — before the source. That is "Undo clear"
+(`undo_clear_plan`, `agent_tab_undo_clear`, frontend `stores/agents/agentClearUndo`):
+Claude, while the source still says `clear` and that transcript exists, gets
+`/resume <prev>` typed into the running session; the resume's own
+`SessionStart` moves the source on, so there is nothing left to undo. Codex
+(whose in-session `/resume` is a picker) has its record written back to
+`<prev>` with source `resume` and the tab is relaunched — the restart path for
+one tab: its minted tmux session ends and the pane respawns with the restore
+args, so `resolve_codex_session` resumes the cleared conversation. Every other
+resumable agent is relaunched the same way on its `RESUMABLE_AGENTS` flag —
+Vibe by the id its hook still holds, the continue-last agents on "latest",
+which is the cleared conversation only while the new chat holds nothing (the
+undo is withdrawn at the next prompt for that reason). Local tabs only. The id
+never crosses to the phone: its Undo asks the desktop (`undo_clear`).
+
 ### The turn state (working / decision / done)
 
 The same script serves four more events since 2026-09-15 — `UserPromptSubmit`,

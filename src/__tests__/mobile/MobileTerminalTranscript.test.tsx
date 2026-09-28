@@ -532,6 +532,90 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     expect(screen.getByText("add a clear button")).toBeTruthy();
   });
 
+  it("offers Undo after a Claude clear: the desktop resumes the cleared chat and the Reader shows it again", async () => {
+    localStorage.setItem("eldrun.mobile.view.claude", "focus");
+    const undoCalls: string[] = [];
+    const sidecar = sidecarFetch(() => STORED);
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+      if (url.endsWith("/undo-clear")) {
+        undoCalls.push(init?.method ?? "GET");
+        return Promise.resolve(jsonResponse(200, { undone: true }));
+      }
+      return sidecar(url);
+    }));
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+    expect(screen.getByText("add a clear button")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Start a new conversation" }));
+    await settle();
+    expect(screen.queryByText("add a clear button")).toBeNull();
+    const undo = screen.getByRole("button", { name: "Bring back the conversation you just cleared" });
+    expect(undo.textContent).toBe("Undo");
+
+    fireEvent.click(undo);
+    await settle();
+    expect(undoCalls).toEqual(["POST"]);
+    expect(screen.getByText("add a clear button")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Start a new conversation" }).textContent).toBe("Clear");
+  });
+
+  it("takes Undo away once the new chat is given a prompt, and offers it on Codex but not Aider", async () => {
+    localStorage.setItem("eldrun.mobile.view.claude", "focus");
+    vi.stubGlobal("fetch", sidecarFetch(() => STORED));
+    const { unmount } = render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Start a new conversation" }));
+    await settle();
+    expect(screen.getByRole("button", { name: "Bring back the conversation you just cleared" })).toBeTruthy();
+    fireEvent.change(screen.getByRole("textbox", { name: "Message agent" }), { target: { value: "fresh start" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await settle();
+    expect(screen.queryByRole("button", { name: "Bring back the conversation you just cleared" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Start a new conversation" })).toBeTruthy();
+    unmount();
+
+    const codex = { ...TAB, id: "tab-codex", label: "Codex", agent_label: "Codex" };
+    localStorage.setItem("eldrun.mobile.view.codex", "focus");
+    const codexView = render(<Terminal tab={codex} back={() => {}} />);
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Start a new conversation" }));
+    await settle();
+    expect(screen.getByRole("button", { name: "Bring back the conversation you just cleared" })).toBeTruthy();
+    codexView.unmount();
+
+    // Aider resumes nothing, so its clear is final.
+    const aider = { ...TAB, id: "tab-aider", label: "Aider", agent_label: "Aider" };
+    render(<Terminal tab={aider} back={() => {}} />);
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Start a new conversation" }));
+    await settle();
+    expect(screen.queryByRole("button", { name: "Bring back the conversation you just cleared" })).toBeNull();
+  });
+
+  it("reloads the Reader after an Undo, reading the session afresh", async () => {
+    localStorage.setItem("eldrun.mobile.view.claude", "focus");
+    const transcriptUrls: string[] = [];
+    const sidecar = sidecarFetch(() => STORED);
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      if (url.endsWith("/undo-clear")) return Promise.resolve(jsonResponse(200, { undone: true }));
+      if (url.includes("/transcript")) transcriptUrls.push(url);
+      return sidecar(url);
+    }));
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Start a new conversation" }));
+    await settle();
+    const before = transcriptUrls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Bring back the conversation you just cleared" }));
+    await settle();
+    await settle();
+    const reads = transcriptUrls.slice(before);
+    expect(reads.length).toBeGreaterThan(0);
+    // No version: the whole session comes back, not an "unchanged".
+    expect(reads.some((url) => !url.includes("version="))).toBe(true);
+  });
+
   it("clears the draft with the composer's ✕", async () => {
     vi.stubGlobal("fetch", sidecarFetch(() => STORED));
     render(<Terminal tab={TAB} back={() => {}} />);

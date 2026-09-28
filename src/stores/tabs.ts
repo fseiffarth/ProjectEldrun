@@ -1274,6 +1274,10 @@ interface TabsStore {
   // remote project). No-op when unchanged. The CenterPanel's localOnly/cwd
   // computation reads the result so the next mount spawns on the chosen side.
   setTabLocation: (key: string, location: TabLocation) => void;
+  // Respawn a tab's PTY in place with `args` — same tab, key and position.
+  // The caller ends a tmux session the tab owns first, or the respawn would
+  // just reattach to it ("Undo clear", `stores/agents/agentClearUndo`).
+  relaunchTabInScope: (scope: string, key: string, args: string[]) => void;
   // Swap the built-in viewer an embed tab renders its file with, in place — same
   // tab, same key, same position in the layout. `viewer` is persisted, so a tab
   // saved under a viewer choice the app has since revised comes back under the
@@ -3171,6 +3175,17 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       // doesn't churn the tabs array / wake the saveLayout debounce.
       if (!changed) return {};
       return writeScope(s, owner, nextTabs, layout, focusedGroupId);
+    });
+  },
+
+  relaunchTabInScope: (scope, key, args) => {
+    set((s) => {
+      const { tabs, layout, focusedGroupId } = scopeState(s, scope);
+      if (!tabs.some((t) => t.key === key)) return {};
+      const nextTabs = tabs.map((t) =>
+        t.key === key ? { ...t, args, relaunchSeq: (t.relaunchSeq ?? 0) + 1 } : t,
+      );
+      return writeScope(s, scope, nextTabs, layout, focusedGroupId);
     });
   },
 

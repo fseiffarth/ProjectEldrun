@@ -15,6 +15,7 @@ import { listen } from "@tauri-apps/api/event";
 import { PLATFORM } from "../../lib/window/dragPlatform";
 import { nextWindowState } from "../../lib/window/windowState";
 import { noteAgentTurn, notePtyOutput, useActivityStore } from "../../stores/activity";
+import { useAgentClearUndoStore } from "../../stores/agents/agentClearUndo";
 import type { AgentTurnState } from "../../stores/activity";
 import {
   usePowerStore,
@@ -891,10 +892,21 @@ export function AppShell() {
     let unlistenTurn: (() => void) | undefined;
     listen<{ id: string; state: AgentTurnState; job?: boolean }>("agent-turn", (ev) => {
       noteAgentTurn(ev.payload.id, ev.payload.state, !!ev.payload.job);
+      // A prompt went into the new conversation: the clear is no longer undone
+      // by resuming — that would leave the prompt behind.
+      if (ev.payload.state === "working") useAgentClearUndoStore.getState().dismiss(ev.payload.id);
     })
       .then((fn) => { unlistenTurn = fn; })
       .catch(() => {});
-    return () => { unlisten?.(); unlistenDigest?.(); unlistenTurn?.(); };
+    // How a tab's session just (re)started, off the same hook's source record:
+    // a `/clear` offers "Undo clear" on that terminal until the next prompt.
+    let unlistenRoll: (() => void) | undefined;
+    listen<{ id: string; source: string }>("agent-session-roll", (ev) => {
+      useAgentClearUndoStore.getState().noteRoll(ev.payload.id, ev.payload.source);
+    })
+      .then((fn) => { unlistenRoll = fn; })
+      .catch(() => {});
+    return () => { unlisten?.(); unlistenDigest?.(); unlistenTurn?.(); unlistenRoll?.(); };
   }, []);
 
   // Recompute the running-task indicators on a fixed cadence. Split from the

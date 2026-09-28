@@ -18,6 +18,7 @@ import { agentTabModelTag, useAgentModelsStore } from "../../stores/agents/agent
 import { persistScopeLayout } from "../../stores/agents/agentSchedules";
 import { sendCollectedPrompt, useAgentPromptsStore, type ProjectAgentPrompt, type SentAgentPrompt } from "../../stores/agents/agentPrompts";
 import { isSessionCommand } from "../../lib/agents/prompt/chart";
+import { undoAgentClear } from "../../stores/agents/agentClearUndo";
 import { reopenClosedAgentTab, useClosedAgentTabsStore } from "../../stores/agents/closedAgentTabs";
 import { isTabColor } from "../../lib/theme/tabColors";
 import type { AgentUsageReport } from "../../lib/agents/agentUsage";
@@ -254,6 +255,7 @@ type DesktopRequest =
   | { type: "tab_seen"; request_id: string; project_id: string; tmux_session: string }
   | { type: "tab_input"; request_id: string; project_id: string; tmux_session: string }
   | { type: "tab_prompt"; request_id: string; project_id: string; tmux_session: string; message: string }
+  | { type: "undo_clear"; request_id: string; project_id: string; tmux_session: string }
   | { type: "desktop_images"; request_id: string; project_id: string }
   | { type: "attach_desktop_image"; request_id: string; project_id: string; image_id: string };
 type DesktopResponse =
@@ -1945,6 +1947,26 @@ async function recordTabPrompt(projectId: string, tmuxSession: string, message: 
   return { status: "seen" };
 }
 
+/** The phone's Undo after a Clear: this window brings back the conversation
+ * the tab's last `/clear` ended (`undoAgentClear` — in-session for Claude, a
+ * relaunch onto it for the other resumable agents), so the session id stays
+ * here. */
+async function undoTabClear(projectId: string, tmuxSession: string): Promise<DesktopResponse> {
+  const scope = mobileScope(projectId);
+  if (!scope) {
+    return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
+  }
+  const tab = scheduleTargetTab(scope.id, tmuxSession);
+  if (!tab) return { status: "error", code: "tab_not_found", message: "Tab not found" };
+  const result = await undoAgentClear(scope.id, tab);
+  switch (result) {
+    case "undone": return { status: "seen" };
+    case "nothing_to_undo": return { status: "error", code: "nothing_to_undo", message: "There is no cleared conversation to bring back" };
+    case "remote_tab": return { status: "error", code: "remote_tab", message: "The tab runs on a remote host" };
+    default: return { status: "error", code: "tab_not_ready", message: "The tab is not ready for input on the desktop" };
+  }
+}
+
 /** The phone typed into this agent tab. It types into a tmux client of its own,
  * so not one byte of it passes through this window — and the classifier only
  * ever calls output "working" or "done" when the session was COMMANDED this
@@ -2090,6 +2112,7 @@ async function handleRequest(
     case "tab_seen": return markTabSeen(request.project_id, request.tmux_session);
     case "tab_input": return markTabInput(request.project_id, request.tmux_session);
     case "tab_prompt": return recordTabPrompt(request.project_id, request.tmux_session, request.message);
+    case "undo_clear": return undoTabClear(request.project_id, request.tmux_session);
     case "desktop_images": return desktopImagesFor(request.project_id);
     case "attach_desktop_image": return attachDesktopImage(request.project_id, request.image_id);
   }

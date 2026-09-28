@@ -954,6 +954,15 @@ pub enum DesktopRequest {
         tmux_session: String,
         message: String,
     },
+    /// Take back the last `/clear` of this agent tab: the desktop types the
+    /// CLI's resume of the conversation that clear ended into the tab
+    /// (`agent_tab_undo_clear`). The session id stays on the desktop; the
+    /// answer is `Seen`, or `nothing_to_undo` once the session has moved on.
+    UndoClear {
+        request_id: String,
+        project_id: String,
+        tmux_session: String,
+    },
     /// What one agent tab is doing, and what its CLI says about its own quota.
     /// Addressed by the same `project_id` + `tmux_session` pair the schedule and
     /// rename requests use, so no key, path or command crosses the boundary.
@@ -1035,6 +1044,7 @@ impl DesktopRequest {
             | Self::TabSeen { request_id, .. }
             | Self::TabInput { request_id, .. }
             | Self::TabPrompt { request_id, .. }
+            | Self::UndoClear { request_id, .. }
             | Self::AgentStatus { request_id, .. }
             | Self::AgentTranscript { request_id, .. }
             | Self::DesktopImages { request_id, .. }

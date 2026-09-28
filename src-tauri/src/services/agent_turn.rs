@@ -34,13 +34,20 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
-use crate::services::agent_session::{live_sessions_dir, project_live_sessions_dir};
+use crate::services::agent_session::{
+    live_sessions_dir, project_live_sessions_dir, read_live_source_in, LIVE_SOURCE_SUFFIX,
+};
 
 /// Suffix of the per-tab turn record beside the session record (`<uid>.turn`).
 pub const TURN_SUFFIX: &str = ".turn";
 
 /// The event the frontend listens for: `{ id: <pty id>, state: <word> }`.
 pub const TURN_EVENT: &str = "agent-turn";
+
+/// How the tab's session just (re)started, relayed from the hook's source
+/// record: `{ id: <pty id>, source: "startup" | "resume" | "clear" | "compact" }`.
+/// A `clear` is what offers the terminal's "Undo clear".
+pub const ROLL_EVENT: &str = "agent-session-roll";
 
 /// What the hook script may write. `Idle` (a `SessionEnd`) means the agent is
 /// gone and the tab is back to whatever its bytes say.
@@ -142,8 +149,13 @@ pub fn clear_record(uid: &str, project_id: Option<&str>) {
 
 /// The uid a record path stands for, or `None` for any other file.
 fn uid_of(path: &Path) -> Option<String> {
+    uid_with_suffix(path, TURN_SUFFIX)
+}
+
+/// The uid a `<uid><suffix>` record path stands for.
+fn uid_with_suffix(path: &Path, suffix: &str) -> Option<String> {
     let name = path.file_name()?.to_str()?;
-    let uid = name.strip_suffix(TURN_SUFFIX)?;
+    let uid = name.strip_suffix(suffix)?;
     if uid.is_empty() || uid.chars().any(|c| !(c.is_ascii_alphanumeric() || c == '-')) {
         return None;
     }
@@ -160,6 +172,23 @@ pub fn resolve_event(path: &Path) -> Option<(String, TurnState)> {
     let text = std::fs::read_to_string(path).ok()?;
     let state = parse_turn_record(&text)?;
     Some((pty, state))
+}
+
+/// What a write of a session's source record (`<uid>.src`, see
+/// `agent_session::LIVE_SOURCE_SUFFIX`) means for the window: the PTY and how
+/// the tab's session just (re)started. `None` for any other file, a tab of
+/// another run, or a word the hook should not have written.
+pub fn resolve_roll_event(path: &Path) -> Option<(String, String)> {
+    let uid = uid_with_suffix(path, LIVE_SOURCE_SUFFIX)?;
+    let pty = pty_for(&uid)?;
+    let source = read_live_source_in(path.parent()?, &uid)?;
+    Some((pty, source))
+}
+
+#[derive(serde::Serialize, Clone)]
+struct RollPayload {
+    id: String,
+    source: String,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -404,7 +433,10 @@ pub fn start(app: AppHandle) {
                 return;
             }
             for p in ev.paths {
-                if p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with(TURN_SUFFIX)) {
+                if p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.ends_with(TURN_SUFFIX) || n.ends_with(LIVE_SOURCE_SUFFIX))
+                {
                     let _ = tx.send(p);
                 }
             }
@@ -429,6 +461,12 @@ pub fn start(app: AppHandle) {
         loop {
             match rx.recv_timeout(JOB_POLL) {
                 Ok(path) => {
+                    // A source record says how the session rolled (a `/clear`,
+                    // a `/resume`); it carries no turn state.
+                    if let Some((id, source)) = resolve_roll_event(&path) {
+                        let _ = app.emit(ROLL_EVENT, RollPayload { id, source });
+                        continue;
+                    }
                     if let (Some((id, state)), Some(uid)) = (resolve_event(&path), uid_of(&path)) {
                         note_state(&uid, state);
                         // The flag beside a brand-new verdict is this moment's,
