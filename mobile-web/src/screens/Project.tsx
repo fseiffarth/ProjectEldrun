@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AGENT_SORTS, DEFAULT_AGENT_SORT, isAgentSort, sortAgentTabs, type AgentSort } from "../../../shared/agentSort";
-import { promptClock, promptLines, promptsFromTranscript } from "../agentPrompts";
+import { promptClock, promptLines, promptsFromTranscript, scheduleClock } from "../agentPrompts";
 import { ApiError, api, closeTab, deleteOutboxFile, listOutbox, outboxFileUrl, reopenTab, reorderTab, type AgentRow, type ClosedTabRow, type OutboxFile, type ProjectDetail, type TabPlace, type TabRow, type TabSchedules } from "../api";
 import { OUTBOX_POLL, sameOutbox } from "../outbox";
 import { readChoice, writeChoice } from "../prefs";
@@ -41,10 +41,11 @@ const CLOSED_HELD_MS = 30_000;
 
 /** The line under an agent tab, in the words the desktop's Agents view uses:
  * how many prompts are scheduled and when the first one fires. The desktop
- * computed both against its own clock, so the phone only formats them. */
-function scheduleLine(schedules: TabSchedules | undefined): string {
-  if (!schedules) return "Schedules need desktop Eldrun";
-  if (schedules.total === 0) return "No scheduled prompts";
+ * computed both against its own clock, so the phone only formats them. A tab
+ * with none — or a desktop that did not say — gets no line at all: the ◷
+ * beside the model is always there to add one. */
+function scheduleLine(schedules: TabSchedules | undefined): string | null {
+  if (!schedules || schedules.total === 0) return null;
   const count = schedules.enabled === schedules.total
     ? `${schedules.total} scheduled`
     : `${schedules.enabled} of ${schedules.total} scheduled`;
@@ -62,11 +63,24 @@ function scheduleLine(schedules: TabSchedules | undefined): string {
  * time. The newest prompt leads and is given room to wrap; the ones behind it
  * are one line each, enough to recognize a session by its recent history
  * without turning the card into a transcript (the Focus view is that).
+ *
+ * The prompts still to come lead the list: the soonest scheduled ones, each
+ * behind a ◷ and the desktop time it fires, so the list reads from what is
+ * next down to what was asked last.
  */
 function PromptLines({ tab }: { tab: TabRow }) {
+  const t = useT();
   const lines = promptLines(tab);
+  const scheduled = tab.schedules?.upcoming ?? [];
   return <div className="tab-card-prompts">
     <small className="tab-card-prompts-label">Last prompts</small>
+    {scheduled.map((prompt, index) => {
+      const when = prompt.at ? scheduleClock(prompt.at) : "";
+      return <p className="tab-card-prompt scheduled" key={`scheduled-${prompt.at ?? ""}-${index}`} title={when ? t("mobile.project.scheduledAt", { at: when }) : undefined}>
+        <span className="tab-card-prompt-when"><span aria-hidden="true">◷</span> {when}</span>
+        <span className="tab-card-prompt-text">{prompt.text}</span>
+      </p>;
+    })}
     {lines.length === 0
       ? <p className="tab-card-prompt empty">{promptsFromTranscript(tab)
         ? "Nothing read from this session's transcript yet."
@@ -455,6 +469,11 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
                 here rather than open-then-find-the-chip. */}
             {tab.agent_model && <button className="tab-card-model" disabled={!tab.available} onClick={() => terminal(tab, { pickModel: true })} aria-haspopup="dialog" aria-label={`Change the model of ${tab.label}`} title="Change the model">{tab.agent_model}</button>}
             {tab.agent_model && isUntested("mobile.project.modelTap") && <span className="untested">{t("mobile.newTab.untested")}</span>}
+            {/* Scheduling lives out here beside the tab, not inside the
+                session: reaching a schedule must not mean attaching a
+                terminal. The ◷ rides right of the model; agent tabs only. */}
+            {tab.kind === "agent" && <button className="tab-card-icon accent tab-card-schedule" onClick={() => setScheduleTab({ tab })} aria-haspopup="dialog" aria-expanded={scheduleTab?.tab.id === tab.id} aria-label={`Scheduled prompts for ${tab.label}`} title="Scheduled prompts"><span aria-hidden="true">◷</span></button>}
+            {tab.kind === "agent" && isUntested("mobile.project.scheduledInPrompts") && <span className="untested">{t("mobile.newTab.untested")}</span>}
           </span>
         </span>
         {/* A shell card is one row, so its › stays here; an agent card carries
@@ -475,13 +494,10 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
       ><span aria-hidden="true">⠿</span></button>}
       </div>
       {tab.kind === "agent" && <PromptLines tab={tab} />}
-      {/* Scheduling lives out here beside the tab, not inside the session:
-          reaching a schedule must not mean attaching a terminal, and this is
-          the same place — and the same summary line — the desktop puts it.
-          The ◷ leading the line opens the tab's schedules; agent tabs only. */}
-      {tab.kind === "agent" && <div className="tab-card-foot">
-        <button className="tab-card-icon accent" onClick={() => setScheduleTab({ tab })} aria-haspopup="dialog" aria-expanded={scheduleTab?.tab.id === tab.id} aria-label={`Scheduled prompts for ${tab.label}`} title="Scheduled prompts"><span aria-hidden="true">◷</span></button>
-        <small className="tab-card-when" title={tab.schedules?.next ? `Next run ${tab.schedules.next.replace("T", " ")} (desktop time)` : undefined}>{scheduleLine(tab.schedules)}</small>
+      {/* The desktop's schedule summary, where it puts it — only when the tab
+          has schedules; the upcoming ones are listed with the prompts above. */}
+      {tab.kind === "agent" && <div className={`tab-card-foot${scheduleLine(tab.schedules) ? "" : " bare"}`}>
+        {scheduleLine(tab.schedules) && <small className="tab-card-when" title={tab.schedules?.next ? `Next run ${tab.schedules.next.replace("T", " ")} (desktop time)` : undefined}>{scheduleLine(tab.schedules)}</small>}
         {/* The › that says the card opens, at the card's bottom-right
             corner: the same as on a shell card's right edge, a whole card away
             from the ✕ a thumb must not find here. */}

@@ -380,6 +380,7 @@ export const UNTESTED = {
   "mobile.project.sendFile": { area: "mobile", what: "NewTabSheet · ＋ → Send a file from this phone into the project's inbox (.eldrun/inbox/), with a Copy of its @reference" },
   "mobile.project.reorder": { area: "mobile", what: "Project · Drag to reorder the desktop's tabs" },
   "mobile.project.modelTap": { area: "mobile", what: "Project · Tap a tab card's model to open the session with its model picker up", tested: "2026-09-23" },
+  "mobile.project.scheduledInPrompts": { area: "mobile", what: "Project · An agent card lists its upcoming scheduled prompts (◷ + desktop time) above the last prompts; the ◷ button sits right of the model; no \"No scheduled prompts\" line" },
   "inbox.menuTitle": { area: "mobile", what: "InboxIndicator · Sent from your phone (global inbox)" },
   "mobile.home.sendToDesktop": { area: "mobile", what: "Home · Send a file to the desktop (global inbox)" },
   "mobile.setupTitle": { area: "mobile", what: "MobileSetupGuide · Set up Eldrun Mobile" },

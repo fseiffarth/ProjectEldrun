@@ -19,7 +19,21 @@ const detail = {
       kind: "agent",
       available: true,
       viewer_busy: false,
-      schedules: { total: 3, enabled: 2, next: "2026-09-03T09:00" },
+      agent_model: "opus",
+      schedules: {
+        total: 3,
+        enabled: 2,
+        next: "2026-09-03T09:00",
+        upcoming: [{ text: "run the nightly benchmark", at: "2026-09-03T09:00" }],
+      },
+    },
+    {
+      id: "t-quiet",
+      label: "Codex",
+      kind: "agent",
+      available: true,
+      viewer_busy: false,
+      schedules: { total: 0, enabled: 0 },
     },
     { id: "t-shell", label: "Shell", kind: "shell", available: true, viewer_busy: false },
   ],
@@ -61,6 +75,25 @@ describe("Mobile project tab list — scheduled prompts", () => {
   it("says what the tab has scheduled without opening the sheet", async () => {
     render(<Project id="p1" back={() => {}} terminal={vi.fn()} />);
     expect(await screen.findByText("2 of 3 scheduled · next 09-03 09:00")).toBeTruthy();
+  });
+
+  it("lists upcoming scheduled prompts with the last prompts and puts the ◷ right of the model", async () => {
+    render(<Project id="p1" back={() => {}} terminal={vi.fn()} />);
+    const text = await screen.findByText("run the nightly benchmark");
+    const row = text.closest(".tab-card-prompt");
+    expect(row?.classList.contains("scheduled")).toBe(true);
+    expect(row?.textContent).toContain("09-03 09:00");
+
+    const control = screen.getByRole("button", { name: "Scheduled prompts for Claude" });
+    const model = screen.getByRole("button", { name: "Change the model of Claude" });
+    expect(control.parentElement).toBe(model.parentElement);
+    expect(model.compareDocumentPosition(control) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("says nothing under a tab with no schedules", async () => {
+    render(<Project id="p1" back={() => {}} terminal={vi.fn()} />);
+    expect(await screen.findByRole("button", { name: "Scheduled prompts for Codex" })).toBeTruthy();
+    expect(screen.queryByText("No scheduled prompts")).toBeNull();
   });
 
   it("stops polling the sheet while the app is hidden and catches up on return", async () => {

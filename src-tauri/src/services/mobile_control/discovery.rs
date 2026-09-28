@@ -125,6 +125,10 @@ pub struct TabSchedules {
     /// Desktop-local `YYYY-MM-DDTHH:MM` of the next run, when one is due.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next: Option<String>,
+    /// The soonest enabled schedules still to fire, `at` desktop-local like
+    /// `next`: the phone lists them with the tab's last prompts.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub upcoming: Vec<TabPrompt>,
 }
 
 /// One prompt an agent tab was given, as the desktop read it off the agent's

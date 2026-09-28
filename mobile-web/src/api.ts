@@ -5,8 +5,10 @@ export interface ProjectRow { id: string; label: string; status: string; kind?: 
 export type AgentStatus = "working" | "question" | "done";
 /** The desktop's own one-line summary of a tab's scheduled prompts: what the
  * Agents view prints under an agent tab, so the project overview says the same
- * thing without opening the sheet. `next` is desktop-local wall clock. */
-export interface TabSchedules { total: number; enabled: number; next?: string }
+ * thing without opening the sheet. `next` is desktop-local wall clock, and so
+ * is each `upcoming` row's `at`: the soonest enabled schedules still to fire,
+ * which the card lists above its last prompts (absent from an older host). */
+export interface TabSchedules { total: number; enabled: number; next?: string; upcoming?: TabPrompt[] }
 /** `agent_model` is the model the tab's session is showing, as the desktop
  * reads it off the pane's own status line — the same words, and the same
  * parse, as the model chip in Focus (`terminal/statusLine`); for a tab whose

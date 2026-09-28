@@ -29,6 +29,17 @@ export function lastPrompt(tab: TabRow): TabPrompt | undefined {
 }
 
 /**
+ * When a scheduled prompt fires: the desktop-local `YYYY-MM-DDTHH:MM` key,
+ * sliced rather than parsed — it is the workstation's wall clock, not an
+ * instant — and trimmed to the time alone when its date is the phone's today.
+ */
+export function scheduleClock(at: string, now = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  return at.startsWith(today) ? at.slice(11) : at.slice(5).replace("T", " ");
+}
+
+/**
  * When a prompt went, in the phone's own zone.
  *
  * The transcript's instant is a real one (the agent writes UTC), so it is

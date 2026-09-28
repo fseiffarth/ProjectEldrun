@@ -151,11 +151,15 @@ nav button,.keys button { flex:1; }
    the gap to the card's edge, so the cluster keeps the ✕'s column without
    sitting under it. */
 .tab-card-foot .card-trailing { margin-left:auto; color:#9498aa; font-size:1.25rem; }
+/* No schedule summary: the foot is only the ›, so it gives up its rule and height. */
+.tab-card-foot.bare { min-height:0; padding:0 14px 6px 10px; border-top:0; }
 .tab-card .agent-status { padding:5px 9px; border-radius:999px; font-size:.72rem; line-height:1; white-space:nowrap; }
 /* The ✕ and ◷ retain separate, comfortable touch targets. */
 .tab-card-icon { position:relative; z-index:1; flex:0 0 auto; display:grid; place-items:center; width:40px; height:40px; padding:0; border:0; border-radius:11px; background:transparent; color:#a3aac0; font-size:1rem; line-height:1; }
 .tab-card-icon:active { background:rgba(56,60,80,.8); color:#d3d6e4; }
 .tab-card-icon.accent { background:#2e2b48; color:#bcb0ff; font-size:1.15rem; }
+/* The ◷ beside the model pill takes the pill's 28px row height. */
+.tab-card-title .tab-card-schedule { width:28px; height:28px; border-radius:8px; font-size:.95rem; }
 .tab-card-close { align-self:flex-start; margin:10px 8px 0 0; font-size:.9rem; }
 .tab-card-close:active { color:#ff9aa6; }
 .tab-card-head .tab-card-main { padding-right:4px; }
@@ -170,6 +174,7 @@ nav button,.keys button { flex:1; }
 .tab-card-prompt { display:flex; gap:8px; min-width:0; margin:0; padding:2px 0; color:#a3abc2; font-size:.82rem; line-height:1.35; }
 .tab-card-prompt.latest { display:grid; gap:1px; color:#ecedfa; font-size:.88rem; }
 .tab-card-prompt.empty { color:#8992ad; font-style:italic; }
+.tab-card-prompt.scheduled .tab-card-prompt-when { color:#bcb0ff; }
 .tab-card-prompt-when { flex:0 0 auto; color:#858fac; font-size:.75rem; font-variant-numeric:tabular-nums; white-space:nowrap; }
 .tab-card-prompt.latest .tab-card-prompt-when { color:#afa5f4; font-size:.7rem; font-weight:700; }
 .tab-card-prompt-text { min-width:0; overflow:hidden; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:1; overflow-wrap:anywhere; }

@@ -539,6 +539,14 @@ async fn project(
                     total: row.total,
                     enabled: row.enabled,
                     next: row.next,
+                    upcoming: row
+                        .upcoming
+                        .into_iter()
+                        .map(|prompt| TabPrompt {
+                            text: prompt.text,
+                            at: prompt.at,
+                        })
+                        .collect(),
                 },
             )
         })

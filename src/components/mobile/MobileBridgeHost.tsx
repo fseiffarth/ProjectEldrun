@@ -71,6 +71,7 @@ import {
   localOccurrenceKey,
   nextScheduleOccurrence,
   scheduleSummary,
+  upcomingSchedules,
   type ScheduleRule,
   type ScheduledAgentPrompt,
 } from "../../lib/agents/agentSchedule";
@@ -83,8 +84,10 @@ interface AgentTabStatus { tmux_session: string; status: "working" | "question" 
 /** The same readings for an agent tab with no status: a finished turn stays
  * sorted among the finished ones on the phone after it has been read. */
 interface AgentTabTiming { tmux_session: string; model?: string; working_at?: number; done_at?: number }
-interface AgentTabSchedules { tmux_session: string; total: number; enabled: number; next?: string }
 interface AgentTabPrompt { text: string; at?: string }
+/** `upcoming` carries the soonest scheduled messages, `at` desktop-local
+ * `YYYY-MM-DDTHH:MM` like `next`. */
+interface AgentTabSchedules { tmux_session: string; total: number; enabled: number; next?: string; upcoming: AgentTabPrompt[] }
 interface AgentTabPrompts { tmux_session: string; prompts: AgentTabPrompt[] }
 interface CreateRequest {
   project_id: string;
@@ -676,6 +679,9 @@ function allAgentPrompts(): AgentTabPrompts[] {
   return allMobileScopes().flatMap((scope) => projectAgentPrompts(scope.id));
 }
 
+/** How many upcoming scheduled prompts a phone tab card lists. */
+const MAX_UPCOMING_SCHEDULES = 3;
+
 /** Each agent tab's scheduled-prompt summary, computed here against the desktop
  * clock the way the Agents view computes the line under a tab. It rides with the
  * catalog because the phone's project overview shows one line per tab: asking
@@ -700,6 +706,8 @@ async function agentScheduleSummaries(projectId?: string): Promise<AgentTabSched
       total: summary.total,
       enabled: summary.enabled,
       next: summary.next ? localOccurrenceKey(summary.next) : undefined,
+      upcoming: upcomingSchedules(schedules, now, MAX_UPCOMING_SCHEDULES)
+        .map(({ message, at }) => ({ text: message, at: localOccurrenceKey(at) })),
     };
   }));
 }

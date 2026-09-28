@@ -82,6 +82,7 @@ export const en = {
   "mobile.composer.undoClear": "Undo",
   "mobile.project.recentlyClosed": "Recently closed",
   "mobile.project.reopenHint": "Reopen {label}: its conversation comes back",
+  "mobile.project.scheduledAt": "Scheduled for {at} (desktop time)",
   "mobile.project.reopenGone": "That tab can no longer be reopened.",
   "mobile.project.reopenFailed": "Open desktop Eldrun to reopen a tab.",
   "mobile.composer.undoClearHint": "Bring back the conversation you just cleared",

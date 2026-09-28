@@ -3726,6 +3726,7 @@ export const dict: Dict = {
   "newTabMenu.groupRecentlyClosed": "Zuletzt geschlossen",
   "mobile.project.recentlyClosed": "Zuletzt geschlossen",
   "mobile.project.reopenHint": "{label} wieder öffnen: die Unterhaltung kommt zurück",
+  "mobile.project.scheduledAt": "Geplant für {at} (Desktop-Zeit)",
   "mobile.project.reopenGone": "Dieser Tab kann nicht mehr geöffnet werden.",
   "mobile.project.reopenFailed": "Öffne Eldrun am Desktop, um einen Tab wieder zu öffnen.",
   "tabColor.menu": "Farbe",

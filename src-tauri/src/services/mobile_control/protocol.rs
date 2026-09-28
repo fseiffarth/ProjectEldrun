@@ -1155,6 +1155,10 @@ pub struct AgentTabSchedules {
     /// Desktop-local `YYYY-MM-DDTHH:MM` of the next run, when one is due.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next: Option<String>,
+    /// The soonest enabled schedules still to fire: their message, and `at`
+    /// as the same desktop-local key as `next`. Absent from an older desktop.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub upcoming: Vec<AgentTabPrompt>,
 }
 
 /// One prompt an agent tab was given, read off the agent's own transcript by
@@ -1520,6 +1524,10 @@ mod tests {
                 total: 3,
                 enabled: 2,
                 next: Some("2026-09-03T09:00".into()),
+                upcoming: vec![AgentTabPrompt {
+                    text: "run the nightly benchmark".into(),
+                    at: Some("2026-09-03T09:00".into()),
+                }],
             }],
             prompts: vec![AgentTabPrompts {
                 tmux_session: "eldrun-project-0--agent-123456789".into(),
@@ -1551,6 +1559,7 @@ mod tests {
         assert!(response_json["statuses"][0].get("done_at").is_none());
         assert_eq!(response_json["schedules"][0]["enabled"], 2);
         assert_eq!(response_json["schedules"][0]["next"], "2026-09-03T09:00");
+        assert_eq!(response_json["schedules"][0]["upcoming"][0]["text"], "run the nightly benchmark");
         // The prompt rows are keyed the same way and carry no id of their own:
         // the sidecar is what turns the tmux name into the phone's tab id.
         assert_eq!(
