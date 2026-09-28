@@ -81,6 +81,7 @@ import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { useExperimental } from "../../lib/experimental";
 import { closeTabWithConfirm } from "../../lib/remote/closeRemoteTab";
+import { reopenClosedAgentTab, useClosedAgentTabs } from "../../stores/agents/closedAgentTabs";
 import { registerHostBoundTab } from "../../lib/remote/hostBound";
 import { localLaunchTabSpec, vibeLocalTabSpec } from "../../lib/agents/localTabSpec";
 import { busyStateClass, useActivityStore } from "../../stores/activity";
@@ -188,6 +189,9 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // The 3D project-blob tab is a root-scope feature, offered only once at least
   // one project exists (it has nothing to show otherwise).
   const scope = useTabsStore((s) => s.scope);
+  // Agent tabs closed in this scope, newest first — what "Reopen closed agent
+  // tab" (the tab menu, the + menu's Recently closed) brings back.
+  const closedAgentTabs = useClosedAgentTabs(scope);
   const hasProjects = useProjectsStore((s) => s.projects.length > 0);
   const showBlobItem = scope === "root" && hasProjects;
   const focusGroup = useTabsStore((s) => s.focusGroup);
@@ -1613,6 +1617,25 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
         >
           <AddTabMenuList
             groups={[
+              // Closed agent tabs first: bringing one back is the likelier
+              // reason to reach for "+" right after a close than a new one.
+              ...(closedAgentTabs.length > 0
+                ? [{
+                    label: t("newTabMenu.groupRecentlyClosed"),
+                    entries: closedAgentTabs.slice(0, 3).map((closed, i) => ({
+                      key: `reopen:${closed.id}`,
+                      label: closed.tab.label,
+                      dot: "↺",
+                      color: TAB_ACCENT[closed.tab.kind],
+                      untested: "tabBar.reopenClosed#2" as const,
+                      shortcut: i === 0 ? ("reopenClosedTab" as const) : undefined,
+                      onPick: () => {
+                        setMenuPos(null);
+                        reopenClosedAgentTab(scope, closed.id);
+                      },
+                    })),
+                  }]
+                : []),
               {
                 label: t("newTabMenu.groupAgents"),
                 moreLabel: t("newTabMenu.moreAgents"),
@@ -2000,6 +2023,21 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             <span className="tab-new-menu-dot tab-new-menu-dot--danger">×</span>
             {t("tabBar.closeToRight")}
           </button>
+          {closedAgentTabs.length > 0 && (
+            <button
+              className="tab-new-menu-item"
+              title={t("tabBar.reopenClosedTitle", { label: closedAgentTabs[0].tab.label })}
+              onClick={() => {
+                reopenClosedAgentTab(scope);
+                setTabMenu(null);
+              }}
+            >
+              <span className="tab-new-menu-dot tab-new-menu-dot--accent">↺</span>
+              {t("tabBar.reopenClosed")}
+              <UntestedTag id="tabBar.reopenClosed" />
+              <MenuShortcut chord="reopenClosedTab" />
+            </button>
+          )}
         </ContextMenuPortal>
       )}
       {stackMenu && (

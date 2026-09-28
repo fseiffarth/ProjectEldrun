@@ -902,6 +902,16 @@ pub enum DesktopRequest {
         project_id: String,
         tmux_session: String,
     },
+    /// Reopen an agent tab closed in this project — the newest, or the one
+    /// `closed_id` names (an opaque id from `Catalog::closed`) — on the resume
+    /// args a restart would give it. Answered with `Created`, like a create;
+    /// `nothing_to_reopen` when the desktop no longer holds it.
+    ReopenTab {
+        request_id: String,
+        project_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        closed_id: Option<String>,
+    },
     Prompts {
         request_id: String,
         project_id: String,
@@ -1019,6 +1029,7 @@ impl DesktopRequest {
             | Self::ColorTab { request_id, .. }
             | Self::ReorderTab { request_id, .. }
             | Self::CloseTab { request_id, .. }
+            | Self::ReopenTab { request_id, .. }
             | Self::Prompts { request_id, .. }
             | Self::PromptMutate { request_id, .. }
             | Self::TabSeen { request_id, .. }
@@ -1108,6 +1119,18 @@ pub struct AgentTabTiming {
     pub working_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub done_at: Option<u64>,
+}
+
+/// An agent tab closed in the project, as the desktop remembers it for a
+/// reopen: an opaque id minted at close (never the session id), the tab's label
+/// and its agent CLI, and when it closed (desktop ms since the epoch).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClosedAgentTab {
+    pub id: String,
+    pub label: String,
+    pub agent: String,
+    #[serde(default)]
+    pub closed_at: u64,
 }
 
 /// One agent tab's scheduled-prompt summary, already computed by the desktop
@@ -1259,6 +1282,10 @@ pub enum DesktopResponse {
         /// ordering them. Defaulted like the rest.
         #[serde(default)]
         timings: Vec<AgentTabTiming>,
+        /// The project's agent tabs closed this desktop session, newest first,
+        /// for the phone's "Recently closed" row. Defaulted like the rest.
+        #[serde(default)]
+        closed: Vec<ClosedAgentTab>,
     },
     /// Answer to [`DesktopRequest::Activity`]: the agent tabs of every eligible
     /// project that are working, waiting on a decision, or done. Keyed by tmux
@@ -1436,7 +1463,7 @@ impl TerminalEvent {
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentTabPrompt, AgentTabPrompts, AgentTabSchedules, AgentTabStatus, AgentTabTiming, DesktopRequest,
+        AgentTabPrompt, AgentTabPrompts, AgentTabSchedules, AgentTabStatus, AgentTabTiming, ClosedAgentTab, DesktopRequest,
         DesktopResponse, MobileAlertItem,
         MobileAlertsSnapshot,
         MobileMailView, MobilePromptInput, MobileScheduleInput, PromptMutation, ScheduleMutation,
@@ -1481,8 +1508,17 @@ mod tests {
                 working_at: None,
                 done_at: Some(1_700_000_100_000),
             }],
+            closed: vec![ClosedAgentTab {
+                id: "0b8f6c1e-closed".into(),
+                label: "claude 2".into(),
+                agent: "claude".into(),
+                closed_at: 1_700_000_200_000,
+            }],
         };
         let response_json = serde_json::to_value(response).expect("serialize catalog response");
+        // A closed tab crosses by its opaque id and label only.
+        assert_eq!(response_json["closed"][0]["id"], "0b8f6c1e-closed");
+        assert_eq!(response_json["closed"][0]["label"], "claude 2");
         assert_eq!(response_json["statuses"][0]["status"], "question");
         assert_eq!(response_json["statuses"][0]["model"], "opus-4-1");
         assert_eq!(response_json["statuses"][0]["working_at"], 1_700_000_000_000u64);
@@ -1534,6 +1570,30 @@ mod tests {
         assert_eq!(agents.len(), 1, "the agent menu survives the unknown field");
         assert_eq!(statuses[0].status, "working");
         assert_eq!(statuses[0].working_at, Some(1_700_000_000_000));
+    }
+
+    #[test]
+    fn a_reopen_names_its_closed_tab_or_takes_the_newest() {
+        let newest = DesktopRequest::ReopenTab {
+            request_id: "request-1".into(),
+            project_id: "project-0".into(),
+            closed_id: None,
+        };
+        let json = serde_json::to_value(&newest).expect("serialize reopen");
+        assert_eq!(json["type"], "reopen_tab");
+        assert!(json.get("closed_id").is_none());
+        assert_eq!(newest.request_id(), "request-1");
+        let named: DesktopRequest = serde_json::from_value(json!({
+            "type": "reopen_tab",
+            "request_id": "request-2",
+            "project_id": "project-0",
+            "closed_id": "0b8f6c1e-closed",
+        }))
+        .expect("decode a named reopen");
+        let DesktopRequest::ReopenTab { closed_id, .. } = named else {
+            panic!("a reopen decodes as one");
+        };
+        assert_eq!(closed_id.as_deref(), Some("0b8f6c1e-closed"));
     }
 
     /// The other half of the bargain: what the *phone* sends stays strict, so

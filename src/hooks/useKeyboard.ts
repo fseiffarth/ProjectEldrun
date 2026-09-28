@@ -7,6 +7,7 @@ import { desktopOwnsSuperKey, probeSuperKeyOwnership } from "../lib/shortcuts/su
 import { zoomChord } from "../lib/shortcuts/zoomChord";
 import { allGroups, findGroup, useTabsStore } from "../stores/tabs";
 import { closeTabWithConfirm } from "../lib/remote/closeRemoteTab";
+import { reopenClosedAgentTab } from "../stores/agents/closedAgentTabs";
 import { useProjectsStore } from "../stores/projects";
 import { BOX_SCOPE_PREFIX, useBoxesStore } from "../stores/boxes";
 import { useSettingsStore, stepZoom } from "../stores/settings";
@@ -103,6 +104,7 @@ export function isEditableTarget(target: EventTarget | null): boolean {
  *   - Shift+Tab            → cycle tabs within the focused subwindow
  *   - Shift+Ctrl+W         → close the focused subwindow
  *   - Ctrl+W               → close the active tab
+ *   - Ctrl+Shift+T         → reopen the last closed agent tab
  *   - Shift+Ctrl+←         → cycle to the previous active project
  *   - F1                   → open the shortcut cheat sheet (window event)
  *   - Ctrl+Shift+Space     → toggle keyboard steering mode (see below)
@@ -195,6 +197,17 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
         const overlay = useRootOverlayStore.getState();
         if (overlay.open) overlay.close();
         return;
+      }
+      // Reopen the last agent tab closed in this scope — from a focused
+      // terminal too, since the tab it lands in after a close is usually one.
+      // With nothing to reopen the key goes on to wherever it was typed.
+      if (chordMatches(resolveChord("reopenClosedTab", overrides), e)) {
+        if (reopenClosedAgentTab(useTabsStore.getState().scope)) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (steering.active) steering.exit();
+          return;
+        }
       }
       if (!steering.active) return;
 

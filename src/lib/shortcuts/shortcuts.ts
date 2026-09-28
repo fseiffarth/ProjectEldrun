@@ -47,6 +47,7 @@ export type ShortcutAction =
   | "closeSubwindow"
   | "closeTab"
   | "closeAllTabs"
+  | "reopenClosedTab"
   | "steeringMode"
   | "cycleProjectBack"
   | "cycleBox"
@@ -184,6 +185,15 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     labelKey: "shortcut.closeAllTabs",
     group: "tabs",
     default: { key: "w", ctrl: true, shift: true, alt: true },
+  },
+  // The browser's chord for the same act. Agent tabs only: they are the ones
+  // whose closing loses something a restart would have brought back.
+  {
+    action: "reopenClosedTab",
+    labelKey: "shortcut.reopenClosedTab",
+    group: "tabs",
+    default: { key: "t", ctrl: true, shift: true },
+    untested: "shortcut.reopenClosedTab",
   },
   // Keyboard steering mode (part 1 of the keyboard-only steering system). The
   // chord toggles the mode; the keys INSIDE it are fixed (see STEERING_KEYS).

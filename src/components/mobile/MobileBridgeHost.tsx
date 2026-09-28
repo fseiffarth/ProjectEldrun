@@ -18,6 +18,7 @@ import { agentTabModelTag, useAgentModelsStore } from "../../stores/agents/agent
 import { persistScopeLayout } from "../../stores/agents/agentSchedules";
 import { sendCollectedPrompt, useAgentPromptsStore, type ProjectAgentPrompt, type SentAgentPrompt } from "../../stores/agents/agentPrompts";
 import { isSessionCommand } from "../../lib/agents/prompt/chart";
+import { reopenClosedAgentTab, useClosedAgentTabsStore } from "../../stores/agents/closedAgentTabs";
 import { isTabColor } from "../../lib/theme/tabColors";
 import type { AgentUsageReport } from "../../lib/agents/agentUsage";
 import { METRIC, agentLabel, agentPromptLeaf, sub } from "../../lib/usageMetrics";
@@ -245,6 +246,7 @@ type DesktopRequest =
   | { type: "color_tab"; request_id: string; project_id: string; tmux_session: string; color?: string | null }
   | { type: "reorder_tab"; request_id: string; project_id: string; tmux_session: string; anchor_tmux_session: string; place: "before" | "after" }
   | { type: "close_tab"; request_id: string; project_id: string; tmux_session: string }
+  | { type: "reopen_tab"; request_id: string; project_id: string; closed_id?: string | null }
   | { type: "prompts"; request_id: string; project_id: string }
   | { type: "prompt_mutate"; request_id: string; project_id: string; action: PromptMutation }
   | { type: "agent_status"; request_id: string; project_id: string; tmux_session: string; refresh: boolean }
@@ -255,7 +257,7 @@ type DesktopRequest =
   | { type: "desktop_images"; request_id: string; project_id: string }
   | { type: "attach_desktop_image"; request_id: string; project_id: string; image_id: string };
 type DesktopResponse =
-| { status: "catalog"; agents: CatalogAgent[]; statuses: AgentTabStatus[]; schedules: AgentTabSchedules[]; prompts: AgentTabPrompts[]; timings: AgentTabTiming[] }
+| { status: "catalog"; agents: CatalogAgent[]; statuses: AgentTabStatus[]; schedules: AgentTabSchedules[]; prompts: AgentTabPrompts[]; timings: AgentTabTiming[]; closed: ClosedAgentTabRow[] }
   | { status: "activity"; statuses: AgentTabStatus[]; prompts: AgentTabPrompts[] }
   | { status: "activated" }
   | { status: "created"; tmux_session: string }
@@ -276,6 +278,10 @@ type DesktopResponse =
   | { status: "desktop_images"; images: DesktopImage[] }
   | { status: "attached"; attachment: InboxAttachment }
   | { status: "error"; code: string; message: string };
+
+/** One agent tab closed in the scope, as the phone's "Recently closed" row
+ * shows it: the opaque id minted at close, never the session id. */
+interface ClosedAgentTabRow { id: string; label: string; agent: string; closed_at: number }
 
 /** One image the desktop offers the phone's composer — an opaque id and a
  * folder label, never a path (`services::desktop_images`). */
@@ -972,6 +978,40 @@ async function closeMobileTab(projectId: string, tmuxSession: string): Promise<D
   // relaunch brings it back.
   await persistScopeLayout(scope.id);
   return { status: "closed" };
+}
+
+/** The scope's closed agent tabs for the phone's "Recently closed" row — the
+ * desktop's own list (`stores/agents/closedAgentTabs`), so a tab closed on
+ * either surface can be reopened from both. Label and agent only. */
+function closedAgentTabRows(projectId?: string): ClosedAgentTabRow[] {
+  const scope = mobileScope(projectId);
+  if (!scope) return [];
+  return (useClosedAgentTabsStore.getState().byScope[scope.id] ?? []).map((closed) => ({
+    id: closed.id,
+    label: closed.tab.label,
+    agent: closed.tab.cmd,
+    closed_at: closed.closedAt,
+  }));
+}
+
+/** Reopen a closed agent tab from the phone — the newest, or the one it names —
+ * exactly as the desktop's "Reopen closed agent tab" does: back in its old
+ * place, on the resume args a restart would give it. Like a create, the scope
+ * is shown first, since only the shown scope's panes spawn a terminal. */
+async function reopenMobileTab(projectId: string, closedId?: string): Promise<DesktopResponse> {
+  const scope = mobileScope(projectId);
+  if (!scope) {
+    return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
+  }
+  await enterScope(scope);
+  const entry = reopenClosedAgentTab(scope.id, closedId);
+  if (!entry) return { status: "error", code: "nothing_to_reopen", message: "There is no closed tab to reopen" };
+  if (!entry.tmuxSession) {
+    return { status: "error", code: "launch_failed", message: "Persistent terminal session was not created" };
+  }
+  if (scope.id === ROOT_SCOPE) useTabsStore.getState().revealTabInScope(ROOT_SCOPE, entry.key);
+  await persistScopeLayout(scope.id);
+  return { status: "created", tmux_session: entry.tmuxSession };
 }
 
 /** Paint one tab from the phone, or clear its colour (#264).
@@ -2019,6 +2059,7 @@ async function handleRequest(
       schedules: await agentScheduleSummaries(request.project_id),
       prompts: agentPrompts(request.project_id),
       timings: agentTimings(request.project_id),
+      closed: closedAgentTabRows(request.project_id),
     };
     case "activity": return { status: "activity", statuses: allAgentStatuses(), prompts: allAgentPrompts() };
     case "activate": return activate(request.project_id);
@@ -2037,6 +2078,7 @@ async function handleRequest(
     case "mail_reply": return mailReadAllowed() ? mailReply(request.folder_id, request.message_id, request.offset, request.body, t) : MAIL_READ_DISABLED;
     case "rename_tab": return renameAgentTab(request.project_id, request.tmux_session, request.label);
     case "close_tab": return closeMobileTab(request.project_id, request.tmux_session);
+    case "reopen_tab": return reopenMobileTab(request.project_id, request.closed_id ?? undefined);
     case "color_tab": return colorMobileTab(request.project_id, request.tmux_session, request.color);
     case "reorder_tab": return reorderMobileTab(request.project_id, request.tmux_session, request.anchor_tmux_session, request.place);
     case "schedules": return schedulesFor(request.project_id, request.tmux_session);
@@ -2063,7 +2105,7 @@ const mutationQueues = new Map<string, Promise<unknown>>();
 
 function mutationDomain(type: DesktopRequest["type"]): string | null {
   switch (type) {
-    case "create": case "activate": case "rename_tab": case "close_tab": case "color_tab": case "reorder_tab": return "tabs";
+    case "create": case "activate": case "rename_tab": case "close_tab": case "reopen_tab": case "color_tab": case "reorder_tab": return "tabs";
     case "todo_mutate": case "alert_resolve": case "calendar_mutate": return "board";
     case "mail_mark": case "mail_reply": return "mail";
     case "schedule_mutate": case "prompt_mutate": return "schedules";

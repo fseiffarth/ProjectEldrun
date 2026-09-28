@@ -36,6 +36,7 @@ import {
   type WindowBounds,
 } from "./tabs";
 import { useProjectsStore } from "./projects";
+import { noteClosedPopoutTabs, reopenClosedAgentTab } from "./agents/closedAgentTabs";
 import {
   PRIMARY_HOST,
   hostStateOf,
@@ -117,6 +118,13 @@ export const DETACHED_CLOSE = "detached-close";
  * exactly like a hidden main-window subwindow. Same envelope shape as the dock.
  */
 export const DETACHED_HIDE = "detached-hide";
+/**
+ * Detached → main: the popout's Ctrl+Shift+T. The closed-tab list lives in the
+ * main window (`stores/agents/closedAgentTabs`), so the popout only asks; the
+ * main window reopens the newest agent tab closed there (else in the scope)
+ * into that popout. Same envelope shape as the dock.
+ */
+export const DETACHED_REOPEN = "detached-reopen";
 /** Detached → main: the popout's OS geometry changed (persisted for respawn). */
 export const DETACHED_BOUNDS = "detached-bounds";
 /**
@@ -431,7 +439,9 @@ export type DetachedEdit =
   // (`TabEntry.mark` / `.todoId`) — payload-only, forwarded like the colour.
   | { kind: "setMark"; key: string; mark: TabMark | undefined }
   | { kind: "setTodo"; key: string; todoId: string | undefined }
-  | { kind: "close"; key: string }
+  // `user`: a close the user asked for in the popout (×, Ctrl+W, the tab menu),
+  // remembered for "Reopen closed agent tab"; the experiment sweep leaves it off.
+  | { kind: "close"; key: string; user?: boolean }
   | { kind: "reorder"; tabKeys: string[] }
   // Multi-host: change WHERE a locatable tab runs (local mirror / primary / a
   // worker), chosen from the popout's own locality badge. The detached tab's PTY
@@ -493,6 +503,10 @@ export interface DetachedEditEnvelope {
 export interface DetachedDockEnvelope {
   scope: string;
   groupId: string;
+  /** DETACHED_CLOSE only: the user closed these tabs (the last tab's ×, the
+   *  window close's "Close tabs"), so their agent tabs are remembered for a
+   *  reopen. Absent for the experiment sweep's close. */
+  user?: boolean;
 }
 
 /** Envelope for a detached→main geometry update. */
@@ -1034,6 +1048,7 @@ export async function listenDetachedHost(): Promise<() => void> {
       store.addTabToScope(edit.scope, edit.tab);
       return;
     }
+    if (edit.kind === "close" && edit.user) noteClosedPopoutTabs(scope, groupId, [edit.key]);
     store.applyDetachedEdit(scope, groupId, edit);
   });
 
@@ -1068,8 +1083,12 @@ export async function listenDetachedHost(): Promise<() => void> {
   });
 
   const unClose = await listen<DetachedDockEnvelope>(DETACHED_CLOSE, (ev) => {
-    const { scope, groupId } = ev.payload;
+    const { scope, groupId, user } = ev.payload;
     const store = useTabsStore.getState();
+    if (user) {
+      const entry = store.detachedGroupsByScope[scope]?.find((d) => d.id === groupId);
+      if (entry) noteClosedPopoutTabs(scope, groupId, orderedTabKeys(entry.subtree));
+    }
     // Closing the popout closes ITS tabs for good (no dock-back, no restore).
     store.closeDetachedGroup(scope, groupId);
     // Persist so the dropped tabs don't come back on next launch. For the active
@@ -1077,6 +1096,12 @@ export async function listenDetachedHost(): Promise<() => void> {
     // (inactive) scope has nothing else to write its session — persist it
     // explicitly, for EVERY scope (root and box scopes persist too; #229).
     void persistScopeNow(scope);
+  });
+
+  const unReopen = await listen<DetachedDockEnvelope>(DETACHED_REOPEN, (ev) => {
+    const { scope, groupId } = ev.payload;
+    // A parked scope has nothing else to write the new tab (see the close handler).
+    if (reopenClosedAgentTab(scope, undefined, groupId)) void persistScopeNow(scope);
   });
 
   const unHide = await listen<DetachedDockEnvelope>(DETACHED_HIDE, (ev) => {
@@ -1306,6 +1331,7 @@ export async function listenDetachedHost(): Promise<() => void> {
     unDock();
     unClose();
     unHide();
+    unReopen();
     unActivity();
     unUsage();
     unDialog();

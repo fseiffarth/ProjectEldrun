@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AGENT_SORTS, DEFAULT_AGENT_SORT, isAgentSort, sortAgentTabs, type AgentSort } from "../../../shared/agentSort";
 import { promptClock, promptLines, promptsFromTranscript } from "../agentPrompts";
-import { ApiError, api, closeTab, deleteOutboxFile, listOutbox, outboxFileUrl, reorderTab, type AgentRow, type OutboxFile, type ProjectDetail, type TabPlace, type TabRow, type TabSchedules } from "../api";
+import { ApiError, api, closeTab, deleteOutboxFile, listOutbox, outboxFileUrl, reopenTab, reorderTab, type AgentRow, type ClosedTabRow, type OutboxFile, type ProjectDetail, type TabPlace, type TabRow, type TabSchedules } from "../api";
 import { OUTBOX_POLL, sameOutbox } from "../outbox";
 import { readChoice, writeChoice } from "../prefs";
 import { useRowDrag } from "../rowDrag";
@@ -295,12 +295,40 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     try {
       await closeTab(tab.id);
       dropTab(tab.id);
+      // The desktop now lists it under Recently closed; show that row at once.
+      if (tab.kind === "agent") void load();
     } catch (cause) {
       setError(cause instanceof ApiError && (cause.status === 503 || cause.code === "desktop_unavailable")
         ? "Open desktop Eldrun to close a tab."
         : "The tab could not be closed.");
     } finally {
       setClosingId(null);
+    }
+  };
+  /** The closed tab whose reopen is in flight. */
+  const [reopeningId, setReopeningId] = useState<string | null>(null);
+  /** Reopen a closed agent tab on the desktop — back in its place there, on
+   *  its conversation — and put its card back here. */
+  const reopen = async (closedTab: ClosedTabRow) => {
+    setReopeningId(closedTab.id);
+    setError("");
+    try {
+      const body = await reopenTab(id, closedTab.id);
+      closed.current.delete(body.tab.id);
+      setDetail((prev) => prev ? {
+        ...prev,
+        tabs: prev.tabs.some((row) => row.id === body.tab.id) ? prev.tabs : [...prev.tabs, body.tab],
+        closed: (prev.closed ?? []).filter((row) => row.id !== closedTab.id),
+      } : prev);
+    } catch (cause) {
+      setError(cause instanceof ApiError && cause.code === "nothing_to_reopen"
+        ? t("mobile.project.reopenGone")
+        : cause instanceof ApiError && (cause.status === 503 || cause.code === "desktop_unavailable")
+          ? t("mobile.project.reopenFailed")
+          : describeFailure(cause));
+      void load();
+    } finally {
+      setReopeningId(null);
     }
   };
   /** Move one tab beside another and tell the desktop, which owns the layout
@@ -462,6 +490,18 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
           have not claimed — the › on the foot included — opens the session. */}
       <button className="tab-card-open" disabled={!tab.available} onClick={() => terminal(tab)} aria-label={`Open ${tab.label}`} />
     </div>)}</section>
+    {/* Agent tabs closed on either surface, newest first: a tap reopens one
+        on the desktop, resuming its conversation, and its card comes back. */}
+    {!!detail?.closed?.length && <section className="create reopen-closed" aria-label={t("mobile.project.recentlyClosed")}>
+      <small className="reopen-closed-label">{t("mobile.project.recentlyClosed")}{isUntested("mobile.project.reopenClosed") && <span className="untested">{t("mobile.newTab.untested")}</span>}</small>
+      {detail.closed.slice(0, 3).map((row) => <button
+        key={row.id}
+        disabled={reopeningId !== null || !detail.desktop_available}
+        onClick={() => void reopen(row)}
+        aria-label={t("mobile.project.reopenHint", { label: row.label })}
+        title={t("mobile.project.reopenHint", { label: row.label })}
+      ><span aria-hidden="true">↺</span> {row.label}</button>)}
+    </section>}
     {detail?.project.status === "inactive" && <section className="create"><button className="primary" disabled={activating || !detail.desktop_available} onClick={() => void activate()}>Activate project</button></section>}
     <section className="create"><button disabled={!detail} onClick={() => setPromptsOpen(true)} aria-haspopup="dialog" aria-expanded={promptsOpen}>◷ Collected prompts</button></section>
     {/* The shell and agent buttons that stood here are the header's ＋ now: a

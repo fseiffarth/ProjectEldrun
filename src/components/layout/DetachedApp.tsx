@@ -27,6 +27,7 @@ import {
   DETACHED_DOCK,
   DETACHED_HIDE,
   DETACHED_EDIT,
+  DETACHED_REOPEN,
   DETACHED_REQUEST_SEED,
   DETACHED_ZOOM,
   applyEditToSubtree,
@@ -75,6 +76,7 @@ import { listenPdfReveal } from "../../stores/viewers/pdfSync";
 import { listenEditorJump } from "../../stores/viewers/editorJump";
 import { listenTexCenter } from "../../stores/viewers/texCenter";
 import { zoomChord } from "../../lib/shortcuts/zoomChord";
+import { chordMatches, resolveChord, type ShortcutMap } from "../../lib/shortcuts/shortcuts";
 import { DetachedCenterPanel } from "./DetachedCenterPanel";
 import { BrowserDownloadHost } from "../browser/BrowserDownloadHost";
 import { ExecTrustHost } from "../common/ExecTrustHost";
@@ -289,6 +291,24 @@ export function DetachedApp({ param }: Props) {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
+  }, [param.scope, param.groupId]);
+
+  // Ctrl+Shift+T — reopen the last closed agent tab into THIS popout. The
+  // closed list lives in the main window, so this only asks (DETACHED_REOPEN).
+  // Captured on `document` so it works from a focused terminal like the main
+  // window's; unlike there, the key is taken even when nothing is left to
+  // reopen, since this window cannot know that without asking.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const overrides = useSettingsStore.getState().settings
+        ?.keyboard_shortcuts as ShortcutMap | undefined;
+      if (!chordMatches(resolveChord("reopenClosedTab", overrides), e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      void emit(DETACHED_REOPEN, { scope: param.scope, groupId: param.groupId });
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
   }, [param.scope, param.groupId]);
 
   // This window is its own JS runtime with its own `document` and its own copy
@@ -705,10 +725,10 @@ export function DetachedApp({ param }: Props) {
   const handleClose = (key: string) => {
     const isLastTab = !group || orderedTabKeys(group).length <= 1;
     if (isLastTab) {
-      void emit(DETACHED_CLOSE, { scope: param.scope, groupId: param.groupId });
+      void emit(DETACHED_CLOSE, { scope: param.scope, groupId: param.groupId, user: true });
       return;
     }
-    pushEdit({ kind: "close", key });
+    pushEdit({ kind: "close", key, user: true });
   };
 
   // Group B #237: put the WHOLE popout back into the main window's tiled layout
@@ -869,7 +889,7 @@ export function DetachedApp({ param }: Props) {
           }}
           onCloseTabs={() => {
             setCloseChoice(null);
-            void emit(DETACHED_CLOSE, { scope: param.scope, groupId: param.groupId });
+            void emit(DETACHED_CLOSE, { scope: param.scope, groupId: param.groupId, user: true });
             // The main window closes this window via `attach_subwindow`; the
             // timer is the net for a main window that is gone or wedged, so the
             // popout can never be stuck un-closable.

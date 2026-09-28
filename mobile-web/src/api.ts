@@ -80,7 +80,10 @@ export interface ScheduledPromptList { schedules: ScheduledPrompt[]; time_zone: 
  * desktop's; the phone only ever sends the text. */
 export interface ProjectPrompt { id: string; message: string; created_at: string; updated_at: string }
 export interface ProjectPromptList { prompts: ProjectPrompt[] }
-export interface ProjectDetail { project: ProjectRow; tabs: TabRow[]; desktop_available: boolean; agents: AgentRow[] }
+/** An agent tab closed in the project this desktop session, newest first — an
+ * opaque id and its label, reopened by `reopenTab`. */
+export interface ClosedTabRow { id: string; label: string; agent: string; closed_at: number }
+export interface ProjectDetail { project: ProjectRow; tabs: TabRow[]; desktop_available: boolean; agents: AgentRow[]; closed?: ClosedTabRow[] }
 export interface TodoColumn { id: string; name: string; position: number; done: boolean; archived: boolean; intake: boolean; overdue: boolean; due_today: boolean; color?: string }
 export interface TodoSubtask { id: string; title: string; done: boolean }
 export interface TodoTaskInput {
@@ -446,6 +449,17 @@ export function reorderTab(tabId: string, anchorId: string, place: TabPlace): Pr
  * the rename above it is a bridge call, so it needs desktop Eldrun open. */
 export function closeTab(tabId: string): Promise<{ closed: boolean }> {
   return api(`/api/v1/tabs/${encodeURIComponent(tabId)}`, { method: "DELETE" });
+}
+
+/** `POST /api/v1/projects/{id}/tabs/reopen` — bring back a closed agent tab
+ * (the newest, or the one `closedId` names) on the desktop, resuming its
+ * conversation, as the desktop's own "Reopen closed agent tab" does. Answers
+ * with the reopened tab's row; `409 nothing_to_reopen` once it is gone. */
+export function reopenTab(projectId: string, closedId?: string): Promise<{ tab: TabRow }> {
+  return api(`/api/v1/projects/${encodeURIComponent(projectId)}/tabs/reopen`, {
+    method: "POST",
+    body: JSON.stringify(closedId ? { closed_id: closedId } : {}),
+  });
 }
 
 const schedulePath = (tabId: string) => `/api/v1/tabs/${encodeURIComponent(tabId)}/schedules`;

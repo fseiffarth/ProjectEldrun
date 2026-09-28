@@ -619,6 +619,10 @@ export interface TabEntry {
   // is only missing there. Tells a fresh OpenCode tab's own session from the
   // folder's older ones (`services::opencode_store`).
   launchedAt?: number;
+  // Runtime only: bumped by `relaunchTabInScope` so the pane respawns its PTY
+  // even when the args it respawns with are the ones it already had. Never
+  // persisted — a restored tab spawns anyway.
+  relaunchSeq?: number;
   // Absolute path of the script this terminal tab was launched to run (Python
   // Run/Debug, or a foreground shell-script run). Lets the activity store pulse
   // the file's run button while the tab is producing output. Busy-gated on read,
@@ -864,7 +868,9 @@ export type DetachedEditPayload =
   // Multi-host: change where a locatable tab runs; applied to the payload here so
   // the main window's flat pane layer (which owns the popout's PTY) respawns it.
   | { kind: "setLocation"; key: string; location: TabLocation }
-  | { kind: "close"; key: string }
+  // `user`: the popout's ×/Ctrl+W, which a reopen may take back
+  // (`stores/agents/closedAgentTabs`); a sweep or file-follow close leaves it off.
+  | { kind: "close"; key: string; user?: boolean }
   | { kind: "reorder"; tabKeys: string[] }
   // Multi-pane popouts: split `key` out into a new pane at `edge` of
   // `targetGroupId` (a group within the popout's subtree). `newGroupId` /

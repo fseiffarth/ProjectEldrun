@@ -30,6 +30,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { isRelaunchableLocalTab, isResumableAgentTab } from "../../stores/tabs";
 import { shouldPersistLocalTab, shouldPersistTab } from "../terminal/tmuxSession";
 import { IS_WINDOWS } from "../platform";
+import { noteClosedAgentTab } from "../../stores/agents/closedAgentTabs";
 
 /**
  * The persistent host tmux session a tab owns, or `null` if the tab is not a
@@ -117,7 +118,8 @@ export function mintedLocalSessionOf(scope: string, tab: TabEntry): string | nul
  * it takes a scope: the phone closes a tab in whichever project it is looking at.
  *
  * The tab leaves the layout (its pane unmounts, killing the PTY client) and the
- * local tmux session it minted is ended with it. A remote session is left
+ * local tmux session it minted is ended with it. A resumable agent tab is kept
+ * for "Reopen closed tab" (`stores/agents/closedAgentTabs`). A remote session is left
  * running; see the file header. Programmatic removals (a re-run replacing its
  * prior tab, a file tab following its file) keep calling `removeTab` directly.
  */
@@ -125,6 +127,8 @@ export function closeTabInScope(scope: string, key: string): void {
   const store = useTabsStore.getState();
   const tab = (store.tabsByScope[scope] ?? []).find((t) => t.key === key);
   const session = tab ? mintedLocalSessionOf(scope, tab) : null;
+  // An agent tab a restart would resume can be reopened the same way.
+  if (tab) noteClosedAgentTab(scope, tab, !!session);
   store.removeTabInScope(scope, key);
   if (session) void invoke<void>("local_tmux_kill", { session }).catch(() => {});
 }

@@ -158,7 +158,7 @@ nav button,.keys button { flex:1; }
    Flat on the card, no inner surface: indented to the tab name (the 44px dot
    column plus the head's 2px) so it reads as that tab's, not as its own box. */
 .tab-card-prompts { display:grid; gap:0; min-width:0; margin:0 14px 10px 46px; }
-.tab-card-prompts-label { margin:0 0 3px; font-size:.68rem; font-weight:700; text-transform:uppercase; letter-spacing:.09em; color:#929cba; }
+.tab-card-prompts-label, .reopen-closed-label { margin:0 0 3px; font-size:.68rem; font-weight:700; text-transform:uppercase; letter-spacing:.09em; color:#929cba; }
 .tab-card-prompt { display:flex; gap:8px; min-width:0; margin:0; padding:2px 0; color:#a3abc2; font-size:.82rem; line-height:1.35; }
 .tab-card-prompt.latest { display:grid; gap:1px; color:#ecedfa; font-size:.88rem; }
 .tab-card-prompt.empty { color:#8992ad; font-style:italic; }
@@ -189,6 +189,7 @@ small { color:#9498aa; }
 .lamp { width:10px; height:10px; border-radius:50%; background:#55d187; box-shadow:0 0 10px #55d187; }
 .lamp.off { background:#d15b66; box-shadow:none; }
 .create { display:grid; gap:9px; margin-top:22px; }
+.reopen-closed > button { text-align:left; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .agent-create > button:first-child { flex:1; text-align:left; }
 .mode { text-transform:capitalize; }
 /* The shell remains a clear first action; the agents fit two across without

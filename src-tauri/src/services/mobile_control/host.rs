@@ -489,7 +489,7 @@ async fn project(
     // and on Windows the nominal path is never a file, so it was never told.
     // A closed desktop refuses the connect at once, on both.
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
-    let (desktop_available, agents, statuses, schedules, prompts, timings) = match admin::desktop_call(
+    let (desktop_available, agents, statuses, schedules, prompts, timings, closed) = match admin::desktop_call(
         &desktop_socket,
         &DesktopRequest::Catalog {
             request_id,
@@ -504,9 +504,11 @@ async fn project(
             schedules,
             prompts,
             timings,
-        }) => (true, agents, statuses, schedules, prompts, timings),
-        _ => (false, vec![], vec![], vec![], vec![], vec![]),
+            closed,
+        }) => (true, agents, statuses, schedules, prompts, timings, closed),
+        _ => (false, vec![], vec![], vec![], vec![], vec![], vec![]),
     };
+    let closed = closed_tab_rows(closed);
     let mut timings = timings
         .into_iter()
         .map(|timing| (timing.tmux_session.clone(), timing))
@@ -552,9 +554,40 @@ async fn project(
     (
         StatusCode::OK,
         Json(
-            json!({ "project": project.public, "tabs": tabs, "desktop_available": desktop_available, "agents": agents }),
+            json!({ "project": project.public, "tabs": tabs, "desktop_available": desktop_available, "agents": agents, "closed": closed }),
         ),
     )
+}
+
+/// Most closed agent tabs one project lists for a reopen — the desktop keeps
+/// ten; the phone's row shows a handful.
+const MAX_CLOSED_TABS: usize = 10;
+
+/// A closed tab's opaque id as the desktop mints it (a UUID): short and plain,
+/// so it can be echoed back in a reopen without widening what a phone sends.
+fn closed_tab_id_ok(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+/// The desktop's closed-tab rows, bounded again on the way out like the prompt
+/// rows below: at most `MAX_CLOSED_TABS`, ids of the minted shape only, labels
+/// and agent names cut to what a tab label may be.
+fn closed_tab_rows(rows: Vec<super::protocol::ClosedAgentTab>) -> Vec<serde_json::Value> {
+    rows.into_iter()
+        .filter(|row| closed_tab_id_ok(&row.id))
+        .take(MAX_CLOSED_TABS)
+        .map(|row| {
+            let clean = |text: &str| -> String {
+                text.chars().filter(|c| !c.is_control()).take(MAX_TAB_LABEL).collect()
+            };
+            json!({
+                "id": row.id,
+                "label": clean(&row.label),
+                "agent": clean(&row.agent),
+                "closed_at": row.closed_at,
+            })
+        })
+        .collect()
 }
 
 /// The desktop's per-tab prompt rows, keyed by tmux name and bounded again on
@@ -664,15 +697,68 @@ async fn created_through_desktop(
             api_error(StatusCode::GATEWAY_TIMEOUT, "launch_pending")
         }
         Ok(DesktopResponse::Error { code, .. }) => api_error(
-            if code == "desktop_unavailable" {
-                StatusCode::SERVICE_UNAVAILABLE
-            } else {
-                StatusCode::BAD_REQUEST
+            match code.as_str() {
+                "desktop_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
+                "nothing_to_reopen" => StatusCode::CONFLICT,
+                _ => StatusCode::BAD_REQUEST,
             },
             &code,
         ),
         _ => api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable"),
     }
+}
+
+/// What a phone may send with a reopen: nothing (the newest closed tab), or the
+/// opaque id of one row of the project's `closed` list.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReopenTabRequest {
+    #[serde(default)]
+    closed_id: Option<String>,
+}
+
+/// `POST /api/v1/projects/{project_id}/tabs/reopen` — bring back an agent tab
+/// closed in this project (on either surface), on the resume args a restart
+/// would give it. The desktop holds the closed tabs; only the opaque id minted
+/// at close crosses, never a session id. Answers like a create, with the
+/// reopened tab's row; `409 nothing_to_reopen` once it is gone.
+async fn reopen_tab(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(project_id): Path<String>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(error) = mutation_guard(&headers, &state) {
+        return error;
+    }
+    let request = if body.is_empty() {
+        ReopenTabRequest::default()
+    } else {
+        match serde_json::from_slice::<ReopenTabRequest>(&body) {
+            Ok(request) => request,
+            Err(_) => return api_error(StatusCode::BAD_REQUEST, "invalid_request"),
+        }
+    };
+    if request.closed_id.as_deref().is_some_and(|id| !closed_tab_id_ok(id)) {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    let Ok(catalog_snapshot) = catalog(&state) else {
+        return api_error(StatusCode::SERVICE_UNAVAILABLE, "catalog_unavailable");
+    };
+    let Some(project) = catalog_snapshot.project(&project_id) else {
+        return api_error(StatusCode::NOT_FOUND, "project_not_found");
+    };
+    let request_id = Base64UrlUnpadded::encode_string(&random_16());
+    created_through_desktop(
+        &state,
+        &project_id,
+        &DesktopRequest::ReopenTab {
+            request_id,
+            project_id: project.raw_id.clone(),
+            closed_id: request.closed_id,
+        },
+    )
+    .await
 }
 
 /// `GET /api/v1/projects/{project_id}/launch-options` — what the ＋ sheet can
@@ -2922,6 +3008,7 @@ fn router(state: HostState) -> Router {
             post(activate_project),
         )
         .route("/api/v1/projects/{project_id}/tabs", post(create_tab))
+        .route("/api/v1/projects/{project_id}/tabs/reopen", post(reopen_tab))
         .route(
             "/api/v1/projects/{project_id}/launch-options",
             get(launch_options),
@@ -3561,6 +3648,29 @@ mod tests {
     fn the_activity_list_puts_a_waiting_session_first_and_a_finished_one_last() {
         assert!(activity_rank("question") < activity_rank("working"));
         assert!(activity_rank("working") < activity_rank("done"));
+    }
+
+    #[test]
+    fn closed_tab_rows_cross_bounded_and_only_with_minted_ids() {
+        use super::super::protocol::ClosedAgentTab;
+        let row = |id: &str, label: &str| ClosedAgentTab {
+            id: id.into(),
+            label: label.into(),
+            agent: "claude".into(),
+            closed_at: 1,
+        };
+        let mut rows = vec![
+            row("../../etc", "bad id"),
+            row("5c1d2f0e-8a1b-4c2d-9e3f-0a1b2c3d4e5f", "claude\u{1b}[2J 1"),
+        ];
+        rows.extend((0..20).map(|i| row(&format!("id-{i}"), "x")));
+        let out = closed_tab_rows(rows);
+        assert_eq!(out.len(), MAX_CLOSED_TABS);
+        assert_eq!(out[0]["id"], "5c1d2f0e-8a1b-4c2d-9e3f-0a1b2c3d4e5f");
+        assert_eq!(out[0]["label"], "claude[2J 1");
+        assert!(out.iter().all(|r| r["id"] != "../../etc"));
+        assert!(!closed_tab_id_ok(&"a".repeat(65)));
+        assert!(!closed_tab_id_ok(""));
     }
 
     #[test]

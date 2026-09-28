@@ -41,6 +41,7 @@ the place of Ctrl. **F1** opens the cheat sheet with every effective binding.
 | Ctrl+W | Close the active tab |
 | Ctrl+Shift+W | Close the focused pane |
 | Ctrl+Shift+Alt+W | Close all tabs in the project |
+| Ctrl+Shift+T | Reopen the last closed agent tab, resuming its conversation (works from a focused terminal; in a popout window it reopens into that window) |
 
 ## New tabs
 
