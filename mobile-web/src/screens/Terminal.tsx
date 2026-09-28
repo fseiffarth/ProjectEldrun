@@ -609,6 +609,14 @@ export function Terminal({ tab, back, pickModel = false, signInTab = false, open
    * re-subscribe per keystroke. */
   const draftRef = useRef(draft);
   draftRef.current = draft;
+  /** The composer grows with its draft, line by line, up to the CSS
+   * max-height, then scrolls; an emptied draft drops it back to one line. */
+  useLayoutEffect(() => {
+    const input = composerInput.current;
+    if (!input) return;
+    input.style.height = "auto";
+    input.style.height = `${input.scrollHeight}px`;
+  }, [draft]);
   const [lines, setLines] = useState<ReadableLine[]>([]);
   const [clipped, setClipped] = useState(false);
   /** The screen the live readers look at: the scrollback's tail, or — while a
@@ -3143,6 +3151,7 @@ export function Terminal({ tab, back, pickModel = false, signInTab = false, open
             event.preventDefault();
             submitDraft();
           }} />
+          {(draft.includes("\n") || draft.length > 60) && isUntested("mobile.composer.autoGrow") && <em className="composer-untested">{t("mobile.focus.untested")}</em>}
           {draft && <button className="composer-clear" onClick={clearDraft} aria-label={t("mobile.composer.clear")} title={t("mobile.composer.clear")}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg></button>}
           {tab.kind === "agent" && <button className={`composer-dictate${listening ? " listening" : ""}`} disabled={!connected || !voiceAvailable || preparingVoice} title={t(voiceAvailable ? "mobile.voice.hint" : "mobile.voice.hintUnavailable")} aria-label={dictateLabel} aria-pressed={listening} ref={dictateButton} onClick={listening ? stopVoice : () => void startVoice()}>{listening ? <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1" /></svg> : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M6 11a6 6 0 0 0 12 0M12 17v4M8 21h8" /></svg>}</button>}
         </div>
