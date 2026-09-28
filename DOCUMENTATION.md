@@ -490,7 +490,10 @@ Viewer state — editor/PDF scroll position, PDF/image zoom, image pan — persi
 per tab. Editable text/LaTeX/Markdown viewers carry opt-in, entirely local Ollama
 **autocomplete** (`Ctrl+Space`) and a dictionary **spell check**, both off by
 default with a per-tab header toggle; if Ollama is not running autocomplete fails
-silently, and nothing is ever sent off the machine.
+silently, and nothing is ever sent off the machine. While spelling is on, the header shows
+the dictionary language beside the toggle and a **＋ Language** menu that
+downloads another Hunspell dictionary (wooorm/dictionaries) and switches to it —
+the same download as Project Settings › Native viewers.
 
 ### Lessons, Tour, and i18n
 

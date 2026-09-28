@@ -681,6 +681,11 @@
   font-size: 10px;
   cursor: var(--cur-pointer, pointer);
 }
+/* A failed dictionary download beside the "＋ Language" menu. */
+.file-viewer-spell-error {
+  color: var(--danger);
+  font-size: 10px;
+}
 
 /* Markdown formatting toolbar (bold/italic/heading/link/list/TOC). */
 .file-viewer-md-toolbar {

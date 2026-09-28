@@ -267,7 +267,13 @@ import { isTreePath, isJsonPath } from "../../lib/viewers/yaml";
 import { isBibPath } from "../../lib/viewers/tex/bib";
 import { hasCards } from "../../lib/viewers/yamlGrid";
 import { useI18nStore, useT, type TranslationKey } from "../../lib/i18n";
-import { defaultSpellLanguage, dictionaryLabel } from "../../lib/spellDictionaries";
+import {
+  defaultSpellLanguage,
+  dictionaryChoices,
+  languageDisplayName,
+  type CatalogDictionary,
+  type InstalledDictionary,
+} from "../../lib/spellDictionaries";
 import { zoomChord } from "../../lib/shortcuts/zoomChord";
 import { ArrowUpRightIcon, BoltIcon, BugIcon, CommentIcon, GearIcon, LinkIcon, PlayIcon, UploadIcon, WarningIcon } from "../common/icons/Icon";
 import { ErrorNote } from "../common/ErrorNote";
@@ -6410,8 +6416,10 @@ function EditorAiControls({ ai, path }: { ai: TabAiPrefs; path: string }) {
  * The dictionary the spelling chip reads, beside it — so the language can be
  * switched where the writing happens instead of in Project Settings. The
  * choice is `Settings.spell_language`, machine-wide (the backend's default,
- * an installed English variant, is what an unset value shows). Lists what is
- * installed; adding a language stays a Project Settings job (it downloads).
+ * an installed English variant, is what an unset value shows). Beside it, a
+ * "＋ Language" menu downloads any other catalog language (the same
+ * `spell_install_language` Project Settings' picker uses) and selects it —
+ * shown even with nothing installed, which is when it is needed most.
  * Re-lists whenever the setting moves, which is also how a download made in
  * Settings while this tab is open reaches the list.
  */
@@ -6421,29 +6429,86 @@ function SpellLanguageSelect() {
   const spellLanguage = useSettingsStore(
     (s) => s.settings?.spell_language as string | undefined,
   );
-  const [installed, setInstalled] = useState<string[]>([]);
+  const [dicts, setDicts] = useState<{
+    installed: InstalledDictionary[];
+    catalog: CatalogDictionary[];
+  } | null>(null);
+  // Bumped after a download: re-downloading the language the setting already
+  // names (its files were missing) moves no setting, yet must re-list.
+  const [listEpoch, setListEpoch] = useState(0);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
-    invoke<string[]>("spell_languages")
-      .then((codes) => {
-        if (live) setInstalled(codes);
+    invoke<{ installed: InstalledDictionary[]; catalog: CatalogDictionary[] }>("spell_dictionaries")
+      .then((d) => {
+        if (live) setDicts(d);
       })
       .catch(() => {
-        if (live) setInstalled([]);
+        if (live) setDicts({ installed: [], catalog: [] });
       });
     return () => {
       live = false;
     };
-  }, [spellLanguage]);
-  if (installed.length === 0) return null;
+  }, [spellLanguage, listEpoch]);
+  if (!dicts) return null;
+  const choices = dictionaryChoices(dicts.installed, dicts.catalog, uiLang);
+
+  const download = async (code: string) => {
+    if (busy) return;
+    setBusy(code);
+    setError(null);
+    try {
+      await invoke("spell_install_language", { code });
+      // Read it right away: the language you just fetched is the one you want.
+      await useSettingsStore.getState().updateSettings({ spell_language: code });
+      setListEpoch((n) => n + 1);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
-    <Dropdown
-      className="file-viewer-ai-mode"
-      value={spellLanguage ?? defaultSpellLanguage(installed.map((code) => ({ code })))}
-      title={t("fileViewer.spellingLanguageTitle")}
-      options={installed.map((code) => ({ value: code, label: dictionaryLabel(code, uiLang) }))}
-      onChange={(v) => void useSettingsStore.getState().updateSettings({ spell_language: v })}
-    />
+    <>
+      {choices.installed.length > 0 && (
+        <Dropdown
+          className="file-viewer-ai-mode"
+          value={spellLanguage ?? defaultSpellLanguage(dicts.installed)}
+          title={t("fileViewer.spellingLanguageTitle")}
+          options={choices.installed.map((d) => ({ value: d.code, label: d.label }))}
+          disabled={busy !== null}
+          onChange={(v) => void useSettingsStore.getState().updateSettings({ spell_language: v })}
+        />
+      )}
+      {choices.downloadable.length > 0 && (
+        <>
+          <Dropdown
+            className="file-viewer-ai-mode"
+            value=""
+            placeholder={
+              busy
+                ? t("fileViewer.spellingDownloading", { lang: languageDisplayName(busy, uiLang) })
+                : t("fileViewer.spellingAddLanguage")
+            }
+            title={t("fileViewer.spellingAddLanguageTitle")}
+            options={choices.downloadable.map((d) => ({ value: d.code, label: d.label }))}
+            disabled={busy !== null}
+            onChange={(v) => void download(v)}
+          />
+          <UntestedTag id="fileViewer.spellingAddLanguage" />
+        </>
+      )}
+      {error && (
+        <ErrorNote
+          as="span"
+          role="alert"
+          className="file-viewer-spell-error"
+          error={t("projectSettings.spellDownloadFailed", { error })}
+        />
+      )}
+    </>
   );
 }
 
