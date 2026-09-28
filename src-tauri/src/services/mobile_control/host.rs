@@ -2917,10 +2917,16 @@ async fn outbox_list(
     if let Err(error) = authenticate(&headers, &state) {
         return error;
     }
-    match outbox_root(&state, &tab_id) {
-        Ok(root) => outbox_listing(root).await,
-        Err(error) => error,
-    }
+    let catalog = match catalog(&state) {
+        Ok(catalog) => catalog,
+        Err(error) => return error,
+    };
+    let Some((project, tab)) = catalog.tab(&tab_id) else {
+        return api_error(StatusCode::NOT_FOUND, "tab_not_found");
+    };
+    // Every file is listed — the gallery holds them all — but only what this
+    // tab sent is marked `from_tab`, the files its chat shows.
+    outbox_listing(project.root.clone(), tab.session_id.clone()).await
 }
 
 /// `GET /api/v1/projects/{project_id}/outbox` — the same listing by the
@@ -2934,14 +2940,17 @@ async fn project_outbox_list(
         return error;
     }
     match project_drop_box_root(&state, &project_id) {
-        Ok(root) => outbox_listing(root).await,
+        Ok(root) => outbox_listing(root, None).await,
         Err(error) => error,
     }
 }
 
-async fn outbox_listing(root: PathBuf) -> (StatusCode, Json<serde_json::Value>) {
+async fn outbox_listing(
+    root: PathBuf,
+    tab: Option<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
     // A directory walk that opens every candidate: off the connection executor.
-    let listed = tokio::task::spawn_blocking(move || outbox::list(&root))
+    let listed = tokio::task::spawn_blocking(move || outbox::list_for(&root, tab.as_deref()))
         .await
         .unwrap_or_else(|error| Err(outbox::OutboxError::Io(error.to_string())));
     match listed {

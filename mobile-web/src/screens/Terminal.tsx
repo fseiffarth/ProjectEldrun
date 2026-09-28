@@ -1687,7 +1687,8 @@ export function Terminal({ tab, back, pickModel = false, signInTab = false, open
   const storedEntries = useMemo(() => sinceClear ?? transcript?.entries ?? [], [sinceClear, transcript]);
   const sessionEntries = useMemo(() => withPending(storedEntries, pending), [storedEntries, pending]);
   /** The files the agent sent while this conversation ran, as its messages. */
-  const chatPosts = useMemo(() => outboxPosts(sessionEntries, outbox), [sessionEntries, outbox]);
+  // The gallery holds every file of the project; the chat only what this tab sent.
+  const chatPosts = useMemo(() => outboxPosts(sessionEntries, outbox.filter((file) => file.from_tab)), [sessionEntries, outbox]);
   /** The open subagent's conversation, once read. */
   const subToken = openStep?.token;
   const subTranscript = subRead && subRead.token === subToken ? subRead.transcript : null;

@@ -192,6 +192,10 @@ pub struct PublicTab {
 pub struct ResolvedTab {
     pub public: PublicTab,
     pub tmux_name: String,
+    /// The desktop's session id for an agent tab — the `ELDRUN_TAB_UID` its
+    /// processes run with, which `eldrun-send` stamps on what it sends. Never
+    /// crosses the browser API.
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -697,6 +701,7 @@ fn resolve_scope(
         tabs.push(ResolvedTab {
             public,
             tmux_name: tmux.to_string(),
+            session_id: tab.session_id.clone(),
         });
     }
     let last_activity = tabs.iter().filter_map(|t| t.public.last_activity).max();

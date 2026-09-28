@@ -18,6 +18,9 @@ if (-not $root) {
 if (-not $root -or -not [IO.Directory]::Exists($root)) { Fail 3 'Set ELDRUN_PROJECT_DIR or run inside a git project.' }
 $root = [IO.Path]::GetFullPath($root)
 $outbox = Join-Path $root '.eldrun/outbox'
+# The agent tab sending: its phone chat shows the file; every gallery lists it.
+$tab = $env:ELDRUN_TAB_UID
+if ($tab -notmatch '^[A-Za-z0-9-]{1,64}$') { $tab = $null }
 foreach ($dir in @((Join-Path $root '.eldrun'), $outbox)) {
     if ((Test-Path -LiteralPath $dir) -and ((Get-Item -Force -LiteralPath $dir).Attributes -band [IO.FileAttributes]::ReparsePoint)) { Fail 3 'The outbox must not be a symlink.' }
 }
@@ -60,8 +63,16 @@ foreach ($source in $sources) {
         while ($true) {
             $leaf = "$stamp-$stem$suffix$ext"
             $dest = Join-Path $outbox $leaf
+            $marker = Join-Path $outbox ".$leaf.tab"
+            # A leaf with no file and no sender marker; the marker lands first,
+            # so the phone never lists this file unclaimed.
+            if ((Test-Path -LiteralPath $dest) -or (Test-Path -LiteralPath $marker)) { $n++; $suffix = "-$n"; continue }
+            if ($tab) { [IO.File]::WriteAllText($marker, $tab) }
             try { [IO.File]::Move($stage, $dest); break }
-            catch [IO.IOException] { if (-not (Test-Path -LiteralPath $dest)) { throw }; $n++; $suffix = "-$n" }
+            catch [IO.IOException] {
+                if ($tab) { [IO.File]::Delete($marker) }
+                if (-not (Test-Path -LiteralPath $dest)) { throw }; $n++; $suffix = "-$n"
+            }
         }
         Write-Output "phone: $leaf ($([Math]::Ceiling($size / 1024)) KB) - preview or download (the phone checks its bytes)"
     } catch { Fail 4 $_.Exception.Message }

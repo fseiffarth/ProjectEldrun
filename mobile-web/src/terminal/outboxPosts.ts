@@ -6,7 +6,9 @@ import type { OutboxFile, TranscriptEntry } from "../api";
  * picture is one message, and what one send put out together — a plot and its
  * table, three screenshots — is one message holding all of it. The gallery
  * behind the 🖼 still lists every file; this only places the ones that belong
- * to the conversation on screen.
+ * to the conversation on screen — the caller passes only the files this tab
+ * sent (`OutboxFile.from_tab`), so a picture reaches the one chat it was sent
+ * from and no other in the project.
  *
  * Placement is by time: every stored record carries one (`TranscriptEntry.at`)
  * and every file its mtime, so a post goes after the last record written at or

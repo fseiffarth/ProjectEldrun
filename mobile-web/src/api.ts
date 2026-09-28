@@ -689,6 +689,9 @@ export async function attachDesktopImage(tabId: string, imageId: string): Promis
  * bytes say, not the extension; `modified` is unix seconds. */
 export interface OutboxFile {
   name: string; kind: string; size: number; modified: number;
+  /** Sent by `eldrun-send` from the tab this listing was read through — the
+   * one chat that shows it. Absent otherwise; the gallery lists every file. */
+  from_tab?: boolean;
   /** What the file is fetched by when that is not its name: a project file's
    * sealed token (`ProjectFileEntry.token`). Outbox files have none. */
   ref?: string;

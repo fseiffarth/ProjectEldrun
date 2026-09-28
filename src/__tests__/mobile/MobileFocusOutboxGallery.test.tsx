@@ -78,7 +78,7 @@ describe("Eldrun Mobile shows the files the agent sent in the chat and in the ga
 
   it("posts the picture in the stored chat after the answer it followed, and in the gallery beside the tab name", async () => {
     vi.stubGlobal("fetch", sidecarFetch([
-      { name: "run12.png", kind: "image/png", size: 48_000, modified: secs("2026-09-15T05:03:00Z") },
+      { name: "run12.png", kind: "image/png", size: 48_000, modified: secs("2026-09-15T05:03:00Z"), from_tab: true },
     ], {
       available: true,
       version: "1:1",
@@ -117,13 +117,38 @@ describe("Eldrun Mobile shows the files the agent sent in the chat and in the ga
     expect(screen.getByRole("dialog", { name: "run12.png" }).querySelector("img")?.getAttribute("src")).toBe("/api/v1/tabs/tab-7/outbox/run12.png");
   });
 
+  it("posts only what this tab sent in its chat; a file from another tab is in the gallery alone", async () => {
+    vi.stubGlobal("fetch", sidecarFetch([
+      { name: "theirs.png", kind: "image/png", size: 9_000, modified: secs("2026-09-15T05:02:40Z") },
+      { name: "mine.png", kind: "image/png", size: 9_000, modified: secs("2026-09-15T05:02:30Z"), from_tab: true },
+    ], {
+      available: true,
+      version: "1:1",
+      truncated: false,
+      entries: [
+        { kind: "prompt", text: "plot it", at: "2026-09-15T05:00:00Z" },
+        { kind: "answer", text: "Here it is.", at: "2026-09-15T05:02:00Z" },
+      ],
+    }));
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+
+    const chat = screen.getByTestId("session-transcript");
+    const imgs = Array.from(chat.querySelectorAll("img")).map((img) => img.getAttribute("src"));
+    expect(imgs).toEqual(["/api/v1/tabs/tab-7/outbox/mine.png"]);
+    fireEvent.click(screen.getByRole("button", { name: "Files from the agent (2)" }));
+    const gallery = screen.getByRole("dialog", { name: "Files from the agent" });
+    expect(gallery.textContent).toContain("theirs.png");
+    expect(gallery.textContent).toContain("mine.png");
+  });
+
   it("posts one send as one album, and leaves files from before the conversation to the gallery", async () => {
     vi.stubGlobal("fetch", sidecarFetch([
-      { name: "notes.pdf", kind: "application/pdf", size: 2_048, modified: secs("2026-09-15T05:10:00Z") },
-      { name: "c.png", kind: "image/png", size: 9_000, modified: secs("2026-09-15T05:02:33Z") },
-      { name: "b.png", kind: "image/png", size: 9_000, modified: secs("2026-09-15T05:02:31Z") },
-      { name: "a.png", kind: "image/png", size: 9_000, modified: secs("2026-09-15T05:02:30Z") },
-      { name: "old.png", kind: "image/png", size: 9_000, modified: secs("2026-09-14T20:00:00Z") },
+      { name: "notes.pdf", kind: "application/pdf", size: 2_048, modified: secs("2026-09-15T05:10:00Z"), from_tab: true },
+      { name: "c.png", kind: "image/png", size: 9_000, modified: secs("2026-09-15T05:02:33Z"), from_tab: true },
+      { name: "b.png", kind: "image/png", size: 9_000, modified: secs("2026-09-15T05:02:31Z"), from_tab: true },
+      { name: "a.png", kind: "image/png", size: 9_000, modified: secs("2026-09-15T05:02:30Z"), from_tab: true },
+      { name: "old.png", kind: "image/png", size: 9_000, modified: secs("2026-09-14T20:00:00Z"), from_tab: true },
     ], {
       available: true,
       version: "1:1",

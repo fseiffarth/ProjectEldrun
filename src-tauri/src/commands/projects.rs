@@ -2784,7 +2784,8 @@ To put a file in front of the user on their phone (Eldrun Mobile), run
 `eldrun-send <file>` — any file up to 24 MiB; images, PDFs and text show
 on the phone, anything else is offered as a download. Local and container
 tabs. `command | eldrun-send -n tests.log` sends stdin; `eldrun-send --clear`
-empties the outbox. Copying into `.eldrun/outbox/` by hand still works.
+empties the outbox. A file sent from this tab shows in this tab's phone chat
+and every gallery; one copied into `.eldrun/outbox/` by hand, in the gallery only.
 
 ## Agent files
 
