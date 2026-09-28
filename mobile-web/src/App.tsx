@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { EldrunMark } from "./EldrunMark";
 import { hasPairedDevice, logoutAuth, resumeAuth } from "./auth";
 import { connectTrace, primeConnection, setUnauthorizedHandler, traceConnect, type TabRow } from "./api";
-import { classifyUnavailable, describeUnavailable, unavailableDetail, type UnavailableReason } from "./connection";
+import { classifyUnavailable, describeUnavailable, suspectsTunnel, tailscaleAppLink, unavailableDetail, type UnavailableReason } from "./connection";
 import { forgetLastPlace, parsePlace, rememberLastPlace, resolvePlace, restoreLastPlace, type LastPlace, type MobileSection, type RestoredPlace } from "./lastPlace";
 import { refreshPush } from "./push";
 import { hasLocalUnlock } from "./localLock";
@@ -148,11 +148,23 @@ function SlowConnectHint() {
   if (!slow) return null;
   return <>
     <p className="splash-hint">
-      Taking a while. Check Tailscale is connected on this phone.
+      Taking a while. Check Tailscale is connected on this phone — if it already is, switch it off and on again.
       {isUntested("mobile.link.slowConnectHint") && <> <span className="untested">Untested</span></>}
     </p>
+    <OpenTailscale />
     <ConnectTrace />
   </>;
+}
+
+/** One tap to the Tailscale app, where a stuck tunnel is switched off and on
+ * (`suspectsTunnel`). Android only; nothing is drawn where it cannot open. */
+function OpenTailscale() {
+  const link = tailscaleAppLink();
+  if (!link) return null;
+  return <p className="splash-hint">
+    <a className="splash-link" href={link}>Open Tailscale</a>
+    {isUntested("mobile.link.openTailscale") && <> <span className="untested">Untested</span></>}
+  </p>;
 }
 
 /** The way in so far (`traceConnect`), for a slow or failed sign-in. */
@@ -435,6 +447,7 @@ export function App() {
     return (
       <Splash message={title} tone="error">
         <p className="splash-hint">{hint}</p>
+        {suspectsTunnel(unavailable.reason) && <OpenTailscale />}
         {unavailable.reason === "host_down" && isUntested("mobile.link.offlineShell") && <p className="splash-hint muted"><span className="untested">Untested</span></p>}
         <p className="splash-hint muted">No project or terminal data is loaded from cache.</p>
         {unavailable.detail && <p className="splash-detail">{unavailable.detail}</p>}

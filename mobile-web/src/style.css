@@ -900,6 +900,8 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .splash-failed .splash-message { color:#ffb4c0; font-size:.98rem; font-weight:640; letter-spacing:0; }
 .splash-hint { max-width:34ch; color:#c8ccdb; font-size:.82rem; line-height:1.5; }
 .splash-hint.muted { color:#767a8b; font-size:.76rem; }
+/* "Open Tailscale": the one way out of a stuck tunnel, so it reads as an action. */
+.splash-link { color:#b7acff; font-weight:600; text-decoration:underline; text-underline-offset:3px; }
 /* The status/code pair, for reading back into a bug report. */
 .splash-detail { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.7rem; color:#6a6e7f; letter-spacing:.04em; }
 .connect-trace { max-width:100%; margin:0; white-space:pre-wrap; text-align:left; letter-spacing:0; }

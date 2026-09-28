@@ -96,7 +96,7 @@ export function describeUnavailable(reason: UnavailableReason): UnavailableCopy 
     case "unreachable":
       return {
         title: "Can't reach your desktop. Is Tailscale on?",
-        hint: "Nothing answered at your desktop's address. Open the Tailscale app on this phone and check it is connected. If it is, the desktop is asleep or shut down.",
+        hint: "Nothing answered at your desktop's address. Open the Tailscale app on this phone and check it is connected. If it already says connected, switch it off and on again — after the phone changes networks its tunnel can stay \"connected\" and carry nothing. If that does not help, the desktop is asleep or shut down.",
       };
     // With Tailscale off, the desktop's 100.x address routes nowhere and the
     // request stalls instead of failing — so a timeout is the usual shape of
@@ -104,7 +104,7 @@ export function describeUnavailable(reason: UnavailableReason): UnavailableCopy 
     case "timeout":
       return {
         title: "Your desktop didn't answer. Is Tailscale on?",
-        hint: "Nothing came back in time. Open the Tailscale app on this phone and check it is connected — while it is off, requests to your desktop go nowhere. If it is on, the desktop may be asleep or the signal weak.",
+        hint: "Nothing came back in time. Open the Tailscale app on this phone and check it is connected — while it is off, requests to your desktop go nowhere. If it already says connected, switch it off and on again: after the phone changes networks its tunnel can stay \"connected\" and carry nothing. If that does not help, the desktop may be asleep or the signal weak.",
       };
     case "host_down":
       return {
@@ -293,4 +293,25 @@ export function knownFailureCodes(): string[] {
 export function localFailureText(reason: unknown): string {
   if (reason instanceof Error && reason.message && !isCode(reason.message)) return reason.message;
   return "That did not work. Try again.";
+}
+
+/**
+ * The failures a stuck tunnel on the phone produces. Tailscale's Android app
+ * can keep saying "connected" after a network change while it passes none of
+ * the browser's traffic (2026-09-28: pings through the tunnel answered, not
+ * one request reached the desktop for hours, a phone restart cleared it).
+ * Nothing in a web page can repair that, so these screens hand the reader the
+ * fix: switch Tailscale off and on.
+ */
+export function suspectsTunnel(reason: UnavailableReason): boolean {
+  return reason === "unreachable" || reason === "timeout";
+}
+
+/** Opens the Tailscale app on Android (Chrome resolves `intent:` links on a
+ * tap), falling back to its store page when it is not installed. `null`
+ * elsewhere: iOS has no scheme for it. */
+export function tailscaleAppLink(userAgent: string = typeof navigator === "undefined" ? "" : navigator.userAgent): string | null {
+  if (!/Android/i.test(userAgent)) return null;
+  const store = encodeURIComponent("https://play.google.com/store/apps/details?id=com.tailscale.ipn");
+  return `intent://#Intent;package=com.tailscale.ipn;S.browser_fallback_url=${store};end`;
 }

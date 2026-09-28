@@ -349,6 +349,7 @@ export const UNTESTED = {
   "mobile.link.offlineShell": { area: "mobile", what: "App · Opened with the desktop closed, the phone shows Eldrun's own splash rather than the proxy's 502 page" },
   "mobile.link.slowConnectHint": { area: "mobile", what: "App · With Tailscale off on the phone, Connecting… asks after a few seconds whether Tailscale is on, and the failure splash names it in its title" },
   "mobile.link.connectTrace": { area: "mobile", what: "App · A cold open warms the connection at start; a slow Connecting… and the failure splash list the warm-up, logout and each sign-in request with its time" },
+  "mobile.link.openTailscale": { area: "mobile", what: "App · On Android, a slow Connecting… and the can't-reach/didn't-answer splash offer Open Tailscale, which opens the Tailscale app (or its store page); the hints say to switch a \"connected\" Tailscale off and on" },
   "mobile.link.splashVersion": { area: "mobile", what: "App · Connecting… and the failure splash show the phone bundle's version and build time (v0.1.x · dd-mm hh:mm), the same line as Home's header" },
   "mobile.link.unlockRetry": { area: "mobile", what: "App · Unlocking after the phone slept connects on the first try (a stale connection or a dropped request is retried inside Connecting…); the failure splash's Retry reconnects without a second fingerprint", tested: "2026-09-27" },
   "mobile.link.silentResume": { area: "mobile", what: "LocalUnlock · A sidecar restart or a lapsed session is renewed silently while the reader is active; a cold open always asks for the PIN" },

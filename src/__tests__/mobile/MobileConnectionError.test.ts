@@ -6,6 +6,8 @@ import {
   describeUnavailable,
   knownFailureCodes,
   localFailureText,
+  suspectsTunnel,
+  tailscaleAppLink,
   unavailableDetail,
   type UnavailableReason,
 } from "../../../mobile-web/src/connection";
@@ -181,5 +183,29 @@ describe("api deadline", () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("Failed to fetch"));
     const failure = await api("/api/v1/status", undefined, 5_000).catch((error: unknown) => error);
     expect((failure as ApiError).code).toBe("offline");
+  });
+});
+
+describe("a stuck tunnel", () => {
+  it("is suspected only where no answer came back", () => {
+    expect(suspectsTunnel("unreachable")).toBe(true);
+    expect(suspectsTunnel("timeout")).toBe(true);
+    for (const reason of ["phone_offline", "host_down", "desktop_down", "busy", "blocked_origin", "server_error", "storage_blocked"] as UnavailableReason[]) {
+      expect(suspectsTunnel(reason), reason).toBe(false);
+    }
+  });
+
+  it("tells the reader to switch a connected Tailscale off and on", () => {
+    for (const reason of ["unreachable", "timeout"] as UnavailableReason[]) {
+      expect(describeUnavailable(reason).hint, reason).toMatch(/switch it off and on again/);
+    }
+  });
+
+  it("links to the Tailscale app on Android only", () => {
+    const android = tailscaleAppLink("Mozilla/5.0 (Linux; Android 15; SM-A146P) AppleWebKit/537.36 Chrome/140.0 Mobile Safari/537.36");
+    expect(android).toMatch(/^intent:\/\/#Intent;package=com\.tailscale\.ipn;/);
+    expect(android).toContain("S.browser_fallback_url=https%3A%2F%2Fplay.google.com");
+    expect(android).toMatch(/;end$/);
+    expect(tailscaleAppLink("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148")).toBeNull();
   });
 });
