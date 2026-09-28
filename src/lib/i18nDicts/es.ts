@@ -7326,6 +7326,8 @@ export const dict: Dict = {
   "settings.agentGlobalImport": "Importar de este equipo",
   "settings.agentGlobalOpen": "Abrir carpeta",
   "settings.agentGlobalImported": "Importados {files} archivos y {configs} archivos de configuración. Las nuevas pestañas de agente los usarán.",
+  "settings.codexAutoReview": "Codex: revisión automática de aprobaciones",
+  "settings.codexAutoReviewHelp": "Codex envía las solicitudes por las que te preguntaría (ejecutar un comando fuera de su sandbox, acceso a la red, cambios fuera del proyecto) a un agente revisor independiente, que aprueba o rechaza cada una. La sandbox y la política de aprobación de Codex no cambian. Dentro de la sandbox de agentes de Eldrun en Linux, la sandbox propia de Codex no puede iniciarse, así que sin esto cada comando pregunta. Cada revisión es una llamada adicional al modelo. Se escribe como approvals_reviewer = \"auto_review\" en la configuración global de Codex; las nuevas pestañas de Codex lo usarán.",
   "settings.agentLoginSignedIn": "sesión iniciada",
   "settings.agentLoginSignedInAs": "sesión iniciada como {account}",
   "settings.agentLoginNotSignedIn": "sin sesión — inicia sesión una vez en cualquier pestaña o importa",

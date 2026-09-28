@@ -7328,6 +7328,8 @@ export const dict: Dict = {
   "settings.agentGlobalImport": "Importer depuis cet ordinateur",
   "settings.agentGlobalOpen": "Ouvrir le dossier",
   "settings.agentGlobalImported": "{files} fichiers et {configs} fichiers de configuration importés. Les nouveaux onglets d'agent les reprennent.",
+  "settings.codexAutoReview": "Codex : revue automatique des autorisations",
+  "settings.codexAutoReviewHelp": "Codex envoie les demandes pour lesquelles il vous solliciterait (lancer une commande hors de son bac à sable, accès réseau, modifications hors du projet) à un agent réviseur distinct, qui accepte ou refuse chacune. Le bac à sable et la politique d'autorisation de Codex restent inchangés. Dans le bac à sable des agents d'Eldrun sous Linux, le bac à sable de Codex ne peut pas démarrer, donc sans cela chaque commande demande. Chaque revue est un appel de modèle supplémentaire. Écrit comme approvals_reviewer = \"auto_review\" dans la configuration Codex globale ; les nouveaux onglets Codex le reprennent.",
   "settings.agentLoginSignedIn": "connecté",
   "settings.agentLoginSignedInAs": "connecté en tant que {account}",
   "settings.agentLoginNotSignedIn": "non connecté — connectez-vous une fois dans un onglet, ou importez",

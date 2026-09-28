@@ -219,6 +219,7 @@ export const UNTESTED = {
   "settings.rootFenceProjects": { area: "layout", what: "SettingsSubPanels · Root agent reads projects (root fence shows every project read-only)" },
   "settings.agentFenceTitle": { area: "layout", what: "SettingsSubPanels · Agent fence" },
   "settings.agentGlobal": { area: "layout", what: "SettingsSubPanels · Global agent config (Eldrun-wide instructions/skills/hooks/MCP laid into every agent home; import / open folder)" },
+  "settings.codexAutoReview": { area: "layout", what: "SettingsSubPanels · Codex auto-review switch (approvals_reviewer in the global Codex config; does it answer fenced Codex's sandbox-failed retries?)" },
   "settings.agentLogins": { area: "layout", what: "SettingsSubPanels · Agent logins (shared per CLI across Eldrun agent homes; import / sign out)" },
   "pill.agentFenceStatus": { area: "projects", what: "ProjectPill · Agent fence: on (status row; the toggle is gone, the fence is the only mode)" },
   "newTabMenu.hostSession": { area: "tabs", what: "NewTabMenu · root console's Host session entries (unfenced agent in Eldrun's host home)" },

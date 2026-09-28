@@ -2025,6 +2025,7 @@ pub fn run() {
             commands::agents::agent_login_sign_out,
             commands::agents::agent_global_status,
             commands::agents::agent_global_import,
+            commands::agents::agent_global_set_codex_auto_review,
             commands::agents::agent_global_open,
             commands::agents::agent_usage,
             commands::agents::agent_versions,

@@ -7331,6 +7331,8 @@ export const dict: Dict = {
   "settings.agentGlobalImport": "Von diesem Rechner importieren",
   "settings.agentGlobalOpen": "Ordner öffnen",
   "settings.agentGlobalImported": "{files} Dateien und {configs} Konfigurationsdateien importiert. Neue Agenten-Tabs übernehmen sie.",
+  "settings.codexAutoReview": "Codex: Freigaben automatisch prüfen",
+  "settings.codexAutoReviewHelp": "Codex schickt die Anfragen, bei denen es sonst dich fragen würde (einen Befehl außerhalb seiner Sandbox ausführen, Netzwerkzugriff, Änderungen außerhalb des Projekts), an einen separaten Prüf-Agenten, der jede einzeln erlaubt oder ablehnt. Codex' Sandbox und Freigaberegel bleiben, wie sie sind. In Eldruns Agenten-Sandbox unter Linux kann Codex' eigene Sandbox nicht starten, deshalb fragt ohne dies jeder Befehl nach. Jede Prüfung ist ein zusätzlicher Modellaufruf. Wird als approvals_reviewer = \"auto_review\" in die globale Codex-Konfiguration geschrieben; neue Codex-Tabs übernehmen es.",
   "settings.agentLoginSignedIn": "angemeldet",
   "settings.agentLoginSignedInAs": "angemeldet als {account}",
   "settings.agentLoginNotSignedIn": "nicht angemeldet – einmal in irgendeinem Tab anmelden oder importieren",

@@ -833,14 +833,69 @@ pub fn import_once() {
 pub struct LayerStatus {
     pub dir: String,
     pub files: usize,
+    /// Whether the layer's Codex config routes approvals to auto-review.
+    pub codex_auto_review: bool,
 }
 
 pub fn status() -> LayerStatus {
     let dir = global_dir();
     LayerStatus {
         files: layer_files(&dir).len(),
+        codex_auto_review: codex_auto_review_in(&dir),
         dir: dir.to_string_lossy().into_owned(),
     }
+}
+
+/// Codex's `approvals_reviewer` value that hands the requests Codex would ask
+/// the user about to a reviewer agent instead. The Manage CLIs switch writes
+/// it into the layer, so it is the user's own Codex config in every home, not
+/// a mode Eldrun picks: the approval policy and the sandbox stay Codex's.
+/// Fenced Linux Codex needs it most — its sandbox cannot nest under the fence,
+/// so every command asks to run outside it (`docs/context/agent_authority.md`).
+const CODEX_REVIEWER: &str = "approvals_reviewer";
+const CODEX_AUTO_REVIEW: &str = "auto_review";
+
+fn codex_auto_review_in(layer: &Path) -> bool {
+    std::fs::read_to_string(layer.join(".codex/config.toml"))
+        .ok()
+        .and_then(|text| text.parse::<toml_edit::DocumentMut>().ok())
+        .is_some_and(|doc| doc.get(CODEX_REVIEWER).and_then(|v| v.as_str()) == Some(CODEX_AUTO_REVIEW))
+}
+
+/// Switch auto-review on or off in the layer under `state_dir`, editing only
+/// that one key of its Codex config. Off removes the key only while it still
+/// says `auto_review`; a reviewer the user named themselves stays. A config
+/// that does not parse is refused rather than rewritten.
+pub fn set_codex_auto_review_in(state_dir: &Path, on: bool) -> io::Result<()> {
+    let layer = global_dir_in(state_dir);
+    let path = layer.join(".codex/config.toml");
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e),
+    };
+    let mut doc = text
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|e| io::Error::other(format!("{}: {e}", path.display())))?;
+    if on {
+        doc[CODEX_REVIEWER] = toml_edit::value(CODEX_AUTO_REVIEW);
+    } else if doc.get(CODEX_REVIEWER).and_then(|v| v.as_str()) == Some(CODEX_AUTO_REVIEW) {
+        doc.remove(CODEX_REVIEWER);
+    }
+    let out = doc.to_string();
+    if out == text {
+        return Ok(());
+    }
+    if out.trim().is_empty() {
+        return std::fs::remove_file(&path);
+    }
+    crate::services::agent_home::create_private_dir(&layer)?;
+    crate::services::agent_home::create_private_dir(&layer.join(".codex"))?;
+    std::fs::write(&path, out)
+}
+
+pub fn set_codex_auto_review(on: bool) -> io::Result<()> {
+    set_codex_auto_review_in(&storage::state_dir(), on)
 }
 
 /// Create the layer's directory (for "Open folder") and return it.
@@ -1065,6 +1120,48 @@ mod tests {
             .unwrap();
         assert!(doc.get("mcp_servers").is_none());
         assert_eq!(doc["projects"]["/work/p"]["trust_level"].as_str(), Some("trusted"));
+    }
+
+    #[test]
+    fn the_codex_auto_review_switch_edits_one_key_and_reaches_every_home() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("state");
+        let home = tmp.path().join("home");
+        let layer = global_dir_in(&state);
+        let layer_file = layer.join(".codex/config.toml");
+        write(&home.join(".codex/config.toml"), "approvals_reviewer = \"user\"\nmodel = \"gpt-5\"\n");
+        // From nothing: on writes the key, off removes the file it created.
+        assert!(!codex_auto_review_in(&layer));
+        set_codex_auto_review_in(&state, true).unwrap();
+        assert!(codex_auto_review_in(&layer));
+        apply_to_home(&state, &home).unwrap();
+        let doc: toml_edit::DocumentMut =
+            std::fs::read_to_string(home.join(".codex/config.toml")).unwrap().parse().unwrap();
+        assert_eq!(doc["approvals_reviewer"].as_str(), Some("auto_review"));
+        assert_eq!(doc["model"].as_str(), Some("gpt-5"));
+        set_codex_auto_review_in(&state, false).unwrap();
+        assert!(!layer_file.exists());
+        apply_to_home(&state, &home).unwrap();
+        let doc: toml_edit::DocumentMut =
+            std::fs::read_to_string(home.join(".codex/config.toml")).unwrap().parse().unwrap();
+        assert!(doc.get("approvals_reviewer").is_none());
+        assert_eq!(doc["model"].as_str(), Some("gpt-5"));
+        // An imported config keeps its comments and tables around the key.
+        let imported = "# mine\n[mcp_servers.docs]\ncommand = \"docs-mcp\"\n";
+        write(&layer_file, imported);
+        set_codex_auto_review_in(&state, true).unwrap();
+        let text = std::fs::read_to_string(&layer_file).unwrap();
+        assert!(text.contains("# mine") && text.contains("[mcp_servers.docs]"));
+        set_codex_auto_review_in(&state, false).unwrap();
+        assert_eq!(std::fs::read_to_string(&layer_file).unwrap(), imported);
+        // A reviewer the user named is not the switch's to remove.
+        write(&layer_file, "approvals_reviewer = \"user\"\n");
+        set_codex_auto_review_in(&state, false).unwrap();
+        assert_eq!(std::fs::read_to_string(&layer_file).unwrap(), "approvals_reviewer = \"user\"\n");
+        // A broken config is refused, not overwritten.
+        write(&layer_file, "not = [toml");
+        assert!(set_codex_auto_review_in(&state, true).is_err());
+        assert_eq!(std::fs::read_to_string(&layer_file).unwrap(), "not = [toml");
     }
 
     #[test]

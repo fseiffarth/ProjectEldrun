@@ -1819,6 +1819,16 @@ pub async fn agent_global_import() -> Result<crate::services::agent_global::Impo
         .map_err(|e| e.to_string())
 }
 
+/// The Manage CLIs switch for Codex auto-review in the Eldrun-wide layer;
+/// every Codex tab picks it up at its next start.
+#[tauri::command]
+pub async fn agent_global_set_codex_auto_review(enabled: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || crate::services::agent_global::set_codex_auto_review(enabled))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
 /// Open the Eldrun-wide layer's folder in the file manager, creating it first.
 #[tauri::command]
 pub async fn agent_global_open() -> Result<(), String> {

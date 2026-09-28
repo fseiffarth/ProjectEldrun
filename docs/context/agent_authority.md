@@ -420,11 +420,41 @@ unless `sandbox_workspace_write.exclude_slash_tmp` is also set — a policy
 narrowing Eldrun must not choose for the agent. So the flag was dropped
 (2026-09-15): inside the fence Codex's sandbox fails to spawn, Codex reports
 that and asks to run the command outside its sandbox — which is still inside
-Eldrun's fence — and the user answers per command or once per session. A user
-who prefers Landlock for now can opt in through their own `~/.codex/config.toml`
-(`[features] use_legacy_landlock = true` plus
-`[sandbox_workspace_write] exclude_slash_tmp = true`) and live with the
-warning until upstream removes the backend.
+Eldrun's fence — and the user answers per command or once per session. The
+Landlock opt-in that used to be suggested here is gone too: Codex's
+linux-sandbox README (checked 2026-09-28) says the legacy Landlock backend was
+removed and `features.use_legacy_landlock` must be turned off.
+
+Letting Codex's bubblewrap nest was re-evaluated on 2026-09-28 (Ubuntu 26.04,
+bubblewrap 0.11.1) and rejected, because it cannot be limited to the fence:
+- Nothing inside the fence can widen it. The agent runs as
+  `bwrap//&unpriv_bwrap` with `NoNewPrivs: 1`. Under no-new-privs AppArmor
+  only allows transitions to a stack that keeps the current label, and
+  `unpriv_bwrap`'s `audit deny capability` outranks any allow, including one
+  in `local/unpriv_bwrap`. A profile "for Codex's bwrap only" is therefore
+  impossible.
+- Eldrun cannot start its outer bwrap under a looser profile either:
+  `kernel.apparmor_restrict_unprivileged_unconfined=1` stops an unconfined
+  process from `change_onexec`-ing into a profile that allows user namespaces.
+- What is left is a profile attached to a root-owned launcher path. Every
+  process of the same uid can exec that launcher with arbitrary arguments, so
+  it reopens capable user namespaces for the whole account (browser included).
+  That is the aa-exec/busybox bypass class Ubuntu closed in 2025, not a
+  fence-only exception.
+- Even with the namespace allowed, a nested `bwrap --proc` would probably
+  fail: the fence's `/proc` carries bwrap's read-only overmounts
+  (`/proc/sys`, …), which become locked in the nested namespace and fail the
+  kernel's `mnt_already_visible` check. This part is inferred, not run.
+
+The way out that keeps a check on each escalation is Codex's own: auto-review
+(`approval_policy = "on-request"` with `approvals_reviewer = "auto_review"`),
+where a reviewer agent answers the sandbox-boundary requests instead of the
+user. Whether it covers the "sandbox failed, retry outside it" request fenced
+Codex raises is not confirmed. Manage CLIs has a switch for it under the
+global agent config (`agent_global::set_codex_auto_review`). The switch writes
+only `approvals_reviewer` into the layer's `.codex/config.toml`. The approval
+policy stays Codex's; auto-review needs `on-request`, Codex's default. So this
+is the user's own Codex config reaching every home, not a mode Eldrun picks.
 
 The fence-tool probe caches success, but retries failure on the next request.
 Installing bubblewrap therefore allows the next tab to start without restarting

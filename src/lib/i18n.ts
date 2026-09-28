@@ -857,6 +857,8 @@ export const en = {
   "settings.agentGlobalImport": "Import from this computer",
   "settings.agentGlobalOpen": "Open folder",
   "settings.agentGlobalImported": "Imported {files} files and {configs} config files. New agent tabs pick them up.",
+  "settings.codexAutoReview": "Codex: auto-review approvals",
+  "settings.codexAutoReviewHelp": "Codex sends the requests it would ask you about (running a command outside its sandbox, network access, edits outside the project) to a separate reviewer agent, which approves or refuses each one. Codex's sandbox and approval policy stay as they are. Inside Eldrun's agent fence on Linux, Codex's own sandbox can't start, so without this every command asks. Each review is an extra model call. Written as approvals_reviewer = \"auto_review\" in the global Codex config; new Codex tabs pick it up.",
   "settings.agentLogins": "Agent logins",
   "settings.agentLoginsHelp": "One login per CLI, shared by every Eldrun agent home: log in once in any tab and every other tab is signed in. \"Import\" copies the login file this computer already holds into Eldrun — only the login, never config. A CLI that keeps its login in a keyring or a database is not listed and logs in once per project.",
   "settings.agentLoginSignedIn": "signed in",

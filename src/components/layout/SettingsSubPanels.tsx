@@ -775,6 +775,7 @@ function AgentLoginsRows() {
 interface AgentGlobalLayer {
   dir: string;
   files: number;
+  codexAutoReview: boolean;
 }
 
 /** The Eldrun-wide agent config: the instructions, skills, hooks and MCP
@@ -827,6 +828,22 @@ function AgentGlobalRow() {
         </span>
       </div>
       {note && <p className="settings-help">{note}</p>}
+      <ToggleRow
+        label={<>{t("settings.codexAutoReview")} <UntestedTag id="settings.codexAutoReview" /></>}
+        checked={layer?.codexAutoReview ?? false}
+        disabled={busy || !layer}
+        onChange={(e) => {
+          setNote(null);
+          setBusy(true);
+          invoke("agent_global_set_codex_auto_review", { enabled: e.target.checked })
+            .catch((err: unknown) => setNote(String(err)))
+            .finally(() => {
+              setBusy(false);
+              refresh();
+            });
+        }}
+      />
+      <p className="settings-help">{t("settings.codexAutoReviewHelp")}</p>
     </>
   );
 }

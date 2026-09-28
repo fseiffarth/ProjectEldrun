@@ -507,6 +507,10 @@ unchanged; the new agents are additive.
   question, and that the fence still bounds writes to the project roots. If
   the per-command asking is unbearable, the honest options are a fence-off
   toggle for that project or a Codex-side exec rule, not another backend flag.
+  2026-09-28: letting Codex's bwrap nest via AppArmor was rejected (it can't
+  be limited to the fence; see `docs/context/agent_authority.md`). Next
+  lever to live-check: Codex auto-review (`approvals_reviewer =
+  "auto_review"`) answering the sandbox-failed retry requests.
 
 203. **Manage CLIs is two lists, not one.** ✅ **Shipped** (2026-08-31). The
     panel rendered every CLI in the registry as a full install card, sorted

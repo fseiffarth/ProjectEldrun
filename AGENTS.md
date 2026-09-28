@@ -146,7 +146,9 @@ Remote & sync:
 Agents:
 - An agent's permission mode is its own CLI's. Eldrun injects no mode flag and
   has no mode toggle; `agent_session` only re-applies the mode Claude's hook
-  recorded on `--resume`. Don't grow that into a mode Eldrun chooses.
+  recorded on `--resume`. Don't grow that into a mode Eldrun chooses. (The
+  Manage CLIs Codex auto-review switch only edits the user's own Codex config
+  in the Eldrun-wide layer; it is off unless the user turns it on.)
 
 Frontend:
 - Gate remote/SFTP/git probes on connected — a sync command against a dead
