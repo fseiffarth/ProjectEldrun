@@ -97,6 +97,11 @@ pub struct CreateTabRequest {
     /// the phone's create route refuses a body carrying it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub like_tab: Option<String>,
+    /// A local-model agent (#31bl): the opaque id [`MobileLocalLaunch`]
+    /// listed, in place of `agent_id`. Alone — no mode, worktree, cloud or
+    /// sign-in rides with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local: Option<String>,
     pub idempotency_key: String,
 }
 
@@ -130,6 +135,21 @@ impl CreateTabRequest {
         }
         if self.like_tab.is_some() && (self.sign_in.is_none() || self.agent_id.is_some()) {
             return false;
+        }
+        if let Some(id) = &self.local {
+            if !agent
+                || id.is_empty()
+                || id.len() > 128
+                || self.agent_id.is_some()
+                || self.mode.is_some()
+                || self.worktree.is_some()
+                || self.cloud.is_some()
+                || self.task.is_some()
+                || self.sign_in.is_some()
+                || self.like_tab.is_some()
+            {
+                return false;
+            }
         }
         if let Some(id) = &self.worktree {
             if id.is_empty() || id.len() > 128 {
@@ -176,6 +196,27 @@ pub struct MobileCloudLaunch {
     pub action: String,
     #[serde(default)]
     pub task: bool,
+}
+
+/// The ＋ sheet's local-model group (#31bl): the model the desktop's "+"
+/// drives and the agents it offers for it, under opaque ids. `ready` is false
+/// until the model sits on the GPU; a start then loads it first. `caution`
+/// marks an agent built for frontier models (`LocalDriverInfo::heavy_harness`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MobileLocalLaunch {
+    pub model: String,
+    #[serde(default)]
+    pub ready: bool,
+    #[serde(default)]
+    pub agents: Vec<MobileLocalAgent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MobileLocalAgent {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub caution: bool,
 }
 
 /// One agent the phone's ＋ can sign in to (`agent_id` is the catalog's
@@ -1244,6 +1285,8 @@ pub enum DesktopResponse {
         cloud: Vec<MobileCloudLaunch>,
         #[serde(default)]
         sign_in: Vec<MobileSignInOption>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        local: Option<MobileLocalLaunch>,
     },
     Todo {
         board: TodoBoardSnapshot,
@@ -1895,16 +1938,32 @@ mod tests {
         assert!(!ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "sign_in": "default", "worktree": "w1", "idempotency_key": key})));
         assert!(!ok(json!({"project_id": "p", "kind": "agent", "like_tab": "t", "idempotency_key": key})));
         assert!(!ok(json!({"project_id": "p", "kind": "agent", "agent_id": "a", "like_tab": "t", "sign_in": "default", "idempotency_key": key})));
+        // A local-model agent: agent kind, a bounded id, and nothing else.
+        assert!(ok(json!({"project_id": "p", "kind": "agent", "local": "l1", "idempotency_key": key})));
+        assert!(!ok(json!({"project_id": "p", "kind": "shell", "local": "l1", "idempotency_key": key})));
+        assert!(!ok(json!({"project_id": "p", "kind": "agent", "local": "", "idempotency_key": key})));
+        assert!(!ok(json!({"project_id": "p", "kind": "agent", "local": "x".repeat(129), "idempotency_key": key})));
+        for extra in [
+            json!({"agent_id": "a"}),
+            json!({"mode": "plan"}),
+            json!({"worktree": "w1"}),
+            json!({"cloud": "open"}),
+            json!({"sign_in": "default"}),
+        ] {
+            let mut body = json!({"project_id": "p", "kind": "agent", "local": "l1", "idempotency_key": key});
+            body.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            assert!(!ok(body), "{extra}");
+        }
     }
 
     #[test]
     fn launch_options_round_trip_and_default() {
         let response: DesktopResponse = serde_json::from_value(json!({"status": "launch_options"}))
             .expect("empty launch options");
-        let DesktopResponse::LaunchOptions { worktrees, cloud, sign_in } = response else {
+        let DesktopResponse::LaunchOptions { worktrees, cloud, sign_in, local } = response else {
             panic!("launch options");
         };
-        assert!(worktrees.is_empty() && cloud.is_empty() && sign_in.is_empty());
+        assert!(worktrees.is_empty() && cloud.is_empty() && sign_in.is_empty() && local.is_none());
         let request = DesktopRequest::LaunchOptions {
             request_id: "r".into(),
             project_id: "p".into(),

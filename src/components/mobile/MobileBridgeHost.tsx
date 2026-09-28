@@ -48,9 +48,14 @@ import {
   buildSignInTabSpec,
   buildStaticTabSpec,
   customAgentToItem,
+  enabledInstalledAgentBins,
+  type BuiltInAgentStatus,
   type StaticMenuItem,
 } from "../tabs/newTabItems";
 import { worktreeAgentSpec } from "../tabs/agentWorktrees";
+import { probeLocalModelPlacement } from "../tabs/localModelGroup";
+import { listLocalDrivers, loadOllamaModel } from "../../lib/agents/localDrivers";
+import { localLaunchTabSpec, vibeLocalTabSpec } from "../../lib/agents/localTabSpec";
 import { agentWorktreeChoices, worktreeName, type GitWorktree } from "../../lib/agents/agentWorktrees";
 import { cleanCloudTask, cloudLaunch, cloudLaunchesFor } from "../../lib/agents/cloudSessions";
 import { loginIdForCmd, signInLaunch } from "../../lib/agents/signInLaunch";
@@ -92,11 +97,19 @@ interface CreateRequest {
   /** The agent tab (tmux name) whose CLI to sign in, in place of `agent_id`;
    *  only the sidecar sets it. */
   like_tab?: string;
+  /** A local-model agent: the opaque id `launch_options.local` listed, in
+   *  place of `agent_id`. */
+  local?: string;
   idempotency_key: string;
 }
 interface MobileWorktree { id: string; label: string; branch?: string; main: boolean }
 interface MobileCloudLaunch { agent_id: string; action: string; task: boolean }
 interface MobileSignInOption { agent_id: string; signed_in?: boolean; account?: string; alternate?: string }
+/** The ＋ sheet's local-model group: the model the desktop's "+" drives and
+ * the agents it offers for it. `ready` is false until the model sits on the
+ * GPU (`probeLocalModelPlacement`) — a start then loads it first. */
+interface MobileLocalAgent { id: string; label: string; caution: boolean }
+interface MobileLocalLaunch { model: string; ready: boolean; agents: MobileLocalAgent[] }
 /** One row of `agent_logins` (`services::agent_auth::LoginStatus`). */
 interface AgentLoginRow { id: string; signed_in: boolean; account: string | null; shared: boolean }
 interface TodoColumn { id: string; name: string; position: number; done: boolean; archived: boolean; overdue?: boolean; due_today?: boolean; color?: string }
@@ -246,7 +259,7 @@ type DesktopResponse =
   | { status: "activity"; statuses: AgentTabStatus[]; prompts: AgentTabPrompts[] }
   | { status: "activated" }
   | { status: "created"; tmux_session: string }
-  | { status: "launch_options"; worktrees: MobileWorktree[]; cloud: MobileCloudLaunch[]; sign_in: MobileSignInOption[] }
+  | { status: "launch_options"; worktrees: MobileWorktree[]; cloud: MobileCloudLaunch[]; sign_in: MobileSignInOption[]; local?: MobileLocalLaunch }
   | { status: "todo"; board: TodoBoard }
   | { status: "alerts"; alerts: MobileAlerts }
   | { status: "calendar"; calendar: MobileCalendar }
@@ -447,18 +460,26 @@ function mobileAgentState(ptyId: string): "working" | "question" | "done" | "idl
 }
 
 /** The model tag a phone card shows for `tab`, with both of its sources asked
- * to re-read for the next poll. */
+ * to re-read for the next poll. A local-model tab whose session names no model
+ * says the one it was started on. */
 function mobileModelTag(projectId: string, tab: TabEntry): string | undefined {
   const models = useAgentModelsStore.getState();
   void models.refresh(projectId, tab);
   void models.refreshScreen(projectId, tab);
-  return agentTabModelTag(projectId, tab, models.byTab, models.screenByTab);
+  return agentTabModelTag(projectId, tab, models.byTab, models.screenByTab)
+    ?? (tab.kind === "local_agent" ? tab.env?.ELDRUN_LOCAL_MODEL : undefined);
+}
+
+/** An agent tab as the phone counts one: a local-model tab is one too — the
+ * catalog lists it as `agent` (`services::mobile_control::discovery`). */
+function isAgentKind(kind: TabEntry["kind"]): boolean {
+  return kind === "agent" || kind === "local_agent";
 }
 
 function projectAgentStatuses(projectId: string): AgentTabStatus[] {
   const activity = useActivityStore.getState();
   return (useTabsStore.getState().tabsByScope[projectId] ?? []).flatMap((tab) => {
-    if (tab.kind !== "agent" || !tab.tmuxSession) return [];
+    if (!isAgentKind(tab.kind) || !tab.tmuxSession) return [];
     const ptyId = `${projectId}:${tab.key}`;
     const state = mobileAgentState(ptyId);
     if (state === "idle") return [];
@@ -485,7 +506,7 @@ function projectAgentStatuses(projectId: string): AgentTabStatus[] {
 function projectAgentTimings(projectId: string): AgentTabTiming[] {
   const activity = useActivityStore.getState();
   return (useTabsStore.getState().tabsByScope[projectId] ?? []).flatMap((tab) => {
-    if (tab.kind !== "agent" || !tab.tmuxSession) return [];
+    if (!isAgentKind(tab.kind) || !tab.tmuxSession) return [];
     const ptyId = `${projectId}:${tab.key}`;
     if (mobileAgentState(ptyId) !== "idle") return [];
     const row: AgentTabTiming = { tmux_session: tab.tmuxSession };
@@ -584,7 +605,7 @@ function mergePromptRows(recent: readonly { text: string; at: string }[], sent: 
 function projectAgentPrompts(projectId: string): AgentTabPrompts[] {
   const models = useAgentModelsStore.getState();
   return (useTabsStore.getState().tabsByScope[projectId] ?? []).flatMap((tab) => {
-    if (tab.kind !== "agent" || !tab.tmuxSession) return [];
+    if (!isAgentKind(tab.kind) || !tab.tmuxSession) return [];
     void models.refresh(projectId, tab);
     const ptyId = `${projectId}:${tab.key}`;
     const recent = models.recentByTab[ptyId] ?? [];
@@ -626,7 +647,7 @@ async function agentScheduleSummaries(projectId?: string): Promise<AgentTabSched
   const scope = mobileScope(projectId);
   if (!scope) return [];
   const targets = (useTabsStore.getState().tabsByScope[scope.id] ?? []).flatMap((tab) =>
-    tab.kind === "agent" && tab.tmuxSession && tab.scheduleTargetId
+    isAgentKind(tab.kind) && tab.tmuxSession && tab.scheduleTargetId
       ? [{ tmux: tab.tmuxSession, target: tab.scheduleTargetId }]
       : [],
   );
@@ -662,7 +683,25 @@ async function create(request: CreateRequest, t: ReturnType<typeof useT>): Promi
   });
 
   let spec: Omit<TabEntry, "key">;
-  if (request.sign_in) {
+  if (request.local) {
+    if (request.kind !== "agent" || request.agent_id || request.mode || request.worktree || request.cloud || request.sign_in) {
+      return { status: "error", code: "invalid_request", message: "A local-model agent names nothing else" };
+    }
+    const local = await localChoices(scope);
+    const choice = local?.choices.find((entry) => entry.public.id === request.local);
+    if (!local || !choice) return { status: "error", code: "unknown_agent", message: "Local model agent is unavailable" };
+    try {
+      spec = choice.driver
+        ? await localLaunchTabSpec(scope.id, choice.driver, choice.public.label, local.model, cwd)
+        : await vibeLocalTabSpec(scope.id, local.model, cwd);
+    } catch (error) {
+      return { status: "error", code: "launch_failed", message: String(error) };
+    }
+    // The desktop "+" offers its agents only once the model is on the GPU;
+    // the phone may start one earlier, so the load starts with it and the
+    // first answer waits for it rather than crawling on a CPU copy.
+    if (!local.ready) void loadOllamaModel(local.model, "gpu").catch(() => {});
+  } else if (request.sign_in) {
     // Built-ins only, as for cloud: a custom agent's login is not ours to
     // guess. The CLI is the phone's pick, or the one the named tab runs.
     let item: StaticMenuItem | undefined;
@@ -774,12 +813,54 @@ async function launchOptions(projectId: string): Promise<DesktopResponse> {
           task: launch.needsTask,
         })))
     : [];
+  const local = await localChoices(scope);
   return {
     status: "launch_options",
     worktrees,
     cloud,
     sign_in: await signInOptions(),
+    ...(local && local.choices.length > 0
+      ? { local: { model: local.model, ready: local.ready, agents: local.choices.map((choice) => choice.public) } }
+      : {}),
   };
+}
+
+/** One local-model agent under its opaque id; `driver` is the
+ * `list_local_drivers` id, absent for Mistral (`vibe`). */
+interface LocalChoice { public: MobileLocalAgent; driver?: string }
+
+/**
+ * The desktop "+"'s local-model group for `scope` (`localModelMenuGroup`):
+ * the "tabs" model and the agents that can drive it — Mistral when installed
+ * and enabled, then every available driver. Not in the root console, whose
+ * agent tabs are never tmux-wrapped and so could not be attached to.
+ */
+async function localChoices(scope: MobileScope): Promise<{ model: string; ready: boolean; choices: LocalChoice[] } | null> {
+  if (scope.id === ROOT_SCOPE) return null;
+  const settings = useSettingsStore.getState().settings;
+  const model = settings?.ollama_roles?.tabs ?? settings?.ollama_model;
+  if (!model) return null;
+  const [drivers, statuses, placement] = await Promise.all([
+    listLocalDrivers(model).catch(() => []),
+    invoke<(BuiltInAgentStatus & { id: string })[]>("list_agents").catch(() => []),
+    probeLocalModelPlacement(model),
+  ]);
+  const withVibe = enabledInstalledAgentBins(statuses, settings?.disabled_agents).has("vibe");
+  const rows = [
+    ...(withVibe ? [{ key: "vibe", label: "Mistral", caution: false, driver: undefined }] : []),
+    ...drivers.filter((d) => d.available).map((d) => ({ key: d.id, label: d.label, caution: d.heavy_harness, driver: d.id })),
+  ];
+  const choices = await Promise.all(rows.map(async (row) => ({
+    driver: row.driver,
+    public: {
+      // The `agent` domain, kept apart from the catalog agents' ids (bare
+      // commands) by the prefix; the two are looked up in separate lists.
+      id: await invoke<string>("mobile_opaque_id", { domain: "agent", value: `local:${row.key}` }),
+      label: row.label,
+      caution: row.caution,
+    },
+  })));
+  return { model, ready: placement === "ready", choices };
 }
 
 /** The agents the phone can open a sign-in tab for, each with the state of

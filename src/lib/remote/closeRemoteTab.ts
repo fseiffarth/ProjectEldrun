@@ -27,7 +27,7 @@ import {
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { invoke } from "@tauri-apps/api/core";
-import { isResumableAgentTab } from "../../stores/tabs";
+import { isRelaunchableLocalTab, isResumableAgentTab } from "../../stores/tabs";
 import { shouldPersistLocalTab, shouldPersistTab } from "../terminal/tmuxSession";
 import { IS_WINDOWS } from "../platform";
 
@@ -105,7 +105,7 @@ export function mintedLocalSessionOf(scope: string, tab: TabEntry): string | nul
     localRunning,
     enabled,
     !!project?.eldrun_mobile_access,
-    isResumableAgentTab(tab),
+    isResumableAgentTab(tab) || isRelaunchableLocalTab(tab),
   )
     ? tab.tmuxSession
     : null;

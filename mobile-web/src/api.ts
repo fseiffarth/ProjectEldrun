@@ -31,7 +31,13 @@ export interface CloudLaunchRow { agent_id: string; action: "new" | "open"; task
 /** One agent the ＋ can open a sign-in tab for. `signed_in` is absent where
  * the desktop cannot tell; `alternate` names the CLI's other way in. */
 export interface SignInRow { agent_id: string; signed_in?: boolean; account?: string; alternate?: "console" | "browser" }
-export interface LaunchOptions { worktrees: WorktreeRow[]; cloud: CloudLaunchRow[]; sign_in: SignInRow[] }
+/** The ＋ sheet's local-model group: the model the desktop's "+" drives and
+ * the agents it offers for it. `ready` is false until the model is on the GPU
+ * (a start then loads it first); `caution` marks an agent built for hosted
+ * frontier models, which a local model may answer badly. */
+export interface LocalAgentRow { id: string; label: string; caution: boolean }
+export interface LocalLaunchRow { model: string; ready: boolean; agents: LocalAgentRow[] }
+export interface LaunchOptions { worktrees: WorktreeRow[]; cloud: CloudLaunchRow[]; sign_in: SignInRow[]; local?: LocalLaunchRow }
 
 /** `GET /api/v1/projects/{id}/launch-options` — asked when the ＋ sheet opens.
  * A desktop that predates the route answers 404; that reads as "project folder
@@ -39,7 +45,7 @@ export interface LaunchOptions { worktrees: WorktreeRow[]; cloud: CloudLaunchRow
 export async function getLaunchOptions(projectId: string, signal?: AbortSignal): Promise<LaunchOptions> {
   try {
     const body = await api<Partial<LaunchOptions>>(`/api/v1/projects/${encodeURIComponent(projectId)}/launch-options`, { signal });
-    return { worktrees: body.worktrees ?? [], cloud: body.cloud ?? [], sign_in: body.sign_in ?? [] };
+    return { worktrees: body.worktrees ?? [], cloud: body.cloud ?? [], sign_in: body.sign_in ?? [], ...(body.local?.agents?.length ? { local: body.local } : {}) };
   } catch (reason) {
     if (reason instanceof ApiError && reason.status === 404) return { worktrees: [], cloud: [], sign_in: [] };
     throw reason;

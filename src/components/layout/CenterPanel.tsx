@@ -28,6 +28,7 @@ import {
   effectiveTabLocation,
   findGroup,
   hydrateScopeFromDisk,
+  isRelaunchableLocalTab,
   isResumableAgentTab,
   isPtyTabKind,
   localTabCwd,
@@ -1322,7 +1323,7 @@ function CenterPanelImpl() {
               localRunning,
               localPersistEnabled,
               mobileAgentTmuxReady.current.get(mobileReadyKey) === true,
-              isResumableAgentTab(tab),
+              isResumableAgentTab(tab) || isRelaunchableLocalTab(tab),
             )
               ? tab.tmuxSession
               : undefined;

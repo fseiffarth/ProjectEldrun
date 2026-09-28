@@ -113,6 +113,12 @@ describe("shouldPersistLocalTab — local shell tabs on Unix", () => {
     expect(shouldPersistLocalTab("agent", "p1", true, true, true, true)).toBe(true);
     expect(shouldPersistLocalTab("agent", "p1", true, true, true, false)).toBe(false);
     expect(shouldPersistLocalTab("agent", "root", true, true, true, true)).toBe(false);
+    // A local-model tab is an agent tab here (#31bl): Mobile access, and a tab
+    // that comes back after a restart, as for any agent.
+    expect(shouldPersistLocalTab("local_agent", "p1", true, true, true, true)).toBe(true);
+    expect(shouldPersistLocalTab("local_agent", "p1", true, true, false, true)).toBe(false);
+    expect(shouldPersistLocalTab("local_agent", "p1", true, true, true, false)).toBe(false);
+    expect(shouldPersistLocalTab("local_agent", "root", true, true, true, true)).toBe(false);
     // A tab actually running on a remote host is not a local session.
     expect(shouldPersistLocalTab("shell", "p1", false, true)).toBe(false);
     // Disabled (setting off, or Windows folded into localEnabled) → off.

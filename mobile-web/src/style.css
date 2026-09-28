@@ -206,6 +206,10 @@ small { color:#9498aa; }
 .new-tab-where { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
 .new-tab-where > small { flex:1 0 100%; padding:0 6px; color:#9da3b6; font-size:.8rem; }
 .new-tab-where > button { min-height:36px; padding:6px 10px; font-size:.8rem; overflow-wrap:anywhere; }
+/* The local-model group: the agents grid under a label worded like "Agents start in". */
+.new-tab-local { display:flex; flex-direction:column; gap:6px; }
+.new-tab-local > small { padding:0 6px; color:#9da3b6; font-size:.8rem; overflow-wrap:anywhere; }
+.new-tab-local > .sheet-note { margin:0; }
 /* The ＋ at the end of the project header. Square against the back chevron
    opposite it, and it never shrinks: the project's name is what gives way. */
 .new-tab { flex:0 0 auto; min-width:44px; padding:8px 12px; font-size:1.25rem; line-height:1.1; }

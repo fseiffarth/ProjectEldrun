@@ -25,7 +25,9 @@ import { getDetachedWindowContext } from "./detachedContext";
  *  composes with `--resume`: `tmux new-session -A` reattaches the live agent when the
  *  host session survives, else creates a fresh one that runs the resume. The name is
  *  inert until `shouldPersistTab` decides to pass it, so minting it on a local agent
- *  costs nothing. Tabs that already carry a name (or an explicit attach), and pane
+ *  costs nothing. A local-model tab (`local_agent`) gets one too, with the `agent`
+ *  token: in a Mobile-access scope it is tmux-wrapped like any agent
+ *  (`shouldPersistLocalTab`), which is how the phone reaches it. Tabs that already carry a name (or an explicit attach), and pane
  *  kinds with no PTY, are left untouched. */
 function withTmuxSession(
   tab: Omit<TabEntry, "key">,
@@ -35,8 +37,12 @@ function withTmuxSession(
   if ((next.kind === "agent" || next.kind === "local_agent") && !next.scheduleTargetId) {
     next = { ...next, scheduleTargetId: crypto.randomUUID() };
   }
-  if ((next.kind === "shell" || next.kind === "agent") && !next.tmuxSession && !next.tmuxAttach) {
-    return { ...next, tmuxSession: newTmuxSessionName(scope, next.kind === "agent" ? "agent" : "shell") };
+  if (
+    (next.kind === "shell" || next.kind === "agent" || next.kind === "local_agent") &&
+    !next.tmuxSession &&
+    !next.tmuxAttach
+  ) {
+    return { ...next, tmuxSession: newTmuxSessionName(scope, next.kind === "shell" ? "shell" : "agent") };
   }
   return next;
 }
@@ -728,6 +734,22 @@ export interface TabEntry {
   // inside the grace window. Named for its first caller; read only by
   // `hydrateThenCreateInScope`, which is what both go through.
   mobileRequestHash?: string;
+  // A local-model tab driven through another agent CLI (`ollama launch claude
+  // --model m`, `codex --oss -m m`, …): the driver, the model and the resolved
+  // argv, so the tab restores by relaunching that line (`isRelaunchableLocalTab`).
+  // Set only on a tab started in a Mobile-access scope (`lib/agents/localTabSpec`),
+  // which is what lets the phone come back to it; the backend re-validates the
+  // line on every load and drops one it would not have built.
+  localLaunch?: LocalLaunch;
+}
+
+/** See `TabEntry.localLaunch`. */
+export interface LocalLaunch {
+  /** A `list_local_drivers` id (`claude`, `codex`, `opencode`, …). */
+  driver: string;
+  model: string;
+  /** The `prepare_local_launch` args for the tab's `cmd`. */
+  args: string[];
 }
 
 export type SplitDir = "row" | "column";
@@ -941,6 +963,8 @@ export interface SavedTabEntry {
   mobileRequestHash?: string;
   // Persisted Host session marker (see TabEntry.hostSession).
   hostSession?: boolean;
+  // Persisted local-model launch line (see TabEntry.localLaunch).
+  localLaunch?: LocalLaunch;
 }
 
 /**
@@ -996,6 +1020,7 @@ export function toSavedTabEntry(t: TabEntry): SavedTabEntry {
     mark: t.mark,
     todoId: t.todoId,
     hostSession: t.hostSession || undefined,
+    localLaunch: t.localLaunch,
   };
 }
 
@@ -4800,12 +4825,20 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       // the table produces the same args anyway, so preferring it costs nothing.
       // A custom agent's flag is re-derived from `settings.json` by the backend
       // sanitizer (`terminal_service::sanitize_tab_layout`) before it reaches here.
+      // A relaunchable local-model tab runs its launch line again: the backend
+      // re-validated it against the driver table on load (`localLaunch`).
+      const localLaunch =
+        kind === "local_agent" && isRelaunchableLocalTab({ kind, localLaunch: t.localLaunch })
+          ? t.localLaunch
+          : undefined;
       const base =
         isResumableAgentTab(tabShape) && t.sessionId
           ? t.cmd in RESUMABLE_AGENTS
             ? RESUMABLE_AGENTS[t.cmd](t.sessionId)
             : (t.resumeArgs ?? [])
-          : [];
+          : localLaunch
+            ? [...localLaunch.args]
+            : [];
       // No permission-mode flag is folded in here, and a layout written before
       // that toggle was removed carries an `agentMode` this ignores. An agent
       // restores on the plain resume command and picks its mode up where it
@@ -4863,8 +4896,8 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         // subsequent restart).
         tmuxSession:
           t.tmuxSession ??
-          ((kind === "shell" || kind === "agent") && !t.tmuxAttach
-            ? newTmuxSessionName(targetScope ?? get().scope, kind === "agent" ? "agent" : "shell")
+          ((kind === "shell" || kind === "agent" || kind === "local_agent") && !t.tmuxAttach
+            ? newTmuxSessionName(targetScope ?? get().scope, kind === "shell" ? "shell" : "agent")
             : undefined),
         // A Sessions-view attach tab reattaches to its tmux session on restart.
         tmuxAttach: t.tmuxAttach,
@@ -4874,6 +4907,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         // authority the user never asked for.
         hostBoundUid: t.hostBoundUid,
         mobileRequestHash: t.mobileRequestHash,
+        localLaunch,
         // A Host session never auto-resumes after a restart: it comes back
         // paused and waits for an explicit Resume (only in the root scope,
         // the one place the marker means anything).
@@ -5200,6 +5234,7 @@ export async function hydrateScopeFromDisk(
       sessionId: tab.sessionId,
       resumeArgs: tab.resumeArgs,
       viewer: tab.viewer,
+      localLaunch: tab.localLaunch,
     }),
   );
   if (restorable.length === 0) {
@@ -5420,6 +5455,28 @@ export function isResumableAgentTab(
 }
 
 /**
+ * Whether a tab is a local-model tab that restores by relaunching its launch
+ * line (`TabEntry.localLaunch`) — the drivers other than Mistral, which have no
+ * session to resume. While its tmux session lives, the restore reattaches the
+ * running agent; once that is gone the relaunch is a fresh conversation.
+ */
+export function isRelaunchableLocalTab(
+  tab: { kind: TabKind; localLaunch?: LocalLaunch },
+): boolean {
+  const launch = tab.localLaunch;
+  return (
+    tab.kind === "local_agent" &&
+    !!launch &&
+    typeof launch.driver === "string" &&
+    !!launch.driver &&
+    typeof launch.model === "string" &&
+    !!launch.model &&
+    Array.isArray(launch.args) &&
+    launch.args.every((arg) => typeof arg === "string")
+  );
+}
+
+/**
  * Whether a tab is a restorable embed: a file dragged from the FileTree onto a
  * tab bar that renders IN-APP via a built-in `viewer` (pdf/image/markdown/text).
  * These re-render the file from its durable `embedPath` on restart with no side
@@ -5436,7 +5493,8 @@ export function isRestorableEmbedTab(
 /**
  * Tab-level restorability (supersedes bare `isRestorableKind` at call sites that
  * have the full tab): a tab survives a restart if its kind is restorable, it is
- * a resumable agent tab, or it is an in-app file-viewer embed.
+ * a resumable agent tab, a relaunchable local-model tab, or an in-app
+ * file-viewer embed.
  */
 export function isRestorableTab(
   tab: {
@@ -5445,11 +5503,13 @@ export function isRestorableTab(
     sessionId?: string;
     resumeArgs?: string[];
     viewer?: TabEntry["viewer"];
+    localLaunch?: LocalLaunch;
   },
 ): boolean {
   return (
     isRestorableKind(tab.kind) ||
     isResumableAgentTab(tab) ||
+    isRelaunchableLocalTab(tab) ||
     isRestorableEmbedTab(tab)
   );
 }

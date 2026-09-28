@@ -25,11 +25,13 @@ import {
   hydrateScopeFromDisk,
   isPtyTabKind,
   isRestorableTab,
+  isRelaunchableLocalTab,
   isResumableAgentTab,
   remoteHostIdOf,
   ROOT_SCOPE,
   toSavedTabEntry,
   useTabsStore,
+  type LocalLaunch,
   type SavedLayoutTree,
   type TabKind,
   type TabLocation,
@@ -733,7 +735,7 @@ export function projectTmuxTargets(
           localRunning,
           localPersistenceEnabled,
           !!project.eldrun_mobile_access,
-          isResumableAgentTab(tab),
+          isResumableAgentTab(tab) || isRelaunchableLocalTab(tab),
         ));
     const session = tab.tmuxAttach ?? (persistent ? tab.tmuxSession : undefined);
     if (!session) continue;
@@ -797,6 +799,9 @@ interface ProjectRuntimeSwitchedPayload {
      *  second remote session (see TabEntry.tmuxSession/tmuxAttach). */
     tmuxSession?: string;
     tmuxAttach?: string;
+    /** A relaunchable local-model tab's launch line (see TabEntry.localLaunch),
+     *  re-validated by the backend like the rest of the layout. */
+    localLaunch?: LocalLaunch;
     /** Host-bound container-exemption marker (see TabEntry.hostBoundUid, #150). */
     hostBoundUid?: string;
     /** The "never tmux-wrap this tab" marker (see TabEntry.ephemeral). */
@@ -1908,6 +1913,7 @@ export function listenProjectRuntimeSwitched(): Promise<() => void> {
         // root/box restore copies had before `hydrateScopeFromDisk`).
         resumeArgs: t.resumeArgs,
         viewer: t.viewer,
+        localLaunch: t.localLaunch,
       }),
     );
     // Mount-free remote: defer restoring a remote project's tabs until its pooled

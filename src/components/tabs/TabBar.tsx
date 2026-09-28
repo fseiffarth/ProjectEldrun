@@ -82,6 +82,7 @@ import { useSettingsStore } from "../../stores/settings";
 import { useExperimental } from "../../lib/experimental";
 import { closeTabWithConfirm } from "../../lib/remote/closeRemoteTab";
 import { registerHostBoundTab } from "../../lib/remote/hostBound";
+import { localLaunchTabSpec, vibeLocalTabSpec } from "../../lib/agents/localTabSpec";
 import { busyStateClass, useActivityStore } from "../../stores/activity";
 import { UntestedTag } from "../common/UntestedTag";
 import { ContextMenuPortal } from "../common/ContextMenuPortal";
@@ -676,60 +677,22 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   async function handleOllamaModel(model: string) {
     setMenuPos(null);
     try {
-      await invoke("ensure_ollama_running");
-      const { vibe_home, alias } = await invoke<{ vibe_home: string; alias: string }>(
-        "prepare_local_agent",
-        { model },
-      );
+      const spec = await vibeLocalTabSpec(scope, model, projectCwd);
       focusGroup(groupId);
-      const sessionId = crypto.randomUUID();
-      addTab({
-        label: model,
-        cmd: "vibe",
-        args: [],
-        // ELDRUN_LOCAL_MODEL records WHICH model this tab is driving, so the
-        // usage recap can break local agent tabs down by model — and ONLY that
-        // (#150): the right to run outside the project's container is granted by
-        // `hostBoundUid` below, registered as a file in the state dir, so a
-        // display-only change here can no longer hand out a container escape.
-        // `VIBE_ACTIVE_MODEL` carries the resolved alias, not necessarily the
-        // name the user picked.
-        env: { VIBE_HOME: vibe_home, VIBE_ACTIVE_MODEL: alias, ELDRUN_LOCAL_MODEL: model, ELDRUN_TAB_UID: sessionId },
-        cwd: projectCwd,
-        kind: "local_agent",
-        sessionId,
-        hostBoundUid: await registerHostBoundTab(scope),
-      });
+      addTab(spec);
     } catch {
       // Ollama not running or agent prep failed — don't create a tab with no model config.
     }
   }
 
   // Drive the active local model through a non-vibe coding agent (Claude Code,
-  // Codex, OpenCode, Droid). The backend resolves the spawn command — `ollama
-  // launch <agent> --model <model>` when available, else a direct fallback — so
-  // everything the tab needs is carried in cmd+args (no env to re-hydrate).
+  // Codex, OpenCode, Droid) — `lib/agents/localTabSpec`.
   async function handleLocalLaunch(agentId: string, label: string, model: string) {
     setMenuPos(null);
     try {
-      await invoke("ensure_ollama_running");
-      const { cmd, args } = await invoke<{ cmd: string; args: string[] }>(
-        "prepare_local_launch",
-        { agent: agentId, model },
-      );
+      const spec = await localLaunchTabSpec(scope, agentId, label, model, projectCwd);
       focusGroup(groupId);
-      addTab({
-        label: `${model} · ${label}`,
-        cmd,
-        args,
-        // Nothing else here names the model — cmd/args are the resolved launcher —
-        // so record it for the usage recap's per-model breakdown. It is a label,
-        // not an authority: see the `hostBoundUid` note above (#150).
-        env: { ELDRUN_LOCAL_MODEL: model },
-        cwd: projectCwd,
-        kind: "local_agent",
-        hostBoundUid: await registerHostBoundTab(scope),
-      });
+      addTab(spec);
     } catch {
       // ollama launch unavailable / agent prep failed — don't create a broken tab.
     }

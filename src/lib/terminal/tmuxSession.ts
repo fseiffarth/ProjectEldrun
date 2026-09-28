@@ -139,6 +139,11 @@ export function shouldPersistTab(
  * still killed. **Box** scopes are included for the same reason since they
  * persist + restore first-class (`sessions/box_<id>/`): a box shell's tmux
  * session has a tab to come back to, so it persists like root's/a project's.
+ *
+ * An agent tab — a local-model one (`local_agent`) included — is wrapped only in
+ * a Mobile-access scope, and only when it comes back after a restart
+ * (`resumableAgent`: a resumable agent, or a relaunchable local-model tab), so
+ * the phone always has a restored tab behind the session it attaches to.
  */
 export function shouldPersistLocalTab(
   kind: string,
@@ -149,7 +154,8 @@ export function shouldPersistLocalTab(
   resumableAgent = false,
 ): boolean {
   return (
-    (kind === "shell" || (kind === "agent" && mobileAccess && resumableAgent)) &&
+    (kind === "shell" ||
+      ((kind === "agent" || kind === "local_agent") && mobileAccess && resumableAgent)) &&
     (scopeKey !== "root" || kind === "shell") &&
     localRunning &&
     localEnabled

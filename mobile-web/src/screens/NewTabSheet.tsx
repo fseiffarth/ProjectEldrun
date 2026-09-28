@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getLaunchOptions, type AgentRow, type CloudLaunchRow, type LaunchOptions, type SignInRow } from "../api";
+import { getLaunchOptions, type AgentRow, type CloudLaunchRow, type LaunchOptions, type LocalLaunchRow, type SignInRow } from "../api";
 import { isUntested } from "../../../src/lib/untested";
 import { useT } from "../../../src/lib/i18n";
 
@@ -11,6 +11,8 @@ export interface NewTabLaunch {
   task?: string;
   /** A sign-in tab: the CLI's own login, in the flow a phone can finish. */
   sign_in?: "default" | "alternate";
+  /** A local-model agent: the opaque id `launch-options` listed. */
+  local?: string;
 }
 
 /**
@@ -28,6 +30,9 @@ export interface NewTabLaunch {
  * come from `launch-options`, asked once the sheet opens; until it answers, the
  * sheet is the plain one. A ☁ New for a CLI that takes its task on the command
  * line swaps the grid for a task box first.
+ *
+ * A desktop with a local (Ollama) model set for tabs adds the desktop "+"'s
+ * local-model group under the agents: the same agents, driving that model.
  *
  * "Sign in to an agent" lists every agent with the state of its shared login
  * and opens a sign-in tab for the one picked (`src/lib/agents/signInLaunch.ts`)
@@ -96,6 +101,7 @@ export function NewTabSheet({ projectId, agents, busy, onPick, onSendFile, onClo
         {/* A desktop that reports no agents still opens shells — say so, rather
             than leaving the sheet looking half-loaded. */}
         {agents.length === 0 && <p className="sheet-note">{t("mobile.newTab.noAgents")}</p>}
+        {options.local && <LocalModelGroup local={options.local} busy={busy} onPick={(id) => onPick("agent", undefined, undefined, { local: id })} />}
         {options.sign_in.length > 0 && <SignInEntry rows={options.sign_in} onOpen={() => setSigningIn(true)} />}
         {/* No desktop round trip: the sidecar writes the file itself, so this
             is not held back while a create is in flight. */}
@@ -106,6 +112,22 @@ export function NewTabSheet({ projectId, agents, busy, onPick, onSendFile, onClo
       </div>
       </>}
     </section>
+  </div>;
+}
+
+/** The local-model agents, as the desktop "+" groups them under the model's
+ * name. A model not yet on the GPU still offers them — the phone cannot watch
+ * a load the way the desktop menu does — and says the first answer waits. */
+function LocalModelGroup({ local, busy, onPick }: { local: LocalLaunchRow; busy: boolean; onPick: (id: string) => void }) {
+  const t = useT();
+  const cautioned = local.agents.filter((row) => row.caution).map((row) => row.label);
+  return <div className="new-tab-local" role="group" aria-label={t("mobile.newTab.localGroup", { model: local.model })}>
+    <small>{t("mobile.newTab.localGroup", { model: local.model })}{isUntested("mobile.newTab.local") && <span className="untested">{t("mobile.newTab.untested")}</span>}</small>
+    <div className="new-tab-agents">{local.agents.map((row) => <div className="agent-create" key={row.id}>
+      <button disabled={busy} onClick={() => onPick(row.id)}>{row.label}</button>
+    </div>)}</div>
+    {!local.ready && <p className="sheet-note">{t("mobile.newTab.localLoads", { model: local.model })}</p>}
+    {cautioned.length > 0 && <p className="sheet-note">{t("mobile.newTab.localCaution", { agents: cautioned.join(", ") })}</p>}
   </div>;
 }
 

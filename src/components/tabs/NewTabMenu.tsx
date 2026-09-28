@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import {
   BLOB_TAB_CMD,
   BROWSER_TAB_CMD,
@@ -33,7 +32,7 @@ import type { CloudLaunch } from "../../lib/agents/cloudSessions";
 import { BOX_SCOPE_PREFIX } from "../../lib/terminal/ptyId";
 import { useExperimental } from "../../lib/experimental";
 import { useT } from "../../lib/i18n";
-import { registerHostBoundTab } from "../../lib/remote/hostBound";
+import { localLaunchTabSpec, vibeLocalTabSpec } from "../../lib/agents/localTabSpec";
 
 interface Props {
   /** Scope (project id or "root") the new tab belongs to. Feeds the shared
@@ -138,52 +137,18 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
   const pickOllamaModel = async (model: string) => {
     onClose();
     try {
-      await invoke("ensure_ollama_running");
-      const { vibe_home, alias } = await invoke<{ vibe_home: string; alias: string }>(
-        "prepare_local_agent",
-        { model },
-      );
-      const sessionId = crypto.randomUUID();
-      onPick({
-        label: model,
-        cmd: "vibe",
-        args: [],
-        // ELDRUN_LOCAL_MODEL: which model this tab drives, for the usage recap's
-        // per-model breakdown (VIBE_ACTIVE_MODEL is the resolved alias). A label,
-        // never an authority — the right to run outside the project's container
-        // is `hostBoundUid`, a marker the backend records in the state dir (#150).
-        env: { VIBE_HOME: vibe_home, VIBE_ACTIVE_MODEL: alias, ELDRUN_LOCAL_MODEL: model, ELDRUN_TAB_UID: sessionId },
-        cwd: projectCwd,
-        kind: "local_agent",
-        sessionId,
-        hostBoundUid: await registerHostBoundTab(scope),
-      });
+      onPick(await vibeLocalTabSpec(scope, model, projectCwd));
     } catch {
       /* ollama down / prep failed — don't create a broken tab */
     }
   };
 
   // Other agents drive the same model via `ollama launch` (or a direct fallback);
-  // the backend resolves the spawn command so the tab carries everything in cmd+args.
+  // `lib/agents/localTabSpec` resolves the spawn line.
   const pickLocalLaunch = async (agentId: string, label: string, model: string) => {
     onClose();
     try {
-      await invoke("ensure_ollama_running");
-      const { cmd, args } = await invoke<{ cmd: string; args: string[] }>(
-        "prepare_local_launch",
-        { agent: agentId, model },
-      );
-      onPick({
-        label: `${model} · ${label}`,
-        cmd,
-        args,
-        // cmd/args are the resolved launcher and name no model — record it here.
-        // Label only; the container exemption is `hostBoundUid` (#150).
-        env: { ELDRUN_LOCAL_MODEL: model },
-        cwd: projectCwd,
-        kind: "local_agent",
-        hostBoundUid: await registerHostBoundTab(scope),
-      });
+      onPick(await localLaunchTabSpec(scope, agentId, label, model, projectCwd));
     } catch {
       /* ollama launch unavailable / prep failed */
     }

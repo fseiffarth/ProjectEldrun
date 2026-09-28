@@ -707,9 +707,10 @@ async fn launch_options(
             worktrees,
             cloud,
             sign_in,
+            local,
         }) => (
             StatusCode::OK,
-            Json(json!({ "worktrees": worktrees, "cloud": cloud, "sign_in": sign_in })),
+            Json(json!({ "worktrees": worktrees, "cloud": cloud, "sign_in": sign_in, "local": local })),
         ),
         Ok(DesktopResponse::Error { code, .. }) => api_error(
             if code == "desktop_unavailable" {
@@ -1590,6 +1591,7 @@ async fn sign_in_tab(
         task: None,
         sign_in: Some(if body.alternate { "alternate" } else { "default" }.to_string()),
         like_tab: Some(tab.tmux_name.clone()),
+        local: None,
         idempotency_key: body.idempotency_key,
     };
     let project_id = project.public.id.clone();

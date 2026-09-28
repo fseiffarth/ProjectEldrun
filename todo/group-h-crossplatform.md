@@ -3188,6 +3188,45 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [ ] ❌ Doesn't work on Windows
       - [ ] ✅ Works on macOS
       - [ ] ❌ Doesn't work on macOS
+- [~] **31bl — Local-model agent tabs on the phone** (2026-09-28;
+  ✅ code-complete, automated tests passing — `MobileLocalAgents.test.tsx`,
+  `TabPersistFilter.test.ts`, `TmuxSessions.test.ts`, `ollama` /
+  `terminal_service` / `mobile_control` discovery + protocol tests;
+  ⚠️ not verified on a phone). Project ＋ gains the desktop "+"'s
+  **Local model · <model>** group (the `ollama_roles.tabs` model): Mistral
+  when installed, then every available driver (Claude Code, Codex, OpenCode,
+  Droid, OpenClaw), with the heavy-harness caution as a note. A model not on
+  the GPU still offers them; the start loads it (`load_ollama_model` gpu) and
+  the sheet says the first answer waits. Local-model tabs are listed on the
+  phone as agent tabs (named for the driver's CLI) and reattach like any
+  agent. For that, in a Mobile-access project/box: local tabs are tmux-wrapped
+  (`agent` token), and the `ollama launch` tabs record their launch line
+  (`TabEntry.localLaunch`) and so **restore after a desktop restart** — as a
+  fresh conversation after a clean quit (which reaps Eldrun's tmux
+  sessions); after a crash the tmux session still holds the agent. The
+  backend re-validates the line against its driver table on every load
+  (`ollama::local_launch_line_ok`); a folder copy never brings one back.
+  Tabs started before this, or outside a Mobile project, behave as before.
+  Untested id `mobile.newTab.local`. Needs the backend restarted (catalog,
+  protocol and sanitizer are Rust); the PWA is rebuilt.
+  - Not on Windows: local tabs there are never tmux-wrapped, so the phone
+    cannot attach (same as every local agent tab).
+  - [ ] 🖐️ Manual phone QA — set a "tabs" local model; in a Mobile project
+    Project ＋ → Local model group lists Mistral + the installed drivers →
+    Claude Code → the tab opens on the phone and answers; it shows on the
+    desktop as "<model> · Claude Code". Quit and restart desktop Eldrun →
+    the tab is back (a fresh conversation) and the phone lists it again;
+    a Mistral tab comes back resumed. With
+    the model unloaded, the group says it isn't on the GPU and a start loads
+    it.
+    - [ ] ✅ Works on Linux (X11)
+    - [ ] ❌ Doesn't work on Linux (X11)
+    - [ ] ✅ Works on Linux (Wayland)
+    - [ ] ❌ Doesn't work on Linux (Wayland)
+    - [ ] ✅ Works on Windows
+    - [ ] ❌ Doesn't work on Windows
+    - [ ] ✅ Works on macOS
+    - [ ] ❌ Doesn't work on macOS
 
 *Not coming to the phone (decided, not forgotten — see
 `docs/mobile_box_parity_plan.md`): editing a box from the phone (membership,
