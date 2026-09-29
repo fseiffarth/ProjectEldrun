@@ -1,5 +1,12 @@
 import { memo, useEffect, useRef, useState } from "react";
-import { formatAddress, formatMailListDate, formatSize, stripFormatControls } from "../../lib/mail";
+import {
+  formatAddress,
+  formatMailListDate,
+  formatSize,
+  senderColor,
+  senderInitial,
+  stripFormatControls,
+} from "../../lib/mail";
 import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import { useI18nStore, useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
@@ -363,6 +370,8 @@ function MailListImpl({
             column. */}
         <span className="mail-sort-spacer" aria-hidden="true" />
         {sortHeader({ field: "attachments", label: <PaperclipIcon />, title: t("mail.sortAttachments") })}
+        {/* Above the sender badges: nothing to sort, the cell keeps the grid. */}
+        <span className="mail-sort-spacer" aria-hidden="true" />
         <span className="mail-sort-from">
           {t("mail.sortFrom")}
           {/* For the per-row ✕ at the far end: a pill in a 14px column on every
@@ -411,7 +420,7 @@ function MailListImpl({
         {headers.map((h) => (
           <div
             key={h.id}
-            className={`mail-row${h.id === selectedId ? " selected" : ""}${
+            className={`mail-row mail-msg-row${h.id === selectedId ? " selected" : ""}${
               checked.has(h.id) ? " checked" : ""
             }${h.seen ? "" : " unread"}`}
             role="button"
@@ -500,9 +509,38 @@ function MailListImpl({
               <span className="mail-row-clip" title={h.has_attachments ? t("mail.hasAttachments") : undefined}>
                 {h.has_attachments ? <PaperclipIcon /> : null}
               </span>
-              <span className="mail-row-from" title={h.from.address}>
-                {formatAddress(h.from)}
+              {/* Who it is from, recognised by colour before it is read: a
+                  run of mail from one sender is one colour down the list. The
+                  colour comes from the address, not the name (`senderColor`),
+                  so a spoofed name still wears a stranger's colour. */}
+              <span
+                className="mail-row-badge"
+                aria-hidden="true"
+                style={{ "--sender-color": senderColor(h.from.address) } as React.CSSProperties}
+              >
+                {senderInitial(h.from)}
               </span>
+              {/* Name and addr-spec as two spans — the name carries the row,
+                  the address sits quieter beside it — but both are always
+                  printed (T7). Same rule as `formatAddress`: a name equal to
+                  the address, or none, prints the address once. A name with an
+                  `@` in it is posing as an address, so the real one is not
+                  quietened beside it. */}
+              {(() => {
+                const name = stripFormatControls(h.from.name ?? "").trim();
+                const address = stripFormatControls(h.from.address);
+                const named = name !== "" && name !== h.from.address;
+                return (
+                  <span className="mail-row-from" title={formatAddress(h.from)}>
+                    <span className="mail-row-from-name">{named ? name : address}</span>
+                    {named && (
+                      <span className={`mail-row-from-addr${name.includes("@") ? " loud" : ""}`}>
+                        {`<${address}>`}
+                      </span>
+                    )}
+                  </span>
+                );
+              })()}
               {/* Always printed, not only while sorted by size: a column that
                   appears with its sort would move every other column sideways
                   on the click that selected it. */}

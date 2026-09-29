@@ -2440,19 +2440,19 @@ handle — it swallows the pointer before the card ever sees it. */
      line up, and splitting it into two matching lists is how they drift apart
      the first time a column is added.
 
-     Star · read-dot · clip · sender · size · date · delete. Every column but the sender
+     Star · read-dot · clip · badge · sender · size · date · delete. Every column but the sender
      is a FIXED width, and that is load-bearing rather than lazy: each row is
      its own grid container, so `auto` columns are sized per row — a row reading
      "1.2 KB" and one reading "12.4 MB" would each pick their own width and the
      "columns" would be a staircase. Fixed tracks (plus one `1fr` that resolves
      identically because every row is the same width) are what actually make
      them line up, header included. */
-  --mail-cols: 16px 14px 16px minmax(0, 1fr) 54px 118px 14px;
+  --mail-cols: 16px 14px 16px 20px minmax(0, 1fr) 54px 118px 14px;
   --mail-col-gap: 6px;
-  /* Where the sender column starts — the three glyph cells plus their gaps.
+  /* Where the sender column starts — the four leading cells plus their gaps.
      The subject/preview lines are indented by exactly this, so they hang under
-     the sender rather than under the stars. */
-  --mail-row-indent: 64px;
+     the sender's name rather than under the stars or the badge. */
+  --mail-row-indent: 90px;
 }
 
 .mail-list.mail-list-full {
@@ -2529,9 +2529,15 @@ handle — it swallows the pointer before the card ever sees it. */
   overflow-y: auto;
 }
 .mail-row {
-  padding: 7px 10px;
-  border-bottom: 1px solid var(--border-subtle);
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-color);
   cursor: var(--cur-pointer, pointer);
+}
+/* Faint banding, so the eye can hold a row across the gap between the sender
+   and the date. Declared before hover/selected/checked so every state wash
+   still wins over it at equal specificity. */
+.mail-row:nth-child(even) {
+  background: color-mix(in srgb, var(--text-primary) 3.5%, transparent);
 }
 .mail-row:hover {
   background: var(--bg-hover);
@@ -2573,8 +2579,17 @@ handle — it swallows the pointer before the card ever sees it. */
   cursor: var(--cur-pointer, pointer);
   text-decoration: underline;
 }
-.mail-row.unread .mail-row-subject,
-.mail-row.unread .mail-row-from {
+/* Read rows step back a tone and unread rows come forward in weight *and*
+   colour, so the two piles separate at a glance rather than by a bold that is
+   easy to miss at 12px. Message rows only (`mail-msg-row`): agent drafts and
+   contacts share `.mail-row` but have no read state to dim. */
+.mail-msg-row .mail-row-from-name,
+.mail-msg-row .mail-row-subject {
+  color: var(--text-secondary);
+}
+.mail-msg-row.unread .mail-row-from-name,
+.mail-msg-row.unread .mail-row-subject {
+  color: var(--text-primary);
   font-weight: 700;
 }
 /* The row's first line IS the column grid — same template as the header, so a
@@ -2644,6 +2659,42 @@ handle — it swallows the pointer before the card ever sees it. */
   white-space: nowrap;
   font-size: 12px;
 }
+/* The sender's initial on a disc of the sender's hashed colour (set inline as
+   `--sender-color`). The ink is a fixed dark, not a theme token: the disc is
+   the same colour on every theme, and the hue recipe's 58% lightness keeps
+   dark text legible on all of them. */
+.mail-row-badge {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--sender-color);
+  color: rgb(0 0 0 / 0.78);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  user-select: none;
+}
+/* Read mail's badge steps back with the rest of the row. */
+.mail-msg-row:not(.unread) .mail-row-badge {
+  opacity: 0.7;
+}
+.mail-row-from-name {
+  font-weight: 600;
+}
+/* The addr-spec beside the name: always printed (threat model T7), just
+   quieter, so the name is what distinguishes one row from the next. */
+.mail-row-from-addr {
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.mail-row-from-addr.loud {
+  font-size: 12px;
+  color: var(--text-primary);
+}
 .mail-row-date {
   font-size: 11px;
   color: var(--text-muted);
@@ -2665,9 +2716,9 @@ handle — it swallows the pointer before the card ever sees it. */
    starting it under the stars would make the glyph columns look like a margin
    the text had escaped. */
 .mail-row-subject {
-  margin-top: 2px;
+  margin-top: 3px;
   padding-left: var(--mail-row-indent);
-  font-size: 12px;
+  font-size: 12.5px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

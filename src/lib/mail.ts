@@ -24,6 +24,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { stripFormatControls } from "./textSafety";
 import { formatBytes } from "./formatBytes";
+import { hashString } from "./theme/categoryColor";
 import type { TranslationKey } from "./i18n";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useSettingsStore } from "../stores/settings";
@@ -1124,6 +1125,27 @@ export function buildMessageSrcdoc(body: {
 export function formatAddress(addr: { name?: string; address: string }): string {
   const name = stripFormatControls(addr.name ?? "").trim();
   return name && name !== addr.address ? `${name} <${addr.address}>` : addr.address;
+}
+
+/**
+ * The sender badge's colour, hashed from the **addr-spec** — never the display
+ * name. The name is attacker-chosen, so hashing it would hand a spoofer the
+ * real sender's colour along with their name; the address is the part that
+ * has to differ, so the colour differs with it. Same recipe as `autoBoxColor`
+ * (golden-angle spread, `categoryColor`'s saturation/lightness), so it sits in
+ * the app's one family of hashed hues.
+ */
+export function senderColor(address: string): string {
+  const hue = Math.round((hashString(address.trim().toLowerCase()) * 137.508) % 360);
+  return `hsl(${hue} 62% 58%)`;
+}
+
+/** The badge's letter: the first letter or digit of the display name, else of
+ *  the address, else `?`. Code-point aware, so an astral letter is not split. */
+export function senderInitial(addr: { name?: string; address: string }): string {
+  const pick = (s: string) => stripFormatControls(s).match(/[\p{L}\p{N}]/u)?.[0];
+  const ch = pick(addr.name ?? "") ?? pick(addr.address) ?? "?";
+  return ch.toLocaleUpperCase();
 }
 
 /** Remove bidi overrides, isolates and zero-width characters from display text.

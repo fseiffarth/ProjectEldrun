@@ -58,11 +58,11 @@ interface Calls {
   deleted: string[][];
 }
 
-function renderList(over: { checkedIds?: string[]; purged?: number; query?: string; searchRemote?: boolean; searchPartial?: boolean } = {}) {
+function renderList(over: { headers?: MailHeader[]; checkedIds?: string[]; purged?: number; query?: string; searchRemote?: boolean; searchPartial?: boolean } = {}) {
   const calls: Calls = { opened: [], checks: [], deleted: [] };
   render(
     <MailList
-      headers={HEADERS}
+      headers={over.headers ?? HEADERS}
       selectedId={null}
       checkedIds={over.checkedIds ?? []}
       loading={false}
@@ -100,6 +100,45 @@ function renderList(over: { checkedIds?: string[]; purged?: number; query?: stri
 const row = (id: string) => screen.getByText(`subject ${id}`).closest(".mail-row") as HTMLElement;
 
 beforeEach(() => vi.clearAllMocks());
+
+describe("sender cell", () => {
+  it("prints the name and, quieter, the addr-spec beside it", () => {
+    renderList({
+      headers: [header({ id: "m1", from: { name: "Ada Lovelace", address: "ada@example.com" } })],
+    });
+    const addr = screen.getByText("<ada@example.com>");
+    expect(addr.className).toBe("mail-row-from-addr");
+    expect(screen.getByText("Ada Lovelace").className).toBe("mail-row-from-name");
+  });
+
+  it("does not quieten the real address beside a name posing as one", () => {
+    renderList({
+      headers: [header({ id: "m1", from: { name: "support@bank.example", address: "a@evil.example" } })],
+    });
+    expect(screen.getByText("<a@evil.example>").className).toContain("loud");
+  });
+
+  it("badges the row with the sender's initial, coloured by address not name", () => {
+    renderList({
+      headers: [
+        header({ id: "m1", from: { name: "PayPal", address: "service@paypal.example" } }),
+        header({ id: "m2", from: { name: "PayPal", address: "a@evil.example" } }),
+        header({ id: "m3", from: { name: "Someone else", address: "service@paypal.example" } }),
+      ],
+    });
+    const badge = (id: string) => row(id).querySelector(".mail-row-badge") as HTMLElement;
+    expect(badge("m1").textContent).toBe("P");
+    expect(badge("m3").textContent).toBe("S");
+    const color = (id: string) => badge(id).style.getPropertyValue("--sender-color");
+    expect(color("m1")).toBe(color("m3"));
+    expect(color("m1")).not.toBe(color("m2"));
+  });
+
+  it("prints a bare address once", () => {
+    renderList();
+    expect(row("m1").querySelector(".mail-row-from")?.textContent).toBe("sender@example.com");
+  });
+});
 
 describe("search coverage note", () => {
   it("says when older server matches may be missing", () => {
