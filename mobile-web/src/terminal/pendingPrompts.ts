@@ -27,6 +27,8 @@ export interface PendingPrompt {
   anchor?: TranscriptEntry;
   /** Which copy of that record was the anchor, if its text repeated. */
   anchorSeen: number;
+  /** When it left this phone (RFC 3339): the time its bubble shows. */
+  sentAt?: string;
   /** The link never acknowledged one of its input frames: the words did not
    * reach the session. The bubble stays where it is and says so, with a
    * resend beside it — it is never removed or moved. The session's own
@@ -61,6 +63,7 @@ export function pendingPrompt(id: number, text: string, entries: readonly Transc
     anchor,
     anchorSeen: anchor ? entries.filter((entry) => entry.kind === anchor.kind
       && entry.text === anchor.text && entry.at === anchor.at).length : 0,
+    sentAt: new Date().toISOString(),
   };
 }
 
@@ -130,6 +133,7 @@ export function withPending(entries: readonly TranscriptEntry[], pending: readon
       text: prompt.text,
       at: after,
       pending: prompt.id,
+      ...(prompt.sentAt ? { sentAt: prompt.sentAt } : {}),
       ...(prompt.failed && !arrived.has(prompt.id) ? { failed: true } : {}),
       ...(prompt.retrying && !arrived.has(prompt.id) ? { retrying: true } : {}),
     });

@@ -648,6 +648,14 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .transcript-md .tok-tag { color:#f47868; }
 .transcript-md .tok-arg { font-style:italic; }
 .transcript-cut { display:block; margin-top:4px; color:#9298aa; font-size:.72rem; }
+/* A messenger's time in the bubble's bottom corner, and its day chip centred
+   across the chat where the day changes (`chatTimes`). */
+.transcript-time { display:block; margin:2px -4px -3px 0; text-align:right; color:#8d93a8; font:400 .68rem/1.2 Inter,ui-sans-serif,system-ui,sans-serif; font-variant-numeric:tabular-nums; }
+.readable-turn.user .transcript-time { color:#a69fd4; }
+.transcript-day { display:flex; justify-content:center; width:100%; margin:4px 0; }
+.transcript-day span { padding:2px 10px; border-radius:10px; background:#1a1d2b; color:#9aa1b8; font:500 .72rem/1.5 Inter,ui-sans-serif,system-ui,sans-serif; }
+.transcript-day em { font-style:normal; opacity:.8; }
+.readable-lines.transcript > .transcript-day + .readable-turn.user { margin-top:0; }
 /* A subagent the agent spawned (`SubagentCard`): on the agent's side, but a
    card rather than a bubble — the agent did not say it — in the working
    row's blue, with a chevron when it opens its own conversation. */

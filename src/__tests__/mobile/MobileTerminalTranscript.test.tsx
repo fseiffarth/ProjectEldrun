@@ -55,6 +55,15 @@ class FakeWebSocket {
 
 import { Terminal } from "../../../mobile-web/src/screens/Terminal";
 
+/** A bubble's words, without the time a messenger puts in its corner. */
+function said(bubble: Element | null | undefined): string | null {
+  if (!bubble) return null;
+  const copy = bubble.cloneNode(true) as Element;
+  copy.querySelectorAll(".transcript-time").forEach((time) => time.remove());
+  return copy.textContent;
+}
+
+
 const TAB = { id: "tab-7", label: "Claude", kind: "agent" as const, agent_label: "Claude Code", available: true, viewer_busy: false };
 
 function jsonResponse(status: number, body: unknown) {
@@ -166,12 +175,12 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     expect(calls.find((url) => url.includes("/transcript"))).toBe("/api/v1/tabs/tab-7/transcript?limit=120");
     const chat = screen.getByTestId("session-transcript");
     const prompt = screen.getByRole("group", { name: "Your prompt" });
-    expect(prompt.textContent).toBe("add a clear button");
+    expect(said(prompt)).toBe("add a clear button");
     expect(prompt.className).toBe("readable-turn user");
     // One bubble per message the agent wrote, its Markdown formatted, its
     // link only a label.
     const answers = chat.querySelectorAll(".readable-turn.agent.answer");
-    expect([...answers].map((bubble) => bubble.textContent)).toEqual(["Looking at the composer.", "Done: the ✕ empties the draft. See the docs."]);
+    expect([...answers].map((bubble) => said(bubble))).toEqual(["Looking at the composer.", "Done: the ✕ empties the draft. See the docs."]);
     expect(answers[1].querySelector("strong")?.textContent).toBe("✕");
     expect(chat.querySelector("a")).toBeNull();
     // The next read names the version it holds, so an unmoved file answers small.
@@ -397,7 +406,7 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     const chat = screen.getByTestId("session-transcript");
     const prompts = () => [...chat.querySelectorAll(".readable-turn.user")];
     const bubble = prompts()[1];
-    expect(bubble.textContent).toBe("also the tests");
+    expect(said(bubble)).toBe("also the tests");
     expect(bubble.className).toBe("readable-turn user");
     expect(document.querySelector(".last-sent")).toBeNull();
 
@@ -412,8 +421,8 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     await settle();
     expect(prompts()).toHaveLength(2);
     expect(prompts()[1]).toBe(bubble);
-    expect(bubble.textContent).toBe("also the tests");
-    expect(bubble.nextElementSibling?.textContent).toBe("Still on the button.");
+    expect(said(bubble)).toBe("also the tests");
+    expect(said(bubble.nextElementSibling)).toBe("Still on the button.");
   });
 
   it("keeps a sent prompt in Reader while Codex is binding its rollout", async () => {
@@ -427,7 +436,7 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     fireEvent.change(screen.getByRole("textbox", { name: "Message agent" }), { target: { value: "keep this visible" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await settle();
-    expect(screen.getByRole("group", { name: "Your prompt" }).textContent).toBe("keep this visible");
+    expect(said(screen.getByRole("group", { name: "Your prompt" }))).toBe("keep this visible");
 
     // Current Codex releases can announce the live session before a readable
     // rollout exists. The reader must retain the phone's just-sent prompt
@@ -436,7 +445,7 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     act(() => { document.dispatchEvent(new Event("visibilitychange")); });
     await settle();
     screen.getByTestId("session-transcript");
-    expect(screen.getByRole("group", { name: "Your prompt" }).textContent).toBe("keep this visible");
+    expect(said(screen.getByRole("group", { name: "Your prompt" }))).toBe("keep this visible");
 
     stored = { available: true, version: "answer:codex", entries: [
       { kind: "answer", text: "Here is the answer." },
@@ -444,7 +453,7 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     act(() => { document.dispatchEvent(new Event("visibilitychange")); });
     await settle();
     expect([...screen.getByTestId("session-transcript").querySelectorAll(".readable-turn")]
-      .map((bubble) => bubble.textContent)).toEqual(["keep this visible", "Here is the answer."]);
+      .map((bubble) => said(bubble))).toEqual(["keep this visible", "Here is the answer."]);
   });
 
   it("shows Codex's next unstamped answer below the prompt sent from this phone", async () => {
@@ -470,7 +479,7 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     await settle();
 
     const bubbles = screen.getByTestId("session-transcript").querySelectorAll(".readable-turn");
-    expect([...bubbles].map((bubble) => bubble.textContent)).toEqual([
+    expect([...bubbles].map((bubble) => said(bubble))).toEqual([
       "first", "First reply", "follow up", "Reply to follow up",
     ]);
   });
@@ -498,7 +507,7 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await settle();
     expect([...screen.getByTestId("session-transcript").querySelectorAll(".readable-turn")]
-      .map((bubble) => bubble.textContent)).toEqual(["fresh start"]);
+      .map((bubble) => said(bubble))).toEqual(["fresh start"]);
 
     // The new rollout is bound: its records are the chat.
     stored = { available: true, version: "new-rollout", truncated: false, entries: [
@@ -508,7 +517,7 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     act(() => { document.dispatchEvent(new Event("visibilitychange")); });
     await settle();
     expect([...screen.getByTestId("session-transcript").querySelectorAll(".readable-turn")]
-      .map((bubble) => bubble.textContent)).toEqual(["fresh start", "Starting fresh."]);
+      .map((bubble) => said(bubble))).toEqual(["fresh start", "Starting fresh."]);
   });
 
   it("does not send /clear to a working Codex, and says why on the phone", async () => {

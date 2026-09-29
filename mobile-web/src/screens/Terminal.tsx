@@ -86,6 +86,7 @@ import { agentInputWrites, bracketsAgentMessage } from "../terminal/composer";
 import { agentWork } from "../terminal/agentBusy";
 import { chatTurns, isPromptEcho } from "../terminal/chatTurns";
 import { answerHtml } from "../terminal/answerMarkdown";
+import { chatDayLabel, chatMoment, chatTime, dayOpeners } from "../terminal/chatTimes";
 import { commandArgsInline, slashCommand, transcriptTurns, type SlashCommand, type TranscriptTurn } from "../terminal/transcriptTurns";
 import { openSubagent, siblingPosition, stepSibling, type SubagentStep } from "../terminal/subagents";
 import { MAX_PENDING, pendingPrompt, withPending, type PendingPrompt } from "../terminal/pendingPrompts";
@@ -400,6 +401,8 @@ function SubagentCard({ turn, label, untested, onOpen }: {
  * agent put up for approval is an answer bubble headed and outlined as the
  * plan. A subagent the agent spawned is a card (`SubagentCard`) that opens
  * its conversation.
+ * As in a messenger, each bubble carries its time in the corner and a day
+ * chip opens each day (`chatTimes`); a record with no stamp has neither.
  * What the agent sent to the phone sits after the record it followed
  * (`outboxPosts`), as picture messages. */
 const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promptLabel, planLabel = "", planUntested = "", agentLabel = "", agentUntested = "", onOpenAgent, onResend, posts, renderPost }: {
@@ -421,7 +424,19 @@ const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promp
   // One bubble per record, keyed by its time (`transcriptTurns`).
   const turns = useMemo(() => transcriptTurns(entries), [entries]);
   const { hold, menu } = useMessageMenu();
-  return <>{turns.map((turn) => <Fragment key={turn.key}>
+  const t = useT();
+  // A messenger's day chip over the first message of each day (`dayOpeners`).
+  const openers = useMemo(() => dayOpeners(turns.map((turn) => turn.stamp)), [turns]);
+  const now = new Date();
+  const dayLabels = { today: t("mobile.transcript.today"), yesterday: t("mobile.transcript.yesterday") };
+  const timesUntested = isUntested("mobile.transcript.times");
+  return <>{turns.map((turn, index) => {
+    const moment = chatMoment(turn.stamp);
+    const time = moment && <small className="transcript-time">{chatTime(moment)}</small>;
+    return <Fragment key={turn.key}>
+    {openers.has(index) && moment && <div className="transcript-day" role="separator">
+      <span>{chatDayLabel(moment, now, dayLabels)}{timesUntested && <em> · {t("mobile.focus.untested")}</em>}</span>
+    </div>}
     {turn.kind === "agent"
       ? <SubagentCard turn={turn} label={agentLabel} untested={agentUntested} onOpen={onOpenAgent} />
       : turn.command
@@ -430,6 +445,7 @@ const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promp
       ? <div className="readable-turn user" role="group" aria-label={promptLabel} data-prompt={turn.text} data-send-failed={turn.failed || undefined} {...hold(turn.key, () => turn.text)}>
           <p className="transcript-text">{turn.text}</p>
           {turn.cut && <small className="transcript-cut">{cutLabel}</small>}
+          {time}
           {/* The link never acknowledged this prompt's frames: it stays where
               it is, says so, and offers to go again (a shown bubble never
               changes or moves). While the resend waits it says that. */}
@@ -445,9 +461,11 @@ const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promp
           {turn.plan && <small className="transcript-plan-head">{planLabel}{planUntested && <em> · {planUntested}</em>}</small>}
           <AnswerText text={turn.text} />
           {turn.cut && <small className="transcript-cut">{cutLabel}</small>}
+          {time}
         </div>}
     {renderPost && posts?.get(turn.index)?.map((post) => <Fragment key={post.key}>{renderPost(post)}</Fragment>)}
-  </Fragment>)}{menu}</>;
+  </Fragment>;
+  })}{menu}</>;
 });
 
 /** The stored preference key for a tab: the agent behind it, or the shell. */

@@ -563,6 +563,9 @@ export interface TranscriptEntry {
   pending?: number;
   failed?: boolean;
   retrying?: boolean;
+  /** Phone-only: when a pending prompt left this phone (its bubble's time;
+   * `at` on it is only its place). */
+  sentAt?: string;
 }
 export interface SessionTranscript {
   available: boolean;

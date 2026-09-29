@@ -284,6 +284,8 @@ export const en = {
   "mobile.transcript.prompt": "Your prompt",
   "mobile.transcript.answer": "Answer",
   "mobile.transcript.plan": "Plan",
+  "mobile.transcript.today": "Today",
+  "mobile.transcript.yesterday": "Yesterday",
   "mobile.subagent.region": "Subagent",
   "mobile.subagent.main": "the main conversation",
   "mobile.subagent.back": "Back to {name}",

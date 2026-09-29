@@ -374,6 +374,7 @@ export const UNTESTED = {
   "mobile.outbox.gallery": { area: "mobile", what: "OutboxGallery · Files the agent sent to the phone, from the 🖼 on the Focus screen and the project screen's header (no shelf under the tab cards any more), Save on every tile" },
   "mobile.outbox.share": { area: "mobile", what: "OutboxGrid/OutboxViewer · Share a file to Signal, WhatsApp, … from its tile or full screen; the button shows at once, a .md goes as .md.txt, a slow download asks for a second tap (Share now)" },
   "mobile.outbox.chat": { area: "mobile", what: "OutboxPost · What eldrun-send puts out shows in the Focus chat as WhatsApp-style picture messages — one picture alone, one send as an album, placed after the message it followed; only in the chat of the tab that sent it (the gallery lists all)" },
+  "mobile.transcript.times": { area: "mobile", what: "Terminal · The Focus chat's bubbles show their time in the corner and a Today / Yesterday / date chip opens each day, as in a messenger; a prompt still sending shows when the phone sent it" },
   "mobile.outbox.step": { area: "mobile", what: "OutboxViewer · Step through the gallery's pictures full screen (‹ ›, swipe, arrow keys)" },
   "mobile.outbox.zoom": { area: "mobile", what: "OutboxViewer · Pinch, double tap and drag to zoom and pan a picture full screen; the picture fits the phone's width" },
   "mobile.project.newTab": { area: "mobile", what: "NewTabSheet · The header's ＋ opens a shell or an agent" },

@@ -38,6 +38,15 @@ class FakeWebSocket {
 
 import { Terminal } from "../../../mobile-web/src/screens/Terminal";
 
+/** A bubble's words, without the time a messenger puts in its corner. */
+function said(bubble: Element | null | undefined): string | null {
+  if (!bubble) return null;
+  const copy = bubble.cloneNode(true) as Element;
+  copy.querySelectorAll(".transcript-time").forEach((time) => time.remove());
+  return copy.textContent;
+}
+
+
 const TAB = { id: "tab-7", label: "Claude", kind: "agent" as const, agent_label: "Claude Code", available: true, viewer_busy: false };
 const secs = (iso: string) => Date.parse(iso) / 1000;
 
@@ -96,7 +105,7 @@ describe("Eldrun Mobile shows the files the agent sent in the chat and in the ga
     // and no strip above the composer.
     const chat = screen.getByTestId("session-transcript");
     const turns = Array.from(chat.querySelectorAll(".readable-turn"));
-    expect(turns.map((turn) => turn.classList.contains("outbox-post") ? "picture" : turn.textContent))
+    expect(turns.map((turn) => turn.classList.contains("outbox-post") ? "picture" : said(turn)))
       .toEqual(["plot run 12", "Here is the plot.", "picture", "thanks"]);
     const post = within(chat).getByRole("group", { name: "Pictures and files from the agent (1)" });
     expect(post.classList.contains("pictures-only")).toBe(true);
