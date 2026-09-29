@@ -1,10 +1,18 @@
 # Headless owner — the desktop's live state moves into the sidecar
 
-*Plan only. Nothing here is implemented. Split out on 2026-09-29 from
+*Split out on 2026-09-29 from
 [`eldrun_hosted_plan.md`](eldrun_hosted_plan.md) (§1 decision 3, §3.4, P0
 and P1), because every step pays off on the desktop whether or not a server
 ever ships. File references were measured at `923e0202`; re-verify before
 building on one.*
+
+*Status: **H0 landed** (2026-09-29, never live-verified): `write_json_atomic`
+fsyncs the parent directory (#172); `calendar.json` writes are
+compare-and-swap on a file `rev` with per-record `rev`s (#171,
+`commands::calendar::transact`); the sidecar answers `Todo`, `Calendar`,
+`Schedules`, `Prompts` and `AgentTranscript` off the state dir when the
+window is closed (`services::mobile_control::headless`), flagged
+`desktop_available: false` and read-only. H1–H3 are still plan only.*
 
 The request behind it: **the phone, schedules and alarms keep working with
 the desktop window closed, and two clients never fight over the same state.**

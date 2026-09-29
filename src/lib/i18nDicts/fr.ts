@@ -61,6 +61,8 @@ export const dict: Dict = {
   "mobile.newTab.title": "Nouvel onglet",
   "mobile.newTab.close": "Fermer",
   "mobile.newTab.untested": "Non testé",
+  "mobile.headless.readOnly": "Lecture seule : la fenêtre Eldrun est fermée, ceci a donc été lu dans ses fichiers. Modifier nécessite le bureau.",
+  "mobile.todo.note": "Synchronisé via le bureau Eldrun. Tant que la fenêtre est fermée, le tableau est en lecture seule.",
   "mobile.newTab.note": "S’ouvre dans Eldrun sur l’ordinateur ; ce téléphone se connecte à l’onglet.",
   "mobile.newTab.shell": "Nouveau terminal",
   "mobile.newTab.noAgents": "Aucun agent n’est configuré sur l’ordinateur. Ce projet peut seulement ouvrir un terminal.",

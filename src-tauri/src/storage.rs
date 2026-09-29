@@ -115,8 +115,75 @@ where
     serde_json::to_writer_pretty(staged.as_file_mut(), value)?;
     staged.as_file_mut().write_all(b"\n")?;
     staged.as_file_mut().sync_all()?;
+    durability::record(DurabilityStep::FileSynced, staged.path());
     staged.persist(path)?;
+    durability::record(DurabilityStep::Persisted, path);
+    // The data is durable, but the directory entry pointing at it is not until
+    // the parent directory is flushed too: a crash after the rename can
+    // otherwise roll the directory back to the old (or no) file (#172). Best
+    // effort — a filesystem that refuses to fsync a directory (some network
+    // and FUSE mounts) must not turn every state write into an error after the
+    // bytes are already in place.
+    sync_parent_dir(parent);
+    durability::record(DurabilityStep::DirSynced, parent);
     Ok(())
+}
+
+/// Flush a directory's entries to disk after a rename into it.
+#[cfg(unix)]
+fn sync_parent_dir(parent: &Path) {
+    if let Ok(dir) = fs::File::open(parent) {
+        let _ = dir.sync_all();
+    }
+}
+
+/// Windows cannot open a directory as a plain file, and NTFS journals the
+/// rename itself; nothing to flush from here.
+#[cfg(not(unix))]
+fn sync_parent_dir(_parent: &Path) {}
+
+/// The steps of one atomic replacement, in the order they must happen: the
+/// staged file's bytes, the rename, then the parent directory's entries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DurabilityStep {
+    FileSynced,
+    Persisted,
+    DirSynced,
+}
+
+/// A seam the tests observe the durability steps through: pulling the power
+/// is not a unit test, so the write path records each step it took and a test
+/// asserts the order. Compiled away outside tests.
+pub(crate) mod durability {
+    use super::DurabilityStep;
+    use std::path::Path;
+
+    #[cfg(test)]
+    static LOG: std::sync::Mutex<Vec<(DurabilityStep, std::path::PathBuf)>> =
+        std::sync::Mutex::new(Vec::new());
+
+    #[cfg(test)]
+    pub(crate) fn record(step: DurabilityStep, path: &Path) {
+        LOG.lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push((step, path.to_path_buf()));
+    }
+
+    #[cfg(not(test))]
+    #[inline]
+    pub(crate) fn record(_step: DurabilityStep, _path: &Path) {}
+
+    /// The steps recorded for writes under `dir`, in order. Tests run in
+    /// parallel, so each one reads only its own temp directory's entries.
+    #[cfg(test)]
+    pub(crate) fn steps_under(dir: &Path) -> Vec<(DurabilityStep, std::path::PathBuf)> {
+        LOG.lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .filter(|(_, path)| path.starts_with(dir))
+            .cloned()
+            .collect()
+    }
 }
 
 /// Create the state dir if missing and make it owner-only (0700).
@@ -720,6 +787,36 @@ mod tests {
             .filter(|n| n.ends_with(".tmp"))
             .collect();
         assert!(strays.is_empty(), "temp files left behind: {strays:?}");
+    }
+
+    /// #172: the staged bytes are flushed, then renamed into place, then the
+    /// parent directory's entries are flushed — and all of it before the write
+    /// returns. Observed through the `durability` seam rather than a crash rig.
+    #[test]
+    fn write_json_atomic_syncs_file_then_persists_then_syncs_parent_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().canonicalize().unwrap();
+        let path = dir.join("durable.json");
+        write_json_atomic(&path, &vec![1u32]).unwrap();
+
+        let steps = durability::steps_under(&dir);
+        let kinds: Vec<DurabilityStep> = steps.iter().map(|(step, _)| *step).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                DurabilityStep::FileSynced,
+                DurabilityStep::Persisted,
+                DurabilityStep::DirSynced
+            ],
+            "steps recorded: {steps:?}"
+        );
+        // The file sync is of the *staged* sibling, not the target; the
+        // directory sync is of the target's parent.
+        let (_, staged) = &steps[0];
+        assert_eq!(staged.parent(), Some(dir.as_path()));
+        assert_ne!(staged, &path);
+        assert_eq!(steps[1].1, path);
+        assert_eq!(steps[2].1, dir);
     }
 
     #[test]

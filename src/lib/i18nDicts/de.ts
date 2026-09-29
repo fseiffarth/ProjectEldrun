@@ -61,6 +61,8 @@ export const dict: Dict = {
   "mobile.newTab.title": "Neuer Tab",
   "mobile.newTab.close": "Schließen",
   "mobile.newTab.untested": "Ungetestet",
+  "mobile.headless.readOnly": "Nur lesen: Das Eldrun-Fenster ist geschlossen, daher wurde dies aus seinen Dateien gelesen. Zum Bearbeiten wird der Desktop gebraucht.",
+  "mobile.todo.note": "Über den Eldrun-Desktop synchronisiert. Solange das Fenster geschlossen ist, ist das Board schreibgeschützt.",
   "mobile.newTab.note": "Öffnet sich in Eldrun auf dem Desktop; dieses Handy verbindet sich mit dem Tab.",
   "mobile.newTab.shell": "Neue Shell",
   "mobile.newTab.noAgents": "Auf dem Desktop sind keine Agenten eingerichtet. Dieses Projekt kann nur eine Shell öffnen.",

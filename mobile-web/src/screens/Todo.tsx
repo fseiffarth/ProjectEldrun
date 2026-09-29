@@ -162,6 +162,7 @@ export function Todo({ card }: { card?: string }) {
   return <main className="screen todo-screen">
     <header><h1>To-do board</h1><button onClick={load} disabled={busy}>↻</button></header>
     {error && <p className="error">{error}</p>}
+    {board?.desktop_available === false && <p className="notice">{t("mobile.headless.readOnly")} {isUntested("mobile.headless.todo") && <span className="untested">{t("mobile.newTab.untested")}</span>}</p>}
     {/* The search is the first thing under the header: it is what a board of
         forty cards is opened with, and it used to sit below a standing notice
         that says the same sentence every visit. That notice is now the last
@@ -201,7 +202,7 @@ export function Todo({ card }: { card?: string }) {
         if (await mutate({ type: "delete", task_id: editing.id })) setEditing(null);
       }}
     />}
-    <p className="notice todo-mobile-note">Synced through the connected Eldrun desktop. The board is unavailable while the desktop is closed.</p>
+    <p className="notice todo-mobile-note">{t("mobile.todo.note")}</p>
   </main>;
 }
 

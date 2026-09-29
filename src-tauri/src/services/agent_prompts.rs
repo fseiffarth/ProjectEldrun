@@ -689,6 +689,19 @@ pub fn list(project_id: &str) -> Result<Vec<ProjectAgentPrompt>, String> {
         .unwrap_or_default())
 }
 
+/// [`list`] read from `state_dir` by a process that only reads this file —
+/// the Mobile sidecar answering a phone with no window open.
+pub fn list_at(state_dir: &std::path::Path, project_id: &str) -> Result<Vec<ProjectAgentPrompt>, String> {
+    validate_id("project id", project_id)?;
+    let path = state_dir.join(FILE_NAME);
+    let file: AgentPromptsFile = if path.exists() {
+        storage::read_json(&path).map_err(|e| format!("read {FILE_NAME}: {e}"))?
+    } else {
+        AgentPromptsFile::default()
+    };
+    Ok(file.projects.get(project_id).cloned().unwrap_or_default())
+}
+
 pub fn upsert(
     project_id: &str,
     input: ProjectAgentPromptInput,

@@ -61,6 +61,8 @@ export const dict: Dict = {
   "mobile.newTab.title": "Pestaña nueva",
   "mobile.newTab.close": "Cerrar",
   "mobile.newTab.untested": "Sin probar",
+  "mobile.headless.readOnly": "Solo lectura: la ventana de Eldrun está cerrada, así que esto se leyó de sus archivos. Para editar hace falta el escritorio.",
+  "mobile.todo.note": "Sincronizado a través del escritorio de Eldrun. Mientras la ventana esté cerrada, el tablero es de solo lectura.",
   "mobile.newTab.note": "Se abre en Eldrun en el ordenador; este teléfono se conecta a la pestaña.",
   "mobile.newTab.shell": "Nueva terminal",
   "mobile.newTab.noAgents": "No hay agentes configurados en el ordenador. Este proyecto solo puede abrir una terminal.",

@@ -9,6 +9,8 @@ import {
   type ScheduledPrompt,
   type ScheduledPromptInput,
 } from "../api";
+import { useT } from "../../../src/lib/i18n";
+import { isUntested } from "../../../src/lib/untested";
 
 /** Per-tab scheduled prompts, opened from the project tab overview — the phone's
  * counterpart to the desktop Agents view, and deliberately not from inside the
@@ -30,6 +32,7 @@ function scheduleRuleLabel(rule: ScheduleRule): string {
 }
 
 export function ScheduleSheet({ tabId, label, onClose, initialMessage }: { tabId: string; label?: string; onClose: () => void; initialMessage?: string }) {
+  const t = useT();
   const [schedules, setSchedules] = useState<ScheduledPrompt[]>([]);
   const [timeZone, setTimeZone] = useState("");
   const [nextRuns, setNextRuns] = useState<Record<string, string>>({});
@@ -44,11 +47,12 @@ export function ScheduleSheet({ tabId, label, onClose, initialMessage }: { tabId
   const [once, setOnce] = useState(mobileLocalDateTime);
   const [weekdays, setWeekdays] = useState([1, 2, 3, 4, 5]);
 
-  const apply = useCallback((value: { schedules: ScheduledPrompt[]; time_zone: string; next_runs: Record<string, string> }) => {
+  const apply = useCallback((value: { schedules: ScheduledPrompt[]; time_zone: string; next_runs: Record<string, string>; desktop_available?: boolean }) => {
     setSchedules(value.schedules);
     setTimeZone(value.time_zone);
     setNextRuns(value.next_runs);
-    setOffline(false);
+    // Listed off the host's files with no window open: shown, but read-only.
+    setOffline(value.desktop_available === false);
     setError("");
   }, []);
   const fail = useCallback((cause: unknown) => {
@@ -127,6 +131,7 @@ export function ScheduleSheet({ tabId, label, onClose, initialMessage }: { tabId
       {timeZone && <p className="sheet-note">Desktop time zone: {timeZone}</p>}
       <p className="sheet-note">Due prompts wait up to one hour for an idle point. They replace any unsent composer draft, even when the tab is focused, and run only while desktop Eldrun is open.</p>
       {error && <p className="sheet-note error" role="alert">{error}</p>}
+      {offline && !error && <p className="sheet-note" role="status">{t("mobile.headless.readOnly")} {isUntested("mobile.headless.schedules") && <span className="untested">{t("mobile.newTab.untested")}</span>}</p>}
       {loading ? <p className="sheet-note">Loading schedules…</p> : schedules.length === 0 ? <p className="sheet-note">No prompts are scheduled for this tab.</p> : <div className="mobile-schedule-list">{schedules.map((schedule) => <article key={schedule.id}>
         <strong>{scheduleRuleLabel(schedule.rule)}</strong><p>{schedule.message}</p>
         {nextRuns[schedule.id] && <small>Next: {nextRuns[schedule.id].replace("T", " ")} ({timeZone})</small>}

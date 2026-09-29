@@ -80,6 +80,10 @@ struct SavedTab {
     /// so be one the phone can come back to (`terminal_service::local_launch_ok`).
     #[serde(default)]
     local_launch: Option<Value>,
+    /// The tab's binding into `agent_tasks.json` — what its schedules are
+    /// filed under. Read here so the sidecar can list them with no window.
+    #[serde(default)]
+    schedule_target_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -201,6 +205,14 @@ pub struct ResolvedTab {
     /// processes run with, which `eldrun-send` stamps on what it sends. Never
     /// crosses the browser API.
     pub session_id: Option<String>,
+    /// The tab's `agent_tasks.json` binding, for answering its schedules with
+    /// no window open (`headless`). Never crosses the browser API.
+    pub schedule_target_id: Option<String>,
+    /// The command the tab runs (`claude`, `codex`, `bash`, …) and the folder
+    /// it runs in — what reading its transcript with no window needs. The
+    /// folder is a raw path and never crosses the browser API.
+    pub cmd: String,
+    pub cwd: String,
 }
 
 #[derive(Debug, Clone)]
@@ -294,7 +306,7 @@ fn enabled(value: &Option<Value>) -> bool {
         .unwrap_or(false)
 }
 
-fn key_id(key: &[u8], domain: &str, parts: &[&str]) -> String {
+pub(super) fn key_id(key: &[u8], domain: &str, parts: &[&str]) -> String {
     let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts all key sizes");
     mac.update(domain.as_bytes());
     mac.update(&[0]);
@@ -707,6 +719,9 @@ fn resolve_scope(
             public,
             tmux_name: tmux.to_string(),
             session_id: tab.session_id.clone(),
+            schedule_target_id: tab.schedule_target_id.clone(),
+            cmd: tab.cmd.clone(),
+            cwd: tab.cwd.clone(),
         });
     }
     let last_activity = tabs.iter().filter_map(|t| t.public.last_activity).max();
@@ -1048,6 +1063,7 @@ mod tests {
             ephemeral: false,
             color: None,
             local_launch: None,
+            schedule_target_id: None,
         };
         assert_eq!(agent_label_of(&tab("release review", "claude")), "Claude");
         assert_eq!(agent_label_of(&tab("Codex", "codex")), "Codex");

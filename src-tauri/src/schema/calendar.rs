@@ -79,12 +79,22 @@ pub struct Calendar {
     /// Read-only calendars (e.g. an imported feed) reject edits in the UI.
     #[serde(default)]
     pub readonly: bool,
+    /// Bumped by every write that changed this record (#171), so a client can
+    /// tell a record it holds from the one on disk. `0` until a revision-aware
+    /// Eldrun first rewrites the record, and not serialized then, so an
+    /// untouched file keeps its bytes.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub rev: u64,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 impl Calendar {
@@ -96,6 +106,7 @@ impl Calendar {
             color: "#4aa3df".to_string(),
             visible: true,
             readonly: false,
+            rev: 0,
             extra: HashMap::new(),
         }
     }
@@ -237,6 +248,12 @@ pub struct CalendarEvent {
     pub overrides: Vec<EventOverride>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub alarms: Vec<Alarm>,
+    /// Bumped by every write that changed this record (#171), so a client can
+    /// tell a record it holds from the one on disk. `0` until a revision-aware
+    /// Eldrun first rewrites the record, and not serialized then, so an
+    /// untouched file keeps its bytes.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub rev: u64,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }
@@ -548,6 +565,12 @@ pub struct CalendarTask {
     /// than an absent one.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub created: String,
+    /// Bumped by every write that changed this record (#171), so a client can
+    /// tell a record it holds from the one on disk. `0` until a revision-aware
+    /// Eldrun first rewrites the record, and not serialized then, so an
+    /// untouched file keeps its bytes.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub rev: u64,
 
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
@@ -582,6 +605,13 @@ pub struct CalendarData {
     /// deleted afterwards.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub board_upgrades: Vec<String>,
+    /// The file's revision, bumped by every write (#171). A writer commits its
+    /// read-modify-write only while the revision on disk is still the one it
+    /// read — the in-process lock cannot see a second Eldrun process, and the
+    /// board rewrites this file on every drag. `0` for a file no
+    /// revision-aware Eldrun has written yet.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub rev: u64,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }
@@ -589,6 +619,7 @@ pub struct CalendarData {
 impl Default for CalendarData {
     fn default() -> Self {
         Self {
+            rev: 0,
             version: CALENDAR_VERSION,
             calendars: vec![Calendar::default_calendar()],
             events: Vec::new(),
@@ -1053,6 +1084,7 @@ pub fn migrate_legacy(events: Vec<LegacyEvent>) -> CalendarData {
         .collect();
 
     CalendarData {
+        rev: 0,
         version: CALENDAR_VERSION,
         calendars: vec![Calendar::default_calendar()],
         events,
@@ -1073,7 +1105,7 @@ fn is_leap(y: i32) -> bool {
     (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }
 
-fn days_in_month(y: i32, m: u32) -> u32 {
+pub(crate) fn days_in_month(y: i32, m: u32) -> u32 {
     match m {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
         4 | 6 | 9 | 11 => 30,
@@ -1307,6 +1339,7 @@ mod tests {
     #[test]
     fn normalize_refiles_orphaned_events() {
         let mut data = CalendarData {
+            rev: 0,
             version: CALENDAR_VERSION,
             calendars: vec![Calendar::default_calendar()],
             events: vec![CalendarEvent {
@@ -1348,6 +1381,7 @@ mod tests {
     /// by `normalize` (see `no_board_means_normalize_leaves_tasks_alone`).
     fn board(tasks: Vec<CalendarTask>) -> CalendarData {
         CalendarData {
+            rev: 0,
             version: CALENDAR_VERSION,
             calendars: vec![Calendar::default_calendar()],
             events: Vec::new(),
@@ -1522,6 +1556,7 @@ mod tests {
     #[test]
     fn no_board_means_normalize_leaves_tasks_unplaced() {
         let mut data = CalendarData {
+            rev: 0,
             version: CALENDAR_VERSION,
             calendars: vec![Calendar::default_calendar()],
             events: Vec::new(),
@@ -1543,6 +1578,7 @@ mod tests {
     #[test]
     fn tags_and_subtask_ids_normalize_without_a_board() {
         let mut data = CalendarData {
+            rev: 0,
             version: CALENDAR_VERSION,
             calendars: vec![Calendar::default_calendar()],
             events: Vec::new(),

@@ -2050,6 +2050,7 @@ fn calendar_create(stores: &Stores, args: &Value) -> Result<(Value, Change), Str
         None => CALENDAR_COLORS[data.calendars.len() % CALENDAR_COLORS.len()].to_string(),
     };
     let calendar = crate::schema::calendar::Calendar {
+        rev: 0,
         id: String::new(),
         name: name.to_string(),
         color,
@@ -3934,6 +3935,7 @@ mod tests {
         let f = Fixture::new();
         let mut data = crate::commands::calendar::read_data(&f.calendar).unwrap();
         data.calendars.push(crate::schema::calendar::Calendar {
+            rev: 0,
             id: "feed".into(), name: "Feed".into(), color: "#4aa3df".into(), visible: true, readonly: true,
             extra: HashMap::new(),
         });
@@ -3968,6 +3970,7 @@ mod tests {
         let f = Fixture::new();
         let mut data = crate::commands::calendar::read_data(&f.calendar).unwrap();
         data.calendars.push(crate::schema::calendar::Calendar {
+            rev: 0,
             id: "file".into(), name: "Conf".into(), color: "#8d8fd6".into(), visible: true, readonly: false,
             extra: HashMap::from([("imported".to_string(), json!(true))]),
         });

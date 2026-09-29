@@ -81,11 +81,14 @@ export interface ScheduledPrompt {
   last?: { occurrence: string; result: "delivered" | "missed" | "failed"; at: string };
 }
 export interface ScheduledPromptInput { enabled: boolean; message: string; rule: ScheduleRule }
-export interface ScheduledPromptList { schedules: ScheduledPrompt[]; time_zone: string; next_runs: Record<string, string> }
+/** `desktop_available: false` on any of these lists means the host answered
+ * off its files because no Eldrun window is open: the data is current but
+ * read-only until the desktop is back (headless owner plan, H0). */
+export interface ScheduledPromptList { schedules: ScheduledPrompt[]; time_zone: string; next_runs: Record<string, string>; desktop_available?: boolean }
 /** A prompt collected for a project without a tab. Ids and timestamps are the
  * desktop's; the phone only ever sends the text. */
 export interface ProjectPrompt { id: string; message: string; created_at: string; updated_at: string }
-export interface ProjectPromptList { prompts: ProjectPrompt[] }
+export interface ProjectPromptList { prompts: ProjectPrompt[]; desktop_available?: boolean }
 /** An agent tab closed in the project this desktop session, newest first — an
  * opaque id and its label, reopened by `reopenTab`. */
 export interface ClosedTabRow { id: string; label: string; agent: string; closed_at: number }
@@ -114,6 +117,8 @@ export interface TodoBoard {
   tasks: TodoCard[];
   calendars: TodoCalendar[];
   projects: TodoProject[];
+  /** False when the host read the board off its files with no window open. */
+  desktop_available?: boolean;
 }
 
 /**
@@ -240,6 +245,8 @@ export interface MobileCalendar {
   calendars: MobileCalendarInfo[];
   events: MobileCalendarEvent[];
   truncated: boolean;
+  /** False when the host expanded the month off its files with no window open. */
+  desktop_available?: boolean;
 }
 export interface MobileMailFolder { id: string; name: string; kind: string; unread: number; total: number }
 export interface MobileMailAccount { id: string; label: string; address: string; folders: MobileMailFolder[] }

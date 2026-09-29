@@ -25,8 +25,9 @@ use super::{
     admin,
     auth::AuthStore,
     config::{verify_tailscale_serve, HostConfig},
-    discovery::{Catalog, CatalogCache, PublicTab, ScopeKind, TabPrompt, TabSchedules},
+    discovery::{Catalog, CatalogCache, PublicTab, ResolvedTab, ScopeKind, TabPrompt, TabSchedules},
     files,
+    headless,
     inbox,
     outbox,
     limits,
@@ -283,6 +284,29 @@ fn catalog_fresh(state: &HostState) -> Result<Catalog, (StatusCode, Json<serde_j
         .unwrap_or_else(PoisonError::into_inner)
         .load_fresh(&state.config.state_dir, &key)
         .map_err(|_| api_error(StatusCode::SERVICE_UNAVAILABLE, "catalog_unavailable"))
+}
+
+/// The host key the desktop mints its opaque ids with — the same
+/// `mobile-control/host.key` — so an id minted here resolves there.
+fn host_key(state: &HostState) -> Vec<u8> {
+    state.auth.lock().unwrap_or_else(PoisonError::into_inner).host_key().to_vec()
+}
+
+/// Whether a desktop answer means no window is open: the persisted-state
+/// kinds are then answered from the state dir instead (`headless`, headless
+/// owner plan H0). A desktop that answered anything else — including its
+/// own error — is present, and its answer stands.
+fn desktop_down(response: &Result<DesktopResponse, String>) -> bool {
+    match response {
+        Err(_) => true,
+        Ok(DesktopResponse::Error { code, .. }) => code == "desktop_unavailable",
+        Ok(_) => false,
+    }
+}
+
+/// Today as the desktop-local `YYYY-MM-DD` the board's date columns read.
+fn local_today() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
 }
 
 /// Drop the cached catalog after a change the desktop has already written to
@@ -985,16 +1009,29 @@ async fn activate_project(
     }
 }
 
-/// The board is intentionally available only through the live desktop bridge:
-/// calendar writes also notify the desktop's CalDAV write hook, and the sidecar
-/// must not become another writer of calendar.json.
+/// The board's *writes* stay behind the live desktop bridge: calendar writes
+/// also notify the desktop's CalDAV write hook, and the sidecar must not
+/// become another writer of calendar.json. A *read* with no window open is
+/// answered from the file (`headless`), marked `desktop_available: false` so
+/// the phone shows the board read-only.
 async fn todo(State(state): State<HostState>, headers: HeaderMap) -> impl IntoResponse {
     if let Err(error) = authenticate(&headers, &state) {
         return error;
     }
     let desktop_socket = state.config.control_dir.join("desktop-control.sock");
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
-    match admin::desktop_call(&desktop_socket, &DesktopRequest::Todo { request_id }).await {
+    let response = admin::desktop_call(&desktop_socket, &DesktopRequest::Todo { request_id }).await;
+    if desktop_down(&response) {
+        let key = host_key(&state);
+        return match headless::todo_board(&state.config.state_dir, &key, &local_today()) {
+            Ok(board) => (
+                StatusCode::OK,
+                Json(json!({ "board": board, "desktop_available": false })),
+            ),
+            Err(_) => api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable"),
+        };
+    }
+    match response {
         Ok(DesktopResponse::Todo { board }) => (StatusCode::OK, Json(json!({ "board": board }))),
         Ok(DesktopResponse::Error { code, .. }) => api_error(
             if code == "desktop_unavailable" {
@@ -1204,12 +1241,23 @@ async fn calendar(
     };
     let desktop_socket = state.config.control_dir.join("desktop-control.sock");
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
-    match admin::desktop_call(
+    let response = admin::desktop_call(
         &desktop_socket,
-        &DesktopRequest::Calendar { request_id, month },
+        &DesktopRequest::Calendar { request_id, month: month.clone() },
     )
-    .await
-    {
+    .await;
+    if desktop_down(&response) {
+        // No window: the month is expanded off `calendar.json` here, read-only.
+        let key = host_key(&state);
+        return match headless::calendar_month(&state.config.state_dir, &key, &month) {
+            Ok(calendar) => (
+                StatusCode::OK,
+                Json(json!({ "calendar": calendar, "desktop_available": false })),
+            ),
+            Err(_) => api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable"),
+        };
+    }
+    match response {
         Ok(DesktopResponse::Calendar { calendar }) => {
             (StatusCode::OK, Json(json!({ "calendar": calendar })))
         }
@@ -2109,6 +2157,23 @@ fn agent_tab_target(
     tab_target(state, tab_id, true)
 }
 
+/// [`agent_tab_target`] keeping the whole catalog record — what answering a
+/// tab's schedules or transcript with no window open needs (its schedule
+/// binding, command and folder), none of which is ever serialized back.
+fn agent_tab(
+    state: &HostState,
+    tab_id: &str,
+) -> Result<(String, ResolvedTab), (StatusCode, Json<serde_json::Value>)> {
+    let catalog = catalog(state)?;
+    let Some((project, tab)) = catalog.tab(tab_id) else {
+        return Err(api_error(StatusCode::NOT_FOUND, "tab_not_found"));
+    };
+    if tab.public.kind != "agent" {
+        return Err(api_error(StatusCode::BAD_REQUEST, "agent_tab_required"));
+    }
+    Ok((project.raw_id.clone(), tab.clone()))
+}
+
 async fn schedules(
     State(state): State<HostState>,
     headers: HeaderMap,
@@ -2117,23 +2182,46 @@ async fn schedules(
     if let Err(error) = authenticate(&headers, &state) {
         return error;
     }
-    let (project_id, tmux_session) = match agent_tab_target(&state, &tab_id) {
+    let (project_id, tab) = match agent_tab(&state, &tab_id) {
         Ok(target) => target,
         Err(error) => return error,
     };
     let desktop_socket = state.config.control_dir.join("desktop-control.sock");
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
-    schedule_desktop_error(
-        admin::desktop_call(
-            &desktop_socket,
-            &DesktopRequest::Schedules {
-                request_id,
-                project_id,
-                tmux_session,
-            },
-        )
-        .await,
+    let response = admin::desktop_call(
+        &desktop_socket,
+        &DesktopRequest::Schedules {
+            request_id,
+            project_id: project_id.clone(),
+            tmux_session: tab.tmux_name.clone(),
+        },
     )
+    .await;
+    if desktop_down(&response) {
+        // No window: the rows come off `agent_tasks.json`, read-only. A tab
+        // the desktop never bound to a schedule target has no rows yet.
+        let listed = match tab.schedule_target_id.as_deref() {
+            Some(target) => headless::schedules(&state.config.state_dir, &project_id, target, chrono::Local::now()),
+            None => Ok(headless::TabSchedules {
+                schedules: Vec::new(),
+                time_zone: headless::local_time_zone(),
+                next_runs: Default::default(),
+            }),
+        };
+        return match listed {
+            Ok(listed) => (
+                StatusCode::OK,
+                Json(json!({
+                    "schedules": listed.schedules.into_iter().map(MobileSchedule::from).collect::<Vec<_>>(),
+                    "time_zone": listed.time_zone,
+                    "next_runs": listed.next_runs,
+                    "desktop_available": false,
+                })),
+            ),
+            Err(_) => api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable"),
+        };
+    }
+    schedule_desktop_error(response)
 }
 
 /// `?refresh=1` — ask the desktop to run the agent's CLI again rather than
@@ -2225,25 +2313,43 @@ async fn agent_transcript(
     {
         return api_error(StatusCode::BAD_REQUEST, "invalid_subagent");
     }
-    let (project_id, tmux_session) = match agent_tab_target(&state, &tab_id) {
+    let (project_id, tab) = match agent_tab(&state, &tab_id) {
         Ok(target) => target,
         Err(error) => return error,
     };
     let desktop_socket = state.config.control_dir.join("desktop-control.sock");
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
-    match admin::desktop_call(
+    let response = admin::desktop_call(
         &desktop_socket,
         &DesktopRequest::AgentTranscript {
             request_id,
-            project_id,
-            tmux_session,
-            subagent: query.subagent,
-            version: query.version,
+            project_id: project_id.clone(),
+            tmux_session: tab.tmux_name.clone(),
+            subagent: query.subagent.clone(),
+            version: query.version.clone(),
             limit: query.limit,
         },
     )
-    .await
-    {
+    .await;
+    if desktop_down(&response) {
+        // No window: the CLI's own transcript is read here, off the tab record.
+        let transcript = tokio::task::spawn_blocking(move || {
+            headless::transcript(
+                &project_id,
+                &tab,
+                query.subagent.as_deref(),
+                query.version.as_deref(),
+                query.limit,
+            )
+        })
+        .await
+        .unwrap_or_else(|_| crate::services::agent_transcript::AgentTranscript::unavailable("read_failed"));
+        return (
+            StatusCode::OK,
+            Json(json!({ "transcript": transcript, "desktop_available": false })),
+        );
+    }
+    match response {
         Ok(DesktopResponse::AgentTranscript { transcript }) => (
             StatusCode::OK,
             Json(json!({ "transcript": transcript })),
@@ -2412,14 +2518,29 @@ async fn prompts(
         Err(error) => return error,
     };
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
-    prompts_call(
-        &state,
-        DesktopRequest::Prompts {
+    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    let response = admin::desktop_call(
+        &desktop_socket,
+        &DesktopRequest::Prompts {
             request_id,
-            project_id,
+            project_id: project_id.clone(),
         },
     )
-    .await
+    .await;
+    if desktop_down(&response) {
+        // No window: the rows come off `agent_prompts.json`, read-only.
+        return match headless::prompts(&state.config.state_dir, &project_id) {
+            Ok(prompts) => (
+                StatusCode::OK,
+                Json(json!({
+                    "prompts": prompts.into_iter().map(MobileCollectedPrompt::from).collect::<Vec<_>>(),
+                    "desktop_available": false,
+                })),
+            ),
+            Err(_) => api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable"),
+        };
+    }
+    prompt_desktop_error(response)
 }
 
 /// Authentication and origin come before the body is even parsed, so an
@@ -4059,14 +4180,193 @@ mod tests {
             .expect("opaque tab id")
             .to_string();
 
+        // No window: the list is answered off the file — nothing filed for a
+        // tab with no schedule binding yet — and flagged so the phone shows it
+        // read-only. Nothing raw crosses either way.
         let (status, _, body) = host
             .send(get_as(&format!("/api/v1/tabs/{tab_id}/schedules"), &cookie))
             .await;
-        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "answered: {body}");
-        assert_eq!(json(&body)["error"], "desktop_unavailable");
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        let answer = json(&body);
+        assert_eq!(answer["desktop_available"], false);
+        assert_eq!(answer["schedules"], serde_json::json!([]));
         assert!(!body.contains(RAW_PROJECT));
         assert!(!body.contains(&host.root.to_string_lossy().to_string()));
         assert!(!body.contains("scheduleTargetId"));
+        assert!(!body.contains("eldrun-"));
+
+        // Editing still needs the window: the sidecar never writes the file.
+        let create = Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/tabs/{tab_id}/schedules"))
+            .header(header::ORIGIN, ORIGIN)
+            .header(header::COOKIE, cookie_pair(&cookie))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "enabled": true,
+                    "message": "Review",
+                    "rule": { "type": "daily", "time": "09:00" },
+                }))
+                .expect("body"),
+            ))
+            .expect("request");
+        let (status, _, body) = host.send(create).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "answered: {body}");
+        assert_eq!(json(&body)["error"], "desktop_unavailable");
+    }
+
+    /// Headless owner plan, H0: with no window open, the persisted-state kinds
+    /// — board, month, schedules, prompts, transcript — are answered off the
+    /// state dir with the desktop's own opaque ids, flagged
+    /// `desktop_available: false`; every write still needs the window.
+    #[tokio::test]
+    async fn persisted_state_is_answered_off_the_files_with_no_window() {
+        let host = Fixture::with_project();
+        let state_dir = host.state.config.state_dir.clone();
+        std::fs::write(
+            state_dir.join("sessions").join(RAW_PROJECT).join("terminals.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "tabLayout": [{
+                    "label": "Claude",
+                    "cmd": "claude",
+                    "cwd": host.root.to_string_lossy(),
+                    "kind": "agent",
+                    "sessionId": "9d0f-session",
+                    "scheduleTargetId": "tgt-1",
+                    "tmuxSession": format!("eldrun-{RAW_PROJECT}--agent-abcdef123"),
+                }]
+            }))
+            .expect("session fixture"),
+        )
+        .expect("write session");
+        std::fs::write(
+            state_dir.join("agent_tasks.json"),
+            serde_json::json!({
+                "version": 1,
+                "projects": { RAW_PROJECT: { "tgt-1": { "schedules": [
+                    { "id": "sched-1", "enabled": true, "message": "Nightly review", "preface": ["/clear"],
+                      "rule": { "type": "daily", "time": "09:00" } }
+                ] } } }
+            })
+            .to_string(),
+        )
+        .expect("tasks fixture");
+        std::fs::write(
+            state_dir.join("agent_prompts.json"),
+            serde_json::json!({
+                "version": 1,
+                "projects": { RAW_PROJECT: [
+                    { "id": "prompt-1", "message": "Write the intro", "created_at": "2026-07-01T09:00:00Z",
+                      "updated_at": "2026-07-01T09:00:00Z", "target": "tgt-1" }
+                ] }
+            })
+            .to_string(),
+        )
+        .expect("prompts fixture");
+        let calendar = state_dir.join("calendar.json");
+        let task = crate::commands::calendar::create_task_at(
+            &calendar,
+            crate::schema::calendar::CalendarTask {
+                title: "Ship it".into(),
+                project_id: RAW_PROJECT.into(),
+                ..Default::default()
+            },
+        )
+        .expect("task");
+        let event = crate::commands::calendar::create_event_at(
+            &calendar,
+            crate::schema::calendar::CalendarEvent {
+                title: "Defense".into(),
+                start: "2026-07-15T10:00".into(),
+                end: "2026-07-15T11:00".into(),
+                ..Default::default()
+            },
+        )
+        .expect("event");
+        let cookie = host.pair_device(&signing_key(31)).await.0;
+        let (_, _, projects_body) = host.send(get_as("/api/v1/projects", &cookie)).await;
+        let project_id = json(&projects_body)["projects"][0]["id"].as_str().expect("project id").to_string();
+        let (_, _, project_body) = host.send(get_as(&format!("/api/v1/projects/{project_id}"), &cookie)).await;
+        let tab_id = json(&project_body)["tabs"][0]["id"].as_str().expect("tab id").to_string();
+        let leaks = |body: &str| {
+            assert!(!body.contains(RAW_PROJECT), "raw project id leaked: {body}");
+            assert!(!body.contains(&task.id), "raw task id leaked: {body}");
+            assert!(!body.contains(&event.id), "raw event id leaked: {body}");
+            assert!(!body.contains("tgt-1"), "schedule target leaked: {body}");
+            assert!(!body.contains("eldrun-"), "tmux name leaked: {body}");
+            assert!(!body.contains(&host.root.to_string_lossy().to_string()), "path leaked: {body}");
+        };
+
+        let (status, _, body) = host.send(get_as("/api/v1/todo", &cookie)).await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        let board = json(&body);
+        assert_eq!(board["desktop_available"], false);
+        assert_eq!(board["board"]["tasks"][0]["title"], "Ship it");
+        assert_eq!(board["board"]["tasks"][0]["column"], "backlog");
+        assert_eq!(board["board"]["tasks"][0]["project_id"], project_id, "the project chip carries the catalog's id");
+        assert_eq!(board["board"]["projects"][0]["name"], "Aurora");
+        leaks(&body);
+
+        let (status, _, body) = host.send(get_as("/api/v1/calendar?month=2026-07", &cookie)).await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        let month = json(&body);
+        assert_eq!(month["desktop_available"], false);
+        assert_eq!(month["calendar"]["month"], "2026-07");
+        assert_eq!(month["calendar"]["events"][0]["title"], "Defense");
+        assert_eq!(month["calendar"]["events"][0]["start"], "2026-07-15T10:00");
+        leaks(&body);
+
+        let (status, _, body) = host.send(get_as(&format!("/api/v1/tabs/{tab_id}/schedules"), &cookie)).await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        let schedules = json(&body);
+        assert_eq!(schedules["desktop_available"], false);
+        assert_eq!(schedules["schedules"][0]["id"], "sched-1");
+        assert_eq!(schedules["schedules"][0]["message"], "Nightly review");
+        assert!(schedules["schedules"][0].get("preface").is_none(), "prefix commands stay desktop-side");
+        assert!(schedules["next_runs"]["sched-1"].as_str().is_some_and(|k| k.ends_with("T09:00")));
+        assert!(schedules["time_zone"].as_str().is_some_and(|z| !z.is_empty()));
+        leaks(&body);
+
+        let (status, _, body) = host.send(get_as(&format!("/api/v1/projects/{project_id}/prompts"), &cookie)).await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        let prompts = json(&body);
+        assert_eq!(prompts["desktop_available"], false);
+        assert_eq!(prompts["prompts"][0]["message"], "Write the intro");
+        assert!(prompts["prompts"][0].get("target").is_none(), "the target binding stays desktop-side");
+        leaks(&body);
+
+        let (status, _, body) = host.send(get_as(&format!("/api/v1/tabs/{tab_id}/transcript"), &cookie)).await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        let transcript = json(&body);
+        assert_eq!(transcript["desktop_available"], false);
+        assert_eq!(transcript["transcript"]["available"], false, "no such session on this machine");
+        leaks(&body);
+
+        // Writes are still the window's: the sidecar never touches the files.
+        let create = Request::builder()
+            .method("POST")
+            .uri("/api/v1/todo")
+            .header(header::ORIGIN, ORIGIN)
+            .header(header::COOKIE, cookie_pair(&cookie))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "type": "create",
+                    "task": { "title": "New", "priority": 0, "percent": 0, "column": "backlog",
+                              "calendar_id": board["board"]["calendars"][0]["id"] }
+                }))
+                .expect("body"),
+            ))
+            .expect("request");
+        let (status, _, body) = host.send(create).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "answered: {body}");
+        assert_eq!(json(&body)["error"], "desktop_unavailable");
+        assert_eq!(
+            crate::commands::calendar::read_data(&calendar).expect("calendar").tasks.len(),
+            1,
+            "nothing was written"
+        );
     }
 
     #[test]
@@ -4647,11 +4947,14 @@ mod tests {
             .expect("opaque tab id")
             .to_string();
 
+        // No window: the (empty) collection is answered off the file and
+        // flagged read-only; nothing raw crosses.
         let (status, _, body) = host
             .send(get_as(&format!("/api/v1/projects/{project_id}/prompts"), &cookie))
             .await;
-        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "answered: {body}");
-        assert_eq!(json(&body)["error"], "desktop_unavailable");
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(json(&body)["desktop_available"], false);
+        assert_eq!(json(&body)["prompts"], serde_json::json!([]));
         assert!(!body.contains(RAW_PROJECT));
 
         let (status, _, body) = host

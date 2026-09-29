@@ -201,12 +201,35 @@ pub fn list(project_id: &str, target_id: &str) -> Result<Vec<ScheduledAgentPromp
     if super::schedule_mcp::prune_proposals(&mut file, &chrono::Utc::now().to_rfc3339()) {
         write(&file)?;
     }
-    Ok(file
-        .projects
+    Ok(schedules_of(&file, project_id, target_id))
+}
+
+/// [`list`] for a process that must not write this file — the Mobile sidecar
+/// answering a phone with no window open reads `state_dir` and prunes expired
+/// proposals in memory only.
+pub fn list_at(
+    state_dir: &std::path::Path,
+    project_id: &str,
+    target_id: &str,
+) -> Result<Vec<ScheduledAgentPrompt>, String> {
+    validate_id("project id", project_id)?;
+    validate_id("schedule target id", target_id)?;
+    let path = state_dir.join(FILE_NAME);
+    let mut file: AgentTasksFile = if path.exists() {
+        storage::read_json(&path).map_err(|e| format!("read {FILE_NAME}: {e}"))?
+    } else {
+        AgentTasksFile::default()
+    };
+    super::schedule_mcp::prune_proposals(&mut file, &chrono::Utc::now().to_rfc3339());
+    Ok(schedules_of(&file, project_id, target_id))
+}
+
+fn schedules_of(file: &AgentTasksFile, project_id: &str, target_id: &str) -> Vec<ScheduledAgentPrompt> {
+    file.projects
         .get(project_id)
         .and_then(|project| project.get(target_id))
         .map(|target| target.schedules.clone())
-        .unwrap_or_default())
+        .unwrap_or_default()
 }
 
 /// Schedule MCP uses the same transaction lock for validation, quotas and writes.

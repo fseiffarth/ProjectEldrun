@@ -57,6 +57,8 @@ export const en = {
   "mobile.newTab.title": "New tab",
   "mobile.newTab.close": "Close",
   "mobile.newTab.untested": "Untested",
+  "mobile.headless.readOnly": "Read-only: the Eldrun window is closed, so this was read from its files. Editing needs the desktop.",
+  "mobile.todo.note": "Synced through the Eldrun desktop. While the window is closed the board is read-only.",
   "mobile.newTab.note": "Opens in Eldrun on your desktop; this phone connects to the tab.",
   "mobile.newTab.shell": "New shell",
   "mobile.newTab.noAgents": "No agents are configured on the desktop, so this project can open only a shell.",

@@ -10,6 +10,8 @@ import {
   type ProjectPromptList,
   type TabRow,
 } from "../api";
+import { useT } from "../../../src/lib/i18n";
+import { isUntested } from "../../../src/lib/untested";
 
 /** The project's collected prompts — text kept without a tab. Sending aims
  * one at an agent tab now (the desktop queues a one-time schedule at its own
@@ -21,6 +23,7 @@ export function PromptsSheet({ projectId, tabs, onClose, onSchedule }: {
   onClose: () => void;
   onSchedule: (tab: TabRow, message: string) => void;
 }) {
+  const t = useT();
   const agentTabs = tabs.filter((tab) => tab.kind === "agent" && tab.available);
   const [prompts, setPrompts] = useState<ProjectPrompt[]>([]);
   const [loading, setLoading] = useState(true);
@@ -35,7 +38,8 @@ export function PromptsSheet({ projectId, tabs, onClose, onSchedule }: {
 
   const apply = useCallback((value: ProjectPromptList) => {
     setPrompts(value.prompts ?? []);
-    setOffline(false);
+    // Listed off the host's files with no window open: shown, but read-only.
+    setOffline(value.desktop_available === false);
     setError("");
   }, []);
   const fail = useCallback((cause: unknown) => {
@@ -106,6 +110,7 @@ export function PromptsSheet({ projectId, tabs, onClose, onSchedule }: {
         : <p className="sheet-note">Open an agent tab to send or schedule a collected prompt.</p>}
       {notice && <p className="sheet-note" role="status">{notice}</p>}
       {error && <p className="sheet-note error" role="alert">{error}</p>}
+      {offline && !error && <p className="sheet-note" role="status">{t("mobile.headless.readOnly")} {isUntested("mobile.headless.prompts") && <span className="untested">{t("mobile.newTab.untested")}</span>}</p>}
       {loading ? <p className="sheet-note">Loading prompts…</p> : prompts.length === 0 ? <p className="sheet-note">No prompts collected yet.</p> : <div className="mobile-schedule-list">{prompts.map((prompt) => <article key={prompt.id}>
         <p>{prompt.message}</p>
         <div>

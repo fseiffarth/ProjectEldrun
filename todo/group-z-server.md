@@ -84,7 +84,7 @@ the desktop groundwork the hosted plan's P1 builds on.*
     silently, today, on one machine** — the board writes on every drag, from a
     second window as well. Add a per-record `rev` and make writes CAS. Worth
     doing on its own merits and a hard prerequisite for anything multi-writer.
-    - [ ] 🤖 Automated test — two interleaved read-modify-write sequences: the
+    - [x] 🤖 Automated test — two interleaved read-modify-write sequences: the
       second write is rejected and retried against fresh state rather than
       clobbering.
     - [ ] 🖐️ Manual test — two windows, same board, drag a card in each within a
@@ -105,7 +105,7 @@ the desktop groundwork the hosted plan's P1 builds on.*
     unplugged rather than shut down. **Must land before any Eldrun-authored JSON
     is ever written server-side**, and it is a two-line change worth making
     regardless.
-    - [ ] 🤖 Automated test — the write path calls `sync_all` on the temp file and
+    - [x] 🤖 Automated test — the write path calls `sync_all` on the temp file and
       on the parent directory handle before returning (assert via a seam, not by
       pulling the power).
     - [ ] 🖐️ Manual test — n/a beyond "nothing regressed"; correctness here is not
