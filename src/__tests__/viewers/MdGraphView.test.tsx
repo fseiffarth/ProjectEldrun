@@ -44,9 +44,13 @@ describe("MdGraphView navigation", () => {
     const svg = viewport.querySelector("svg")!;
     const initialTransform = svg.style.transform;
 
-    const wheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: -100, clientX: 250, clientY: 100 });
-    fireEvent(viewport, wheel);
-    expect(wheel.defaultPrevented).toBe(true);
+    // The label can land before the effect that attaches the wheel listener has
+    // run (a loaded CI runner showed it), so wheel until one is taken.
+    await waitFor(() => {
+      const wheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: -100, clientX: 250, clientY: 100 });
+      fireEvent(viewport, wheel);
+      expect(wheel.defaultPrevented).toBe(true);
+    });
     await waitFor(() => expect(svg.style.transform).not.toBe(initialTransform));
 
     fireEvent.mouseEnter(node, { clientX: 250, clientY: 100 });
