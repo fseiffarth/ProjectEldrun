@@ -23,9 +23,9 @@ fn parse<T: serde::de::DeserializeOwned>(json: &str) -> T {
 // ── Settings ───────────────────────────────────────────────────────────────
 
 #[test]
-fn settings_default_color_scheme_is_fancy_dark() {
+fn settings_default_color_scheme_is_plain_dark() {
     let s = Settings::default();
-    assert_eq!(s.color_scheme(), "fancy_dark");
+    assert_eq!(s.color_scheme(), "dark");
 }
 
 #[test]

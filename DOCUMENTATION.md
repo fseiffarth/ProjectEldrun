@@ -378,8 +378,8 @@ these sub-panels: **Global apps** (per-role commands, e.g. the browser for PDF l
 **Shortcuts**, **Git hosting** (provider tokens), **VPN auto-connect**, **Remote
 hosts**, **Archived projects**, **Scaffold repair**, and **Help**.
 
-Themes are `THEMES` in `src/types/index.ts` — Fancy Dark (the default), Plain
-Dark, Plain Light, Fancy Light, and Light Lavender.
+Themes are `THEMES` in `src/types/index.ts` — Fancy Dark, Plain Dark (the
+default), Plain Light, Fancy Light, and Light Lavender.
 
 **Experimental flags** (`src/lib/experimental.ts`) gate surfaces that are not
 finished: `mail_client`, `web_browser`, `deck_presenter`, `python_run_debug`,
@@ -1030,7 +1030,7 @@ remote git at all.
 - `default_agent_cmd` drives the default tab type and project terminal respawn.
   UI choices are `claude`, `codex`, `gemini`, `vibe`, plus any custom agent
   registered from "＋ Add agent…".
-- `color_scheme` supports `fancy_dark` (default), `dark`, `light`,
+- `color_scheme` supports `fancy_dark`, `dark` (default), `light`,
   `fancy_light`, `light_lavender`.
 - `global_apps` stores one entry per role with `exec` and `visible`; retired
   roles keep their entries but are filtered out of the bar.

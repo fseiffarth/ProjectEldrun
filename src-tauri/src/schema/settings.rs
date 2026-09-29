@@ -911,7 +911,7 @@ pub struct AlertSources {
 
 impl Settings {
     pub fn color_scheme(&self) -> &str {
-        self.color_scheme.as_deref().unwrap_or("fancy_dark")
+        self.color_scheme.as_deref().unwrap_or("dark")
     }
 
     /// Whether Claude agent tabs should be spawned with `--remote-control`.
@@ -1257,7 +1257,7 @@ mod default_rule_tests {
         assert!(absent.connections_headless());
         assert!(absent.agent_remote_control());
         assert!(absent.daily_stats_recap());
-        assert_eq!(absent.color_scheme(), "fancy_dark");
+        assert_eq!(absent.color_scheme(), "dark");
 
         let off: Settings = serde_json::from_str(
             r#"{"persist_local_sessions":false,"connections_headless":false,

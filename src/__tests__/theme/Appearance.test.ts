@@ -105,9 +105,9 @@ describe("system theme", () => {
     expect(resolveTheme("light_lavender")).toBe("light_lavender");
   });
 
-  it("resolves to fancy_dark when the OS preference is unreadable", () => {
+  it("resolves to the default (Plain Dark) when the OS preference is unreadable", () => {
     // jsdom has no matchMedia — the honest default is the app's default theme.
-    expect(resolveTheme("system")).toBe("fancy_dark");
+    expect(resolveTheme("system")).toBe("dark");
   });
 
   it("follows the OS light preference when readable", () => {
@@ -126,7 +126,7 @@ describe("system theme", () => {
 
   it("applyTheme never lets 'system' reach data-theme or the pre-paint cache", () => {
     applyTheme("system");
-    expect(document.documentElement.getAttribute("data-theme")).toBe("fancy_dark");
-    expect(localStorage.getItem("eldrun-theme")).toBe("fancy_dark");
+    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+    expect(localStorage.getItem("eldrun-theme")).toBe("dark");
   });
 });
