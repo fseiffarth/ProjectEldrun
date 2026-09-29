@@ -632,6 +632,10 @@ pub struct GitStatus {
     /// Commits the upstream has that the current branch lacks, as of the last
     /// fetch — the git bar's Pull button. `0` with no upstream.
     pub behind: usize,
+    /// A tag already names `HEAD` — the git bar hides Release, whose only
+    /// target is that commit. Probed only for a local repo with a remote (the
+    /// sole case the button shows); `false` otherwise.
+    pub head_tagged: bool,
 }
 
 #[tauri::command]
@@ -659,6 +663,7 @@ fn git_status_probe(project_dir: String, probe_remote: bool) -> Result<GitStatus
             has_remote: false,
             is_repo: false,
             behind: 0,
+            head_tagged: false,
         });
     }
 
@@ -700,6 +705,11 @@ fn git_status_probe(project_dir: String, probe_remote: bool) -> Result<GitStatus
         && run_git(target.as_ref(), &project_dir, &["remote"])
             .map(|o| !o.stdout.is_empty())
             .unwrap_or(false);
+    let head_tagged = has_remote
+        && target.is_none()
+        && run_git(None, &project_dir, &["tag", "--points-at", "HEAD"])
+            .map(|o| o.status.success() && !o.stdout.trim_ascii().is_empty())
+            .unwrap_or(false);
 
     Ok(GitStatus {
         staged,
@@ -708,6 +718,7 @@ fn git_status_probe(project_dir: String, probe_remote: bool) -> Result<GitStatus
         has_remote,
         is_repo: true,
         behind,
+        head_tagged,
     })
 }
 
@@ -3153,6 +3164,37 @@ mod tests {
         run(&["init"]);
         run(&["config", "user.email", "test@example.com"]);
         run(&["config", "user.name", "Test User"]);
+    }
+
+    #[test]
+    fn status_reports_a_tag_on_head_so_release_hides() {
+        if !git_available() {
+            eprintln!("git not on PATH — skipping status_reports_a_tag_on_head_so_release_hides");
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        init_repo(dir);
+        let run = |args: &[&str]| {
+            crate::paths::command_no_window("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git")
+        };
+        let probe = || git_status_probe(dir.to_string_lossy().into_owned(), true).expect("status");
+        fs::write(dir.join("f.txt"), "a\n").expect("write");
+        run(&["add", "f.txt"]);
+        run(&["commit", "-m", "one"]);
+        run(&["tag", "-a", "v0.1.0", "-m", "v0.1.0"]);
+        // No remote, no Release button: not probed.
+        assert!(!probe().head_tagged);
+        run(&["remote", "add", "origin", "https://git.example.org/owner/repo.git"]);
+        assert!(probe().head_tagged);
+        // A new commit past the tag is releasable again.
+        fs::write(dir.join("f.txt"), "b\n").expect("write");
+        run(&["commit", "-am", "two"]);
+        assert!(!probe().head_tagged);
     }
 
     // ── Anonymous visibility probe ───────────────────────────────────────────
