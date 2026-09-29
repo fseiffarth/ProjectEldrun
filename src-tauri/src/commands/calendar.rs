@@ -658,7 +658,7 @@ fn move_tasks_in(data: &mut CalendarData, moves: &[TaskPlacement]) -> Result<Vec
 /// clears their placement instead and lets `normalize` file them, which is the
 /// better default: a *completed* card then lands in Done rather than being dumped
 /// into the leftmost column with its checkbox still ticked.
-fn columns_set_at(
+pub(crate) fn columns_set_at(
     path: &Path,
     columns: Vec<TaskColumn>,
     fallback_column: Option<String>,
@@ -710,7 +710,7 @@ pub(crate) fn create_calendar_at(path: &Path, calendar: Calendar) -> Result<Cale
     stored_calendar(&data, &id)
 }
 
-fn update_calendar_at(path: &Path, calendar: Calendar) -> Result<Calendar, String> {
+pub(crate) fn update_calendar_at(path: &Path, calendar: Calendar) -> Result<Calendar, String> {
     let (_, data) = transact(path, |data| {
         let slot = data
             .calendars
@@ -736,7 +736,7 @@ fn stored_calendar(data: &CalendarData, id: &str) -> Result<Calendar, String> {
 /// matching what Thunderbird's "Remove calendar" does. Refusing to delete the last
 /// calendar keeps `normalize()`'s "at least one calendar" invariant meaningful
 /// (otherwise the next read would silently resurrect a default).
-fn delete_calendar_at(path: &Path, id: &str) -> Result<(), String> {
+pub(crate) fn delete_calendar_at(path: &Path, id: &str) -> Result<(), String> {
     transact(path, |data| {
         if data.calendars.len() <= 1 {
             return Err("cannot delete the last calendar".to_string());

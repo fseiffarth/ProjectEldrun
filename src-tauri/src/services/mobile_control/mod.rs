@@ -12,6 +12,7 @@ pub mod config;
 pub mod discovery;
 pub mod files;
 pub mod headless;
+pub mod headless_board;
 pub mod host;
 pub mod inbox;
 pub mod live_pwa;

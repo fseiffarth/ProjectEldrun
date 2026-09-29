@@ -259,6 +259,12 @@ pub trait Runner: Send + Sync {
     /// Type and submit each submission into `tmux`, in order, giving the pane
     /// time to act between them. Blocking.
     fn deliver(&self, tmux: &str, submissions: &[Submission]) -> Result<(), String>;
+    /// End the session under `tmux` and everything it ran (headless owner
+    /// plan, H3: the phone's close with no window). A session already gone is
+    /// the desired state, not an error. Blocking.
+    fn kill(&self, _tmux: &str) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// The production runner: the tmux server the window's and the sidecar's
@@ -366,6 +372,36 @@ impl Runner for TmuxRunner {
             }
         }
         Ok(())
+    }
+
+    /// The window's close of a local tab, done by the owner: the pane's
+    /// process subtree is walked **before** the session ends (once the leader
+    /// dies its children reparent and the tree is unreachable —
+    /// `terminal::reap_child_subtree`), then `kill-session`, then the
+    /// launcher script the session may have been started from is dropped.
+    fn kill(&self, tmux: &str) -> Result<(), String> {
+        if cfg!(windows) {
+            return Ok(());
+        }
+        let target = target_of(tmux);
+        let pane_pid = self
+            .tmux(&["display-message", "-p", "-t", &target, "#{pane_pid}"])
+            .ok()
+            .filter(|out| out.status.success())
+            .and_then(|out| String::from_utf8_lossy(&out.stdout).trim().parse::<u32>().ok());
+        if let Some(pid) = pane_pid {
+            crate::terminal::reap_child_subtree(pid, crate::terminal::ReapMode::Graceful);
+        }
+        let out = self.tmux(&["kill-session", "-t", &format!("={tmux}")])?;
+        crate::services::tmux_local::remove_launcher(tmux);
+        if out.status.success() {
+            return Ok(());
+        }
+        let detail = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        if crate::services::tmux_local::kill_failure_is_already_gone(&detail) {
+            return Ok(());
+        }
+        Err(format!("tmux kill-session: {detail}"))
     }
 }
 
@@ -1031,5 +1067,47 @@ mod tests {
         let message = typed.find("hello\nworld\n").expect("the message with its newline, submitted");
         assert!(model < message, "prefix first: {typed:?}");
         assert!(!runner.paste_file.exists(), "the staged submission is removed");
+    }
+
+    /// H3: the owner's close ends the tab's session on the server and the
+    /// process it ran; a second kill of a session already gone is fine.
+    #[cfg(unix)]
+    #[test]
+    fn a_kill_ends_the_session_and_its_process_on_a_private_socket() {
+        if !crate::services::tmux_local::tmux_available() {
+            return;
+        }
+        let socket = format!("eldrun-test-h3-{}", std::process::id());
+        let session = "eldrun-p--shell-h3";
+        let dir = tempfile::tempdir().unwrap();
+        let tmux = |args: &[&str]| {
+            std::process::Command::new("tmux")
+                .args(["-L", &socket, "-f", "/dev/null"])
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        let started = tmux(&["new-session", "-d", "-x", "80", "-y", "24", "-s", session, "sleep 300"]);
+        assert!(started.status.success(), "{}", String::from_utf8_lossy(&started.stderr));
+        let pid = tmux(&["display-message", "-p", "-t", &format!("={session}:"), "#{pane_pid}"]);
+        let pid: u32 = String::from_utf8_lossy(&pid.stdout).trim().parse().expect("pane pid");
+        let runner = TmuxRunner::new(dir.path(), Some(socket.clone()));
+        assert!(runner.probe(session).is_some());
+        let killed = runner.kill(session);
+        let again = runner.kill(session);
+        let mut alive = true;
+        for _ in 0..50 {
+            alive = std::path::Path::new(&format!("/proc/{pid}")).exists()
+                && std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| !s.contains(") Z "));
+            if !alive {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let _ = tmux(&["kill-server"]);
+        killed.unwrap();
+        again.unwrap();
+        assert!(runner.probe(session).is_none(), "the session is gone");
+        assert!(!alive, "the pane's process was reaped");
     }
 }

@@ -743,6 +743,47 @@ pub fn upsert(
     Ok(result)
 }
 
+/// [`upsert`] on `state_dir`'s file by a process that shares it (the Mobile
+/// sidecar editing a phone's collected prompt with no window open, headless
+/// owner plan H3), under the file's lock alone.
+pub fn upsert_at(
+    state_dir: &std::path::Path,
+    project_id: &str,
+    input: ProjectAgentPromptInput,
+) -> Result<Vec<ProjectAgentPrompt>, String> {
+    validate_id("project id", project_id)?;
+    let input = validate_input(input)?;
+    let path = file_path(state_dir);
+    let _lock = storage::FileLock::exclusive(&path).ok();
+    let mut file = read_at(&path)?;
+    let result = apply_upsert(&mut file, project_id, input, &storage::iso_now())?;
+    write_at(&path, &file)?;
+    Ok(result)
+}
+
+/// [`archive`] on `state_dir`'s file by a process that shares it (the
+/// sidecar's send-now with no window open), under the file's lock alone.
+/// The live session and the repo head are still read where the process's
+/// own state dir says (the sidecar's is the same one).
+pub fn archive_at(
+    state_dir: &std::path::Path,
+    project_id: &str,
+    prompt_id: &str,
+    input: SentAgentPromptInput,
+) -> Result<Vec<ProjectAgentPrompt>, String> {
+    validate_id("project id", project_id)?;
+    validate_id("prompt id", prompt_id)?;
+    let input = validate_sent(input)?;
+    let (input, roll) = resolve_live_session(project_id, input);
+    let head = prompt_blame::head(project_id);
+    let path = file_path(state_dir);
+    let _lock = storage::FileLock::exclusive(&path).ok();
+    let mut file = read_at(&path)?;
+    apply_archive(&mut file, project_id, prompt_id, &input, head.as_ref(), roll.as_deref(), &storage::iso_now());
+    write_at(&path, &file)?;
+    Ok(file.projects.get(project_id).cloned().unwrap_or_default())
+}
+
 pub fn delete(project_id: &str, prompt_id: &str) -> Result<Vec<ProjectAgentPrompt>, String> {
     validate_id("project id", project_id)?;
     validate_id("prompt id", prompt_id)?;

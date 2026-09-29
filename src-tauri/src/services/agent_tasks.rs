@@ -12,7 +12,7 @@ use crate::{
 };
 
 const FILE_NAME: &str = "agent_tasks.json";
-const MAX_SCHEDULES: usize = 32;
+pub(crate) const MAX_SCHEDULES: usize = 32;
 pub const MAX_MESSAGE_BYTES: usize = 16 * 1024;
 /// A preface is a short list of the agent's own slash commands, not a second
 /// message channel: each entry is one line, must be a command, and there are
@@ -390,6 +390,30 @@ pub fn upsert(
     let mut file = read()?;
     let result = apply_upsert(&mut file, project_id, target_id, prompt, expect_existing_on)?;
     write(&file)?;
+    Ok(result)
+}
+
+/// [`upsert`] on `path` by a process that shares the file — the Mobile
+/// sidecar writing a phone's schedule with no window open (headless owner
+/// plan, H3) — under the file's lock alone.
+pub fn upsert_in(
+    path: &std::path::Path,
+    project_id: &str,
+    target_id: &str,
+    mut prompt: ScheduledAgentPrompt,
+    expect_existing_on: Option<&str>,
+) -> Result<Vec<ScheduledAgentPrompt>, String> {
+    validate_id("project id", project_id)?;
+    validate_id("schedule target id", target_id)?;
+    if let Some(source) = expect_existing_on {
+        validate_id("schedule target id", source)?;
+    }
+    prompt.last = None;
+    let prompt = validate_prompt(prompt)?;
+    let _lock = file_lock(path);
+    let mut file = read_at(path)?;
+    let result = apply_upsert(&mut file, project_id, target_id, prompt, expect_existing_on)?;
+    write_at(path, &file)?;
     Ok(result)
 }
 

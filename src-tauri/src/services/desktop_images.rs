@@ -70,6 +70,32 @@ impl ImageFolder {
     }
 }
 
+/// The platform's screenshot and picture folders plus Eldrun's own screenshot
+/// staging area under `state_dir`, where a shot taken through the Screenshot
+/// app waits for its filing answer. Linux honours `user-dirs.dirs`, so a
+/// localized `~/Bilder` is found. Shared by the desktop command and the
+/// Mobile sidecar's answer with no window (headless owner plan, H3).
+pub fn default_folders(state_dir: &Path) -> Vec<ImageFolder> {
+    let home = crate::paths::home_dir();
+    let user_dirs = if cfg!(target_os = "linux") {
+        let config = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .unwrap_or_else(|| home.join(".config"));
+        fs::read_to_string(config.join("user-dirs.dirs"))
+            .map(|text| parse_user_dirs(&text, &home))
+            .unwrap_or_default()
+    } else {
+        HashMap::new()
+    };
+    let mut folders = image_folders(crate::paths::OsKind::current(), &home, &user_dirs);
+    folders.push(ImageFolder {
+        label: "Eldrun screenshots".into(),
+        path: state_dir.join("screenshots-pending"),
+    });
+    folders
+}
+
 /// The `XDG_*_DIR` lines of `user-dirs.dirs`, `$HOME` expanded. Only the
 /// `"$HOME/…"` and absolute forms the spec allows; anything else is skipped.
 pub fn parse_user_dirs(text: &str, home: &Path) -> HashMap<String, PathBuf> {

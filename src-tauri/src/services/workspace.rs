@@ -567,6 +567,167 @@ pub fn create_tab_in(path: &Path, scope: &str, tab: TabEntry, request_hash: Opti
     }
 }
 
+// ── The phone's tab operations (headless owner plan, H3) ────────────────────
+//
+// What the sidecar applies to the file when no window is open to apply it
+// to a store: named by tmux session, as every mobile tab request is. Each is
+// one [`edit_in`], so the version moves and a client holding the old copy
+// merges rather than overwrites (`updatedVersion`).
+
+/// What a tab operation is told when the tab is not in the set.
+pub const TAB_NOT_FOUND: &str = "tab_not_found";
+/// `TerminalSession.extra`: the agent tabs closed with no window open, newest
+/// first, for the phone's "Recently closed" row and a headless reopen
+/// (`[{ id, closedAt, tab }]`, at most [`MAX_CLOSED_TABS`]). The window keeps
+/// its own closed list in memory; this is the owner's.
+pub const CLOSED_TABS_KEY: &str = "workspaceClosedTabs";
+/// Closed agent tabs kept per scope — the window keeps ten too.
+const MAX_CLOSED_TABS: usize = 10;
+
+/// One closed agent tab as the owner remembers it for a reopen: an opaque id
+/// minted at close (never the session id), when it closed (ms since the
+/// epoch), and the record itself.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClosedTab {
+    pub id: String,
+    pub closed_at: u64,
+    pub tab: TabEntry,
+}
+
+/// The scope's owner-closed agent tabs, newest first.
+pub fn closed_tabs(session: &TerminalSession) -> Vec<ClosedTab> {
+    session
+        .extra
+        .get(CLOSED_TABS_KEY)
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default()
+}
+
+fn set_closed_tabs(session: &mut TerminalSession, closed: Vec<ClosedTab>) {
+    if closed.is_empty() {
+        session.extra.remove(CLOSED_TABS_KEY);
+    } else {
+        session.extra.insert(CLOSED_TABS_KEY.to_string(), serde_json::to_value(closed).unwrap_or(Value::Null));
+    }
+}
+
+/// The opaque id a closed tab is reopened by: 32 hex characters, never the
+/// session id (the phone echoes it back, bounded by the host's id check).
+fn closed_id() -> String {
+    let mut bytes = [0u8; 16];
+    let _ = getrandom::fill(&mut bytes);
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn edit_tab_in(
+    path: &Path,
+    scope: &str,
+    tmux: &str,
+    edit: impl FnOnce(&mut TerminalSession, usize) -> Result<(), String>,
+) -> Result<TerminalSession, String> {
+    edit_in(path, scope, |session| {
+        let index = session
+            .tab_layout
+            .iter()
+            .position(|t| tmux_of(t) == Some(tmux))
+            .ok_or_else(|| TAB_NOT_FOUND.to_string())?;
+        edit(session, index)
+    })
+}
+
+/// Rename the tab behind `tmux`. `label` is already cleaned by the caller.
+pub fn rename_tab_in(path: &Path, scope: &str, tmux: &str, label: &str) -> Result<TerminalSession, String> {
+    edit_tab_in(path, scope, tmux, |session, i| {
+        session.tab_layout[i].label = label.to_string();
+        Ok(())
+    })
+}
+
+/// Colour the tab behind `tmux` with a palette id, or clear it with `None`.
+pub fn color_tab_in(path: &Path, scope: &str, tmux: &str, color: Option<&str>) -> Result<TerminalSession, String> {
+    edit_tab_in(path, scope, tmux, |session, i| {
+        match color {
+            Some(color) => {
+                session.tab_layout[i].extra.insert("color".to_string(), Value::String(color.to_string()));
+            }
+            None => {
+                session.tab_layout[i].extra.remove("color");
+            }
+        }
+        Ok(())
+    })
+}
+
+/// Move the tab behind `tmux` next to the one behind `anchor`, before or
+/// after it. A refused move (no anchor) changes nothing.
+pub fn reorder_tab_in(path: &Path, scope: &str, tmux: &str, anchor: &str, after: bool) -> Result<TerminalSession, String> {
+    edit_tab_in(path, scope, tmux, |session, i| {
+        let tab = session.tab_layout.remove(i);
+        let at = session
+            .tab_layout
+            .iter()
+            .position(|t| tmux_of(t) == Some(anchor))
+            .ok_or_else(|| TAB_NOT_FOUND.to_string())?;
+        session.tab_layout.insert(if after { at + 1 } else { at }, tab);
+        Ok(())
+    })
+}
+
+/// Take the tab behind `tmux` out of the set and hand it back, so the caller
+/// can end the session behind it (the desktop's own × ends a local session
+/// the tab minted). An agent tab joins the scope's closed list, under a fresh
+/// opaque id, for a reopen. `now_ms` is the close stamp.
+pub fn close_tab_in(path: &Path, scope: &str, tmux: &str, now_ms: u64) -> Result<TabEntry, String> {
+    let mut removed: Option<TabEntry> = None;
+    edit_tab_in(path, scope, tmux, |session, i| {
+        let tab = session.tab_layout.remove(i);
+        if matches!(kind_of(&tab), "agent" | "local_agent") {
+            let mut closed = closed_tabs(session);
+            closed.insert(0, ClosedTab { id: closed_id(), closed_at: now_ms, tab: tab.clone() });
+            closed.truncate(MAX_CLOSED_TABS);
+            set_closed_tabs(session, closed);
+        }
+        removed = Some(tab);
+        Ok(())
+    })?;
+    removed.ok_or_else(|| TAB_NOT_FOUND.to_string())
+}
+
+/// Put a closed agent tab back — the newest, or the one `closed_id` names —
+/// at the end of the set, as a **new** tab: a fresh id (the old one is
+/// tombstoned, and a window whose base predates the close would otherwise
+/// read its own stale snapshot as closing it again) and a fresh tmux name
+/// (the close ended the old session). `Ok(None)` when there is nothing to
+/// reopen. The record keeps its `sessionId`, so the launch resumes the
+/// conversation.
+pub fn reopen_tab_in(path: &Path, scope: &str, closed_id: Option<&str>) -> Result<Option<TabEntry>, String> {
+    const NOTHING: &str = "\u{0}nothing";
+    let stored = edit_in(path, scope, |session| {
+        let mut closed = closed_tabs(session);
+        let index = match closed_id {
+            Some(id) => closed.iter().position(|c| c.id == id),
+            None => (!closed.is_empty()).then_some(0),
+        };
+        let Some(index) = index else {
+            return Err(NOTHING.to_string());
+        };
+        let mut tab = closed.remove(index).tab;
+        set_closed_tabs(session, closed);
+        for key in [TAB_ID_KEY, TAB_CREATED_KEY, TAB_UPDATED_KEY, TMUX_SESSION_KEY, "mobileRequestHash"] {
+            tab.extra.remove(key);
+        }
+        tab.key = format!("headless-{}", crate::commands::projects::uuid_v4());
+        session.tab_layout.push(tab);
+        Ok(())
+    });
+    match stored {
+        Err(e) if e == NOTHING => Ok(None),
+        Err(e) => Err(e),
+        Ok(stored) => Ok(stored.tab_layout.last().cloned()),
+    }
+}
+
 /// Bump the version of a session held as raw JSON (the path rewrite keeps
 /// fields this build does not model). A no-op for an unversioned file.
 pub fn bump_raw_version(session: &mut Value) {
@@ -905,6 +1066,76 @@ mod tests {
         let out = sync_in(&path, "p", client(seeded.version, seeded.tabs.clone())).unwrap();
         assert!(out.stale);
         assert_eq!(labels(&out.tabs), ["A", "Claude"]);
+    }
+
+    /// H3: the phone's tab edits with no window open land through the
+    /// per-tab operations — rename, colour, reorder, close — each one an
+    /// `edit_in`, so a window's stale copy merges rather than overwrites; a
+    /// closed agent tab is remembered for a reopen, which comes back as a
+    /// new tab (fresh id and tmux name, same session id) at the end.
+    #[test]
+    fn phone_tab_operations_land_in_the_file_and_a_closed_agent_tab_reopens() {
+        let (_dir, path) = file();
+        let mut agent = pty_tab("b", "Claude", "eldrun-p--agent-2");
+        agent.extra.insert("kind".into(), Value::String("agent".into()));
+        agent.session_id = Some("uid-1".into());
+        agent.extra.insert("scheduleTargetId".into(), Value::String("target-1".into()));
+        let seeded = sync_in(&path, "p", client(0, vec![pty_tab("a", "A", "eldrun-p--shell-1"), agent, pty_tab("c", "C", "eldrun-p--shell-3")])).unwrap();
+        let base = seeded.version;
+
+        let stored = rename_tab_in(&path, "p", "eldrun-p--shell-1", "From the phone").unwrap();
+        assert_eq!(stored.tab_layout[0].label, "From the phone");
+        assert_eq!(rename_tab_in(&path, "p", "nope", "x").unwrap_err(), TAB_NOT_FOUND);
+        let stored = color_tab_in(&path, "p", "eldrun-p--shell-1", Some("teal")).unwrap();
+        assert_eq!(stored.tab_layout[0].extra["color"], "teal");
+        let stored = color_tab_in(&path, "p", "eldrun-p--shell-1", None).unwrap();
+        assert!(!stored.tab_layout[0].extra.contains_key("color"));
+        let stored = reorder_tab_in(&path, "p", "eldrun-p--shell-3", "eldrun-p--shell-1", false).unwrap();
+        assert_eq!(labels(&stored.tab_layout), ["C", "From the phone", "Claude"]);
+        let stored = reorder_tab_in(&path, "p", "eldrun-p--shell-3", "eldrun-p--agent-2", true).unwrap();
+        assert_eq!(labels(&stored.tab_layout), ["From the phone", "Claude", "C"]);
+        assert_eq!(reorder_tab_in(&path, "p", "eldrun-p--shell-3", "nope", true).unwrap_err(), TAB_NOT_FOUND);
+        assert_eq!(labels(&read_session(&path).unwrap().tab_layout), ["From the phone", "Claude", "C"], "a refused move changes nothing");
+
+        // Closing hands the record back (the caller ends its session); a shell
+        // is forgotten, an agent tab is kept for a reopen.
+        let shell = close_tab_in(&path, "p", "eldrun-p--shell-3", 1_000).unwrap();
+        assert_eq!(shell.label, "C");
+        assert!(closed_tabs(&read_session(&path).unwrap()).is_empty());
+        let closed = close_tab_in(&path, "p", "eldrun-p--agent-2", 2_000).unwrap();
+        assert_eq!(closed.label, "Claude");
+        let stored = read_session(&path).unwrap();
+        assert_eq!(labels(&stored.tab_layout), ["From the phone"]);
+        let remembered = closed_tabs(&stored);
+        assert_eq!(remembered.len(), 1);
+        assert_eq!(remembered[0].closed_at, 2_000);
+        assert_eq!(remembered[0].tab.label, "Claude");
+        assert_ne!(remembered[0].id, "uid-1", "the closed id is never the session id");
+        assert_eq!(close_tab_in(&path, "p", "eldrun-p--agent-2", 3_000).unwrap_err(), TAB_NOT_FOUND);
+
+        // The window's stale snapshot neither resurrects the closed tabs nor
+        // undoes the rename.
+        let out = sync_in(&path, "p", client(base, seeded.tabs.clone())).unwrap();
+        assert_eq!(labels(&out.tabs), ["From the phone"]);
+
+        // Reopening by an unknown id is nothing; the newest comes back as a
+        // new tab with a fresh id, a fresh tmux name and its session id.
+        assert!(reopen_tab_in(&path, "p", Some("not-a-closed-id")).unwrap().is_none());
+        let reopened = reopen_tab_in(&path, "p", None).unwrap().expect("reopened");
+        assert_eq!(reopened.label, "Claude");
+        assert_eq!(reopened.session_id.as_deref(), Some("uid-1"));
+        assert_eq!(reopened.extra["scheduleTargetId"], "target-1", "its schedules follow it");
+        assert_ne!(tmux_of(&reopened), Some("eldrun-p--agent-2"));
+        assert!(tmux_of(&reopened).unwrap().starts_with("eldrun-p--agent-"));
+        assert_ne!(tab_id(&reopened), tab_id(&closed));
+        let stored = read_session(&path).unwrap();
+        assert_eq!(labels(&stored.tab_layout), ["From the phone", "Claude"]);
+        assert!(closed_tabs(&stored).is_empty());
+        assert!(reopen_tab_in(&path, "p", None).unwrap().is_none());
+        // A window whose base predates the close keeps the reopened tab: it is
+        // a create after its base, not a close it knew of.
+        let out = sync_in(&path, "p", client(out.version, out.tabs.clone())).unwrap();
+        assert_eq!(labels(&out.tabs), ["From the phone", "Claude"]);
     }
 
     #[test]

@@ -1019,6 +1019,19 @@ pub enum DesktopRequest {
         project_id: String,
         image_id: String,
     },
+    /// The owner wrote a slice with no window answering (headless owner
+    /// plan, H3) and a window is open after all: re-read it. `slices` names
+    /// what moved — `workspace` (the scope's tab set; `project_id` is the raw
+    /// scope id), `projects` (the registry), `calendar` (the board and the
+    /// month), `schedules`, `prompts`. Answered `Seen`; never awaited by the
+    /// phone.
+    Refresh {
+        request_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project_id: Option<String>,
+        #[serde(default)]
+        slices: Vec<String>,
+    },
 }
 
 impl DesktopRequest {
@@ -1057,7 +1070,8 @@ impl DesktopRequest {
             | Self::AgentStatus { request_id, .. }
             | Self::AgentTranscript { request_id, .. }
             | Self::DesktopImages { request_id, .. }
-            | Self::AttachDesktopImage { request_id, .. } => request_id,
+            | Self::AttachDesktopImage { request_id, .. }
+            | Self::Refresh { request_id, .. } => request_id,
         }
     }
 

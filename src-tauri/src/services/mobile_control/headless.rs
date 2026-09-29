@@ -28,10 +28,10 @@ use super::discovery::{key_id, ResolvedProject, ResolvedTab, ScopeKind};
 use super::protocol::{
     AgentCatalogEntry, AgentTabPrompt, AgentTabPrompts, AgentTabSchedules, AgentTabStatus,
     AgentTabTiming, CreateTabKind, CreateTabRequest, MobileCalendarEvent, MobileCalendarInfo,
-    MobileCalendarSnapshot, TodoBoardSnapshot, TodoCalendar, TodoCard, TodoColumn, TodoProject,
-    TodoSubtask,
+    MobileCalendarSnapshot, PromptMutation, ScheduleMutation, TodoBoardSnapshot, TodoCalendar,
+    TodoCard, TodoColumn, TodoProject, TodoSubtask,
 };
-use crate::schema::agent_prompts::ProjectAgentPrompt;
+use crate::schema::agent_prompts::{ProjectAgentPrompt, ProjectAgentPromptInput, RecordedAgentPromptInput, SentAgentPromptInput};
 use crate::schema::agent_tasks::{AgentScheduleRule, ScheduledAgentPrompt};
 use crate::schema::calendar::{Calendar, CalendarData};
 use crate::schema::project::TabEntry;
@@ -145,7 +145,7 @@ pub fn todo_board(state_dir: &Path, host_key: &[u8], today: &str) -> Result<Todo
 /// Every registered project's `(id, name)`, in registry order — what the
 /// board's project chips resolve against. Tolerant of any registry shape:
 /// an entry without both strings is simply not offered.
-fn project_names(state_dir: &Path) -> Vec<(String, String)> {
+pub(super) fn project_names(state_dir: &Path) -> Vec<(String, String)> {
     let Ok(bytes) = std::fs::read(state_dir.join("projects.json")) else {
         return Vec::new();
     };
@@ -434,6 +434,16 @@ pub fn turn_readings(state_dir: &Path, project_id: &str, tabs: &[ResolvedTab]) -
                     model: model.clone(),
                     working_at: ms(at),
                     done_at: None,
+                });
+            }
+            // A finished turn the phone already watched (`mark_seen`, H3) is a
+            // read one: it keeps its timing and its model, not its status.
+            Some((TurnState::Done, at)) if seen_at(state_dir, uid).is_some_and(|seen| at.unwrap_or(0) <= seen) => {
+                readings.timings.push(AgentTabTiming {
+                    tmux_session: tab.tmux_name.clone(),
+                    model: model.clone(),
+                    working_at: None,
+                    done_at: ms(at),
                 });
             }
             Some((TurnState::Done, at)) => readings.statuses.push(AgentTabStatus {
@@ -755,6 +765,456 @@ pub async fn create_tab(
         return Err(CreateRefusal::LaunchFailed(reason));
     }
     Ok(HeadlessCreated { tmux_session, existed: false })
+}
+
+// ── The remaining tab requests (headless owner plan, H3) ────────────────────
+
+/// The scope's owner-closed agent tabs as the catalog's `closed` rows: the
+/// opaque id minted at close, the label, the agent and the close stamp.
+pub fn closed_tabs(state_dir: &Path, raw_id: &str) -> Vec<super::protocol::ClosedAgentTab> {
+    let path = session_file(state_dir, raw_id);
+    // project-tree-read: ok — the state-dir session file, keyed by scope id.
+    let Ok(session) = storage::read_json::<crate::schema::session::TerminalSession>(&path) else {
+        return Vec::new();
+    };
+    crate::services::workspace::closed_tabs(&session)
+        .into_iter()
+        .map(|closed| super::protocol::ClosedAgentTab {
+            id: closed.id,
+            label: closed.tab.label,
+            agent: closed.tab.cmd,
+            closed_at: closed.closed_at,
+        })
+        .collect()
+}
+
+/// `RESUMABLE_AGENTS` (`stores/tabs.ts`): the launch args that bring a
+/// resumable agent tab's conversation back. Claude's `--resume <launch id>`
+/// is upgraded to the live id by `launch_prep` as at every restart; Codex
+/// resolves its own from `ELDRUN_TAB_UID`; the rest continue their latest.
+pub(super) fn resume_args(cmd: &str, session_id: &str) -> Vec<String> {
+    match cmd {
+        "claude" => vec!["--resume".into(), session_id.into()],
+        "codex" => Vec::new(),
+        "qwen" | "opencode" | "copilot" | "cursor-agent" | "grok" | "agy" | "vibe" => vec!["--continue".into()],
+        "droid" => vec!["--resume".into()],
+        "gemini" => vec!["--resume".into(), "latest".into()],
+        _ => Vec::new(),
+    }
+}
+
+/// `ReopenTab` with no window: the closed record comes back as a new tab
+/// (`workspace::reopen_tab_in` — fresh id and tmux name, same session id)
+/// on the resume args a restart would give it, started detached through
+/// `launch`; a launch that fails takes it back out, as the create does.
+/// `Ok(None)` when the scope has nothing to reopen.
+pub async fn reopen_tab(
+    state_dir: &Path,
+    project: &ResolvedProject,
+    closed_id: Option<&str>,
+    launch: &HeadlessLaunch,
+) -> Result<Option<HeadlessCreated>, CreateRefusal> {
+    if project.public.kind == ScopeKind::Root {
+        return Err(CreateRefusal::DesktopUnavailable);
+    }
+    let path = session_file(state_dir, &project.raw_id);
+    let Some(mut tab) = crate::services::workspace::reopen_tab_in(&path, &project.raw_id, closed_id).map_err(CreateRefusal::Persist)?
+    else {
+        return Ok(None);
+    };
+    if let Some(uid) = tab.session_id.as_deref().filter(|id| !id.is_empty()) {
+        tab.extra.insert("args".into(), json!(resume_args(&tab.cmd, uid)));
+    }
+    let tmux_session = crate::services::workspace::tmux_of(&tab)
+        .ok_or_else(|| CreateRefusal::Persist("the owner minted no tmux name".to_string()))?
+        .to_string();
+    if let Err(reason) = launch(launch_options(&project.raw_id, &tab)).await {
+        let id = crate::services::workspace::tab_id(&tab).map(str::to_string);
+        let _ = crate::services::workspace::edit_in(&path, &project.raw_id, |session| {
+            // project-tree-read: ok — the state-dir session file the owner just wrote, keyed by scope id.
+            session.tab_layout.retain(|tab| crate::services::workspace::tab_id(tab) != id.as_deref());
+            Ok(())
+        });
+        return Err(CreateRefusal::LaunchFailed(reason));
+    }
+    Ok(Some(HeadlessCreated { tmux_session, existed: false }))
+}
+
+/// `Activate` with no window: the registry entry's `status` becomes
+/// `active` under the file's lock (`storage::patch_json`), so the next
+/// window restores the project open. Boxes and the root console have no
+/// such status.
+pub fn activate(state_dir: &Path, raw_id: &str) -> Result<(), String> {
+    let path = state_dir.join("projects.json");
+    storage::patch_json(&path, Vec::<serde_json::Value>::new(), |list| {
+        let entry = list
+            .iter_mut()
+            .find(|row| row.get("id").and_then(serde_json::Value::as_str) == Some(raw_id))
+            .ok_or_else(|| "project_not_found".to_string())?;
+        if let Some(obj) = entry.as_object_mut() {
+            obj.insert("status".into(), json!("active"));
+        }
+        Ok(())
+    })
+    .map(|_| ())
+}
+
+/// `TabSeen` with no window: when the phone last had the tab on screen,
+/// stamped per session uid at `<state_dir>/mobile-control/seen/<uid>` (epoch
+/// seconds). A turn that finished at or before the stamp is not reported
+/// `done` again by the headless readings — the desktop's `clearAttention`,
+/// remembered on disk since the sidecar answers from files.
+pub fn mark_seen(state_dir: &Path, uid: &str, now_secs: u64) {
+    if uid.is_empty() || uid.chars().any(|c| !(c.is_ascii_alphanumeric() || c == '-')) {
+        return;
+    }
+    let dir = state_dir.join("mobile-control").join("seen");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let _ = std::fs::write(dir.join(uid), now_secs.to_string());
+}
+
+/// `isSessionCommand` (`lib/agents/prompt/chart.ts`): a lone slash command,
+/// or `/rename` / `/model` with arguments — the CLI's, not a prompt, and
+/// never recorded as one.
+pub fn is_session_command(prompt: &str) -> bool {
+    let mut words = prompt.split_whitespace();
+    let Some(head) = words.next() else {
+        return false;
+    };
+    let head = head.to_ascii_lowercase();
+    let shaped = head.len() > 1
+        && head.starts_with('/')
+        && head[1..].chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | ':' | '-'));
+    if !shaped {
+        return false;
+    }
+    words.next().is_none() || matches!(head.as_str(), "/rename" | "/model")
+}
+
+/// `TabPrompt` with no window: the phone's composer sent `message` to the
+/// tab through the sidecar's own tmux client; the words are recorded on the
+/// project's prompt history as delivered, the way the desktop records them
+/// (`recordTabPrompt`). A session command is not a prompt and is not
+/// recorded. `Ok(false)` when nothing was recorded.
+pub fn record_prompt(state_dir: &Path, project_id: &str, tab: &ResolvedTab, message: &str) -> Result<bool, String> {
+    let text = message.trim();
+    if text.is_empty() || is_session_command(text) {
+        return Ok(false);
+    }
+    agent_prompts::record_at(
+        state_dir,
+        project_id,
+        RecordedAgentPromptInput {
+            id: crate::commands::projects::uuid_v4(),
+            message: text.to_string(),
+            created_at: None,
+            sent: SentAgentPromptInput {
+                schedule_origin: None,
+                tab_label: tab.public.label.clone(),
+                session_id: tab.session_id.clone(),
+                tab_id: None,
+                preface: Vec::new(),
+                agent: Some(tab.cmd.clone()),
+                result: Some("delivered".to_string()),
+                scheduled_for: None,
+                sent_at: None,
+            },
+        },
+    )
+    .map(|_| true)
+}
+
+/// What a headless undo answered (`undoAgentClear`'s results).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UndoOutcome {
+    Undone,
+    NothingToUndo,
+    /// The tab's session is not there to type into.
+    TabNotReady,
+}
+
+/// `UndoClear` with no window, given the plan `agent_session::undo_clear_plan`
+/// made: Claude's `/resume <id>` is typed into the running session through
+/// the tmux runner (the composer reset, the paste, Enter — one submission,
+/// never bracketed); a relaunch ends the session and starts the tab again
+/// on its resume args, which its record now resolves to the cleared
+/// conversation. Blocking on the runner; the caller runs it off-thread.
+pub async fn apply_undo_plan(
+    state_dir: &Path,
+    project: &ResolvedProject,
+    tab: &ResolvedTab,
+    plan: Option<agent_session::UndoClearPlan>,
+    runner: Arc<dyn super::scheduler::Runner>,
+    launch: &HeadlessLaunch,
+) -> Result<UndoOutcome, String> {
+    let Some(plan) = plan else {
+        return Ok(UndoOutcome::NothingToUndo);
+    };
+    let tmux = tab.tmux_name.clone();
+    match plan {
+        agent_session::UndoClearPlan::Type { command } => {
+            let typed = tokio::task::spawn_blocking(move || {
+                if runner.probe(&tmux).is_none() {
+                    return Ok(false);
+                }
+                runner.deliver(&tmux, &[super::scheduler::Submission { text: command, bracketed: false }]).map(|()| true)
+            })
+            .await
+            .map_err(|e| e.to_string())??;
+            Ok(if typed { UndoOutcome::Undone } else { UndoOutcome::TabNotReady })
+        }
+        agent_session::UndoClearPlan::Relaunch => {
+            let path = session_file(state_dir, &project.raw_id);
+            // project-tree-read: ok — the state-dir session file, keyed by scope id.
+            let session: crate::schema::session::TerminalSession =
+                storage::read_json(&path).map_err(|e| format!("read session: {e}"))?;
+            let Some(record) = session.tab_layout.iter().find(|t| crate::services::workspace::tmux_of(t) == Some(tab.tmux_name.as_str())).cloned()
+            else {
+                return Ok(UndoOutcome::TabNotReady);
+            };
+            let ended = tokio::task::spawn_blocking(move || runner.kill(&tmux)).await.map_err(|e| e.to_string())?;
+            ended?;
+            let mut record = record;
+            if let Some(uid) = record.session_id.as_deref().filter(|id| !id.is_empty()) {
+                record.extra.insert("args".into(), json!(resume_args(&record.cmd, uid)));
+            }
+            launch(launch_options(&project.raw_id, &record)).await?;
+            Ok(UndoOutcome::Undone)
+        }
+    }
+}
+
+// ── Desktop images with no window ───────────────────────────────────────────
+
+/// `DesktopImages` with no window: the same folders the desktop lists,
+/// minus the clipboard (reading it needs a display connection the sidecar
+/// has not).
+pub fn desktop_images(state_dir: &Path) -> Vec<crate::services::desktop_images::DesktopImage> {
+    let folders = crate::services::desktop_images::default_folders(state_dir);
+    crate::services::desktop_images::list(&folders, std::time::SystemTime::now())
+}
+
+/// `AttachDesktopImage` with no window: copy the listed file into the
+/// project's inbox. The `Err` is the wire code the phone maps to a
+/// sentence; the clipboard's image needs the window.
+pub fn attach_desktop_image(state_dir: &Path, root: &Path, image_id: &str) -> Result<super::protocol::MobileInboxAttachment, String> {
+    use crate::services::desktop_images;
+    if !desktop_images::valid_id(image_id) {
+        return Err("image_not_found".into());
+    }
+    if image_id == desktop_images::CLIPBOARD_ID {
+        return Err("desktop_unavailable".into());
+    }
+    let path = desktop_images::resolve(&desktop_images::default_folders(state_dir), image_id).ok_or_else(|| "image_not_found".to_string())?;
+    let bytes = std::fs::read(&path).map_err(|_| "image_not_found".to_string())?;
+    let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| "image".into());
+    super::inbox::store(root, &name, &bytes)
+        .map(|stored| super::protocol::MobileInboxAttachment { name: stored.name, reference: stored.reference, size: stored.size })
+        .map_err(|error| error.code().to_string())
+}
+
+// ── Schedules and prompts with no window ────────────────────────────────────
+
+/// `ScheduleMutate` with no window: the rule lands in `agent_tasks.json`
+/// under the file's lock (`upsert_in` / `delete_in`), as the desktop bridge
+/// writes it — a create gets a fresh id, an update keeps the stored prefix
+/// commands the phone never sees, a delete is plain. Answers the tab's rows
+/// as `schedules` does. `Err("schedule_not_found")` for an update of a rule
+/// that is gone.
+pub fn schedule_mutate(
+    state_dir: &Path,
+    project_id: &str,
+    schedule_target_id: &str,
+    action: ScheduleMutation,
+    now: DateTime<Local>,
+) -> Result<TabSchedules, String> {
+    let path = agent_tasks::file_path(state_dir);
+    match action {
+        ScheduleMutation::Delete { schedule_id } => {
+            agent_tasks::delete_in(&path, project_id, schedule_target_id, &schedule_id, false)?;
+        }
+        ScheduleMutation::Create { schedule } => {
+            let prompt = ScheduledAgentPrompt {
+                id: crate::commands::projects::uuid_v4(),
+                enabled: schedule.enabled,
+                message: schedule.message,
+                rule: schedule.rule,
+                preface: Vec::new(),
+                last: None,
+                origin: None,
+            };
+            agent_tasks::upsert_in(&path, project_id, schedule_target_id, prompt, None)?;
+        }
+        ScheduleMutation::Update { schedule_id, schedule } => {
+            let existing = agent_tasks::list_at(state_dir, project_id, schedule_target_id)?
+                .into_iter()
+                .find(|row| row.id == schedule_id)
+                .ok_or_else(|| "schedule_not_found".to_string())?;
+            let prompt = ScheduledAgentPrompt {
+                id: schedule_id,
+                enabled: schedule.enabled,
+                message: schedule.message,
+                rule: schedule.rule,
+                preface: existing.preface,
+                last: None,
+                origin: None,
+            };
+            agent_tasks::upsert_in(&path, project_id, schedule_target_id, prompt, None)?;
+        }
+    }
+    schedules(state_dir, project_id, schedule_target_id, now)
+}
+
+/// The agent tab a headless send aims at: its binding and the facts the
+/// history row carries.
+pub struct SendTarget {
+    pub schedule_target_id: String,
+    pub label: String,
+    pub session_id: Option<String>,
+    pub agent: String,
+}
+
+/// `PromptMutate` with no window: a collected prompt is created, edited or
+/// removed in `agent_prompts.json` under its lock; a send is the desktop's
+/// send-now — a one-time rule at this machine's current minute under the
+/// prompt's id (finished one-time rules pruned first at the tab's cap, the
+/// id re-minted when a recurring rule holds it), then the prompt retired to
+/// the history — and the sidecar's own scheduler delivers it at the next
+/// idle point. Answers the project's remaining prompts.
+pub fn prompt_mutate(
+    state_dir: &Path,
+    project_id: &str,
+    action: PromptMutation,
+    target: Option<SendTarget>,
+    now: DateTime<Local>,
+) -> Result<Vec<ProjectAgentPrompt>, String> {
+    match action {
+        PromptMutation::Delete { prompt_id } => agent_prompts::delete_at(state_dir, project_id, &prompt_id),
+        PromptMutation::Create { prompt } => agent_prompts::upsert_at(
+            state_dir,
+            project_id,
+            ProjectAgentPromptInput { id: crate::commands::projects::uuid_v4(), message: prompt.message, tags: None, target: None },
+        ),
+        PromptMutation::Update { prompt_id, prompt } => agent_prompts::upsert_at(
+            state_dir,
+            project_id,
+            ProjectAgentPromptInput { id: prompt_id, message: prompt.message, tags: None, target: None },
+        ),
+        PromptMutation::Send { prompt_id, .. } => {
+            let target = target.ok_or_else(|| "tab_not_found".to_string())?;
+            let prompt = agent_prompts::list_at(state_dir, project_id)?
+                .into_iter()
+                .find(|row| row.id == prompt_id)
+                .ok_or_else(|| "prompt_not_found".to_string())?;
+            let path = agent_tasks::file_path(state_dir);
+            let existing = agent_tasks::list_at(state_dir, project_id, &target.schedule_target_id)?;
+            for pruned in schedules_to_prune_for_send(&existing) {
+                agent_tasks::delete_in(&path, project_id, &target.schedule_target_id, &pruned, false)?;
+            }
+            let clash = existing
+                .iter()
+                .any(|rule| rule.id == prompt.id && !matches!(rule.rule, AgentScheduleRule::Once { .. }));
+            let id = if clash { crate::commands::projects::uuid_v4() } else { prompt.id.clone() };
+            let rule = ScheduledAgentPrompt {
+                id,
+                enabled: true,
+                message: prompt.message.clone(),
+                rule: AgentScheduleRule::Once { at: now.format("%Y-%m-%dT%H:%M").to_string() },
+                preface: Vec::new(),
+                last: None,
+                origin: None,
+            };
+            agent_tasks::upsert_in(&path, project_id, &target.schedule_target_id, rule, None)?;
+            agent_prompts::archive_at(
+                state_dir,
+                project_id,
+                &prompt.id,
+                SentAgentPromptInput {
+                    schedule_origin: None,
+                    tab_label: target.label,
+                    session_id: target.session_id,
+                    tab_id: None,
+                    preface: Vec::new(),
+                    agent: Some(target.agent),
+                    result: None,
+                    scheduled_for: None,
+                    sent_at: None,
+                },
+            )
+        }
+    }
+}
+
+/// `schedulesToPruneForSend` (`lib/agents/prompt/send.ts`): at the tab's
+/// cap, the oldest finished one-time rules that make room for one more.
+fn schedules_to_prune_for_send(schedules: &[ScheduledAgentPrompt]) -> Vec<String> {
+    let room = agent_tasks::MAX_SCHEDULES as i64 - schedules.len() as i64;
+    if room > 0 {
+        return Vec::new();
+    }
+    let mut finished: Vec<&ScheduledAgentPrompt> = schedules
+        .iter()
+        .filter(|rule| matches!(rule.rule, AgentScheduleRule::Once { .. }) && rule.last.is_some())
+        .collect();
+    finished.sort_by(|a, b| {
+        let at = |rule: &ScheduledAgentPrompt| rule.last.as_ref().map(|last| last.at.clone()).unwrap_or_default();
+        at(a).cmp(&at(b))
+    });
+    finished.into_iter().take((1 - room) as usize).map(|rule| rule.id.clone()).collect()
+}
+
+// ── Agent status with no window ─────────────────────────────────────────────
+
+/// `AgentStatus` with no window: the state off the hooks' turn record (the
+/// catalog's reading for the tab), today's tally off `usage_stats.json`
+/// (the same UTC day the desktop recap calls today), and no usage panel —
+/// reading one runs the agent's CLI, which needs the window's agent home.
+pub fn agent_status(state_dir: &Path, project: &ResolvedProject, tab: &ResolvedTab) -> super::protocol::MobileAgentStatus {
+    let readings = turn_readings(state_dir, &project.raw_id, std::slice::from_ref(tab));
+    let state = readings
+        .statuses
+        .into_iter()
+        .find(|row| row.tmux_session == tab.tmux_name)
+        .map(|row| row.status)
+        .unwrap_or_else(|| "idle".to_string());
+    let stats: crate::schema::usage_stats::UsageStats = storage::read_json(&state_dir.join(crate::schema::usage_stats::STATS_FILE)).unwrap_or_default();
+    let day = stats
+        .daily_for(&project.raw_id)
+        .remove(&chrono::Utc::now().format("%Y-%m-%d").to_string())
+        .unwrap_or_default();
+    let count = |key: &str| day.get(key).copied().unwrap_or(0);
+    super::protocol::MobileAgentStatus {
+        state,
+        label: tab.public.label.clone(),
+        agent: tab.public.agent_label.clone(),
+        project: project.public.label.clone(),
+        today: super::protocol::MobileAgentTally {
+            prompts: count(&format!("agent.prompt.{}", tab.cmd)),
+            worked_s: count("agent.worked_s"),
+            decisions: count("agent.decision"),
+            done: count("agent.done"),
+        },
+        usage: super::protocol::MobileAgentUsage {
+            label: tab.public.agent_label.clone().unwrap_or_else(|| tab.cmd.clone()),
+            supported: false,
+            raw: None,
+            error: Some("desktop_unavailable".to_string()),
+            cached: false,
+        },
+    }
+}
+
+fn seen_at(state_dir: &Path, uid: &str) -> Option<u64> {
+    if uid.is_empty() || uid.chars().any(|c| !(c.is_ascii_alphanumeric() || c == '-')) {
+        return None;
+    }
+    std::fs::read_to_string(state_dir.join("mobile-control").join("seen").join(uid))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
 }
 
 // ── Time zone ───────────────────────────────────────────────────────────────

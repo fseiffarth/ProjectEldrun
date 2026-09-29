@@ -81,30 +81,10 @@ pub fn mobile_opaque_id(domain: String, value: String) -> Result<String, String>
 // clipboard, which needs a display connection — and writes through the same
 // `inbox::store` a file sent from the phone goes through.
 
-/// The platform's screenshot and picture folders plus Eldrun's own screenshot
-/// staging area, where a shot taken through the Screenshot app waits for its
-/// filing answer. Linux honours `user-dirs.dirs`, so a localized `~/Bilder`
-/// is found.
+/// The platform's folder set, shared with the sidecar's headless answer
+/// (`services::desktop_images::default_folders`).
 fn desktop_image_folders() -> Vec<ImageFolder> {
-    let home = crate::paths::home_dir();
-    let user_dirs = if cfg!(target_os = "linux") {
-        let config = std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-            .unwrap_or_else(|| home.join(".config"));
-        std::fs::read_to_string(config.join("user-dirs.dirs"))
-            .map(|text| desktop_images::parse_user_dirs(&text, &home))
-            .unwrap_or_default()
-    } else {
-        HashMap::new()
-    };
-    let mut folders =
-        desktop_images::image_folders(crate::paths::OsKind::current(), &home, &user_dirs);
-    folders.push(ImageFolder {
-        label: "Eldrun screenshots".into(),
-        path: storage::state_dir().join("screenshots-pending"),
-    });
-    folders
+    desktop_images::default_folders(&storage::state_dir())
 }
 
 /// The clipboard's image as a list entry, or `None` when it holds none — or

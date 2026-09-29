@@ -73,6 +73,11 @@ struct HostState {
     /// The headless git dots and agent readings, per project, so the phone's
     /// polls cost a git spawn or a transcript walk once per `READING_TTL`.
     readings: Arc<Mutex<headless::ReadingCache>>,
+    /// The owner's reach into the tmux server with no window (headless owner
+    /// plan, H3): a phone's prompt, undo and close type into or end the tab's
+    /// session through it. Production is `scheduler::TmuxRunner` on the
+    /// default socket; a test swaps in a recorder.
+    runner: Arc<dyn scheduler::Runner>,
 }
 
 /// The owner's spawn seam (headless owner plan, H1b): `launch` starts a
@@ -347,6 +352,79 @@ fn desktop_down(response: &Result<DesktopResponse, String>) -> bool {
         Ok(DesktopResponse::Error { code, .. }) => code == "desktop_unavailable",
         Ok(_) => false,
     }
+}
+
+/// The scope's state-dir session file, which the headless tab edits lock.
+fn scope_session_file(state: &HostState, raw_id: &str) -> PathBuf {
+    headless::session_file(&state.config.state_dir, raw_id)
+}
+
+/// Milliseconds since the epoch, the desktop's close stamp.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// A tab edit applied to the session file because no window was open to
+/// apply it to a store (headless owner plan, H3): the catalog is re-read so
+/// the answer is the row as stored, as the desktop path answers it.
+fn headless_tab_edit(
+    state: &HostState,
+    raw_id: &str,
+    tab_id: &str,
+    tmux_session: &str,
+    edited: Result<crate::schema::session::TerminalSession, String>,
+    fallback: serde_json::Value,
+) -> (StatusCode, Json<serde_json::Value>) {
+    match edited {
+        Ok(_) => {
+            catalog_stale(state);
+            poke_window(state, Some(raw_id), &["workspace"]);
+            let row = catalog_fresh(state)
+                .ok()
+                .and_then(|next| next.tab(tab_id).map(|(_, tab)| tab.public.clone()));
+            match row {
+                Some(mut row) => {
+                    row.viewer_busy = state.terminal_registry.is_busy(tmux_session);
+                    (StatusCode::OK, Json(json!({ "tab": row, "desktop_available": false })))
+                }
+                None => {
+                    let mut answer = fallback;
+                    answer["desktop_available"] = json!(false);
+                    (StatusCode::OK, Json(answer))
+                }
+            }
+        }
+        Err(code) => headless_tab_error(&code),
+    }
+}
+
+fn headless_tab_error(code: &str) -> (StatusCode, Json<serde_json::Value>) {
+    if code == crate::services::workspace::TAB_NOT_FOUND {
+        api_error(StatusCode::NOT_FOUND, "tab_not_found")
+    } else {
+        eprintln!("mobile: a tab edit with no window failed: {code}");
+        api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable")
+    }
+}
+
+/// Tell a window — should one be open after all — that the owner wrote a
+/// slice behind its back (headless owner plan, H3). The owner only writes
+/// when the desktop did not answer, so this normally reaches nothing; it is
+/// the net for a window that was wedged past its deadline and recovered.
+/// Fire-and-forget, never awaited by the phone's request.
+fn poke_window(state: &HostState, raw_id: Option<&str>, slices: &[&str]) {
+    let socket = state.config.control_dir.join("desktop-control.sock");
+    let request = DesktopRequest::Refresh {
+        request_id: Base64UrlUnpadded::encode_string(&random_16()),
+        project_id: raw_id.map(str::to_string),
+        slices: slices.iter().map(|s| s.to_string()).collect(),
+    };
+    tokio::spawn(async move {
+        let _ = admin::desktop_call(&socket, &request).await;
+    });
 }
 
 /// A project's git dot with no window (`headless::git_dot_for`), cached per
@@ -733,7 +811,7 @@ async fn project(
             git,
         }) => (true, agents, statuses, schedules, prompts, timings, closed, git),
         // No window: the same rows off the state dir (headless owner plan,
-        // H1b). Nothing was closed through a window, so that row is empty.
+        // H1b); the closed row is what the owner closed (H3).
         response if desktop_down(&response) => {
             let state_dir = &state.config.state_dir;
             let agents = headless::agents(state_dir, &host_key(&state), &*state.spawner.installed)
@@ -747,7 +825,8 @@ async fn project(
             } else {
                 None
             };
-            (false, agents, readings.statuses, schedules, readings.prompts, readings.timings, vec![], git)
+            let closed = headless::closed_tabs(state_dir, &project.raw_id);
+            (false, agents, readings.statuses, schedules, readings.prompts, readings.timings, closed, git)
         }
         _ => (false, vec![], vec![], vec![], vec![], vec![], vec![], None),
     };
@@ -946,38 +1025,49 @@ async fn create_headless(
     let created = headless::create_tab(state_dir, &host_key(state), project, request, &agents, &state.spawner.launch).await;
     match created {
         Ok(created) => {
-            for _ in 0..8 {
-                if let Ok(next) = catalog_fresh(state) {
-                    if let Some(tab) = next
-                        .project(project_id)
-                        .and_then(|p| p.tabs.iter().find(|t| t.tmux_name == created.tmux_session))
-                    {
-                        return (
-                            StatusCode::CREATED,
-                            Json(json!({ "tab": tab.public, "desktop_available": false })),
-                        );
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(125)).await;
-            }
-            api_error(StatusCode::GATEWAY_TIMEOUT, "launch_pending")
+            poke_window(state, Some(&project.raw_id), &["workspace"]);
+            answer_headless_created(state, project_id, &created).await
         }
-        Err(refusal) => {
-            if let headless::CreateRefusal::LaunchFailed(why) | headless::CreateRefusal::Persist(why) = &refusal {
-                eprintln!("mobile: a create with no window failed ({}): {why}", refusal.code());
-            }
-            api_error(
-            match refusal {
-                headless::CreateRefusal::DesktopUnavailable => StatusCode::SERVICE_UNAVAILABLE,
-                headless::CreateRefusal::LaunchFailed(_) | headless::CreateRefusal::Persist(_) => {
-                    StatusCode::BAD_GATEWAY
-                }
-                headless::CreateRefusal::UnknownAgent => StatusCode::BAD_REQUEST,
-            },
-            refusal.code(),
-            )
-        }
+        Err(refusal) => headless_create_error(refusal),
     }
+}
+
+/// The new row once the catalog lists a tab the owner just minted and
+/// started (a create or a reopen with no window).
+async fn answer_headless_created(
+    state: &HostState,
+    project_id: &str,
+    created: &headless::HeadlessCreated,
+) -> (StatusCode, Json<serde_json::Value>) {
+    for _ in 0..8 {
+        if let Ok(next) = catalog_fresh(state) {
+            if let Some(tab) = next
+                .project(project_id)
+                .and_then(|p| p.tabs.iter().find(|t| t.tmux_name == created.tmux_session))
+            {
+                return (
+                    StatusCode::CREATED,
+                    Json(json!({ "tab": tab.public, "desktop_available": false })),
+                );
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(125)).await;
+    }
+    api_error(StatusCode::GATEWAY_TIMEOUT, "launch_pending")
+}
+
+fn headless_create_error(refusal: headless::CreateRefusal) -> (StatusCode, Json<serde_json::Value>) {
+    if let headless::CreateRefusal::LaunchFailed(why) | headless::CreateRefusal::Persist(why) = &refusal {
+        eprintln!("mobile: a create with no window failed ({}): {why}", refusal.code());
+    }
+    api_error(
+        match refusal {
+            headless::CreateRefusal::DesktopUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+            headless::CreateRefusal::LaunchFailed(_) | headless::CreateRefusal::Persist(_) => StatusCode::BAD_GATEWAY,
+            headless::CreateRefusal::UnknownAgent => StatusCode::BAD_REQUEST,
+        },
+        refusal.code(),
+    )
 }
 
 /// Ask the desktop for the tab `request` describes (a sign-in tab, which
@@ -1080,16 +1170,30 @@ async fn reopen_tab(
         return api_error(StatusCode::NOT_FOUND, "project_not_found");
     };
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
-    created_through_desktop(
-        &state,
-        &project_id,
+    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    let response = admin::desktop_call(
+        &desktop_socket,
         &DesktopRequest::ReopenTab {
             request_id,
             project_id: project.raw_id.clone(),
-            closed_id: request.closed_id,
+            closed_id: request.closed_id.clone(),
         },
     )
-    .await
+    .await;
+    if desktop_down(&response) {
+        // No window: the owner reopens what it closed (headless owner plan,
+        // H3) and starts it detached, as its create does.
+        let reopened = headless::reopen_tab(&state.config.state_dir, project, request.closed_id.as_deref(), &state.spawner.launch).await;
+        return match reopened {
+            Ok(Some(created)) => {
+                poke_window(&state, Some(&project.raw_id), &["workspace"]);
+                answer_headless_created(&state, &project_id, &created).await
+            }
+            Ok(None) => api_error(StatusCode::CONFLICT, "nothing_to_reopen"),
+            Err(refusal) => headless_create_error(refusal),
+        };
+    }
+    answer_created(&state, &project_id, response).await
 }
 
 /// `GET /api/v1/projects/{project_id}/launch-options` — what the ＋ sheet can
@@ -1111,15 +1215,25 @@ async fn launch_options(
     };
     let desktop_socket = state.config.control_dir.join("desktop-control.sock");
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
-    match admin::desktop_call(
+    let response = admin::desktop_call(
         &desktop_socket,
         &DesktopRequest::LaunchOptions {
             request_id,
             project_id: project.raw_id.clone(),
         },
     )
-    .await
-    {
+    .await;
+    if desktop_down(&response) {
+        // No window: the ＋ sheet offers what the owner can start — the
+        // project folder, a shell or a plain agent (headless owner plan,
+        // H3). Worktrees, cloud sessions, sign-ins and local models wait for
+        // the window, so none is listed.
+        return (
+            StatusCode::OK,
+            Json(json!({ "worktrees": [], "cloud": [], "sign_in": [], "local": null, "desktop_available": false })),
+        );
+    }
+    match response {
         Ok(DesktopResponse::LaunchOptions {
             worktrees,
             cloud,
@@ -1160,15 +1274,34 @@ async fn activate_project(
     };
     let desktop_socket = state.config.control_dir.join("desktop-control.sock");
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
-    match admin::desktop_call(
+    let response = admin::desktop_call(
         &desktop_socket,
         &DesktopRequest::Activate {
             request_id,
             project_id: project.raw_id.clone(),
         },
     )
-    .await
-    {
+    .await;
+    if desktop_down(&response) {
+        // No window: the registry entry is marked active under the file's
+        // lock, and the next window restores it open (headless owner plan,
+        // H3). A box or the root console has no such status.
+        if project.public.kind != ScopeKind::Project {
+            return api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable");
+        }
+        return match headless::activate(&state.config.state_dir, &project.raw_id) {
+            Ok(()) => {
+                catalog_stale(&state);
+                poke_window(&state, Some(&project.raw_id), &["projects"]);
+                (StatusCode::OK, Json(json!({ "status": "activated", "desktop_available": false })))
+            }
+            Err(why) => {
+                eprintln!("mobile: an activate with no window failed: {why}");
+                api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable")
+            }
+        };
+    }
+    match response {
         Ok(DesktopResponse::Activated) => (StatusCode::OK, Json(json!({ "status": "activated" }))),
         Ok(DesktopResponse::Error { code, .. }) => api_error(
             if code == "desktop_unavailable" {
@@ -1182,11 +1315,9 @@ async fn activate_project(
     }
 }
 
-/// The board's *writes* stay behind the live desktop bridge: calendar writes
-/// also notify the desktop's CalDAV write hook, and the sidecar must not
-/// become another writer of calendar.json. A *read* with no window open is
-/// answered from the file (`headless`), marked `desktop_available: false` so
-/// the phone shows the board read-only.
+/// The board through the window when one is open; with none, read and
+/// written off `calendar.json` (`headless`, `headless_board`), marked
+/// `desktop_available: false`.
 async fn todo(State(state): State<HostState>, headers: HeaderMap) -> impl IntoResponse {
     if let Err(error) = authenticate(&headers, &state) {
         return error;
@@ -1483,8 +1614,8 @@ fn valid_calendar_action(action: &CalendarAction) -> bool {
     }
 }
 
-/// Calendar writes share the same live desktop bridge as the to-do board. This
-/// keeps CalDAV push ordering and the calendar store as the sole writer.
+/// Calendar writes go through the window when one is open (CalDAV pushes
+/// from there); with none, a local calendar is written here under CAS.
 async fn calendar_mutate(
     State(state): State<HostState>,
     headers: HeaderMap,
@@ -1508,16 +1639,39 @@ async fn calendar_mutate(
     }
     let desktop_socket = state.config.control_dir.join("desktop-control.sock");
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
-    match admin::desktop_call(
+    let response = admin::desktop_call(
         &desktop_socket,
         &DesktopRequest::CalendarMutate {
             request_id,
-            month,
-            action,
+            month: month.clone(),
+            action: action.clone(),
         },
     )
-    .await
-    {
+    .await;
+    if desktop_down(&response) {
+        // No window: the write is one CAS transaction on `calendar.json`
+        // (headless owner plan, H3); a CalDAV-backed calendar still needs
+        // the window, which pushes from the write.
+        let key = host_key(&state);
+        return match super::headless_board::calendar_mutate(&state.config.state_dir, &key, action) {
+            Ok(()) => {
+                poke_window(&state, None, &["calendar"]);
+                match headless::calendar_month(&state.config.state_dir, &key, &month) {
+                    Ok(calendar) => (StatusCode::OK, Json(json!({ "calendar": calendar, "desktop_available": false }))),
+                    Err(_) => api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable"),
+                }
+            }
+            Err(super::headless_board::Refused(code)) => api_error(
+                match code {
+                    "event_not_found" => StatusCode::NOT_FOUND,
+                    "desktop_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
+                    _ => StatusCode::BAD_REQUEST,
+                },
+                code,
+            ),
+        };
+    }
+    match response {
         Ok(DesktopResponse::Calendar { calendar }) => {
             (StatusCode::OK, Json(json!({ "calendar": calendar })))
         }
@@ -1575,12 +1729,36 @@ async fn todo_mutate(
     }
     let desktop_socket = state.config.control_dir.join("desktop-control.sock");
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
-    match admin::desktop_call(
+    let response = admin::desktop_call(
         &desktop_socket,
-        &DesktopRequest::TodoMutate { request_id, action },
+        &DesktopRequest::TodoMutate { request_id, action: action.clone() },
     )
-    .await
-    {
+    .await;
+    if desktop_down(&response) {
+        // No window: the board write is one CAS transaction on
+        // `calendar.json` under the desktop's own rules (headless owner
+        // plan, H3), answered with the board as stored.
+        let key = host_key(&state);
+        let projects = headless::project_names(&state.config.state_dir);
+        return match super::headless_board::todo_mutate(&state.config.state_dir, &key, &projects, action) {
+            Ok(()) => {
+                poke_window(&state, None, &["calendar"]);
+                match headless::todo_board(&state.config.state_dir, &key, &local_today()) {
+                    Ok(board) => (StatusCode::OK, Json(json!({ "board": board, "desktop_available": false }))),
+                    Err(_) => api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable"),
+                }
+            }
+            Err(super::headless_board::Refused(code)) => api_error(
+                match code {
+                    "task_not_found" => StatusCode::NOT_FOUND,
+                    "desktop_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
+                    _ => StatusCode::BAD_REQUEST,
+                },
+                code,
+            ),
+        };
+    }
+    match response {
         Ok(DesktopResponse::Todo { board }) => (StatusCode::OK, Json(json!({ "board": board }))),
         Ok(DesktopResponse::Error { code, .. }) => api_error(
             if code == "desktop_unavailable" {
@@ -1868,17 +2046,23 @@ async fn rename_tab(
     };
     let desktop_socket = state.config.control_dir.join("desktop-control.sock");
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
-    match admin::desktop_call(
+    let response = admin::desktop_call(
         &desktop_socket,
         &DesktopRequest::RenameTab {
             request_id,
-            project_id,
+            project_id: project_id.clone(),
             tmux_session: tmux_session.clone(),
-            label,
+            label: label.clone(),
         },
     )
-    .await
-    {
+    .await;
+    if desktop_down(&response) {
+        // No window: the rename lands in the session file through the
+        // workspace service, and the desktop's next sync keeps it.
+        let edited = crate::services::workspace::rename_tab_in(&scope_session_file(&state, &project_id), &project_id, &tmux_session, &label);
+        return headless_tab_edit(&state, &project_id, &tab_id, &tmux_session, edited, json!({ "label": label }));
+    }
+    match response {
         Ok(DesktopResponse::Renamed { label }) => {
             let row = catalog_fresh(&state)
                 .ok()
@@ -1944,17 +2128,21 @@ async fn color_tab(
     };
     let desktop_socket = state.config.control_dir.join("desktop-control.sock");
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
-    match admin::desktop_call(
+    let response = admin::desktop_call(
         &desktop_socket,
         &DesktopRequest::ColorTab {
             request_id,
-            project_id,
+            project_id: project_id.clone(),
             tmux_session: tmux_session.clone(),
-            color,
+            color: color.clone(),
         },
     )
-    .await
-    {
+    .await;
+    if desktop_down(&response) {
+        let edited = crate::services::workspace::color_tab_in(&scope_session_file(&state, &project_id), &project_id, &tmux_session, color.as_deref());
+        return headless_tab_edit(&state, &project_id, &tab_id, &tmux_session, edited, json!({ "color": color }));
+    }
+    match response {
         Ok(DesktopResponse::Colored { color }) => {
             let row = catalog_fresh(&state)
                 .ok()
@@ -2017,17 +2205,36 @@ async fn sent_prompt(
     };
     let desktop_socket = state.config.control_dir.join("desktop-control.sock");
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
-    match admin::desktop_call(
+    let response = admin::desktop_call(
         &desktop_socket,
         &DesktopRequest::TabPrompt {
             request_id,
-            project_id,
+            project_id: project_id.clone(),
             tmux_session,
             message: message.to_string(),
         },
     )
-    .await
-    {
+    .await;
+    if desktop_down(&response) {
+        // No window: the owner writes the history row (headless owner plan,
+        // H3); the words already reached the tab through the terminal socket.
+        let Ok((_, tab)) = agent_tab(&state, &tab_id) else {
+            return api_error(StatusCode::NOT_FOUND, "tab_not_found");
+        };
+        return match headless::record_prompt(&state.config.state_dir, &project_id, &tab, message) {
+            Ok(recorded) => {
+                if recorded {
+                    poke_window(&state, Some(&project_id), &["prompts"]);
+                }
+                (StatusCode::OK, Json(json!({ "recorded": recorded, "desktop_available": false })))
+            }
+            Err(why) => {
+                eprintln!("mobile: recording a phone prompt with no window failed: {why}");
+                api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable")
+            }
+        };
+    }
+    match response {
         Ok(DesktopResponse::Seen) => (StatusCode::OK, Json(json!({ "recorded": true }))),
         Ok(DesktopResponse::Error { code, .. }) => api_error(
             match code.as_str() {
@@ -2181,18 +2388,39 @@ async fn order_tab(
     }
     let desktop_socket = state.config.control_dir.join("desktop-control.sock");
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
-    match admin::desktop_call(
+    let after = matches!(request.place, TabPlace::After);
+    let response = admin::desktop_call(
         &desktop_socket,
         &DesktopRequest::ReorderTab {
             request_id,
-            project_id,
-            tmux_session,
-            anchor_tmux_session: anchor_tmux,
+            project_id: project_id.clone(),
+            tmux_session: tmux_session.clone(),
+            anchor_tmux_session: anchor_tmux.clone(),
             place: request.place,
         },
     )
-    .await
-    {
+    .await;
+    if desktop_down(&response) {
+        // No window: the move lands in the session file's order, which is
+        // the order the catalog publishes and the phone reconciles against.
+        let edited = crate::services::workspace::reorder_tab_in(&scope_session_file(&state, &project_id), &project_id, &tmux_session, &anchor_tmux, after);
+        return match edited {
+            Ok(_) => {
+                catalog_stale(&state);
+                poke_window(&state, Some(&project_id), &["workspace"]);
+                let tabs: Vec<String> = catalog_fresh(&state)
+                    .ok()
+                    .and_then(|next| {
+                        next.tab(&tab_id)
+                            .map(|(project, _)| project.tabs.iter().map(|t| t.public.id.clone()).collect())
+                    })
+                    .unwrap_or_default();
+                (StatusCode::OK, Json(json!({ "tabs": tabs, "desktop_available": false })))
+            }
+            Err(code) => headless_tab_error(&code),
+        };
+    }
+    match response {
         Ok(DesktopResponse::Reordered) => {
             // The desktop persists before it answers, so a fresh read is the new
             // order; a catalog that somehow has not caught up answers with what
@@ -2242,16 +2470,35 @@ async fn close_tab(
     };
     let desktop_socket = state.config.control_dir.join("desktop-control.sock");
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
-    match admin::desktop_call(
+    let response = admin::desktop_call(
         &desktop_socket,
         &DesktopRequest::CloseTab {
             request_id,
-            project_id,
-            tmux_session,
+            project_id: project_id.clone(),
+            tmux_session: tmux_session.clone(),
         },
     )
-    .await
-    {
+    .await;
+    if desktop_down(&response) {
+        // No window: the tab leaves the set in the session file (an agent tab
+        // is remembered for a reopen), then its session ends the way the
+        // desktop's × ends a local session the tab minted — the subtree
+        // reaped, the launcher dropped (`Runner::kill`).
+        return match crate::services::workspace::close_tab_in(&scope_session_file(&state, &project_id), &project_id, &tmux_session, now_ms()) {
+            Ok(_) => {
+                catalog_stale(&state);
+                poke_window(&state, Some(&project_id), &["workspace"]);
+                let runner = state.runner.clone();
+                let ended = tokio::task::spawn_blocking(move || runner.kill(&tmux_session)).await;
+                if let Ok(Err(why)) = ended {
+                    eprintln!("mobile: a close with no window left the session running: {why}");
+                }
+                (StatusCode::OK, Json(json!({ "closed": true, "desktop_available": false })))
+            }
+            Err(code) => headless_tab_error(&code),
+        };
+    }
+    match response {
         // The desktop rewrites the session file before it answers, so the only
         // thing that could still be carrying the closed tab is this cache —
         // dropped here rather than read back, because nothing in this reply
@@ -2426,7 +2673,7 @@ async fn agent_status(
     let refresh = matches!(query.refresh.as_deref(), Some("1" | "true"));
     let desktop_socket = state.config.control_dir.join("desktop-control.sock");
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
-    match admin::desktop_call(
+    let response = admin::desktop_call(
         &desktop_socket,
         &DesktopRequest::AgentStatus {
             request_id,
@@ -2435,8 +2682,20 @@ async fn agent_status(
             refresh,
         },
     )
-    .await
-    {
+    .await;
+    if desktop_down(&response) {
+        // No window: the state and today's tally off the files; the CLI's
+        // usage panel needs the window (headless owner plan, H3).
+        let Ok(snapshot) = catalog(&state) else {
+            return api_error(StatusCode::SERVICE_UNAVAILABLE, "catalog_unavailable");
+        };
+        let Some((project, tab)) = snapshot.tab(&tab_id) else {
+            return api_error(StatusCode::NOT_FOUND, "tab_not_found");
+        };
+        let report = headless::agent_status(&state.config.state_dir, project, tab);
+        return (StatusCode::OK, Json(json!({ "report": report, "desktop_available": false })));
+    }
+    match response {
         Ok(DesktopResponse::AgentStatus { report }) => (
             StatusCode::OK,
             Json(json!({ "report": report })),
@@ -2544,24 +2803,49 @@ async fn schedule_mutation(
     tab_id: &str,
     action: ScheduleMutation,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let (project_id, tmux_session) = match agent_tab_target(state, tab_id) {
+    let (project_id, tab) = match agent_tab(state, tab_id) {
         Ok(target) => target,
         Err(error) => return error,
     };
     let desktop_socket = state.config.control_dir.join("desktop-control.sock");
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
-    schedule_desktop_error(
-        admin::desktop_call(
-            &desktop_socket,
-            &DesktopRequest::ScheduleMutate {
-                request_id,
-                project_id,
-                tmux_session,
-                action,
-            },
-        )
-        .await,
+    let response = admin::desktop_call(
+        &desktop_socket,
+        &DesktopRequest::ScheduleMutate {
+            request_id,
+            project_id: project_id.clone(),
+            tmux_session: tab.tmux_name.clone(),
+            action: action.clone(),
+        },
     )
+    .await;
+    if desktop_down(&response) {
+        // No window: the rule lands in `agent_tasks.json` under its lock
+        // (headless owner plan, H3); the sidecar's own scheduler fires it.
+        let Some(target) = tab.schedule_target_id.as_deref() else {
+            return api_error(StatusCode::NOT_FOUND, "tab_not_found");
+        };
+        return match headless::schedule_mutate(&state.config.state_dir, &project_id, target, action, chrono::Local::now()) {
+            Ok(listed) => {
+                poke_window(state, Some(&project_id), &["schedules"]);
+                (
+                    StatusCode::OK,
+                    Json(json!({
+                        "schedules": listed.schedules.into_iter().map(MobileSchedule::from).collect::<Vec<_>>(),
+                        "time_zone": listed.time_zone,
+                        "next_runs": listed.next_runs,
+                        "desktop_available": false,
+                    })),
+                )
+            }
+            Err(code) if code == "schedule_not_found" => api_error(StatusCode::NOT_FOUND, &code),
+            Err(why) => {
+                eprintln!("mobile: a schedule write with no window failed: {why}");
+                api_error(StatusCode::BAD_REQUEST, "invalid_request")
+            }
+        };
+    }
+    schedule_desktop_error(response)
 }
 
 async fn schedule_create(
@@ -2670,14 +2954,6 @@ fn prompt_project(
     Ok(project.raw_id.clone())
 }
 
-async fn prompts_call(
-    state: &HostState,
-    request: DesktopRequest,
-) -> (StatusCode, Json<serde_json::Value>) {
-    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
-    prompt_desktop_error(admin::desktop_call(&desktop_socket, &request).await)
-}
-
 async fn prompts(
     State(state): State<HostState>,
     headers: HeaderMap,
@@ -2739,15 +3015,65 @@ async fn prompt_mutation(
         Err(error) => return error,
     };
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
-    prompts_call(
-        state,
-        DesktopRequest::PromptMutate {
+    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    let response = admin::desktop_call(
+        &desktop_socket,
+        &DesktopRequest::PromptMutate {
             request_id,
-            project_id,
-            action,
+            project_id: project_id.clone(),
+            action: action.clone(),
         },
     )
-    .await
+    .await;
+    if desktop_down(&response) {
+        // No window: the prompt lands in `agent_prompts.json` under its lock;
+        // a send is queued as a one-time rule the sidecar's scheduler fires
+        // (headless owner plan, H3).
+        let target = match &action {
+            PromptMutation::Send { tmux_session, .. } => {
+                let Ok(snapshot) = catalog(state) else {
+                    return api_error(StatusCode::SERVICE_UNAVAILABLE, "catalog_unavailable");
+                };
+                let Some(tab) = snapshot
+                    .projects
+                    .iter()
+                    .filter(|p| p.raw_id == project_id)
+                    .flat_map(|p| p.tabs.iter())
+                    .find(|t| &t.tmux_name == tmux_session)
+                else {
+                    return api_error(StatusCode::NOT_FOUND, "tab_not_found");
+                };
+                let Some(schedule_target_id) = tab.schedule_target_id.clone() else {
+                    return api_error(StatusCode::NOT_FOUND, "tab_not_found");
+                };
+                Some(headless::SendTarget {
+                    schedule_target_id,
+                    label: tab.public.label.clone(),
+                    session_id: tab.session_id.clone(),
+                    agent: tab.cmd.clone(),
+                })
+            }
+            _ => None,
+        };
+        return match headless::prompt_mutate(&state.config.state_dir, &project_id, action, target, chrono::Local::now()) {
+            Ok(prompts) => {
+                poke_window(state, Some(&project_id), &["prompts", "schedules"]);
+                (
+                    StatusCode::OK,
+                    Json(json!({
+                        "prompts": prompts.into_iter().map(MobileCollectedPrompt::from).collect::<Vec<_>>(),
+                        "desktop_available": false,
+                    })),
+                )
+            }
+            Err(code) if code == "prompt_not_found" || code == "tab_not_found" => api_error(StatusCode::NOT_FOUND, &code),
+            Err(why) => {
+                eprintln!("mobile: a prompt write with no window failed: {why}");
+                api_error(StatusCode::BAD_REQUEST, "invalid_request")
+            }
+        };
+    }
+    prompt_desktop_error(response)
 }
 
 async fn prompt_create(
@@ -2872,16 +3198,22 @@ async fn undo_clear(
     };
     let desktop_socket = state.config.control_dir.join("desktop-control.sock");
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
-    match admin::desktop_call(
+    let response = admin::desktop_call(
         &desktop_socket,
         &DesktopRequest::UndoClear {
             request_id,
-            project_id,
+            project_id: project_id.clone(),
             tmux_session,
         },
     )
-    .await
-    {
+    .await;
+    if desktop_down(&response) {
+        // No window: the owner takes the clear back (headless owner plan,
+        // H3) — Claude's resume typed into the session, the others
+        // relaunched onto the cleared conversation.
+        return undo_clear_headless(&state, &tab_id).await;
+    }
+    match response {
         Ok(DesktopResponse::Seen) => (StatusCode::OK, Json(json!({ "undone": true }))),
         Ok(DesktopResponse::Error { code, .. }) => api_error(
             match code.as_str() {
@@ -2896,16 +3228,54 @@ async fn undo_clear(
     }
 }
 
+/// `undo_clear` with no window: the plan `agent_session::undo_clear_plan`
+/// makes for the tab (read off the process's own state dir — the same one
+/// in production) applied through the host's runner and spawn seam.
+async fn undo_clear_headless(state: &HostState, tab_id: &str) -> (StatusCode, Json<serde_json::Value>) {
+    let Ok(snapshot) = catalog(state) else {
+        return api_error(StatusCode::SERVICE_UNAVAILABLE, "catalog_unavailable");
+    };
+    let Some((project, tab)) = snapshot.tab(tab_id) else {
+        return api_error(StatusCode::NOT_FOUND, "tab_not_found");
+    };
+    if project.public.kind == ScopeKind::Root {
+        return api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable");
+    }
+    let Some(uid) = tab.session_id.clone().filter(|id| !id.is_empty()) else {
+        return api_error(StatusCode::CONFLICT, "nothing_to_undo");
+    };
+    let (agent, raw_id) = (tab.cmd.clone(), project.raw_id.clone());
+    let plan = tokio::task::spawn_blocking(move || crate::services::agent_session::undo_clear_plan(&agent, Some(&raw_id), &uid))
+        .await
+        .ok()
+        .flatten();
+    match headless::apply_undo_plan(&state.config.state_dir, project, tab, plan, state.runner.clone(), &state.spawner.launch).await {
+        Ok(headless::UndoOutcome::Undone) => (StatusCode::OK, Json(json!({ "undone": true, "desktop_available": false }))),
+        Ok(headless::UndoOutcome::NothingToUndo) => api_error(StatusCode::CONFLICT, "nothing_to_undo"),
+        Ok(headless::UndoOutcome::TabNotReady) => api_error(StatusCode::SERVICE_UNAVAILABLE, "tab_not_ready"),
+        Err(why) => {
+            eprintln!("mobile: an undo with no window failed: {why}");
+            api_error(StatusCode::SERVICE_UNAVAILABLE, "tab_not_ready")
+        }
+    }
+}
+
 /// Tell the desktop a phone had this agent tab on screen, so its activity
 /// store marks the tab's output read (see `clearAttention`). Fire-and-forget:
 /// nothing in the terminal path may wait on the desktop, which is why this
 /// spawns rather than awaits — a wedged bridge would otherwise hold the
 /// WebSocket attach for the full control-call deadline.
-fn mark_tab_seen(socket: &std::path::Path, project_id: Option<String>, tmux_session: String) {
+fn mark_tab_seen(state: &HostState, project_id: Option<String>, tmux_session: String, uid: Option<&str>) {
     let Some(project_id) = project_id else {
         return;
     };
-    let socket = socket.to_path_buf();
+    // Remembered on disk too (H3): the headless readings answer from files,
+    // and a turn the phone watched finish must not come back as `done` once
+    // the window is closed.
+    if let Some(uid) = uid {
+        headless::mark_seen(&state.config.state_dir, uid, now_ms() / 1000);
+    }
+    let socket = state.config.control_dir.join("desktop-control.sock");
     tokio::spawn(async move {
         // No `exists()` pre-check: a closed desktop refuses the connect at
         // once, and on Windows the nominal socket path is never a file, so the
@@ -2990,6 +3360,8 @@ async fn terminal(
     let catalog = state.catalog.clone();
     let desktop_socket = state.config.control_dir.join("desktop-control.sock");
     let seen_tmux = tmux.clone();
+    let seen_uid = tab.session_id.clone();
+    let seen_state = state.clone();
     let input_socket = desktop_socket.clone();
     let input_project = seen_project.clone();
     let input_tmux = tmux.clone();
@@ -3005,7 +3377,7 @@ async fn terminal(
             // last moment the screen was in front of somebody. Both edges are
             // stamped, so a turn that finished while the phone was watching
             // does not come back as an unread `done` the moment it detaches.
-            mark_tab_seen(&desktop_socket, seen_project.clone(), seen_tmux.clone());
+            mark_tab_seen(&seen_state, seen_project.clone(), seen_tmux.clone(), seen_uid.as_deref());
             let _ = pty_bridge::attach(
                 socket,
                 tmux,
@@ -3020,7 +3392,7 @@ async fn terminal(
                 },
             )
             .await;
-            mark_tab_seen(&desktop_socket, seen_project, seen_tmux);
+            mark_tab_seen(&seen_state, seen_project, seen_tmux, seen_uid.as_deref());
         })
 }
 
@@ -3203,15 +3575,22 @@ async fn desktop_images(
     };
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
     let desktop_socket = state.config.control_dir.join("desktop-control.sock");
-    match admin::desktop_call(
+    let response = admin::desktop_call(
         &desktop_socket,
         &DesktopRequest::DesktopImages {
             request_id,
             project_id,
         },
     )
-    .await
-    {
+    .await;
+    if desktop_down(&response) {
+        // No window: the folders are listed here, without the clipboard
+        // (headless owner plan, H3).
+        let state_dir = state.config.state_dir.clone();
+        let images = tokio::task::spawn_blocking(move || headless::desktop_images(&state_dir)).await.unwrap_or_default();
+        return (StatusCode::OK, Json(json!({ "images": images, "desktop_available": false })));
+    }
+    match response {
         Ok(DesktopResponse::DesktopImages { images }) => {
             (StatusCode::OK, Json(json!({ "images": images })))
         }
@@ -3249,16 +3628,33 @@ async fn attach_desktop_image(
     };
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
     let desktop_socket = state.config.control_dir.join("desktop-control.sock");
-    match admin::desktop_call(
+    let response = admin::desktop_call(
         &desktop_socket,
         &DesktopRequest::AttachDesktopImage {
             request_id,
             project_id,
-            image_id: request.image_id,
+            image_id: request.image_id.clone(),
         },
     )
-    .await
-    {
+    .await;
+    if desktop_down(&response) {
+        // No window: the file is copied into the project's inbox here.
+        let Ok(snapshot) = catalog(&state) else {
+            return api_error(StatusCode::SERVICE_UNAVAILABLE, "catalog_unavailable");
+        };
+        let Some((project, _)) = snapshot.tab(&tab_id) else {
+            return api_error(StatusCode::NOT_FOUND, "tab_not_found");
+        };
+        let (state_dir, root, image_id) = (state.config.state_dir.clone(), project.root.clone(), request.image_id);
+        let attached = tokio::task::spawn_blocking(move || headless::attach_desktop_image(&state_dir, &root, &image_id))
+            .await
+            .unwrap_or_else(|_| Err("write_failed".to_string()));
+        return match attached {
+            Ok(attachment) => (StatusCode::CREATED, Json(json!({ "attachment": attachment, "desktop_available": false }))),
+            Err(code) => desktop_image_error(&code),
+        };
+    }
+    match response {
         Ok(DesktopResponse::Attached { attachment }) => (
             StatusCode::CREATED,
             Json(json!({ "attachment": attachment })),
@@ -3825,6 +4221,7 @@ pub async fn run(state_dir: PathBuf) -> Result<(), String> {
         terminal_registry: TerminalRegistry::default(),
         spawner: HeadlessSpawner::default(),
         readings: Arc::new(Mutex::new(headless::ReadingCache::default())),
+        runner: Arc::new(scheduler::TmuxRunner::new(&state_dir, None)),
     };
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
     // A Serve verification failure must be a real service failure. A clean
@@ -3912,6 +4309,32 @@ mod tests {
         _dir: tempfile::TempDir,
         root: PathBuf,
         state: HostState,
+        /// What the owner typed into or ended (H3); the host's `runner`.
+        runner: Arc<RunnerRecorder>,
+    }
+
+    /// The host's tmux reach, recorded: no server runs in a test, so nothing
+    /// is probed unless a test says so, and what would have been typed or
+    /// ended is written down instead.
+    #[derive(Default)]
+    struct RunnerRecorder {
+        probe: Mutex<Option<scheduler::SessionProbe>>,
+        delivered: Mutex<Vec<(String, Vec<scheduler::Submission>)>>,
+        killed: Mutex<Vec<String>>,
+    }
+
+    impl scheduler::Runner for RunnerRecorder {
+        fn probe(&self, _tmux: &str) -> Option<scheduler::SessionProbe> {
+            *self.probe.lock().unwrap()
+        }
+        fn deliver(&self, tmux: &str, submissions: &[scheduler::Submission]) -> Result<(), String> {
+            self.delivered.lock().unwrap().push((tmux.to_string(), submissions.to_vec()));
+            Ok(())
+        }
+        fn kill(&self, tmux: &str) -> Result<(), String> {
+            self.killed.lock().unwrap().push(tmux.to_string());
+            Ok(())
+        }
     }
 
     impl Fixture {
@@ -3923,9 +4346,11 @@ mod tests {
             let auth = AuthStore::open(&control_dir, ORIGIN.to_string()).expect("auth store");
             let root = state_dir.join("work");
             std::fs::create_dir_all(&root).expect("project root");
+            let runner = Arc::new(RunnerRecorder::default());
             Self {
                 _dir: dir,
                 root,
+                runner: runner.clone(),
                 state: HostState {
                     config: HostConfig {
                         state_dir,
@@ -3941,6 +4366,7 @@ mod tests {
                     terminal_registry: TerminalRegistry::default(),
                     spawner: HeadlessSpawner::default(),
                     readings: Arc::new(Mutex::new(headless::ReadingCache::default())),
+                    runner,
                 },
             }
         }
@@ -4377,7 +4803,9 @@ mod tests {
         assert!(!body.contains("scheduleTargetId"));
         assert!(!body.contains("eldrun-"));
 
-        // Editing still needs the window: the sidecar never writes the file.
+        // A tab the desktop never bound to a schedule target has nowhere to
+        // file a rule: the owner answers "no such tab" rather than inventing
+        // a binding (H3).
         let create = Request::builder()
             .method("POST")
             .uri(format!("/api/v1/tabs/{tab_id}/schedules"))
@@ -4394,19 +4822,454 @@ mod tests {
             ))
             .expect("request");
         let (status, _, body) = host.send(create).await;
-        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "answered: {body}");
-        assert_eq!(json(&body)["error"], "desktop_unavailable");
+        assert_eq!(status, StatusCode::NOT_FOUND, "answered: {body}");
+        assert_eq!(json(&body)["error"], "tab_not_found");
+        assert!(!body.contains("eldrun-"));
     }
 
-    /// Headless owner plan, H0: with no window open, the persisted-state kinds
-    /// — board, month, schedules, prompts, transcript — are answered off the
-    /// state dir with the desktop's own opaque ids, flagged
     /// A host whose spawn seam records what it is asked to start (and starts
     /// nothing), with every agent CLI "installed".
     fn headless_host(launch: headless::HeadlessLaunch) -> Fixture {
         let mut host = Fixture::with_project();
         host.state.spawner = HeadlessSpawner { launch, installed: Arc::new(|_| true) };
         host
+    }
+
+    /// A same-origin, authenticated JSON request of any method.
+    fn request_as(method: &str, uri: &str, cookie: &str, body: Option<Value>) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::ORIGIN, ORIGIN)
+            .header(header::COOKIE, cookie_pair(cookie))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.map(|b| serde_json::to_vec(&b).expect("body")).unwrap_or_default()))
+            .expect("request")
+    }
+
+    /// The opaque project id and the agent tab id of the `with_project` host.
+    async fn project_and_tab(host: &Fixture, cookie: &str) -> (String, String) {
+        let (_, _, projects_body) = host.send(get_as("/api/v1/projects", cookie)).await;
+        let project_id = json(&projects_body)["projects"][0]["id"].as_str().unwrap_or_else(|| panic!("project id: {projects_body}")).to_string();
+        let (_, _, project_body) = host.send(get_as(&format!("/api/v1/projects/{project_id}"), cookie)).await;
+        let tab_id = json(&project_body)["tabs"][0]["id"].as_str().expect("tab id").to_string();
+        (project_id, tab_id)
+    }
+
+    /// H3 (headless owner plan §3): with no window open, the phone's tab
+    /// edits — rename, colour, close, reopen — are the owner's: they land in
+    /// the session file through the workspace service, answered as stored
+    /// and flagged; a close ends the tab's session and remembers an agent
+    /// tab; a reopen brings it back as a new tab started detached on its
+    /// resume args. Nothing raw crosses.
+    #[tokio::test]
+    async fn tab_edits_close_and_reopen_are_the_owners_with_no_window() {
+        let recorded: Arc<Mutex<Vec<PtyOptions>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = recorded.clone();
+        let host = headless_host(Arc::new(move |opts: PtyOptions| {
+            sink.lock().unwrap().push(opts);
+            Box::pin(async { Ok(()) })
+        }));
+        let cookie = host.pair_device(&signing_key(51)).await.0;
+        let (project_id, tab_id) = project_and_tab(&host, &cookie).await;
+        let session_file = host.state.config.state_dir.join("sessions").join(RAW_PROJECT).join("terminals.json");
+        let leaks = |body: &str| {
+            assert!(!body.contains(RAW_PROJECT), "raw project id leaked: {body}");
+            assert!(!body.contains("eldrun-"), "tmux name leaked: {body}");
+            assert!(!body.contains("9d0f-session"), "session id leaked: {body}");
+            assert!(!body.contains(&host.root.to_string_lossy().to_string()), "path leaked: {body}");
+        };
+
+        let (status, _, body) = host
+            .send(request_as("PUT", &format!("/api/v1/tabs/{tab_id}"), &cookie, Some(json!({ "label": "  Review  " }))))
+            .await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(json(&body)["desktop_available"], false);
+        assert_eq!(json(&body)["tab"]["label"], "Review", "the row as stored, trimmed");
+        leaks(&body);
+        let (status, _, body) = host
+            .send(request_as("PUT", &format!("/api/v1/tabs/{tab_id}/color"), &cookie, Some(json!({ "color": "teal" }))))
+            .await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(json(&body)["tab"]["color"], "teal");
+        leaks(&body);
+        let stored: crate::schema::session::TerminalSession = crate::storage::read_json(&session_file).expect("session");
+        assert!(crate::services::workspace::is_owned(&stored));
+        assert_eq!(stored.tab_layout[0].label, "Review"); // project-tree-read: ok — the state-dir session file.
+        assert_eq!(stored.tab_layout[0].extra["color"], "teal"); // project-tree-read: ok — same.
+
+        // Closing: the tab is gone from the file and the catalog, its session
+        // was ended, and the project lists it under "Recently closed".
+        let (status, _, body) = host.send(request_as("DELETE", &format!("/api/v1/tabs/{tab_id}"), &cookie, None)).await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(json(&body)["closed"], true);
+        assert_eq!(host.runner.killed.lock().unwrap().as_slice(), [format!("eldrun-{RAW_PROJECT}--agent-abcdef123")]);
+        let (_, _, body) = host.send(get_as(&format!("/api/v1/projects/{project_id}"), &cookie)).await;
+        let detail = json(&body);
+        assert_eq!(detail["tabs"].as_array().map(Vec::len), Some(0), "{body}");
+        assert_eq!(detail["closed"].as_array().map(Vec::len), Some(1), "{body}");
+        assert_eq!(detail["closed"][0]["label"], "Review");
+        assert_eq!(detail["closed"][0]["agent"], "claude");
+        let closed_id = detail["closed"][0]["id"].as_str().expect("closed id").to_string();
+        leaks(&body);
+        let (status, _, body) = host.send(request_as("DELETE", &format!("/api/v1/tabs/{tab_id}"), &cookie, None)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "answered: {body}");
+
+        // Reopening by that id: a new tab on the resume args a restart would
+        // give it, started through the spawn seam, listed, and gone from the
+        // closed row; a second reopen has nothing left.
+        let (status, _, body) = host
+            .send(request_as("POST", &format!("/api/v1/projects/{project_id}/tabs/reopen"), &cookie, Some(json!({ "closed_id": closed_id }))))
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "answered: {body}");
+        let answer = json(&body);
+        assert_eq!(answer["desktop_available"], false);
+        assert_eq!(answer["tab"]["label"], "Review");
+        assert_ne!(answer["tab"]["id"], tab_id, "a new tab");
+        leaks(&body);
+        let spawned = recorded.lock().unwrap().clone();
+        assert_eq!(spawned.len(), 1);
+        assert_eq!(spawned[0].cmd, "claude");
+        assert_eq!(spawned[0].args, vec!["--resume".to_string(), "9d0f-session".to_string()]);
+        assert!(spawned[0].tmux_session.as_deref().is_some_and(|n| n.starts_with(&format!("eldrun-{RAW_PROJECT}--agent-"))));
+        assert_ne!(spawned[0].tmux_session.as_deref(), Some(&*format!("eldrun-{RAW_PROJECT}--agent-abcdef123")), "a fresh session name");
+        let stored: crate::schema::session::TerminalSession = crate::storage::read_json(&session_file).expect("session");
+        assert_eq!(stored.tab_layout.len(), 1); // project-tree-read: ok — the state-dir session file.
+        assert_eq!(stored.tab_layout[0].session_id.as_deref(), Some("9d0f-session")); // project-tree-read: ok — same.
+        let (_, _, body) = host.send(get_as(&format!("/api/v1/projects/{project_id}"), &cookie)).await;
+        assert_eq!(json(&body)["closed"], json!([]));
+        assert_eq!(json(&body)["tabs"][0]["label"], "Review");
+        let (status, _, body) = host
+            .send(request_as("POST", &format!("/api/v1/projects/{project_id}/tabs/reopen"), &cookie, None))
+            .await;
+        assert_eq!(status, StatusCode::CONFLICT, "answered: {body}");
+        assert_eq!(json(&body)["error"], "nothing_to_reopen");
+    }
+
+    /// Bind the `with_project` host's agent tab to schedule target `tgt-1`.
+    fn bind_schedule_target(host: &Fixture) {
+        std::fs::write(
+            host.state.config.state_dir.join("sessions").join(RAW_PROJECT).join("terminals.json"),
+            serde_json::to_vec(&json!({
+                "tabLayout": [{
+                    "label": "Claude",
+                    "cmd": "claude",
+                    "cwd": host.root.to_string_lossy(),
+                    "kind": "agent",
+                    "sessionId": "9d0f-session",
+                    "scheduleTargetId": "tgt-1",
+                    "tmuxSession": format!("eldrun-{RAW_PROJECT}--agent-abcdef123"),
+                }]
+            }))
+            .expect("session fixture"),
+        )
+        .expect("write session");
+    }
+
+    /// H3 (the plan's exit, the writes half): with no window open, the
+    /// phone edits a to-do card and a calendar event (CAS on
+    /// `calendar.json`), writes and removes a schedule and a collected
+    /// prompt, sends a prompt now (a one-time rule the sidecar's scheduler
+    /// fires, the prompt retired to the history), records a composer prompt,
+    /// asks for the tab's status and the ＋ sheet's options, and attaches a
+    /// desktop image — every answer flagged, nothing raw crossing.
+    #[tokio::test]
+    async fn writes_with_side_effects_are_the_owners_with_no_window() {
+        let host = Fixture::with_project();
+        bind_schedule_target(&host);
+        let state_dir = host.state.config.state_dir.clone();
+        let cookie = host.pair_device(&signing_key(54)).await.0;
+        let (project_id, tab_id) = project_and_tab(&host, &cookie).await;
+        let leaks = |body: &str| {
+            assert!(!body.contains(RAW_PROJECT), "raw project id leaked: {body}");
+            assert!(!body.contains("tgt-1"), "schedule target leaked: {body}");
+            assert!(!body.contains("eldrun-"), "tmux name leaked: {body}");
+            assert!(!body.contains("9d0f-session"), "session id leaked: {body}");
+            assert!(!body.contains(&host.root.to_string_lossy().to_string()), "path leaked: {body}");
+        };
+
+        // The board: a card is created into the intake column, ticked, and
+        // the answer is the board as stored.
+        let (_, _, body) = host.send(get_as("/api/v1/todo", &cookie)).await;
+        let board = json(&body)["board"].clone();
+        let intake = board["columns"].as_array().unwrap().iter().find(|c| c["intake"] == true).unwrap()["id"].as_str().unwrap().to_string();
+        let calendar_id = board["calendars"][0]["id"].as_str().expect("calendar id").to_string();
+        let card = json!({ "title": "From the phone", "notes": "", "priority": 0, "percent": 0, "column": intake,
+            "calendar_id": calendar_id, "project_id": project_id, "tags": [], "subtasks": [] });
+        let (status, _, body) = host
+            .send(request_as("POST", "/api/v1/todo", &cookie, Some(json!({ "type": "create", "task": card }))))
+            .await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        let answer = json(&body);
+        assert_eq!(answer["desktop_available"], false);
+        assert_eq!(answer["board"]["tasks"][0]["title"], "From the phone");
+        assert_eq!(answer["board"]["tasks"][0]["project_id"], project_id);
+        let task_id = answer["board"]["tasks"][0]["id"].as_str().expect("task id").to_string();
+        leaks(&body);
+        let (status, _, body) = host
+            .send(request_as("POST", "/api/v1/todo", &cookie, Some(json!({ "type": "toggle", "task_id": task_id }))))
+            .await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(json(&body)["board"]["tasks"][0]["done"], true);
+        let (status, _, body) = host
+            .send(request_as("POST", "/api/v1/todo", &cookie, Some(json!({ "type": "toggle", "task_id": "not-a-card" }))))
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "answered: {body}");
+
+        // The calendar: an event is created, then deleted, on the month.
+        let event = json!({ "calendar_id": calendar_id, "start": "2026-07-15T10:00", "end": "2026-07-15T11:00", "all_day": false,
+            "title": "Defense", "location": "", "notes": "", "conference": "", "category": "", "status": "" });
+        let (status, _, body) = host
+            .send(request_as("POST", "/api/v1/calendar?month=2026-07", &cookie, Some(json!({ "type": "create_event", "event": event }))))
+            .await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        let month = json(&body);
+        assert_eq!(month["desktop_available"], false);
+        assert_eq!(month["calendar"]["events"][0]["title"], "Defense");
+        let event_id = month["calendar"]["events"][0]["id"].as_str().expect("event id").to_string();
+        let data = crate::commands::calendar::read_data(&state_dir.join("calendar.json")).expect("calendar");
+        assert_eq!(data.events.len(), 1);
+        assert!(!body.contains(&data.events[0].id), "raw event id leaked: {body}");
+        let (status, _, body) = host
+            .send(request_as("POST", "/api/v1/calendar?month=2026-07", &cookie, Some(json!({ "type": "delete_event", "event_id": event_id }))))
+            .await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(json(&body)["calendar"]["events"], json!([]));
+
+        // Schedules: a rule is created, edited (keeping prefix commands the
+        // phone never sees), and removed.
+        std::fs::write(
+            state_dir.join("agent_tasks.json"),
+            json!({ "version": 1, "projects": { RAW_PROJECT: { "tgt-1": { "schedules": [
+                { "id": "sched-1", "enabled": true, "message": "Nightly review", "preface": ["/clear"], "rule": { "type": "daily", "time": "09:00" } }
+            ] } } } })
+            .to_string(),
+        )
+        .expect("tasks fixture");
+        let (status, _, body) = host
+            .send(request_as(
+                "POST",
+                &format!("/api/v1/tabs/{tab_id}/schedules"),
+                &cookie,
+                Some(json!({ "enabled": true, "message": "Morning plan", "rule": { "type": "daily", "time": "08:00" } })),
+            ))
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "answered: {body}");
+        let listed = json(&body);
+        assert_eq!(listed["desktop_available"], false);
+        assert_eq!(listed["schedules"].as_array().map(Vec::len), Some(2));
+        let created = listed["schedules"].as_array().unwrap().iter().find(|s| s["message"] == "Morning plan").unwrap()["id"].as_str().unwrap().to_string();
+        assert!(listed["next_runs"][&created].as_str().is_some_and(|k| k.ends_with("T08:00")));
+        leaks(&body);
+        let (status, _, body) = host
+            .send(request_as(
+                "PUT",
+                &format!("/api/v1/tabs/{tab_id}/schedules/sched-1"),
+                &cookie,
+                Some(json!({ "enabled": false, "message": "Nightly review, later", "rule": { "type": "daily", "time": "21:00" } })),
+            ))
+            .await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        let stored = crate::services::agent_tasks::list_at(&state_dir, RAW_PROJECT, "tgt-1").expect("rules");
+        let nightly = stored.iter().find(|r| r.id == "sched-1").expect("kept");
+        assert_eq!(nightly.message, "Nightly review, later");
+        assert!(!nightly.enabled);
+        assert_eq!(nightly.preface, ["/clear"], "the desktop's prefix commands survive a phone edit");
+        let (status, _, body) = host
+            .send(request_as("DELETE", &format!("/api/v1/tabs/{tab_id}/schedules/{created}"), &cookie, None))
+            .await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(json(&body)["schedules"].as_array().map(Vec::len), Some(1));
+        let (status, _, body) = host
+            .send(request_as("PUT", &format!("/api/v1/tabs/{tab_id}/schedules/gone"), &cookie, Some(json!({ "enabled": true, "message": "x", "rule": { "type": "daily", "time": "08:00" } }))))
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "answered: {body}");
+
+        // Collected prompts: created, edited, sent now (a one-time rule at
+        // this minute under the prompt's id; the prompt retired to the
+        // history), and one deleted.
+        let (status, _, body) = host
+            .send(request_as("POST", &format!("/api/v1/projects/{project_id}/prompts"), &cookie, Some(json!({ "message": "Write the intro" }))))
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "answered: {body}");
+        let answer = json(&body);
+        assert_eq!(answer["desktop_available"], false);
+        let prompt_id = answer["prompts"][0]["id"].as_str().expect("prompt id").to_string();
+        let (status, _, body) = host
+            .send(request_as("PUT", &format!("/api/v1/projects/{project_id}/prompts/{prompt_id}"), &cookie, Some(json!({ "message": "Write the intro, briefly" }))))
+            .await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(json(&body)["prompts"][0]["message"], "Write the intro, briefly");
+        let (status, _, body) = host
+            .send(request_as("POST", &format!("/api/v1/projects/{project_id}/prompts/{prompt_id}/send"), &cookie, Some(json!({ "tab_id": tab_id }))))
+            .await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(json(&body)["prompts"], json!([]), "retired to the history");
+        let rules = crate::services::agent_tasks::list_at(&state_dir, RAW_PROJECT, "tgt-1").expect("rules");
+        let queued = rules.iter().find(|r| r.id == prompt_id).expect("a one-time rule under the prompt's id");
+        assert!(matches!(&queued.rule, crate::schema::agent_tasks::AgentScheduleRule::Once { at } if at.len() == 16));
+        assert_eq!(queued.message, "Write the intro, briefly");
+        let history = crate::services::agent_prompts::list_at(&state_dir, RAW_PROJECT).expect("prompts");
+        assert!(history.is_empty());
+        let (status, _, body) = host
+            .send(request_as("POST", &format!("/api/v1/projects/{project_id}/prompts"), &cookie, Some(json!({ "message": "Throwaway" }))))
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "answered: {body}");
+        let other = json(&body)["prompts"][0]["id"].as_str().expect("prompt id").to_string();
+        let (status, _, body) = host
+            .send(request_as("DELETE", &format!("/api/v1/projects/{project_id}/prompts/{other}"), &cookie, None))
+            .await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(json(&body)["prompts"], json!([]));
+
+        // The composer's prompt is recorded on the history; a session
+        // command is not.
+        let (status, _, body) = host
+            .send(request_as("POST", &format!("/api/v1/tabs/{tab_id}/prompt"), &cookie, Some(json!({ "message": "  Summarize the diff  " }))))
+            .await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(json(&body)["recorded"], true);
+        let (status, _, body) = host
+            .send(request_as("POST", &format!("/api/v1/tabs/{tab_id}/prompt"), &cookie, Some(json!({ "message": "/clear" }))))
+            .await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(json(&body)["recorded"], false);
+        let file: serde_json::Value = serde_json::from_slice(&std::fs::read(state_dir.join("agent_prompts.json")).expect("prompts file")).expect("json");
+        let rows = file["history"][RAW_PROJECT].as_array().expect("history rows");
+        assert!(rows.iter().any(|row| row["message"] == "Summarize the diff" && row["tab_label"] == "Claude" && row["result"] == "delivered"), "{file}");
+        assert!(rows.iter().any(|row| row["message"] == "Write the intro, briefly"), "the send-now was retired here: {file}");
+        assert!(!rows.iter().any(|row| row["message"] == "/clear"));
+
+        // Nothing to undo for a tab whose hook recorded no clear.
+        let (status, _, body) = host.send(request_as("POST", &format!("/api/v1/tabs/{tab_id}/undo-clear"), &cookie, None)).await;
+        assert_eq!(status, StatusCode::CONFLICT, "answered: {body}");
+        assert_eq!(json(&body)["error"], "nothing_to_undo");
+
+        // The tab's status: state and tally off the files, no usage panel.
+        let (status, _, body) = host.send(get_as(&format!("/api/v1/tabs/{tab_id}/status"), &cookie)).await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        let report = json(&body)["report"].clone();
+        assert_eq!(report["state"], "idle");
+        assert_eq!(report["label"], "Claude");
+        assert_eq!(report["project"], "Aurora");
+        assert_eq!(report["usage"]["supported"], false);
+        assert_eq!(report["usage"]["error"], "desktop_unavailable");
+        leaks(&body);
+
+        // The ＋ sheet's options: only what the owner can start.
+        let (status, _, body) = host.send(get_as(&format!("/api/v1/projects/{project_id}/launch-options"), &cookie)).await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        let options = json(&body);
+        assert_eq!(options["desktop_available"], false);
+        assert_eq!(options["worktrees"], json!([]));
+        assert_eq!(options["sign_in"], json!([]));
+
+        // Desktop images: a file in Eldrun's own screenshot folder is listed
+        // (no clipboard) and attached into the project inbox.
+        let shots = state_dir.join("screenshots-pending");
+        std::fs::create_dir_all(&shots).expect("shots dir");
+        std::fs::write(shots.join("shot.png"), b"\x89PNG\r\n\x1a\nnot really").expect("shot");
+        let (status, _, body) = host.send(get_as(&format!("/api/v1/tabs/{tab_id}/desktop-images"), &cookie)).await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        let images = json(&body);
+        assert_eq!(images["desktop_available"], false);
+        let shot = images["images"].as_array().unwrap().iter().find(|i| i["name"] == "shot.png").expect("the screenshot is listed");
+        assert!(!images["images"].as_array().unwrap().iter().any(|i| i["id"] == "clipboard"));
+        let image_id = shot["id"].as_str().unwrap().to_string();
+        assert!(!body.contains("screenshots-pending"), "folder path leaked: {body}");
+        let (status, _, body) = host
+            .send(request_as("POST", &format!("/api/v1/tabs/{tab_id}/desktop-images"), &cookie, Some(json!({ "image_id": image_id }))))
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "answered: {body}");
+        let attached = json(&body)["attachment"].clone();
+        assert!(attached["reference"].as_str().is_some_and(|r| r.starts_with(".eldrun/inbox/")), "{body}");
+        assert!(host.root.join(attached["reference"].as_str().unwrap()).is_file());
+        let (status, _, body) = host
+            .send(request_as("POST", &format!("/api/v1/tabs/{tab_id}/desktop-images"), &cookie, Some(json!({ "image_id": "clipboard" }))))
+            .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "answered: {body}");
+    }
+
+    /// H3: the owner's undo of a Claude `/clear` types the resume into the
+    /// running session, and a relaunch plan ends the session and starts the
+    /// tab again on its resume args; a tab whose session is gone is not
+    /// ready.
+    #[tokio::test]
+    async fn an_undo_with_no_window_types_or_relaunches() {
+        use crate::services::agent_session::UndoClearPlan;
+        let recorded: Arc<Mutex<Vec<PtyOptions>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = recorded.clone();
+        let host = headless_host(Arc::new(move |opts: PtyOptions| {
+            sink.lock().unwrap().push(opts);
+            Box::pin(async { Ok(()) })
+        }));
+        let snapshot = catalog(&host.state).expect("catalog");
+        let project = snapshot.project(&snapshot.projects[0].public.id).expect("project");
+        let tab = &project.tabs[0];
+        let runner: Arc<dyn scheduler::Runner> = host.runner.clone();
+        let state_dir = host.state.config.state_dir.clone();
+
+        let outcome = headless::apply_undo_plan(&state_dir, project, tab, Some(UndoClearPlan::Type { command: "/resume abc".into() }), runner.clone(), &host.state.spawner.launch).await;
+        assert_eq!(outcome, Ok(headless::UndoOutcome::TabNotReady), "no session to type into");
+        *host.runner.probe.lock().unwrap() = Some(scheduler::SessionProbe { created: 1, activity: 1 });
+        let outcome = headless::apply_undo_plan(&state_dir, project, tab, Some(UndoClearPlan::Type { command: "/resume abc".into() }), runner.clone(), &host.state.spawner.launch).await;
+        assert_eq!(outcome, Ok(headless::UndoOutcome::Undone));
+        let typed = host.runner.delivered.lock().unwrap().clone();
+        assert_eq!(typed.len(), 1);
+        assert_eq!(typed[0].0, tab.tmux_name);
+        assert_eq!(typed[0].1, vec![scheduler::Submission { text: "/resume abc".into(), bracketed: false }]);
+
+        let outcome = headless::apply_undo_plan(&state_dir, project, tab, Some(UndoClearPlan::Relaunch), runner.clone(), &host.state.spawner.launch).await;
+        assert_eq!(outcome, Ok(headless::UndoOutcome::Undone));
+        assert_eq!(host.runner.killed.lock().unwrap().as_slice(), std::slice::from_ref(&tab.tmux_name));
+        let spawned = recorded.lock().unwrap().clone();
+        assert_eq!(spawned.len(), 1);
+        assert_eq!(spawned[0].tmux_session.as_deref(), Some(tab.tmux_name.as_str()));
+        assert_eq!(spawned[0].args, vec!["--resume".to_string(), "9d0f-session".to_string()]);
+        assert_eq!(headless::apply_undo_plan(&state_dir, project, tab, None, runner, &host.state.spawner.launch).await, Ok(headless::UndoOutcome::NothingToUndo));
+    }
+
+    /// H3: activating a stopped project with no window marks its registry
+    /// entry active under the file's lock, so the next window opens it; a
+    /// box has no such status and still needs the window.
+    #[tokio::test]
+    async fn activating_a_project_with_no_window_marks_the_registry() {
+        let host = Fixture::with_project();
+        let registry = host.state.config.state_dir.join("projects.json");
+        let mut list: Vec<Value> = serde_json::from_slice(&std::fs::read(&registry).expect("registry")).expect("json");
+        list[0]["status"] = json!("inactive");
+        std::fs::write(&registry, serde_json::to_vec(&list).expect("registry")).expect("write registry");
+        let cookie = host.pair_device(&signing_key(52)).await.0;
+        // A stopped project is off the phone's default list; the search
+        // view still finds it.
+        let (_, _, projects_body) = host.send(get_as("/api/v1/projects", &cookie)).await;
+        assert_eq!(json(&projects_body)["projects"], json!([]));
+        let (_, _, projects_body) = host.send(get_as("/api/v1/projects?view=search&q=aur", &cookie)).await;
+        let project_id = json(&projects_body)["projects"][0]["id"].as_str().unwrap_or_else(|| panic!("project id: {projects_body}")).to_string();
+        let (_, _, body) = host.send(get_as(&format!("/api/v1/projects/{project_id}"), &cookie)).await;
+        assert_eq!(json(&body)["project"]["status"], "inactive");
+        let (status, _, body) = host
+            .send(request_as("POST", &format!("/api/v1/projects/{project_id}/activate"), &cookie, None))
+            .await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(json(&body)["desktop_available"], false);
+        let list: Vec<Value> = serde_json::from_slice(&std::fs::read(&registry).expect("registry")).expect("json");
+        assert_eq!(list[0]["status"], "active");
+        assert_eq!(list[0]["name"], "Aurora", "the rest of the entry survived");
+        let (_, _, body) = host.send(get_as(&format!("/api/v1/projects/{project_id}"), &cookie)).await;
+        assert_eq!(json(&body)["project"]["status"], "active");
+        let (_, _, projects_body) = host.send(get_as("/api/v1/projects", &cookie)).await;
+        assert_eq!(json(&projects_body)["projects"][0]["id"], project_id, "listed again");
+
+        let host = Fixture::with_box();
+        let cookie = host.pair_device(&signing_key(53)).await.0;
+        let (_, _, projects_body) = host.send(get_as("/api/v1/projects", &cookie)).await;
+        let box_id = json(&projects_body)["projects"][0]["id"].as_str().expect("box id").to_string();
+        let (status, _, body) = host
+            .send(request_as("POST", &format!("/api/v1/projects/{box_id}/activate"), &cookie, None))
+            .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "answered: {body}");
+        assert!(!body.contains(RAW_BOX));
     }
 
     fn create_request(project_id: &str, cookie: &str, body: Value) -> Request<Body> {
@@ -4571,7 +5434,10 @@ mod tests {
         assert_eq!(json(&body)["tabs"].as_array().expect("tabs").len(), 1);
     }
 
-    /// `desktop_available: false`; every write still needs the window.
+    /// Headless owner plan, H0: with no window open, the persisted-state kinds
+    /// — board, month, schedules, prompts, transcript — are answered off the
+    /// state dir with the desktop's own opaque ids, flagged
+    /// `desktop_available: false`.
     #[tokio::test]
     async fn persisted_state_is_answered_off_the_files_with_no_window() {
         let host = Fixture::with_project();
@@ -4711,14 +5577,17 @@ mod tests {
                 .expect("body"),
             ))
             .expect("request");
+        // A write with no window is the owner's now (H3): one CAS commit on
+        // the file, answered with the board as stored.
         let (status, _, body) = host.send(create).await;
-        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "answered: {body}");
-        assert_eq!(json(&body)["error"], "desktop_unavailable");
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(json(&body)["desktop_available"], false);
         assert_eq!(
             crate::commands::calendar::read_data(&calendar).expect("calendar").tasks.len(),
-            1,
-            "nothing was written"
+            2,
+            "the card was written"
         );
+        leaks(&body);
     }
 
     #[test]
@@ -5049,12 +5918,13 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST, "answered: {body}");
         assert_eq!(json(&body)["error"], "invalid_label");
 
-        // A well-formed rename with no desktop window is unavailable, not an
-        // error the phone should read as "the name was rejected" — and it still
-        // leaks neither the raw project id nor the tmux name.
+        // A well-formed rename with no desktop window is the owner's (H3): it
+        // lands in the session file, is answered as stored and flagged, and
+        // still leaks neither the raw project id nor the tmux name.
         let (status, _, body) = host.send(rename(ORIGIN, "Release review")).await;
-        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "answered: {body}");
-        assert_eq!(json(&body)["error"], "desktop_unavailable");
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(json(&body)["desktop_available"], false);
+        assert_eq!(json(&body)["tab"]["label"], "Release review");
         assert!(!body.contains(RAW_PROJECT));
         assert!(!body.contains("eldrun-"));
     }
@@ -5095,15 +5965,26 @@ mod tests {
         let (status, _, body) = host.send(close("https://evil.example", Some(&cookie))).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "answered: {body}");
 
-        // A well-formed close with no desktop window is unavailable, not a
-        // refusal of the tab — and it leaks neither the raw ids nor the tmux
-        // name the desktop is addressed by.
+        // A well-formed close with no desktop window is the owner's (H3): the
+        // tab leaves the session file and its session is ended — and the
+        // answer leaks neither the raw ids nor the tmux name.
         let (status, _, body) = host.send(close(ORIGIN, Some(&cookie))).await;
-        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "answered: {body}");
-        assert_eq!(json(&body)["error"], "desktop_unavailable");
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(json(&body)["closed"], true);
+        assert_eq!(json(&body)["desktop_available"], false);
         assert!(!body.contains(RAW_BOX));
         assert!(!body.contains(RAW_PROJECT));
         assert!(!body.contains("eldrun-"));
+        assert_eq!(
+            host.runner.killed.lock().unwrap().as_slice(),
+            [format!("eldrun-box_{RAW_BOX}--shell-abcdef123")],
+            "the session behind the closed tab was ended"
+        );
+        let (_, _, project_body) = host
+            .send(get_as(&format!("/api/v1/projects/{project_id}"), &cookie))
+            .await;
+        assert_eq!(json(&project_body)["tabs"].as_array().map(Vec::len), Some(1), "{project_body}");
+        let tab_id = json(&project_body)["tabs"][0]["id"].as_str().expect("remaining tab").to_string();
 
         // The agent-only routes are unchanged by that: the same shell tab is
         // still refused a schedule.
@@ -5189,13 +6070,15 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND, "answered: {body}");
         assert_eq!(json(&body)["error"], "tab_not_found");
 
-        // A well-formed move with no desktop window is unavailable rather than
-        // refused, and says nothing about the raw ids or the tmux names.
+        // A well-formed move with no desktop window is the owner's (H3): the
+        // session file's order is the phone's, and the answer says nothing
+        // about the raw ids or the tmux names.
         let (status, _, body) = host
-            .send(move_to(ORIGIN, Some(&cookie), &anchor_id, "before"))
+            .send(move_to(ORIGIN, Some(&cookie), &anchor_id, "after"))
             .await;
-        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "answered: {body}");
-        assert_eq!(json(&body)["error"], "desktop_unavailable");
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(json(&body)["desktop_available"], false);
+        assert_eq!(json(&body)["tabs"], serde_json::json!([anchor_id, tab_id]), "the moved tab now follows its anchor");
         assert!(!body.contains(RAW_BOX));
         assert!(!body.contains(RAW_PROJECT));
         assert!(!body.contains("eldrun-"));
@@ -5341,7 +6224,7 @@ mod tests {
             .expect("request");
         let (status, _, answer) = host.send(send).await;
         assert!(
-            status == StatusCode::BAD_REQUEST || status == StatusCode::SERVICE_UNAVAILABLE,
+            status == StatusCode::BAD_REQUEST || status == StatusCode::NOT_FOUND,
             "answered {status}: {answer}"
         );
         assert!(!answer.contains(RAW_PROJECT));
@@ -5786,13 +6669,13 @@ mod tests {
                 .expect("request")
         };
 
-        // No desktop window: unavailable, and neither the raw project id nor
-        // the project path leaks out of the answer.
+        // No desktop window: the folders are listed here, flagged (H3), and
+        // neither the raw project id nor the project path leaks out.
         let (status, _, body) = host
             .send(get_as(&format!("/api/v1/tabs/{tab_id}/desktop-images"), &cookie))
             .await;
-        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "answered: {body}");
-        assert_eq!(json(&body)["error"], "desktop_unavailable");
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(json(&body)["desktop_available"], false);
         assert!(!body.contains(RAW_PROJECT));
         assert!(!body.contains(host.root.to_str().unwrap()));
 
