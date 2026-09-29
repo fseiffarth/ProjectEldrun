@@ -606,6 +606,14 @@ export function Terminal({ tab, back, pickModel = false, signInTab = false, open
    * and whether its turn is still running. */
   const [altFrame, setAltFrame] = useState<ReadableLine[]>([]);
   const [ctrl, setCtrl] = useState(false);
+  /** The Ctrl / Esc / Tab … key row under the composer, folded away until
+   * the composer's keys button opens it. Folding it drops a held Ctrl, which
+   * would otherwise wait unseen on the next key. */
+  const [keysShown, setKeysShown] = useState(false);
+  const toggleKeys = () => {
+    if (keysShown) setCtrl(false);
+    setKeysShown(!keysShown);
+  };
   const [sendFailed, setSendFailed] = useState(false);
   /** `initialView`: the reader's choice for this agent, else Focus on an
    * agent tab and Terminal on a shell. */
@@ -3203,7 +3211,9 @@ export function Terminal({ tab, back, pickModel = false, signInTab = false, open
             <input ref={fileInput} type="file" accept={ANY_FILE_ACCEPT} multiple hidden aria-hidden="true" tabIndex={-1} data-testid="inbox-file-input" onChange={(event) => { attachFromPhone(event.target.files); event.target.value = ""; }} />
             <input ref={galleryInput} type="file" accept="image/*,video/*" multiple hidden aria-hidden="true" tabIndex={-1} data-testid="inbox-gallery-input" onChange={(event) => { attachFromPhone(event.target.files); event.target.value = ""; }} />
             <button className="composer-add" disabled={!connected} onClick={() => setAddSheet(true)} aria-label="Add to the message" aria-haspopup="dialog" aria-expanded={addSheet} title="Add a photo or file from this phone, pictures from its gallery, an image from the desktop, or a project file (@)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg></button>
-            {/* Plan / Goal / Clear sit centred between ＋ and Send, evenly spaced. */}
+            {/* Folds the key row below in and out; it starts folded. */}
+            <button className={`composer-keys${keysShown ? " open" : ""}`} onPointerDown={(event) => event.preventDefault()} onClick={toggleKeys} aria-label={t(keysShown ? "mobile.composer.keysHide" : "mobile.composer.keysShow")} aria-expanded={keysShown} aria-controls="terminal-keys" title={t(keysShown ? "mobile.composer.keysHide" : "mobile.composer.keysShow")}><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="12" rx="2" /><path d="M7 10h.01M11 10h.01M15 10h.01M8 14h8" /></svg></button>
+            {/* Plan / Goal / Clear sit centred between the keys button and Send, evenly spaced. */}
             <div className="composer-chips">
             {prefixCommands.map((command) => {
               const plan = command === "/plan";
@@ -3217,13 +3227,17 @@ export function Terminal({ tab, back, pickModel = false, signInTab = false, open
             {undoable && isUntested("mobile.composer.undoClear") && <em className="composer-untested">{t("mobile.focus.untested")}</em>}
             </div>
           </>}
-          {tab.kind !== "agent" && <span className="composer-spacer" />}
+          {tab.kind !== "agent" && <>
+            <button className={`composer-keys${keysShown ? " open" : ""}`} onPointerDown={(event) => event.preventDefault()} onClick={toggleKeys} aria-label={t(keysShown ? "mobile.composer.keysHide" : "mobile.composer.keysShow")} aria-expanded={keysShown} aria-controls="terminal-keys" title={t(keysShown ? "mobile.composer.keysHide" : "mobile.composer.keysShow")}><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="12" rx="2" /><path d="M7 10h.01M11 10h.01M15 10h.01M8 14h8" /></svg></button>
+            <span className="composer-spacer" />
+          </>}
           <button className="send-icon" disabled={!connected || !draft.trim()} onClick={submitDraft} aria-label="Send" title="Send"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 16 8-16 8 3-8-3-8Z" /><path d="M7 12h13" /></svg></button>
         </div>
       </div>
-      <div className="keys">
+      {keysShown && <div className="keys" id="terminal-keys">
+      {isUntested("mobile.composer.keysToggle") && <em className="composer-untested keys-untested">{t("mobile.focus.untested")}</em>}
       <button className={ctrl ? "selected" : ""} aria-pressed={ctrl} disabled={!connected} onClick={() => setCtrl((on) => !on)}>Ctrl</button><button disabled={!connected} onClick={() => press("\u001b")}>Esc</button><button disabled={!connected} onClick={() => press("\t")}>Tab</button><button disabled={!connected} onClick={() => press("\u001b[D")}>←</button><button disabled={!connected} onClick={() => press("\u001b[A")}>↑</button><button disabled={!connected} onClick={() => press("\u001b[B")}>↓</button><button disabled={!connected} onClick={() => press("\u001b[C")}>→</button><button disabled={!connected} onClick={() => press("\r")}>Enter</button><button disabled={!connected} onClick={() => press("\u007f")}>⌫</button><button className="danger" disabled={!connected} onClick={() => window.confirm("Send interrupt (Ctrl+C)?") && type("\u0003")}>Interrupt</button>
-      </div>
+      </div>}
     </div>
     {modelSheet && (effortStep
       ? <OptionSheet

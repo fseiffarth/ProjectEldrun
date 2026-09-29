@@ -92,6 +92,8 @@ export const en = {
   "mobile.composer.plan": "Plan",
   "mobile.composer.planHint": "Start the message with /plan: the agent plans first and edits nothing until you agree",
   "mobile.composer.goal": "Goal",
+  "mobile.composer.keysShow": "Show the Ctrl, Esc, Tab and arrow keys",
+  "mobile.composer.keysHide": "Hide the Ctrl, Esc, Tab and arrow keys",
   "mobile.composer.goalHint": "Start the message with /goal: the agent keeps working until the goal is met",
   "mobile.composer.clearBusy": "Codex is still working and can’t start a new conversation now. Stop it with Esc, then tap again.",
   "mobile.slash.title": "Commands",

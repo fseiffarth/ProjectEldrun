@@ -91,6 +91,8 @@ export const dict: Dict = {
   "mobile.composer.plan": "Plan",
   "mobile.composer.planHint": "Empezar el mensaje con /plan: el agente planifica primero y no edita nada hasta que lo apruebes",
   "mobile.composer.goal": "Objetivo",
+  "mobile.composer.keysShow": "Mostrar las teclas Ctrl, Esc, Tab y flechas",
+  "mobile.composer.keysHide": "Ocultar las teclas Ctrl, Esc, Tab y flechas",
   "mobile.composer.goalHint": "Empezar el mensaje con /goal: el agente sigue trabajando hasta cumplir el objetivo",
   "mobile.composer.clearBusy": "Codex sigue trabajando y no puede iniciar una conversación nueva ahora. Detenlo con Esc y vuelve a tocar.",
   "mobile.slash.title": "Comandos",

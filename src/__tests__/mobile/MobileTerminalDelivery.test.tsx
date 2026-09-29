@@ -68,6 +68,12 @@ class FakeWebSocket {
 
 import { Terminal } from "../../../mobile-web/src/screens/Terminal";
 
+/** The key row starts folded; open it, then press its Enter. */
+function pressEnterKey() {
+  fireEvent.click(screen.getByRole("button", { name: /^Show the Ctrl/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Enter" }));
+}
+
 const TAB = { id: "tab-7", label: "Claude", kind: "agent" as const, agent_label: "Claude Code", available: true, viewer_busy: false };
 const STORED = {
   available: true,
@@ -186,7 +192,7 @@ describe("Eldrun Mobile prompt delivery", () => {
   it("never raises the composer's notice for a keystroke the probe's pong vouches for", async () => {
     render(<Terminal tab={TAB} back={() => {}} />);
     await tick(50);
-    fireEvent.click(screen.getByRole("button", { name: "Enter" }));
+    pressEnterKey();
     await tick(5_050);
     act(() => socket().pong());
     await tick(10_000);
@@ -208,7 +214,7 @@ describe("Eldrun Mobile prompt delivery", () => {
   it("takes the composer's notice down when a late keystroke is acked", async () => {
     render(<Terminal tab={TAB} back={() => {}} />);
     await tick(50);
-    fireEvent.click(screen.getByRole("button", { name: "Enter" }));
+    pressEnterKey();
     await tick(9_300);
     screen.getByText(/That did not reach the desktop/);
     act(() => socket().ack());
@@ -231,8 +237,23 @@ describe("Eldrun Mobile prompt delivery", () => {
     await tick(50);
     socket().bufferedAmount = 1024 * 1024;
     const before = socket().frames;
-    fireEvent.click(screen.getByRole("button", { name: "Enter" }));
+    pressEnterKey();
     expect(socket().frames).toBe(before);
     screen.getByText(/That did not reach the desktop/);
+  });
+
+  it("folds the key row until the composer's keys button opens it, and a fold drops a held Ctrl", async () => {
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await tick(50);
+    expect(screen.queryByRole("button", { name: "Esc" })).toBeNull();
+    const toggle = screen.getByRole("button", { name: /^Show the Ctrl/ });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByRole("button", { name: "Ctrl" }));
+    expect(screen.getByRole("button", { name: "Ctrl" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: /^Hide the Ctrl/ }));
+    expect(screen.queryByRole("button", { name: "Esc" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /^Show the Ctrl/ }));
+    expect(screen.getByRole("button", { name: "Ctrl" }).getAttribute("aria-pressed")).toBe("false");
   });
 });

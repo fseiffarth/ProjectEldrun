@@ -767,6 +767,10 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .composer-dictate,.composer-bar .send-icon { display:grid; place-items:center; width:40px; min-width:40px; height:40px; padding:0; border:0; border-radius:10px; }
 .composer-add { display:grid; place-items:center; flex:0 0 auto; width:36px; height:36px; padding:0; border:0; border-radius:50%; background:transparent; color:#c8cdda; }
 .composer-spacer { flex:1 0 0; }
+/* Folds the key row under the composer in and out; lit while it shows. */
+.composer-keys { display:grid; place-items:center; flex:0 0 auto; width:36px; height:36px; padding:0; border:0; border-radius:50%; background:transparent; color:#c8cdda; }
+.composer-keys.open { color:#8c7df4; }
+.keys-untested { align-self:center; flex:0 0 auto; }
 .composer-chips { display:flex; flex:1 1 0; min-width:0; align-items:center; justify-content:space-evenly; }
 /* Plan / Goal: lead the draft with `/plan` or `/goal`; lit while it does.
    Clear, right of them, sends `/clear` at once. */
