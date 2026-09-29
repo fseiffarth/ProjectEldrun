@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::schema::calendar::{
     add_days as add_date_days, add_minutes, days_between, days_from_civil, days_in_month,
-    parse_date, CalendarEvent, Freq, Rrule,
+    parse_date, Alarm, CalendarEvent, Freq, Rrule,
 };
 
 /// Hard ceiling on occurrences generated for one event in one window, so a
@@ -24,7 +24,7 @@ use crate::schema::calendar::{
 const MAX_OCCURRENCES: usize = 2000;
 
 /// One expanded occurrence — the fields the phone's month renders.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Occurrence {
     pub event_id: String,
     pub calendar_id: String,
@@ -40,6 +40,9 @@ pub struct Occurrence {
     pub category: String,
     pub status: String,
     pub recurring: bool,
+    /// The event's reminders, carried as the frontend's `Occurrence.alarms`
+    /// is (an override never changes them).
+    pub alarms: Vec<Alarm>,
 }
 
 // ── Stamps ──────────────────────────────────────────────────────────────────
@@ -515,6 +518,7 @@ pub fn expand_event(event: &CalendarEvent, window_start: &str, window_end: &str)
             category: event.category.clone(),
             status: event.status.clone(),
             recurring: event.rrule.is_some(),
+            alarms: event.alarms.clone(),
         });
     }
     out

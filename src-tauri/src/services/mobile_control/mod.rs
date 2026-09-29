@@ -6,6 +6,7 @@
 //! `commands::mobile_control`.
 
 pub mod admin;
+pub mod alarms;
 pub mod auth;
 pub mod config;
 pub mod discovery;

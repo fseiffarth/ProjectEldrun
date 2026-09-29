@@ -1420,7 +1420,7 @@ export const en = {
   "agentSchedule.howItWorks": "How delivery works",
   "agentSchedule.warning": "When a prompt becomes due, Eldrun waits up to one hour for a safe idle point. Delivery replaces any unsent text currently in this agent's composer, even while the tab is focused.",
   "agentSchedule.openOnly": "Delivery belongs to whichever Eldrun is up: an open window, or, with Eldrun Mobile switched on, its background service while no window is open, which restarts this agent's session first if it has stopped. Missed occurrences are recorded and recurring schedules never burst-send a backlog.",
-  "agentSchedule.windowOnlyTimers": "Auto-continue, the warm-up cron, CalDAV sync and calendar reminders still run only from an open Eldrun window.",
+  "agentSchedule.windowOnlyTimers": "Auto-continue, the warm-up cron and CalDAV sync still run only from an open Eldrun window. Calendar reminders reach a subscribed phone with no window open, once.",
   "agentSchedule.leaseElsewhere": "Another Eldrun window holds the timers right now: scheduled prompts, auto-continue, reminders and syncs fire there, not here. This window takes over when that one closes.",
   "agentSchedule.nonResumable": "This agent tab is not resumable. Its schedules disappear when the tab closes or when Eldrun closes.",
   "agentSchedule.saved": "Schedules",

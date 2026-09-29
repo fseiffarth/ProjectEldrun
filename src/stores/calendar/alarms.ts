@@ -127,6 +127,23 @@ function notifyPhone(alarm: DueAlarm) {
 }
 
 /**
+ * The keys of `keys` this window may show: the backend answers the ones
+ * nobody had claimed. A backend without the command (an older binary under a
+ * hot-reloaded `src/`), or one that fails, leaves the decision to this window
+ * alone, as before the record existed.
+ */
+async function claimFired(keys: string[]): Promise<Set<string>> {
+  if (keys.length === 0) return new Set();
+  try {
+    const granted = await invoke<string[] | null>("calendar_alarms_claim", { keys });
+    if (Array.isArray(granted)) return new Set(granted);
+  } catch {
+    // Fall through: this window decides.
+  }
+  return new Set(keys);
+}
+
+/**
  * The reminder engine.
  *
  * A single ticker scans the calendar for reminders that have come due and shows
@@ -179,7 +196,13 @@ export const useAlarmStore = create<AlarmStore>((set, get) => ({
     const window = alarmWindow(events, now);
     const occurrences = expandEvents(events, window.start, window.end);
     const allDue = dueAlarms(occurrences, fired, now);
-    const due = allDue.filter((a) => !muted.has(a.calendarId));
+    // Claim before showing (headless owner plan, H2): the backend's fired
+    // record is shared with every other window and with the Mobile sidecar,
+    // which pushes reminders to the phone while no window is open. A key
+    // somebody else claimed is theirs — it still joins this window's own set
+    // below, so it is never asked about again.
+    const granted = await claimFired(allDue.map((a) => a.key));
+    const due = allDue.filter((a) => granted.has(a.key) && !muted.has(a.calendarId));
 
     if (allDue.length === 0 && woken.length === 0) {
       if (dropped) set({ active, snoozed: stillSnoozed });

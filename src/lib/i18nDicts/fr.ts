@@ -1444,7 +1444,7 @@ export const dict: Dict = {
   "agentSchedule.howItWorks": "Comment la remise fonctionne",
   "agentSchedule.warning": "Lorsqu’un prompt arrive à échéance, Eldrun attend jusqu’à une heure un point d’inactivité sûr. L’envoi remplace tout texte non envoyé dans l’éditeur de l’agent, même si l’onglet a le focus.",
   "agentSchedule.openOnly": "L’envoi revient à l’Eldrun en marche : une fenêtre ouverte ou, avec Eldrun Mobile activé, son service d’arrière-plan tant qu’aucune fenêtre n’est ouverte, qui relance d’abord la session de cet agent si elle s’est arrêtée. Les occurrences manquées sont consignées et les planifications récurrentes n’envoient jamais un arriéré en rafale.",
-  "agentSchedule.windowOnlyTimers": "La poursuite automatique, le cron de préchauffage, la synchronisation CalDAV et les rappels du calendrier ne s’exécutent toujours que depuis une fenêtre Eldrun ouverte.",
+  "agentSchedule.windowOnlyTimers": "La poursuite automatique, le cron de préchauffage et la synchronisation CalDAV ne s’exécutent toujours que depuis une fenêtre Eldrun ouverte. Les rappels du calendrier atteignent un téléphone abonné sans fenêtre ouverte, une seule fois.",
   "agentSchedule.leaseElsewhere": "Une autre fenêtre Eldrun détient les minuteurs en ce moment : les invites planifiées, la reprise automatique, les rappels et les synchronisations se déclenchent là-bas, pas ici. Cette fenêtre prend le relais quand l’autre se ferme.",
   "agentSchedule.nonResumable": "Cet onglet d’agent ne peut pas être repris. Ses planifications disparaissent lorsque l’onglet ou Eldrun est fermé.",
   "agentSchedule.saved": "Planifications",

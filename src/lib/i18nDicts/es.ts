@@ -1442,7 +1442,7 @@ export const dict: Dict = {
   "agentSchedule.howItWorks": "Cómo funciona la entrega",
   "agentSchedule.warning": "Cuando vence un prompt, Eldrun espera hasta una hora a que haya un punto seguro de inactividad. La entrega sustituye cualquier texto sin enviar del editor del agente, incluso si la pestaña tiene el foco.",
   "agentSchedule.openOnly": "La entrega corre a cargo del Eldrun que esté activo: una ventana abierta o, con Eldrun Mobile activado, su servicio en segundo plano mientras no haya ninguna ventana abierta, que antes reinicia la sesión de este agente si se ha detenido. Las ocasiones perdidas se registran y los programas recurrentes nunca envían de golpe un atraso.",
-  "agentSchedule.windowOnlyTimers": "Auto-continuar, el cron de calentamiento, la sincronización CalDAV y los recordatorios del calendario siguen ejecutándose solo desde una ventana de Eldrun abierta.",
+  "agentSchedule.windowOnlyTimers": "Auto-continuar, el cron de calentamiento y la sincronización CalDAV siguen ejecutándose solo desde una ventana de Eldrun abierta. Los recordatorios del calendario llegan a un teléfono suscrito sin ninguna ventana abierta, una sola vez.",
   "agentSchedule.leaseElsewhere": "Otra ventana de Eldrun tiene ahora los temporizadores: los prompts programados, la continuación automática, los recordatorios y las sincronizaciones se disparan allí, no aquí. Esta ventana toma el relevo cuando aquella se cierre.",
   "agentSchedule.nonResumable": "Esta pestaña de agente no se puede reanudar. Sus programas desaparecen al cerrar la pestaña o Eldrun.",
   "agentSchedule.saved": "Programas",

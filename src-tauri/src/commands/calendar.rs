@@ -1212,6 +1212,15 @@ pub async fn calendar_fetch_ics(url: String) -> Result<String, String> {
     crate::services::browser_engine::fetch_ics(&url).await
 }
 
+/// Claim reminders as fired before showing them (headless owner plan, H2):
+/// answers the keys nobody had claimed yet — another window, or the Mobile
+/// sidecar with no window open, may have shown one already — and records
+/// them all (`services::calendar_alarms`).
+#[tauri::command]
+pub fn calendar_alarms_claim(keys: Vec<String>) -> Result<Vec<String>, String> {
+    crate::services::calendar_alarms::claim(&keys)
+}
+
 /// Replace `calendar_id`'s events/tasks with a freshly parsed set, in one
 /// atomic write.
 #[tauri::command]

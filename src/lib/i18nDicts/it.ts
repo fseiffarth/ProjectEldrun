@@ -1442,7 +1442,7 @@ export const dict: Dict = {
   "agentSchedule.howItWorks": "Come funziona la consegna",
   "agentSchedule.warning": "Quando un prompt arriva a scadenza, Eldrun attende fino a un’ora un punto di inattività sicuro. L’invio sostituisce il testo non ancora inviato nell’editor dell’agente, anche se la scheda è attiva.",
   "agentSchedule.openOnly": "L’invio spetta all’Eldrun in esecuzione: una finestra aperta oppure, con Eldrun Mobile attivo, il suo servizio in background finché nessuna finestra è aperta, che prima riavvia la sessione di questo agente se si è fermata. Le occorrenze perse vengono registrate e le pianificazioni ricorrenti non inviano mai gli arretrati in blocco.",
-  "agentSchedule.windowOnlyTimers": "La continuazione automatica, il cron di riscaldamento, la sincronizzazione CalDAV e i promemoria del calendario continuano a funzionare solo da una finestra Eldrun aperta.",
+  "agentSchedule.windowOnlyTimers": "La continuazione automatica, il cron di riscaldamento e la sincronizzazione CalDAV continuano a funzionare solo da una finestra Eldrun aperta. I promemoria del calendario raggiungono un telefono iscritto senza alcuna finestra aperta, una sola volta.",
   "agentSchedule.leaseElsewhere": "Un’altra finestra di Eldrun detiene ora i timer: i prompt pianificati, la continuazione automatica, i promemoria e le sincronizzazioni scattano lì, non qui. Questa finestra subentra quando quella si chiude.",
   "agentSchedule.nonResumable": "Questa scheda agente non può essere ripresa. Le sue pianificazioni scompaiono quando la scheda o Eldrun vengono chiusi.",
   "agentSchedule.saved": "Pianificazioni",

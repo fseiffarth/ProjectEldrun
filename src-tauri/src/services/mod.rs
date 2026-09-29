@@ -154,6 +154,10 @@ pub mod workspace;
 // The single-client timer lease (headless owner plan, H2, interim): one
 // window fires schedules, alarms and syncs at a time.
 pub mod timer_lease;
+// Calendar reminders' due set and their cross-process fired record (headless
+// owner plan, H2): the window claims before showing, the sidecar pushes with
+// no window open.
+pub mod calendar_alarms;
 pub mod usage_stats;
 // Project VMs (`docs/vm_projects_plan.md`): the third trust tier — the whole
 // project inside a hardware-accelerated QEMU guest (KVM on Linux, HVF on
