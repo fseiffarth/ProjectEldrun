@@ -273,7 +273,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `hooks/useHeaderMenu.ts` | Shared single-open header menu behavior: hover grace, click/keyboard opening, arrow/Home/End navigation, Escape and natural Tab exit. |
 | `hooks/useListReorder.ts` + `lib/listReorder.ts` | The shared drag-a-row-into-place gesture for `{ id }[]` lists. Pointer events (not HTML5 DnD); the grip takes pointer capture. |
 | `lib/shortcuts/shortcuts.ts` | Shortcut definitions, chord parsing/resolution. |
-| `lib/shortcuts/newTabChord.ts` | Ctrl+Shift+N/M and Ctrl+1–9 (and steering's N/M/1–9/+) → a window event the focused pane's `TabBar` answers with its own + menu handlers; also asks it for the agent names behind 1–9. |
+| `lib/shortcuts/newTabChord.ts` | Ctrl+Shift+N/M and Ctrl+1–9 (and steering's N/M/1–9/+) → a window event the focused pane's `TabBar` answers with its own + menu handlers; also asks it for the agent names behind 1–9. Which agent has which number: `agentShortcutSlots` (`tabs/newTabItems.ts`), ordered by `Settings.agent_order` (Manage CLIs' ↑/↓). |
 | `lib/shortcuts/steeringRegion.ts` | Steering's region cursor: a `.steer-cursor` class walked over the side panel / header app overlays / + menu (controls + `cursor: pointer` rows); Enter clicks, text fields get the caret. |
 | `lib/shortcuts/statusJump.ts` | Steering's Q/R/D: every tab needing an answer / working / done, across scopes in station-ring order. |
 | `lib/shortcuts/zoomChord.ts` | The one Ctrl +/-/0 zoom matcher (window, agent panes, editor): typed key first, US position as fallback, so German `+`/`-` work. |

@@ -23,7 +23,7 @@ import {
   openCodexHooksTab,
   type CodexHookState,
 } from "../../lib/agents/codexHooks";
-import type { GlobalAppEntry } from "../../types";
+import type { CustomAgent, GlobalAppEntry } from "../../types";
 import { parseSshAddress } from "../projects/scaffold";
 import { useProjectsStore } from "../../stores/projects";
 import { useGlobalMachinesStore } from "../../stores/remote/globalMachines";
@@ -56,7 +56,16 @@ import { formatTime } from "../../lib/calendar/calendarTime";
 import { useUse24h } from "../../lib/timeFormat";
 import { AGENT_FENCE_DEFAULT_PATHS, parseAgentFencePaths } from "../../lib/agents/agentFence";
 import { loginIdForCmd } from "../../lib/agents/signInLaunch";
-import { AGENT_ITEMS } from "../tabs/newTabItems";
+import {
+  AGENT_ITEMS,
+  agentShortcutSlots,
+  effectiveAgentOrder,
+  enabledInstalledAgentBins,
+  moveInAgentOrder,
+  sortByAgentOrder,
+} from "../tabs/newTabItems";
+import { AGENT_TAB_ACTIONS, chordLabel, resolveChord } from "../../lib/shortcuts/shortcuts";
+import { useShortcutOverrides } from "../../lib/shortcuts/shortcutHint";
 import { ErrorNote } from "../common/ErrorNote";
 
 interface OllamaModelInfo {
@@ -1524,6 +1533,8 @@ function AgentCronRow({ cmd, label }: { cmd: string; label: string }) {
   );
 }
 
+const NO_CUSTOM_AGENTS: CustomAgent[] = [];
+
 /**
  * "Manage Agents" panel: detect and one-click-install the AI coding-agent CLIs
  * Eldrun can launch as agent tabs (Claude, Codex, Google Antigravity, Google
@@ -1576,6 +1587,22 @@ export function AgentsPanel({
   // Filter over the *not installed* half only (see the two sections below).
   const [search, setSearch] = useState("");
   const logRef = useRef<HTMLPreElement>(null);
+  const shortcutOverrides = useShortcutOverrides();
+  const customAgents = settings?.custom_agents ?? NO_CUSTOM_AGENTS;
+  // Custom agents whose command is on PATH — the + menu's own probe, so a
+  // missing one takes no number here either.
+  const [installedCustom, setInstalledCustom] = useState<Set<string> | null>(null);
+  const customCmdsKey = customAgents.map((ca) => ca.cmd).join("\n");
+  useEffect(() => {
+    const cmds = customCmdsKey ? customCmdsKey.split("\n") : [];
+    if (cmds.length === 0) {
+      setInstalledCustom(new Set());
+      return;
+    }
+    invoke<string[]>("probe_binaries", { bins: cmds })
+      .then((found) => setInstalledCustom(new Set(found)))
+      .catch(() => setInstalledCustom(new Set()));
+  }, [customCmdsKey]);
 
   const refresh = () => {
     invoke<AgentInfo[]>("list_agents").then(setAgents).catch(() => setAgents([]));
@@ -1822,10 +1849,51 @@ export function AgentsPanel({
     );
   };
 
+  // The installed list's order is the + menu's, and so Ctrl+1–9's
+  // (`agent_order`, row keys = binaries). Before anything was moved it is the
+  // menu's own: the default agent first, then registry order.
+  const installedList = (agents ?? []).filter((a) => a.installed);
+  const defaultAgentCmd = settings?.default_agent_cmd || "claude";
+  const defaultAgentBin =
+    (agents ?? []).find((a) => a.id === defaultAgentCmd)?.bin ?? defaultAgentCmd;
+  const builtinKeys = sortByAgentOrder(
+    installedList,
+    (a) => a.bin,
+    AGENT_ITEMS.map((item) => item.cmd),
+  ).map((a) => a.bin);
+  const savedOrder = settings?.agent_order;
+  const agentOrder = effectiveAgentOrder(
+    [...builtinKeys, ...customAgents.map((ca) => `custom:${ca.id}`)],
+    savedOrder,
+    defaultAgentBin,
+  );
+  const chordSlots = agentShortcutSlots({
+    installedBuiltins: enabledInstalledAgentBins(installedList, disabledAgents),
+    installedCmds: installedCustom,
+    customAgents,
+    defaultAgentBin,
+    agentOrder: savedOrder,
+  });
+  const chordFor = (bin: string) => {
+    const slot = chordSlots.findIndex((s) => s?.key === bin);
+    return slot < 0 ? null : chordLabel(resolveChord(AGENT_TAB_ACTIONS[slot], shortcutOverrides));
+  };
+  const visibleOrder = agentOrder.filter((key) => builtinKeys.includes(key));
+  const moveAgent = (bin: string, delta: 1 | -1) => {
+    // Keys of agents not installed right now keep their place in the saved
+    // list, so a reinstall lands where it was.
+    const kept = (savedOrder ?? []).filter((key) => !agentOrder.includes(key));
+    void updateSettings({
+      agent_order: moveInAgentOrder([...agentOrder, ...kept], bin, delta, builtinKeys),
+    });
+  };
+
   // The card for one CLI. One renderer for both sections below, so an
   // installed entry and one still to be installed cannot drift into two
   // designs — the only thing that differs is which list a card lands in.
-  const agentCard = (a: AgentInfo) => (
+  const agentCard = (a: AgentInfo) => {
+    const chord = a.installed ? chordFor(a.bin) : null;
+    return (
     <SettingsCard key={a.id} className="agent-list-entry">
       <div className="agent-list-entry-head">
         <div className="settings-subheader">
@@ -1839,21 +1907,49 @@ export function AgentsPanel({
           )}
         </div>
         {a.installed && (
-          <label
-            className="agent-disable-toggle"
-            title={t("agents.disableToggleTitle")}
-          >
-            <Toggle
-              checked={!disabledAgents.includes(a.id)}
-              onChange={(e) => setAgentDisabled(a.id, !e.target.checked)}
-              size="sm"
-              aria-label={t(
-                disabledAgents.includes(a.id) ? "agents.disableAriaEnable" : "agents.disableAriaDisable",
-                { label: a.label },
-              )}
-            />
-            {disabledAgents.includes(a.id) ? t("agents.disabled") : t("agents.enabled")}
-          </label>
+          <div className="agent-list-entry-actions">
+            <UntestedTag id="settingsSubPanels.agentOrder" />
+            {chord && (
+              <kbd className="agent-chord-chip" title={t("agents.chordTitle", { label: a.label })}>
+                {chord}
+              </kbd>
+            )}
+            <button
+              type="button"
+              className="settings-btn sm icon"
+              title={t("agents.moveUp")}
+              aria-label={t("agents.moveUpLabel", { label: a.label })}
+              disabled={visibleOrder.indexOf(a.bin) <= 0}
+              onClick={() => moveAgent(a.bin, -1)}
+            >
+              ↑
+            </button>
+            <button
+              type="button"
+              className="settings-btn sm icon"
+              title={t("agents.moveDown")}
+              aria-label={t("agents.moveDownLabel", { label: a.label })}
+              disabled={visibleOrder.indexOf(a.bin) >= visibleOrder.length - 1}
+              onClick={() => moveAgent(a.bin, 1)}
+            >
+              ↓
+            </button>
+            <label
+              className="agent-disable-toggle"
+              title={t("agents.disableToggleTitle")}
+            >
+              <Toggle
+                checked={!disabledAgents.includes(a.id)}
+                onChange={(e) => setAgentDisabled(a.id, !e.target.checked)}
+                size="sm"
+                aria-label={t(
+                  disabledAgents.includes(a.id) ? "agents.disableAriaEnable" : "agents.disableAriaDisable",
+                  { label: a.label },
+                )}
+              />
+              {disabledAgents.includes(a.id) ? t("agents.disabled") : t("agents.enabled")}
+            </label>
+          </div>
         )}
       </div>
       <div className="agent-remote-install-row">
@@ -2080,9 +2176,10 @@ export function AgentsPanel({
       {a.id === "claude" && <ClaudeRemoteControlNotice />}
       {a.installed && installedExtras?.(a)}
     </SettingsCard>
-  );
+    );
+  };
 
-  const installedAgents = (agents ?? []).filter((a) => a.installed);
+  const installedAgents = sortByAgentOrder(installedList, (a) => a.bin, agentOrder);
   const availableAgents = (agents ?? []).filter((a) => !a.installed);
   const query = search.trim().toLowerCase();
   // Matched on the label, the id and the binary name, because a CLI is looked

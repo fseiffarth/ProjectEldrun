@@ -1313,6 +1313,11 @@ export const dict: Dict = {
   "agents.composerNoModels": "Keine Modellnamen für diesen Agenten.",
   "agents.installed": "installiert",
   "agents.notInstalled": "nicht installiert",
+  "agents.moveUp": "Nach oben — das +-Menü und Ctrl+1–9 folgen dieser Reihenfolge",
+  "agents.moveDown": "Nach unten — das +-Menü und Ctrl+1–9 folgen dieser Reihenfolge",
+  "agents.moveUpLabel": "{label} nach oben",
+  "agents.moveDownLabel": "{label} nach unten",
+  "agents.chordTitle": "Öffnet einen neuen {label}-Tab im fokussierten Bereich",
   "agents.disableToggleTitle":
     "Diesen Agenten aus den Tab-Auswahlmenüs ausblenden (Agenten-Liste beim Tab-Hinzufügen, Lokales-Modell-Treiber), ohne ihn zu deinstallieren",
   "agents.disableAriaEnable": "{label} in Tab-Menüs aktivieren",

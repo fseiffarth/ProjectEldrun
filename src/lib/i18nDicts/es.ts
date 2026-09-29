@@ -1309,6 +1309,11 @@ export const dict: Dict = {
   "agents.composerNoModels": "Sin nombres de modelo para este agente.",
   "agents.installed": "instalado",
   "agents.notInstalled": "no instalado",
+  "agents.moveUp": "Subir — el menú + y Ctrl+1–9 siguen este orden",
+  "agents.moveDown": "Bajar — el menú + y Ctrl+1–9 siguen este orden",
+  "agents.moveUpLabel": "Subir {label}",
+  "agents.moveDownLabel": "Bajar {label}",
+  "agents.chordTitle": "Abre una nueva pestaña de {label} en el panel activo",
   "agents.disableToggleTitle":
     "Ocultar este agente de los menús de selección de pestañas (lista de agentes al añadir pestaña, controladores de Modelo Local) sin desinstalarlo",
   "agents.disableAriaEnable": "Habilitar {label} en los menús de pestañas",

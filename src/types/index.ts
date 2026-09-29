@@ -418,6 +418,12 @@ export interface Settings {
    *  uninstalling the CLI. Round-trips through the backend settings `extra`
    *  catch-all — no Rust field needed. Unset/empty = nothing hidden. */
   disabled_agents?: string[];
+  /** The order of the Agents group's rows, which is the order Ctrl+1–9 number
+   *  them: row keys (a built-in's command, `"claude"`; a custom agent's
+   *  `"custom:<id>"`). Set by Manage CLIs' ↑/↓. Unset = the default agent
+   *  first, then menu order (`agentShortcutSlots`); keys it lacks follow the
+   *  ones it names. Round-trips through the backend settings `extra`. */
+  agent_order?: string[];
   /** The scheduled agent warm-up (Manage CLIs → Scheduled warm-up): at each
    *  configured local time, one short message is sent to that agent (in its
    *  one-shot print mode), so its usage window starts *then* rather than

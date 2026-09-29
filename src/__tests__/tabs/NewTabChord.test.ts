@@ -5,7 +5,13 @@
  */
 import { describe, it, expect } from "vitest";
 import { newTabRequestFor } from "../../lib/shortcuts/newTabChord";
-import { agentMenuEntries, agentShortcutSlots } from "../../components/tabs/newTabItems";
+import {
+  agentMenuEntries,
+  agentShortcutSlots,
+  effectiveAgentOrder,
+  moveInAgentOrder,
+  sortByAgentOrder,
+} from "../../components/tabs/newTabItems";
 import type { CustomAgent } from "../../types";
 
 const key = (init: KeyboardEventInit) => new KeyboardEvent("keydown", init);
@@ -76,5 +82,61 @@ describe("agentShortcutSlots", () => {
   it("shows no numbers where the chords do not work", () => {
     const entries = agentMenuEntries({ ...base, pick: () => {}, onAddCustom: () => {}, t: (k) => k });
     expect(entries.every((e) => e.shortcut === undefined)).toBe(true);
+  });
+});
+
+describe("agent order (Settings.agent_order)", () => {
+  const custom: CustomAgent[] = [{ id: "a", label: "Mine", cmd: "mine" } as CustomAgent];
+  const base = {
+    installedBuiltins: new Set(["claude", "codex", "gemini"]),
+    installedCmds: new Set(["mine"]),
+    customAgents: custom,
+  };
+
+  it("numbers the chords in the saved order, ahead of the default-agent rule", () => {
+    const slots = agentShortcutSlots({
+      ...base,
+      defaultAgentBin: "claude",
+      agentOrder: ["gemini", "custom:a", "claude"],
+    });
+    // codex is not in the saved order: it follows the named ones.
+    expect(slots.map((s) => s?.key)).toEqual(["gemini", "custom:a", "claude", "codex"]);
+  });
+
+  it("orders the menu rows the same way and labels them with those numbers", () => {
+    const entries = agentMenuEntries({
+      ...base,
+      pick: () => {},
+      onAddCustom: () => {},
+      defaultAgentBin: "claude",
+      agentOrder: ["gemini", "codex"],
+      t: (k) => k,
+    });
+    expect(entries.slice(0, 3).map((e) => e.key)).toEqual(["gemini", "codex", "claude"]);
+    const chord = (k: string) => entries.find((e) => e.key === k)?.shortcut;
+    expect(chord("gemini")).toBe("agentTab1");
+    expect(chord("codex")).toBe("agentTab2");
+    expect(chord("claude")).toBe("agentTab3");
+    expect(chord("custom:a")).toBe("agentTab4");
+  });
+
+  it("sorts named keys first and keeps the rest stable", () => {
+    expect(sortByAgentOrder(["a", "b", "c", "d"], (k) => k, ["c", "a"])).toEqual(["c", "a", "b", "d"]);
+    expect(sortByAgentOrder(["a", "b"], (k) => k, undefined)).toEqual(["a", "b"]);
+  });
+
+  it("falls back to the default agent first when nothing is saved", () => {
+    expect(effectiveAgentOrder(["claude", "codex", "gemini"], undefined, "codex")).toEqual(["codex", "claude", "gemini"]);
+    expect(effectiveAgentOrder(["claude", "codex"], [], "aider")).toEqual(["claude", "codex"]);
+    expect(effectiveAgentOrder(["claude", "codex"], ["codex"], "claude")).toEqual(["codex", "claude"]);
+  });
+
+  it("moves a key past its visible neighbour, leaving hidden keys in place", () => {
+    const order = ["claude", "custom:a", "codex", "gemini"];
+    const peers = ["claude", "codex", "gemini"];
+    expect(moveInAgentOrder(order, "codex", -1, peers)).toEqual(["codex", "custom:a", "claude", "gemini"]);
+    expect(moveInAgentOrder(order, "codex", 1, peers)).toEqual(["claude", "custom:a", "gemini", "codex"]);
+    expect(moveInAgentOrder(order, "gemini", 1, peers)).toEqual(order);
+    expect(moveInAgentOrder(order, "claude", -1, peers)).toEqual(order);
   });
 });

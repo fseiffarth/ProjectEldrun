@@ -89,6 +89,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
     vibeForLocalModel,
     compactAgentBins,
     customAgents,
+    agentOrder,
     installedCustom,
     boxMembers,
   } = useAddTabMenuData(scope);
@@ -175,6 +176,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
               installedBuiltins: enabledAgents,
               installedCmds: installedCustom,
               customAgents,
+              agentOrder,
               pick: pickStatic,
               pickCloud,
               onAddCustom: () => {
@@ -188,6 +190,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                 installedBuiltins: enabledAgents,
                 installedCmds: installedCustom,
                 customAgents,
+                agentOrder,
                 pick: pickStatic,
                 pickCloud,
                 onAddCustom: () => {

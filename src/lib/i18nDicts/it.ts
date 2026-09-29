@@ -1309,6 +1309,11 @@ export const dict: Dict = {
   "agents.composerNoModels": "Nessun nome di modello per questo agente.",
   "agents.installed": "installato",
   "agents.notInstalled": "non installato",
+  "agents.moveUp": "Sposta su — il menu + e Ctrl+1–9 seguono questo ordine",
+  "agents.moveDown": "Sposta giù — il menu + e Ctrl+1–9 seguono questo ordine",
+  "agents.moveUpLabel": "Sposta {label} su",
+  "agents.moveDownLabel": "Sposta {label} giù",
+  "agents.chordTitle": "Apre una nuova scheda {label} nel riquadro attivo",
   "agents.disableToggleTitle":
     "Nascondi questo agente dai menu di scelta scheda (elenco agenti all'aggiunta scheda, driver Modello Locale) senza disinstallarlo",
   "agents.disableAriaEnable": "Abilita {label} nei menu delle schede",

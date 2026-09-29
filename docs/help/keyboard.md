@@ -56,6 +56,11 @@ entry.
 | Ctrl+1 | New tab with your default agent (set in the 🧠 menu) |
 | Ctrl+2 … Ctrl+9 | The + menu's other agents, in the order it lists them |
 
+To choose which agent each number opens, reorder them with ↑/↓ in
+**Settings → Agents → Manage CLIs** (also the 🧠 menu's Manage CLIs…); each installed agent shows
+its chord there. Once you have moved one, the list order is the numbering —
+Ctrl+1 is the top agent rather than the default one.
+
 ## Steering mode
 
 Press **Ctrl+Shift+Space**. A legend appears at the bottom and the app answers

@@ -282,6 +282,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
     vibeForLocalModel,
     compactAgentBins,
     customAgents,
+    agentOrder,
     installedCustom,
     boxMembers,
   } = useAddTabMenuData(scope);
@@ -660,6 +661,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
       installedCmds: installedCustom,
       customAgents,
       defaultAgentBin,
+      agentOrder,
     });
   onNewTabChord.current = (request) => {
     if (request.kind === "monitor") {
@@ -1659,6 +1661,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   pick: handleAdd,
                   pickCloud: handleAddCloud,
                   defaultAgentBin,
+                  agentOrder,
                   onAddCustom: () => {
                     setMenuPos(null);
                     setAgentDialogOpen(true);
@@ -1673,6 +1676,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                     pick: handleAdd,
                     pickCloud: handleAddCloud,
                     defaultAgentBin,
+                    agentOrder,
                     onAddCustom: () => {
                       setMenuPos(null);
                       setAgentDialogOpen(true);

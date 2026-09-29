@@ -249,6 +249,7 @@ export const UNTESTED = {
   "settingsSubPanels.2": { area: "layout", what: "SettingsSubPanels · Prompt composer" },
   "settingsSubPanels.3": { area: "layout", what: "SettingsSubPanels · Re-check version" },
   "settingsSubPanels.4": { area: "layout", what: "SettingsSubPanels · Install in a terminal" },
+  "settingsSubPanels.agentOrder": { area: "layout", what: "Manage CLIs · installed agents reorder with ↑/↓ and show their Ctrl+1–9 chord; the + menu's Agents rows and the chords follow that order (in popouts too)" },
   "shortcutHelp.title": { area: "layout", what: "ShortcutHelpOverlay · Keyboard Shortcuts" },
   "statusCluster.settingLabel": { area: "layout", what: "SettingsPanel · Collapse header status indicators" },
   "theme.presets": { area: "layout", what: "ThemeCustomizer · Saved themes" },

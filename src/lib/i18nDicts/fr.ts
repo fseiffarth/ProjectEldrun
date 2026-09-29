@@ -1311,6 +1311,11 @@ export const dict: Dict = {
   "agents.composerNoModels": "Aucun nom de modèle pour cet agent.",
   "agents.installed": "installé",
   "agents.notInstalled": "non installé",
+  "agents.moveUp": "Monter — le menu + et Ctrl+1–9 suivent cet ordre",
+  "agents.moveDown": "Descendre — le menu + et Ctrl+1–9 suivent cet ordre",
+  "agents.moveUpLabel": "Monter {label}",
+  "agents.moveDownLabel": "Descendre {label}",
+  "agents.chordTitle": "Ouvre un nouvel onglet {label} dans le panneau actif",
   "agents.disableToggleTitle":
     "Masquer cet agent des menus de choix d'onglet (liste des agents à l'ajout d'onglet, pilotes de Modèle Local) sans le désinstaller",
   "agents.disableAriaEnable": "Activer {label} dans les menus d'onglets",

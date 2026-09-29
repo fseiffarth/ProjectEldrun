@@ -1277,6 +1277,11 @@ export const en = {
   "agents.composerNoModels": "No model names for this agent.",
   "agents.installed": "installed",
   "agents.notInstalled": "not installed",
+  "agents.moveUp": "Move up — the + menu and Ctrl+1–9 follow this order",
+  "agents.moveDown": "Move down — the + menu and Ctrl+1–9 follow this order",
+  "agents.moveUpLabel": "Move {label} up",
+  "agents.moveDownLabel": "Move {label} down",
+  "agents.chordTitle": "Opens a new {label} tab in the focused pane",
   "agents.disableToggleTitle":
     "Hide this agent from tab-choice menus (add-tab Agents list, Local Model drivers) without uninstalling it",
   "agents.disableAriaEnable": "Enable {label} in tab menus",

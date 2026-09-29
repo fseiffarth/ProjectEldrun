@@ -56,6 +56,8 @@ export interface AddTabMenuData {
   compactAgentBins: Set<string>;
   /** User-defined custom agents (Settings.custom_agents). */
   customAgents: CustomAgent[];
+  /** Settings.agent_order: the Agents rows' order and Ctrl+1–9 numbers. */
+  agentOrder: string[] | undefined;
   /** Installed *custom*-agent commands, probed separately (they aren't in the
    *  built-in registry). `null` until resolved — custom agents render enabled
    *  until a probe proves one missing. */
@@ -150,6 +152,7 @@ export function useAddTabMenuData(scope: string): AddTabMenuData {
   const customAgents = useSettingsStore(
     (s) => s.settings?.custom_agents ?? EMPTY_CUSTOM_AGENTS,
   );
+  const agentOrder = useSettingsStore((s) => s.settings?.agent_order);
   const [installedCustom, setInstalledCustom] = useState<Set<string> | null>(null);
   // Re-probe custom commands whenever the set changes (adding one in the dialog).
   useEffect(() => {
@@ -179,6 +182,7 @@ export function useAddTabMenuData(scope: string): AddTabMenuData {
     vibeForLocalModel,
     compactAgentBins,
     customAgents,
+    agentOrder,
     installedCustom,
     boxMembers,
   };

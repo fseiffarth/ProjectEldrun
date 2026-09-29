@@ -277,6 +277,19 @@
   color: var(--success);
   font-size: 11px;
 }
+/* An installed agent's head, right side: its Ctrl+N chord, ↑/↓ (the + menu's
+   order, hence the chords') and the Enabled toggle. */
+.agent-list-entry-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.agent-chord-chip {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
 /* Enabled/Disabled toggle on an installed agent's row: hides it from tab-choice
    menus (add-tab Agents group, Local Model drivers) without uninstalling it. */
 .agent-disable-toggle {
@@ -394,7 +407,8 @@
   font-size: 11px;
   color: var(--text-secondary);
 }
-.agent-version-chip {
+.agent-version-chip,
+.agent-chord-chip {
   padding: 1px 6px;
   border: 1px solid var(--border-subtle);
   border-radius: 4px;

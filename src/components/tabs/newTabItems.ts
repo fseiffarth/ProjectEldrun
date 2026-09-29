@@ -304,17 +304,74 @@ export interface AgentShortcutSlot {
 }
 
 /**
- * The agents behind the Ctrl+1–9 chords, index 0 = Ctrl+1. Slot 1 is the
- * default agent (`defaultAgentBin`), empty when it is not in the menu; slots
- * 2–9 are the Agents group's other pickable rows in menu order. Shared by the
- * rows' chord hints (`agentMenuEntries`) and the chord itself (`TabBar`), so the
- * number shown is the agent opened.
+ * `rows` in the user's agent order (`Settings.agent_order`, Agents-group row
+ * keys): the keys it names first, in its order, then every other row as given.
+ * No saved order leaves `rows` as they are.
+ */
+export function sortByAgentOrder<T>(
+  rows: readonly T[],
+  keyOf: (row: T) => string,
+  order: readonly string[] | undefined,
+): T[] {
+  if (!order?.length) return [...rows];
+  const rank = new Map(order.map((key, i) => [key, i]));
+  return rows
+    .map((row, i) => ({ row, rank: rank.get(keyOf(row)) ?? order.length + i }))
+    .sort((a, b) => a.rank - b.rank)
+    .map(({ row }) => row);
+}
+
+/**
+ * Every Agents-group row key (`keys`, in menu order) in the order the chords
+ * number them: the saved order when there is one, else the default agent first.
+ * What Manage CLIs lists its installed agents by and rewrites when one moves.
+ */
+export function effectiveAgentOrder(
+  keys: readonly string[],
+  order: readonly string[] | undefined,
+  defaultKey: string,
+): string[] {
+  if (order?.length) return sortByAgentOrder(keys, (key) => key, order);
+  return keys.includes(defaultKey)
+    ? [defaultKey, ...keys.filter((key) => key !== defaultKey)]
+    : [...keys];
+}
+
+/**
+ * `order` with `key` swapped with its next (`delta` 1) or previous (-1)
+ * neighbour among `peers` — the rows the mover can see. Rows between the two
+ * that the mover does not list (custom agents, in Manage CLIs) stay put.
+ */
+export function moveInAgentOrder(
+  order: readonly string[],
+  key: string,
+  delta: 1 | -1,
+  peers: readonly string[],
+): string[] {
+  const visible = order.filter((k) => peers.includes(k));
+  const other = visible[visible.indexOf(key) + delta];
+  const next = [...order];
+  const from = next.indexOf(key);
+  const to = other === undefined ? -1 : next.indexOf(other);
+  if (from < 0 || to < 0) return next;
+  [next[from], next[to]] = [next[to], next[from]];
+  return next;
+}
+
+/**
+ * The agents behind the Ctrl+1–9 chords, index 0 = Ctrl+1. With a saved
+ * `agentOrder` the pickable rows simply follow it. Without one, slot 1 is the
+ * default agent (`defaultAgentBin`), empty when it is not in the menu, and
+ * slots 2–9 are the Agents group's other pickable rows in menu order. Shared by
+ * the rows' chord hints (`agentMenuEntries`), the chord itself (`TabBar`) and
+ * Manage CLIs' list, so the number shown is the agent opened.
  */
 export function agentShortcutSlots(opts: {
   installedBuiltins: Set<string> | null;
   installedCmds: Set<string> | null;
   customAgents: CustomAgent[];
   defaultAgentBin: string;
+  agentOrder?: readonly string[];
 }): (AgentShortcutSlot | null)[] {
   const rows: AgentShortcutSlot[] = [
     ...AGENT_ITEMS.filter((item) => opts.installedBuiltins?.has(item.cmd)).map((item) => ({
@@ -325,6 +382,9 @@ export function agentShortcutSlots(opts: {
       .filter((ca) => opts.installedCmds == null || opts.installedCmds.has(ca.cmd))
       .map((ca) => ({ key: `custom:${ca.id}`, item: customAgentToItem(ca) })),
   ];
+  if (opts.agentOrder?.length) {
+    return sortByAgentOrder(rows, (row) => row.key, opts.agentOrder).slice(0, AGENT_TAB_ACTIONS.length);
+  }
   const def = rows.find((row) => row.item.cmd === opts.defaultAgentBin) ?? null;
   return [def, ...rows.filter((row) => row !== def)].slice(0, AGENT_TAB_ACTIONS.length);
 }
@@ -354,6 +414,8 @@ export function agentMenuEntries(opts: {
   /** Where the Ctrl+1–9 chords work (the main window's panes), the default
    *  agent's binary: each numbered row then shows its chord. */
   defaultAgentBin?: string;
+  /** `Settings.agent_order`: the rows (and their numbers) follow it. */
+  agentOrder?: readonly string[];
   t: (key: TranslationKey, vars?: Record<string, string>) => string;
 }): AddMenuEntry[] {
   const chordByKey = new Map<string, AgentTabAction>();
@@ -362,8 +424,10 @@ export function agentMenuEntries(opts: {
       if (slot) chordByKey.set(slot.key, AGENT_TAB_ACTIONS[i]);
     });
   }
-  const builtins = AGENT_ITEMS.filter((item) =>
-    opts.installedBuiltins?.has(item.cmd),
+  const builtins = sortByAgentOrder(
+    AGENT_ITEMS.filter((item) => opts.installedBuiltins?.has(item.cmd)),
+    (item) => item.cmd,
+    opts.agentOrder,
   ).map((item) => ({
     key: item.cmd,
     label: item.label,
@@ -400,7 +464,7 @@ export function agentMenuEntries(opts: {
         onPick: () => {},
       }]
     : [];
-  const custom = opts.customAgents.map((ca) => {
+  const custom = sortByAgentOrder(opts.customAgents, (ca) => `custom:${ca.id}`, opts.agentOrder).map((ca) => {
     const missing = opts.installedCmds != null && !opts.installedCmds.has(ca.cmd);
     return {
       key: `custom:${ca.id}`,
