@@ -1,7 +1,8 @@
-# Headless owner — handoff (H1 + H1b)
+# Headless owner — handoff (H1 + H1b + H2)
 
 *Written 2026-09-29 by the H1 agent, extended the same day by the first H1b
-agent (stopped early: usage limit) and closed by the second H1b agent. Plan:
+agent (stopped early: usage limit), closed by the second H1b agent, and
+extended by the H2 agent (the timers). Plan:
 [`headless_owner_plan.md`](headless_owner_plan.md).
 Worktree: `.claude/worktrees/agent-a48b863224fa9d19d`, branch
 `worktree-agent-a48b863224fa9d19d` (based on `develop` at `ad117b09`).
@@ -20,6 +21,8 @@ Nothing was run live; every claim below is gates + tests only.*
 | `732409e1` | **H1b step 4** | `services/launch_prep.rs::prepare` (the launch assembly moved out of `pty_spawn`), `tmux_local::{local_tmux_argv, spawn_detached_with}` (the detached spawn, tested on a private socket). |
 | `84a8677d` | **H1b step 6** | headless `Catalog` / `Activity` / `GitStates` / `Create` (`headless.rs`, `host.rs::HeadlessSpawner`), the phone's ＋ starts a shell or agent with no window; the H1 exit test in `host.rs`. |
 | `dce35fa4` | **H1b step 7** | default apps CAS: `patch_default_apps`, `lib/defaultApps.ts`, the dialog and Settings → File types patch one entry. |
+| `0d706b6b` | **H2, scheduled prompts** | `services/mobile_control/scheduler.rs`: the sidecar's 15 s loop fires scheduled prompts with no window open (tmux `send-keys`/`paste-buffer` into the tab, a dead tab restarted through the H1b spawn); `agent_tasks` / `agent_prompts` transactions hold the file's `FileLock` and have path-based cores (`claim_in`, `complete_in`, `delete_in`, `record_at`, `delete_at`); `timer_lease::holder_in`; the schedule dialog's delivery note + MCP contract. |
+| `de732275` | **H2, calendar reminders** | `services/calendar_alarms.rs` (the due set + the cross-process fired record `calendar-alarms-fired.json`), `commands::calendar::calendar_alarms_claim`, the window's `alarms.ts` claims before it shows, `services/mobile_control/alarms.rs` pushes due reminders to the phone with no window (Web Push, the existing `push.rs`). `calendar_recurrence::Occurrence` carries `alarms`. |
 | `1981a679` | H3 draft | on the side branch `worktree-agent-a48b863224fa9d19d-h3-wip`, **not gate-clean**, not on this branch. See "For H3" below. Its `updatedVersion` half (`1a44acc1`) and its `adoptSyncOutcome` half (`dce19aef`) are both on this branch now; what remains there is the per-tab edit primitives and the host fallbacks. |
 
 ## The H1 design as built
@@ -249,6 +252,35 @@ the desktop away; covers step 6's readings too) and `setDefaultApp.patch`
 (the dialog title). The patch listener (step 2) has no visible control and
 carries no pill.
 
+**Manual checks owed (the plan's H2 exit; Mobile must be enabled so the
+sidecar runs — `systemctl --user status eldrun-mobile-host`):**
+1. *Closed window.* In a project open a Claude tab, add a one-time schedule
+   (Agents ▸ the tab's ⏰) five minutes ahead with a prefix `/clear`, then
+   quit Eldrun cleanly (the window's ×; this reaps the tmux sessions, which
+   is the relaunch case). Watch `journalctl --user -u eldrun-mobile-host -f`:
+   at the minute, `scheduler: restarted 'eldrun-<project>--agent-…'`, then
+   within ~45 s `… delivered into …`. `tmux attach -t =<that name>` shows
+   `/clear` submitted and the prompt answered. Relaunch Eldrun: the tab is
+   attached to that session, the rule is gone from its menu, and the
+   project's Sent prompts hold the row (result delivered, the occurrence).
+   Variant: leave the window closed but the tab's session alive (kill only
+   the window with `kill -TERM <pid>` of the Eldrun process — no reap): no
+   restart line, the prompt goes in once the agent has been quiet 30 s.
+2. *Two windows.* Open a second Eldrun window on the same state dir (a
+   packaged build beside the dev one), schedule a prompt two minutes ahead
+   in one; the other's schedule dialog shows "Another Eldrun window holds
+   the timers". The prompt arrives once (one history row, one `last`).
+   Close the lease-holding window before the minute: the other fires it,
+   still once.
+3. *Window + sidecar.* With one window open, wait past a schedule: the
+   journal shows nothing from the scheduler (the window held the lease).
+4. *Reminders.* Phone: Eldrun Mobile ▸ Calendar ▸ Reminders on. Add an
+   event with a 15-minute reminder 16 minutes ahead, quit Eldrun cleanly.
+   At the minute the phone gets the push (`reminder '…' pushed to 1
+   phone(s)` in the journal); relaunch Eldrun: the reminder does not pop up
+   again (it is in `calendar-alarms-fired.json`). With the window open
+   instead, the popup + toast + push come once and the journal is silent.
+
 **Manual checks owed (the plan's H1 exit):** quit Eldrun cleanly (the
 window's ×; this also reaps every `eldrun-*` session — so start the Mobile
 sidecar first or leave it running as its systemd unit); on the phone open a
@@ -339,47 +371,185 @@ another save different entries within a second and both survive.
 - ESLint: 31 pre-existing warnings (0 errors) in files this work never
   touched (`TerminalView.tsx`, `TodoAgendaRail.tsx`, `notebook.ts`,
   `mobile-web/.../Terminal.tsx`).
+- (H2) The session file is camelCase (`tabLayout`, `TerminalSession` is
+  `rename_all = "camelCase"`); a fixture written as `tab_layout` reads as
+  no tabs, silently.
+- (H2) `FileLock` is flock, per open file description: a state-dir wrapper
+  that takes `lock()` (mutex + file lock) must call the `*_locked` core, not
+  the `*_in` variant that takes the file lock again — same-process deadlock.
+- (H2) tmux: `send-keys -l` and `set-buffer` are bounded by the 16 KiB
+  client message; `load-buffer <file>` is not. `paste-buffer` without `-r`
+  replaces every newline with a carriage return (a submit per line).
+  `window_activity` is pane output; `session_activity` is client input —
+  the wrong one reads an unattached session as idle forever.
+- (H2) `clippy::await_holding_lock`: a `MutexGuard` bound in a
+  `#[tokio::test]` body must be scoped in a block before the next `.await`
+  (`drop()` is not enough for the lint).
+- (H2) `agent_prompts::record_at` still reads the live session record and
+  the repo head from the process's `storage::state_dir()` (production: the
+  same dir); in a lib test they simply answer nothing.
+- (H2) A window's reminder engine now asks the backend before showing:
+  `CalendarAlarmPush.test.ts`-style tests whose `invoke` mock answers `null`
+  get "all granted" (a `null` answer is treated as no record).
 
-## Gate status (at `dce35fa4`, the branch tip)
+## Gate status (at `de732275`, the branch tip)
 
-- `cargo test --no-fail-fast`: **2934 lib tests** and every integration
-  binary green; the wall-clock `mail_sanitize` tests failed in the parallel
-  runs and passed alone each time.
+- `cargo test --no-fail-fast`: **2946 lib tests** and every integration
+  binary green (2934 at `313e080b`); the wall-clock `mail_sanitize`
+  quadratic-time test failed once in a parallel run and passed alone.
 - `cargo clippy --all-targets -- -D warnings`: clean.
-- `npm run build`: green. `npm test`: **634 files, 6455 tests** (632 /
-  6447 at `c5fee054`). `npm run lint`: 0 errors, 31 pre-existing warnings.
+- `npm run build`: green. `npm test`: **635 files, 6457 tests** (634 files / 6455
+  tests at `313e080b`). `npm run lint`: 0 errors, 31 pre-existing warnings.
 - `git diff --check` clean; `scripts/privacy-check.sh` passed on every commit.
 
-## For H2 (where the timers hook in)
+## H2 — the timers, as built
 
-- The lease is in `c5fee054`: `services/timer_lease.rs` (`acquire_in` /
-  `release_in`, 30 s TTL), `commands/agent_tasks.rs::timer_lease_{acquire,
-  release}`, `stores/timerLease.ts` (`holdsTimerLease()`, optimistic default,
-  10 s heartbeat from `layout/TimerLeaseHost.tsx`), gates in
-  `AgentScheduleHost`, `AgentContinueHost`, `AgentCronHost`,
-  `CalDavSyncHost` ticks and `stores/calendar/alarms.ts::tick`. Git probing
-  is not gated. The dialog note is `agentSchedule.leaseElsewhere`
-  (untested-tagged).
-- The port proper: `services/agent_tasks.rs` (`claim` / `complete`),
-  `services/schedule_mcp.rs::next_occurrence`, and `headless.rs::next_run_key`
-  are the backend pieces a scheduler loop can use.
-- **Where a sidecar-side tick sends keys into a tab (H1b step 4 landed):**
-  the tab is named by its tmux session (`workspace::tmux_of`, the catalog's
-  `ResolvedTab::tmux_name`); delivery is `tmux send-keys -t =<name>: -l
-  <text>` then `send-keys -t =<name>: Enter` through
-  `paths::command_no_window("tmux")` on the default socket (the same server
-  the window's and the sidecar's spawns use — step 5 kept it). If the
-  session is not live (`tmux has-session -t =<name>` fails), the sidecar can
-  start it with the step-4 path — `headless::launch_options(raw_id, &tab)`
-  builds the `PtyOptions` from the persisted record, then the host's
-  `HeadlessSpawner.launch` (`prepare` resolves the resume args through
-  `agent_session::resolve_agent_session`; the sidecar process has no
-  `RemotePoolState`, so only local tabs) — and then
-  deliver — that is "fires once with no client". The lease then only has to
-  say whether a window holds the timers; the sidecar takes them when none
-  does (`timer_lease::acquire_in` from the sidecar process, same file).
-- `pty_bridge` has the attach side (`tmux_attach_command`) if a tick needs to
-  read the screen back (`local_tmux_screen_args`).
+Per step, with the plan's H2 exit ("with the window closed, a scheduled
+prompt fires into an agent tab; with two windows open, every schedule fires
+exactly once") covered by tests, never live.
+
+1. **Interim lease — done** (`c5fee054`, unchanged in substance):
+   `services/timer_lease.rs`, `stores/timerLease.ts`, `TimerLeaseHost`; the
+   five window timer hosts tick only under `holdsTimerLease()`. New:
+   `holder_in(path, now)` (a read: who holds it, `None` when free or
+   expired) and `lease_file(state_dir)`. **The lease is a window lease**: the
+   sidecar reads it and never takes it, so a window that opens takes the
+   timers back — it can run the ones the sidecar cannot.
+2. **Scheduled prompts in the owner — done** (`0d706b6b`).
+   `services/mobile_control/scheduler.rs`, a tokio task spawned in
+   `host::run` beside the admin socket (ends on the same `shutdown` watch):
+   - **Tick** (`tick(ctx, now)`, every 15 s): if `holder_in` names a window
+     → nothing. Else `targets(state_dir)` = `agent_tasks::bindings_at` (every
+     project/target with an enabled rule) joined to the scope's session file
+     (`headless::session_file`, camelCase `tabLayout`) by `scheduleTargetId`
+     on an `agent` / `local_agent` tab with a tmux name (`workspace::tmux_of`).
+     Per target, rules sorted soonest-first; `verdict` (the twin of
+     `scheduleVerdict`: `Wait` inside the hour, `Missed` past it, `None` when
+     off / a receipt at or after the occurrence / a finished once).
+     `Missed` → `claim_in` + `complete_in(Missed)` + `retire`. `Wait` →
+     `runner.probe(tmux)` (`tmux display-message -p -t =<name>:
+     '#{session_created}\t#{window_activity}'`); no session → relaunch (below)
+     and stop for this target; else `ready(record, probe, now)`; ready →
+     `claim_in` → `deliver` (in `spawn_blocking`) → `complete_in(Delivered |
+     Failed)` → `retire` → stop for this target (one delivery per tab per
+     tick, as the window).
+   - **Idle = the hooks' record first, the pane second.** `record` is
+     `headless::turn_record` (`live_sessions/<uid>.turn`, shared root or the
+     project slice, newest stamp; uid = the tab's `sessionId`). A stamp
+     older than `session_created` is the previous process's and ignored.
+     `working` / `decision` / `idle` (a `SessionEnd`: the tab is a shell now)
+     hold; `done` delivers once it has stood 3 s and the window has painted
+     nothing for 2 s; no record (a hookless agent, or a fresh relaunch) needs
+     30 s of quiet — the window's `HOOKLESS_DONE_QUIET_MS`. **Why the hooks
+     and not tmux alone:** the window's own gate is the hook verdict
+     (`agentDeliveryReady`), the agent itself says when a turn ends, and
+     output is silent under a long tool; tmux's `window_activity` (updated on
+     pane output, unlike `session_activity` which is client input) only
+     replaces the byte-settle the window had. Consequence: an untrusted
+     Codex (hookless, repaints a spinner every 100 ms even idle) is never
+     quiet and never delivered to headless — the window delivers to it.
+   - **Delivery** (`TmuxRunner::deliver`): per submission (each prefix
+     command, then the message — `submissions()`, sanitized, empties
+     skipped): `send-keys -t =<name>: C-a C-k` (the composer reset), then for
+     a lone character `send-keys -l -- <c>`, otherwise the text is staged in
+     `<state_dir>/mobile-control/schedule-paste.txt` (0600, removed after)
+     and `load-buffer -b eldrun-schedule <file>` + `paste-buffer -r -d -b
+     eldrun-schedule -t =<name>:` with `-p` for every agent but Claude
+     (`bracketsAgentMessage`: tmux brackets only if the pane asked; `-r`
+     keeps newlines as newlines — the default turns each into a submit),
+     then `send-keys Enter`. Between submissions: 350 ms, then quiet ≥ 1 s
+     (≤ 6 s) — `settleBetweenSubmissions`. A tmux command line is capped at
+     16 KiB, which is why a 16 KiB message goes through a buffer file.
+   - **Relaunch**: kind `agent` only, `headless::launch_options(raw_id, tab)`
+     through the host's `HeadlessSpawner.launch` (H1b: `launch_prep::prepare`
+     + `spawn_detached_with`, default socket), once per tab per 60 s. The
+     prompt goes in on a later tick once the CLI is up and 30 s quiet (no
+     record yet) or its hook says done.
+   - **Retire** = the window's: `agent_prompts::record_at` (history row under
+     `<id>` for a once, `<id>@<occurrence>` otherwise, with label, launch
+     `sessionId`, agent, preface, result, `scheduled_for`, `schedule_origin`),
+     then for a once `agent_tasks::delete_in` and the carried collected
+     prompt removed (`agent_prompts::delete_at`, by id else by sanitized
+     text — `promptOfSchedule`). Every firing is `eprintln!`ed (the sidecar's
+     journal: `journalctl --user -u eldrun-mobile-host`).
+   - **Exactly once**: `agent_tasks` transactions now hold the file's
+     `FileLock` (`Guard` = the in-process mutex + `agent_tasks.json.lock`),
+     and the path-based cores `claim_in` / `complete_in` / `delete_in` are
+     what the sidecar calls — one read-check-write under the lock, so an
+     occurrence is claimed by exactly one process however the lease flips.
+     Claims survive a restart (unchanged), so nothing re-fires.
+     `agent_prompts` got the same lock and `record_at` / `delete_at`.
+   - Tests (`scheduler.rs`): verdict + readiness tables, `submissions`,
+     `targets`; `a_due_prompt_fires_once_with_no_window_and_restarts_a_dead_tab`
+     (the headless exit: relaunch recorded with the tab's `PtyOptions`, a
+     stale `working` ignored, delivered once with the preface, claim
+     released, receipt, history row, once retired, never twice);
+     `receipts_holds_and_failures_are_recorded_the_windows_way`;
+     `two_windows_and_the_sidecar_fire_a_schedule_exactly_once` (three
+     threads over one state dir; and the sidecar alone fires once);
+     `concurrent_claims_through_the_file_lock_admit_one` (eight threads, no
+     mutex on that path); `the_sidecar_stands_down_while_a_window_holds_the_timers`;
+     `keys_reach_the_pane_on_a_private_socket` (a `cat` pane on `-L`, prefix
+     first, the message's newline kept, `kill-server` after; skipped without
+     tmux).
+   - UI: the schedule dialog's "how delivery works" fold says who delivers
+     now (`agentSchedule.openOnly`, pill `agentSchedule.headless`) and which
+     timers still need a window (`agentSchedule.windowOnlyTimers`, pill
+     `calendar.alarms.headless`); the schedule MCP `CONTRACT` says the same.
+3. **Calendar reminders — done** (`de732275`): the notification path
+   with no window is the existing Mobile Web Push (`push.rs`, kind
+   `calendar`, the same notice the window's `notify` admin call sends).
+   - `services/calendar_alarms.rs`: `due_alarms` / `alarm_time` /
+     `alarm_window` / `muted_calendars` — the twin of `lib/calendar/alarms.ts`
+     over `calendar_recurrence::expand_events` (`Occurrence.alarms` added;
+     `Occurrence` lost `Eq` for it) — and the **fired record**
+     `<state_dir>/calendar-alarms-fired.json` under its `FileLock`:
+     `claim_in(path, keys)` answers the keys nobody had claimed and records
+     them all (newest 500). This record, not the lease, is what makes a
+     reminder show once across two windows and the sidecar.
+   - The window (`alarms.ts::tick`) now claims through
+     `calendar_alarms_claim` before showing and keeps `localStorage` as its
+     local guard; a key another process claimed joins the local set unshown.
+     A backend without the command (or a failing one) leaves the decision to
+     the window, as before. Test: `CalendarAlarmClaim.test.ts` (2).
+   - `services/mobile_control/alarms.rs`: a 30 s loop in `host::run`; while
+     no window holds the lease, `due_to_push` reads `calendar.json`, claims
+     the due keys, and each unmuted one becomes a `Notice { Calendar, title,
+     "HH:MM · place" | "YYYY-MM-DD" (all-day), tag = key }` →
+     `AuthStore::push_deliveries` → `push::send` (gone endpoints forgotten),
+     journalled. No words to translate in the body on purpose. A muted
+     calendar's reminders are claimed silently, as the window records them.
+     Test: `reminders_reach_the_phone_once_with_no_window`.
+   - No OS toast and no in-app popup with the window closed — there is no
+     window; a phone with reminders on gets the push. A reminder the sidecar
+     pushed is on record, so a window opened later does not show it again.
+4. **Not moved, still under the window lease (recorded, by design):**
+   auto-continue (`AgentContinueHost`: driven by the window's PTY output
+   classifier and its own gates), the warm-up cron (`AgentCronHost`: types
+   into tabs through the window's registry), CalDAV sync (`CalDavSyncHost`:
+   the window's calendar store + credentials flow), git probing (never
+   gated — a duplicate probe costs, never fires). Moving auto-continue and
+   the cron would reuse `scheduler::TmuxRunner::deliver` + `ready`; CalDAV
+   would need the sync client `AppHandle`-free and the credential lookup
+   from the sidecar process. The dialog names the three.
+
+**H2 parity gaps, recorded not fixed:** the sidecar does no after-link
+chaining (`continueAfterDelivery`: a prompt chart's `after` edge is queued
+by the window only — with no window a chain stops after its first hop until
+a window opens and its `waitingForIdle` is gone, so the hop is then never
+queued; the window's tick only chains deliveries it made) and no prompt
+blame (`agent_prompt_blame`). A schedule bound to a tab of a project no
+window has loaded still fires only from the sidecar (a window holding the
+lease fires only for its loaded scopes — today's behaviour too). The sidecar
+only exists while Mobile is enabled: with Mobile off there is no headless
+owner, and schedules need a window, as before. A sidecar-delivered prompt
+is not counted by the window's usage recap (`recordAuthorizedInput`).
+
+## For H2 (where the timers hooked in — kept for the record)
+
+- `pty_bridge` has the attach side (`tmux_attach_command`) if a tick ever
+  needs to read the screen back (`local_tmux_screen_args`); the scheduler
+  reads only `window_activity`.
 
 ## For H3
 
@@ -402,5 +572,24 @@ another save different entries within a second and both survive.
 - Calendar/todo writes from the sidecar are safe now (`commands::calendar::*_at`
   are path-based and CAS); the mobile action → record mapping lives in
   `MobileBridgeHost.tsx` (`calendarMutate`, `todoMutate`) and would need a
-  Rust twin. Schedules/prompts writes need `FileLock` in
-  `agent_tasks::mutate` / `agent_prompts` first. Mail stays behind the window.
+  Rust twin. ~~Schedules/prompts writes need `FileLock` in
+  `agent_tasks::mutate` / `agent_prompts` first.~~ Done in H2: every
+  `agent_tasks` / `agent_prompts` transaction holds the file lock, and the
+  path-based cores (`claim_in`, `complete_in`, `delete_in`, `record_at`,
+  `delete_at`) are the pattern for `ScheduleMutate` / `PromptMutate` with no
+  window (`upsert` still needs an `_in` twin). Mail stays behind the window.
+- (H2) `TabPrompt` / `TabInput` with no window: `scheduler::TmuxRunner::deliver`
+  is the typing path (reset, buffer paste, Enter) and `scheduler::ready` the
+  idle gate; a phone "send now" headless is `submissions()` + `deliver`
+  plus `agent_prompts::record_at` — the sidecar's `pty_bridge` already
+  writes raw input into an attached session, so only the composer-safe
+  submit is new.
+- (H2) The window learns of a sidecar-fired schedule at its next load of
+  the target (`agent-schedules-changed` is a Tauri event; the sidecar emits
+  nothing). Its cached copy is stale until then; a second fire is impossible
+  (claim + receipt), but the dialog's status row may lag one tick. A poke
+  over the desktop socket, if H3 adds one for creates, should also refresh
+  schedules and the alarm store.
+- (H2) Timers still window-bound: auto-continue, the warm-up cron, CalDAV
+  sync (see "H2 — the timers, as built", item 4). Their move would go beside
+  `scheduler.rs` / `alarms.rs` in `host::run`.

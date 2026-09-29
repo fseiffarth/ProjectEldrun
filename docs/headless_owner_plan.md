@@ -75,6 +75,34 @@ probing is not gated (a duplicate probe costs, never fires). The port of the
 timers into the owner — "fires once with no client" — is still plan only,
 as is H3.*
 
+*Status: **H2 landed** (2026-09-29, never live-verified): the timers that
+matter with no window are the owner's. **Scheduled prompts** fire from the
+Mobile sidecar while no window holds the lease
+(`services::mobile_control::scheduler`): a 15 s tick over every bound agent
+tab, `scheduleVerdict`'s twin, the durable claim taken under the file's
+cross-process lock (`agent_tasks::claim_in` — the one at-most-once check,
+whichever process fires), the prompt typed into the tab's tmux session
+(`send-keys` reset, `load-buffer` + `paste-buffer -r [-p]`, `Enter`; prefix
+commands first), the receipt, the history row and a one-time rule's retire
+as the window does them; a tab whose session is gone is restarted through
+the H1b detached spawn and delivered to on a later tick. Idle is the hooks'
+`live_sessions/*.turn` record (the agent's own word — chosen over tmux
+activity alone because output is silent under a long tool and the window's
+gate is the same record) plus the session's `window_activity` quiet as the
+settle; a hookless tab needs 30 s of quiet. **Calendar reminders** reach a
+subscribed phone with no window through the existing Web Push path
+(`mobile_control::alarms`), and are claimed — by a window before it shows
+one, by the sidecar before it pushes — in a shared fired record under its
+lock (`services::calendar_alarms`), so a reminder shows once across two
+windows and the sidecar. The lease stays a **window** lease (the sidecar
+reads it, never takes it), so an opening window takes the timers back.
+Still under the lease, by design: auto-continue, the warm-up cron, CalDAV
+sync; git probing is not gated. Exit tests:
+`scheduler::tests::a_due_prompt_fires_once_with_no_window_and_restarts_a_dead_tab`,
+`…::two_windows_and_the_sidecar_fire_a_schedule_exactly_once`,
+`alarms::tests::reminders_reach_the_phone_once_with_no_window`. Handoff:
+[`headless_owner_handoff.md`](headless_owner_handoff.md).*
+
 The request behind it: **the phone, schedules and alarms keep working with
 the desktop window closed, and two clients never fight over the same state.**
 The hosted plan builds on this; nothing here depends on it.
