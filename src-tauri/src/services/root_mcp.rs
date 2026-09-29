@@ -505,7 +505,9 @@ fn wire_named_cli_args(bin: &str, args: &mut Vec<String>, url: &str, server: &st
     match bin {
         // The root server keeps its rule (a `--mcp-config` already present wins);
         // the schedule and help servers join whatever is there. None twice.
-        "claude" if !args.iter().any(|a| a.contains(&format!("\"{server}\":")))
+        // A subcommand (`claude auth login`, a sign-in tab) refuses the flag.
+        "claude" if !super::agent_fence::runs_subcommand(args)
+            && !args.iter().any(|a| a.contains(&format!("\"{server}\":")))
             && (server != SERVER_NAME || !args.iter().any(|a| a == "--mcp-config")) => {
             let config = json!({
                 "mcpServers": {
@@ -3258,6 +3260,13 @@ mod tests {
         apply_help_to_spawn_with(&mut claude, &runtime, "helptok", &[]);
         assert_eq!(claude.args.iter().filter(|a| *a == "--mcp-config").count(), 1);
         assert_eq!(claude.args.len(), 3);
+        // A sign-in tab (`claude auth login`) refuses `--mcp-config`.
+        let mut login = opts("claude", &["auth", "login", "--claudeai"], Some("p"));
+        login.schedule_target_id = Some("t".into());
+        apply_to_spawn_with(&mut login, &runtime, "roottok", &["claude".into()], &[], false);
+        apply_schedule_to_spawn_with(&mut login, &runtime, "schedtok", &[]);
+        apply_help_to_spawn_with(&mut login, &runtime, "helptok", &[]);
+        assert_eq!(login.args, ["auth", "login", "--claudeai"]);
         // An unwired CLI: the env pair only.
         let mut gemini = opts("gemini", &[], Some("p"));
         apply_help_to_spawn_with(&mut gemini, &runtime, "helptok", &[]);
