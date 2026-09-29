@@ -168,6 +168,48 @@ describe("Eldrun Mobile Reader opens the subagents an agent spawned", () => {
     expect(screen.queryByRole("navigation", { name: "Subagent" })).toBeNull();
   });
 
+  it("keeps the session's subagents reachable from the chat header", async () => {
+    vi.stubGlobal("fetch", subagentFetch());
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+    const index = screen.getByRole("navigation", { name: "Subagents in this conversation" });
+    const toggle = within(index).getByRole("button", { name: /^Subagents \(3\)/ });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect((within(index).getByRole("button", { name: "Plan · Still starting" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(within(index).getByRole("button", { name: "general-purpose · Find the tests" }));
+    await settle();
+    within(screen.getByTestId("subagent-transcript")).getByText("Tests live beside the code.");
+    expect(screen.queryByRole("navigation", { name: "Subagents in this conversation" })).toBeNull();
+    fireEvent.click(within(screen.getByRole("navigation", { name: "Subagent" })).getByRole("button", { name: "Back to the main conversation" }));
+    await settle();
+    expect(within(screen.getByRole("navigation", { name: "Subagents in this conversation" })).getByRole("button", { name: /^Subagents \(3\)/ }).getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("can fetch older turns from the list when the visible tail has no subagents", async () => {
+    const fetch = vi.fn((url: string) => {
+      if (url.endsWith("/outbox")) return Promise.resolve(jsonResponse(200, { files: [] }));
+      if (url.includes("/transcript")) {
+        const expanded = new URL(url, "http://phone").searchParams.get("limit") === "240";
+        return Promise.resolve(jsonResponse(200, { transcript: {
+          available: true, version: expanded ? "older:2" : "older:1", truncated: !expanded,
+          entries: expanded ? MAIN.entries : MAIN.entries.filter((entry) => entry.kind !== "agent"),
+        } }));
+      }
+      return Promise.resolve(jsonResponse(404, { error: "not_found" }));
+    });
+    vi.stubGlobal("fetch", fetch);
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+    const index = screen.getByRole("navigation", { name: "Subagents in this conversation" });
+    fireEvent.click(within(index).getByRole("button", { name: /^Subagents \(0\+\)/ }));
+    fireEvent.click(within(index).getByRole("button", { name: "Find subagents in earlier turns" }));
+    await settle();
+    within(index).getByRole("button", { name: "Explore · Map the backend" });
+    expect(fetch.mock.calls.some(([url]) => String(url).includes("limit=240"))).toBe(true);
+  });
+
   it("steps to the next subagent without going back, and walks into a subagent's own", async () => {
     vi.stubGlobal("fetch", subagentFetch());
     render(<Terminal tab={TAB} back={() => {}} />);

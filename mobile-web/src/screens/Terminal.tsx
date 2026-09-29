@@ -34,6 +34,7 @@ import {
   type ProjectDetail,
   type SessionTranscript,
   type TabRow,
+  type TranscriptEntry,
 } from "../api";
 import { describeFailure } from "../connection";
 import { DRAFT_SAVE_DELAY, readDraft, writeDraft } from "../drafts";
@@ -95,7 +96,7 @@ import { MAX_PENDING, pendingPrompt, withPending, type PendingPrompt } from "../
 import { outboxPosts, type OutboxPost as ChatPost } from "../terminal/outboxPosts";
 import { afterClear, clearMark, type ClearMark } from "../terminal/clearedSession";
 import { ageLabel, sizeLabel } from "../terminal/fileLabels";
-import { resetText, StatusSheet } from "./StatusSheet";
+import { resetCountdown, resetText, StatusSheet } from "./StatusSheet";
 import { SignInSheet } from "./SignInSheet";
 import { copiedSignIn, hasSignInTab, osc52Text, readHiddenSignIn, readSignedOut, readSignIn, signInAlternate, signInCommand, signInDone, type SignIn } from "../terminal/signIn";
 import { limitMeters, parseUsageReport, type LimitMeters } from "../../../shared/usageReport";
@@ -797,6 +798,12 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
    * panel the status sheet shows — the facts row prints them beside the
    * context figure. Empty until a read answers or for a CLI without one. */
   const [limits, setLimits] = useState<LimitMeters>({});
+  const [limitsNow, setLimitsNow] = useState(() => Date.now());
+  const [limitsReadAt, setLimitsReadAt] = useState(() => Date.now());
+  const rememberLimits = useCallback((next: LimitMeters) => {
+    setLimits(next);
+    setLimitsReadAt(Date.now());
+  }, []);
   /** The composer's **+**: a phone file into the project inbox, an image
    * already on the desktop, or an `@`. */
   const [addSheet, setAddSheet] = useState(false);
@@ -893,6 +900,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
   /** The subagents walked into from the stored session (`subagents.ts`),
    * outermost first; empty while the session itself is read. */
   const [subagentPath, setSubagentPath] = useState<readonly SubagentStep[]>([]);
+  const [subagentListOpen, setSubagentListOpen] = useState(false);
   const openStep = subagentPath[subagentPath.length - 1];
   /** The last read of a subagent's conversation, and whose it is — a read
    * that belongs to another subagent is never drawn under this one's bar. */
@@ -1729,6 +1737,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
   const sinceClear = useMemo(() => afterClear(transcript?.entries ?? [], clearedAt), [transcript, clearedAt]);
   const storedEntries = useMemo(() => sinceClear ?? transcript?.entries ?? [], [sinceClear, transcript]);
   const sessionEntries = useMemo(() => withPending(storedEntries, pending), [storedEntries, pending]);
+  const sessionAgents = useMemo(() => sessionEntries.filter((entry) => entry.kind === "agent"), [sessionEntries]);
   /** The files the agent sent while this conversation ran, as its messages. */
   // The gallery holds every file of the project; the chat only what this tab sent.
   const chatPosts = useMemo(() => outboxPosts(sessionEntries, outbox.filter((file) => file.from_tab)), [sessionEntries, outbox]);
@@ -1737,6 +1746,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
   const subTranscript = subRead && subRead.token === subToken ? subRead.transcript : null;
   // Another tab is another session, with subagents of its own.
   useEffect(() => { setSubagentPath([]); }, [tab.id]);
+  useEffect(() => { setSubagentListOpen(false); }, [tab.id]);
   useEffect(() => { setSubLimit(TRANSCRIPT_STEP); }, [subToken]);
   /** Reads the open subagent's conversation as the session itself is read: at
    * once, then every TRANSCRIPT_POLL while the page is visible — a subagent
@@ -1777,15 +1787,20 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
   const levelEntries = openStep ? (subTranscript?.entries ?? []) : sessionEntries;
   const levelEntriesRef = useRef(levelEntries);
   levelEntriesRef.current = levelEntries;
-  const openSubagentTurn = useCallback((turn: TranscriptTurn) => {
+  const openSubagentTurn = useCallback((turn: Pick<TranscriptTurn, "subagent" | "text" | "role">, fromList = false) => {
     const token = turn.subagent;
     if (!token) return;
     const top = readableHost.current?.scrollTop ?? 0;
     setSubagentPath((path) => openSubagent(path, { token, task: turn.text, role: turn.role }, levelEntriesRef.current, top));
+    if (!fromList) setSubagentListOpen(false);
     // A conversation opens on its newest turn, as the session does.
     atBottomRef.current = true;
     setAtBottom(true);
   }, []);
+  const openListedSubagent = (entry: TranscriptEntry) => {
+    if (!entry.subagent) return;
+    openSubagentTurn(entry, true);
+  };
   /** Back up one level, to where that conversation was scrolled. */
   const subagentUp = () => {
     if (!openStep) return;
@@ -1903,7 +1918,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
             stopped = true;
             return;
           }
-          if (report.usage.raw) setLimits(limitMeters(parseUsageReport(report.usage.raw)));
+          if (report.usage.raw) rememberLimits(limitMeters(parseUsageReport(report.usage.raw)));
         },
         () => {},
       );
@@ -1916,7 +1931,12 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", poll);
     };
-  }, [tab.id, tab.kind]);
+  }, [tab.id, tab.kind, rememberLimits]);
+  useEffect(() => {
+    if (tab.kind !== "agent") return;
+    const timer = window.setInterval(() => setLimitsNow(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, [tab.kind]);
   useEffect(() => {
     if (!outboxOpen && !gallery) return;
     // The viewer opens from the gallery, so Escape closes the top one first.
@@ -2252,7 +2272,11 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
   // The cleared conversation's figures are not the new chat's.
   const storedUsage = sinceClear ? undefined : transcript?.usage;
   const contextLeft = status?.context ?? (storedUsage?.contextLeft != null ? `${storedUsage.contextLeft}%` : undefined);
-  const shownLimits = limits.session || limits.week ? limits : sessionLimits(storedUsage, new Date(Date.now()));
+  const limitTime = new Date(limitsNow);
+  const shownLimits = limits.session || limits.week ? limits : sessionLimits(storedUsage, limitTime);
+  const readTime = limits.session || limits.week ? new Date(limitsReadAt) : limitTime;
+  const sessionReset = shownLimits.session?.resets ? resetCountdown(shownLimits.session.resets, limitTime, readTime) : "";
+  const weekReset = shownLimits.week?.resets ? resetCountdown(shownLimits.week.resets, limitTime, readTime) : "";
   /** The picker the model chip opened, read off the screen while the sheet is
    * up — a list of the session's own rows, not a list of models Eldrun
    * believes in. None of OpenCode's, Antigravity's or Cursor's is the numbered
@@ -3104,6 +3128,21 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
             followReadable(stream.scrollHeight - stream.scrollTop - stream.clientHeight < 120);
             checkPinnedPrompt();
           }}>
+          {sessionShown && !openStep && (sessionAgents.length > 0 || (transcript?.truncated && !sinceClear)) &&
+            <nav className="subagent-index" aria-label={t("mobile.subagent.indexRegion")}>
+              <button type="button" className="subagent-index-toggle" aria-expanded={subagentListOpen} aria-controls="mobile-subagent-list" onClick={() => setSubagentListOpen((open) => !open)}>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4v7a4 4 0 0 0 4 4h7m-3-3 3 3-3 3" /></svg>
+                <span>{t("mobile.subagent.index", { count: `${sessionAgents.length}${transcript?.truncated && !sinceClear ? "+" : ""}` })}{subagentUntested && <em> · {subagentUntested}</em>}</span>
+                <svg className={subagentListOpen ? "expanded" : ""} viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+              </button>
+              {subagentListOpen && <div id="mobile-subagent-list" className="subagent-index-list">
+                {sessionAgents.map((entry, index) => <button type="button" key={`${entry.at ?? index}:${index}`} disabled={!entry.subagent} aria-label={`${entry.role ?? t("mobile.subagent.region")} · ${entry.text}`} onClick={() => openListedSubagent(entry)}>
+                  <small>{entry.role ?? t("mobile.subagent.region")}</small>
+                  <span>{entry.text}{entry.cut && "…"}</span>
+                </button>)}
+                {transcript?.truncated && !sinceClear && <button type="button" className="subagent-index-earlier" onClick={() => setTranscriptLimit((limit) => limit + TRANSCRIPT_STEP)}>{t("mobile.subagent.earlier")}</button>}
+              </div>}
+            </nav>}
           {sessionShown && openStep
             ? subagentView
             : sessionShown
@@ -3217,8 +3256,9 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
         </>}
         {status?.branch && <span className="fact-branch">⎇ {status.branch}</span>}
         {contextLeft && <span className="fact-context">{contextLeft} context</span>}
-        {shownLimits.session && <span className={`fact-limit${shownLimits.session.percent >= 90 ? " high" : ""}`} title={shownLimits.session.resets ? resetText(shownLimits.session.resets, new Date()) : undefined}>{t("mobile.facts.session", { percent: Math.round(100 - shownLimits.session.percent) })}</span>}
-        {shownLimits.week && <span className={`fact-limit${shownLimits.week.percent >= 90 ? " high" : ""}`} title={shownLimits.week.resets ? resetText(shownLimits.week.resets, new Date()) : undefined}>{t("mobile.facts.week", { percent: Math.round(100 - shownLimits.week.percent) })}</span>}
+        {shownLimits.session && <span className={`fact-limit${shownLimits.session.percent >= 90 ? " high" : ""}`} title={shownLimits.session.resets ? resetText(shownLimits.session.resets, limitTime, readTime) : undefined}>{t("mobile.facts.session", { percent: Math.round(100 - shownLimits.session.percent) })}{sessionReset && <> · {t("mobile.facts.resetIn", { time: sessionReset })}</>}</span>}
+        {shownLimits.week && <span className={`fact-limit${shownLimits.week.percent >= 90 ? " high" : ""}`} title={shownLimits.week.resets ? resetText(shownLimits.week.resets, limitTime, readTime) : undefined}>{t("mobile.facts.week", { percent: Math.round(100 - shownLimits.week.percent) })}{weekReset && <> · {t("mobile.facts.resetIn", { time: weekReset })}</>}</span>}
+        {(sessionReset || weekReset) && isUntested("mobile.facts.limitResets") && <em className="composer-untested">{t("mobile.focus.untested")}</em>}
       </div>}
       <div className="prompt-composer">
         {slashMenu.length > 0 && <div className="slash-menu" role="group" aria-label={t("mobile.slash.title")}>
@@ -3336,7 +3376,7 @@ export function Terminal({ tab, project, back, pickModel = false, signInTab = fa
       onPick={(key) => void applyMode(key)}
       onClose={() => { if (!switching) setModeSheet(false); }}
     />}
-    {statusSheet && <StatusSheet tab={tab} live={status} onLimits={setLimits} onClose={() => setStatusSheet(false)} signIn={signInWay} />}
+    {statusSheet && <StatusSheet tab={tab} live={status} onLimits={rememberLimits} onClose={() => setStatusSheet(false)} signIn={signInWay} />}
     {signInSheet && <SignInSheet
       tabId={tab.id}
       agent={agentLabel}
