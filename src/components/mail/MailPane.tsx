@@ -169,10 +169,6 @@ export function MailPane({ visible }: MailPaneProps) {
   }, []);
 
   const folders = selectedAccountId ? (foldersByAccount[selectedAccountId] ?? []) : [];
-  const accountDrafts = useMemo(
-    () => agentDrafts.filter((d) => d.account_id === selectedAccountId),
-    [agentDrafts, selectedAccountId],
-  );
   const openDraft = useCallback((d: MailDraft) => {
     void useMailStore.getState().openAgentDraft(d);
   }, []);
@@ -229,7 +225,7 @@ export function MailPane({ visible }: MailPaneProps) {
   // leaves rows whose `account_id` names no mailbox, and a raw uuid on a row
   // would be worse than a blank line.
   const accountLabel = useCallback(
-    (h: MailHeader) => {
+    (h: Pick<MailHeader, "account_id">) => {
       const account = accounts.find((a) => a.id === h.account_id);
       return account ? account.label || account.address : undefined;
     },
@@ -673,17 +669,21 @@ export function MailPane({ visible }: MailPaneProps) {
               {f.unread > 0 && <span className="mail-rail-badge">{f.unread}</span>}
             </button>
           ))}
-          {/* Drafts an agent wrote for this account: a section of its own at
-              the foot of the rail, divided off and in its own colour, since they
-              sit in no server folder and nobody here wrote them. Selecting it
-              lists them the way a folder lists messages; a draft opens in the
-              composer, never sends. Only the selected account's — the rail is
-              that account's, and another account's draft listed here would read
-              as this mailbox's. Every draft, orphans included, is also a row in
-              the title bar's ✓ Approvals panel. */}
-          {(accountDrafts.length > 0 || draftsOpen) && (
+          {/* Drafts agents wrote, for every account: a section of its own at the
+              foot of the rail, divided off and in its own colour, since they sit
+              in no server folder and nobody here wrote them. Not the selected
+              account's alone — a draft must not hide because another mailbox is
+              lit — so, like the priority group, it carries an "All accounts"
+              scope label and each row names its account. Selecting it lists them
+              the way a folder lists messages; a draft opens in the composer
+              (switching to its account), never sends. Every draft, orphans
+              included, is also a row in the title bar's ✓ Approvals panel. */}
+          {(agentDrafts.length > 0 || draftsOpen) && (
             <div className="mail-rail-agent-section">
-              <div className="mail-rail-title">{t("mail.agentSection")}</div>
+              <div className="mail-rail-title">
+                {t("mail.agentSection")}
+                <span className="mail-headerband-scope">{t("mail.priorityAllAccounts")}</span>
+              </div>
               <button
                 type="button"
                 className={`mail-rail-folder mail-rail-agent-drafts${draftsOpen ? " selected" : ""}`}
@@ -691,8 +691,8 @@ export function MailPane({ visible }: MailPaneProps) {
               >
                 <span className="mail-rail-folder-name">{t("mail.agentDrafts")}</span>
                 <UntestedTag id="mail.agentDrafts" />
-                {accountDrafts.length > 0 && (
-                  <span className="mail-rail-badge">{accountDrafts.length}</span>
+                {agentDrafts.length > 0 && (
+                  <span className="mail-rail-badge">{agentDrafts.length}</span>
                 )}
               </button>
             </div>
@@ -713,7 +713,7 @@ export function MailPane({ visible }: MailPaneProps) {
           </div>
         ) : (
           draftsOpen ? (
-          <MailAgentDraftList drafts={accountDrafts} onOpen={openDraft} />
+          <MailAgentDraftList drafts={agentDrafts} accountLabel={accountLabel} onOpen={openDraft} />
         ) : (
           <>
             <MailList

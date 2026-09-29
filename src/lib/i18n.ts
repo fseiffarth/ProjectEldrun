@@ -5947,7 +5947,7 @@ export const en = {
   "mail.agentOnlyTitle": "Only messages shared with agents",
   "mail.agentDrafts": "Drafted by agents",
   "mail.agentSection": "Agents",
-  "mail.noAgentDrafts": "No agent drafts for this account.",
+  "mail.noAgentDrafts": "No agent drafts.",
   "mail.noRecipient": "(no recipient)",
   "mail.agentMark": "agent",
   "mail.agentMarkReader": "mail-reading agent",

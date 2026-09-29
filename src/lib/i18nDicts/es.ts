@@ -5653,7 +5653,7 @@ export const dict: Dict = {
   "mail.agentOnlyTitle": "Solo los mensajes compartidos con agentes",
   "mail.agentDrafts": "Redactados por agentes",
   "mail.agentSection": "Agentes",
-  "mail.noAgentDrafts": "No hay borradores de agentes para esta cuenta.",
+  "mail.noAgentDrafts": "No hay borradores de agentes.",
   "mail.noRecipient": "(sin destinatario)",
   "mail.agentMark": "agente",
   "mail.agentMarkReader": "agente que lee correo",

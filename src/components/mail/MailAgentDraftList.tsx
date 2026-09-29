@@ -9,14 +9,19 @@ import type { MailDraft } from "../../types/mail";
  * tab (`openAgentDraft`), as a click on a message opens its tab; nothing here
  * sends.
  *
+ * Drafts of every account are listed, so each row names its mailbox (as the
+ * cross-account priority lists do); a click opens it under that account.
+ *
  * Mail strings stay plain text nodes, as in `MailList`: the body an agent wrote
  * may carry text shaped by mail from outside.
  */
 export function MailAgentDraftList({
   drafts,
+  accountLabel,
   onOpen,
 }: {
   drafts: MailDraft[];
+  accountLabel: (draft: MailDraft) => string | undefined;
   onOpen: (draft: MailDraft) => void;
 }) {
   const t = useT();
@@ -25,6 +30,7 @@ export function MailAgentDraftList({
       {drafts.length === 0 && <div className="mail-empty">{t("mail.noAgentDrafts")}</div>}
       <div className="mail-list-rows">
         {drafts.map((d) => {
+          const account = accountLabel(d);
           const to = [...d.to, ...d.cc, ...d.bcc].map(stripFormatControls).join(", ");
           return (
             <div
@@ -68,6 +74,7 @@ export function MailAgentDraftList({
                   {stripFormatControls(d.body_text.slice(0, 200))}
                 </div>
               )}
+              {account && <div className="mail-row-account">{account}</div>}
             </div>
           );
         })}

@@ -5657,7 +5657,7 @@ export const dict: Dict = {
   "mail.agentOnlyTitle": "Nur für Agenten freigegebene Nachrichten",
   "mail.agentDrafts": "Von Agenten entworfen",
   "mail.agentSection": "Agenten",
-  "mail.noAgentDrafts": "Keine Agentenentwürfe für dieses Konto.",
+  "mail.noAgentDrafts": "Keine Agentenentwürfe.",
   "mail.noRecipient": "(kein Empfänger)",
   "mail.agentMark": "Agent",
   "mail.agentMarkReader": "E-Mail lesender Agent",

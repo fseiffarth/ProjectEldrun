@@ -121,12 +121,13 @@ describe("the agent-draft row", () => {
     render(
       <MailAgentDraftList
         drafts={[draft({ staged: [agentFile, { ...agentFile, staged_id: "s2" }], suggested_to: ["bob@example.com"] })]}
+        accountLabel={() => undefined}
         onOpen={vi.fn()}
       />,
     );
     expect(screen.getByText("2 attached · suggests 1 recipients")).toBeTruthy();
     cleanup();
-    render(<MailAgentDraftList drafts={[draft({ staged: [] })]} onOpen={vi.fn()} />);
+    render(<MailAgentDraftList drafts={[draft({ staged: [] })]} accountLabel={() => undefined} onOpen={vi.fn()} />);
     expect(screen.queryByText(/attached/)).toBeNull();
   });
 });
