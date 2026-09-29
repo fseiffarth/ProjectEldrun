@@ -490,9 +490,21 @@ export function mailContactsSetCollect(enabled: boolean): Promise<void> {
   return invoke<void>("mail_contacts_set_collect", { enabled });
 }
 
-/** Pick a `.vcf` (backend dialog) and merge it into the book. */
+/** Pick a `.vcf`, `.ldif` or Thunderbird `abook.sqlite` (backend dialog) and
+ *  merge it into the book. */
 export function mailContactsImport(): Promise<MailContactsImportReport> {
   return invoke<MailContactsImportReport>("mail_contacts_import");
+}
+
+/** Merge every address book of every Thunderbird profile on this machine
+ *  (read-only; Collected Addresses land in Collected). */
+export function mailContactsImportThunderbird(): Promise<MailContactsImportReport> {
+  return invoke<MailContactsImportReport>("mail_contacts_import_thunderbird");
+}
+
+/** Add the senders of all locally indexed Inbox mail as Collected cards. */
+export function mailContactsHarvestInbox(): Promise<MailContactsImportReport> {
+  return invoke<MailContactsImportReport>("mail_contacts_harvest_inbox");
 }
 
 /** Save cards as a `.vcf` (backend dialog): these ids, or every card when

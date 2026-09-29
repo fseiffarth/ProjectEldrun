@@ -67,7 +67,7 @@ use crate::schema::mail::{
     MailSyncSummary, StagedAttachment, ACCOUNTS_VERSION, FILTERS_VERSION,
 };
 use crate::schema::mail::{
-    MailContact, MailContactList, MailContacts, MailContactsImportReport, MailContactsView,
+    MailContact, MailContactBook, MailContactList, MailContacts, MailContactsImportReport, MailContactsView,
     CONTACTS_VERSION,
 };
 use crate::services::mail_ai;
@@ -83,6 +83,7 @@ use crate::services::mail_pgp::{self, PgpKeyInfo, PgpKeyring, SealOpts};
 use zeroize::Zeroizing;
 use crate::services::mail_sanitize::{self, SANITIZER_VERSION};
 use crate::services::mail_store::MailStore;
+use crate::services::mail_thunderbird;
 use crate::services::remote_credentials::{self, KeyringState, MailProto};
 use crate::storage;
 
@@ -4053,16 +4054,22 @@ pub async fn mail_contacts_set_collect(enabled: bool) -> Result<(), String> {
     .map_err(|e| e.to_string())?
 }
 
-/// Import a `.vcf`. Like [`mail_attach_pick`], the OS dialog is raised **inside
+/// Import a `.vcf`, an `.ldif` (Thunderbird's other export) or a Thunderbird
+/// `abook.sqlite`. Like [`mail_attach_pick`], the OS dialog is raised **inside
 /// Rust** and no path crosses IPC; the file is read once, capped at
-/// `mail_contacts::MAX_IMPORT_BYTES`, and parsed as untrusted text.
+/// `mail_contacts::MAX_IMPORT_BYTES` (a database at
+/// `mail_thunderbird::MAX_DB_BYTES`), and parsed as untrusted text. The format
+/// is told from the contents, not the extension.
 #[tauri::command]
 pub async fn mail_contacts_import(app: AppHandle) -> Result<MailContactsImportReport, String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
         .set_title("Import contacts")
+        .add_filter("Address book", &["vcf", "vcard", "ldif", "ldi", "sqlite"])
         .add_filter("vCard", &["vcf", "vcard"])
+        .add_filter("LDIF", &["ldif", "ldi"])
+        .add_filter("Thunderbird address book", &["sqlite"])
         .pick_file(move |chosen| {
             let _ = tx.send(chosen);
         });
@@ -4079,6 +4086,17 @@ pub async fn mail_contacts_import(app: AppHandle) -> Result<MailContactsImportRe
         if !meta.is_file() {
             return Err("not a file".to_string());
         }
+        let mut magic = [0u8; 16];
+        let is_sqlite = std::fs::File::open(&source)
+            .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut magic))
+            .is_ok()
+            && &magic == b"SQLite format 3\0";
+        if is_sqlite {
+            let read = mail_thunderbird::read_book(&source)?;
+            return with_contacts(|book| {
+                Ok(merge_thunderbird(book, read, MailContactBook::Personal))
+            });
+        }
         if meta.len() > mail_contacts::MAX_IMPORT_BYTES {
             return Err(format!(
                 "the file is larger than {} MiB",
@@ -4086,15 +4104,120 @@ pub async fn mail_contacts_import(app: AppHandle) -> Result<MailContactsImportRe
             ));
         }
         let bytes = std::fs::read(&source).map_err(|e| e.to_string())?;
-        let cards = mail_contacts::parse_vcards(&mail_contacts::decode_file(&bytes));
-        if cards.is_empty() {
-            return Err("no vCard (BEGIN:VCARD) found in that file".to_string());
+        let text = mail_contacts::decode_file(&bytes);
+        let cards = mail_contacts::parse_vcards(&text);
+        if !cards.is_empty() {
+            return with_contacts(|book| {
+                Ok(mail_contacts::merge_import(
+                    book,
+                    cards,
+                    MailContactBook::Personal,
+                    unix_now(),
+                    &mut uuid_v4,
+                ))
+            });
         }
-        with_contacts(|book| Ok(mail_contacts::merge_import(book, cards, unix_now(), &mut uuid_v4)))
+        let (cards, lists) = mail_contacts::parse_ldif(&text);
+        if cards.is_empty() && lists.is_empty() {
+            return Err("no contacts found in that file (vCard, LDIF or Thunderbird address book)"
+                .to_string());
+        }
+        let read = mail_thunderbird::ReadBook { cards, lists };
+        with_contacts(|book| Ok(merge_thunderbird(book, read, MailContactBook::Personal)))
     })
     .await
     .map_err(|e| e.to_string())?
 }
+
+/// Fold one read address book — cards, then lists — into ours.
+fn merge_thunderbird(
+    book: &mut MailContacts,
+    read: mail_thunderbird::ReadBook,
+    target: MailContactBook,
+) -> MailContactsImportReport {
+    let mut report =
+        mail_contacts::merge_import(book, read.cards, target, unix_now(), &mut uuid_v4);
+    report.lists = mail_contacts::merge_lists(book, read.lists, &mut uuid_v4);
+    report
+}
+
+/// "Import from Thunderbird": every address book in every Thunderbird profile
+/// on this machine (native and snap layouts on every OS), Personal books
+/// into Personal and `history.sqlite` ("Collected Addresses") into Collected.
+/// Read-only — see `services::mail_thunderbird`. One unreadable book does not
+/// stop the rest; only a run where none could be read is an error.
+#[tauri::command]
+pub async fn mail_contacts_import_thunderbird() -> Result<MailContactsImportReport, String> {
+    tokio::task::spawn_blocking(|| {
+        let books = mail_thunderbird::find_books(&crate::paths::home_dir());
+        if books.is_empty() {
+            return Err("no Thunderbird profile with an address book was found".to_string());
+        }
+        let mut total = MailContactsImportReport::default();
+        let mut errors = Vec::new();
+        let mut read_any = false;
+        for f in books {
+            let read = match mail_thunderbird::read_book(&f.path) {
+                Ok(r) => r,
+                Err(e) => {
+                    errors.push(format!("{}: {e}", f.path.display()));
+                    continue;
+                }
+            };
+            read_any = true;
+            let target = if f.collected {
+                MailContactBook::Collected
+            } else {
+                MailContactBook::Personal
+            };
+            let r = with_contacts(|book| Ok(merge_thunderbird(book, read, target)))?;
+            total.added += r.added;
+            total.merged += r.merged;
+            total.skipped += r.skipped;
+            total.lists += r.lists;
+        }
+        if !read_any {
+            return Err(format!(
+                "no Thunderbird address book could be read: {}",
+                errors.join("; ")
+            ));
+        }
+        for e in errors {
+            eprintln!("mail: Thunderbird import skipped {e}");
+        }
+        Ok(total)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// "Add from Inbox": the senders of every locally indexed Inbox message, in
+/// every account, become Collected cards (`mail_contacts::harvest`). Never
+/// touches a server; the user's own account addresses are left out.
+#[tauri::command]
+pub async fn mail_contacts_harvest_inbox(
+    state: State<'_, MailState>,
+) -> Result<MailContactsImportReport, String> {
+    let rt = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let store = store_of(&rt)?;
+        let senders = store.inbox_senders(HARVEST_SCAN_CAP)?;
+        let own: std::collections::HashSet<String> = read_accounts(&accounts_path())
+            .unwrap_or_default()
+            .accounts
+            .into_iter()
+            .map(|a| a.address.trim().to_lowercase())
+            .collect();
+        with_contacts(|book| {
+            Ok(mail_contacts::harvest(book, &senders, &own, unix_now(), &mut uuid_v4))
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Most Inbox messages one "Add from Inbox" reads, newest first.
+const HARVEST_SCAN_CAP: u32 = 50_000;
 
 /// Export cards as vCard 3.0 through a Rust-raised save dialog: the given ids,
 /// or the whole book when `ids` is empty. `None` when the dialog was cancelled,

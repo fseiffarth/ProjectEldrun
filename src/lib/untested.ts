@@ -287,6 +287,8 @@ export const UNTESTED = {
   "mail.keys.title": { area: "mail", what: "MailKeysDialog · OpenPGP keys" },
   "mail.contacts.title": { area: "mail", what: "MailAddressBook · Address Book tab (Personal / Collected books, lists, card editor, Write)" },
   "mail.contacts.importExport": { area: "mail", what: "MailAddressBook · vCard Import… / Export… (backend-raised file dialogs)" },
+  "mail.contacts.fromInbox": { area: "mail", what: "MailAddressBook · Add from Inbox (senders of indexed Inbox mail → Collected; robots and own addresses skipped)" },
+  "mail.contacts.thunderbird": { area: "mail", what: "MailAddressBook · From Thunderbird (reads every profile's abook/history.sqlite from a temp copy) + LDIF/abook.sqlite in Import…" },
   "mail.contacts.autocomplete": { area: "mail", what: "MailRecipientField · To/Cc/Bcc autocomplete from the address book (lists expand to members)" },
   "mail.contacts.addSender": { area: "mail", what: "MailMessageView · ☆/★ beside the sender: add to / open in the Address Book" },
   "mail.overlayTitle": { area: "mail", what: "MailOverlay · Mail" },

@@ -26,7 +26,7 @@
 use std::collections::HashSet;
 
 use crate::schema::mail::{
-    MailContact, MailContactBook, MailContactList, MailContactPhone, MailContacts,
+    MailAddress, MailContact, MailContactBook, MailContactList, MailContactPhone, MailContacts,
     MailContactsImportReport,
 };
 use crate::services::mail_engine::validate_recipient;
@@ -377,6 +377,227 @@ pub fn collect(
     added
 }
 
+// ── Harvesting received mail ────────────────────────────────────────────────
+
+/// An address that sends but is not written back to: `noreply@…`, bounce and
+/// notification robots, the mailer daemon. Judged on the local part only
+/// (a `+tag` ignored), so a person at a domain named "noreply" still counts.
+pub fn is_automated_sender(address: &str) -> bool {
+    let local = address.rsplit_once('@').map_or(address, |(l, _)| l).to_lowercase();
+    let local = local.split('+').next().unwrap_or("");
+    let squashed: String = local.chars().filter(|c| !matches!(c, '-' | '_' | '.')).collect();
+    squashed.starts_with("noreply")
+        || squashed.starts_with("donotreply")
+        || squashed.starts_with("bounce")
+        || matches!(
+            squashed.as_str(),
+            "mailerdaemon" | "postmaster" | "notification" | "notifications"
+        )
+}
+
+/// A sender's display name as a card name, or empty. The name is the sender's
+/// own claim, so one that carries an `@` — the `"boss@corp.test" <x@evil.test>`
+/// trick — is dropped rather than stored as who the address belongs to.
+fn sender_name(name: Option<&str>, address: &str) -> String {
+    let n = clean_line(name.unwrap_or(""));
+    let n = n.trim_matches(|c| c == '"' || c == '\'' || c == ' ').to_string();
+    if n.contains('@') || n.eq_ignore_ascii_case(address) {
+        return String::new();
+    }
+    n
+}
+
+/// "Add from Inbox": every distinct sender becomes a Collected card, unless a
+/// card already holds the address (`merged` — an unnamed Collected card takes
+/// the sender's name), it is one of the user's own addresses (`own`, lower
+/// case) or an automated sender, or the book is full (all `skipped`).
+///
+/// `senders` is newest first, so the most recent display name wins. Receiving
+/// mail is not writing to someone: popularity stays 0. Unlike [`collect`] this
+/// ignores `collect_disabled` — that switch governs automatic collecting, and
+/// this is an explicit click.
+pub fn harvest(
+    book: &mut MailContacts,
+    senders: &[MailAddress],
+    own: &HashSet<String>,
+    now: i64,
+    new_id: &mut dyn FnMut() -> String,
+) -> MailContactsImportReport {
+    let mut report = MailContactsImportReport::default();
+    let mut seen = HashSet::new();
+    for s in senders {
+        let Some(addr) = clean_email(&s.address) else { continue };
+        let needle = addr.to_lowercase();
+        if !seen.insert(needle.clone()) {
+            continue;
+        }
+        if own.contains(&needle) || is_automated_sender(&addr) {
+            report.skipped += 1;
+            continue;
+        }
+        let name = sender_name(s.name.as_deref(), &addr);
+        if let Some(card) = book
+            .contacts
+            .iter_mut()
+            .find(|c| c.emails.iter().any(|e| e.to_lowercase() == needle))
+        {
+            if card.book == MailContactBook::Collected
+                && card.display_name.is_empty()
+                && card.first_name.is_empty()
+                && card.last_name.is_empty()
+                && !name.is_empty()
+            {
+                card.display_name = name;
+                card.updated = now;
+            }
+            report.merged += 1;
+            continue;
+        }
+        if book.contacts.len() >= MAX_CONTACTS {
+            report.skipped += 1;
+            continue;
+        }
+        book.contacts.push(MailContact {
+            id: new_id(),
+            book: MailContactBook::Collected,
+            display_name: name,
+            emails: vec![addr],
+            created: now,
+            updated: now,
+            ..Default::default()
+        });
+        report.added += 1;
+    }
+    report
+}
+
+// ── LDIF in (Thunderbird's other export) ────────────────────────────────────
+
+/// Every person and mailing list in an LDIF file, raw — not yet normalized,
+/// no ids. Thunderbird's attribute names (`mozillaSecondEmail`, `mozillaHome…`)
+/// and the plain LDAP ones; base64 (`::`) values decoded, folded lines joined,
+/// `:<` URL values ignored. A `groupOfNames` record is a list whose members
+/// are the `mail=` of each `member` DN.
+pub fn parse_ldif(text: &str) -> (Vec<MailContact>, Vec<MailContactList>) {
+    use base64::Engine as _;
+    let mut cards = Vec::new();
+    let mut lists = Vec::new();
+    let mut record: Vec<(String, String)> = Vec::new();
+    let mut lines: Vec<String> = Vec::new();
+    for raw in text.split('\n') {
+        let line = raw.strip_suffix('\r').unwrap_or(raw);
+        if let Some(rest) = line.strip_prefix(' ') {
+            if let Some(last) = lines.last_mut() {
+                last.push_str(rest);
+                continue;
+            }
+        }
+        lines.push(line.to_string());
+    }
+    lines.push(String::new());
+    for line in lines {
+        if line.trim().is_empty() {
+            if !record.is_empty() {
+                ldif_record(std::mem::take(&mut record), &mut cards, &mut lists);
+                if cards.len() >= MAX_CONTACTS || lists.len() >= MAX_LISTS {
+                    break;
+                }
+            }
+            continue;
+        }
+        if line.starts_with('#') {
+            continue;
+        }
+        let Some((name, rest)) = line.split_once(':') else { continue };
+        let value = if let Some(b64) = rest.strip_prefix(':') {
+            match base64::engine::general_purpose::STANDARD.decode(b64.trim()) {
+                Ok(bytes) => decode_file(&bytes),
+                Err(_) => continue,
+            }
+        } else if rest.starts_with('<') {
+            continue;
+        } else {
+            rest.trim_start().to_string()
+        };
+        record.push((name.trim().to_ascii_lowercase(), value));
+    }
+    (cards, lists)
+}
+
+fn ldif_record(
+    record: Vec<(String, String)>,
+    cards: &mut Vec<MailContact>,
+    lists: &mut Vec<MailContactList>,
+) {
+    let is_group = record
+        .iter()
+        .any(|(k, v)| k == "objectclass" && v.trim().eq_ignore_ascii_case("groupOfNames"));
+    if is_group {
+        let mut l = MailContactList::default();
+        for (k, v) in &record {
+            match k.as_str() {
+                "cn" => l.name = v.clone(),
+                "mozillanickname" | "xmozillanickname" => l.nickname = v.clone(),
+                "description" => l.description = v.clone(),
+                "member" | "uniquemember" => {
+                    if let Some(mail) = v.split(',').find_map(|part| {
+                        let (a, b) = part.split_once('=')?;
+                        a.trim().eq_ignore_ascii_case("mail").then(|| b.trim().to_string())
+                    }) {
+                        l.members.push(mail);
+                    }
+                }
+                _ => {}
+            }
+        }
+        lists.push(l);
+        return;
+    }
+    let mut c = MailContact::default();
+    let (mut home, mut work) = (Vec::new(), Vec::new());
+    let (mut by, mut bm, mut bd) = (String::new(), String::new(), String::new());
+    let phone = |c: &mut MailContact, kind: &str, v: &str| {
+        c.phones.push(MailContactPhone { kind: kind.into(), number: v.to_string() })
+    };
+    for (k, v) in &record {
+        match k.as_str() {
+            "cn" | "displayname" => c.display_name = v.clone(),
+            "givenname" => c.first_name = v.clone(),
+            "sn" | "surname" => c.last_name = v.clone(),
+            "mozillanickname" | "xmozillanickname" => c.nickname = v.clone(),
+            "mail" | "mozillasecondemail" | "xmozillasecondemail" => c.emails.push(v.clone()),
+            "telephonenumber" => phone(&mut c, "work", v),
+            "homephone" => phone(&mut c, "home", v),
+            "mobile" | "cellphone" | "carphone" => phone(&mut c, "cell", v),
+            "facsimiletelephonenumber" | "fax" => phone(&mut c, "fax", v),
+            "pager" | "pagerphone" => phone(&mut c, "pager", v),
+            "o" | "company" => c.organization = v.clone(),
+            "title" => c.job_title = v.clone(),
+            "mozillaworkurl" | "workurl" | "mozillahomeurl" | "homeurl" if c.website.is_empty() => {
+                c.website = v.clone()
+            }
+            "mozillahomestreet" | "mozillahomestreet2" | "mozillahomelocalityname"
+            | "mozillahomestate" | "mozillahomepostalcode" | "mozillahomecountryname" => {
+                home.push(v.clone())
+            }
+            "street" | "streetaddress" | "mozillaworkstreet2" | "l" | "locality" | "st"
+            | "postalcode" | "c" | "countryname" => work.push(v.clone()),
+            "birthyear" => by = v.trim().to_string(),
+            "birthmonth" => bm = v.trim().to_string(),
+            "birthday" => bd = v.trim().to_string(),
+            "description" => c.notes = v.clone(),
+            _ => {}
+        }
+    }
+    let lines = if home.is_empty() { work } else { home };
+    c.address = lines.into_iter().filter(|l| !l.trim().is_empty()).collect::<Vec<_>>().join("\n");
+    if !bm.is_empty() && !bd.is_empty() {
+        let (m, d) = (format!("{bm:0>2}"), format!("{bd:0>2}"));
+        c.birthday = if by.is_empty() { format!("--{m}-{d}") } else { format!("{by}-{m}-{d}") };
+    }
+    cards.push(c);
+}
+
 // ── vCard in ────────────────────────────────────────────────────────────────
 
 /// Decode a file's bytes: UTF-8 (BOM tolerated), else Windows-1252 — what old
@@ -660,10 +881,13 @@ fn apply_prop(c: &mut MailContact, p: &Prop) {
 
 /// Fold imported cards into the book (rule 2): a card sharing an address with
 /// one already there fills that card's empty fields and adds its missing
-/// addresses and numbers; anything else is a new Personal card.
+/// addresses and numbers; anything else is a new card in `target`. Importing
+/// into Personal promotes a matched Collected card; importing into Collected
+/// (Thunderbird's own collected addresses) leaves a matched card's book alone.
 pub fn merge_import(
     book: &mut MailContacts,
     imported: Vec<MailContact>,
+    target: MailContactBook,
     now: i64,
     new_id: &mut dyn FnMut() -> String,
 ) -> MailContactsImportReport {
@@ -688,13 +912,13 @@ pub fn merge_import(
         };
         match hit {
             Some(i) => {
-                merge_into(&mut book.contacts[i], card, now);
+                merge_into(&mut book.contacts[i], card, target, now);
                 report.merged += 1;
             }
             None if book.contacts.len() >= MAX_CONTACTS => report.skipped += 1,
             None => {
                 card.id = new_id();
-                card.book = MailContactBook::Personal;
+                card.book = target;
                 card.popularity = 0;
                 card.last_used = 0;
                 card.created = now;
@@ -717,7 +941,7 @@ fn display_key(c: &MailContact) -> String {
     name.trim().to_lowercase()
 }
 
-fn merge_into(into: &mut MailContact, from: MailContact, now: i64) {
+fn merge_into(into: &mut MailContact, from: MailContact, target: MailContactBook, now: i64) {
     fn fill(slot: &mut String, v: String) {
         if slot.is_empty() {
             *slot = v;
@@ -745,8 +969,66 @@ fn merge_into(into: &mut MailContact, from: MailContact, now: i64) {
         }
     }
     // The user chose to import this person: they are no longer just collected.
-    into.book = MailContactBook::Personal;
+    if target == MailContactBook::Personal {
+        into.book = MailContactBook::Personal;
+    }
     into.updated = now;
+}
+
+/// Fold imported mailing lists into the book: a list whose name (any case)
+/// is already there gains the members it lacks; any other becomes a new list.
+/// Members are untrusted — an address that fails [`clean_email`] is dropped,
+/// not an error. Returns how many lists were added or extended.
+pub fn merge_lists(
+    book: &mut MailContacts,
+    imported: Vec<MailContactList>,
+    new_id: &mut dyn FnMut() -> String,
+) -> u32 {
+    let mut touched = 0u32;
+    for raw in imported {
+        let name = clean_line(&raw.name);
+        if name.is_empty() {
+            continue;
+        }
+        let mut seen = HashSet::new();
+        let members: Vec<String> = raw
+            .members
+            .iter()
+            .filter_map(|m| clean_email(m))
+            .filter(|e| seen.insert(e.to_lowercase()))
+            .take(MAX_LIST_MEMBERS)
+            .collect();
+        let key = name.to_lowercase();
+        if let Some(l) = book.lists.iter_mut().find(|l| l.name.to_lowercase() == key) {
+            let have = lower_set(&l.members);
+            let before = l.members.len();
+            for m in members {
+                if l.members.len() >= MAX_LIST_MEMBERS {
+                    break;
+                }
+                if !have.contains(&m.to_lowercase()) {
+                    l.members.push(m);
+                }
+            }
+            if l.members.len() != before {
+                touched += 1;
+            }
+            continue;
+        }
+        if book.lists.len() >= MAX_LISTS {
+            continue;
+        }
+        book.lists.push(MailContactList {
+            id: new_id(),
+            name,
+            nickname: clean_line(&raw.nickname),
+            description: clean_block(&raw.description),
+            members,
+            ..Default::default()
+        });
+        touched += 1;
+    }
+    touched
 }
 
 // ── vCard out ───────────────────────────────────────────────────────────────
@@ -1083,7 +1365,7 @@ TEL;CELL:0170\nitem1.EMAIL;INTERNET:jm@x.test\nEND:VCARD\n";
              BEGIN:VCARD\nEMAIL:not an address\nEND:VCARD\n\
              BEGIN:VCARD\nFN:New\nEMAIL:n@x.test\nEND:VCARD",
         );
-        let r = merge_import(&mut book, imported, 5, &mut next);
+        let r = merge_import(&mut book, imported, MailContactBook::Personal, 5, &mut next);
         assert_eq!((r.added, r.merged, r.skipped), (2, 2, 1));
         let eve = find_by_email(&book, "e@x.test").unwrap();
         assert_eq!(eve.display_name, "Eve");
@@ -1104,6 +1386,101 @@ TEL;CELL:0170\nitem1.EMAIL;INTERNET:jm@x.test\nEND:VCARD\n";
     fn latin1_files_decode() {
         assert_eq!(decode_file(b"FN:M\xfcller"), "FN:Müller");
         assert_eq!(decode_file("\u{feff}FN:A".as_bytes()), "FN:A");
+    }
+
+    fn from(name: Option<&str>, address: &str) -> MailAddress {
+        MailAddress { name: name.map(str::to_string), address: address.into() }
+    }
+
+    #[test]
+    fn harvest_adds_distinct_people_and_skips_robots_and_self() {
+        let mut book = MailContacts::default();
+        let mut next = ids();
+        collect(&mut book, &["known@x.test".into()], 1, &mut next);
+        book.collect_disabled = true;
+        let own: HashSet<String> = ["me@x.test".to_string()].into();
+        let senders = [
+            from(Some("Ada Lovelace"), "ada@x.test"),
+            from(Some("Old Name"), "ADA@x.test"),
+            from(Some("Known Person"), "known@x.test"),
+            from(Some("Me"), "me@x.test"),
+            from(Some("Shop"), "no-reply@shop.test"),
+            from(None, "Mailer-Daemon@x.test"),
+            from(Some("\"boss@corp.test\""), "x@evil.test"),
+            from(None, "not an address"),
+        ];
+        let r = harvest(&mut book, &senders, &own, 9, &mut next);
+        assert_eq!((r.added, r.merged, r.skipped), (2, 1, 3));
+        let ada = find_by_email(&book, "ada@x.test").unwrap();
+        assert_eq!(ada.display_name, "Ada Lovelace", "newest name wins");
+        assert_eq!(ada.book, MailContactBook::Collected);
+        assert_eq!(ada.popularity, 0, "receiving is not writing");
+        let known = find_by_email(&book, "known@x.test").unwrap();
+        assert_eq!(known.display_name, "Known Person", "an unnamed collected card takes the name");
+        assert_eq!(known.popularity, 1);
+        assert_eq!(find_by_email(&book, "x@evil.test").unwrap().display_name, "", "an @ in a name is dropped");
+    }
+
+    #[test]
+    fn automated_senders_are_judged_on_the_local_part() {
+        for a in ["noreply@x.test", "no_reply+t@x.test", "Do-Not-Reply@x.test", "bounces@x.test", "notifications@x.test"] {
+            assert!(is_automated_sender(a), "{a}");
+        }
+        for a in ["ann@noreply.test", "replyall@x.test", "postman@x.test"] {
+            assert!(!is_automated_sender(a), "{a}");
+        }
+    }
+
+    #[test]
+    fn thunderbird_ldif_parses_people_and_lists() {
+        let ldif = "dn: cn=Ada Lovelace,mail=ada@x.test\n\
+objectclass: top\nobjectclass: person\ngivenName: Ada\nsn: Lovelace\ncn: Ada Lovelace\n\
+mail: ada@x.test\nmozillaSecondEmail: a.l@x.test\nmobile: 123\nmozillaHomeStreet: 1 Road\n\
+mozillaHomeLocalityName: London\nbirthyear: 1815\nbirthmonth: 12\nbirthday: 10\n\
+description:: TGluZSBvbmUKTGluZSB0d28=\n\n\
+# comment\n\
+dn: cn=Friends\nobjectclass: top\nobjectclass: groupOfNames\ncn: Friends\n\
+member: cn=Ada Lovelace,mail=ada@x.test\nmember: cn=Bob,mail=bob@x.test\n";
+        let (cards, lists) = parse_ldif(ldif);
+        assert_eq!(cards.len(), 1);
+        let c = normalize_contact(cards[0].clone(), false).unwrap();
+        assert_eq!(c.display_name, "Ada Lovelace");
+        assert_eq!((c.first_name.as_str(), c.last_name.as_str()), ("Ada", "Lovelace"));
+        assert_eq!(c.emails, ["ada@x.test", "a.l@x.test"]);
+        assert_eq!(c.phones[0].kind, "cell");
+        assert_eq!(c.address, "1 Road\nLondon");
+        assert_eq!(c.birthday, "1815-12-10");
+        assert_eq!(c.notes, "Line one\nLine two");
+        assert_eq!(lists.len(), 1);
+        assert_eq!(lists[0].name, "Friends");
+        assert_eq!(lists[0].members, ["ada@x.test", "bob@x.test"]);
+    }
+
+    #[test]
+    fn merged_lists_gain_members_by_name_and_drop_bad_addresses() {
+        let mut book = MailContacts::default();
+        let mut next = ids();
+        let list = |name: &str, members: &[&str]| MailContactList {
+            name: name.into(),
+            members: members.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        };
+        assert_eq!(merge_lists(&mut book, vec![list("Team", &["a@x.test", "bad address"])], &mut next), 1);
+        assert_eq!(book.lists[0].members, ["a@x.test"]);
+        assert_eq!(merge_lists(&mut book, vec![list("team", &["A@x.test", "b@x.test"])], &mut next), 1);
+        assert_eq!(book.lists.len(), 1);
+        assert_eq!(book.lists[0].members, ["a@x.test", "b@x.test"]);
+        assert_eq!(merge_lists(&mut book, vec![list("Team", &["b@x.test"])], &mut next), 0);
+    }
+
+    #[test]
+    fn importing_into_collected_does_not_promote_a_match() {
+        let mut book = MailContacts::default();
+        let mut next = ids();
+        collect(&mut book, &["e@x.test".into()], 1, &mut next);
+        let r = merge_import(&mut book, vec![card("Eve", &["e@x.test"]), card("F", &["f@x.test"])], MailContactBook::Collected, 5, &mut next);
+        assert_eq!((r.added, r.merged), (1, 1));
+        assert!(book.contacts.iter().all(|c| c.book == MailContactBook::Collected));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 ---
 id: mail-calendar
 title: Mail, calendar, to-do board and browser
-keywords: [mail, email, imap, smtp, address book, contacts, vcard, autocomplete, calendar, caldav, ics, event, reminder, todo, board, browser, web]
+keywords: [mail, email, imap, smtp, address book, contacts, vcard, ldif, thunderbird import, autocomplete, calendar, caldav, ics, event, reminder, todo, board, browser, web]
 ---
 
 These surfaces are machine-wide, not per project. They open as overlays over
@@ -24,9 +24,18 @@ contacts you add. **Collected Addresses** fills itself: after a send, each
 recipient without a card is added (switch this off at the bottom of the
 book's left column). A card holds a name, nickname, several addresses, phone
 numbers, organization, postal address, birthday and notes. Mailing lists
-group addresses under one name. **Import…** and **Export…** read and write
-vCard (`.vcf`) files; an imported card whose address is already in the book
-is merged into that card rather than duplicated.
+group addresses under one name. **Import…** reads vCard (`.vcf`), LDIF
+(`.ldif`) or a Thunderbird `abook.sqlite`; **Export…** writes vCard. An
+imported card whose address is already in the book is merged into that card
+rather than duplicated.
+
+**From Thunderbird** imports every address book of every Thunderbird profile
+on this computer, mailing lists included. Thunderbird's files are only read,
+never changed. Its Collected Addresses go to Collected; everything else goes
+to Personal. **Add from Inbox** adds the sender of every downloaded Inbox mail
+to Collected Addresses. It skips automated senders (`noreply@…`, bounces,
+the mailer daemon) and your own addresses, and it only uses mail already on
+this machine.
 
 While you type in To, Cc or Bcc, matching contacts and lists appear below the
 field. Use ↑/↓ to move, Enter or Tab to pick, and Escape to close the list.

@@ -187,6 +187,37 @@ describe("the Address Book tab", () => {
   });
 });
 
+describe("filling the book", () => {
+  const report = { cancelled: false, added: 3, merged: 1, skipped: 2, lists: 0 };
+
+  it("Add from Inbox harvests through the backend and reports the counts", async () => {
+    useMailStore.getState().openContactsTab();
+    const tab = useMailStore.getState().mailTabs[0];
+    if (tab.kind !== "contacts") throw new Error("expected the contacts tab");
+    invoke.mockImplementation((cmd: string) =>
+      Promise.resolve(cmd === "mail_contacts_get" ? view() : cmd === "mail_contacts_harvest_inbox" ? report : []),
+    );
+    render(<MailAddressBook tab={tab} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Add from Inbox" }));
+    expect(await screen.findByText(/From Inbox: 3 new, 1 already in the book, 2 skipped/)).toBeTruthy();
+    expect(invoke).toHaveBeenCalledWith("mail_contacts_harvest_inbox");
+  });
+
+  it("From Thunderbird imports and mentions the lists", async () => {
+    useMailStore.getState().openContactsTab();
+    const tab = useMailStore.getState().mailTabs[0];
+    if (tab.kind !== "contacts") throw new Error("expected the contacts tab");
+    invoke.mockImplementation((cmd: string) =>
+      Promise.resolve(
+        cmd === "mail_contacts_get" ? view() : cmd === "mail_contacts_import_thunderbird" ? { ...report, lists: 2 } : [],
+      ),
+    );
+    render(<MailAddressBook tab={tab} />);
+    fireEvent.click(await screen.findByRole("button", { name: "From Thunderbird" }));
+    expect(await screen.findByText(/2 mailing lists added or extended/)).toBeTruthy();
+  });
+});
+
 describe("the sender star", () => {
   const header = (address: string) =>
     ({

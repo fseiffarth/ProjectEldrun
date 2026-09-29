@@ -73,7 +73,7 @@ use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row, ToS
 use sha2::{Digest, Sha256};
 
 use crate::schema::mail::{
-    MailAttachmentMeta, MailDraft, MailFlag, MailFolder, MailFolderKind, MailHeader,
+    MailAddress, MailAttachmentMeta, MailDraft, MailFlag, MailFolder, MailFolderKind, MailHeader,
     MailHeaderPage, MailPriority, MailPriorityCounts, MailPrioritySource, MailSort,
     NewStagedFile, StagedAttachment,
 };
@@ -852,6 +852,37 @@ impl MailStore {
         // account's folders — tens of rows — so this costs nothing.
         all.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(all)
+    }
+
+    /// The `From:` of every indexed Inbox message across all accounts, newest
+    /// first, at most `cap` rows — what the Address Book's "Add from Inbox"
+    /// harvests. Only locally indexed mail: this never reaches a server. A row
+    /// whose sealed sender cannot be opened is skipped, not guessed at.
+    pub fn inbox_senders(&self, cap: u32) -> Result<Vec<MailAddress>, String> {
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT m.id, m.account_id, m.from_json FROM messages m
+                 JOIN folders f ON f.id = m.folder_id
+                 WHERE f.kind = ?1 AND m.deleted = 0
+                 ORDER BY m.date DESC LIMIT ?2",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![MailFolderKind::Inbox.as_str(), cap], |r| {
+                let id: String = r.get(0)?;
+                let account_id: String = r.get(1)?;
+                self.open_text(r, 2, &account_id, "messages", "from_json", &id)
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for row in rows {
+            let Some(json) = row.map_err(|e| e.to_string())? else { continue };
+            if let Ok(addr) = serde_json::from_str::<MailAddress>(&json) {
+                out.push(addr);
+            }
+        }
+        Ok(out)
     }
 
     pub fn folder(&self, folder_id: &str) -> Result<Option<MailFolder>, String> {
@@ -3552,6 +3583,29 @@ mod tests {
         }
     }
 
+    /// Only Inbox folders, newest first, capped, deleted rows left out.
+    #[test]
+    fn inbox_senders_reads_inbox_folders_only() {
+        let (_dir, store) = store();
+        let mut inbox = folder("a1", "INBOX");
+        inbox.kind = MailFolderKind::Inbox;
+        let other = folder("a1", "Newsletters");
+        store.upsert_folder(&inbox).unwrap();
+        store.upsert_folder(&other).unwrap();
+        let mut old = header(&inbox, 1, "old", "2026-07-01T09:00:00Z");
+        old.from.address = "old@example.com".into();
+        let mut new = header(&inbox, 2, "new", "2026-07-02T09:00:00Z");
+        new.from.address = "new@example.com".into();
+        let mut elsewhere = header(&other, 3, "news", "2026-07-03T09:00:00Z");
+        elsewhere.from.address = "news@example.com".into();
+        for h in [&old, &new, &elsewhere] {
+            store.upsert_header(h).unwrap();
+        }
+        let got: Vec<String> = store.inbox_senders(10).unwrap().into_iter().map(|a| a.address).collect();
+        assert_eq!(got, ["new@example.com", "old@example.com"]);
+        assert_eq!(store.inbox_senders(1).unwrap().len(), 1);
+    }
+
     fn agent_draft(id: &str) -> MailDraft {
         MailDraft { id: id.into(), account_id: "a1".into(), origin: Some("agent".into()), owner_session: Some("tab".into()), ..Default::default() }
     }
@@ -5207,6 +5261,19 @@ mod tests {
                 unread: 0,
                 total: 0,
             }
+        }
+
+        /// The sealed sender opens for the Address Book harvest like any read.
+        #[test]
+        fn inbox_senders_open_sealed_senders() {
+            let (_d, store) = sealed_store();
+            let mut inbox = realistic_folder("a1", "INBOX");
+            inbox.kind = MailFolderKind::Inbox;
+            store.upsert_folder(&inbox).unwrap();
+            store.upsert_header(&header(&inbox, 1, "Hi", "2026-07-20T09:00:00Z")).unwrap();
+            let got = store.inbox_senders(10).unwrap();
+            assert_eq!(got.len(), 1);
+            assert_eq!(got[0].address, "sender@example.com");
         }
 
         /// Everything the plain store does, the sealed store must also do — and

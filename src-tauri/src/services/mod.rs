@@ -104,6 +104,8 @@ pub mod mail_pgp;
 pub mod mail_reader;
 pub mod mail_sanitize;
 pub mod mail_store;
+// Thunderbird address books (abook/history.sqlite), read from a temp copy.
+pub mod mail_thunderbird;
 pub mod mobile_control;
 pub mod net_usage;
 pub mod opencode_store;

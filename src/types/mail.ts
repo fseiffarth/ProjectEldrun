@@ -746,4 +746,6 @@ export interface MailContactsImportReport {
   added: number;
   merged: number;
   skipped: number;
+  /** Mailing lists added or extended (Thunderbird imports only). */
+  lists: number;
 }

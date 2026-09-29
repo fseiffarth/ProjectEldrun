@@ -1592,6 +1592,8 @@ pub fn run() {
             commands::mail::mail_contact_list_delete,
             commands::mail::mail_contacts_set_collect,
             commands::mail::mail_contacts_import,
+            commands::mail::mail_contacts_import_thunderbird,
+            commands::mail::mail_contacts_harvest_inbox,
             commands::mail::mail_contacts_export,
             commands::mail::mail_filters_apply,
             // Local-model mail assistant (Group Q, #203–#208). Every one runs a

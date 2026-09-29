@@ -6,7 +6,9 @@ import {
   mailContactUpsert,
   mailContactsDelete,
   mailContactsExport,
+  mailContactsHarvestInbox,
   mailContactsImport,
+  mailContactsImportThunderbird,
   mailContactsSetCollect,
   stripFormatControls,
 } from "../../lib/mail";
@@ -23,6 +25,7 @@ import type {
   MailContactBook,
   MailContactList,
   MailContactPhone,
+  MailContactsImportReport,
 } from "../../types/mail";
 import { Toggle } from "../common/Toggle";
 import { UntestedTag } from "../common/UntestedTag";
@@ -229,12 +232,24 @@ export function MailAddressBook({ tab }: { tab: MailContactsTab }) {
     setSelection(null);
   }
 
-  async function doImport() {
-    const report = await run(() => mailContactsImport());
+  async function doImport(work: () => Promise<MailContactsImportReport> = mailContactsImport) {
+    const report = await run(work);
     if (!report || report.cancelled) return;
     await reload();
+    const counts = { added: report.added, merged: report.merged, skipped: report.skipped };
     setStatus(
-      t("mail.contacts.importDone", {
+      report.lists
+        ? t("mail.contacts.importDoneLists", { ...counts, lists: report.lists })
+        : t("mail.contacts.importDone", counts),
+    );
+  }
+
+  async function doHarvest() {
+    const report = await run(() => mailContactsHarvestInbox());
+    if (!report) return;
+    await reload();
+    setStatus(
+      t("mail.contacts.fromInboxDone", {
         added: report.added,
         merged: report.merged,
         skipped: report.skipped,
@@ -287,9 +302,36 @@ export function MailAddressBook({ tab }: { tab: MailContactsTab }) {
           {t("mail.contacts.newList")}
         </button>
         <span className="mail-toolbar-sep" aria-hidden="true" />
-        <button type="button" className="settings-btn" disabled={busy} onClick={() => void doImport()}>
+        <button
+          type="button"
+          className="settings-btn"
+          disabled={busy}
+          title={t("mail.contacts.fromInboxHint")}
+          onClick={() => void doHarvest()}
+        >
+          {t("mail.contacts.fromInbox")}
+        </button>
+        <UntestedTag id="mail.contacts.fromInbox" />
+        <span className="mail-toolbar-sep" aria-hidden="true" />
+        <button
+          type="button"
+          className="settings-btn"
+          disabled={busy}
+          title={t("mail.contacts.importHint")}
+          onClick={() => void doImport()}
+        >
           {t("mail.contacts.import")}
         </button>
+        <button
+          type="button"
+          className="settings-btn"
+          disabled={busy}
+          title={t("mail.contacts.importThunderbirdHint")}
+          onClick={() => void doImport(mailContactsImportThunderbird)}
+        >
+          {t("mail.contacts.importThunderbird")}
+        </button>
+        <UntestedTag id="mail.contacts.thunderbird" />
         <button
           type="button"
           className="settings-btn"

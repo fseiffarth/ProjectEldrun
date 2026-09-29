@@ -1351,7 +1351,8 @@ pub struct MailContactsView {
     pub collect_outgoing: bool,
 }
 
-/// The outcome of a vCard import.
+/// The outcome of an import (vCard, LDIF, a Thunderbird profile) or of an
+/// "Add from Inbox" harvest.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct MailContactsImportReport {
     /// The file dialog was cancelled: nothing was read.
@@ -1359,8 +1360,11 @@ pub struct MailContactsImportReport {
     pub added: u32,
     /// Cards whose address was already in the book, folded into that card.
     pub merged: u32,
-    /// Cards with no usable address, or past the size caps.
+    /// Cards with no usable address, or past the size caps. For a harvest:
+    /// automated senders (`noreply@…`) and the user's own addresses too.
     pub skipped: u32,
+    /// Mailing lists added or extended (Thunderbird imports only).
+    pub lists: u32,
 }
 
 #[cfg(test)]
