@@ -3606,9 +3606,13 @@ export const en = {
   // `TerminalSignInToggle` inside its own add-form did — one row of a form
   // switching language and the rest not.
   "machines.label": "Machines",
-  "machines.ariaLabel": "Global machines — click to open the list",
-  "machines.triggerTitle": "Global worker machines — connect one, then add it to any project from its row. Opening this list checks each machine, which is a real SSH login, so it opens on a click and never on hover.",
+  "machines.ariaLabel": "Global machines — click to open the overview",
+  "machines.triggerTitle": "Global worker machines — hover for the list, click for the overview with one tile per machine. Connect one, then add it to any project from its row or tile. Showing either checks each machine (a real SSH login), at most once a minute.",
   "machines.groupLabel": "Global machines",
+  "machines.overlayTitle": "Global machines",
+  "machines.overlayLead": "Every SSH host no project owns. Connect or check one, open its system monitor, or hand it to a project — each tile carries its machine's actions.",
+  "machines.openOverlayAria": "Open the Machines overview",
+  "machines.openOverlayTitle": "Open these machines as a window — one tile per machine",
   "machines.empty": "No global machines yet.",
   "machines.note.strong": "Use a row's ⇥ button",
   "machines.note.rest": "to add that machine to a project — as a shared-folder worker on a remote project, or as the primary host of a local one. Drag a row's grip (⠿) to reorder.",

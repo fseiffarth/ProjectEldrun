@@ -461,7 +461,8 @@ svg.alerts-toggle-icon {
 .mail-overlay,
 .calendar-overlay,
 .todo-overlay,
-.models-overlay {
+.models-overlay,
+.machines-overlay {
   width: min(1680px, calc(100vw - 24px));
   height: min(93vh, calc(100vh - 24px));
   max-height: min(93vh, calc(100vh - 24px));
@@ -486,7 +487,8 @@ svg.alerts-toggle-icon {
 .mail-overlay-body,
 .calendar-overlay-body,
 .todo-overlay-body,
-.models-overlay-body {
+.models-overlay-body,
+.machines-overlay-body {
   position: relative;
   flex: 1;
   min-height: 0;
@@ -756,6 +758,141 @@ svg.alerts-toggle-icon {
 }
 .models-tile-chip.more {
   border-style: dashed;
+}
+
+/* ── Global machines: the overlay's tile grid (header/MachinesOverlay) ───────
+   The Machines dropdown's own rows (`header/MachinesIndicator`,
+   `surface="overlay"`), dressed as the Models overlay's tiles above — the same
+   `.models-home` page, `.models-tile` card and icon box — but a tile is not one
+   button: it holds the row's actions, toggles and forms, so it keeps a plain
+   cursor and loses the menu row's hairline. Selectors are two classes deep so
+   they outrank `.vpn-indicator-row + .vpn-indicator-row` and the grab cursor
+   in header-menus.css whatever the @import order. */
+.machines-overlay-spacer {
+  flex: 1 1 auto;
+}
+.machines-home-inner {
+  max-width: 1320px;
+}
+/* As many 300px columns as fit: a fleet is a list of peers, not four fixed
+   sections, so it takes the auto-fill a two-up would waste. */
+.machines-home .machines-grid {
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+}
+.machines-grid > .machines-tile {
+  gap: 10px;
+  min-height: 170px;
+  padding: 16px 18px;
+  border: 1px solid var(--control-border);
+  cursor: var(--cur-default, default);
+}
+.machines-grid > .machines-tile:hover {
+  border-color: var(--accent);
+}
+/* The row's buttons sit above the hover wash. */
+.machines-grid > .machines-tile > * {
+  position: relative;
+  z-index: 1;
+}
+.machines-grid > .machines-tile .vpn-indicator-head {
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+.machines-tile .machines-tile-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+}
+.machines-tile .machines-tile-glyph {
+  width: 20px;
+  height: 20px;
+}
+.machines-grid > .machines-tile .vpn-indicator-head .vpn-indicator-config {
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+}
+.machines-tile-desc {
+  gap: 4px;
+}
+.machines-tile .machines-tile-target {
+  overflow: hidden;
+  font-family: var(--mono-font, monospace);
+  font-size: 11.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.machines-tile .machines-tile-stat {
+  flex-wrap: wrap;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+.machines-tile-busy {
+  padding: 0 7px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--success) 16%, transparent);
+  color: var(--text-primary);
+  font-size: 11px;
+}
+.machines-grid > .machines-tile .machines-util {
+  padding: 0;
+}
+/* The icon actions at the tile's foot, so the tiles of one row line them up
+   (the chips' rule in `.models-tile-chips`). */
+.machines-grid > .machines-tile .machines-row-actions {
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-color);
+}
+/* The page's own rows — the note, the fleet bar, add / import / export and
+   their forms — keep the dropdown's markup; on a page they are a left-aligned
+   column of readable width rather than a 280px menu's full-bleed strips. */
+.machines-home-inner > .vpn-indicator-note {
+  padding: 0;
+  border-bottom: 0;
+}
+.machines-home-inner > .vpn-indicator-row {
+  padding: 0;
+  border-top: 0;
+}
+.machines-home-inner > .machines-fleet-icons {
+  justify-content: flex-start;
+  gap: 6px;
+}
+.machines-home-inner > .machines-fleet-icons .untested-tag {
+  position: static;
+}
+.machines-home-inner > .menu-form,
+.machines-home-inner > .machines-io-panel {
+  max-width: 520px;
+}
+.machines-home-inner > .tab-new-menu-group-label {
+  margin-top: 6px;
+  padding: 0;
+}
+/* The dropdown's door into the overlay, beside its ×. */
+.machines-open-overlay {
+  margin-left: auto;
+  width: 24px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: var(--cur-pointer, pointer);
+}
+.machines-open-overlay:hover {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.machines-open-overlay:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 /* ── The header overlays' tabs (mail/MailOverlay and its three siblings) ─────

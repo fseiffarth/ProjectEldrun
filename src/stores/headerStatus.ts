@@ -84,7 +84,9 @@ export const useHeaderStatusStore = create<HeaderStatusState>((set) => ({
  * nothing".
  */
 export function useHeaderStatusReport(
-  key: HeaderStatusKey,
+  /** `null`: this caller reports nothing (a second surface of a member that
+   *  already reports, e.g. the Machines overlay) — and clears nothing. */
+  key: HeaderStatusKey | null,
   report: HeaderStatusReport | null,
 ) {
   const tone = report?.tone ?? null;
@@ -94,13 +96,14 @@ export function useHeaderStatusReport(
   // out of existence for an instant also blinks the fold decision (see
   // `MIN_FOLDABLE` in StatusCluster).
   useEffect(() => {
+    if (key === null) return;
     const { report: publish } = useHeaderStatusStore.getState();
     publish(key, tone === null ? null : { tone, label: label ?? "" });
   }, [key, tone, label]);
-  useEffect(
-    () => () => useHeaderStatusStore.getState().report(key, null),
-    [key],
-  );
+  useEffect(() => {
+    if (key === null) return;
+    return () => useHeaderStatusStore.getState().report(key, null);
+  }, [key]);
 }
 
 /**

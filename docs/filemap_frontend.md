@@ -138,7 +138,8 @@ stores stay at the top. No `index.ts` barrels.
 | `header/AppTimerDisplay.tsx` | Active-project time-tracking readout. |
 | `header/AppResourceDisplay.tsx` | CPU/RAM/GPU readout. GPU = device memory + utilization (`gpustat`); Ollama models only in the tooltip, or as fallback where the GPU can't be read. |
 | `header/ConnTypeIcon.tsx` | Local/remote (SSH) connection-type icon. |
-| `header/MachinesIndicator.tsx` | Global machines (SSH hosts no project owns). Opens on click, never hover; probe sweep rate-limited (60 s/machine) and skips HPC hosts. Reads `status` and `reachable` maps. |
+| `header/MachinesIndicator.tsx` | Global machines (SSH hosts no project owns). Hover → dropdown, click (or its ⤢) → `MachinesOverlayHost`; both are one `MachinesSurface` (`surface`), the overlay's rows `.models-tile` tiles in a grid. Probe sweep rate-limited (60 s/machine, brakes + hand checks shared by both) and skips HPC hosts. Reads `status` and `reachable` maps. |
+| `header/MachinesOverlay.tsx` | The Machines overlay's frame only (Models overlay chrome, Escape/backdrop); the tiles come from `MachinesIndicator`. Mounted in AppShell before the host-key/HPC/monitor dialogs so they land on top. |
 | `header/MailIndicator.tsx` | Header ✉ (the only way into mail, `mail_client`). Red dot = unread inbox derived from the local index (`inboxUnread`), not an arrivals counter. |
 | `header/CalendarIndicator.tsx` | Header 🗓 (`calendar_global_app`), `MailIndicator`'s twin. Badge is derived from store + clock each minute, never acknowledged. |
 | `header/TodoIndicator.tsx` | Header ☑ (`todo_board`). Badge = open cards due today or overdue on visible calendars, derived not acknowledged; hover lists the cards. |
@@ -253,6 +254,7 @@ stores stay at the top. No `index.ts` barrels.
 | `browser.ts` | In-app browser store (#61). Nothing reaches the network on its own (`load`/`openLive` only, both clicks), actions tolerate a rejected invoke, downloads refused by default. |
 | `mail.ts` | Global mail store. Every action tolerates a rejected invoke (lands in `error`); `checkMail` and a debounced typed folder search can reach a server. Owns list order and the search coverage flags (`searchRemote`, `searchPartial`). |
 | `modelsOverlay.ts` | Models & agents overlay: `open` + `view` (`home` grid or a section; a plain open shows the grid, doors deep-link). No data copies. |
+| `machinesOverlay.ts` | Machines overlay open/closed (header Machines button click, dropdown ⤢). No data copies. |
 | `agents/ollamaActivity.ts` | Local-model session facts shared by dropdown and overlay: `installed`, `models`, downloads/paused/loads, update verdicts, server version; ref-counted `initLocalModelEvents`. |
 | `alarms.ts` | Reminder ticker: fires an OS notification + the in-app popup + a phone push (`mobile_admin` `notify` → sidecar `push.rs`; phone side `mobile-web/src/push.ts` + `sw.js`), exactly once each; a calendar with `alerts_off` is recorded as fired but never shown. |
 | `linkRouting.ts` | Routing of clicked links/URIs to viewers or external apps. |

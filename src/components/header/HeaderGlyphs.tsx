@@ -90,6 +90,20 @@ export function SettingsGlyph({ className }: { className: string }) {
   );
 }
 
+/** Two stacked server units — the global machines — for the Machines overlay's
+ *  bar (`header/MachinesOverlay`). On the shared 16-unit grid, y=2..14. */
+export function MachinesGlyph({ className }: { className: string }) {
+  return (
+    <Glyph className={className}>
+      <g {...STROKE}>
+        <rect x="2" y="2" width="12" height="5" rx="1.2" />
+        <rect x="2" y="9" width="12" height="5" rx="1.2" />
+        <path d="M4.5 4.5h.01M4.5 11.5h.01M8 4.5h3.5M8 11.5h3.5" />
+      </g>
+    </Glyph>
+  );
+}
+
 /** A processor chip — on-device compute — for the Models & agents button
  *  (`layout/LocalModelMenu`) and the overlay it opens (`models/ModelsOverlay`).
  *  The one glyph here NOT on the shared 16-unit `Glyph` grid: it keeps the

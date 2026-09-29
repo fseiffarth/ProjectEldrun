@@ -40,6 +40,7 @@ import { ShortcutHelpOverlay } from "./ShortcutHelpOverlay";
 import { RemoteConnectDialog } from "../projects/RemoteConnectDialog";
 import { RemoteMachinesDialogHost } from "../projects/RemoteMachinesWindow";
 import { GlobalMachineMonitorDialogHost } from "../monitoring/GlobalMachineMonitorDialog";
+import { MachinesOverlayHost } from "../header/MachinesIndicator";
 import { HpcPipelineWizardHost } from "../projects/HpcPipelineWizard";
 import { BigFolderDialogHost } from "../projects/BigFolderExcludeDialog";
 import { BoxEditorHost } from "../projects/BoxEditorDialog";
@@ -1333,6 +1334,14 @@ export function AppShell() {
           backend reports OS-tool captures as an app-wide event with no component of
           its own to land in. */}
       <ScreenshotSaveOverlay />
+      {/* The Machines overlay — a click on the header's Machines button: the
+          global machines as a grid of tiles. Mounted here, BEFORE the host-key
+          prompt, the HPC guard, the connect dialogs and the machine monitor
+          below (all `.modal-backdrop` at one z-index, DOM order the tie-break),
+          because each of them is raised by a gesture made inside it and must
+          land on top — and the root console (a terminal sign-in) is later
+          still. */}
+      <MachinesOverlayHost />
       {/* "Is this the right machine?" — shown before a password is sent to a host
           whose SSH key has never been accepted here. At the shell because it can be
           raised by any connect surface (the Connect modal, a create/extend dialog,
