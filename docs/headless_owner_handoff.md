@@ -672,10 +672,12 @@ probe / delivered / killed); the four pre-H3 host tests
 assert the new contract; `WorkspaceSync.test.ts` +2 (a created-elsewhere
 tab is added, `refreshWorkspaceScope`).
 
-**H3 parity gaps, recorded not fixed**: a headless close ends the session
-even for a `tmuxAttach` tab (the desktop's close keeps a session the tab only
-attached to — the catalog does not tell the two apart; a phone lists
-`tmuxAttach` tabs rarely); a headless reopen of an agent other than Claude
+**Fixed after review:** a headless close no longer ends a `tmuxAttach` tab's
+session. The closed record decides (`workspace::owns_tmux_session`): only a
+session the tab minted is killed, as the desktop's × does
+(`closing_an_attach_tab_does_not_own_the_session_it_rode`).
+
+**H3 parity gaps, recorded not fixed**: a headless reopen of an agent other than Claude
 / Codex continues its latest conversation, as the window's reopen does; the
 seen stamp is never pruned (one small file per uid under
 `mobile-control/seen/`); `AgentStatus` has no usage panel headless; a

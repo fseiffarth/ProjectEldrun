@@ -2483,15 +2483,18 @@ async fn close_tab(
         // No window: the tab leaves the set in the session file (an agent tab
         // is remembered for a reopen), then its session ends the way the
         // desktop's × ends a local session the tab minted — the subtree
-        // reaped, the launcher dropped (`Runner::kill`).
+        // reaped, the launcher dropped (`Runner::kill`). An attach tab's
+        // session is not the tab's to end: it stays running.
         return match crate::services::workspace::close_tab_in(&scope_session_file(&state, &project_id), &project_id, &tmux_session, now_ms()) {
-            Ok(_) => {
+            Ok(closed) => {
                 catalog_stale(&state);
                 poke_window(&state, Some(&project_id), &["workspace"]);
-                let runner = state.runner.clone();
-                let ended = tokio::task::spawn_blocking(move || runner.kill(&tmux_session)).await;
-                if let Ok(Err(why)) = ended {
-                    eprintln!("mobile: a close with no window left the session running: {why}");
+                if crate::services::workspace::owns_tmux_session(&closed) {
+                    let runner = state.runner.clone();
+                    let ended = tokio::task::spawn_blocking(move || runner.kill(&tmux_session)).await;
+                    if let Ok(Err(why)) = ended {
+                        eprintln!("mobile: a close with no window left the session running: {why}");
+                    }
                 }
                 (StatusCode::OK, Json(json!({ "closed": true, "desktop_available": false })))
             }

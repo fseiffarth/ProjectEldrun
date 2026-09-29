@@ -105,6 +105,13 @@ pub fn tmux_of(tab: &TabEntry) -> Option<&str> {
     extra_str(tab, TMUX_SESSION_KEY).or_else(|| extra_str(tab, TMUX_ATTACH_KEY))
 }
 
+/// Whether closing the tab may end its tmux session: only a session the tab
+/// minted itself. An attach tab rides a session someone else started (the
+/// Sessions view, possibly by hand), so its close must leave it running.
+pub fn owns_tmux_session(tab: &TabEntry) -> bool {
+    extra_str(tab, TMUX_ATTACH_KEY).is_none() && extra_str(tab, TMUX_SESSION_KEY).is_some()
+}
+
 fn kind_of(tab: &TabEntry) -> &str {
     extra_str(tab, KIND_KEY).unwrap_or("")
 }
@@ -1146,5 +1153,23 @@ mod tests {
         let kept = tombstones(&session);
         assert_eq!(kept.len(), MAX_TOMBSTONES);
         assert_eq!(kept[0].id, "10", "the oldest fell off");
+    }
+
+    /// A phone close with no window ends only a session the tab minted: an
+    /// attach tab rides a session someone else started (possibly by hand),
+    /// so the close hands it back without the right to end it.
+    #[test]
+    fn closing_an_attach_tab_does_not_own_the_session_it_rode() {
+        let (_dir, path) = file();
+        let mut attach = tab("t", "Attached");
+        attach.extra.insert("tmuxAttach".into(), Value::String("train".into()));
+        sync_in(&path, "box:paper", client(0, vec![attach, pty_tab("m", "Mine", "eldrun-box_paper--shell-mine")])).unwrap();
+
+        let closed = close_tab_in(&path, "box:paper", "train", 1).unwrap();
+        assert_eq!(closed.label, "Attached");
+        assert!(!owns_tmux_session(&closed), "the attached session is not the tab's to end");
+
+        let closed = close_tab_in(&path, "box:paper", "eldrun-box_paper--shell-mine", 2).unwrap();
+        assert!(owns_tmux_session(&closed), "a minted session ends with its tab");
     }
 }
