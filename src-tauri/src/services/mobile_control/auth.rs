@@ -45,6 +45,12 @@ const CHALLENGE_TTL: u64 = 60;
 pub const SESSION_IDLE: u64 = 15 * 60;
 /// The absolute cap on one login, however active the phone stays.
 pub const SESSION_MAX: u64 = 12 * 60 * 60;
+/// How long an open ticket (`open_ticket`) lets its one URL be fetched. Long
+/// enough for the browser's PDF viewer to fetch it again or hand it to its
+/// download manager, short enough that a URL left in the browser's history is
+/// dead by the time anybody reads it there.
+pub const OPEN_TICKET_TTL: u64 = 5 * 60;
+const MAX_OPEN_TICKETS: usize = 64;
 
 fn now() -> u64 {
     SystemTime::now()
@@ -112,6 +118,16 @@ struct Challenge {
     expires_at: u64,
 }
 
+/// A URL the phone asked to open outside the PWA, where its `SameSite=Strict`
+/// session cookie does not go along: `target` (path and query) may be fetched
+/// while `session` lives and the ticket has not expired.
+#[derive(Clone)]
+struct OpenTicket {
+    session: String,
+    target: String,
+    expires_at: u64,
+}
+
 #[derive(Clone)]
 struct Session {
     device_id: String,
@@ -133,6 +149,7 @@ pub struct AuthStore {
     pairing: Option<PairCode>,
     challenges: HashMap<String, Challenge>,
     sessions: HashMap<String, Session>,
+    tickets: HashMap<String, OpenTicket>,
     attempts: HashMap<String, VecDeque<u64>>,
     /// Web Push subscriptions, held here so revocation drops them in the same
     /// call (`push.rs`).
@@ -189,6 +206,7 @@ impl AuthStore {
             pairing: None,
             challenges: HashMap::new(),
             sessions: HashMap::new(),
+            tickets: HashMap::new(),
             attempts: HashMap::new(),
             push,
         })
@@ -203,6 +221,7 @@ impl AuthStore {
     fn sweep_expired(&mut self, t: u64) {
         self.challenges.retain(|_, c| c.expires_at >= t);
         self.sessions.retain(|_, s| s.expires_at >= t);
+        self.tickets.retain(|_, x| x.expires_at >= t);
     }
 
     /// Per-scope sliding window. A single global window meant 30 forged
@@ -399,6 +418,53 @@ impl AuthStore {
         Some(session.device_id.clone())
     }
 
+    /// A ticket that lets `target` — one path and query — be fetched without
+    /// the session cookie, for as long as the session behind `token` lives
+    /// and at most `OPEN_TICKET_TTL`. The browser's own PDF viewer is a
+    /// navigation handed over from the installed app, which the browser treats
+    /// as arriving from outside the site: the strict cookie stays behind.
+    pub fn open_ticket(&mut self, token: &str, target: &str) -> Result<String, String> {
+        self.authenticate(token).ok_or("authentication_required")?;
+        let t = now();
+        self.sweep_expired(t);
+        if self.tickets.len() >= MAX_OPEN_TICKETS {
+            if let Some(oldest) = self
+                .tickets
+                .iter()
+                .min_by_key(|(_, x)| x.expires_at)
+                .map(|(key, _)| key.clone())
+            {
+                self.tickets.remove(&oldest);
+            }
+        }
+        let ticket = random_id::<32>()?;
+        self.tickets.insert(
+            ticket.clone(),
+            OpenTicket {
+                session: token.into(),
+                target: target.into(),
+                expires_at: t + OPEN_TICKET_TTL,
+            },
+        );
+        Ok(ticket)
+    }
+
+    /// The device behind `ticket` when it was issued for exactly `target` and
+    /// neither it nor its session has ended. Using it does not slide the
+    /// session: a browser tab re-reading a PDF is not the phone speaking.
+    pub fn redeem_ticket(&mut self, ticket: &str, target: &str) -> Option<String> {
+        let entry = self.tickets.get(ticket)?;
+        if entry.expires_at < now() {
+            self.tickets.remove(ticket);
+            return None;
+        }
+        if entry.target != target {
+            return None;
+        }
+        let session = entry.session.clone();
+        self.authenticate(&session)
+    }
+
     pub fn logout(&mut self, token: &str) {
         self.sessions.remove(token);
     }
@@ -549,6 +615,35 @@ mod tests {
         assert_eq!(auth.authenticate(&token).as_deref(), Some(device.as_str()));
         auth.revoke(&device).expect("revoke");
         assert!(auth.authenticate(&token).is_none());
+    }
+
+    #[test]
+    fn an_open_ticket_opens_its_one_url_while_the_session_lives() {
+        let (_dir, mut auth) = store();
+        let signing = SigningKey::random(&mut OsRng);
+        let public = signing.verifying_key().to_public_key_der().expect("SPKI");
+        let public = Base64UrlUnpadded::encode_string(public.as_bytes());
+        let (code, _) = auth.create_pairing_code().expect("pairing code");
+        let device = auth.pair(&code, "Phone", &public).expect("paired");
+        let (nonce, payload, _) = auth.challenge(&device).expect("challenge");
+        let signature: Signature = signing.sign(payload.as_bytes());
+        let signature = Base64UrlUnpadded::encode_string(&signature.to_bytes());
+        let (token, _) = auth.login(&device, &nonce, &signature).expect("login");
+
+        assert!(auth.open_ticket("not-a-session", "/a").is_err());
+        let ticket = auth.open_ticket(&token, "/api/v1/x?f=1").expect("ticket");
+        assert_eq!(auth.redeem_ticket(&ticket, "/api/v1/x?f=1").as_deref(), Some(device.as_str()));
+        // Again, for the viewer's second read.
+        assert!(auth.redeem_ticket(&ticket, "/api/v1/x?f=1").is_some());
+        assert!(auth.redeem_ticket(&ticket, "/api/v1/x?f=2").is_none());
+        assert!(auth.redeem_ticket("forged", "/api/v1/x?f=1").is_none());
+
+        auth.tickets.get_mut(&ticket).expect("held").expires_at = now() - 1;
+        assert!(auth.redeem_ticket(&ticket, "/api/v1/x?f=1").is_none());
+
+        let ticket = auth.open_ticket(&token, "/api/v1/x?f=1").expect("ticket");
+        auth.logout(&token);
+        assert!(auth.redeem_ticket(&ticket, "/api/v1/x?f=1").is_none());
     }
 
     fn store() -> (tempfile::TempDir, AuthStore) {

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@xterm/xterm", () => ({
@@ -310,7 +310,8 @@ describe("Eldrun Mobile shows the files the agent sent in the chat and in the ga
     expect(Array.from(gallery.querySelectorAll(".outbox-entry strong")).map((name) => name.textContent))
       .toEqual(["paper.pdf", "plot.png"]);
     fireEvent.click(within(gallery).getByRole("button", { name: "Open paper.pdf" }));
-    expect(open).toHaveBeenCalledWith("/api/v1/tabs/tab-7/outbox/paper.pdf", "_blank", "noopener");
+    // This host mints no ticket, so the plain URL opens.
+    await waitFor(() => expect(open).toHaveBeenCalledWith("/api/v1/tabs/tab-7/outbox/paper.pdf", "_blank", "noopener"));
     fireEvent.click(within(gallery).getByRole("button", { name: "Close" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Terminal" }));

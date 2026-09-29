@@ -1127,6 +1127,9 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .outbox-confirm .outbox-delete-yes { border-color:#6b2f33; background:#2a1416; color:#f2b8b5; }
 .outbox-entry-error { padding:0 2px; color:#f2b8b5; font-size:.7rem; }
 .outbox-viewer-head a, .outbox-text-body a, .outbox-viewer > a { color:#8fb8ff; }
+/* Opens in the browser's tab through a ticket (`openOutside`), so a button —
+   drawn as the link it replaced. */
+.outbox-open { border:0; background:transparent; color:#8fb8ff; font:inherit; padding:0; text-decoration:underline; text-align:left; }
 .outbox-text-body { overflow:auto; padding:12px; }
 .outbox-text-body pre { margin:0 0 12px; white-space:pre-wrap; overflow-wrap:anywhere; font-size:.8rem; }
 .outbox-viewer:has(> [role=alert]) { grid-template-rows:auto auto minmax(0,1fr); }

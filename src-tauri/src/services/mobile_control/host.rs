@@ -9,7 +9,7 @@ use std::{
 use axum::{
     body::{Body, Bytes},
     extract::{ws::WebSocketUpgrade, DefaultBodyLimit, Path, Query, State},
-    http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode},
+    http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode, Uri},
     middleware::{self, Next},
     response::IntoResponse,
     routing::{get, post, put},
@@ -142,6 +142,13 @@ struct PushBody {
     prefs: PushPrefs,
 }
 
+/// A same-origin URL the phone is about to open outside the app.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpenTicketBody {
+    url: String,
+}
+
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct CalendarQuery {
@@ -181,6 +188,79 @@ fn authenticate(
         // Every authenticated request slides the session (`auth::SESSION_IDLE`).
         .touch(token)
         .ok_or_else(|| api_error(StatusCode::UNAUTHORIZED, "authentication_required"))
+}
+
+/// What an open ticket is bound to: the path and the query without its own
+/// `ticket` pair, in the order the phone wrote them.
+fn ticket_target(uri: &Uri) -> String {
+    let query: Vec<&str> = uri
+        .query()
+        .unwrap_or_default()
+        .split('&')
+        .filter(|pair| !pair.is_empty() && !pair.starts_with("ticket="))
+        .collect();
+    if query.is_empty() {
+        uri.path().to_string()
+    } else {
+        format!("{}?{}", uri.path(), query.join("&"))
+    }
+}
+
+/// `authenticate`, or — for a file's bytes, which the phone opens in the
+/// browser's own tab where the strict cookie does not follow — an open ticket
+/// in the query that was issued for exactly this URL.
+fn authenticate_or_ticket(
+    headers: &HeaderMap,
+    state: &HostState,
+    uri: &Uri,
+) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+    let cookie = authenticate(headers, state);
+    if cookie.is_ok() {
+        return cookie;
+    }
+    let ticket = uri
+        .query()
+        .unwrap_or_default()
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("ticket="));
+    match ticket {
+        Some(ticket) => state
+            .auth
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .redeem_ticket(ticket, &ticket_target(uri))
+            .ok_or_else(|| api_error(StatusCode::UNAUTHORIZED, "authentication_required")),
+        None => cookie,
+    }
+}
+
+/// `POST /api/v1/open-ticket` `{ url }` — the same URL with a short-lived
+/// `ticket` added (`AuthStore::open_ticket`), for the phone to open a PDF in
+/// the browser's viewer. Only the file routes that call
+/// `authenticate_or_ticket` honour it.
+async fn open_ticket(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Json(body): Json<OpenTicketBody>,
+) -> impl IntoResponse {
+    if let Err(error) = mutation_guard(&headers, &state) {
+        return error;
+    }
+    let Some(token) = cookie_token(&headers) else {
+        return api_error(StatusCode::UNAUTHORIZED, "authentication_required");
+    };
+    let uri = match body.url.parse::<Uri>() {
+        Ok(uri) if uri.scheme().is_none() && uri.authority().is_none() && uri.path().starts_with("/api/v1/") => uri,
+        _ => return api_error(StatusCode::BAD_REQUEST, "invalid_url"),
+    };
+    let target = ticket_target(&uri);
+    match state.auth.lock().unwrap_or_else(PoisonError::into_inner).open_ticket(token, &target) {
+        Ok(ticket) => {
+            let joiner = if target.contains('?') { '&' } else { '?' };
+            (StatusCode::OK, Json(json!({ "url": format!("{target}{joiner}ticket={ticket}") })))
+        }
+        Err(_) => api_error(StatusCode::UNAUTHORIZED, "authentication_required"),
+    }
 }
 
 fn catalog(state: &HostState) -> Result<Catalog, (StatusCode, Json<serde_json::Value>)> {
@@ -2998,10 +3078,11 @@ async fn outbox_listing(
 async fn outbox_file(
     State(state): State<HostState>,
     headers: HeaderMap,
+    uri: Uri,
     Path((tab_id, name)): Path<(String, String)>,
     Query(query): Query<HashMap<String, String>>,
 ) -> Response<Body> {
-    if let Err(error) = authenticate(&headers, &state) {
+    if let Err(error) = authenticate_or_ticket(&headers, &state, &uri) {
         return error.into_response();
     }
     let root = match outbox_root(&state, &tab_id) {
@@ -3016,10 +3097,11 @@ async fn outbox_file(
 async fn project_outbox_file(
     State(state): State<HostState>,
     headers: HeaderMap,
+    uri: Uri,
     Path((project_id, name)): Path<(String, String)>,
     Query(query): Query<HashMap<String, String>>,
 ) -> Response<Body> {
-    if let Err(error) = authenticate(&headers, &state) {
+    if let Err(error) = authenticate_or_ticket(&headers, &state, &uri) {
         return error.into_response();
     }
     let root = match project_drop_box_root(&state, &project_id) {
@@ -3198,10 +3280,11 @@ async fn project_files_list(
 async fn project_files_raw(
     State(state): State<HostState>,
     headers: HeaderMap,
+    uri: Uri,
     Path(project_id): Path<String>,
     Query(query): Query<HashMap<String, String>>,
 ) -> Response<Body> {
-    if let Err(error) = authenticate(&headers, &state) {
+    if let Err(error) = authenticate_or_ticket(&headers, &state, &uri) {
         return error.into_response();
     }
     let (root, raw_id) = match files_scope(&state, &project_id) {
@@ -3411,6 +3494,7 @@ fn router(state: HostState) -> Router {
             "/api/v1/tabs/{tab_id}/desktop-images",
             get(desktop_images).post(attach_desktop_image),
         )
+        .route("/api/v1/open-ticket", post(open_ticket))
         .route("/api/v1/tabs/{tab_id}/outbox", get(outbox_list))
         .route(
             "/api/v1/tabs/{tab_id}/outbox/{name}",
@@ -5307,6 +5391,67 @@ mod tests {
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         let (status, _, _) = host.send(get_as("/api/v1/projects/not-a-project/files", &cookie)).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    /// The browser's own PDF viewer fetches without the strict session cookie;
+    /// a ticket minted over the session opens that one URL and nothing else.
+    #[tokio::test]
+    async fn an_open_ticket_reads_its_one_file_without_the_cookie() {
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(36)).await.0;
+        let (_, _, body) = host
+            .send(get_as("/api/v1/projects?view=search&q=aurora", &cookie))
+            .await;
+        let project_id = json(&body)["projects"][0]["id"].as_str().unwrap().to_string();
+        let base = format!("/api/v1/projects/{project_id}/files");
+        std::fs::write(host.root.join("paper.pdf"), "%PDF-1.7\n%%EOF\n").unwrap();
+        std::fs::write(host.root.join("other.pdf"), "%PDF-1.7\n%%EOF\n").unwrap();
+        std::fs::write(
+            host.state.config.state_dir.join("settings.json"),
+            serde_json::json!({ "eldrun_mobile_host": { "enabled": true, "project_files": true } }).to_string(),
+        )
+        .unwrap();
+        let (_, _, body) = host.send(get_as(&base, &cookie)).await;
+        let token_of = |name: &str| {
+            json(&body)["entries"].as_array().unwrap().iter()
+                .find(|entry| entry["name"] == name).unwrap()["token"].as_str().unwrap().to_string()
+        };
+        let (paper, other) = (token_of("paper.pdf"), token_of("other.pdf"));
+        let url = format!("{base}/raw?f={paper}");
+        let mint = |origin: &str, cookie: &str, url: &str| Request::builder()
+            .method("POST")
+            .uri("/api/v1/open-ticket")
+            .header(header::ORIGIN, origin)
+            .header(header::COOKIE, cookie_pair(cookie))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(serde_json::json!({ "url": url }).to_string()))
+            .unwrap();
+
+        let (status, _, body) = host.send(mint(ORIGIN, &cookie, &url)).await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        let opened = json(&body)["url"].as_str().unwrap().to_string();
+        assert!(opened.starts_with(&format!("{url}&ticket=")), "{opened}");
+        let anonymous = |uri: &str| Request::builder().uri(uri).body(Body::empty()).unwrap();
+        let (status, headers, body) = host.send(anonymous(&opened)).await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(headers.get(header::CONTENT_TYPE).unwrap(), "application/pdf");
+        let (status, _, _) = host.send(anonymous(&format!("{opened}&download=1"))).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "the ticket names the exact URL");
+        let ticket = opened.rsplit("ticket=").next().unwrap();
+        let (status, _, _) = host.send(anonymous(&format!("{base}/raw?f={other}&ticket={ticket}"))).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "not another file");
+        let (status, _, _) = host.send(anonymous(&format!("{base}?ticket={ticket}"))).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "not the listing");
+
+        // Minting needs the session and the exact origin, and only for the API.
+        let (status, _, _) = host.send(mint(ORIGIN, "not-a-session", &url)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, _, _) = host.send(mint("https://evil.example", &cookie, &url)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        for refused in ["https://evil.example/api/v1/x", "/index.html"] {
+            let (status, _, _) = host.send(mint(ORIGIN, &cookie, refused)).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+        }
     }
 
     #[tokio::test]

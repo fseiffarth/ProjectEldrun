@@ -22,6 +22,7 @@ import {
   listOutbox,
   MAX_INBOX_FILE,
   outboxFileUrl,
+  openOutside,
   openSignInTab,
   recoverSession,
   reportSentPrompt,
@@ -1887,7 +1888,7 @@ export function Terminal({ tab, back, pickModel = false, signInTab = false, open
   }, [outboxOpen, gallery]);
   /** A PDF opens in the browser's own viewer; a picture or text full-screen here. */
   const openOutbox = useCallback((file: OutboxFile) => {
-    if (file.kind === "application/pdf") window.open(outboxFileUrl({ tab: tab.id }, file.name), "_blank", "noopener");
+    if (file.kind === "application/pdf") void openOutside(outboxFileUrl({ tab: tab.id }, file.name));
     else setOutboxOpen(file);
   }, [tab.id]);
   /** A lone picture takes its own shape once loaded; a chat following its

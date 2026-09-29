@@ -738,6 +738,21 @@ export function viewerFileUrl(scope: ViewerScope, file: OutboxFile, download = f
   return outboxFileUrl(scope, file.name, download);
 }
 
+/** Open one of the file URLs above in the browser's own tab (its PDF viewer).
+ * From the installed app that tab is a navigation from outside the site, so
+ * the `SameSite=Strict` session cookie stays behind and the file answered
+ * `authentication_required`; the URL goes out with a short-lived ticket for
+ * exactly that file instead (`POST /api/v1/open-ticket`). If none can be had
+ * the plain URL still opens — in a browser tab of the site the cookie rides. */
+export async function openOutside(url: string): Promise<void> {
+  let target = url;
+  try {
+    const minted = await api<{ url?: unknown }>("/api/v1/open-ticket", { method: "POST", body: JSON.stringify({ url }) });
+    if (typeof minted.url === "string") target = minted.url;
+  } catch { /* the plain URL below */ }
+  window.open(target, "_blank", "noopener");
+}
+
 /** One row of a project folder (`files.rs`): `token` is a sealed path the
  * phone can only hand back, `kind` is `"dir"` or the media type the file's
  * first bytes announce, `modified` is unix seconds. */

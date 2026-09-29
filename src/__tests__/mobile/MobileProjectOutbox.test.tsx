@@ -88,7 +88,8 @@ describe("Mobile project — the files the agent sent", () => {
     expect(gallery.querySelectorAll(".outbox-entry").length).toBe(8);
 
     fireEvent.click(within(gallery).getByRole("button", { name: "Open paper.pdf" }));
-    expect(open).toHaveBeenCalledWith("/api/v1/projects/p1/outbox/paper.pdf", "_blank", "noopener");
+    // This host mints no ticket, so the plain URL opens.
+    await waitFor(() => expect(open).toHaveBeenCalledWith("/api/v1/projects/p1/outbox/paper.pdf", "_blank", "noopener"));
 
     fireEvent.click(within(gallery).getByRole("button", { name: "Close" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Files from the agent" })).toBeNull());

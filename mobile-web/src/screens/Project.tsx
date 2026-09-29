@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AGENT_SORTS, DEFAULT_AGENT_SORT, isAgentSort, sortAgentTabs, type AgentSort } from "../../../shared/agentSort";
 import { promptClock, promptLines, promptsFromTranscript, scheduleClock } from "../agentPrompts";
-import { ApiError, api, closeTab, deleteOutboxFile, listOutbox, outboxFileUrl, reopenTab, reorderTab, type AgentRow, type ClosedTabRow, type OutboxFile, type ProjectDetail, type TabPlace, type TabRow, type TabSchedules } from "../api";
+import { ApiError, api, closeTab, deleteOutboxFile, listOutbox, openOutside, outboxFileUrl, reopenTab, reorderTab, type AgentRow, type ClosedTabRow, type OutboxFile, type ProjectDetail, type TabPlace, type TabRow, type TabSchedules } from "../api";
 import { OUTBOX_POLL, sameOutbox } from "../outbox";
 import { readChoice, writeChoice } from "../prefs";
 import { useRowDrag } from "../rowDrag";
@@ -281,7 +281,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
   /** A PDF opens in the browser's own viewer; a picture or text full screen
    * here — the Focus screen's gallery does the same with the same files. */
   const openFile = useCallback((file: OutboxFile) => {
-    if (file.kind === "application/pdf") window.open(outboxFileUrl({ project: id }, file.name), "_blank", "noopener");
+    if (file.kind === "application/pdf") void openOutside(outboxFileUrl({ project: id }, file.name));
     else setFileOpen(file);
   }, [id]);
   /** Removes one file the desktop sent, from the tile's own confirm. The row is

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type PointerEvent } from "react";
 import { useT } from "../../../src/lib/i18n";
-import { viewerFileUrl, type OutboxFile, type ViewerScope } from "../api";
+import { openOutside, viewerFileUrl, type OutboxFile, type ViewerScope } from "../api";
 import { shareAs, useOutboxShare } from "../outboxShare";
 import { sizeLabel } from "../terminal/fileLabels";
 import { isUntested } from "../../../src/lib/untested";
@@ -263,7 +263,7 @@ export function OutboxViewer({ scope, file, pictures, onStep, onClose }: {
     {(failure || sharing.failed === file.name) && <p role="alert">{failure || t("mobile.outbox.shareError")}</p>}
     {isText ? <div className="outbox-text-body">
       <pre>{text ?? (failure ? "" : t("mobile.outbox.loading"))}</pre>
-      {file.size > INLINE_LIMIT && <a href={url} target="_blank" rel="noopener noreferrer">{t("mobile.outbox.whole")}</a>}
+      {file.size > INLINE_LIMIT && <button className="outbox-open" onClick={() => void openOutside(url)}>{t("mobile.outbox.whole")}</button>}
     </div> : isImage ? <div ref={stage} className={`outbox-viewer-stage${zoomed ? " zoomed" : ""}`}
       onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}>
       <img ref={image} src={url} alt={file.name} draggable={false}
@@ -271,6 +271,6 @@ export function OutboxViewer({ scope, file, pictures, onStep, onClose }: {
       {previous && <button className="outbox-step outbox-step-previous" onClick={() => onStep?.(previous)} aria-label={t("mobile.outbox.previous")}><span aria-hidden="true">‹</span></button>}
       {next && <button className="outbox-step outbox-step-next" onClick={() => onStep?.(next)} aria-label={t("mobile.outbox.next")}><span aria-hidden="true">›</span></button>}
     </div>
-      : file.kind === "application/pdf" ? <a href={url} target="_blank" rel="noopener noreferrer">{t("mobile.outbox.open", { name: file.name })}</a> : null}
+      : file.kind === "application/pdf" ? <button className="outbox-open" onClick={() => void openOutside(url)}>{t("mobile.outbox.open", { name: file.name })}</button> : null}
   </div>;
 }

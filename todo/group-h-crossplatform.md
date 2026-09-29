@@ -3308,7 +3308,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     closes it, and a sideways drag on a card's ⠿ grip does not open it.
     Walk into `src/` and back by the trail; open a `.md` (text
     preview), a `.png` (full screen, pinch, step to the folder's next picture,
-    Save, Share), a PDF (browser tab). `.git`, `.env` and a symlink are not
+    Save, Share), a PDF (browser tab, reading it — it said
+    `authentication_required` before its open ticket, 2026-09-29). `.git`, `.env` and a symlink are not
     listed. Switch it off on the desktop → within ~5 s the swipe does nothing and
     an open drawer is gone; a folder opened meanwhile says it was switched off.
     - [ ] ✅ Works on Linux (X11)

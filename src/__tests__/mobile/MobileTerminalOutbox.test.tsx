@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@xterm/xterm", () => ({
@@ -147,7 +147,8 @@ describe("Eldrun Mobile reaches the files the agent sent through the gallery", (
     expect(dialog.querySelector("svg")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     fireEvent.click(screen.getByRole("button", { name: "Open paper.pdf" }));
-    expect(open).toHaveBeenCalledWith("/api/v1/tabs/tab-7/outbox/paper.pdf", "_blank", "noopener");
+    // This host mints no ticket, so the plain URL opens.
+    await waitFor(() => expect(open).toHaveBeenCalledWith("/api/v1/tabs/tab-7/outbox/paper.pdf", "_blank", "noopener"));
     const link = screen.getByRole("link", { name: "Open data.zip" });
     expect(link.getAttribute("href")).toBe("/api/v1/tabs/tab-7/outbox/data.zip?download=1");
     expect(link.getAttribute("download")).toBe("data.zip");
@@ -189,7 +190,9 @@ describe("Eldrun Mobile reaches the files the agent sent through the gallery", (
     fireEvent.click(screen.getByRole("button", { name: "Open large.log" }));
     await settle();
     expect(screen.getByRole("dialog").querySelector("pre")?.textContent?.length).toBe(1024 * 1024);
-    expect(screen.getByRole("link", { name: "Open the whole file" }).getAttribute("target")).toBe("_blank");
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    fireEvent.click(screen.getByRole("button", { name: "Open the whole file" }));
+    await waitFor(() => expect(open).toHaveBeenCalledWith("/api/v1/tabs/tab-7/outbox/large.log", "_blank", "noopener"));
   });
 
   it("shows no gallery button for an empty or unreachable outbox", async () => {

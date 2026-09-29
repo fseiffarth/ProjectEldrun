@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useT, type TranslationKey } from "../../../src/lib/i18n";
 import { isUntested } from "../../../src/lib/untested";
-import { ApiError, listProjectFiles, viewerFileUrl, type OutboxFile, type ProjectFileEntry, type ProjectFileListing, type ViewerScope } from "../api";
+import { ApiError, listProjectFiles, openOutside, viewerFileUrl, type OutboxFile, type ProjectFileEntry, type ProjectFileListing, type ViewerScope } from "../api";
 import { sizeLabel } from "../terminal/fileLabels";
 import { installFocusSwipe } from "../terminal/focusSwipe";
 import { OutboxViewer } from "./OutboxViewer";
@@ -93,7 +93,7 @@ export function ProjectFiles({ projectId, label, onClose }: {
     }
     const file = asViewerFile(entry);
     // A PDF opens in the browser's own viewer, as it does from the outbox.
-    if (entry.kind === "application/pdf") window.open(viewerFileUrl(scope, file), "_blank", "noopener");
+    if (entry.kind === "application/pdf") void openOutside(viewerFileUrl(scope, file));
     else setFileOpen(file);
   };
 

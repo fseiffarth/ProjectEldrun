@@ -24,8 +24,12 @@ const SRC = {
 };
 
 function hostWith(files: boolean) {
-  return vi.fn(async (input: string | URL | Request) => {
+  return vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
+    if (url === "/api/v1/open-ticket") {
+      const { url: target } = JSON.parse(String(init?.body)) as { url: string };
+      return new Response(JSON.stringify({ url: `${target}&ticket=t1` }), { status: 200 });
+    }
     if (url === "/api/v1/projects/p1/outbox") return new Response(JSON.stringify({ files: [] }), { status: 200 });
     if (url === "/api/v1/projects/p1/files") return new Response(JSON.stringify(ROOT), { status: 200 });
     if (url === "/api/v1/projects/p1/files?dir=tok-src") return new Response(JSON.stringify(SRC), { status: 200 });
@@ -111,9 +115,10 @@ describe("Mobile project — read-only file browser", () => {
     fireEvent.click(within(trail).getByRole("button", { name: "Alpha" }));
     await within(sheet).findByRole("button", { name: "Open README.md" });
 
-    // A PDF goes to the browser's viewer by its token.
+    // A PDF goes to the browser's viewer by its token, with a ticket: that tab
+    // is outside the app, where the strict session cookie does not follow.
     fireEvent.click(within(sheet).getByRole("button", { name: "Open paper.pdf" }));
-    expect(open).toHaveBeenCalledWith("/api/v1/projects/p1/files/raw?f=tok-paper", "_blank", "noopener");
+    await waitFor(() => expect(open).toHaveBeenCalledWith("/api/v1/projects/p1/files/raw?f=tok-paper&ticket=t1", "_blank", "noopener"));
 
     // A picture opens full screen, loaded by its token, with Save beside it.
     fireEvent.click(within(sheet).getByRole("button", { name: "Open plot.png" }));
