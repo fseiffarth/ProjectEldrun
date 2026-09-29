@@ -4,6 +4,7 @@ import { Toggle } from "../common/Toggle";
 import { SettingsAdvanced, SettingsCard, SettingsHeader, SettingsList, SettingsSection, ToggleRow } from "./settingsUi";
 import { formatBytes as fmtBytes } from "../../lib/formatBytes";
 import { UntestedTag } from "../common/UntestedTag";
+import { diffDefaultApps, patchDefaultApps } from "../../lib/defaultApps";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Dropdown } from "../common/Dropdown";
@@ -281,8 +282,13 @@ export function FileTypeSettings({ onBack, onClose }: SubPanelProps) {
   }, []);
 
   const saveApps = (next: Record<string, string>) => {
+    // Only the change, so a save from another window or the phone in between
+    // is kept (headless owner plan, H1b); the answer is the map as stored.
+    const patch = diffDefaultApps(apps, next);
     setApps(next);
-    invoke<void>("save_default_apps", { defaultApps: next }).catch((err) => setError(String(err)));
+    patchDefaultApps(patch, () => next)
+      .then(setApps)
+      .catch((err) => setError(String(err)));
   };
 
   const normalizeExt = (ext: string) => {

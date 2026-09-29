@@ -1385,6 +1385,7 @@ pub fn run() {
             commands::mobile_control::global_inbox_delete,
             commands::default_apps::get_default_apps,
             commands::default_apps::save_default_apps,
+            commands::default_apps::patch_default_apps,
             // Projects
             commands::projects::get_projects,
             commands::projects::save_projects,

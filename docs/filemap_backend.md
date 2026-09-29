@@ -34,7 +34,7 @@ only when breaking it does damage. The *why* goes in code comments or
 | `terminal.rs` | Terminal/PTY command surface (delegates to `terminal/mod.rs`). `pty_spawn` keeps only the crash-loop guard, the PTY and its event; the launch assembly (authority, cwd gate, resume, fence, MCP grants, docker/ssh/tmux wraps) is `services::launch_prep::prepare`, shared with the sidecar's headless spawn. Also the **local** tmux-session commands (TODO #85): `local_tmux_{list,kill,rename}`. |
 | `app_update.rs` | Settings → Updates commands (thin over `services::app_update`). No command takes a URL or path; download re-asks GitHub, install uses what download staged. |
 | `apps.rs` | App launching, `run_script_detached`, `open_file`, external window tracking. |
-| `default_apps.rs` | Per-file-type default-app mapping. |
+| `default_apps.rs` | Per-file-type default-app mapping. `patch_default_apps { set, remove }` changes entries under the file's lock (`storage::patch_json`, headless owner plan H1b) and answers the stored map; `save_default_apps` (whole replace, older frontends) goes through the same lock. |
 | `ssh.rs` | SSH commands for remote projects (`ssh_connect`, `ssh_default_dir`, `ssh_list_dir`, `ssh_tooling_status`) + explicit-click disconnects: `remote_kill_all_jobs` (`tmux kill-server`) and `ssh_close_master`. |
 | `remote.rs` | Pooled SSH/SFTP lifecycle (`remote_connect`/`remote_disconnect`), `remote_upload_file` (sanitized dest), and remote tmux commands (`remote_tmux_{list,kill,rename}`, per host) (#85). |
 | `openvpn.rs` | OpenVPN tunnel connect/store-config commands. |
