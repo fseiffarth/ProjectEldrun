@@ -1,6 +1,6 @@
 # Help MCP
 
-Built from `docs/help_mcp_plan.md`. A read-only MCP server, `eldrun-help`,
+A read-only MCP server, `eldrun-help`,
 answering questions about Eldrun from its user docs (`docs/help/*.md`), handed
 to every **local** agent tab. On by default (`Settings::help_mcp`, absent = on).
 

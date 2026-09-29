@@ -39,8 +39,7 @@ correctness/UX work atop the same layout model #42 detaches.*
     (`attachGroup` with the resolved edge/center target) — released outside the main
     window or on Escape, the popout stays floating. A plain (non-Ctrl) tab-bar drag
     still hands off to the WM for a native window move.
-    Plan/reviews: `docs/group_l_42_detach_plan.md`,
-    `docs/group_l_42_detach_plan_review.md`, `docs/group_l_42_detach_review_code.md`.
+    Code review: `docs/group_l_42_detach_review_code.md`.
     *Files: `src/stores/detached.ts`, `src/stores/tabs.ts`,
     `src/components/layout/DetachedApp.tsx` / `DetachedCenterPanel.tsx` /
     `AppShell.tsx`, `src/components/tabs/TabBar.tsx`,

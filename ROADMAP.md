@@ -41,7 +41,7 @@ after user confirmation. See [verification](todo/group-y-verification.md),
 [sessions](todo/group-f-session.md), [remote/HPC](todo/group-g-remote.md),
 [mail](todo/group-j-mail.md), [CalDAV](todo/group-x-caldav.md),
 [presenter](todo/group-v-presenter.md), and
-[Mobile acceptance work](docs/eldrun_mobile_agent_plan.md).
+[Mobile acceptance work](todo/group-h-crossplatform.md).
 
 ## Reliability and Maintenance
 

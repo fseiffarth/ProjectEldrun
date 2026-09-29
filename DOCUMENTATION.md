@@ -407,8 +407,8 @@ The sidecar derives opaque browser ids from trusted Eldrun state and revalidates
 the project, tab, tmux session, device session, and canonical project directory
 throughout an attachment. Mobile creation goes through the running desktop and
 accepts only a typed shell or cataloged resumable-agent request; it does not
-accept paths, commands, argv, or tmux names. See
-`docs/eldrun_mobile_agent_plan.md` for the protocol and acceptance matrix.
+accept paths, commands, argv, or tmux names. The protocol lives in
+`src-tauri/src/services/mobile_control/`.
 
 ### Workspace Apps
 

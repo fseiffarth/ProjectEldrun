@@ -675,7 +675,7 @@ resolves; the package names above still resolve (`apt-cache policy <pkg>`,
 ## 7. bubblewrap (agent fence)
 
 **Where** `services/agent_fence.rs`, `src/lib/agents/agentFence.ts`,
-`docs/agent_fence_plan.md`.
+`docs/context/agent_authority.md`.
 
 **Assumes** `bwrap` flags `--ro-bind --ro-bind-try --bind --bind-try --dev
 --proc --tmpfs --symlink --unshare-pid --die-with-parent --chdir` — **not**

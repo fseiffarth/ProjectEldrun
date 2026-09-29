@@ -701,7 +701,7 @@ unchanged; the new agents are additive.
   live-verified — `UntestedTag` id `scheduleMcp`): project agents propose rows
   in their own tab's schedule list over a separate `/mcp/schedule` path —
   self-target only, staged by default, no preface, no `/`·`!`·`#`·`$`·`@`
-  messages, quotas. Plan: `docs/agent_schedule_mcp_plan.md`; runtime notes and
+  messages, quotas. Runtime notes and
   the click-through: `docs/context/agent_schedule_mcp.md`.
   - [ ] 🖐️ Live QA — the six steps in `docs/context/agent_schedule_mcp.md`
     (needs a build with the new backend): propose → approve → idle delivery in
@@ -1203,8 +1203,7 @@ unchanged; the new agents are additive.
 
 262. **Agents view: a prompt chart replaces the library, Scheduled and Sent
     sections.** Three lists hold the same prompt at three moments of its life,
-    and every seam between them is a place #256 had to be written. Plan:
-    `docs/prompt_chart_plan.md`. One surface under the tabs section: cards on
+    and every seam between them is a place #256 had to be written. One surface under the tabs section: cards on
     a vertical timeline (past ordinal with day separators, a now line, a
     proportional zoomable future band), one **strand** per agent tab plus a
     timeless Drafts shelf, queued cards stacked under the now line in delivery
@@ -1260,7 +1259,7 @@ unchanged; the new agents are additive.
       when the gesture ends over nothing. Links are pulled out of a card's
       bottom port onto another card; every draft/scheduled/queued/chained
       card carries an agent picker (a draft's choice persists as the new
-      `target` field on the prompt row). `docs/prompt_chart_plan.md` §9.
+      `target` field on the prompt row).
       Built 2026-09-10, **not live-tested**.
       - [x] 🤖 Automated test — `AgentPromptTimeline` (windows per view and
         week start, anchor stepping with the month clamp, x ↔ time and snap,
@@ -1333,7 +1332,7 @@ unchanged; the new agents are additive.
       view below Day. Typed prompts are adopted from a timed read of the
       transcript (`agent_tab_recent_prompts`), so messages sent mid-turn and
       the first prompt after a launch reach the chart at their real time.
-      `docs/prompt_chart_plan.md` §10. Needs a backend restart.
+      Needs a backend restart.
       - [x] 🤖 Automated test — cargo `an_after_link_carries_commands_and_a_related_one_cannot`,
         `a_prompt_recorded_after_the_fact_keeps_its_time_and_place`,
         `recent_prompts_carry_their_times_and_take_in_mid_turn_messages`;
@@ -1369,7 +1368,7 @@ unchanged; the new agents are additive.
       `related` for a resume (`link_session_roll`, id `roll:<row>`; deleting
       the row takes it). Closed strands are one per gone *tab* now, keyed by
       `tab_id`. Rows written before this carry the launch id and stay where
-      they were. `docs/prompt_chart_plan.md` §11. Needs a backend restart
+      they were. Needs a backend restart
       (frozen build: `npm run package:dev`, then relaunch).
       - [x] 🤖 Automated test — cargo
         `a_rolled_session_links_the_new_rows_to_the_tabs_previous_session`,
@@ -1400,7 +1399,7 @@ unchanged; the new agents are additive.
       schedules only the start and brings its descendants onto the timeline.
       The next prompt waits for an explicit working→done hook pair, stable
       for three seconds; silence and timeouts cannot release it. Hook-free
-      agents pause after their first input. See `docs/prompt_chart_plan.md` §12.
+      agents pause after their first input.
       - [x] 🤖 Automated tests — `AgentPromptDrafts`, `PromptChart`,
         `AgentScheduleQuietTab`, `AgentScheduleRetire`, `AgentTurnHooks`.
       - [ ] 🖐️ Manual test — enable Free layout, move and link three drafts,
@@ -1429,7 +1428,7 @@ unchanged; the new agents are additive.
         - [ ] ❌ Doesn't work on macOS
     - **Nothing is sent that nobody asked to send (2026-09-15), not
       live-tested.** A two-coder pass over the chart's review findings; see
-      `docs/prompt_chart_plan.md` §13. The **backend guards need a restart**
+      the #262 QA list. The **backend guards need a restart**
       (frozen build: `npm run package:dev`, then relaunch); the frontend half
       hot-reloads.
       - [x] 🤖 Automated tests — `PromptChart`, `PromptChartSelect`,

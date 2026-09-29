@@ -828,7 +828,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
 
 90. **Native presenter ("deck"): a PDF-based presentation editor and presenter.**
     A TeX/PDF-first presentation surface, behind the experimental
-    `deck_presenter` flag. Plan and rationale: `docs/deck_presenter_plan.md`.
+    `deck_presenter` flag.
     Three separable halves: **generation** (a base PDF from `.tex`, from an
     imported PDF, or from a generated starter template), **design** (editable
     object layers — text with list styles, images, shapes, single-path icons —

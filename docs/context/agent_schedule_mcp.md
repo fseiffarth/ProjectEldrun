@@ -1,6 +1,6 @@
 # Agent schedule MCP
 
-Desktop v1 implements `docs/agent_schedule_mcp_plan.md`. It is globally off by
+Desktop v1. It is globally off by
 default. Settings → Manage CLIs enables it for new local project-agent spawns;
 each project's trusted `projects.json` entry selects `off`, `propose` (default),
 or `apply`. The project pill menu also exposes this level. Nothing is written to

@@ -1,6 +1,6 @@
 # Agent git push MCP
 
-Desktop v1 implements `docs/git_push_mcp_plan.md`: a fenced agent tab can ask
+Desktop v1: a fenced agent tab can ask
 Eldrun to push the project it works in, without a credential ever entering the
 fence. Globally **on** by default since 2026-09-26 (`Settings::git_push_mcp`,
 absent = on, `false` = off; Settings → Manage CLIs) — the fence has to stay

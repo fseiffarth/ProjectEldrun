@@ -477,8 +477,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       verify nettop's CSV shape/permissions before writing the parser.
 
 32. **OS parity sweep (2026-09-16).** ✅ Code-complete, ⚠️ **none of it
-    verified live** — see `docs/os_parity_sweep_plan.md` for the full merged
-    plan, what was refuted, and what was deferred and why. Every item below
+    verified live** — deferred items are listed under 32z below. Every item below
     passed `cargo test`, clippy, the Windows cross-check (25 → 0 warnings),
     `npm run build`/`test`/`lint`.
     - [x] **32a — orphan containers swept on Windows.** The startup sweep
@@ -713,6 +712,32 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         - [ ] ❌ Doesn't work on Windows
         - [ ] ✅ Works on macOS
         - [ ] ❌ Doesn't work on macOS
+    - [ ] **32z — deferred from the sweep** (each needs live hardware or a
+      product call first):
+      - X11 backend on any X11 session — mutates the WM workspace count and
+        survives crashes; needs live XFCE/MATE/i3.
+      - KDE Wayland `info()` via D-Bus properties — needs live KWin.
+      - Intel/xe iGPU readout — `vram_total: Option` ripples through TS and
+        the remote parser.
+      - GNOME projector blanking via the portal Inhibit — needs a live GNOME.
+      - Distro hints beyond the fence — nothing else fails closed.
+      - Windows renderer restart — WebView2 shares renderers across
+        same-origin windows; one kill may take all.
+      - Container credential freshness on Windows — needs Docker Desktop to
+        see whether rename-over propagates.
+      - Windows shutdown time budget — measure teardown on hardware first.
+      - Roaming `%APPDATA%` state dir — needs a migration; niche.
+      - Phone-side "no terminals on Windows" copy — new mobile API field +
+        mobile-web i18n.
+      - Job Object for ConPTY children — needs hardware to see current crash
+        reaping.
+      - Keychain file read for fenced Claude on macOS — security trade-off;
+        probe on a Mac first.
+      - Login-shell PATH import on macOS — runs user rc files.
+      - `macOptionIsMeta`, ⌘\ panel toggle, fullscreen restore — product
+        decisions; breaks international Option input.
+      - `NSLocalNetworkUsageDescription`, richer macOS crash log — low value
+        vs. signal-handler risk.
 
 254. **The bare Super key belongs to the desktop, not to the OS.** ✅ Fixed
     2026-09-07, ⚠️ untested live. `useKeyboard` gated its lone Meta/Super panel
@@ -899,7 +924,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         - [ ] ❌ Doesn't work on macOS
 
 - [~] **31ad — `eldrun-send`: files from agent terminals to the phone** (2026-09-14;
-  implemented, pending live QA). See `docs/mobile_send_plan.md`. Local and
+  implemented, pending live QA). Local and
   container tabs get an installed command, scoped root env, and read-only
   mounts. Focus previews images/text/PDF and offers downloads and file sharing.
   After deliberately restarting Eldrun, verify on the tailnet:
@@ -2835,7 +2860,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   `MobileRootAccess.test.tsx`, `scopeCaption` in `MobileProjectOrder.test.tsx`;
   ⚠️ not verified on a phone, and it needs a rebuild + restart first: the
   sidecar's catalog changed and the phone serves the bundle baked into the
-  binary). Plan and rationale: `docs/mobile_root_plan.md`,
+  binary). Rationale:
   `docs/context/root_console.md` ("On the phone"). Root is a phone scope behind
   its own default-off switch (Settings → Eldrun Mobile → Root console) and a
   gate: with the root MCP tools on it is listed only while write review is
@@ -2954,8 +2979,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
 - [~] **31bi — Mobile ↔ desktop link hardening** (2026-09-24; ✅ code-complete,
   automated tests passing — `auth.rs`, `pty_bridge.rs`, `limits.rs`,
   `protocol.rs`, the mobile vitest suite; ⚠️ never run on a phone; the sidecar
-  and the bridge both changed, so a rebuild + restart first). The nine steps of
-  `docs/mobile_link_hardening_plan.md`: input frames acked by the sidecar and a
+  and the bridge both changed, so a rebuild + restart first). The nine steps: input frames acked by the sidecar and a
   lost prompt marked on its own bubble with Resend (1); sliding 15-min session
   renewed silently on a 401 while the reader is active, PIN on every cold open,
   `session_expired` told apart from `access_revoked` (2); the service worker

@@ -2,8 +2,7 @@
 
 Referenced from `AGENTS.md`.
 
-**A project can run in a container** (#38, `services::sandbox`,
-`docs/docker_projects_plan.md`): with the pill's "Run this project in a
+**A project can run in a container** (#38, `services::sandbox`): with the pill's "Run this project in a
 container" toggle on, every shell/agent tab `docker exec`s into ONE
 session-lived, capability-dropped container (`eldrun-<id>`); `local_agent`
 tabs stay on the host. The project dir stays on the host, bind-mounted at its

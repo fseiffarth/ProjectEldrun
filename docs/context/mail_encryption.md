@@ -1,8 +1,6 @@
 # Mail encryption — why it is shaped this way
 
-Two features that share a prefix and almost nothing else. Plan:
-`docs/mail_encryption_plan.md` (and the two long derivations behind it,
-`mail_encryption_plan_a.md` / `_b.md`).
+Two features that share a prefix and almost nothing else.
 
 - **`services/mail_crypt.rs`** encrypts the **local store**. Applies to every
   account, independent of what any correspondent supports.
@@ -199,7 +197,7 @@ perfectly good email-certificate validator remains correct and free.
 
 ## What the agent path can and cannot read
 
-The root MCP's mail tools (`services::root_mcp_mail`, `docs/mail_mcp_plan.md`)
+The root MCP's mail tools (`services::root_mcp_mail`, `docs/context/root_console.md`)
 reach mail through `commands::mail::AgentMail`, which **never opens or unlocks
 the store**: a store not opened this run, or opened as the memory-only
 stand-in, answers "mail is locked" and nothing prompts. `mail_read` shares

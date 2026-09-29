@@ -25,8 +25,7 @@ own IMAP/SMTP transport does, but every prompt here runs against a **loopback**
 Ollama and refuses a non-loopback host **even when `ollama_allow_remote_host` is
 true** — stricter than the setting on purpose. No web fetch / image proxy / link
 resolution inside any prompt; the only input is what the local store already
-holds. Design + full rationale: [`docs/mail_local_ai_plan.md`](../docs/mail_local_ai_plan.md);
-the store/encryption invariants it must honour:
+holds. The store/encryption invariants it must honour:
 [`docs/context/mail_encryption.md`](../docs/context/mail_encryption.md).*
 
 *Files: new `src-tauri/src/services/mail_ai.rs` (the loopback-only `/api/chat`
@@ -156,7 +155,7 @@ the user runs it, and each new surface carries an `UntestedTag`.
   - [ ] ✅ Works on macOS
   - [ ] ❌ Doesn't work on macOS
 
-**Live QA — agent attachments (#859b, `docs/mail_mcp_attachments_plan.md`)** —
+**Live QA — agent attachments (#859b)** —
 needs `root_mcp_mail` on, a mail account, and Settings → Agent fence → *Root
 agent reads projects* on before the root tab is opened.
 - [ ] 🖐️ #859b — in a root tab ask "write a mail to bob@example.com, attach

@@ -338,7 +338,7 @@ no token and no tools.
 
 ## Mail
 
-Design and threat model: [`docs/mail_mcp_plan.md`](../mail_mcp_plan.md). The
+The
 tools live in `services::root_mcp_mail` — nine names, pinned by a test — and
 are new entries in this same server, not a second one.
 
@@ -367,7 +367,7 @@ does not exist for it — the same "unknown tool" an invented name gets.
   `enabled_tools`). Its first read latches `Session::has_read_mail`, after
   which it is treated as a reader for writes: always staged, tainted, reader
   drafts. `served` lists the read tools for `LocalModel`; the switch decides
-  per request (`docs/mail_mcp_plan.md` §*Local-model reads*).
+  per request.
 - **A reader** gets the read tools (`mail_folders`, `mail_search`, `mail_read`,
   `mail_thread`) and the draft tools, is served **no cross-project sweep**, and
   its calendar/board writes **always stage** with `tainted: true`, whatever
@@ -399,7 +399,7 @@ composer*, and `mail_draft_send` stays a Tauri command — nothing here sends.
 The `root-mcp-changed` event gains `kind: "draft"`, carrying the id and origin
 only.
 
-**Attachments and suggestions (root tab only; `mail_mcp_attachments_plan.md`).**
+**Attachments and suggestions (root tab only).**
 - `attach: [{project, path}]` (≤ 5) on `mail_draft_create`/`_update`, replace
   semantics. Refused unless the tab's spawn record says its fence shows the
   projects, and on Windows. Resolution is the **same-roots rule**
@@ -561,7 +561,7 @@ This is a write-integrity gate, **not confidentiality protection**. Calendar
 visibility scoping is a separate read-gate feature and has not shipped here;
 fenced agents can still disclose what tools let them read. An unfenced agent
 can access the real store directly. Mail shipped on this surface
-(`docs/mail_mcp_plan.md`, `services::root_mcp_mail`): the reader class and a
+(`services::root_mcp_mail`): the reader class and a
 local-model tab that has read mail always stage, their proposals carry the
 mark, drafts are the proposal and the composer's Send the approval. No send or
 approval tool exists on the endpoint.
@@ -650,8 +650,7 @@ Mobile-enabled project: a shell that runs as the user and can read every store
 these tools serve. Keeping root away took nothing from someone holding the
 phone and kept the user from their own root agent away from the desk.
 
-So root is a phone scope, behind a line drawn where the rights actually are
-(`docs/mobile_root_plan.md`):
+So root is a phone scope, behind a line drawn where the rights actually are:
 
 - **Its own switch, default off** — `eldrun_mobile_host.root_access`, in
   Settings → Eldrun Mobile. Root is in neither `projects.json` nor
@@ -685,4 +684,4 @@ So root is a phone scope, behind a line drawn where the rights actually are
   already ran `status off` and nothing of Eldrun's binds the prefix, so nobody
   loses a key — and without one, no keystroke from a paired phone can open
   tmux's own command line and detach, rename or spawn past the review gate
-  above. Decided 2026-09-24 (`docs/mobile_link_hardening_plan.md`, decision 5).
+  above. Decided 2026-09-24.

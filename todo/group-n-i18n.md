@@ -1,7 +1,6 @@
 ## Group N — Internationalization (i18n)
 *Files: `src/lib/i18n.ts` (the translation store — flat `lang → key → text`
-maps for en/de/es/fr/it), every component under `src/components/`. Full
-resumable plan: [`docs/i18n_translation_plan.md`](../docs/i18n_translation_plan.md).*
+maps for en/de/es/fr/it), every component under `src/components/`. *
 
 92. **Full app-wide translation coverage. DONE.** The i18n system
     (`src/lib/i18n.ts`) was originally wired into only the Settings dialog's
@@ -28,6 +27,6 @@ resumable plan: [`docs/i18n_translation_plan.md`](../docs/i18n_translation_plan.
     never pass it is a silent English-only bug hiding in plain sight
     (`calendar/`'s `formatLongDate()`) — grep for the helper's call sites,
     not just for hardcoded strings. Full history, batch-script methodology,
-    and key-naming conventions: [`docs/i18n_translation_plan.md`](../docs/i18n_translation_plan.md).
+    and key-naming conventions: `docs/i18n_translation_plan.md` in git history (removed 2026-09-29).
 
 ---

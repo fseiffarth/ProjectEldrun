@@ -2,9 +2,9 @@
 
 Status: **Proposed. Nothing in this document is implemented.**
 
-This is the follow-up review that
-[`eldrun_mobile_agent_plan.md`](eldrun_mobile_agent_plan.md) §12 requires
-before any of its deferred phases begin. It specs six directions surfaced by
+This is the follow-up review the original mobile plan (removed once built;
+its still-deferred list is kept at the end of this file) required before any
+of its deferred phases begin. It specs six directions surfaced by
 the 2026-08-26 code review of the mobile surface, ordered by value against the
 product thesis: the phone exists to *steer agent turns*, not to mirror the
 desktop. A seventh (G), a security hardening from the 2026-08-28 mobile
@@ -272,7 +272,7 @@ when its old chunk is gone.
 >   `GET /api/v1/projects/{id}/files/raw?f=<token>[&download=1]`; the project
 >   detail carries `files: bool` so the phone shows its 📁 only when on.
 
-Downloads already exist for explicitly sent outbox files (`docs/mobile_send_plan.md`).
+Downloads already exist for explicitly sent outbox files (`eldrun-send`, `docs/context/agent_sessions.md`).
 This section concerns browsing beyond that outbox.
 
 ### D.1 Goal
@@ -592,3 +592,20 @@ sign-off before implementation) → D → E → F. Each phase is independently
 shippable and independently refusable. G sits outside this order entirely: it
 touches only the PWA's own lock, depends on nothing else here, and can land at
 any time — after the user signs off on the extractable-key tradeoff in G.3.
+
+## Still deferred from the original mobile plan
+
+Carried over from the original plan's §12 when it was removed (2026-09-29).
+Everything this file does not cover still needs its own review first:
+
+- creation while the desktop is absent, which requires a daemon-owned or
+  transactional shared tab-state model;
+- remote primary/worker tabs, containers, and VMs, each with its own authority
+  and connectivity rules;
+- structured attention/approval state supplied by agents rather than terminal
+  scraping;
+- tab termination (ending the session behind a tab), move, or mode changes
+  after creation — a phone renames (`PUT /api/v1/tabs/{id}`) and closes
+  (`DELETE /api/v1/tabs/{id}`, the desktop's own ×; the tmux session keeps
+  running) a tab, but never kills what runs in one;
+- native wrappers, multi-user hosts, or non-Tailscale publication.

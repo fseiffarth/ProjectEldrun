@@ -2,8 +2,7 @@
 
 Referenced from `AGENTS.md`.
 
-**A shell/script tab runs inside a tmux session so a long run survives** (#85,
-`docs/tmux_remote_plan.md`) — decoupled from the disposable channel, the tab
+**A shell/script tab runs inside a tmux session so a long run survives** (#85) — decoupled from the disposable channel, the tab
 **reattaches** on relaunch. It covers **two axes**:
 
 - **Remote** (on the SSH host): survives an SSH drop, a laptop sleep, a VPN drop,

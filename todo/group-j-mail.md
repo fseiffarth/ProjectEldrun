@@ -251,8 +251,8 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
 ---
 
 66. **Encrypt the local mail store, and add OpenPGP. (BUILT — every phase,
-    never live-tested.)** Two features, deliberately sequenced, both from
-    `docs/mail_encryption_plan.md`.
+    never live-tested.)** Two features, deliberately sequenced, rationale in
+    `docs/context/mail_encryption.md`.
 
     **At rest (phases 1–2).** Every sensitive value in the mail store is an
     XChaCha20-Poly1305 envelope (`services/mail_crypt.rs`), sealed *per value*
@@ -855,8 +855,7 @@ no-MDC OpenPGP refused — is deliberately not re-listed here.*
 ### Mail tools for agents — root MCP (#859)
 
 - [x] **#859 Mail tools for the root agent and the contained reader** —
-  ✅ Done · 🧪 untested live (2026-09-19). Plan: `docs/mail_mcp_plan.md`;
-  rationale: `docs/context/root_console.md` §Mail, `docs/context/vm_projects.md`
+  ✅ Done · 🧪 untested live (2026-09-19). Rationale: `docs/context/root_console.md` §Mail, `docs/context/vm_projects.md`
   §"The contained mail reader".
     - A **root tab** writes mail drafts and never reads mail; a **contained
       reader** (agent tab in a `mail_reader` VM under default Proxy egress)

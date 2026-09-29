@@ -153,7 +153,7 @@ closed the boundary; it has moved it.
 ### 2.5 Lifecycle
 
 One container per **browser session**, not per project (a browser is not
-project-scoped; see `browser_plan_a.md` §7). Ephemeral by construction: no
+project-scoped; see `browser_plan_b.md`). Ephemeral by construction: no
 persistent profile volume, so quitting *is* the delete — the same bargain
 `incognito(true)` strikes today. Teardown on window close, `down_all` at app
 exit, `sweep_orphans` at startup, all inherited from `sandbox.rs`. A liveness

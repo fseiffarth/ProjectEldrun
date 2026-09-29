@@ -46,7 +46,7 @@ Every existing mechanism then applies verbatim, already tested:
 - the three auto-connect gates, lamp/pill UI, `RemoteConnectDialog` — unchanged
   (localhost passes `mayAutoTouch`; a VM host is never HPC-tagged).
 
-This mirrors the lesson written into `docker_projects_plan.md` ("there is
+This mirrors the lesson written into `docs/context/docker_containers.md` ("there is
 exactly one such feature"): the new code is a **VM lifecycle service** plus a
 thin creation/activation shim; the trust boundary itself is machinery that
 already exists and already asks before it destroys anything.
@@ -266,7 +266,7 @@ have, for users who want host-side durability or local tooling. When enabled,
 one added knob, default ON for VM projects: **manual pull only**. Background
 passes may *push* mirror→VM and *fetch* refs for status, but nothing VM→mirror
 lands without a click (the ordinary confirmed pull, plus "view diff before
-pull" — already on the deferred list from `ssh_sync_plan`; this tier is the
+pull" — already deferred by the SSH local-sync work; this tier is the
 reason to build it). Rationale: the mirror is the host-side artifact other
 tools and the user's editor read; auto-landing agent-written bytes there would
 quietly re-open the half-in/half-out hole this tier exists to close. Byte-sync

@@ -2,8 +2,7 @@
 
 Referenced from `AGENTS.md`.
 
-- **A remote project can reach N machines, not one** (`docs/multi_host_remote_plan.md`,
-  `services::worker_sync`). The project's `remote` is the **primary** — it still owns
+- **A remote project can reach N machines, not one** (`services::worker_sync`). The project's `remote` is the **primary** — it still owns
   files, git, the mirror, and full bidirectional sync, unchanged. Extra **worker**
   hosts (`Project.compute_hosts`, mirrored into `projects.json`'s
   `extra["compute_hosts"]`) are experiment machines: their code is kept **one-way** in
