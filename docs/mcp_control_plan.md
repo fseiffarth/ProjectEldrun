@@ -10,10 +10,10 @@ terminal, or any MCP client) can drive the app itself — *open a new tab of
 type X*, *open this file of this project in a new tab*, *make this project
 active/inactive* — instead of only working inside a shell.
 
-Not to be confused with [`eldrun_server_plan.md`](eldrun_server_plan.md)
-(group Z): that is a multi-user sync box on a Pi. This is a **local control
-surface for the running desktop app**, and it deliberately shares that plan's
-first instinct — build as little server as possible.
+Not to be confused with [`eldrun_hosted_plan.md`](eldrun_hosted_plan.md):
+that is a multi-user server running every user's work. This is a **local
+control surface for the running desktop app**, and it deliberately builds as
+little server as possible.
 
 ---
 
@@ -65,6 +65,16 @@ Five decisions carry the design:
    responding", never hangs the client. The exception is `eldrun_status`,
    whose source of truth is backend files (`projects.json`,
    `active_session.json`), answered without the round trip.
+
+   *Revisit when the hosted plan's P1 lands (noted 2026-09-29).*
+   [`eldrun_hosted_plan.md`](eldrun_hosted_plan.md) §3.4 moves the live
+   model out of the window into one headless `workspace` owner, the Mobile
+   sidecar. That covers the tab set, spawning, project activation and every
+   timer. Because it is a *move*, not a second implementation, the drift
+   argument above stops applying to each slice once that slice has moved.
+   For a moved slice, tools call the owner's per-operation commands instead
+   of going through `McpBridgeHost`, and they keep working with the window
+   closed. Until a slice moves, this decision stands for it.
 
 3. **The bridge is dumb and the tool list has one home.** `eldrun-mcp` is
    invoked as `eldrun-mcp --project <id>`, reads that project's token from

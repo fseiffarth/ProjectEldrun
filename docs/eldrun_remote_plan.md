@@ -1,6 +1,11 @@
 # Eldrun Remote — implementation plan
 
-Status: **plan only; nothing in this document is implemented.**
+Status: **superseded (2026-09-29).** Its shape shipped as Eldrun Mobile: the
+`eldrun --mobile-host` sidecar (`services/mobile_control`) and the
+`mobile-web/` PWA, which have since grown well past this MVP. What this plan
+left out, running the work itself on a server for several users, is
+[`eldrun_hosted_plan.md`](eldrun_hosted_plan.md). This document is kept for
+its rationale only; for current behaviour read the code, not this plan.
 
 This plan defines a private mobile/PWA controller for terminal sessions already
 running on a Linux or macOS Eldrun host. It deliberately does not describe a
@@ -66,7 +71,7 @@ features with similar names.
 | [`tmux_remote_plan.md`](tmux_remote_plan.md) and [`context/tmux_sessions.md`](context/tmux_sessions.md) | Reuse Eldrun-minted `eldrun-<scope>--<kind>-<uuid>` names, discovery parsing, and detach semantics. Extend local persistence to opted-in local agent tabs. |
 | [`resume_sessions_plan.md`](resume_sessions_plan.md) | Agent resume remains the fallback if a tmux session no longer exists. Live remote attachment does not replace conversation resume. |
 | [`multi_host_remote_plan.md`](multi_host_remote_plan.md) | No worker or primary SSH host is exposed in the MVP. |
-| [`eldrun_server_plan.md`](eldrun_server_plan.md) | That plan covers multi-user projects/calendar/tasks. Eldrun Remote is a single-user terminal controller and introduces no collaboration server. |
+| [`eldrun_hosted_plan.md`](eldrun_hosted_plan.md) | That plan covers a multi-user server that runs the work. Eldrun Remote is a single-user terminal controller and introduces no collaboration server. |
 | Claude `--remote-control` (`agent_remote_control` / `remote_control`) | This remains Claude's vendor service. New persisted fields use `eldrun_remote_*` names so the two controls cannot be confused. |
 
 ## 3. Fixed architecture
