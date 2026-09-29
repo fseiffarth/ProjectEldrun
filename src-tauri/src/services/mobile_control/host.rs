@@ -40,6 +40,7 @@ use super::{
         MAX_TAB_LABEL, TERMINAL_PROTOCOL,
     },
     pty_bridge::{self, TerminalRegistry},
+    scheduler,
     push::{AgentTabRef, PushPrefs},
     sign_in,
     live_pwa, MOBILE_ASSETS,
@@ -3845,6 +3846,10 @@ pub async fn run(state_dir: PathBuf) -> Result<(), String> {
     tokio::spawn(async move {
         let _ = admin::serve(&admin_path, admin_context).await;
     });
+    // The owner's timers (headless owner plan, H2): scheduled prompts fire
+    // from here while no window holds the timer lease, through the same
+    // launch seam the headless create uses. Ends with the server.
+    tokio::spawn(scheduler::run(state.config.state_dir.clone(), state.spawner.launch.clone(), shutdown_tx.subscribe()));
     let publisher_shutdown = shutdown_tx.clone();
     let publisher_origin = config.origin.clone();
     let publisher_failure = serve_failure.clone();

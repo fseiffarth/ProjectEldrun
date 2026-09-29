@@ -64,6 +64,21 @@ pub fn acquire_in(path: &Path, client: &str, now: u64, ttl: u64) -> Result<Lease
     Ok(LeaseState { held: true, holder: Some(lease.holder), expires_at: lease.expires_at })
 }
 
+/// Who holds the lease at `now`, without asking for it: the window whose
+/// timers are running, or `None` when no window does — a lease never taken,
+/// released, or a holder that stopped renewing. What the Mobile sidecar's
+/// scheduler reads (headless owner plan, H2): it fires only while no window
+/// holds the timers, and never takes the lease itself — a window that opens
+/// must be able to take over the timers the sidecar cannot run.
+pub fn holder_in(path: &Path, now: u64) -> Option<String> {
+    read(path).filter(|lease| lease.expires_at > now).map(|lease| lease.holder)
+}
+
+/// `<state_dir>/timer-lease.json`.
+pub fn lease_file(state_dir: &Path) -> std::path::PathBuf {
+    state_dir.join(FILE_NAME)
+}
+
 /// Give the lease up if `client` holds it, so the next asker takes it at
 /// once rather than after the TTL.
 pub fn release_in(path: &Path, client: &str) -> Result<(), String> {

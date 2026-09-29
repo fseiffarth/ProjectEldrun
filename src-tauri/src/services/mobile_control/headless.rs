@@ -395,7 +395,7 @@ pub struct TurnReadings {
 /// The newest turn record of a tab: the shared root's and, for a project
 /// tab, the project's own slice (where a fenced agent's hook writes) — the
 /// one with the later stamp wins. The record is `<state> <epoch seconds>`.
-fn turn_record(state_dir: &Path, project_id: &str, uid: &str) -> Option<(TurnState, Option<u64>)> {
+pub(super) fn turn_record(state_dir: &Path, project_id: &str, uid: &str) -> Option<(TurnState, Option<u64>)> {
     if uid.is_empty() || uid.chars().any(|c| !(c.is_ascii_alphanumeric() || c == '-')) {
         return None;
     }
@@ -658,7 +658,7 @@ fn tab_record(kind: &CreateTabKind, agent: Option<&AgentChoice>, cwd: &Path, req
 /// The launch of a stored tab record, for the detached spawn: what the
 /// window's `TerminalView` hands `pty_spawn`, at a fixed 80×24 nobody is
 /// looking at. `project_id` is the raw scope id (a project's or a box's).
-fn launch_options(project_id: &str, tab: &TabEntry) -> PtyOptions {
+pub(super) fn launch_options(project_id: &str, tab: &TabEntry) -> PtyOptions {
     let strings = |key: &str| -> Vec<String> {
         tab.extra
             .get(key)

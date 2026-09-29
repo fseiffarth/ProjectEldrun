@@ -25,26 +25,58 @@ const SCHEDULE_TARGET_KEY: &str = "scheduleTargetId";
 
 static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
-fn lock() -> std::sync::MutexGuard<'static, ()> {
-    LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+/// The transaction guard of the state dir's file: the in-process mutex the
+/// window's commands always took, plus the file's `FileLock`, because the
+/// Mobile sidecar is a second process on the same file (headless owner plan,
+/// H2: it claims and completes occurrences with no window open, and a claim
+/// is the only at-most-once check there is). Fields drop in order — the
+/// file lock goes before the mutex.
+struct Guard {
+    _file: Option<storage::FileLock>,
+    _mutex: std::sync::MutexGuard<'static, ()>,
+}
+
+fn lock() -> Guard {
+    let mutex = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+    Guard { _file: file_lock(&path()), _mutex: mutex }
+}
+
+/// The cross-process lock beside `path` (`agent_tasks.json.lock`). Best
+/// effort, like every `FileLock`: a filesystem without advisory locks still
+/// gets the occurrence checks inside the transaction.
+fn file_lock(path: &std::path::Path) -> Option<storage::FileLock> {
+    storage::FileLock::exclusive(path).ok()
+}
+
+/// `<state_dir>/agent_tasks.json`.
+pub fn file_path(state_dir: &std::path::Path) -> std::path::PathBuf {
+    state_dir.join(FILE_NAME)
 }
 
 fn path() -> std::path::PathBuf {
-    storage::state_dir().join(FILE_NAME)
+    file_path(&storage::state_dir())
 }
 
-fn read() -> Result<AgentTasksFile, String> {
-    let path = path();
+fn read_at(path: &std::path::Path) -> Result<AgentTasksFile, String> {
     if !path.exists() {
         return Ok(AgentTasksFile::default());
     }
-    storage::read_json(&path).map_err(|e| format!("read {FILE_NAME}: {e}"))
+    storage::read_json(path).map_err(|e| format!("read {FILE_NAME}: {e}"))
+}
+
+fn read() -> Result<AgentTasksFile, String> {
+    read_at(&path())
+}
+
+fn write_at(path: &std::path::Path, file: &AgentTasksFile) -> Result<(), String> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("create state directory: {e}"))?;
+    }
+    storage::write_json_atomic(path, file).map_err(|e| format!("write {FILE_NAME}: {e}"))
 }
 
 fn write(file: &AgentTasksFile) -> Result<(), String> {
-    std::fs::create_dir_all(storage::state_dir())
-        .map_err(|e| format!("create state directory: {e}"))?;
-    storage::write_json_atomic(&path(), file).map_err(|e| format!("write {FILE_NAME}: {e}"))
+    write_at(&path(), file)
 }
 
 pub(crate) fn validate_id(label: &str, value: &str) -> Result<(), String> {
@@ -214,14 +246,29 @@ pub fn list_at(
 ) -> Result<Vec<ScheduledAgentPrompt>, String> {
     validate_id("project id", project_id)?;
     validate_id("schedule target id", target_id)?;
-    let path = state_dir.join(FILE_NAME);
-    let mut file: AgentTasksFile = if path.exists() {
-        storage::read_json(&path).map_err(|e| format!("read {FILE_NAME}: {e}"))?
-    } else {
-        AgentTasksFile::default()
-    };
+    let mut file = read_at(&file_path(state_dir))?;
     super::schedule_mcp::prune_proposals(&mut file, &chrono::Utc::now().to_rfc3339());
     Ok(schedules_of(&file, project_id, target_id))
+}
+
+/// Every (project, target) of `state_dir`'s file that holds at least one
+/// enabled rule — what the sidecar's scheduler walks with no window open
+/// (headless owner plan, H2). A read, never a write.
+pub fn bindings_at(state_dir: &std::path::Path) -> Result<Vec<AgentScheduleTargetBinding>, String> {
+    let file = read_at(&file_path(state_dir))?;
+    Ok(file
+        .projects
+        .iter()
+        .flat_map(|(project_id, targets)| {
+            targets
+                .iter()
+                .filter(|(_, target)| target.schedules.iter().any(|rule| rule.enabled))
+                .map(move |(target_id, _)| AgentScheduleTargetBinding {
+                    project_id: project_id.clone(),
+                    schedule_target_id: target_id.clone(),
+                })
+        })
+        .collect())
 }
 
 fn schedules_of(file: &AgentTasksFile, project_id: &str, target_id: &str) -> Vec<ScheduledAgentPrompt> {
@@ -375,13 +422,36 @@ pub fn delete(
     schedule_id: &str,
     expect_undelivered: bool,
 ) -> Result<(), String> {
+    let _guard = lock();
+    delete_locked(&path(), project_id, target_id, schedule_id, expect_undelivered)
+}
+
+/// [`delete`] on `path` by a process that shares the file (the sidecar's
+/// retire of a fired one-time rule), under the file's lock alone.
+pub fn delete_in(
+    path: &std::path::Path,
+    project_id: &str,
+    target_id: &str,
+    schedule_id: &str,
+    expect_undelivered: bool,
+) -> Result<(), String> {
+    let _lock = file_lock(path);
+    delete_locked(path, project_id, target_id, schedule_id, expect_undelivered)
+}
+
+fn delete_locked(
+    path: &std::path::Path,
+    project_id: &str,
+    target_id: &str,
+    schedule_id: &str,
+    expect_undelivered: bool,
+) -> Result<(), String> {
     validate_id("project id", project_id)?;
     validate_id("schedule target id", target_id)?;
     validate_id("schedule id", schedule_id)?;
-    let _guard = lock();
-    let mut file = read()?;
+    let mut file = read_at(path)?;
     apply_delete(&mut file, project_id, target_id, schedule_id, expect_undelivered)?;
-    write(&file)
+    write_at(path, &file)
 }
 
 pub fn delete_target(project_id: &str, target_id: &str) -> Result<(), String> {
@@ -402,14 +472,42 @@ pub fn claim(
     schedule_id: &str,
     occurrence: &str,
 ) -> Result<bool, String> {
+    let _guard = lock();
+    claim_locked(&path(), project_id, target_id, schedule_id, occurrence, chrono::Local::now())
+}
+
+/// [`claim`] on `path` by a process that shares the file — the Mobile
+/// sidecar firing a schedule with no window open (headless owner plan, H2).
+/// Under the file's lock alone: the check and the write are one transaction
+/// against whatever a window wrote, so an occurrence is claimed by exactly
+/// one of them, whichever asked first.
+pub fn claim_in(
+    path: &std::path::Path,
+    project_id: &str,
+    target_id: &str,
+    schedule_id: &str,
+    occurrence: &str,
+    now: chrono::DateTime<chrono::Local>,
+) -> Result<bool, String> {
+    let _lock = file_lock(path);
+    claim_locked(path, project_id, target_id, schedule_id, occurrence, now)
+}
+
+fn claim_locked(
+    path: &std::path::Path,
+    project_id: &str,
+    target_id: &str,
+    schedule_id: &str,
+    occurrence: &str,
+    now: chrono::DateTime<chrono::Local>,
+) -> Result<bool, String> {
     validate_id("project id", project_id)?;
     validate_id("schedule target id", target_id)?;
     validate_id("schedule id", schedule_id)?;
     if parse_date_time(occurrence).is_none() {
         return Err("invalid occurrence".into());
     }
-    let _guard = lock();
-    let mut file = read()?;
+    let mut file = read_at(path)?;
     let Some(target) = file
         .projects
         .get_mut(project_id)
@@ -432,15 +530,40 @@ pub fn claim(
     {
         return Ok(false);
     }
-    if !reserve_agent_delivery(target, schedule_id, occurrence, chrono::Local::now()) { return Ok(false); }
+    if !reserve_agent_delivery(target, schedule_id, occurrence, now) { return Ok(false); }
     target
         .claims
         .insert(schedule_id.to_string(), occurrence.to_string());
-    write(&file)?;
+    write_at(path, &file)?;
     Ok(true)
 }
 
 pub fn complete(
+    project_id: &str,
+    target_id: &str,
+    schedule_id: &str,
+    occurrence: &str,
+    result: AgentScheduleResult,
+) -> Result<Vec<ScheduledAgentPrompt>, String> {
+    let _guard = lock();
+    complete_locked(&path(), project_id, target_id, schedule_id, occurrence, result)
+}
+
+/// [`complete`] on `path`, the sidecar's half of [`claim_in`].
+pub fn complete_in(
+    path: &std::path::Path,
+    project_id: &str,
+    target_id: &str,
+    schedule_id: &str,
+    occurrence: &str,
+    result: AgentScheduleResult,
+) -> Result<Vec<ScheduledAgentPrompt>, String> {
+    let _lock = file_lock(path);
+    complete_locked(path, project_id, target_id, schedule_id, occurrence, result)
+}
+
+fn complete_locked(
+    path: &std::path::Path,
     project_id: &str,
     target_id: &str,
     schedule_id: &str,
@@ -453,8 +576,7 @@ pub fn complete(
     if parse_date_time(occurrence).is_none() {
         return Err("invalid occurrence".into());
     }
-    let _guard = lock();
-    let mut file = read()?;
+    let mut file = read_at(path)?;
     let target = file
         .projects
         .get_mut(project_id)
@@ -479,7 +601,7 @@ pub fn complete(
     }
     target.claims.remove(schedule_id);
     let schedules = target.schedules.clone();
-    write(&file)?;
+    write_at(path, &file)?;
     Ok(schedules)
 }
 

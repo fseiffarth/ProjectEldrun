@@ -6,7 +6,7 @@ use crate::schema::agent_tasks::{AgentPromptTarget, AgentScheduleResult, AgentSc
 use super::{agent_tasks, root_mcp::{Caller, Session}};
 
 pub const SERVER_NAME: &str = "eldrun-schedule";
-pub const CONTRACT: &str = "Schedules fire only while Eldrun is running and this tab is open, when it is next idle at/after the time. Occurrences over one hour late are missed. By default the user must approve proposals first. Recurring prompts always require approval. Times are desktop-local YYYY-MM-DDTHH:MM / HH:MM. Weekdays are numbered 1 = Monday … 7 = Sunday (the calendar tools' 0 = Sunday convention does not apply here). A one-time schedule needs five minutes' lead; a daily or weekday rule whose next occurrence is closer than that starts at the occurrence after it. Arguments are validated before anything else runs — a malformed call costs no budget. Prompts only: no commands or prefix commands.";
+pub const CONTRACT: &str = "Schedules fire from an open Eldrun window, or, with Eldrun Mobile switched on, from its background service while no window is open (which restarts this tab's session if it has stopped), when the tab is next idle at/after the time. Occurrences over one hour late are missed. By default the user must approve proposals first. Recurring prompts always require approval. Times are desktop-local YYYY-MM-DDTHH:MM / HH:MM. Weekdays are numbered 1 = Monday … 7 = Sunday (the calendar tools' 0 = Sunday convention does not apply here). A one-time schedule needs five minutes' lead; a daily or weekday rule whose next occurrence is closer than that starts at the occurrence after it. Arguments are validated before anything else runs — a malformed call costs no budget. Prompts only: no commands or prefix commands.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -54,7 +54,7 @@ struct Cancel { id: String }
 #[serde(deny_unknown_fields)]
 struct Empty {}
 
-fn wall(at: &str) -> Option<DateTime<Local>> {
+pub(crate) fn wall(at: &str) -> Option<DateTime<Local>> {
     let naive = NaiveDateTime::parse_from_str(at, "%Y-%m-%dT%H:%M").ok()?;
     // Refuse DST gaps; choose the first occurrence of a repeated wall minute,
     // as the desktop Date constructor does.

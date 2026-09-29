@@ -45,12 +45,40 @@ const MAX_LINKS_PER_PROJECT: usize = 256;
 
 static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
-fn lock() -> std::sync::MutexGuard<'static, ()> {
-    LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+/// The in-process mutex plus the file's `FileLock`: the Mobile sidecar
+/// writes this file too (a fired schedule's history row, headless owner
+/// plan H2), so the transaction has to hold across processes.
+struct Guard {
+    _file: Option<storage::FileLock>,
+    _mutex: std::sync::MutexGuard<'static, ()>,
+}
+
+fn lock() -> Guard {
+    let mutex = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+    Guard { _file: storage::FileLock::exclusive(&path()).ok(), _mutex: mutex }
+}
+
+/// `<state_dir>/agent_prompts.json`.
+pub fn file_path(state_dir: &std::path::Path) -> std::path::PathBuf {
+    state_dir.join(FILE_NAME)
 }
 
 fn path() -> std::path::PathBuf {
-    storage::state_dir().join(FILE_NAME)
+    file_path(&storage::state_dir())
+}
+
+fn read_at(path: &std::path::Path) -> Result<AgentPromptsFile, String> {
+    if !path.exists() {
+        return Ok(AgentPromptsFile::default());
+    }
+    storage::read_json(path).map_err(|e| format!("read {FILE_NAME}: {e}"))
+}
+
+fn write_at(path: &std::path::Path, file: &AgentPromptsFile) -> Result<(), String> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("create state directory: {e}"))?;
+    }
+    storage::write_json_atomic(path, file).map_err(|e| format!("write {FILE_NAME}: {e}"))
 }
 
 fn read() -> Result<AgentPromptsFile, String> {
@@ -810,6 +838,55 @@ pub fn record(
     project_id: &str,
     entry: RecordedAgentPromptInput,
 ) -> Result<Vec<SentAgentPrompt>, String> {
+    let (entry, input, head, roll) = prepare_record(project_id, entry)?;
+    let _guard = lock();
+    let mut file = read()?;
+    apply_record(&mut file, project_id, &entry, &input, head.as_ref(), roll.as_deref(), &storage::iso_now());
+    write(&file)?;
+    Ok(file.history.get(project_id).cloned().unwrap_or_default())
+}
+
+/// [`record`] on `state_dir`'s file by a process that shares it — the Mobile
+/// sidecar writing the history row of a schedule it fired with no window
+/// open (headless owner plan, H2) — under the file's lock alone. The live
+/// session and the repo head are still read where the process's own state
+/// dir says (the sidecar's is the same one).
+pub fn record_at(
+    state_dir: &std::path::Path,
+    project_id: &str,
+    entry: RecordedAgentPromptInput,
+) -> Result<Vec<SentAgentPrompt>, String> {
+    let (entry, input, head, roll) = prepare_record(project_id, entry)?;
+    let path = file_path(state_dir);
+    let _lock = storage::FileLock::exclusive(&path).ok();
+    let mut file = read_at(&path)?;
+    apply_record(&mut file, project_id, &entry, &input, head.as_ref(), roll.as_deref(), &storage::iso_now());
+    write_at(&path, &file)?;
+    Ok(file.history.get(project_id).cloned().unwrap_or_default())
+}
+
+/// [`delete`] on `state_dir`'s file (the sidecar retiring the collected
+/// prompt a fired one-time rule carried), under the file's lock alone.
+pub fn delete_at(
+    state_dir: &std::path::Path,
+    project_id: &str,
+    prompt_id: &str,
+) -> Result<Vec<ProjectAgentPrompt>, String> {
+    validate_id("project id", project_id)?;
+    validate_id("prompt id", prompt_id)?;
+    let path = file_path(state_dir);
+    let _lock = storage::FileLock::exclusive(&path).ok();
+    let mut file = read_at(&path)?;
+    apply_delete(&mut file, project_id, prompt_id);
+    write_at(&path, &file)?;
+    Ok(file.projects.get(project_id).cloned().unwrap_or_default())
+}
+
+type PreparedRecord = (RecordedAgentPromptInput, SentAgentPromptInput, Option<RepoHead>, Option<String>);
+
+/// The validation and the reads outside the lock that [`record`] and
+/// [`record_at`] share.
+fn prepare_record(project_id: &str, entry: RecordedAgentPromptInput) -> Result<PreparedRecord, String> {
     validate_id("project id", project_id)?;
     validate_id("history entry id", &entry.id)?;
     let message = sanitize_message(&entry.message);
@@ -823,19 +900,7 @@ pub fn record(
     let (input, roll) = resolve_live_session(project_id, input);
     let entry = RecordedAgentPromptInput { message, ..entry };
     let head = prompt_blame::head(project_id);
-    let _guard = lock();
-    let mut file = read()?;
-    apply_record(
-        &mut file,
-        project_id,
-        &entry,
-        &input,
-        head.as_ref(),
-        roll.as_deref(),
-        &storage::iso_now(),
-    );
-    write(&file)?;
-    Ok(file.history.get(project_id).cloned().unwrap_or_default())
+    Ok((entry, input, head, roll))
 }
 
 /// Record which files a delivered prompt touched, from the delivery (or

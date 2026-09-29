@@ -45,6 +45,7 @@ export const UNTESTED = {
 
   // --- agents — Agent sessions, schedules and the prompt chart ------
   "agentSchedule.title": { area: "agents", what: "AgentScheduleDialog · Scheduled prompts · {tab}" },
+  "agentSchedule.headless": { area: "agents", what: "AgentScheduleDialog · delivery note: with no window open the Mobile sidecar fires scheduled prompts (tmux send-keys into the tab, restarting a stopped session first) while no window holds the timer lease; two windows plus the sidecar fire each occurrence once (claim under the file lock)" },
   "agentSchedule.leaseElsewhere": { area: "agents", what: "AgentScheduleDialog · note that another Eldrun window holds the timer lease (schedules, auto-continue, reminders, CalDAV sync fire there); the lease itself: one window per state dir fires timers, heartbeat-renewed, 30 s TTL" },
   "promptChart.heading": { area: "agents", what: "PromptChart · Prompt chart" },
   "terminal.signIn.title": { area: "agents", what: "Terminal sign-in card · open/copy an agent's login link, paste the code back; wrapped URLs click and copy whole" },

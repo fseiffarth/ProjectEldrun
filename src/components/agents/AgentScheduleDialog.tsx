@@ -284,7 +284,10 @@ export function AgentScheduleDialog({ scope, tab, onClose, initialMessage, initi
           <details className="agent-schedule-notice">
             <summary>{t("agentSchedule.howItWorks")}</summary>
             <p>{t("agentSchedule.warning")}</p>
-            <p>{t("agentSchedule.openOnly")}</p>
+            {/* With no window open the Mobile sidecar delivers (headless owner
+                plan, H2); the timers that still need a window are named too. */}
+            <p>{t("agentSchedule.openOnly")} <UntestedTag id="agentSchedule.headless" /></p>
+            <p>{t("agentSchedule.windowOnlyTimers")}</p>
           </details>
           {/* Two Eldrun windows on one state dir: only the one holding the timer
               lease delivers (headless owner plan, H2 interim). Said here, where
