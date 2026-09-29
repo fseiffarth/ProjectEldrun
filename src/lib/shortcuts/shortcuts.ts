@@ -201,13 +201,14 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   },
   // Keyboard steering mode (part 1 of the keyboard-only steering system). The
   // chord toggles the mode; the keys INSIDE it are fixed (see STEERING_KEYS).
-  // Ctrl+Shift+Space collides with no default above and with no common
-  // terminal chord (Ctrl+Space is emacs set-mark; the Shift keeps clear of it).
+  // Shift+Space: one hand, collides with no default above, and terminals send
+  // it as a plain space anyway. It types text, so `useKeyboard` ignores it in
+  // the middle of a typing burst (a Shift still held from a capital).
   {
     action: "steeringMode",
     labelKey: "shortcut.steeringMode",
     group: "steering",
-    default: { key: " ", ctrl: true, shift: true },
+    default: { key: " ", shift: true },
     untested: "shortcut.steeringMode",
   },
   // Backward twin of cycleProject. Alt (not Ctrl) distinguishes it from
@@ -662,37 +663,39 @@ const ALL_LEVELS: readonly SteeringContext[] = ["projects", "panes", "tabs", "re
  */
 export const STEERING_KEYS: SteeringKeyDef[] = [
   // Projects.
-  { keys: "← →", labelKey: "steering.project.label", descKey: "steering.project.desc", levels: ["projects"] },
+  { keys: "S F / ← →", labelKey: "steering.project.label", descKey: "steering.project.desc", levels: ["projects"] },
   { keys: "1–9", labelKey: "steering.jump.label", descKey: "steering.jump.desc", levels: ["projects"] },
-  { keys: "↓", labelKey: "steering.into.label", descKey: "steering.into.desc", levels: ["projects"] },
+  { keys: "D / ↓", labelKey: "steering.into.label", descKey: "steering.into.desc", levels: ["projects"] },
   { keys: "N", labelKey: "steering.newProject.label", descKey: "steering.newProject.desc", levels: ["projects"] },
   { keys: "M", labelKey: "steering.mail.label", descKey: "steering.mail.desc", levels: ["projects"], when: "mail" },
   { keys: "C", labelKey: "steering.calendar.label", descKey: "steering.calendar.desc", levels: ["projects"], when: "calendar" },
   { keys: "T", labelKey: "steering.todo.label", descKey: "steering.todo.desc", levels: ["projects"], when: "todo" },
   // Subwindows and their tabs.
-  { keys: "← →", labelKey: "steering.focus.label", descKey: "steering.focus.desc", levels: ["panes"], when: "stepsPanes" },
-  { keys: "← →", labelKey: "steering.tabs.label", descKey: "steering.tabs.desc", levels: PANE_LEVELS, when: "stepsTabs" },
-  { keys: "↓", labelKey: "steering.intoTabs.label", descKey: "steering.intoTabs.desc", levels: ["panes"], when: "stepsPanes" },
-  { keys: "↑", labelKey: "steering.up.label", descKey: "steering.up.desc", levels: PANE_LEVELS },
+  { keys: "S F / ← →", labelKey: "steering.focus.label", descKey: "steering.focus.desc", levels: ["panes"], when: "stepsPanes" },
+  { keys: "S F / ← →", labelKey: "steering.tabs.label", descKey: "steering.tabs.desc", levels: PANE_LEVELS, when: "stepsTabs" },
+  { keys: "D / ↓", labelKey: "steering.intoTabs.label", descKey: "steering.intoTabs.desc", levels: ["panes"], when: "stepsPanes" },
+  { keys: "E / ↑", labelKey: "steering.up.label", descKey: "steering.up.desc", levels: PANE_LEVELS },
   { keys: "N", labelKey: "steering.newShell.label", descKey: "steering.newShell.desc", levels: PANE_LEVELS },
   { keys: "M", labelKey: "steering.newMonitor.label", descKey: "steering.newMonitor.desc", levels: PANE_LEVELS },
   { keys: "1–9", labelKey: "steering.newAgent.label", descKey: "steering.newAgent.desc", levels: PANE_LEVELS, agentSlots: true },
   { keys: "+", labelKey: "steering.newTabMenu.label", descKey: "steering.newTabMenu.desc", levels: PANE_LEVELS },
-  { keys: "F", labelKey: "steering.files.label", descKey: "steering.files.desc", levels: PANE_LEVELS },
+  { keys: "V", labelKey: "steering.files.label", descKey: "steering.files.desc", levels: PANE_LEVELS },
   { keys: "W", labelKey: "steering.closeTab.label", descKey: "steering.closeTab.desc", levels: PANE_LEVELS },
-  { keys: "Enter", labelKey: "steering.work.label", descKey: "steering.work.desc", levels: PANE_LEVELS },
+  { keys: "Space / Enter / Esc", labelKey: "steering.work.label", descKey: "steering.work.desc", levels: PANE_LEVELS },
   // The region cursor (side panel, header apps, + menu).
-  { keys: "↑ ↓", labelKey: "steering.move.label", descKey: "steering.move.desc", levels: ["region"] },
-  { keys: "← →", labelKey: "steering.sideView.label", descKey: "steering.sideView.desc", levels: ["region"], when: "sideRegion" },
+  { keys: "E D / ↑ ↓", labelKey: "steering.move.label", descKey: "steering.move.desc", levels: ["region"] },
+  { keys: "S F / ← →", labelKey: "steering.sideView.label", descKey: "steering.sideView.desc", levels: ["region"], when: "sideRegion" },
   { keys: "Enter", labelKey: "steering.press.label", descKey: "steering.press.desc", levels: ["region"] },
+  { keys: "/", labelKey: "steering.search.label", descKey: "steering.search.desc", levels: ["region"] },
   // Wherever the tab bars are. Shift walks the status jumps backwards.
   { keys: "Q", labelKey: "steering.nextDecision.label", descKey: "steering.nextDecision.desc", levels: BASE_LEVELS, status: "decision" },
   { keys: "R", labelKey: "steering.nextWorking.label", descKey: "steering.nextWorking.desc", levels: BASE_LEVELS, status: "working" },
-  { keys: "D", labelKey: "steering.nextDone.label", descKey: "steering.nextDone.desc", levels: BASE_LEVELS, status: "done" },
-  { keys: "E", labelKey: "steering.sidePanel.label", descKey: "steering.sidePanel.desc", levels: BASE_LEVELS },
+  { keys: "X", labelKey: "steering.nextDone.label", descKey: "steering.nextDone.desc", levels: BASE_LEVELS, status: "done" },
+  { keys: "B", labelKey: "steering.sidePanel.label", descKey: "steering.sidePanel.desc", levels: BASE_LEVELS },
   { keys: "P", labelKey: "steering.panels.label", descKey: "steering.panels.desc", levels: BASE_LEVELS },
-  { keys: "S", labelKey: "steering.settings.label", descKey: "steering.settings.desc", levels: BASE_LEVELS },
+  { keys: ",", labelKey: "steering.settings.label", descKey: "steering.settings.desc", levels: BASE_LEVELS },
   { keys: "?", labelKey: "steering.help.label", descKey: "steering.help.desc", levels: ALL_LEVELS },
-  { keys: "Esc", labelKey: "steering.back.label", descKey: "steering.back.desc", levels: ["panes", "tabs", "region"] },
-  { keys: "Esc / Enter", labelKey: "steering.exit.label", descKey: "steering.exit.desc", levels: ["projects"] },
+  { keys: "Esc", labelKey: "steering.back.label", descKey: "steering.back.desc", levels: ["region"] },
+  { keys: "Space", labelKey: "steering.exit.label", descKey: "steering.exit.desc", levels: ["region"] },
+  { keys: "Space / Esc / Enter", labelKey: "steering.exit.label", descKey: "steering.exit.desc", levels: ["projects"] },
 ];

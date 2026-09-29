@@ -3,7 +3,8 @@ import { useProjectsStore } from "./projects";
 
 /**
  * Where in the window steering is pointing. The mode is a small hierarchy the
- * arrows walk: ↓ goes one level in, ↑ (or Escape) one level out.
+ * arrows walk: ↓ goes one level in, ↑ one level out. It opens on the tabs of
+ * the current project — switching tabs is what it is mostly for.
  *
  *   projects — ←/→ switch the project (the station ring), ↓ into its windows
  *   panes    — ←/→ step the subwindows (the tabs, when there is only one)
@@ -42,7 +43,7 @@ interface KeyboardSteeringState {
   region: SteeringRegion | null;
   /** The level Escape returns to from a region. */
   regionReturn: SteeringBaseLevel;
-  /** Enter the mode at the top: the project level. */
+  /** Enter the mode on the current project's tabs. */
   enter: () => void;
   exit: () => void;
   setLevel: (level: SteeringBaseLevel) => void;
@@ -53,11 +54,11 @@ interface KeyboardSteeringState {
 
 export const useKeyboardSteeringStore = create<KeyboardSteeringState>((set, get) => ({
   active: false,
-  level: "projects",
+  level: "tabs",
   region: null,
-  regionReturn: "projects",
-  enter: () => set({ active: true, level: "projects", region: null }),
-  exit: () => set({ active: false, level: "projects", region: null }),
+  regionReturn: "tabs",
+  enter: () => set({ active: true, level: "tabs", region: null }),
+  exit: () => set({ active: false, level: "tabs", region: null }),
   setLevel: (level) => set({ level, region: null }),
   enterRegion: (region) => {
     const { level, regionReturn } = get();

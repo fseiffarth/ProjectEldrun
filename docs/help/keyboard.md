@@ -25,7 +25,7 @@ the place of Ctrl. **F1** opens the cheat sheet with every effective binding.
 | Alt+Shift+← | Previous project |
 | Ctrl+Shift+PageDown / PageUp | Next / previous box |
 | Ctrl+Shift+R | Open / close the root console |
-| Ctrl+Shift+Space | Enter keyboard steering mode |
+| Shift+Space | Enter keyboard steering mode |
 | F1 | Shortcut help |
 
 ## Tabs and panes
@@ -63,20 +63,27 @@ Ctrl+1 is the top agent rather than the default one.
 
 ## Steering mode
 
-Press **Ctrl+Shift+Space**. A legend appears at the bottom and the app answers
-single keys, even while a terminal has focus:
+Press **Shift+Space**. A legend appears at the bottom and the app answers
+single keys, even while a terminal has focus. (Mid-word, with Shift still held
+from a capital, Shift+Space stays a plain space.) The mode opens on the
+current project's tabs; **E S D F** work like **↑ ← ↓ →** throughout.
 
 | Key | Action |
 |---|---|
-| 1–9 | Jump to a station: 1 is the root, 2 the first project pill (leaves the mode) |
-| ↑ ↓ ← → | Move pane focus (each pane shows its step count) |
-| Tab / Shift+Tab | Next / previous tab in the focused pane |
-| F | Toggle the pane's file viewer |
-| P | Toggle the side panels |
+| S F / ← → | Previous / next tab (on the subwindow level: subwindow; on the project level: project) |
+| E / ↑ | Up a level: tabs → subwindows → projects |
+| D / ↓ | Back down a level |
+| 1–9 | Tabs: new agent tab. Projects: jump to a station (1 = root, 2 = first pill) |
+| N / M | New shell / System Monitor tab (projects: new project / mail) |
+| + | The new-tab menu, walked with E/D; **/** types into its search |
+| V | Toggle the pane's file viewer |
 | W | Close the active tab |
-| S | Open Settings (leaves the mode) |
+| B | Open the side panel |
+| P | Toggle the side panels |
+| Q / R / X | Next tab waiting for an answer / working / done (Shift: previous) |
+| , | Open Settings (leaves the mode) |
 | ? | Open the cheat sheet (leaves the mode) |
-| Esc / Enter | Leave steering mode |
+| Space / Esc / Enter | Leave steering mode (Esc inside a panel or menu backs out of it) |
 
 ## In editors and viewers
 

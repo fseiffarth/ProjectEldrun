@@ -275,6 +275,33 @@ correctness/UX work atop the same layout model #42 detaches.*
       - [ ] ✅ Works on macOS
       - [ ] ❌ Doesn't work on macOS
 
+213b. **Live-QA steering's Shift+Space entry, tab-level start and E S D F.**
+    ✅ Implemented · 🧪 Awaiting live QA (2026-09-29). The default chord is now
+    Shift+Space (was Ctrl+Shift+Space); within 400 ms of a typed character it
+    stays a plain space ("I am" with Shift still held). The mode opens on the
+    current project's tabs; ↑ climbs to subwindows → projects (skipping the
+    subwindow level when there is only one). E S D F double ↑ ← ↓ →
+    everywhere, region cursor included; Space, Esc or Enter leave from any
+    tab-bar level. Keys that moved off E/S/D/F: side panel E→B, settings
+    S→`,`, done jump D→X, file viewer F→V. In the + menu (and any region) `/`
+    puts the caret in its search field and leaves steering; nothing focuses
+    the search on its own. Verify: Shift+Space from a focused terminal enters,
+    fast "I am" / "Hello World" typing never does; S/F switch tabs at once; +
+    then D/E walk the rows, `/` then typing filters; Space exits.
+    *Files: `src/hooks/useKeyboard.ts`, `src/stores/keyboardSteering.ts`,
+    `src/lib/shortcuts/shortcuts.ts` / `steeringRegion.ts`.*
+    - [x] 🤖 Automated test — `src/__tests__/shell/SteeringLevels.test.tsx`
+      (tab-level start, E S D F, Space exit, typing-burst guard, `/` search).
+    - [ ] 🖐️ Manual test
+      - [ ] ✅ Works on Linux (X11)
+      - [ ] ❌ Doesn't work on Linux (X11)
+      - [ ] ✅ Works on Linux (Wayland)
+      - [ ] ❌ Doesn't work on Linux (Wayland)
+      - [ ] ✅ Works on Windows
+      - [ ] ❌ Doesn't work on Windows
+      - [ ] ✅ Works on macOS
+      - [ ] ❌ Doesn't work on macOS
+
 215. **Live-QA one-click installs in the root console.** ✅ Implemented · 🧪
     Awaiting live QA. Every one-click install (`runInstallInTab`: Ollama/agent
     CLI installs, the LaTeX/MiKTeX prompt, `gh`/`glab` install + auth login,

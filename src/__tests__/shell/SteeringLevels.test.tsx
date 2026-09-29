@@ -1,6 +1,7 @@
 /**
- * Keyboard steering as a hierarchy: projects → subwindows → tabs (↓ in, ↑ and
- * Escape out), the new-tab keys inside a pane, the status jumps, the per-level
+ * Keyboard steering as a hierarchy: projects → subwindows → tabs (↓ in, ↑ out,
+ * E S D F doubling the arrows), opened on the tabs by Shift+Space and left by
+ * Space / Escape / Enter, the new-tab keys inside a pane, the status jumps, the per-level
  * legend table (`steeringKeysFor`) and the region cursor that walks the side
  * panel, the header apps and a pane's + menu.
  */
@@ -32,6 +33,7 @@ import { nextStatusTab, statusTabs } from "../../lib/shortcuts/statusJump";
 import {
   activateRegionCursor,
   clearRegionCursor,
+  focusRegionSearch,
   moveRegionCursor,
   placeRegionCursor,
   regionCursor,
@@ -92,11 +94,15 @@ afterEach(() => {
 });
 
 describe("steering levels", () => {
-  it("starts on the projects, goes down to subwindows and tabs, and climbs back out", () => {
+  it("starts on the tabs, climbs to the projects and goes back down", () => {
     const { a, b } = twoPanes();
     render(<Harness />);
-    press({ key: " ", ctrlKey: true, shiftKey: true });
-    expect(steering()).toMatchObject({ active: true, level: "projects" });
+    press({ key: " ", shiftKey: true });
+    expect(steering()).toMatchObject({ active: true, level: "tabs" });
+    press({ key: "ArrowUp" });
+    expect(steering().level).toBe("panes");
+    press({ key: "ArrowUp" });
+    expect(steering().level).toBe("projects");
 
     press({ key: "ArrowDown" });
     expect(steering().level).toBe("panes");
@@ -114,12 +120,44 @@ describe("steering levels", () => {
     expect(useTabsStore.getState().activeKey).not.toBe(before);
     expect(useTabsStore.getState().focusedGroupId).toBe(a);
 
-    press({ key: "ArrowUp" });
-    expect(steering().level).toBe("panes");
-    press({ key: "Escape" });
-    expect(steering().level).toBe("projects");
     press({ key: "Escape" });
     expect(steering().active).toBe(false);
+  });
+
+  it("E S D F steer like the arrows, and Space leaves", () => {
+    const { a, b } = twoPanes();
+    render(<Harness />);
+    press({ key: " ", shiftKey: true });
+    const group = allGroups(useTabsStore.getState().layout).find((g) => g.id === a)!;
+    const before = group.activeKey;
+    press({ key: "f" });
+    expect(useTabsStore.getState().activeKey).not.toBe(before);
+    press({ key: "s" });
+    expect(useTabsStore.getState().activeKey).toBe(before);
+    press({ key: "e" });
+    expect(steering().level).toBe("panes");
+    press({ key: "f" });
+    expect(useTabsStore.getState().focusedGroupId).toBe(b);
+    press({ key: "d" });
+    expect(steering().level).toBe("tabs");
+    press({ key: " " });
+    expect(steering().active).toBe(false);
+  });
+
+  it("leaves Shift+Space to the text in the middle of a typing burst", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(10_000);
+      render(<Harness />);
+      press({ key: "I", shiftKey: true });
+      press({ key: " ", shiftKey: true });
+      expect(steering().active).toBe(false);
+      vi.setSystemTime(11_000);
+      press({ key: " ", shiftKey: true });
+      expect(steering().active).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("steps the tabs straight away when there is only one subwindow", () => {
@@ -127,14 +165,13 @@ describe("steering levels", () => {
     store.addTab({ label: "t1", cmd: "bash", cwd: "/p", kind: "shell" });
     store.addTab({ label: "t2", cmd: "bash", cwd: "/p", kind: "shell" });
     render(<Harness />);
-    press({ key: " ", ctrlKey: true, shiftKey: true });
-    press({ key: "ArrowDown" });
+    press({ key: " ", shiftKey: true });
     const start = useTabsStore.getState().activeKey;
     press({ key: "ArrowRight" });
     expect(useTabsStore.getState().activeKey).not.toBe(start);
-    // Nothing further down to go to.
-    press({ key: "ArrowDown" });
-    expect(steering().level).toBe("panes");
+    // Up skips a panes level that would only step the same tabs.
+    press({ key: "ArrowUp" });
+    expect(steering().level).toBe("projects");
   });
 
   it("opens new tabs in the focused pane by type, then steps aside", () => {
@@ -147,19 +184,16 @@ describe("steering levels", () => {
     };
     window.addEventListener(NEW_TAB_SHORTCUT_EVENT, onRequest);
     try {
-      press({ key: " ", ctrlKey: true, shiftKey: true });
-      press({ key: "ArrowDown" });
+      press({ key: " ", shiftKey: true });
       press({ key: "n" });
       expect(requests[requests.length - 1]?.request).toEqual({ kind: "shell" });
       expect(steering().active).toBe(false);
 
-      press({ key: " ", ctrlKey: true, shiftKey: true });
-      press({ key: "ArrowDown" });
+      press({ key: " ", shiftKey: true });
       press({ key: "2" });
       expect(requests[requests.length - 1]?.request).toEqual({ kind: "agent", slot: 1 });
 
-      press({ key: " ", ctrlKey: true, shiftKey: true });
-      press({ key: "ArrowDown" });
+      press({ key: " ", shiftKey: true });
       press({ key: "+" });
       expect(requests[requests.length - 1]?.request).toEqual({ kind: "menu" });
       expect(steering()).toMatchObject({ active: true, level: "region", region: "addTab" });
@@ -176,13 +210,14 @@ describe("steering levels", () => {
       setActive,
       projects: [{ id: "x", name: "x", status: "active", position: 0, local_file: "/x/project.json" }],
     });
-    press({ key: " ", ctrlKey: true, shiftKey: true });
+    press({ key: " ", shiftKey: true });
+    press({ key: "ArrowUp" });
     press({ key: "2" });
     expect(setActive).toHaveBeenCalledWith("x");
     expect(steering()).toMatchObject({ active: true, level: "projects" });
   });
 
-  it("Q / R / D jump to the next tab in that state and land on the tab level", () => {
+  it("Q / R / X jump to the next tab in that state and land on the tab level", () => {
     const store = useTabsStore.getState();
     const t1 = store.addTab({ label: "t1", cmd: "claude", cwd: "/p", kind: "agent" });
     const t2 = store.addTab({ label: "t2", cmd: "claude", cwd: "/p", kind: "agent" });
@@ -191,8 +226,8 @@ describe("steering levels", () => {
       busyByTab: {},
     });
     render(<Harness />);
-    press({ key: " ", ctrlKey: true, shiftKey: true });
-    press({ key: "d" });
+    press({ key: " ", shiftKey: true });
+    press({ key: "x" });
     expect(jumps).toEqual([["p", t2.key]]);
     expect(steering().level).toBe("tabs");
     press({ key: "q" });
@@ -207,7 +242,7 @@ describe("steering levels", () => {
     render(<SteeringLegend />);
     expect(root.dataset.steer).toBeUndefined();
     act(() => steering().enter());
-    expect(root.dataset.steer).toBe(steering().level);
+    expect(root.dataset.steer).toBe("tabs");
     act(() => steering().setLevel("projects"));
     expect(root.dataset.steer).toBe("projects");
     act(() => steering().setLevel("tabs"));
@@ -308,6 +343,17 @@ describe("region cursor", () => {
     } as DOMRect);
     return document.getElementById("root")!;
   }
+
+  it("/ hands the surface's text field the caret, and only on request", () => {
+    const root = surface();
+    placeRegionCursor(root);
+    expect(document.activeElement?.id).not.toBe("field");
+    expect(focusRegionSearch(root)).toBe(true);
+    expect(document.activeElement?.id).toBe("field");
+    expect(regionCursor()).toBeNull();
+    document.getElementById("field")!.remove();
+    expect(focusRegionSearch(root)).toBe(false);
+  });
 
   it("finds controls and clickable rows once, skipping what is hidden", () => {
     const root = surface();

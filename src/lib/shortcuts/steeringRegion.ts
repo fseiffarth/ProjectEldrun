@@ -163,6 +163,21 @@ function isTextEntry(el: HTMLElement): boolean {
  * DOM focus and the caller leaves steering for the user to type; "press" — it
  * was clicked; null — no cursor.
  */
+/** `root`'s first shown text field — the + menu's filter, a search box. */
+export function regionSearchField(root: HTMLElement): HTMLElement | null {
+  return regionTargets(root).find(isTextEntry) ?? null;
+}
+
+/** Hand `root`'s first text field the caret (steering's `/`). False when the
+ *  surface has none. */
+export function focusRegionSearch(root: HTMLElement): boolean {
+  const field = regionSearchField(root);
+  if (!field) return false;
+  setCursor(null);
+  field.focus();
+  return true;
+}
+
 export function activateRegionCursor(): "type" | "press" | null {
   const el = regionCursor();
   if (!el) return null;
