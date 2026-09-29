@@ -166,7 +166,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     if (!filesOffered || filesOpen || !host) return;
     // Not from a card's grip (its drag is its own, `touch-action:none`), and
     // not through a sheet laid over the list.
-    return installFocusSwipe(host, { onSwipeRight: () => setFilesOpen(true), onSwipeLeft: () => {} }, { ignore: ".tab-card-grip, .sheet-backdrop, [role='dialog']" });
+    return installFocusSwipe(host, { onSwipeRight: () => setFilesOpen(true), onSwipeLeft: () => {} }, { ignore: ".tab-card-grip, .sheet-backdrop, [role='dialog']", leftEdge: true });
   }, [filesOffered, filesOpen]);
   const outboxScope = useMemo(() => ({ project: id }), [id]);
   /** The pictures among them, which the full-screen viewer steps through. */

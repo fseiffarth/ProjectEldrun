@@ -3304,7 +3304,11 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   - Needs the sidecar updated and the PWA rebuilt (`npm run backend:stale`).
   - [ ] 🖐️ Manual phone QA — switch it on; on a Mobile project's screen a
     left→right swipe slides the files drawer in from the left (no 📁 in the
-    header any more, 2026-09-28); a right→left swipe over it or a tap beside it
+    header any more, 2026-09-28); a swipe starting right at the left edge
+    opens it too (unless Android's back gesture takes it). Inside an agent tab's
+    Focus view (2026-09-29) a swipe from the left third opens the drawer, one
+    from further right the status line; in a shell tab any swipe opens it;
+    Terminal view opens neither. A right→left swipe over it or a tap beside it
     closes it, and a sideways drag on a card's ⠿ grip does not open it.
     Walk into `src/` and back by the trail; open a `.md` (text
     preview), a `.png` (full screen, pinch, step to the folder's next picture,

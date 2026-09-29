@@ -355,7 +355,8 @@ does not have to ship a phone app for the agent you are running.
   under its tab cards. Share is available where the phone browser supports
   file sharing; stdin works with `command | eldrun-send -n tests.log`.
 - **Project files, read-only** (opt-in, off by default): a left→right swipe on
-  the phone's project screen opens a drawer that walks the project's folders
+  the phone's project screen, or from the left third of a tab's Focus view,
+  opens a drawer that walks the project's folders
   and opens files in the same viewer. Folders and files travel as sealed
   tokens, never paths; `.git`, `.eldrun`, `.env…` and symlinks are left out,
   and nothing can be changed.

@@ -44,8 +44,12 @@ reopen, because the phone attaches to its terminal session.
 
 Switch on **Project files on the phone** under **Project access** (off by
 default) and a project's screen on the phone opens its files when you swipe
-from left to right across it — a drawer slides in from the left edge (swipe
-back, or tap beside it, to close it): walk its folders and open a file —
+from left to right across it, the screen's left edge included — a drawer
+slides in from the left (swipe back, or tap beside it, to close it). Inside a
+tab's Focus view the same swipe opens them when it starts in the left third of
+the screen; further right it shows the agent's status line (a shell tab has
+none, so there any left→right swipe opens the files). Walk the folders and
+open a file —
 pictures and text full screen, PDFs in the browser, with Save and Share. It is
 read-only: nothing can be changed, moved or deleted from there.
 

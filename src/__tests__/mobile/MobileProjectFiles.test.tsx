@@ -134,6 +134,16 @@ describe("Mobile project — read-only file browser", () => {
     await waitFor(() => expect(text.querySelector("pre")?.textContent).toBe("# Hello\n"));
   });
 
+  it("opens from the screen's left edge, where a drawer is pulled from", async () => {
+    vi.stubGlobal("fetch", hostWith(true));
+    render(<Project id="p1" back={() => {}} terminal={() => {}} />);
+    const heading = await screen.findByRole("heading", { name: "Alpha" });
+    await waitFor(() => {
+      swipe(heading, 4, 200);
+      expect(screen.getByRole("dialog", { name: "Files" })).toBeTruthy();
+    });
+  });
+
   it("puts the drawer away on a right-to-left swipe over it", async () => {
     vi.stubGlobal("fetch", hostWith(true));
     render(<Project id="p1" back={() => {}} terminal={() => {}} />);

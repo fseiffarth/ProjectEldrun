@@ -473,6 +473,7 @@ export function App() {
   if (terminal) return <Terminal
     key={terminal.tab.id}
     tab={terminal.tab}
+    project={terminal.project}
     pickModel={terminal.pickModel}
     signInTab={terminal.signIn}
     openTab={(next, opts) => openTerminal(terminal.project, next, false, opts?.signIn)}

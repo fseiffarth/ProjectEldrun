@@ -5,6 +5,7 @@ import { SpeechLangSheet, speechLangSummary } from "../components/SpeechLangPick
 import { OutboxGallery } from "../components/OutboxGallery";
 import { OutboxViewer } from "../components/OutboxViewer";
 import { OutboxPost } from "../components/OutboxPost";
+import { ProjectFiles } from "../components/ProjectFiles";
 import { Fragment, memo, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -30,6 +31,7 @@ import {
   uploadToInbox,
   type DesktopImage,
   type OutboxFile,
+  type ProjectDetail,
   type SessionTranscript,
   type TabRow,
 } from "../api";
@@ -161,6 +163,9 @@ const TRANSCRIPT_POLL = 5_000;
 const TRANSCRIPT_SETTLE = 1_200;
 /** Turns fetched at first, and added per "Show earlier turns" tap. */
 const TRANSCRIPT_STEP = 120;
+/** A left→right swipe starting in this share of the screen, from the left,
+ * opens the project's files; one starting further right, the status line. */
+const FILES_SWIPE_ZONE = 1 / 3;
 
 /** An agent TUI parses one stdin chunk as one key event: a chunk that opens with
  * a control byte is read as that keypress and the remainder is dropped, so
@@ -561,8 +566,11 @@ function QuestionList({ prompt, tabs, question, sent, sendingLabel, onPick }: {
 
 /** `pickModel`: the tab card's model was tapped, so the session opens with its
  * model picker already up — once, as soon as the session has drawn. */
-export function Terminal({ tab, back, pickModel = false, signInTab = false, openTab }: {
+export function Terminal({ tab, project, back, pickModel = false, signInTab = false, openTab }: {
   tab: TabRow;
+  /** The project the tab belongs to, for the files drawer a swipe from the
+   * left of the output opens (`ProjectFiles`). */
+  project?: string;
   back: () => void;
   pickModel?: boolean;
   /** The tab exists only to sign its CLI in (`src/lib/agents/signInLaunch.ts`):
@@ -872,6 +880,14 @@ export function Terminal({ tab, back, pickModel = false, signInTab = false, open
    * input box (cwd, model, mode, context…). A left→right swipe opens it, a
    * right→left swipe or its ✕ closes it; never persisted. */
   const [statusStrip, setStatusStrip] = useState(false);
+  /** The project's name while the desktop's "Project files on the phone"
+   * switch is on for it (`detail.files`) — null while off, or unknown. */
+  const [filesLabel, setFilesLabel] = useState<string | null>(null);
+  /** The files drawer, the project screen's own, opened here by a left→right
+   * swipe that starts in the left third of the output (or anywhere on it
+   * when there is no status line to show). */
+  const [filesOpen, setFilesOpen] = useState(false);
+  const closeFiles = useCallback(() => setFilesOpen(false), []);
   /** Turns asked for; grows with "Show earlier turns". */
   const [transcriptLimit, setTranscriptLimit] = useState(TRANSCRIPT_STEP);
   /** The subagents walked into from the stored session (`subagents.ts`),
@@ -2696,13 +2712,38 @@ export function Terminal({ tab, back, pickModel = false, signInTab = false, open
   );
   const statusSwipe = tab.kind === "agent" && view === "focus" && (!altScreen || liveScreen.length > 0);
   useEffect(() => {
+    if (!project) return;
+    // Read on opening and on coming back to the page, not polled: the drawer
+    // itself says so when the switch went off in between.
+    const controller = new AbortController();
+    const read = () => {
+      if (document.visibilityState !== "visible") return;
+      api<ProjectDetail>(`/api/v1/projects/${encodeURIComponent(project)}`, { signal: controller.signal })
+        .then((detail) => setFilesLabel(detail.files ? detail.project.label : null))
+        .catch(() => {});
+    };
+    read();
+    document.addEventListener("visibilitychange", read);
+    return () => {
+      controller.abort();
+      document.removeEventListener("visibilitychange", read);
+    };
+  }, [project]);
+  const filesSwipe = filesLabel !== null && view === "focus";
+  /** Where the output is up for a swipe to read; `readableHost` is mounted
+   * with it. */
+  const readableShown = view === "focus" && (!altScreen || sessionShown);
+  useEffect(() => {
     const stream = readableHost.current;
-    if (!statusSwipe || !stream) return;
+    if ((!statusSwipe && !filesSwipe) || filesOpen || !stream) return;
     return installFocusSwipe(stream, {
-      onSwipeRight: () => setStatusStrip(true),
+      onSwipeRight: (start) => {
+        if (filesSwipe && (!statusSwipe || start.x < window.innerWidth * FILES_SWIPE_ZONE)) setFilesOpen(true);
+        else setStatusStrip(true);
+      },
       onSwipeLeft: () => setStatusStrip(false),
-    });
-  }, [statusSwipe]);
+    }, { leftEdge: filesSwipe });
+  }, [statusSwipe, filesSwipe, filesOpen, readableShown]);
   /** Agent tabs read as a chat (`ReadableTurns`); a shell's output has no
    * turns to lay out. */
   const chat = tab.kind === "agent";
@@ -3324,6 +3365,7 @@ export function Terminal({ tab, back, pickModel = false, signInTab = false, open
         closing the file lands back on the grid. */}
     {gallery && !outboxOpen && <OutboxGallery scope={outboxScope} files={outbox} onOpen={openOutbox} onDetails={setOutboxOpen} onDelete={removeOutbox} onClose={() => setGallery(false)} />}
     {outboxOpen && <OutboxViewer key={`${tab.id}/${outboxOpen.name}`} scope={outboxScope} file={outboxOpen} pictures={outboxPictures} onStep={setOutboxOpen} onClose={() => setOutboxOpen(null)} />}
+    {filesOpen && project && filesLabel !== null && <ProjectFiles key={project} projectId={project} label={filesLabel} onClose={closeFiles} />}
 
   </main>;
 }
