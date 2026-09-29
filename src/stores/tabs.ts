@@ -5170,12 +5170,14 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
   },
 }));
 
-// A detached window can fail to build briefly while a display is being removed,
-// or while Wayland is still retiring its previous window under the same label.
+// A detached window can fail to build while a display is being removed, or
+// while Wayland is still retiring its previous window under the same label.
 // Keep its layout detached through those failures. Only an exhausted retry may
-// dock it back, so a transient OS event cannot rewrite the saved window layout.
+// dock it back, so a transient OS event cannot rewrite the saved window layout;
+// the retries span ~30 s because switching to one screen reconfigures the
+// outputs in several steps, seconds apart.
 const openingDetachedWindows = new Map<string, Promise<void>>();
-const detachedOpenDelays = [0, 300, 900, 1800];
+const detachedOpenDelays = [0, 300, 900, 1800, 3600, 7200, 15000];
 
 function openDetachedWindow(scope: string, groupId: string): Promise<void> {
   const label = `detached-${scope}-${groupId}`;

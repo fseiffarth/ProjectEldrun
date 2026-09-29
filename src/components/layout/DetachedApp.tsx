@@ -27,6 +27,7 @@ import {
   DETACHED_DOCK,
   DETACHED_HIDE,
   DETACHED_EDIT,
+  DETACHED_GAVE_UP,
   DETACHED_REOPEN,
   DETACHED_REQUEST_SEED,
   DETACHED_ZOOM,
@@ -653,8 +654,11 @@ export function DetachedApp({ param }: Props) {
             // its tabs were out of the layout, its record persisted
             // `detached: true`, and the failure repeated at every launch (#224).
             // The `WindowEvent::Destroyed` hook tells the main window, which
-            // docks any surviving record back; this destroy is what triggers it.
-            void getCurrentWindow().destroy();
+            // docks any surviving record back once this keeps happening; saying
+            // first that this death is our own failure is what lets it.
+            void emit(DETACHED_GAVE_UP, { label }).finally(() => {
+              void getCurrentWindow().destroy();
+            });
             return;
           }
           void emit(DETACHED_REQUEST_SEED, {

@@ -430,7 +430,11 @@ describe("Group B — two heaps, one protocol", () => {
       main.tabs.useTabsStore.getState().detachGroup(root.children[1].id);
       await Promise.resolve();
       expect(main.tabs.useTabsStore.getState().detachedGroupsByScope["p"]).toHaveLength(1);
-      await vi.advanceTimersByTimeAsync(3000);
+      // Switching to one screen reconfigures the outputs for seconds: still
+      // detached well after the old 3 s budget.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(main.tabs.useTabsStore.getState().detachedGroupsByScope["p"]).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(20_000);
 
       // A permanent failure still leaves the tabs reachable in the main layout.
       expect(main.tabs.useTabsStore.getState().detachedGroupsByScope["p"] ?? []).toHaveLength(0);

@@ -223,11 +223,23 @@ export interface DetachedOpenDialogEnvelope {
  * from the `WindowEvent::Destroyed` hook for every popout death. Legitimate
  * teardowns drop the store record BEFORE the window goes, so the host finds no
  * record and does nothing; a record still standing means the popout died
- * behind the store's back (`xkill`, a renderer crash, a seed timeout) and its
- * tabs are docked back rather than stranded.
+ * behind the store's back (a display change, `xkill`, a renderer crash, a seed
+ * timeout). The popout is reopened from that record; only one that keeps
+ * giving up on its own (DETACHED_GAVE_UP) is docked back rather than stranded.
  */
 export const DETACHED_WINDOW_DESTROYED = "detached-window-destroyed";
 export interface DetachedWindowDestroyedEnvelope {
+  label: string;
+}
+
+/**
+ * Popout → main, right before a popout destroys itself because no seed ever
+ * arrived. Its death is then the window's own failure, which may end in a dock
+ * back; any other death was done TO a working window (a compositor dropping it
+ * while a monitor goes away) and only reopens it.
+ */
+export const DETACHED_GAVE_UP = "detached-gave-up";
+export interface DetachedGaveUpEnvelope {
   label: string;
 }
 
@@ -951,7 +963,18 @@ function persistScopeNow(scope: string): Promise<void> {
 /** Set while `shutdownDetachedWindows` destroys popouts on quit, so their
  *  `Destroyed` events are not mistaken for crashes and docked back. */
 let shuttingDown = false;
+/** Per label: when its popout's recent unexpected deaths happened. */
 const unexpectedWindowDeaths = new Map<string, number[]>();
+/** Labels whose popout announced DETACHED_GAVE_UP and has not died yet. */
+const gaveUpWindows = new Set<string>();
+
+/** How long to wait before reopening a popout that died `deaths` times in the
+ *  last minute. The first two come back at once; after that a window something
+ *  keeps killing backs off, so a display that takes a while to settle is waited
+ *  out instead of fought. Pure. */
+export function detachedRespawnDelay(deaths: number): number {
+  return deaths <= 2 ? 0 : Math.min(30_000, 1000 * 2 ** (deaths - 3));
+}
 
 /** The `DetachedTabStatus` map for one popout's keys, from the main window's
  *  classified activity — the same three states `TabBar` derives per tab. Pure. */
@@ -1148,16 +1171,23 @@ export async function listenDetachedHost(): Promise<() => void> {
     }
   });
 
-  // A compositor can discard a popout during a monitor change. Reopen its
-  // existing detached record instead of silently docking it into the main
-  // window and persisting that as the new layout. Bound repeated deaths so a
-  // broken webview does eventually dock its tabs where they remain reachable.
-  // Quit teardown destroys popouts with their records intact, hence the flag.
+  const unGaveUp = await listen<DetachedGaveUpEnvelope>(DETACHED_GAVE_UP, (ev) => {
+    gaveUpWindows.add(ev.payload.label);
+  });
+
+  // A compositor can discard a popout during a monitor change — once per step
+  // of it, and switching to one screen takes several. Reopen it from its
+  // existing detached record instead of docking it into the main window and
+  // persisting that as the new layout. Only a popout that keeps giving up on
+  // its own (no seed, so it cannot render) is docked, after bounded retries, so
+  // its tabs stay reachable. Quit teardown destroys popouts with their records
+  // intact, hence the flag.
   const unDestroyed = await listen<DetachedWindowDestroyedEnvelope>(
     DETACHED_WINDOW_DESTROYED,
     (ev) => {
       if (shuttingDown) return;
       const { label } = ev.payload;
+      const gaveUp = gaveUpWindows.delete(label);
       const store = useTabsStore.getState();
       for (const [scope, entries] of Object.entries(store.detachedGroupsByScope)) {
         const entry = entries?.find((d) => d.label === label);
@@ -1169,13 +1199,21 @@ export async function listenDetachedHost(): Promise<() => void> {
         const recent = (unexpectedWindowDeaths.get(label) ?? [])
           .filter((time) => now - time < 60_000);
         recent.push(now);
-        if (recent.length <= 2) {
-          unexpectedWindowDeaths.set(label, recent);
-          store.respawnDetachedForScope(scope);
-        } else {
+        if (gaveUp && recent.length > 2) {
           unexpectedWindowDeaths.delete(label);
           store.recoverDetachedGroup(scope, entry.id);
           void persistScopeNow(scope);
+          return;
+        }
+        unexpectedWindowDeaths.set(label, recent);
+        const delay = detachedRespawnDelay(recent.length);
+        if (delay === 0) {
+          store.respawnDetachedForScope(scope);
+        } else {
+          setTimeout(() => {
+            const latest = useTabsStore.getState();
+            if (latest.scope === scope) latest.respawnDetachedForScope(scope);
+          }, delay);
         }
         return;
       }
@@ -1339,6 +1377,7 @@ export async function listenDetachedHost(): Promise<() => void> {
     unActivity();
     unUsage();
     unDialog();
+    unGaveUp();
     unDestroyed();
     unTabsSync();
     unProjectsSync();

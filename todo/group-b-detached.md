@@ -1,5 +1,23 @@
 ## Group B — Detached Windows: Parity & Cross-Window Correctness
 
+- [ ] 🖐️ **Switching to one screen keeps popouts separate (2026-09-29).**
+  Still after the 2026-09-24 retry fix: going from several screens to one
+  docked popouts into the main window's subwindow. A compositor may drop a
+  popout at each step of the display switch, and the third death within a
+  minute docked it. Now only a popout that gave up on its own (no seed, so it
+  cannot render: `DETACHED_GAVE_UP`) is ever docked; any other death reopens it
+  from its record, backing off from the third death on, and a failed rebuild
+  retries for ~30 s instead of 3 s. Check: popouts on the external screen,
+  switch to the built-in display only (Super+P or unplug), then back. Expect
+  every popout still its own window. Not run live (`detached.ts` host).
+  - [ ] ✅ Works on Linux (X11)
+  - [ ] ❌ Doesn't work on Linux (X11)
+  - [ ] ✅ Works on Linux (Wayland)
+  - [ ] ❌ Doesn't work on Linux (Wayland)
+  - [ ] ✅ Works on Windows
+  - [ ] ❌ Doesn't work on Windows
+  - [ ] ✅ Works on macOS
+  - [ ] ❌ Doesn't work on macOS
 - [ ] 🖐️ **Wayland popout respawns on its own screen (2026-09-25).** A popout
   closed by a project switch (no unsaved work) came back on the pointer's
   screen, while one kept minimized for unsaved work kept its screen — so one

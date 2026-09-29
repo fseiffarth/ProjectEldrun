@@ -52,7 +52,7 @@ vi.mock("@tauri-apps/api/webviewWindow", () => ({
   WebviewWindow: { getByLabel: (l: string) => getByLabel(l) },
 }));
 
-import { useTabsStore, type GroupNode } from "../../stores/tabs";
+import { useTabsStore, orderedTabKeys, type GroupNode } from "../../stores/tabs";
 import { useProjectsStore } from "../../stores/projects";
 import {
   listenDetachedHost,
@@ -63,6 +63,8 @@ import {
   DETACHED_CLOSE,
   DETACHED_HIDE,
   DETACHED_WINDOW_DESTROYED,
+  DETACHED_GAVE_UP,
+  detachedRespawnDelay,
   detachedSeedEvent,
   type DetachedSeed,
 } from "../../stores/detached";
@@ -357,6 +359,54 @@ describe("detached host (#42)", () => {
     expect(useTabsStore.getState().detachedGroupsByScope.p).toHaveLength(1);
     expect((useTabsStore.getState().layout as GroupNode).tabKeys).not.toContain(bKey);
     expect(invokeMock).not.toHaveBeenCalledWith("save_tab_layout", expect.anything());
+  });
+
+  it("keeps reopening a popout the display switch kills again and again, never docking it", async () => {
+    // Switching to one screen reconfigures the outputs in several steps, and a
+    // compositor may drop the popout at each. It used to dock on the third death
+    // in a minute — the popout "went back into the main subwindow".
+    const { label, bKey } = detachSecond();
+    await listenDetachedHost();
+    const detachCalls = () =>
+      invokeMock.mock.calls.filter(([cmd]) => cmd === "detach_subwindow").length;
+    vi.useFakeTimers();
+    try {
+      invokeMock.mockClear();
+      for (let i = 0; i < 4; i++) {
+        handlers.get(DETACHED_WINDOW_DESTROYED)!({ payload: { label } });
+        await vi.advanceTimersByTimeAsync(detachedRespawnDelay(i + 1));
+      }
+      expect(detachCalls()).toBe(4);
+      expect(useTabsStore.getState().detachedGroupsByScope.p).toHaveLength(1);
+      expect((useTabsStore.getState().layout as GroupNode).tabKeys).not.toContain(bKey);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("docks a popout that keeps giving up on its seed, so its tabs stay reachable", async () => {
+    const { label, bKey } = detachSecond();
+    await listenDetachedHost();
+    vi.useFakeTimers();
+    try {
+      for (let i = 0; i < 3; i++) {
+        handlers.get(DETACHED_GAVE_UP)!({ payload: { label } });
+        handlers.get(DETACHED_WINDOW_DESTROYED)!({ payload: { label } });
+        await vi.advanceTimersByTimeAsync(detachedRespawnDelay(i + 1));
+      }
+      expect(useTabsStore.getState().detachedGroupsByScope.p ?? []).toHaveLength(0);
+      expect(orderedTabKeys(useTabsStore.getState().layout)).toContain(bKey);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("backs off reopening a window something keeps killing", () => {
+    expect(detachedRespawnDelay(1)).toBe(0);
+    expect(detachedRespawnDelay(2)).toBe(0);
+    expect(detachedRespawnDelay(3)).toBe(1000);
+    expect(detachedRespawnDelay(4)).toBe(2000);
+    expect(detachedRespawnDelay(20)).toBe(30_000);
   });
 
   it("app-quit teardown persists each detached scope and destroys its popout (no discard)", async () => {
