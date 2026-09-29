@@ -20,7 +20,8 @@ added here once §12 Q1, Q3 and Q4 are answered.*
 ### Z.0 — Prerequisites and pre-existing debt (#169–#172)
 
 *Kept from the removed sync-server design because each is worth doing on its
-own. #171 and #172 are P0 of the new plan.*
+own. #171 and #172 are H0 of [`docs/headless_owner_plan.md`](../docs/headless_owner_plan.md),
+the desktop groundwork the hosted plan's P1 builds on.*
 
 169. **Live-test the CalDAV push work.** *Code-complete as of 2026-07-29 (still
     uncommitted at time of writing).* `caldav_push` / `caldav_delete` /

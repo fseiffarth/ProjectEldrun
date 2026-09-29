@@ -1,10 +1,12 @@
 # Eldrun Hosted — one server, several users, desktop and phone as thin clients
 
-*Plan only. Nothing here is implemented. Written 2026-09-29 against the tree at
+*Plan only. Nothing here is implemented. The desktop-side groundwork (the
+headless owner, P1) is split out into
+[`headless_owner_plan.md`](headless_owner_plan.md). Written 2026-09-29 against the tree at
 `1441eb0e`, and revised the same day, against `923e0202`, after three
 independent reviews (security, architecture, scope). The reviewers then
-discussed each other's findings. The user then decided Q7, Q11 and Q14, and
-delegated Q5.
+discussed each other's findings. The user then decided every other §12
+question and delegated Q5.
 §14 lists what changed. Every
 number and file reference was measured at one of those two commits; re-verify
 before building on one.*
@@ -98,30 +100,14 @@ Seven decisions carry it:
      `server_capabilities` (§3.5).
 
 3. **Live state moves out of the window into one headless owner. This is the
-   real work, and it comes first.** Today the React app is the authority for
-   far more than the plan's first draft said:
-   - Terminal processes only start when `TerminalView` mounts: the only
-     `pty_spawn` call is `TerminalView.tsx:1430`. The frontend decides
-     tmux-or-not (`CenterPanel.tsx:199`) and mints tmux names (`tabs.ts:45`).
-   - Scheduled prompts, auto-continue and the warm-up cron are fired by React
-     hosts mounted in `AppShell.tsx:1420-1422`. Calendar alarms and CalDAV
-     sync run on frontend timers too.
-   - The tab set is saved as one whole client snapshot
-     (`save_tab_layout`, `projects.rs:2565`, debounced from `tabs.ts:5127`).
-     `terminal_service.rs:78-93` records four tabs lost to *one* client racing
-     itself.
-   - The phone is answered by the desktop window:
-     `commands/mobile_control.rs:1331` emits a `DesktopRequest` to window
-     `"main"`, and `MobileBridgeHost.tsx` (2302 lines) answers it.
-
-   With no client connected, nothing is scheduled. With two clients connected,
-   every schedule fires twice and the tab set is last-writer-wins as a whole.
-   Closing the main window quits the whole desktop app (`lib.rs:776-783`), so
-   the owner cannot live in the Tauri process either. **The owner is the
-   existing per-user Mobile sidecar** (`eldrun --mobile-host`, a user systemd
-   unit already), grown into a `workspace` service. On the desktop it lets the
-   phone, schedules and alarms work with the window closed. On the server the
-   same code becomes the daemon (§3.4).
+   real work, and it comes first.** Today the React app spawns every
+   terminal, fires every timer, saves the tab set as one whole snapshot and
+   answers the phone, so with no client nothing is scheduled and with two
+   every schedule fires twice. **The owner is the existing per-user Mobile
+   sidecar** (`eldrun --mobile-host`), grown into a `workspace` service. That
+   work is desktop work, worth doing with no server, and has its own plan:
+   [`headless_owner_plan.md`](headless_owner_plan.md). On the server the same
+   code becomes the daemon (§3.4).
 
 4. **The backend becomes `eldrun-core`, a Tauri-free crate, plus two thin
    hosts, by P3.** The count at `923e0202`:
@@ -226,7 +212,7 @@ anything with a browser.
 These are **system** template units, so no `enable-linger` is needed.
 
 - **The gateway** runs as its own unprivileged user. It terminates TLS (or
-  sits behind Tailscale Serve or a reverse proxy, **Q8**), authenticates
+  sits behind Tailscale Serve, **Q8**), authenticates
   devices, serves the web bundle and the PWA, and forwards each connection to
   **the caller's own daemon only**. It holds the shares database and the
   audit log. It links no core services, and it reads no user files: every data
@@ -359,10 +345,10 @@ network (P0).**
 
 | Class | Runs where | Examples | On the server |
 |---|---|---|---|
-| `core` | the user's daemon | projects, fs, git, terminal (incl. `pty_set_visible`), agents, search, tex, viewers' backends, skills, schedules, copilot, ollama completion | exposed |
+| `core` | the user's daemon | projects, fs, git, terminal (incl. `pty_set_visible`), agents, search, tex, viewers' backends, skills, schedules, copilot, ollama completion, the root console **Host** session (under the user's own uid, no sudo, **Q6**) | exposed |
 | `client` | the machine the user sits at | clipboard, native print, screenshot, subwindows/popouts, os clock, power, sysstat/gpustat of *this* machine, IDE launch, open-outside | not exposed; browser adapter or hidden |
 | `admin` | the server as a whole | OpenVPN (machine-wide), global machines, VMs, Docker, app update, dev build, admin-provided agent credentials and server-wide CLI installs | admin role only, or disabled (§9) |
-| `off` | nowhere in server mode | root console **Host** session (unless **Q6**), keychain unlock, anything D-Bus-session-bound, the whole-document saves that §3.4 replaces | refused with a named reason |
+| `off` | nowhere in server mode | keychain unlock, anything D-Bus-session-bound, the whole-document saves that §3.4 replaces | refused with a named reason |
 
 The class also drives the UI. The frontend asks once (`server_capabilities`,
 following the `browser_capabilities` precedent) and hides a control whose
@@ -371,90 +357,22 @@ carries `HOST_OS`.
 
 ### 3.4 Live state: from the window to one headless owner
 
-**Today** the main window owns:
-- the live model: projects' activation and restore logic
-  (`projects.ts:1408-1437`), tabs, activity and alerts;
-- **spawning**: a tab's process starts when its `TerminalView` mounts;
-- **every timer**: `AgentScheduleHost` ticks every 15 s against the
-  frontend's `lastPtyOutputAt`, plus auto-continue, the warm-up cron,
-  calendar alarms (`stores/calendar/alarms.ts:148`), the CalDAV sync host,
-  and git probing (the phone's git dots are "what the desktop's pills already
-  probed").
+The move itself, with its ownership table, protocol, migration order and
+tests, is [`headless_owner_plan.md`](headless_owner_plan.md) (split out
+2026-09-29). It lands on the desktop first, where the owner is the Mobile
+sidecar; on the server the same `workspace` service runs inside the user's
+daemon. What the server adds to that plan:
 
-The backend persists client snapshots. Popouts forward writes to the main
-window (`detachedContext`). The phone's sidecar asks the main window, and with
-the window closed the whole app has quit.
-
-**The owner.** A user may have a laptop browser, the desktop shell and a
-phone connected at once, or nothing connected while an agent runs overnight.
-The model needs one owner that is always there: a **`workspace` service in
-the sidecar**, which becomes the daemon on a server. It is the same code in
-both places.
-
-| State | Owner | Why |
-|---|---|---|
-| Project list, active/stopped, per-project settings | owner (`projects.json`). `save_projects` already patches only `status`, `position` and `box_id` (`projects.rs:655-673`); activation/restore logic moves out of the store. | Already mostly backend-owned. |
-| **Tab set** per project: id, kind, label, colour, order, tmux name, agent session record, untested marks | **owner, per-operation commands** (group 0) | Must be identical on every client, which is what "the same view" means. |
-| **Spawn policy and launch assembly**: tmux-or-not, tmux name, launch script | **owner** (group 0) | A tab's process must start whether or not a client is connected. Decided by `HOST_OS`, never the client's. |
-| **Timers**: schedules, auto-continue, warm-up cron, calendar alarms, CalDAV sync, git probing | **owner** | With no client they never fire; with two clients they fire twice. |
-| Agent turn state, prompts, transcript pointers | owner (hooks already write it backend-side) | Already mostly backend-side. |
-| Todo, calendar, alerts, mail overview | owner, **in the user's own daemon**; shared calendars and todo lists through `eldrun-calendar` | Phone reads them without a window. Mail never leaves the user's daemon; no presence event or gateway record carries any of it (§6.7). |
-| Settings, boxes, default apps | owner, **compare-and-swap** replacing the whole-document `save_settings` / `save_boxes` / `save_default_apps` | A laptop and a phone saving at once must not erase each other. |
-| Pane split, focused tab per pane, scroll position, overlays, keyboard steering, hover, **terminal size** | **client** | Per screen; a phone and a 4K monitor cannot share a layout (**Q4**). `TerminalSession` splits into the shared tab set and a per-client layout (today both sit in `save_tab_layout`'s `tab_groups`). |
-
-**Protocol.** On connect, the client gets a versioned snapshot. After that it
-receives `workspace:patch {version, ops}` events. Mutations are
-per-operation commands that return the new version, and a client whose
-version skipped re-fetches the snapshot. Stores keep optimistic updates but
-reconcile on the patch. Field edits (labels, colours) are last-writer-wins
-per field. Tab creation, closing and reordering are serialised by the owner.
-**`save_tab_layout` is refused once the owner holds the tab set; no second
-client connects before that.**
-
-**One writer per slice.** `JSON_MUTATION_LOCK` (`storage.rs:97-100`) only
-serialises writes within one process. Once the sidecar owns a slice, the
-desktop window writes that slice **only** through the sidecar, over the
-existing desktop bridge, and never touches the file.
-
-**Migration order.**
-
-0. **Group 0: tab set, spawning, and whole-document saves.** Per-operation
-   tab commands. The owner spawns into `tmux -L eldrun`, and every client,
-   the desktop included, attaches. `save_tab_layout` is refused, and
-   settings, boxes and default apps use compare-and-swap. Then `Catalog`,
-   `Activity` and `GitStates` can be answered by the owner, because they read
-   React stores today (`MobileBridgeHost.tsx:2160-2171`).
-1. **Timers**: schedules, auto-continue, cron, alarms, CalDAV, git probing.
-   In the interim, a timer host still in React runs only under a single-client
-   **lease** granted by the owner. Two windows can never both fire it, and
-   until its port lands a schedule needs a connected client (stated in the
-   UI).
-2. **The remaining `DesktopRequest` kinds** (34 in total, `protocol.rs:752`):
-   - read-only: `AgentStatus`, `AgentTranscript`, `Todo`, `Alerts`,
-     `Calendar`, `Schedules`, `Prompts`, `LaunchOptions`, `MailOverview`,
-     `MailFolder`, `MailMessage`, `DesktopImages`;
-   - tab mutations: `RenameTab`, `ColorTab`, `ReorderTab`, `CloseTab`,
-     `ReopenTab`, `TabSeen`, `UndoClear`, `Create`, `Activate`;
-   - input paths: `TabInput`, `TabPrompt`, `AttachDesktopImage`;
-   - writes with side effects: `TodoMutate`, `CalendarMutate`,
-     `ScheduleMutate`, `PromptMutate`, `AlertResolve`, `MailMark`,
-     `MailReply`.
-
-**P0's head start.** Before group 0, the sidecar can already serve the
-persisted-state kinds with the window closed: `Todo`, `Calendar`,
-`Schedules`, `Prompts` and `AgentTranscript`, reading the files. While the
-window is closed, `Catalog`, `Activity` and `GitStates` come back as "desktop
-closed" or marked stale.
-
-After each port, the desktop's React store switches from owning that slice to
-subscribing to it, and `MobileBridgeHost.tsx` shrinks by that handler.
-
-**Conflict to resolve in the other doc:** `docs/mcp_control_plan.md` §1
-decision 2 says re-implementing the frontend's model backend-side "would be
-a second implementation that drifts". This plan does exactly that, on
-purpose: it *moves* the model, and does not duplicate it. That decision now
-carries a note saying it no longer applies to a slice once that slice has
-moved.
+- **Spawn policy follows `HOST_OS`**, taken from `server_capabilities`, never
+  the connected client's OS (§1.2).
+- **Todo, calendar, alerts and the mail overview** live in the user's own
+  daemon. Shared calendars and todo lists go through `eldrun-calendar`. Mail
+  never leaves the user's daemon; no presence event or gateway record carries
+  any of it (§6.7).
+- **Per-client layout** (decided, Q4): the tab set is shared across a user's
+  clients, while pane layout, focus, scroll and terminal size are per client.
+- **No second client connects before `save_tab_layout` is refused**, which is
+  why the owner plan's group 0 comes before P2.
 
 ### 3.5 Transport
 
@@ -568,8 +486,8 @@ cannot make private.
 **Server-side persistence.** `write_json_atomic` already calls `sync_all` on
 the staged file (`storage.rs:117`). What is missing is an fsync of the
 **parent directory** after `persist` (`:118`), so a crash can lose the
-rename. On a multi-user box that runs for months, that fix is a P0
-prerequisite (#172).
+rename. On a multi-user box that runs for months, that fix is a hard
+prerequisite (#172, H0 of [`headless_owner_plan.md`](headless_owner_plan.md)).
 
 ---
 
@@ -1184,7 +1102,9 @@ terminal on the phone takes that tab over from any other viewer (§3.5).
   - the web bundle.
 - **Signing:** the server artifacts go through the same release-signing
   lane as the desktop (`docs/context/release_signing.md`).
-- **Migrating an existing desktop user** to a server is Q13.
+- **Migrating an existing desktop user** to a server goes one project at a
+  time through `project_transfer` (`.eldrunproj`); agent logins are redone
+  on the server (Q13).
 
 ---
 
@@ -1196,7 +1116,7 @@ terminal on the phone takes that tab over from any other viewer (§3.5).
 | Passwords never persisted by default; opt-in goes to the OS keychain | **Holds, changed in where opt-in goes:** a daemon has no desktop Secret Service session, so opt-in saving goes to a per-user sealed store whose key the user's devices release and which is held only in memory (§6.8, Q5 decided). Nothing is saved without the opt-in. |
 | Remote/VPN auto-connect never prompts | OpenVPN is `admin`. Per-user remote projects work by SSH from the daemon; auto-connect needs keys (an `ssh-agent` per daemon), never a stored password. |
 | Hardened git, `exec_trust` | Hold; shared clones refuse hooked verbs, and config sanitizing fails closed (§6.5). |
-| `agent_fence` fails closed; the Host session is the one unfenced agent | Holds, provided user namespaces work (§8). The fence also hides other shared hubs (§6.3). Whether the Host session is offered is **Q6**; under a per-user uid it equals the user's own SSH login. |
+| `agent_fence` fails closed; the Host session is the one unfenced agent | Holds, provided user namespaces work (§8). The fence also hides other shared hubs (§6.3). The Host session is offered (**Q6**): under a per-user uid it equals the user's own SSH login, with no sudo. |
 | Agents live only in Eldrun (agent homes, `agent_auth`, `agent_global`) | Holds per user, unchanged: each user signs in to their own CLIs (§5). Config, skills, hooks and MCP entries stay per user and per scope. CLI binaries come from the user's own install or the server-wide root. |
 | `services/` stays `AppHandle`-free | **Not true today:** seven modules and `terminal/mod.rs` break it. P1 fixes them first (§3.2). |
 | `mobile_control`: raw ids/paths never cross the browser API | Holds for the phone API. **Relaxed** for the web desktop client toward its own user, on a separate route prefix (§4.3). Never crosses users. |
@@ -1217,32 +1137,21 @@ terminal on the phone takes that tab over from any other viewer (§3.5).
 Each phase ships on its own, and each is worth having even if the next never
 comes.
 
-**P0: decisions and cheap prerequisites.**
-- Answer §12 Q1, Q3 and Q4. They change the shape of P2–P4.
-- Group Z's P0 items: the parent-directory fsync (#172) and compare-and-swap
-  on `calendar.json` (#171).
+**P0: decisions and the command table.**
+- ~~Answer §12 Q1, Q3 and Q4.~~ Answered 2026-09-29; all three confirm the
+  shape this plan already assumes (§14).
 - Write the command class table and its completeness test (§3.3). This is
   cheap, and it forces the per-command conversation early.
-- The sidecar serves the persisted-state `DesktopRequest` kinds (`Todo`,
-  `Calendar`, `Schedules`, `Prompts`, `AgentTranscript`) from files, with
-  the window closed (§3.4). **Visible payoff: the phone reads todo, calendar
-  and schedules with the desktop closed.**
+- The desktop prerequisites that used to sit here (#171, #172, the sidecar
+  serving persisted-state kinds with the window closed) are H0 of
+  [`headless_owner_plan.md`](headless_owner_plan.md).
 
 **P1: one headless owner.** The riskiest phase, done first.
-- The sidecar's `workspace` service takes group 0: per-operation tab
-  commands, spawning into `tmux -L eldrun`, and `save_tab_layout` refused.
-  Settings, boxes and default apps move to compare-and-swap.
-  `TerminalSession` splits into the shared tab set and per-client layout.
-- It takes the timers, with the single-client lease in the interim, and then
-  the remaining `DesktopRequest` kinds. The desktop window writes each owned
-  slice only through the sidecar.
+- [`headless_owner_plan.md`](headless_owner_plan.md) H0–H3, on the desktop.
+  Its exit is this phase's exit.
 - In parallel: start the crate extraction (§3.2). Fix the seven services and
   `terminal/mod.rs` first, then convert one `commands/*.rs` file at a time,
   keeping all five gates green after each.
-- *Exit:* with the desktop window closed, the phone lists tabs, starts an
-  agent, and sees a scheduled prompt fire. Two desktop windows open at once
-  fire every schedule exactly once. `MobileBridgeHost.tsx` answers nothing
-  the owner can.
 
 **P2: single-user server, "my box, thin clients".**
 - The sidecar grows a `core` dispatcher and serves the web bundle. There is
@@ -1326,11 +1235,8 @@ i18n and `UntestedTag` rows land inside each phase, never after it.
 - **Gates:** all five AGENTS.md gates stay at zero warnings through P1 on
   every converted file. That is how an extraction touching 211 coupled
   commands stays reviewable.
-- **Owner tests (P1):**
-  - two simulated clients rename, reorder and close tabs concurrently, and
-    the final tab set equals the daemon's, with no tab lost;
-  - `save_tab_layout` is refused once the owner holds the tab set;
-  - each timer fires exactly once with two clients and once with none.
+- **Owner tests (P1):** [`headless_owner_plan.md`](headless_owner_plan.md)
+  §4.
 - **Protocol tests:**
   - the shim against a fake daemon: every `__TAURI_INTERNALS__` member,
     event subscribe and unsubscribe, rejection on disconnect, resume by
@@ -1383,12 +1289,16 @@ i18n and `UntestedTag` rows land inside each phase, never after it.
 
 ## 12. Open questions for a human
 
-**Q1. Who are the users?** A few trusted colleagues on a machine you run, or
-an institutional service? That decides OIDC vs. invites, how hard quotas need
-to be, and whether the admin is a person or a role.
+**Q1. Who are the users?** *Answered (user, 2026-09-29):* a few trusted
+colleagues on a machine the admin runs, and the admin is one person. Login is
+invite codes plus device keys (§4.1), OIDC stays P5, and quotas are the
+per-user slices and filesystem quotas of §8, not a hard multi-tenant regime.
 
-**Q2. Admin-provided credentials, per CLI.** Users sign in themselves by
-default (decided, §5). This matters only for what the admin offers (§5.4):
+**Q2. Admin-provided credentials, per CLI.** *Answered (user, 2026-09-29):*
+both options stay: admin API keys (P3b) and the at-risk shared consumer login
+(P5), each on top of the user's own login, the default (§5). What remains is
+research, not a decision: each CLI's row below is verified before that
+option is enabled for it (§5.4):
 - *API keys (P3b):* which variable or file carries the key, and does the CLI
   accept a base-URL override (needed for the broker)?
 - *A shared consumer login (P5):* does a refresh rotate the refresh token? Do
@@ -1396,12 +1306,13 @@ default (decided, §5). This matters only for what the admin offers (§5.4):
   replica it can't write back, or on an access token alone? How is a leaked
   token revoked?
 
-**Q3. Editing together:** per-member clones through a hub (recommended,
-§6), or a shared tree with worktrees as the default?
+**Q3. Editing together.** *Answered (user, 2026-09-29):* per-member clones
+through the `eldrun-hub` bare repo (§6). A shared tree with worktrees stays a
+P5 option and is never the default.
 
-**Q4. Is the tab set shared across a user's clients while pane layout and
-terminal size are per client (recommended)**, or is the layout shared too,
-so that phone and desktop mirror each other exactly?
+**Q4. The tab set across a user's clients.** *Answered (user, 2026-09-29):*
+the tab set is shared, while pane layout, focus, scroll and terminal size are
+per client (§3.4). Phone and desktop do not mirror each other's layout.
 
 **Q5. Saved credentials on the server.** *Decided (delegated by the user,
 2026-09-29):* a per-user key, wrapped per paired device, released by a
@@ -1409,18 +1320,21 @@ device's ECDH half on connect, and held only in the kernel's per-user
 persistent keyring. It seals the mail store and the opt-in saved passwords,
 and comes with a one-time recovery code (§6.8).
 
-**Q6. The root console's Host session on the server:** allowed (it is the
-user's own shell under their uid), or off?
+**Q6. The root console's Host session on the server.** *Answered (user,
+2026-09-29):* allowed, under the user's own uid only. It equals the user's
+own shell there, so it gains no reach; no sudo, and admin verbs stay with the
+helper (§3.3).
 
 **Q7. Mail and CalDAV on the server.** *Answered (user, 2026-09-29):* in
 scope and per user. Mail is always private. The admin and each user can
 switch mail, calendar and todo off (§6.7).
 
-**Q8. TLS:** Tailscale Serve (as Mobile does today), ACME with a public name,
-or behind an existing institutional reverse proxy?
+**Q8. TLS.** *Answered (user, 2026-09-29):* Tailscale Serve, as Mobile does
+today. Nothing faces the public internet; colleagues reach the server through
+the tailnet. ACME and a reverse proxy are not in scope.
 
-**Q9. GPUs:** first come first served, or per-user assignment from the
-start?
+**Q9. GPUs.** *Answered (user, 2026-09-29):* first come, first served, as
+§8 has it. Per-user `CUDA_VISIBLE_DEVICES` waits until contention shows up.
 
 **Q10. Group Z.** *Answered:* `todo/group-z-server.md` has been rewritten
 for this plan. It keeps #169 (CalDAV live test, needed for Q7), #170 (generic
@@ -1432,13 +1346,15 @@ remote URL publishing), #171 (calendar compare-and-swap, P0) and #172
 consumer login is an optional P5 item at the admin's own risk, and the terms
 are quoted before it can be enabled (§5).
 
-**Q12. Standalone and server side by side.** Can a user keep standalone
-desktop projects (offline use) and server projects in one Eldrun, or is a
-desktop either standalone or a client?
+**Q12. Standalone and server side by side.** *Answered (user, 2026-09-29):*
+side by side, as separate apps. The desktop app stays standalone for local
+and offline projects, server projects open in the browser client, and both
+can run at once. One window holding both waits for the P5 shell (§7.2).
 
-**Q13. Migrating an existing user.** Their projects, `state_dir`, agent
-homes and schedules: via `project_transfer` (`.eldrunproj`) one project at a
-time, or a whole-`state_dir` import?
+**Q13. Migrating an existing user.** *Answered (user, 2026-09-29):* one
+project at a time through `project_transfer` (`.eldrunproj`); the user
+chooses what moves, and agent logins are redone on the server. No
+whole-`state_dir` import in v1.
 
 **Q14. The sync plan's shared calendar and board.** *Answered (user,
 2026-09-29):* a user can open a calendar or a todo list to other users, as
@@ -1527,6 +1443,20 @@ discussion round.** All three agreed on every change below.
   keyring, seals mail and the opt-in saved passwords. It was chosen over a
   key file, TPM sealing and a passphrase for backup safety and protection
   from agents, while still surviving daemon restarts (§6.8).
+- **Split (2026-09-29):** §1 decision 3's detail, §3.4's ownership table,
+  protocol and migration order, P0's desktop items and the owner tests moved
+  to [`headless_owner_plan.md`](headless_owner_plan.md), because all of it
+  pays off on the desktop with no server. This file keeps the server delta.
+- **Q1/Q3/Q4:** a small trusted group with one person as admin (invites and
+  device keys, OIDC stays P5); per-member clones through the hub; a shared
+  tab set with per-client layout. Each confirms what the plan already
+  assumed, so no section changes beyond §12 and P0.
+- **Q2/Q6/Q8/Q9/Q12/Q13:** both admin credential options stay, with Q2's
+  per-CLI facts left as research before each is enabled; the Host session
+  moves from `off` to `core` under the user's own uid (§3.3, §9); TLS is
+  Tailscale Serve only; GPUs are first come, first served; standalone and
+  server run side by side as separate apps; migration is per project via
+  `.eldrunproj` (§8).
 
 - **Follow-ups outside this file, done 2026-09-29:**
   - `docs/eldrun_remote_plan.md` is marked superseded;
