@@ -653,7 +653,7 @@ fn git_status_blocking(project_dir: String) -> Result<GitStatus, String> {
 /// → `gitDirtyState`) reads the counts and `is_repo`, never `has_remote` — so the
 /// second process (an SSH round trip on a remote project) bought nothing. The
 /// `git_status` command keeps the full answer for anything that does read it.
-fn git_status_probe(project_dir: String, probe_remote: bool) -> Result<GitStatus, String> {
+pub(crate) fn git_status_probe(project_dir: String, probe_remote: bool) -> Result<GitStatus, String> {
     let target = remote_target_for_dir(&project_dir);
     if local_non_repo(target.as_ref(), &project_dir) {
         return Ok(GitStatus {
@@ -1372,7 +1372,7 @@ pub async fn git_unpushed_commits(project_dir: String) -> Result<Vec<String>, St
     run_off_thread(move || git_unpushed_commits_blocking(project_dir)).await
 }
 
-fn git_unpushed_commits_blocking(project_dir: String) -> Result<Vec<String>, String> {
+pub(crate) fn git_unpushed_commits_blocking(project_dir: String) -> Result<Vec<String>, String> {
     let target = remote_target_for_dir(&project_dir);
     if local_non_repo(target.as_ref(), &project_dir) {
         return Ok(vec![]);

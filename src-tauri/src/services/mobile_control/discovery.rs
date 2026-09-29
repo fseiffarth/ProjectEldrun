@@ -431,22 +431,26 @@ fn expected_tmux(project_id: &str, kind: &str, name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+/// The built-in agent CLIs whose tabs resume across a relaunch (the frontend's
+/// `RESUMABLE_AGENTS`): what the phone may come back to, and — with no
+/// window — what it may start (`headless::agents`).
+pub(super) const RESUMABLE_BUILTINS: &[&str] = &[
+    "claude",
+    "codex",
+    "qwen",
+    "opencode",
+    "copilot",
+    "cursor-agent",
+    "grok",
+    "gemini",
+    "agy",
+    "vibe",
+    "droid",
+];
+
 fn resumable(tab: &SavedTab) -> bool {
-    const BUILTIN: &[&str] = &[
-        "claude",
-        "codex",
-        "qwen",
-        "opencode",
-        "copilot",
-        "cursor-agent",
-        "grok",
-        "gemini",
-        "agy",
-        "vibe",
-        "droid",
-    ];
     tab.session_id.is_some()
-        && (BUILTIN.contains(&tab.cmd.as_str())
+        && (RESUMABLE_BUILTINS.contains(&tab.cmd.as_str())
             || tab.resume_args.as_ref().is_some_and(|v| !v.is_empty()))
 }
 

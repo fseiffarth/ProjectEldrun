@@ -3780,6 +3780,8 @@ export const dict: Dict = {
   "mobile.project.reopenHint": "Rouvrir {label} : sa conversation revient",
   "mobile.project.scheduledAt": "Programmé pour {at} (heure du bureau)",
   "mobile.project.reopenGone": "Cet onglet ne peut plus être rouvert.",
+  "mobile.project.desktopUnavailable": "Bureau indisponible — les sessions existantes s'ouvrent toujours, et un nouveau shell ou agent démarre ici et sera repris par la prochaine fenêtre Eldrun ; activer un projet demande Eldrun.",
+  "mobile.newTab.headless": "Aucune fenêtre Eldrun n'est ouverte : un shell ou un agent démarre sur la machine elle-même et la prochaine fenêtre s'y rattache. Un mode, un worktree, une session cloud, un modèle local ou une connexion attendent la fenêtre.",
   "mobile.project.reopenFailed": "Ouvrez Eldrun sur l’ordinateur pour rouvrir un onglet.",
   "tabColor.menu": "Couleur",
   "tabColor.none": "Aucune couleur",

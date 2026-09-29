@@ -490,6 +490,12 @@ pub fn agent_label_for_bin(bin: &str) -> Option<&'static str> {
     AGENTS.iter().find(|a| a.bin == bin).map(|a| a.label)
 }
 
+/// The registry id of the agent whose binary is `bin` — what the settings'
+/// `disabled_agents` list names (`SettingsSubPanels`' Manage CLIs switches).
+pub fn agent_id_for_bin(bin: &str) -> Option<&'static str> {
+    AGENTS.iter().find(|a| a.bin == bin).map(|a| a.id)
+}
+
 /// POSIX login-shell script used by the explicit "install on remote machine"
 /// action. Agent ids resolve through the same registry as local installation,
 /// so the frontend never supplies executable text. Probe before and after: a

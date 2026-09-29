@@ -105,15 +105,20 @@ describe("Mobile project screen — the ＋", () => {
     expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/tabs"))).toBe(false);
   });
 
-  it("opens the ＋ while the desktop is away for a file, holding only the creates", async () => {
+  it("opens the ＋ while the desktop is away: a shell, a plain agent and a file go, a mode waits", async () => {
     serve({ ...DETAIL, desktop_available: false });
     render(<Project id="p" back={() => {}} terminal={() => {}} />);
     await screen.findByText(/Desktop unavailable/);
     const open = screen.getByRole("button", { name: "New tab" }) as HTMLButtonElement;
     expect(open.disabled).toBe(false);
     fireEvent.click(open);
-    expect((screen.getByRole("button", { name: "New shell" }) as HTMLButtonElement).disabled).toBe(true);
+    // The host starts these itself (headless owner plan, H1b) …
+    expect((screen.getByRole("button", { name: "New shell" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Claude" }) as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByRole("button", { name: /Send a file from this phone/ }) as HTMLButtonElement).disabled).toBe(false);
+    // … while a launch mode still needs the window.
+    expect((screen.getByRole("button", { name: "plan" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/No Eldrun window is open/)).toBeTruthy();
   });
 
   it("puts the phone file under the shell and asks for any file, not just media", async () => {

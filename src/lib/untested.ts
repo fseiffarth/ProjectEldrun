@@ -390,6 +390,7 @@ export const UNTESTED = {
   "mobile.outbox.zoom": { area: "mobile", what: "OutboxViewer · Pinch, double tap and drag to zoom and pan a picture full screen; the picture fits the phone's width" },
   "mobile.project.newTab": { area: "mobile", what: "NewTabSheet · The header's ＋ opens a shell or an agent" },
   "mobile.newTab.worktree": { area: "mobile", what: "NewTabSheet · Agents start in: project folder or a linked worktree" },
+  "mobile.headless": { area: "mobile", what: "Project/Home · With no Eldrun window open (headless owner plan, H1b): the ＋ sheet's shell and plain agent start on the host itself (owner-minted tab, detached tmux session, attached by the next window — the row appears with its screen hidden until then); the project list's git dots; the project screen's and the Agents list's status / model / prompts / schedule summaries read off the hooks' turn records and the tabs' transcripts" },
   "mobile.newTab.cloud": { area: "mobile", what: "NewTabSheet · ☁ New / ☁ Open cloud session on an agent tile (task box for Claude/Mistral)" },
   "mobile.newTab.local": { area: "mobile", what: "NewTabSheet · Local model group: start Mistral / Claude Code / Codex / OpenCode / Droid on the desktop's local model; the tab is listed and reattaches after a desktop restart (#31bl)" },
   "mobile.project.sendFile": { area: "mobile", what: "NewTabSheet · ＋ → Send a file from this phone into the project's inbox (.eldrun/inbox/), with a Copy of its @reference" },

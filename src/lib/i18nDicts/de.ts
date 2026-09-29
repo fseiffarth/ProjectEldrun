@@ -3782,6 +3782,8 @@ export const dict: Dict = {
   "mobile.project.reopenHint": "{label} wieder öffnen: die Unterhaltung kommt zurück",
   "mobile.project.scheduledAt": "Geplant für {at} (Desktop-Zeit)",
   "mobile.project.reopenGone": "Dieser Tab kann nicht mehr geöffnet werden.",
+  "mobile.project.desktopUnavailable": "Desktop nicht erreichbar — bestehende Sitzungen lassen sich weiter öffnen, und eine neue Shell oder ein Agent startet hier und wird vom nächsten Eldrun-Fenster übernommen; ein Projekt aktivieren braucht Eldrun.",
+  "mobile.newTab.headless": "Kein Eldrun-Fenster ist offen: eine Shell oder ein Agent startet direkt auf dem Rechner, und das nächste Fenster hängt sich daran. Ein Modus, ein Worktree, eine Cloud-Sitzung, ein lokales Modell oder eine Anmeldung warten auf das Fenster.",
   "mobile.project.reopenFailed": "Öffne Eldrun am Desktop, um einen Tab wieder zu öffnen.",
   "tabColor.menu": "Farbe",
   "tabColor.none": "Keine Farbe",

@@ -42,11 +42,16 @@ export interface NewTabLaunch {
  * new session, and the sheet closes on the tap rather than waiting for the
  * desktop, so a slow create is a screen the reader can still read.
  */
-export function NewTabSheet({ projectId, agents, busy, onPick, onSendFile, onClose }: {
+export function NewTabSheet({ projectId, agents, busy, headless = false, onPick, onSendFile, onClose }: {
   projectId: string;
   agents: AgentRow[];
-  /** A create in flight, or no desktop to answer one; the file row ignores it. */
+  /** A create in flight; the file row ignores it. */
   busy: boolean;
+  /** No desktop window: a shell or a plain agent is started by the host
+   *  itself (headless owner plan, H1b) and picked up by the next window;
+   *  a mode, a worktree, a cloud session, a local model or a sign-in still
+   *  needs the window and is held. */
+  headless?: boolean;
   onPick: (kind: "shell" | "agent", agent?: AgentRow, mode?: string, launch?: NewTabLaunch) => void;
   /** Opens the phone's file picker; runs inside the tap, which the picker needs. */
   onSendFile: () => void;
@@ -87,6 +92,7 @@ export function NewTabSheet({ projectId, agents, busy, onPick, onSendFile, onClo
         </div>
       </div> : <>
       <p className="sheet-note">{t("mobile.newTab.note")}</p>
+      {headless && <p className="sheet-note">{t("mobile.newTab.headless")}{isUntested("mobile.headless") && <span className="untested">{t("mobile.newTab.untested")}</span>}</p>}
       <div className="create">
         <button className="primary" disabled={busy} onClick={() => onPick("shell")}>{t("mobile.newTab.shell")}</button>
         {/* Right under the shell, not after the agents: at the foot of a
@@ -101,18 +107,18 @@ export function NewTabSheet({ projectId, agents, busy, onPick, onSendFile, onClo
         {linked.length > 0 && agents.length > 0 && <div className="new-tab-where" role="group" aria-label={t("mobile.newTab.where")}>
           <small>{t("mobile.newTab.where")}{isUntested("mobile.newTab.worktree") && <span className="untested">{t("mobile.newTab.untested")}</span>}</small>
           <button className={where === "" ? "selected" : ""} aria-pressed={where === ""} onClick={() => setWhere("")}>{t("mobile.newTab.projectFolder")}</button>
-          {linked.map((row) => <button key={row.id} className={where === row.id ? "selected" : ""} aria-pressed={where === row.id} title={row.label} onClick={() => setWhere(row.id)}>{row.branch || row.label}</button>)}
+          {linked.map((row) => <button key={row.id} className={where === row.id ? "selected" : ""} aria-pressed={where === row.id} disabled={headless} title={row.label} onClick={() => setWhere(row.id)}>{row.branch || row.label}</button>)}
         </div>}
         <div className="new-tab-agents">{agents.map((agent) => <div className="agent-create" key={agent.id}>
-          <button disabled={busy} onClick={() => pickAgent(agent)}>{agent.label}</button>
-          {agent.modes.map((mode) => <button className="mode" disabled={busy} key={mode} onClick={() => pickAgent(agent, mode)}>{mode}</button>)}
-          {options.cloud.filter((launch) => launch.agent_id === agent.id).map((launch) => <button className="mode" disabled={busy} key={`cloud:${launch.action}`} onClick={() => pickCloud(agent, launch)}>{t(launch.action === "new" ? "mobile.newTab.cloudNew" : "mobile.newTab.cloudOpen")}</button>)}
+          <button disabled={busy || (headless && where !== "")} onClick={() => pickAgent(agent)}>{agent.label}</button>
+          {agent.modes.map((mode) => <button className="mode" disabled={busy || headless} key={mode} onClick={() => pickAgent(agent, mode)}>{mode}</button>)}
+          {options.cloud.filter((launch) => launch.agent_id === agent.id).map((launch) => <button className="mode" disabled={busy || headless} key={`cloud:${launch.action}`} onClick={() => pickCloud(agent, launch)}>{t(launch.action === "new" ? "mobile.newTab.cloudNew" : "mobile.newTab.cloudOpen")}</button>)}
         </div>)}</div>
         {/* A desktop that reports no agents still opens shells — say so, rather
             than leaving the sheet looking half-loaded. */}
         {agents.length === 0 && <p className="sheet-note">{t("mobile.newTab.noAgents")}</p>}
-        {options.local && <LocalModelGroup local={options.local} busy={busy} onPick={(id) => onPick("agent", undefined, undefined, { local: id })} />}
-        {options.sign_in.length > 0 && <SignInEntry rows={options.sign_in} onOpen={() => setSigningIn(true)} />}
+        {options.local && <LocalModelGroup local={options.local} busy={busy || headless} onPick={(id) => onPick("agent", undefined, undefined, { local: id })} />}
+        {options.sign_in.length > 0 && !headless && <SignInEntry rows={options.sign_in} onOpen={() => setSigningIn(true)} />}
       </div>
       </>}
     </section>

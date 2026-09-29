@@ -54,6 +54,10 @@ pub struct OpenApp {
 /// One entry in `project.json["tab_layout"]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TabEntry {
+    /// The window's own handle, re-minted by every window that loads the
+    /// tab (`loadFromLayout`); defaulted so a record written without one (an
+    /// older or hand-made file) still loads.
+    #[serde(default)]
     pub key: String,
     pub label: String,
     pub cmd: String,

@@ -451,7 +451,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     {/* The desktop pill's git dot, in words: what is left to add, commit or
         push. Nothing while clean or while the desktop is away. */}
     {detail?.project.git && <p className="project-git"><GitMark state={detail.project.git} long /></p>}
-    {detail && !detail.desktop_available && <p className="notice">Desktop unavailable — existing sessions can still be opened, but activating a project and creating tabs require Eldrun.</p>}
+    {detail && !detail.desktop_available && <p className="notice">{t("mobile.project.desktopUnavailable")}</p>}
     {error && <p className="error">{error}</p>}
     {projectInbox.view}
     {canReorder && <p className="reorder-hint">Drag <span aria-hidden="true">⠿</span> to arrange — this is the desktop's own tab order, so the Eldrun window follows. {isUntested("mobile.project.reorder") && <span className="untested">{t("mobile.newTab.untested")}</span>}</p>}
@@ -543,7 +543,8 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     {newTabOpen && detail && <NewTabSheet
       projectId={id}
       agents={detail.agents}
-      busy={creating || !detail.desktop_available}
+      busy={creating}
+      headless={!detail.desktop_available}
       onClose={() => setNewTabOpen(false)}
       onPick={(kind, agent, mode, launch) => { setNewTabOpen(false); void create(kind, agent, mode, launch); }}
       onSendFile={() => { projectInbox.open(); setNewTabOpen(false); }}

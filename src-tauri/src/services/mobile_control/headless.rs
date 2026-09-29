@@ -9,24 +9,36 @@
 //! again through this module sees the same ids. `host.rs` reaches for these
 //! only once the desktop's control socket reported the window closed.
 //!
-//! Read-only by construction: nothing here writes a state file, so the
-//! sidecar never becomes a second writer of `calendar.json` or
+//! Read-only but for one write (H1b): a create goes through the workspace
+//! service's owner-side primitive (`workspace::create_tab_in`, under the
+//! session file's lock), and nothing here touches `calendar.json` or
 //! `agent_tasks.json`.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Local};
+use serde_json::json;
 
-use super::discovery::{key_id, ResolvedTab};
+use super::discovery::{key_id, ResolvedProject, ResolvedTab, ScopeKind};
 use super::protocol::{
-    MobileCalendarEvent, MobileCalendarInfo, MobileCalendarSnapshot, TodoBoardSnapshot,
-    TodoCalendar, TodoCard, TodoColumn, TodoProject, TodoSubtask,
+    AgentCatalogEntry, AgentTabPrompt, AgentTabPrompts, AgentTabSchedules, AgentTabStatus,
+    AgentTabTiming, CreateTabKind, CreateTabRequest, MobileCalendarEvent, MobileCalendarInfo,
+    MobileCalendarSnapshot, TodoBoardSnapshot, TodoCalendar, TodoCard, TodoColumn, TodoProject,
+    TodoSubtask,
 };
 use crate::schema::agent_prompts::ProjectAgentPrompt;
 use crate::schema::agent_tasks::{AgentScheduleRule, ScheduledAgentPrompt};
 use crate::schema::calendar::{Calendar, CalendarData};
+use crate::schema::project::TabEntry;
+use crate::services::agent_session;
 use crate::services::agent_transcript::{self, AgentTranscript, DEFAULT_LIMIT};
+use crate::services::agent_turn::{parse_turn_record, TurnState, TURN_SUFFIX};
+use crate::terminal::PtyOptions;
 use crate::services::calendar_recurrence::{expand_events, month_window};
 use crate::services::todo_board::{board_columns, column_of, fallback_column_id};
 use crate::services::{agent_prompts, agent_tasks, schedule_mcp};
@@ -306,6 +318,443 @@ pub fn transcript(
         version,
         limit.unwrap_or(DEFAULT_LIMIT),
     )
+}
+
+// ── Catalog, activity, git dots and create (H1b) ────────────────────────────
+//
+// The rest of what the phone's project screen reads through the window, and
+// the one write the owner can do on its own: `Create`. The catalog's agent
+// list, the agent tabs' turn state, their schedule summaries and prompts and
+// the project's git dot are read off the state dir and the tabs' own
+// transcripts; a create is `workspace::create_tab_in` (the owner mints the
+// id, the tmux name and an agent's schedule binding) followed by a detached
+// spawn through the seam the host hands in — `launch_prep::prepare` plus
+// `tmux_local::spawn_detached_with` in production, a recorder in tests.
+
+/// A built-in agent the phone may start with no window: the registry's
+/// label and binary under the opaque id the desktop mints for it
+/// (`mobile_opaque_id("agent", cmd)`), so the phone's pick resolves on
+/// either side.
+#[derive(Debug, Clone)]
+pub struct AgentChoice {
+    pub public: AgentCatalogEntry,
+    pub bin: &'static str,
+}
+
+/// The `disabled_agents` list of `settings.json` (registry ids; a binary
+/// name is accepted too, as the desktop's own filter reads them).
+fn disabled_agents(state_dir: &Path) -> HashSet<String> {
+    std::fs::read(state_dir.join("settings.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|settings| {
+            settings.get("disabled_agents").and_then(|list| {
+                list.as_array()
+                    .map(|rows| rows.iter().filter_map(|row| row.as_str().map(str::to_string)).collect())
+            })
+        })
+        .unwrap_or_default()
+}
+
+/// `agentChoices` with no window: the resumable built-ins that are installed
+/// (`installed`, the registry probe in production) and not switched off in
+/// the settings. Custom agents need the desktop's own probe and are not
+/// offered here; `modes` is empty, as the desktop sends it.
+pub fn agents(state_dir: &Path, host_key: &[u8], installed: &dyn Fn(&str) -> bool) -> Vec<AgentChoice> {
+    let disabled = disabled_agents(state_dir);
+    super::discovery::RESUMABLE_BUILTINS
+        .iter()
+        .filter_map(|bin| {
+            let label = crate::commands::agents::agent_label_for_bin(bin)?;
+            let id = crate::commands::agents::agent_id_for_bin(bin)?;
+            if disabled.contains(id) || disabled.contains(*bin) || !installed(bin) {
+                return None;
+            }
+            Some(AgentChoice {
+                public: AgentCatalogEntry {
+                    id: key_id(host_key, "agent", &[bin]),
+                    label: label.to_string(),
+                    modes: Vec::new(),
+                },
+                bin,
+            })
+        })
+        .collect()
+}
+
+/// What the hooks' turn records and the tabs' transcripts say about a
+/// project's agent tabs: the desktop's `statuses`, `timings` and `prompts`
+/// rows of a `Catalog` answer, keyed by tmux name like those.
+#[derive(Debug, Clone, Default)]
+pub struct TurnReadings {
+    pub statuses: Vec<AgentTabStatus>,
+    pub timings: Vec<AgentTabTiming>,
+    pub prompts: Vec<AgentTabPrompts>,
+}
+
+/// The newest turn record of a tab: the shared root's and, for a project
+/// tab, the project's own slice (where a fenced agent's hook writes) — the
+/// one with the later stamp wins. The record is `<state> <epoch seconds>`.
+fn turn_record(state_dir: &Path, project_id: &str, uid: &str) -> Option<(TurnState, Option<u64>)> {
+    if uid.is_empty() || uid.chars().any(|c| !(c.is_ascii_alphanumeric() || c == '-')) {
+        return None;
+    }
+    let name = format!("{uid}{TURN_SUFFIX}");
+    let live = state_dir.join("live_sessions");
+    [live.join(&name), live.join(storage::project_key(project_id)).join(&name)]
+        .iter()
+        .filter_map(|path| {
+            let text = std::fs::read_to_string(path).ok()?;
+            let state = parse_turn_record(&text)?;
+            let at = text.split_whitespace().nth(1).and_then(|s| s.parse::<u64>().ok());
+            Some((state, at))
+        })
+        .max_by_key(|(_, at)| at.unwrap_or(0))
+}
+
+/// `Catalog`'s per-tab agent readings for `tabs` with no window: a turn in
+/// flight is `working` (a decision pending, `question`), a finished one
+/// `done`; an idle or unrecorded tab gets a timing row when its transcript
+/// names a model; every agent tab with a transcript gets its newest prompts.
+pub fn turn_readings(state_dir: &Path, project_id: &str, tabs: &[ResolvedTab]) -> TurnReadings {
+    let mut readings = TurnReadings::default();
+    for tab in tabs.iter().filter(|t| t.public.kind == "agent") {
+        let Some(uid) = tab.session_id.as_deref().filter(|id| !id.is_empty()) else {
+            continue;
+        };
+        let model = agent_session::agent_session_model(&tab.cmd, Some(project_id), uid);
+        let record = turn_record(state_dir, project_id, uid);
+        let ms = |at: Option<u64>| at.map(|secs| secs.saturating_mul(1000));
+        match record {
+            Some((TurnState::Working, at)) | Some((TurnState::Decision, at)) => {
+                let status = if matches!(record, Some((TurnState::Decision, _))) { "question" } else { "working" };
+                readings.statuses.push(AgentTabStatus {
+                    tmux_session: tab.tmux_name.clone(),
+                    status: status.to_string(),
+                    model: model.clone(),
+                    working_at: ms(at),
+                    done_at: None,
+                });
+            }
+            Some((TurnState::Done, at)) => readings.statuses.push(AgentTabStatus {
+                tmux_session: tab.tmux_name.clone(),
+                status: "done".to_string(),
+                model: model.clone(),
+                working_at: None,
+                done_at: ms(at),
+            }),
+            _ => {
+                if model.is_some() {
+                    readings.timings.push(AgentTabTiming {
+                        tmux_session: tab.tmux_name.clone(),
+                        model: model.clone(),
+                        working_at: None,
+                        done_at: None,
+                    });
+                }
+            }
+        }
+        let prompts = agent_session::agent_session_recent_prompts(&tab.cmd, Some(project_id), uid);
+        if !prompts.is_empty() {
+            readings.prompts.push(AgentTabPrompts {
+                tmux_session: tab.tmux_name.clone(),
+                prompts: prompts
+                    .into_iter()
+                    .map(|prompt| AgentTabPrompt { text: prompt.text, at: Some(prompt.at) })
+                    .collect(),
+            });
+        }
+    }
+    readings
+}
+
+/// `Catalog`'s per-tab schedule summaries for the tabs of `project_id` that
+/// carry a binding: total and enabled counts, the soonest next run, and up
+/// to three upcoming enabled rules — from the same `schedules` the tab's
+/// own sheet reads with no window.
+pub fn schedule_summaries(
+    state_dir: &Path,
+    project_id: &str,
+    tabs: &[ResolvedTab],
+    now: DateTime<Local>,
+) -> Vec<AgentTabSchedules> {
+    tabs.iter()
+        .filter(|tab| tab.public.kind == "agent")
+        .filter_map(|tab| {
+            let target = tab.schedule_target_id.as_deref().filter(|id| !id.is_empty())?;
+            let listed = schedules(state_dir, project_id, target, now).ok()?;
+            if listed.schedules.is_empty() {
+                return None;
+            }
+            let mut upcoming = listed
+                .schedules
+                .iter()
+                .filter_map(|rule| {
+                    let at = listed.next_runs.get(&rule.id)?;
+                    Some(AgentTabPrompt { text: rule.message.clone(), at: Some(at.clone()) })
+                })
+                .collect::<Vec<_>>();
+            upcoming.sort_by(|a, b| a.at.cmp(&b.at));
+            upcoming.truncate(3);
+            Some(AgentTabSchedules {
+                tmux_session: tab.tmux_name.clone(),
+                total: listed.schedules.len() as u32,
+                enabled: listed.schedules.iter().filter(|rule| rule.enabled).count() as u32,
+                next: listed.next_runs.values().min().cloned(),
+                upcoming,
+            })
+        })
+        .collect()
+}
+
+/// `Activity` with no window: the readings of every project's agent tabs.
+pub fn activity(state_dir: &Path, catalog: &super::discovery::Catalog) -> TurnReadings {
+    let mut all = TurnReadings::default();
+    for project in &catalog.projects {
+        let readings = turn_readings(state_dir, &project.raw_id, &project.tabs);
+        all.statuses.extend(readings.statuses);
+        all.timings.extend(readings.timings);
+        all.prompts.extend(readings.prompts);
+    }
+    all
+}
+
+/// The project pill's git dot, probed here rather than read off the pills:
+/// `gitDirtyState`'s ladder (untracked or unstaged ▸ staged ▸ unpushed),
+/// none for a clean tree or no repo. Blocking — two hardened git spawns —
+/// so the host runs it off the async thread and caches it.
+pub fn git_dot_for(dir: &Path) -> Option<&'static str> {
+    let dir = dir.to_string_lossy().into_owned();
+    let status = crate::commands::git::git_status_probe(dir.clone(), false).ok()?;
+    if !status.is_repo {
+        return None;
+    }
+    if status.untracked > 0 || status.unstaged > 0 {
+        return Some("dirty");
+    }
+    if status.staged > 0 {
+        return Some("staged");
+    }
+    let unpushed = crate::commands::git::git_unpushed_commits_blocking(dir).unwrap_or_default();
+    (!unpushed.is_empty()).then_some("unpushed")
+}
+
+/// How long a headless reading stands before it is taken again: the phone
+/// polls the project list and screen every few seconds, and each git dot is
+/// two git spawns, each turn reading a transcript walk per agent tab.
+pub const READING_TTL: Duration = Duration::from_secs(10);
+
+/// The host's cache of the headless readings, per raw project id.
+#[derive(Debug, Default)]
+pub struct ReadingCache {
+    git: HashMap<String, (Instant, Option<&'static str>)>,
+    readings: HashMap<String, (Instant, TurnReadings)>,
+}
+
+impl ReadingCache {
+    /// The cached git dot of `raw_id` while it is fresh.
+    pub fn git(&self, raw_id: &str, now: Instant) -> Option<Option<&'static str>> {
+        self.git.get(raw_id).filter(|(at, _)| now.duration_since(*at) < READING_TTL).map(|(_, dot)| *dot)
+    }
+
+    pub fn set_git(&mut self, raw_id: &str, dot: Option<&'static str>, now: Instant) {
+        self.git.insert(raw_id.to_string(), (now, dot));
+    }
+
+    /// The project's turn readings, taken now when the cached ones are stale.
+    pub fn readings(&mut self, state_dir: &Path, project: &ResolvedProject, now: Instant) -> TurnReadings {
+        if let Some((at, readings)) = self.readings.get(&project.raw_id) {
+            if now.duration_since(*at) < READING_TTL {
+                return readings.clone();
+            }
+        }
+        let readings = turn_readings(state_dir, &project.raw_id, &project.tabs);
+        self.readings.insert(project.raw_id.clone(), (now, readings.clone()));
+        readings
+    }
+}
+
+/// The owner's spawn of a tab with no window: `PtyOptions` in, the process
+/// running (detached, under the tab's tmux name) or the reason it is not.
+pub type HeadlessLaunch =
+    Arc<dyn Fn(PtyOptions) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>;
+
+/// Why a headless create was refused, as the phone's error code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CreateRefusal {
+    /// The request needs the window: a sign-in, a cloud session, a worktree,
+    /// a local model, a mode, a sign-in like a tab, or the root console.
+    DesktopUnavailable,
+    UnknownAgent,
+    /// The tab was minted and then taken back out: the spawn failed.
+    LaunchFailed(String),
+    Persist(String),
+}
+
+impl CreateRefusal {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::DesktopUnavailable => "desktop_unavailable",
+            Self::UnknownAgent => "unknown_agent",
+            Self::LaunchFailed(_) => "launch_failed",
+            Self::Persist(_) => "persist_failed",
+        }
+    }
+}
+
+/// What a headless create answers: the tab's tmux name — the same answer the
+/// desktop's `Created` carries — and whether the request had already been
+/// answered (the phone retries a create until it sees the tab).
+#[derive(Debug, Clone)]
+pub struct HeadlessCreated {
+    pub tmux_session: String,
+    pub existed: bool,
+}
+
+/// A scope's session file under `state_dir`, as `terminal_service` keys it.
+pub fn session_file(state_dir: &Path, raw_id: &str) -> std::path::PathBuf {
+    state_dir.join("sessions").join(storage::project_key(raw_id)).join("terminals.json")
+}
+
+/// The tab record a headless create appends — `buildStaticTabSpec`'s shape:
+/// a shell is the bare login shell; an agent is its binary with a fresh
+/// session uuid as `sessionId`, `ELDRUN_TAB_UID` and, for the CLIs that take
+/// one at launch (Claude, Gemini), `--session-id`. The owner mints the id,
+/// the tmux name and the schedule binding (`workspace::create_tab_in`); the
+/// key is re-minted by every window that loads it.
+fn tab_record(kind: &CreateTabKind, agent: Option<&AgentChoice>, cwd: &Path, request_hash: &str) -> TabEntry {
+    let mut extra: HashMap<String, serde_json::Value> = HashMap::new();
+    let (label, cmd, session_id) = match (kind, agent) {
+        (CreateTabKind::Agent, Some(agent)) => {
+            let uuid = crate::commands::projects::uuid_v4();
+            let args = if matches!(agent.bin, "claude" | "gemini") {
+                vec!["--session-id".to_string(), uuid.clone()]
+            } else {
+                Vec::new()
+            };
+            extra.insert("kind".into(), json!("agent"));
+            extra.insert("args".into(), json!(args));
+            extra.insert("env".into(), json!({ "ELDRUN_TAB_UID": uuid }));
+            (agent.public.label.clone(), agent.bin.to_string(), Some(uuid))
+        }
+        _ => {
+            extra.insert("kind".into(), json!("shell"));
+            extra.insert("args".into(), json!([]));
+            extra.insert("env".into(), json!({}));
+            ("Shell".to_string(), String::new(), None)
+        }
+    };
+    extra.insert("mobileRequestHash".into(), json!(request_hash));
+    TabEntry {
+        key: format!("headless-{}", crate::commands::projects::uuid_v4()),
+        label,
+        cmd,
+        cwd: cwd.to_string_lossy().into_owned(),
+        session_id,
+        extra,
+    }
+}
+
+/// The launch of a stored tab record, for the detached spawn: what the
+/// window's `TerminalView` hands `pty_spawn`, at a fixed 80×24 nobody is
+/// looking at. `project_id` is the raw scope id (a project's or a box's).
+fn launch_options(project_id: &str, tab: &TabEntry) -> PtyOptions {
+    let strings = |key: &str| -> Vec<String> {
+        tab.extra
+            .get(key)
+            .and_then(serde_json::Value::as_array)
+            .map(|rows| rows.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .unwrap_or_default()
+    };
+    let env = tab
+        .extra
+        .get("env")
+        .and_then(serde_json::Value::as_object)
+        .map(|map| {
+            map.iter()
+                .filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_string())))
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let tmux = crate::services::workspace::tmux_of(tab).unwrap_or_default().to_string();
+    PtyOptions {
+        id: format!("headless:{tmux}"),
+        cmd: tab.cmd.clone(),
+        args: strings("args"),
+        env,
+        cwd: tab.cwd.clone(),
+        cols: 80,
+        rows: 24,
+        local_only: false,
+        sandbox: false,
+        agent: tab.extra.get("kind").and_then(serde_json::Value::as_str) == Some("agent"),
+        project_id: Some(project_id.to_string()),
+        schedule_target_id: tab.extra.get("scheduleTargetId").and_then(serde_json::Value::as_str).map(str::to_string),
+        remote_host_id: None,
+        tmux_session: Some(tmux),
+        tmux_attach: None,
+        host_bound_uid: None,
+        host_session: false,
+    }
+}
+
+/// `Create` with no window (headless owner plan, H1b): what the window's
+/// bridge does for a shell or a plain agent tab, done by the owner — the
+/// tab is minted into the scope's session file first (so a window opening
+/// meanwhile merges it in rather than overwriting it), then started
+/// detached through `launch`; a launch that fails takes the record back out.
+/// Everything that needs the window — a sign-in, a cloud session, a
+/// worktree, a local model, a mode, the root console — is refused with
+/// `desktop_unavailable`, as before this existed. Idempotent on the
+/// request's key, like the desktop's create.
+pub async fn create_tab(
+    state_dir: &Path,
+    host_key: &[u8],
+    project: &ResolvedProject,
+    request: &CreateTabRequest,
+    agents: &[AgentChoice],
+    launch: &HeadlessLaunch,
+) -> Result<HeadlessCreated, CreateRefusal> {
+    if request.sign_in.is_some()
+        || request.cloud.is_some()
+        || request.worktree.is_some()
+        || request.local.is_some()
+        || request.like_tab.is_some()
+        || request.mode.is_some()
+        || project.public.kind == ScopeKind::Root
+    {
+        return Err(CreateRefusal::DesktopUnavailable);
+    }
+    let agent = match request.kind {
+        CreateTabKind::Shell => None,
+        CreateTabKind::Agent => Some(
+            agents
+                .iter()
+                .find(|choice| request.agent_id.as_deref() == Some(choice.public.id.as_str()))
+                .ok_or(CreateRefusal::UnknownAgent)?,
+        ),
+    };
+    let request_hash = key_id(host_key, "request", &[&request.idempotency_key]);
+    let record = tab_record(&request.kind, agent, &project.root, &request_hash);
+    let path = session_file(state_dir, &project.raw_id);
+    let created = crate::services::workspace::create_tab_in(&path, &project.raw_id, record, Some(&request_hash))
+        .map_err(CreateRefusal::Persist)?;
+    let tmux_session = crate::services::workspace::tmux_of(&created.tab)
+        .ok_or_else(|| CreateRefusal::Persist("the owner minted no tmux name".to_string()))?
+        .to_string();
+    if created.existed {
+        return Ok(HeadlessCreated { tmux_session, existed: true });
+    }
+    if let Err(reason) = launch(launch_options(&project.raw_id, &created.tab)).await {
+        let id = crate::services::workspace::tab_id(&created.tab).map(str::to_string);
+        let _ = crate::services::workspace::edit_in(&path, &project.raw_id, |session| {
+            // project-tree-read: ok — the state-dir session file the owner just wrote, keyed by scope id.
+            session.tab_layout.retain(|tab| crate::services::workspace::tab_id(tab) != id.as_deref());
+            Ok(())
+        });
+        return Err(CreateRefusal::LaunchFailed(reason));
+    }
+    Ok(HeadlessCreated { tmux_session, existed: false })
 }
 
 // ── Time zone ───────────────────────────────────────────────────────────────

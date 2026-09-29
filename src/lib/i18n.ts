@@ -86,6 +86,8 @@ export const en = {
   "mobile.project.reopenHint": "Reopen {label}: its conversation comes back",
   "mobile.project.scheduledAt": "Scheduled for {at} (desktop time)",
   "mobile.project.reopenGone": "That tab can no longer be reopened.",
+  "mobile.project.desktopUnavailable": "Desktop unavailable — sessions can still be opened, and a new shell or agent starts here and is picked up by the next Eldrun window; activating a project needs Eldrun.",
+  "mobile.newTab.headless": "No Eldrun window is open: a shell or an agent starts on the host itself and the next window attaches to it. A mode, a worktree, a cloud session, a local model or a sign-in waits for the window.",
   "mobile.project.reopenFailed": "Open desktop Eldrun to reopen a tab.",
   "mobile.composer.undoClearHint": "Bring back the conversation you just cleared",
   "mobile.composer.undoGone": "Nothing to undo: the conversation has moved on since the clear.",

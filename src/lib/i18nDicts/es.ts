@@ -3778,6 +3778,8 @@ export const dict: Dict = {
   "mobile.project.reopenHint": "Reabrir {label}: su conversación vuelve",
   "mobile.project.scheduledAt": "Programado para {at} (hora del escritorio)",
   "mobile.project.reopenGone": "Esa pestaña ya no se puede reabrir.",
+  "mobile.project.desktopUnavailable": "Escritorio no disponible — las sesiones existentes siguen abriéndose, y un nuevo shell o agente arranca aquí y lo recoge la próxima ventana de Eldrun; activar un proyecto necesita Eldrun.",
+  "mobile.newTab.headless": "No hay ninguna ventana de Eldrun abierta: un shell o un agente arranca en el propio equipo y la próxima ventana se conecta a él. Un modo, un worktree, una sesión en la nube, un modelo local o un inicio de sesión esperan a la ventana.",
   "mobile.project.reopenFailed": "Abre Eldrun en el escritorio para reabrir una pestaña.",
   "tabColor.menu": "Color",
   "tabColor.none": "Sin color",

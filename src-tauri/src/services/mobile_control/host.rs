@@ -3,7 +3,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::PathBuf,
     sync::{Arc, Mutex, PoisonError},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use axum::{
@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::services::desktop_images;
+use crate::terminal::PtyOptions;
 
 use super::{
     admin,
@@ -65,6 +66,48 @@ struct HostState {
     auth: Arc<Mutex<AuthStore>>,
     catalog: Arc<Mutex<CatalogCache>>,
     terminal_registry: TerminalRegistry,
+    /// How a tab is started with no window (headless owner plan, H1b).
+    spawner: HeadlessSpawner,
+    /// The headless git dots and agent readings, per project, so the phone's
+    /// polls cost a git spawn or a transcript walk once per `READING_TTL`.
+    readings: Arc<Mutex<headless::ReadingCache>>,
+}
+
+/// The owner's spawn seam (headless owner plan, H1b): `launch` starts a
+/// prepared tab detached under its tmux name, `installed` says which agent
+/// CLIs the ＋ sheet may offer. Production is `launch_prep::prepare` plus
+/// `tmux_local::spawn_detached_with` on the default tmux server — the same
+/// launch assembly and the same server the window uses, so the window later
+/// attaches to what the sidecar started — and the registry's install probe.
+/// A test swaps in a recorder.
+#[derive(Clone)]
+struct HeadlessSpawner {
+    launch: headless::HeadlessLaunch,
+    installed: Arc<dyn Fn(&str) -> bool + Send + Sync>,
+}
+
+impl Default for HeadlessSpawner {
+    fn default() -> Self {
+        Self {
+            launch: Arc::new(|opts: PtyOptions| {
+                Box::pin(async move {
+                    let prepared = crate::services::launch_prep::prepare(opts, None, None).await?;
+                    #[cfg(unix)]
+                    {
+                        crate::services::tmux_local::spawn_detached_with(&prepared.opts, None)?;
+                        prepared.commit();
+                        Ok(())
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        let _ = prepared;
+                        Err("a tab with no window needs tmux, which this platform has none of".to_string())
+                    }
+                })
+            }),
+            installed: Arc::new(crate::commands::agents::binary_is_installed),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -304,6 +347,28 @@ fn desktop_down(response: &Result<DesktopResponse, String>) -> bool {
     }
 }
 
+/// A project's git dot with no window (`headless::git_dot_for`), cached per
+/// project for `READING_TTL`; the probe runs off the async thread.
+async fn headless_git_dot(state: &HostState, raw_id: &str, root: &std::path::Path) -> Option<&'static str> {
+    let now = Instant::now();
+    if let Some(dot) = state.readings.lock().unwrap_or_else(PoisonError::into_inner).git(raw_id, now) {
+        return dot;
+    }
+    let dir = root.to_path_buf();
+    let dot = tokio::task::spawn_blocking(move || headless::git_dot_for(&dir)).await.ok().flatten();
+    state.readings.lock().unwrap_or_else(PoisonError::into_inner).set_git(raw_id, dot, Instant::now());
+    dot
+}
+
+/// A project's agent readings with no window, from the cache while fresh.
+fn headless_readings(state: &HostState, project: &super::discovery::ResolvedProject) -> headless::TurnReadings {
+    state
+        .readings
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .readings(&state.config.state_dir, project, Instant::now())
+}
+
 /// Today as the desktop-local `YYYY-MM-DD` the board's date columns read.
 fn local_today() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
@@ -486,6 +551,16 @@ async fn projects(
                 .into_iter()
                 .filter_map(|row| git_dot(&row.state).map(|dot| (row.project_id, dot)))
                 .collect::<HashMap<_, _>>(),
+            // No window: probe the dots here (headless owner plan, H1b).
+            response if desktop_down(&response) => {
+                let mut dots = HashMap::new();
+                for p in listed.iter().filter(|p| p.public.kind == ScopeKind::Project) {
+                    if let Some(dot) = headless_git_dot(&state, &p.raw_id, &p.root).await {
+                        dots.insert(p.raw_id.clone(), dot);
+                    }
+                }
+                dots
+            }
             _ => HashMap::new(),
         }
     } else {
@@ -555,6 +630,12 @@ async fn activity(State(state): State<HostState>, headers: HeaderMap) -> impl In
     .await
     {
         Ok(DesktopResponse::Activity { statuses, prompts }) => (true, statuses, prompts),
+        // No window: the hooks' turn records and the tabs' transcripts
+        // (headless owner plan, H1b).
+        response if desktop_down(&response) => {
+            let readings = headless::activity(&state.config.state_dir, &catalog_snapshot);
+            (false, readings.statuses, readings.prompts)
+        }
         _ => (false, vec![], vec![]),
     };
     // Tmux session names are unique across the whole server, so one map covers
@@ -649,6 +730,23 @@ async fn project(
             closed,
             git,
         }) => (true, agents, statuses, schedules, prompts, timings, closed, git),
+        // No window: the same rows off the state dir (headless owner plan,
+        // H1b). Nothing was closed through a window, so that row is empty.
+        response if desktop_down(&response) => {
+            let state_dir = &state.config.state_dir;
+            let agents = headless::agents(state_dir, &host_key(&state), &*state.spawner.installed)
+                .into_iter()
+                .map(|choice| choice.public)
+                .collect();
+            let readings = headless_readings(&state, project);
+            let schedules = headless::schedule_summaries(state_dir, &project.raw_id, &project.tabs, chrono::Local::now());
+            let git = if project.public.kind == ScopeKind::Project {
+                headless_git_dot(&state, &project.raw_id, &project.root).await.map(str::to_string)
+            } else {
+                None
+            };
+            (false, agents, readings.statuses, schedules, readings.prompts, readings.timings, vec![], git)
+        }
         _ => (false, vec![], vec![], vec![], vec![], vec![], vec![], None),
     };
     let mut public = project.public.clone();
@@ -815,12 +913,75 @@ async fn create_tab(
         return api_error(StatusCode::NOT_FOUND, "project_not_found");
     };
     request.project_id = project.raw_id.clone();
-    create_through_desktop(&state, &project_id, request).await
+    let request_id = Base64UrlUnpadded::encode_string(&random_16());
+    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    let response = admin::desktop_call(&desktop_socket, &DesktopRequest::Create { request_id, request: request.clone() }).await;
+    if desktop_down(&response) {
+        // No window: the owner mints and starts the tab (headless owner
+        // plan, H1b); the window attaches to it when it next opens.
+        return create_headless(&state, &project_id, &request).await;
+    }
+    answer_created(&state, &project_id, response).await
 }
 
-/// Ask the desktop for the tab `request` describes and answer with its row
-/// once the catalog lists it. `project_id` is the scope's public id, which the
-/// new row is looked up under; the request already carries the raw one.
+/// A create answered by the owner with no window: `headless::create_tab`
+/// through the host's spawn seam, then the new row once the catalog lists
+/// it (not `available` — no window is attached, and in a test no tmux
+/// server runs — so the row is read straight from the session file).
+async fn create_headless(
+    state: &HostState,
+    project_id: &str,
+    request: &CreateTabRequest,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let Ok(snapshot) = catalog(state) else {
+        return api_error(StatusCode::SERVICE_UNAVAILABLE, "catalog_unavailable");
+    };
+    let Some(project) = snapshot.project(project_id) else {
+        return api_error(StatusCode::NOT_FOUND, "project_not_found");
+    };
+    let state_dir = &state.config.state_dir;
+    let agents = headless::agents(state_dir, &host_key(state), &*state.spawner.installed);
+    let created = headless::create_tab(state_dir, &host_key(state), project, request, &agents, &state.spawner.launch).await;
+    match created {
+        Ok(created) => {
+            for _ in 0..8 {
+                if let Ok(next) = catalog_fresh(state) {
+                    if let Some(tab) = next
+                        .project(project_id)
+                        .and_then(|p| p.tabs.iter().find(|t| t.tmux_name == created.tmux_session))
+                    {
+                        return (
+                            StatusCode::CREATED,
+                            Json(json!({ "tab": tab.public, "desktop_available": false })),
+                        );
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(125)).await;
+            }
+            api_error(StatusCode::GATEWAY_TIMEOUT, "launch_pending")
+        }
+        Err(refusal) => {
+            if let headless::CreateRefusal::LaunchFailed(why) | headless::CreateRefusal::Persist(why) = &refusal {
+                eprintln!("mobile: a create with no window failed ({}): {why}", refusal.code());
+            }
+            api_error(
+            match refusal {
+                headless::CreateRefusal::DesktopUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+                headless::CreateRefusal::LaunchFailed(_) | headless::CreateRefusal::Persist(_) => {
+                    StatusCode::BAD_GATEWAY
+                }
+                headless::CreateRefusal::UnknownAgent => StatusCode::BAD_REQUEST,
+            },
+            refusal.code(),
+            )
+        }
+    }
+}
+
+/// Ask the desktop for the tab `request` describes (a sign-in tab, which
+/// needs the window) and answer with its row once the catalog lists it.
+/// `project_id` is the scope's public id, which the new row is looked up
+/// under; the request already carries the raw one.
 async fn create_through_desktop(
     state: &HostState,
     project_id: &str,
@@ -838,7 +999,17 @@ async fn created_through_desktop(
     request: &DesktopRequest,
 ) -> (StatusCode, Json<serde_json::Value>) {
     let desktop_socket = state.config.control_dir.join("desktop-control.sock");
-    match admin::desktop_call(&desktop_socket, request).await {
+    let response = admin::desktop_call(&desktop_socket, request).await;
+    answer_created(state, project_id, response).await
+}
+
+/// The phone's answer to a desktop `Created` (or the desktop's refusal).
+async fn answer_created(
+    state: &HostState,
+    project_id: &str,
+    response: Result<DesktopResponse, String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    match response {
         Ok(DesktopResponse::Created { tmux_session }) => {
             for _ in 0..40 {
                 if let Ok(next) = catalog_fresh(state) {
@@ -3650,6 +3821,8 @@ pub async fn run(state_dir: PathBuf) -> Result<(), String> {
         auth: auth.clone(),
         catalog: Arc::new(Mutex::new(CatalogCache::default())),
         terminal_registry: TerminalRegistry::default(),
+        spawner: HeadlessSpawner::default(),
+        readings: Arc::new(Mutex::new(headless::ReadingCache::default())),
     };
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
     // A Serve verification failure must be a real service failure. A clean
@@ -3759,6 +3932,8 @@ mod tests {
                     auth: Arc::new(Mutex::new(auth)),
                     catalog: Arc::new(Mutex::new(CatalogCache::default())),
                     terminal_registry: TerminalRegistry::default(),
+                    spawner: HeadlessSpawner::default(),
+                    readings: Arc::new(Mutex::new(headless::ReadingCache::default())),
                 },
             }
         }
@@ -4219,6 +4394,176 @@ mod tests {
     /// Headless owner plan, H0: with no window open, the persisted-state kinds
     /// — board, month, schedules, prompts, transcript — are answered off the
     /// state dir with the desktop's own opaque ids, flagged
+    /// A host whose spawn seam records what it is asked to start (and starts
+    /// nothing), with every agent CLI "installed".
+    fn headless_host(launch: headless::HeadlessLaunch) -> Fixture {
+        let mut host = Fixture::with_project();
+        host.state.spawner = HeadlessSpawner { launch, installed: Arc::new(|_| true) };
+        host
+    }
+
+    fn create_request(project_id: &str, cookie: &str, body: Value) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/projects/{project_id}/tabs"))
+            .header(header::ORIGIN, ORIGIN)
+            .header(header::COOKIE, cookie_pair(cookie))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(serde_json::to_vec(&body).expect("body")))
+            .expect("request")
+    }
+
+    /// H1b exit (headless owner plan §3, H1): with no window, a phone's create
+    /// is the owner's — the tab is minted into the session file (id, tmux
+    /// name, schedule binding, request hash, session uuid), started detached
+    /// through the spawn seam under that name, and listed by the catalog; a
+    /// repeat of the request opens nothing twice; what needs the window is
+    /// still refused; and nothing raw crosses.
+    #[tokio::test]
+    async fn a_create_with_no_window_is_minted_spawned_and_listed_by_the_owner() {
+        let recorded: Arc<Mutex<Vec<PtyOptions>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = recorded.clone();
+        let host = headless_host(Arc::new(move |opts: PtyOptions| {
+            sink.lock().unwrap().push(opts);
+            Box::pin(async { Ok(()) })
+        }));
+        let cookie = host.pair_device(&signing_key(41)).await.0;
+        let (_, _, projects_body) = host.send(get_as("/api/v1/projects", &cookie)).await;
+        let project_id = json(&projects_body)["projects"][0]["id"].as_str().expect("project id").to_string();
+        let (status, _, body) = host.send(get_as(&format!("/api/v1/projects/{project_id}"), &cookie)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let detail = json(&body);
+        assert_eq!(detail["desktop_available"], false);
+        assert_eq!(detail["closed"], json!([]));
+        let claude = detail["agents"]
+            .as_array()
+            .expect("agents")
+            .iter()
+            .find(|a| a["label"] == "Claude")
+            .expect("Claude is offered with no window")["id"]
+            .as_str()
+            .expect("agent id")
+            .to_string();
+        let request = json!({
+            "project_id": project_id,
+            "kind": "agent",
+            "agent_id": claude,
+            "idempotency_key": "h1b-exit-0123456789abcdef",
+        });
+        let (status, _, body) = host.send(create_request(&project_id, &cookie, request.clone())).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let answer = json(&body);
+        assert_eq!(answer["desktop_available"], false);
+        assert_eq!(answer["tab"]["kind"], "agent");
+        assert_eq!(answer["tab"]["label"], "Claude");
+        assert_eq!(answer["tab"]["available"], false, "no tmux server runs here");
+        let tab_id = answer["tab"]["id"].as_str().expect("tab id").to_string();
+
+        // The owner minted the tab into the session file.
+        let session_path = host.state.config.state_dir.join("sessions").join(RAW_PROJECT).join("terminals.json");
+        let session: Value = serde_json::from_slice(&std::fs::read(&session_path).expect("session")).expect("json");
+        let tabs = session["tabLayout"].as_array().expect("tabs");
+        assert_eq!(tabs.len(), 2, "{session}");
+        let minted = &tabs[1];
+        assert!(minted["id"].as_str().is_some_and(|id| !id.is_empty()), "{minted}");
+        let tmux = minted["tmuxSession"].as_str().expect("tmux name").to_string();
+        assert!(tmux.starts_with(&format!("eldrun-{RAW_PROJECT}--agent-")), "{tmux}");
+        let target = minted["scheduleTargetId"].as_str().expect("schedule binding").to_string();
+        assert!(minted["mobileRequestHash"].as_str().is_some());
+        let uid = minted["sessionId"].as_str().expect("session uuid").to_string();
+        assert_eq!(minted["args"], json!(["--session-id", uid]));
+        assert_eq!(minted["env"]["ELDRUN_TAB_UID"], uid);
+        assert!(session["workspaceVersion"].as_u64().is_some_and(|v| v >= 2), "{session}");
+        let leaks = |body: &str| {
+            assert!(!body.contains(RAW_PROJECT), "raw project id leaked: {body}");
+            assert!(!body.contains("eldrun-"), "tmux name leaked: {body}");
+            assert!(!body.contains(&uid), "session id leaked: {body}");
+            assert!(!body.contains(&target), "schedule target leaked: {body}");
+            assert!(!body.contains(&host.root.to_string_lossy().to_string()), "path leaked: {body}");
+        };
+        leaks(&body);
+
+        // The spawn seam was handed the tab's launch under that name.
+        let spawned = recorded.lock().unwrap().clone();
+        assert_eq!(spawned.len(), 1);
+        let opts = &spawned[0];
+        assert_eq!(opts.tmux_session.as_deref(), Some(tmux.as_str()));
+        assert_eq!(opts.id, format!("headless:{tmux}"));
+        assert_eq!(opts.cmd, "claude");
+        assert_eq!(opts.args, vec!["--session-id".to_string(), uid.clone()]);
+        assert!(opts.agent);
+        assert_eq!(opts.project_id.as_deref(), Some(RAW_PROJECT));
+        assert!(std::path::Path::new(&opts.cwd).ends_with("work"), "{}", opts.cwd);
+        assert_eq!(opts.env.get("ELDRUN_TAB_UID"), Some(&uid));
+        assert_eq!(opts.schedule_target_id.as_deref(), Some(target.as_str()));
+
+        // The same request again answers the same tab and starts nothing.
+        let (status, _, body) = host.send(create_request(&project_id, &cookie, request)).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        assert_eq!(json(&body)["tab"]["id"], tab_id);
+        assert_eq!(recorded.lock().unwrap().len(), 1);
+        let session: Value = serde_json::from_slice(&std::fs::read(&session_path).expect("session")).expect("json");
+        assert_eq!(session["tabLayout"].as_array().expect("tabs").len(), 2);
+
+        // The catalog lists it, and the activity list knows the project.
+        let (_, _, body) = host.send(get_as(&format!("/api/v1/projects/{project_id}"), &cookie)).await;
+        assert!(json(&body)["tabs"].as_array().expect("tabs").iter().any(|t| t["id"] == tab_id), "{body}");
+        leaks(&body);
+        let (status, _, body) = host.send(get_as("/api/v1/activity", &cookie)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(json(&body)["desktop_available"], false);
+        leaks(&body);
+
+        // What needs the window is still refused, and a shell is the owner's too.
+        let (status, _, body) = host
+            .send(create_request(
+                &project_id,
+                &cookie,
+                json!({ "project_id": project_id, "kind": "agent", "agent_id": claude, "cloud": "new", "task": "x", "idempotency_key": "h1b-cloud-0123456789abcdef" }),
+            ))
+            .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert_eq!(json(&body)["error"], "desktop_unavailable");
+        let (status, _, body) = host
+            .send(create_request(
+                &project_id,
+                &cookie,
+                json!({ "project_id": project_id, "kind": "shell", "idempotency_key": "h1b-shell-0123456789abcdef" }),
+            ))
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        assert_eq!(json(&body)["tab"]["kind"], "shell");
+        let shell = recorded.lock().unwrap().last().cloned().expect("shell spawn");
+        assert_eq!(shell.cmd, "");
+        assert!(!shell.agent);
+        assert!(shell.tmux_session.as_deref().is_some_and(|n| n.starts_with(&format!("eldrun-{RAW_PROJECT}--shell-"))));
+    }
+
+    /// A headless launch that fails leaves no tab behind: the record is taken
+    /// back out and the phone hears `launch_failed`.
+    #[tokio::test]
+    async fn a_headless_launch_that_fails_takes_the_minted_tab_back_out() {
+        let host = headless_host(Arc::new(|_: PtyOptions| Box::pin(async { Err("tmux is not installed".to_string()) })));
+        let cookie = host.pair_device(&signing_key(42)).await.0;
+        let (_, _, projects_body) = host.send(get_as("/api/v1/projects", &cookie)).await;
+        let project_id = json(&projects_body)["projects"][0]["id"].as_str().expect("project id").to_string();
+        let (status, _, body) = host
+            .send(create_request(
+                &project_id,
+                &cookie,
+                json!({ "project_id": project_id, "kind": "shell", "idempotency_key": "h1b-fail-0123456789abcdef" }),
+            ))
+            .await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+        assert_eq!(json(&body)["error"], "launch_failed");
+        assert!(!body.contains("eldrun-"), "{body}");
+        let session_path = host.state.config.state_dir.join("sessions").join(RAW_PROJECT).join("terminals.json");
+        let session: Value = serde_json::from_slice(&std::fs::read(&session_path).expect("session")).expect("json");
+        assert_eq!(session["tabLayout"].as_array().expect("tabs").len(), 1, "{session}");
+        let (_, _, body) = host.send(get_as(&format!("/api/v1/projects/{project_id}"), &cookie)).await;
+        assert_eq!(json(&body)["tabs"].as_array().expect("tabs").len(), 1);
+    }
+
     /// `desktop_available: false`; every write still needs the window.
     #[tokio::test]
     async fn persisted_state_is_answered_off_the_files_with_no_window() {
