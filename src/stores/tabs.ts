@@ -5169,7 +5169,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         allowClear,
       };
       const outcome = await syncWorkspace({ ...payload, baseVersion: get().workspaceVersionByScope[scope] });
-      if (outcome) adoptSyncOutcome(scope, outcome);
+      if (outcome) adoptSyncOutcome(scope, outcome, keep);
     } catch (error) {
       if (options?.strict) throw error;
       // tab layout is non-critical
@@ -5369,33 +5369,77 @@ async function loadWorkspaceSnapshot(scope: string): Promise<Record<string, unkn
   }
 }
 
-/** Take a sync answer into the store: the scope's new version, and the ids
- * the service minted for the tabs this window created (matched by the `key`
- * it sent). Nothing else moves here — this window's optimistic state stands;
- * a change from another client reaches it at its next hydrate. */
-export function adoptSyncOutcome(scope: string, outcome: WorkspaceSyncOutcome): void {
+/** Take a sync answer into the store: the scope's new version; the ids the
+ * service minted for the tabs this window created (matched by the `key` it
+ * sent); and what another client changed meanwhile — a label or colour the
+ * service kept over this window's older copy is adopted, and a tab this
+ * window sent (`sentKeys`) that the answer no longer holds was closed
+ * elsewhere and leaves the store (the session behind it keeps running, as a
+ * close from the phone always meant). Order is not reconciled: this window's
+ * pane tree is its own. A tab created elsewhere is not added here — it
+ * reaches this window at its next hydrate (H3 grows this). */
+export function adoptSyncOutcome(scope: string, outcome: WorkspaceSyncOutcome, sentKeys?: Set<string>): void {
   const idByKey = new Map<string, string>();
+  const byId = new Map<string, SavedTabEntry>();
   for (const tab of outcome.tabs ?? []) {
     if (tab.id && tab.key) idByKey.set(tab.key, tab.id);
+    if (tab.id) byId.set(tab.id, tab);
   }
-  useTabsStore.setState((state) => {
-    const tabs = state.tabsByScope[scope];
-    const needsIds = tabs?.some((t) => !t.id && idByKey.has(t.key));
-    return {
-      workspaceVersionByScope: { ...state.workspaceVersionByScope, [scope]: outcome.version },
-      ...(tabs && needsIds
-        ? {
-            tabsByScope: {
-              ...state.tabsByScope,
-              [scope]: tabs.map((t) => (!t.id && idByKey.has(t.key) ? { ...t, id: idByKey.get(t.key) } : t)),
-            },
-            ...(state.scope === scope
-              ? { tabs: state.tabs.map((t) => (!t.id && idByKey.has(t.key) ? { ...t, id: idByKey.get(t.key) } : t)) }
-              : {}),
-          }
-        : {}),
-    };
-  });
+  const reconcile = (t: TabEntry): TabEntry => {
+    const id = t.id ?? idByKey.get(t.key);
+    if (!id) return t;
+    const held = byId.get(id);
+    let next = t.id ? t : { ...t, id };
+    if (held) {
+      if (held.label !== next.label) next = { ...next, label: held.label };
+      const color = isTabColor(held.color) ? held.color : undefined;
+      if (color !== next.color) next = { ...next, color };
+    }
+    return next;
+  };
+  // A tab closed elsewhere leaves through the store's own remover, so its
+  // pane and the layout tree follow.
+  const closedElsewhere = (useTabsStore.getState().tabsByScope[scope] ?? [])
+    .filter((t) => !!t.id && !byId.has(t.id) && !!sentKeys?.has(t.key))
+    .map((t) => t.key);
+  for (const key of closedElsewhere) useTabsStore.getState().removeTabInScope(scope, key);
+  useTabsStore.setState((state) => ({
+    workspaceVersionByScope: { ...state.workspaceVersionByScope, [scope]: outcome.version },
+    ...(state.tabsByScope[scope]
+      ? {
+          tabsByScope: { ...state.tabsByScope, [scope]: state.tabsByScope[scope].map(reconcile) },
+          ...(state.scope === scope ? { tabs: state.tabs.map(reconcile) } : {}),
+        }
+      : {}),
+  }));
+}
+
+/** The `workspace:patch` event's payload (`WORKSPACE_PATCH_EVENT`). */
+export interface WorkspacePatch {
+  scope: string;
+  version: number;
+  ops: WorkspaceSyncOutcome["ops"];
+}
+
+/** Another client of this backend moved a scope's shared tab set: when the
+ * patch is newer than what this window knows and the scope is loaded here,
+ * fetch the snapshot and reconcile through `adoptSyncOutcome`, every tab this
+ * window holds counting as sent. A window's own sync echoes here too — its
+ * answer has usually recorded the version first, and the fetch is idempotent
+ * otherwise. A scope this window has not hydrated takes the snapshot at its
+ * hydrate. */
+export async function applyWorkspacePatch(patch: WorkspacePatch): Promise<void> {
+  const known = () => useTabsStore.getState().workspaceVersionByScope[patch.scope] ?? 0;
+  const loaded = () => Object.prototype.hasOwnProperty.call(useTabsStore.getState().tabsByScope, patch.scope);
+  if (!loaded() || patch.version <= known()) return;
+  const saved = await loadWorkspaceSnapshot(patch.scope);
+  if (typeof saved.version !== "number" || !loaded() || saved.version <= known()) return;
+  const sent = new Set((useTabsStore.getState().tabsByScope[patch.scope] ?? []).map((t) => t.key));
+  adoptSyncOutcome(
+    patch.scope,
+    { version: saved.version, tabs: (saved.tabLayout as SavedTabEntry[] | undefined) ?? [], ops: patch.ops, stale: true },
+    sent,
+  );
 }
 
 /** Replace the group `groupId` via `fn`, returning a new tree (structural). */

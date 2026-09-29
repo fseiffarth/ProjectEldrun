@@ -53,6 +53,7 @@ import { AgentContinueHost } from "./AgentContinueHost";
 import { AgentCronHost } from "./AgentCronHost";
 import { AgentScheduleHost } from "./AgentScheduleHost";
 import { TimerLeaseHost } from "./TimerLeaseHost";
+import { WorkspacePatchHost } from "./WorkspacePatchHost";
 import { CalDavConflictDialog } from "../calendar/CalDavConflictDialog";
 import { ModelsOverlayHost } from "../models/ModelsOverlay";
 import { RootOverlayHost } from "./RootOverlay";
@@ -1419,6 +1420,7 @@ export function AppShell() {
           Main window only, so two windows cannot both send the morning's
           message. */}
           <TimerLeaseHost />
+          <WorkspacePatchHost />
           <AgentContinueHost />
           <AgentCronHost />
           <AgentScheduleHost />
