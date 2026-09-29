@@ -20,6 +20,7 @@ vi.mock("../../lib/shortcuts/tabJump", () => ({
 }));
 
 import { useKeyboard } from "../../hooks/useKeyboard";
+import { SteeringLegend } from "../../components/layout/SteeringLegend";
 import { useKeyboardSteeringStore } from "../../stores/keyboardSteering";
 import { allGroups, useTabsStore, type TabEntry } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
@@ -199,6 +200,24 @@ describe("steering levels", () => {
     // Nothing is working: the key does nothing.
     press({ key: "r" });
     expect(jumps).toHaveLength(2);
+  });
+
+  it("marks the current level on <html> for the stylesheet, and clears it on exit", () => {
+    const root = document.documentElement;
+    render(<SteeringLegend />);
+    expect(root.dataset.steer).toBeUndefined();
+    act(() => steering().enter());
+    expect(root.dataset.steer).toBe(steering().level);
+    act(() => steering().setLevel("projects"));
+    expect(root.dataset.steer).toBe("projects");
+    act(() => steering().setLevel("tabs"));
+    expect(root.dataset.steer).toBe("tabs");
+    act(() => steering().enterRegion("side"));
+    expect(root.dataset).toMatchObject({ steer: "region", steerRegion: "side" });
+    act(() => steering().leaveRegion());
+    expect(root.dataset.steerRegion).toBeUndefined();
+    act(() => steering().exit());
+    expect(root.dataset.steer).toBeUndefined();
   });
 });
 

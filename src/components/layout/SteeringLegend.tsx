@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useKeyboardSteeringStore } from "../../stores/keyboardSteering";
 import { allGroups, useTabsStore } from "../../stores/tabs";
@@ -60,6 +60,22 @@ export function SteeringLegend() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [inPane, focusedGroupId],
   );
+
+  // Publish where steering points on <html> (`data-steer`, plus
+  // `data-steer-region` in a region) so the stylesheet can light up the one
+  // object the arrows act on — the top frame and current pill, the focused
+  // subwindow, its active tab, the side panel or overlay — without every one
+  // of those components subscribing to this store.
+  useEffect(() => {
+    if (!active) return;
+    const root = document.documentElement;
+    root.dataset.steer = level;
+    if (region) root.dataset.steerRegion = region;
+    return () => {
+      delete root.dataset.steer;
+      delete root.dataset.steerRegion;
+    };
+  }, [active, level, region]);
 
   if (!active) return null;
   const count = (kind: "decision" | "working" | "done") =>
