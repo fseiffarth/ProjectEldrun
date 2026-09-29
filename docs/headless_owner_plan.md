@@ -37,6 +37,34 @@ are the client's fields the merge never reads), not into a second file;
 hold a revision); (6) `Catalog`/`Activity`/`GitStates` are still the
 window's.*
 
+*Status: **H1b landed** (2026-09-29, never live-verified), which completes
+what H1 meant: per-tab `updatedVersion` (a change written after a client's
+base is kept over that client's stale copy); the desktop's `workspace:patch`
+listener (`WorkspacePatchHost` → `applyWorkspacePatch`; `adoptSyncOutcome`
+takes a newer label/colour and drops a sent tab closed elsewhere); the
+owner mints a created tab's tmux name and schedule binding
+(`workspace::create_tab_in`, idempotent per request) and **spawns it**:
+`pty_spawn`'s launch assembly moved into `services::launch_prep::prepare`,
+shared by the window and the Mobile sidecar, whose headless create starts
+the session detached (`tmux_local::spawn_detached_with`) on the **default
+tmux socket** — kept, against the plan's `-L eldrun`: sessions cannot move
+between tmux servers, so a switch would need a union of two servers at every
+touch point (list, kill, rename, attach, capture, discovery, the fence's
+live check) while a window that had not restarted kept spawning on the
+old one, for the small gain of a private server; the window attaches to a
+sidecar-started session through its ordinary `new-session -A` restore.
+`Catalog`, `Activity`, `GitStates` and a shell / plain-agent `Create` are
+answered by the sidecar with no window (`mobile_control::headless`,
+`desktop_available: false`); a sign-in, cloud, worktree, local-model, mode or
+root-console create still needs the window. Default apps are patched per
+entry (`patch_default_apps`) under the file's lock — a patch command, not a
+revision on the bare map. Not yet: a window does not learn of a sidecar
+create until its next sync or hydrate (`adoptSyncOutcome` adds nothing —
+H3), and a sidecar-started agent lacks the window's `--name`, `/rename` and
+Remote-Control flag until restarted from a window. The exit test is
+`host.rs::a_create_with_no_window_is_minted_spawned_and_listed_by_the_owner`.
+Handoff: [`headless_owner_handoff.md`](headless_owner_handoff.md).*
+
 *Status: **H2 interim landed** (2026-09-29, never live-verified): the
 single-client lease. `services::timer_lease` grants one client per state
 dir a heartbeat-renewed lease (`timer-lease.json`, 30 s TTL, released on

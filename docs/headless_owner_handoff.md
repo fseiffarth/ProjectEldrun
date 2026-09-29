@@ -1,7 +1,8 @@
-# Headless owner — handoff (H1 + H1b in progress)
+# Headless owner — handoff (H1 + H1b)
 
-*Written 2026-09-29 by the H1 agent, extended the same day by the H1b agent
-(stopped early: usage limit). Plan: [`headless_owner_plan.md`](headless_owner_plan.md).
+*Written 2026-09-29 by the H1 agent, extended the same day by the first H1b
+agent (stopped early: usage limit) and closed by the second H1b agent. Plan:
+[`headless_owner_plan.md`](headless_owner_plan.md).
 Worktree: `.claude/worktrees/agent-a48b863224fa9d19d`, branch
 `worktree-agent-a48b863224fa9d19d` (based on `develop` at `ad117b09`).
 Nothing was run live; every claim below is gates + tests only.*
@@ -15,7 +16,11 @@ Nothing was run live; every claim below is gates + tests only.*
 | `c5fee054` | H2 interim | landed before the scope was narrowed to H1; all gates green. The single-client timer lease (`services/timer_lease.rs`, `stores/timerLease.ts`, `TimerLeaseHost`), the five timer hosts gated on `holdsTimerLease()`, the schedule dialog's note. The H2 subagent should build on it or drop it — it is one self-contained commit. |
 | `e262b6db` | docs | the H1 handoff (this file's first version). |
 | `1a44acc1` | **H1b, steps 1 + 3 + the create primitive** | `updatedVersion` per tab (held wins when updated after the client's base); owner-side minting of a created PTY tab's tmux name (and an agent's `scheduleTargetId`) in `services/workspace.rs`; `workspace::create_tab_in` — the sidecar's headless create primitive, idempotent on `mobileRequestHash`. Tests in `workspace.rs`. |
-| `1981a679` | H3 draft | on the side branch `worktree-agent-a48b863224fa9d19d-h3-wip`, **not gate-clean**, not on this branch. See "For H3" below. Its `updatedVersion` half is now on this branch (`1a44acc1`); its `adoptSyncOutcome` half is not (H1b step 2, below). |
+| `dce19aef` | **H1b step 2** | the desktop `workspace:patch` listener: `adoptSyncOutcome(scope, outcome, sentKeys)` reconcile + `applyWorkspacePatch` in `tabs.ts`, `layout/WorkspacePatchHost.tsx` mounted in `AppShell`; `WorkspaceSync.test.ts` (4 tests). |
+| `732409e1` | **H1b step 4** | `services/launch_prep.rs::prepare` (the launch assembly moved out of `pty_spawn`), `tmux_local::{local_tmux_argv, spawn_detached_with}` (the detached spawn, tested on a private socket). |
+| `84a8677d` | **H1b step 6** | headless `Catalog` / `Activity` / `GitStates` / `Create` (`headless.rs`, `host.rs::HeadlessSpawner`), the phone's ＋ starts a shell or agent with no window; the H1 exit test in `host.rs`. |
+| `dce35fa4` | **H1b step 7** | default apps CAS: `patch_default_apps`, `lib/defaultApps.ts`, the dialog and Settings → File types patch one entry. |
+| `1981a679` | H3 draft | on the side branch `worktree-agent-a48b863224fa9d19d-h3-wip`, **not gate-clean**, not on this branch. See "For H3" below. Its `updatedVersion` half (`1a44acc1`) and its `adoptSyncOutcome` half (`dce19aef`) are both on this branch now; what remains there is the per-tab edit primitives and the host fallbacks. |
 
 ## The H1 design as built
 
@@ -78,14 +83,17 @@ localFile, baseVersion?, tabs, groups, sessions, activeTabIndex?,
 allowClear }` — the same flat payload as `save_tab_layout` plus the version,
 so the frontend's one persisted shape (`toSavedTabEntry`) is the wire shape.
 `workspace_sync` emits `workspace:patch { scope, version, ops }` to every
-window (`WORKSPACE_PATCH_EVENT`); nothing listens yet.
+window (`WORKSPACE_PATCH_EVENT`); `layout/WorkspacePatchHost.tsx` listens
+and hands it to `tabs.ts::applyWorkspacePatch` (H1b step 2).
 
 **Frontend** (`src/stores/tabs.ts`): `TabEntry.id` / `SavedTabEntry.id`
 round-trip (`toSavedTabEntry`, `loadFromLayout` keep it while `key` is
 re-minted); `workspaceVersionByScope`; `hydrateScopeFromDisk` →
 `loadWorkspaceSnapshot` (falls back to `load_tab_session` on an older
 backend); `persistScope` → `syncWorkspace` (falls back to `save_tab_layout`)
-and `adoptSyncOutcome` (version + minted ids only — see H1b step 2).
+and `adoptSyncOutcome(scope, outcome, sentKeys)` (version, minted ids, a
+newer label/colour from the answer, and a sent tab the answer no longer
+holds leaves through `removeTabInScope` — H1b step 2).
 `snapshotScopeForSwitch` carries `workspaceVersion`; `projects.ts` sends it
 in the switch payload (`PreviousProjectSnapshot.workspace_version`);
 `ProjectPill` close-all uses `syncWorkspace` with `allowClear`. 16 test files
@@ -105,213 +113,174 @@ lists `services/workspace.rs` as a defining file.
 `save_settings` — the frontend's fallback only — refuses a stale document;
 `patch_settings` strips a caller's `rev` and bumps); `ProjectBox.rev`
 (`write_boxes` stamps per changed box; `save_boxes` refuses a stale list).
-`storage::patch_json` now holds the `FileLock` too. Default apps: no CAS yet
-(H1b step 7).
+`storage::patch_json` now holds the `FileLock` too. Default apps (H1b step
+7): `patch_default_apps { set, remove }` merges under the lock and answers
+the stored map; `save_default_apps` (whole replace, older frontends) goes
+through the same lock.
 
-## H1b — status per step
+## H1b — status per step (all done)
 
 The user accepted H1 as built; H1b completes what the plan meant by H1. The
 step numbers are the coordinator's brief.
 
 1. **`updatedVersion` — done** (`1a44acc1`). Test:
-   `a_change_written_after_the_clients_base_is_kept_over_its_stale_copy`
-   (uses `edit_in` as the "other writer"; the H3 draft's `rename/color/
-   close_tab_in` were **not** ported — they are H3's). The two-client test's
-   assertion flipped from "A" to "A renamed" (the rename now stands).
-2. **Desktop `workspace:patch` listener — not done.** Port from the H3 draft
-   (`git show 1981a679:src/stores/tabs.ts`, the `adoptSyncOutcome(scope,
-   outcome, sentKeys)` version, and
-   `git show 1981a679:src/__tests__/tabs/WorkspaceSync.test.ts`, 2 tests):
-   it takes a newer label/colour from the answer and removes a tab this
-   window *sent* (`sentKeys`) that the answer no longer holds, through
-   `removeTabInScope` so the pane tree follows; `persistScope` passes `keep`
-   as `sentKeys`. Then add a small `WorkspacePatchHost` (beside
-   `layout/TimerLeaseHost.tsx`, mounted in `AppShell.tsx` next to it at
-   ~line 1421) that `listen("workspace:patch")`s; when `version >` the
-   scope's `workspaceVersionByScope` and the scope is hydrated, fetch
-   `workspace_snapshot` and call `adoptSyncOutcome(scope, {version, tabs:
-   tabLayout, ops, stale: true}, new Set(keys of tabsByScope[scope]))`. Note
-   the listener only fires for Tauri-side syncs (a popout/second window); a
-   sidecar write is another process and reaches a window at its next sync
-   (stale answer) or hydrate. `adoptSyncOutcome` does not *add* tabs created
-   elsewhere — leave that for H3 or state it.
-3. **Owner-side minting — done on the owner** (`1a44acc1`,
-   `mint_for_created`), **deviation on the client:** `tabs.ts`'s
-   `withTmuxSession` / `newTmuxSessionName` were **kept**. Reason: a window
-   creates the tab synchronously (`addTabToScope`) and `TerminalView` spawns
-   the PTY on mount with `tab.tmuxSession`, *before* the debounced sync could
-   answer a minted name; removing the client mint would spawn window-created
-   tabs unwrapped. The owner's mint covers every other writer (the sidecar,
-   a legacy client). Both mint the same shape; the Rust test
-   `a_created_pty_tab_is_given_a_tmux_name_…` checks it against
-   `expected_tmux`'s rules.
-4. **Owner-side spawning — not done.** Design decided, nothing written:
-   - `tmux_local.rs`: factor `wrap_pty_options_local`'s body into
-     `local_tmux_argv(opts, detached: bool) -> Vec<String>` (same argv, `-d`
-     inserted right after `-A`, same launcher-script fallback over
-     `TMUX_ARGV_BUDGET`) and add `spawn_detached_with(opts, socket:
-     Option<&str>) -> Result<(), String>` (Unix only): `paths::command_no_window("tmux")`
-     (+ `-L socket` when given — for tests only; production passes `None`),
-     `current_dir(opts.cwd)`, env `TERM=xterm-256color`, `COLORTERM`,
-     `PATH = paths::effective_path()`, then `opts.env` into the client env
-     (that is how the `SECRET_ENV` tokens reach the session via
-     `update-environment` — never on argv, #864), `.output()`, non-zero →
-     `Err(stderr)`. The existing test
-     `a_real_tmux_session_gets_the_secret_from_the_client_environment` shows
-     the private-socket pattern (`tmux -L eldrun-test-… -f /dev/null`, and
-     `kill-server` at the end).
-   - **The launch assembly must be shared, not copied** (plan §5): move
-     `commands/terminal.rs::pty_spawn`'s body from the `opts.cwd.is_empty()`
-     resolve (line ~264) through the tmux wrap (line ~762) into a new
-     `services/launch_prep.rs::prepare(opts, session_name, pool:
-     Option<&RemotePoolState>) -> Result<PreparedLaunch, String>` (async only
-     for `remote::connect_host`; `None` + a remote project → `Err`).
-     `PreparedLaunch { opts, named, interrupted, mcp_spawn_guard,
-     resume_claim, fenced_registration, host_agent_tab, spawned_tab_id }`
-     with `commit(self)` doing what `pty_spawn` does after a successful
-     spawn (`guard.keep()`, `claim.keep()`, `register_tab`,
-     `track/untrack_host_agent_tab`) and `mcp_token_handed_out()` for the
-     `SESSIONS_EVENT` emit that stays in `pty_spawn`. Everything in that
-     block is already `AppHandle`-free (`agent_fence`, `agent_home`,
-     `agent_session`, `root_mcp::apply_*` — which no-op in the sidecar
-     because `root_mcp::runtime()` is `None` there — `codex_bind`,
-     `agent_turn::bind_tab`, `sandbox::enforce_spawn_authority`, the O#149
-     cwd gate, `resolve_agent_remote_control`/`append_claude_name`/
-     `vm_spawn_refusal`/`cwd_within`/`scope_root_for` move along).
-     `pty_spawn` keeps: the crash-loop check, `terminal::spawn_pty`, the
-     emit, `commit()`. The fence stays fail-closed by construction (same
-     `decide`).
-   - The sidecar then spawns a tab with no window: build `PtyOptions` (id
-     `headless:<tmux>`, 80×24, `agent: kind == agent`, `project_id:
-     Some(raw_id)` or `None` for `root`, `tmux_session: Some(minted)`,
-     `schedule_target_id`), `launch_prep::prepare(opts, None, None).await`,
-     `tmux_local::spawn_detached_with(&prepared.opts, None)`, `commit()`.
-     The window later attaches through its ordinary restore (`loadFromLayout`
-     keeps `tmuxSession`; `tmux new-session -A` attaches instead of creating).
-     Known parity gaps to record, not fix: `--name`, `initialInput`
-     (`/rename`) and the Remote-Control flag come from the window's
-     `TerminalView`; a sidecar-started agent runs without them until it is
-     restarted from a window.
-5. **`tmux -L eldrun` — decided: keep the default socket.** Sessions cannot
-   move between tmux servers, so a switch needs a union of two servers
-   (`-L eldrun` for new sessions, default for the live ones) at every
-   touch point: `tmux_local::{kill_eldrun_sessions, local_tmux_*_args}`,
-   `commands/terminal.rs::local_tmux_{list,kill,rename…}`,
-   `discovery::live_tmux`, `pty_bridge::{tmux_attach_command,
-   tmux_capture_command, tmux_window_size_command}`, the phone's screen
-   capture (`local_tmux_screen_args`), `agent_fence::live_unfenced_by_scope`
-   (pane pids), plus per-name server resolution (`has-session` on each) for
-   attach/kill/rename. A window that has not restarted keeps spawning on the
-   default socket. The gain (a private server) is small against the reach
-   of that migration and the user's live sessions; a private socket is only
-   used by tests (`spawn_detached_with(_, Some(..))`). Record this in the
-   plan's status block when H1b closes.
-6. **Headless `Catalog` / `Activity` / `GitStates` / `Create` — not done.**
-   Design decided:
-   - `host.rs`: each route's `match admin::desktop_call(..)` gets an arm for
-     `desktop_down(&response)` (helper exists, line ~300) that answers from
-     `headless::*` with `desktop_available: false`. Routes: `project`
-     (Catalog, ~line 620), `activity` (~542), `projects` (GitStates, ~480),
-     `create_tab` → `create_through_desktop` (~824).
-   - `headless.rs` additions: `agents(state_dir, host_key) ->
-     Vec<AgentCatalogEntry>` = built-ins in `discovery::resumable`'s list
-     that are installed (`commands::agents::binary_is_installed(bin)`) and
-     not in `settings.json`'s `extra["disabled_agents"]`, id =
-     `key_id(host_key, "agent", &[bin])` (what the desktop's
-     `mobile_opaque_id("agent", cmd)` mints), `modes: []` (the desktop sends
-     none too); custom agents skipped (need `probe_binaries`; say so).
-     `statuses(...)`/`timings(...)` from the hooks' turn records
-     `<state_dir>/live_sessions/<uid>.turn` and
-     `<live_sessions>/<project_key>/<uid>.turn` (`agent_turn::parse_turn_record`;
-     uid = the tab's `session_id`): working→`working`, decision→`question`,
-     done→`done`, idle→none; the record's second word is epoch seconds →
-     `working_at`/`done_at` in ms; model via
-     `agent_session::agent_session_model(cmd, Some(project_id), uid)`.
-     `prompts` via `agent_session::agent_session_recent_prompts(cmd,
-     Some(project_id), uid)` → `AgentTabPrompts{tmux_session, prompts:[{text,
-     at}]}`. Schedule summaries from the existing `headless::schedules` per
-     tab with a `schedule_target_id` (total / enabled / next = min of
-     `next_runs` / upcoming ≤ 3). `closed: []`. Git dot:
-     `commands::git::git_status_probe(dir, false)` +
-     `git_unpushed_commits_blocking` (both sync, hardened git; run in
-     `spawn_blocking`; cache 10 s per project in a new `HostState` field —
-     the projects route is polled every few seconds).
-   - `headless::create_tab(state_dir, host_key, project: &ResolvedProject,
-     request: CreateTabRequest, launch: impl AsyncFnOnce(PtyOptions) ->
-     Result<(), String>) -> Result<String /*tmux*/, &'static str /*code*/>`:
-     refuse with `desktop_unavailable` what needs the window (`local`,
-     `sign_in`, `cloud`, `worktree`, `like_tab`, a `mode`); `kind: shell` →
-     label "Shell", cmd ""; `kind: agent` → bin from the agents list above
-     (`unknown_agent` otherwise), label = registry label, `sessionId` =
-     uuid, `env.ELDRUN_TAB_UID` = it, args `["--session-id", uuid]` for
-     `claude`/`gemini` only (mirrors `newTabItems.ts::buildStaticTabSpec`);
-     cwd = `project.root`; `mobileRequestHash = key_id(host_key, "request",
-     &[idempotency_key])`; then `workspace::create_tab_in(session_path, raw_id,
-     tab, Some(hash))` (persist first), then `launch(opts)`; on launch
-     failure `edit_in` the tab back out and answer `launch_failed`. The
-     route seam (`launch`) is what the host test stubs; the real closure is
-     `prepare` + `spawn_detached_with(.., None)`. `created_through_desktop`'s
-     40×125 ms catalog poll then finds the tab (`available` needs the
-     session on the default socket → in a unit test with a stubbed launch
-     the row is there with `available: false`; assert on the session file
-     and the catalog row, not on `available`).
-   - Exit test for the brief (backend): a `#[tokio::test]` in `host.rs`
-     posting `/api/v1/projects/{id}/tabs` with no desktop socket, a stubbed
-     launch recording the `PtyOptions`, asserting the session file gained
-     an owner-minted tab (id, `eldrun-<raw>--agent-…`, `scheduleTargetId`,
-     `mobileRequestHash`), that the recorded options carry
-     `tmux_session == that name`, that a repeat post creates nothing, and
-     that the answer leaks no raw id / path / tmux name. Plus a `#[cfg(unix)]`
-     `tmux_local` test that `spawn_detached_with(.., Some(private socket))`
-     creates a session `has-session` finds (kill-server after). The
-     `launch_prep` move is covered by the existing terminal/fence tests
-     (behaviour-preserving move; `cargo test --no-fail-fast`).
-7. **Default apps CAS — not done.** `commands/default_apps.rs`: add
-   `patch_default_apps { set: HashMap<String,String>, remove: Vec<String> }`
-   on `storage::patch_json(path, DefaultApps::default(), |apps| …)`; make
-   `save_default_apps` go through `patch_json` too (whole replace under the
-   lock; kept for older frontends). Register in `lib.rs` next to
-   `save_default_apps` (~line 1387). Callers: `SetDefaultAppDialog.tsx`
-   (~line 152: `set {ext: exec}` or `remove [ext]`) and
-   `SettingsSubPanels.tsx::FileTypeSettings` (~line 285: diff `apps` vs
-   `next` into set/remove), both with the `isUnknownCommand` fallback to
-   `save_default_apps` (pattern in `tabs.ts::syncWorkspace`). Give the
-   dialog an `UntestedTag` (`setDefaultApp.patch` row in
-   `src/lib/untested.ts`, area `files`).
+   `a_change_written_after_the_clients_base_is_kept_over_its_stale_copy`.
+2. **Desktop `workspace:patch` listener — done** (`dce19aef`).
+   `adoptSyncOutcome(scope, outcome, sentKeys)`: a held label/colour newer
+   than this window's copy is adopted; a tab this window *sent* (`sentKeys`,
+   `persistScope` passes `keep`) that the answer no longer holds was closed
+   elsewhere and leaves through `removeTabInScope` (pane tree follows); order
+   is not reconciled; a tab created elsewhere is **not added** (it arrives at
+   the next hydrate — H3). `applyWorkspacePatch({scope, version, ops})`:
+   when the scope is loaded and `version >` the known one, fetch
+   `workspace_snapshot` and adopt with every held key as sent; the window's
+   own sync echoes here too (idempotent). `WorkspacePatchHost` is mounted in
+   `AppShell` next to `TimerLeaseHost`. The event only fires for Tauri-side
+   syncs (a second window); a sidecar write is another process and reaches a
+   window at its next sync (stale answer) or hydrate. Tests:
+   `src/__tests__/tabs/WorkspaceSync.test.ts` (4).
+3. **Owner-side minting — done** (`1a44acc1`); the window keeps pre-minting
+   its own names (`withTmuxSession` / `newTmuxSessionName`): `TerminalView`
+   spawns on mount with `tab.tmuxSession`, before a debounced sync could
+   answer. Both mint the same shape.
+4. **Owner-side spawning — done** (`732409e1`).
+   - `services/launch_prep.rs::prepare(opts, session_name, pool:
+     Option<&RemotePoolState>) -> Result<PreparedLaunch, String>` is
+     `pty_spawn`'s former body from the empty-cwd resolve through the local
+     tmux wrap, **moved, not copied** (the helpers `vm_spawn_refusal`,
+     `cwd_within`, `scope_root_for`, `append_claude_name`,
+     `resolve_agent_remote_control` and their tests moved with it).
+     `PreparedLaunch { opts, named, interrupted, … }` with `commit(self)`
+     (guard.keep, claim.keep, `register_tab`, `track/untrack_host_agent_tab`)
+     and `mcp_token_handed_out()`; a dropped `PreparedLaunch` releases the
+     MCP token and the Codex resume claim as a failed spawn always did.
+     `pool: None` + a remote project → `Err` (the headless path only starts
+     local tabs). `pty_spawn` keeps the crash-loop check, `terminal::spawn_pty`
+     (on `prepared.opts.clone()`), the `SESSIONS_EVENT` emit and `commit()`.
+   - `tmux_local::local_tmux_argv(session, opts, detached)` is the one argv
+     (`-d` after `-A` when detached, launcher-script fallback either way);
+     `wrap_pty_options_local` calls it. `spawn_detached_with(opts, socket:
+     Option<&str>)` (Unix): `paths::command_no_window("tmux")` [+ `-L socket
+     -f /dev/null`, tests only], `current_dir(opts.cwd)`, `TERM`,
+     `COLORTERM`, `PATH = effective_path()`, then `opts.env` on the client
+     (secrets reach the session via `update-environment`, never argv),
+     stdin null, `.output()`, non-zero → `Err(stderr)`. Tests: argv pair, the
+     refusal without a name, and a live private-socket session
+     (`a_detached_spawn_creates_a_session_the_server_finds`, `kill-server`
+     after).
+   - Parity gaps, recorded not fixed: `--name`, `initialInput` (`/rename`)
+     and the Remote-Control flag come from the window's `TerminalView`; a
+     sidecar-started agent runs without them until restarted from a window.
+     A headless spawn has no crash-loop guard (no registry).
+5. **`tmux -L eldrun` — decided: keep the default socket** (reasons in the
+   plan's status block). A private socket is only used by tests.
+6. **Headless `Catalog` / `Activity` / `GitStates` / `Create` — done**
+   (`84a8677d`).
+   - `headless.rs`: `agents(state_dir, host_key, installed)` = the resumable
+     built-ins (`discovery::RESUMABLE_BUILTINS`, now a `pub(super)` const)
+     that are installed and not in `settings.json`'s `disabled_agents` (id or
+     bin), id = `key_id(host_key, "agent", &[bin])`, `modes: []`; custom
+     agents are not offered. `turn_readings(state_dir, pid, tabs)` reads
+     `<state_dir>/live_sessions/<uid>.turn` and `…/<project_key>/<uid>.turn`
+     (newest stamp wins; uid = the tab's `sessionId`): working→`working`,
+     decision→`question`, done→`done`, idle/none→a timing row when the
+     transcript names a model; prompts via
+     `agent_session_recent_prompts`. `schedule_summaries` (total / enabled /
+     `next` = min of `next_runs` / `upcoming` ≤ 3). `activity(state_dir,
+     catalog)` folds every project. `git_dot_for(dir)` = `gitDirtyState`'s
+     ladder over `commands::git::git_status_probe` +
+     `git_unpushed_commits_blocking` (both now `pub(crate)`, hardened git,
+     `spawn_blocking`). `ReadingCache` (`READING_TTL` 10 s) holds git dots and
+     readings per raw id in `HostState.readings`.
+   - `headless::create_tab(state_dir, host_key, project, request, agents,
+     launch)`: refuses `sign_in` / `cloud` / `worktree` / `local` /
+     `like_tab` / `mode` and the **root scope** with `DesktopUnavailable`;
+     `unknown_agent` when the pick is not in `agents`; builds the record
+     (`tab_record`: shell = label "Shell", cmd ""; agent = registry label,
+     bin, `sessionId` uuid, `env.ELDRUN_TAB_UID`, `--session-id` for
+     claude/gemini; `mobileRequestHash = key_id(host_key, "request",
+     &[idempotency_key])`; key `headless-<uuid>`), `workspace::create_tab_in`
+     on `headless::session_file(state_dir, raw_id)` (persist first, so a
+     window opening meanwhile merges it in), then `launch(launch_options(…))`
+     (id `headless:<tmux>`, 80×24, `project_id: Some(raw_id)` — box scopes
+     included); a failed launch `edit_in`s the record back out →
+     `launch_failed` (502). `existed` answers without launching.
+   - `host.rs`: `HeadlessSpawner { launch: HeadlessLaunch, installed }` on
+     `HostState` (`Default` = `launch_prep::prepare(opts, None, None)` +
+     `spawn_detached_with(&prepared.opts, None)` + `commit()`; the registry's
+     `binary_is_installed`). Routes: `projects` (git dots via
+     `headless_git_dot` when `desktop_down`), `activity`, `project` (agents,
+     statuses, schedules, prompts, timings, `closed: []`, git), `create_tab`
+     (calls the desktop first; `desktop_down` → `create_headless`, which
+     polls `catalog_fresh` for the tmux row **without** `available` and
+     answers `201 { tab, desktop_available: false }`). `create_through_desktop`
+     stays for the sign-in route. A persist/launch failure is
+     `eprintln!`ed (the sidecar's journal).
+   - `schema::project::TabEntry.key` is `#[serde(default)]` now: the host
+     fixtures (and any hand-made file) write tabs without a key, and the
+     workspace service refused to read them.
+   - Tests: `a_create_with_no_window_is_minted_spawned_and_listed_by_the_owner`
+     (the H1 exit test: minted record with id / `eldrun-<raw>--agent-…` /
+     `scheduleTargetId` / `mobileRequestHash` / `sessionId`, the recorded
+     `PtyOptions`, repeat = same tab + no second spawn, catalog + activity
+     list it, no leak of raw id / tmux / uid / target / path, cloud refused
+     503, shell created too) and
+     `a_headless_launch_that_fails_takes_the_minted_tab_back_out`.
+   - Phone (`mobile-web`): `NewTabSheet` takes `headless` beside `busy`: the
+     shell and a plain agent are enabled with the desktop away; modes, cloud,
+     a linked worktree, local models and the sign-in entry are held; a note
+     (`mobile.newTab.headless`) with the `mobile.headless` untested mark.
+     `Project.tsx`'s notice is `mobile.project.desktopUnavailable` (was
+     hardcoded). `MobileNewTabSheet.test.tsx`'s away-test asserts the new
+     contract.
+7. **Default apps CAS — done** (`dce35fa4`). `commands/default_apps.rs`:
+   `patch_default_apps { set, remove } -> DefaultApps` on
+   `storage::patch_json` (+ `patch_default_apps_at` for the test);
+   `save_default_apps` is a whole replace under the same lock. Frontend:
+   `src/lib/defaultApps.ts` (`patchDefaultApps(patch, whole)` with the
+   `isUnknownCommand` fallback to `save_default_apps`, `diffDefaultApps`),
+   used by `SetDefaultAppDialog` (global scope; pill `setDefaultApp.patch`)
+   and `SettingsSubPanels::FileTypeSettings`. Tests:
+   `src/__tests__/files/DefaultAppsPatch.test.ts` (4),
+   `default_apps::tests::patches_compose_instead_of_overwriting`.
 
-**Untested pills owed for H1b** (none added yet): the patch listener has no
-visible control — the register test requires a call site per row, so tag
-the nearest visible surface (the default-apps dialog for step 7; for step 6
-the phone's project screen already renders `desktop_available: false`
-read-only hints in `mobile-web`, and `isUntested("mobile.…")` rows are used
-there — add `mobile.headless.create` on the ＋ sheet's create button).
+**Untested rows added for H1b:** `mobile.headless` (the ＋ sheet's note with
+the desktop away; covers step 6's readings too) and `setDefaultApp.patch`
+(the dialog title). The patch listener (step 2) has no visible control and
+carries no pill.
 
-**Manual checks owed (the plan's H1 exit, once steps 4 + 6 land):** quit
-Eldrun cleanly (the window's ×; this also reaps every `eldrun-*` session —
-so start the Mobile sidecar first or leave it running as its systemd unit);
-on the phone open a Mobile-enabled project, press ＋, start Claude; the
-row should appear within ~5 s with the tmux name hidden; relaunch Eldrun,
+**Manual checks owed (the plan's H1 exit):** quit Eldrun cleanly (the
+window's ×; this also reaps every `eldrun-*` session — so start the Mobile
+sidecar first or leave it running as its systemd unit); on the phone open a
+Mobile-enabled project, press ＋, start Claude; the row should appear within
+~2 s with the tmux name hidden and its screen unavailable; relaunch Eldrun,
 open the project: the new Claude tab is there and attached to the running
 session (its screen shows the CLI already started, not a fresh launch);
 `tmux ls` on the desktop shows one `eldrun-<project>--agent-…` for it.
 Also: with the window closed, the phone's project list shows git dots and
-the Agents list shows the working/done state of a tab that ran a turn.
+the Agents list shows the working/done state of a tab that ran a turn;
+Settings → File types on one window and the Set-default-app dialog on
+another save different entries within a second and both survive.
 
-## Deviations from the plan (all recorded in the plan's status block, except the H1b ones — add them when H1b closes)
+## Deviations from the plan (all recorded in the plan's status block)
 
 1. Owner = versioned file + lock, both processes run the service (above).
 2. Ops are derived by the service from the client's snapshot against its base
    version, not sent one by one; the store's internals are untouched.
 3. **No `tmux -L eldrun`** (H1b step 5, reasons above); owner-side spawning
-   pending (step 4). Names: the owner mints for created tabs lacking one;
-   the window still pre-mints its own (step 3, reason above).
+   shares the window's launch assembly (`launch_prep`, step 4) and the
+   default server. Names: the owner mints for created tabs lacking one; the
+   window still pre-mints its own (step 3, reason above).
 4. Per-client layout split at the API only (no second file).
-5. Default-apps CAS pending (step 7).
-6. `Catalog` / `Activity` / `GitStates` / `Create` still answered by the
-   window (step 6 pending; the sidecar's file catalog already marks
-   `desktop_available: false`).
+5. ~~Default-apps CAS pending~~ — done (step 7): a patch command, not a
+   revision on the bare map.
+6. ~~`Catalog` / `Activity` / `GitStates` / `Create` still answered by the
+   window~~ — done (step 6) for a shell / plain agent create; a sign-in,
+   cloud, worktree, local-model, mode or root-console create still needs
+   the window, and custom agents are not offered headless.
 7. ~~Field edits last-writer-wins by client~~ — fixed in `1a44acc1`
    (`updatedVersion`).
+8. `adoptSyncOutcome` does not add a tab created elsewhere (H3).
 
 ## Gotchas
 
@@ -354,25 +323,32 @@ the Agents list shows the working/done state of a tab that ran a turn.
   description, so never take the lock twice in one call path
   (`create_tab_in` therefore does its existence check *inside* `edit_in`'s
   closure and aborts the write with a sentinel error).
+- `tests/project_tree_intent.rs` flags any `.tab_layout` read without a
+  `// project-tree-read: ok — …` marker, `headless.rs`'s launch-failure
+  `retain` included.
+- `launch_prep::prepare` reads `projects.json`/`settings.json` from
+  `storage::state_dir()`; the host test therefore stubs `HeadlessSpawner`
+  (`headless_host(launch)`) and never runs the real launch.
+  `agent_session_model` / `agent_session_recent_prompts` read the real state
+  dir too (a fabricated uid answers nothing).
+- A headless-created session is reaped by the window's clean quit like every
+  `eldrun-*` session (`kill_eldrun_sessions`); the sidecar itself never owns
+  the process (the tmux server does).
 - The post-commit hook prints "EMBEDDED MOBILE PWA IS STALE" — expected, the
   running app was never restarted.
 - ESLint: 31 pre-existing warnings (0 errors) in files this work never
   touched (`TerminalView.tsx`, `TodoAgendaRail.tsx`, `notebook.ts`,
   `mobile-web/.../Terminal.tsx`).
 
-## Gate status (at `1a44acc1`, the branch tip)
+## Gate status (at `dce35fa4`, the branch tip)
 
-- `cargo test --no-fail-fast`: **2927 lib tests** (+3 over `c5fee054`) and
-  every integration binary green; the one wall-clock test above failed in
-  the parallel run and passed alone.
+- `cargo test --no-fail-fast`: **2934 lib tests** and every integration
+  binary green; the wall-clock `mail_sanitize` tests failed in the parallel
+  runs and passed alone each time.
 - `cargo clippy --all-targets -- -D warnings`: clean.
-- `npm run build`, `npm test`, `npm run lint`: **not rerun for `1a44acc1`**
-  — no file under `src/`, `mobile-web/` or `package.json` changed since
-  `c5fee054`, where they stood at green / **632 files, 6447 tests** / 0
-  errors + 31 pre-existing warnings. Rerun them before the next frontend
-  commit and compare the count.
-- `git diff --check` clean; `scripts/privacy-check.sh` passed on the staged
-  commit.
+- `npm run build`: green. `npm test`: **634 files, 6455 tests** (632 /
+  6447 at `c5fee054`). `npm run lint`: 0 errors, 31 pre-existing warnings.
+- `git diff --check` clean; `scripts/privacy-check.sh` passed on every commit.
 
 ## For H2 (where the timers hook in)
 
@@ -387,16 +363,18 @@ the Agents list shows the working/done state of a tab that ran a turn.
 - The port proper: `services/agent_tasks.rs` (`claim` / `complete`),
   `services/schedule_mcp.rs::next_occurrence`, and `headless.rs::next_run_key`
   are the backend pieces a scheduler loop can use.
-- **Where a sidecar-side tick sends keys into a tab (once H1b step 4 lands):**
+- **Where a sidecar-side tick sends keys into a tab (H1b step 4 landed):**
   the tab is named by its tmux session (`workspace::tmux_of`, the catalog's
   `ResolvedTab::tmux_name`); delivery is `tmux send-keys -t =<name>: -l
   <text>` then `send-keys -t =<name>: Enter` through
   `paths::command_no_window("tmux")` on the default socket (the same server
   the window's and the sidecar's spawns use — step 5 kept it). If the
   session is not live (`tmux has-session -t =<name>` fails), the sidecar can
-  start it with the step-4 path (`launch_prep::prepare` +
-  `spawn_detached_with`) from the tab's persisted record (`cmd`, `cwd`,
-  `sessionId`, resume via `agent_session::resolve_agent_session`) and then
+  start it with the step-4 path — `headless::launch_options(raw_id, &tab)`
+  builds the `PtyOptions` from the persisted record, then the host's
+  `HeadlessSpawner.launch` (`prepare` resolves the resume args through
+  `agent_session::resolve_agent_session`; the sidecar process has no
+  `RemotePoolState`, so only local tabs) — and then
   deliver — that is "fires once with no client". The lease then only has to
   say whether a window holds the timers; the sidecar takes them when none
   does (`timer_lease::acquire_in` from the sidecar process, same file).
@@ -408,13 +386,19 @@ the Agents list shows the working/done state of a tab that ran a turn.
 - The draft on `worktree-agent-a48b863224fa9d19d-h3-wip` (`1981a679`):
   `workspace::{rename,color,reorder,close}_tab_in` by tmux name (build them
   on this branch's `edit_in(path, scope, …)` + `tmux_of`); `host.rs`
-  fallbacks; `adoptSyncOutcome` reconcile (now H1b step 2).
-  Known bug: `host.rs::session_file()` must use
-  `state.config.state_dir.join("sessions").join(project_key(raw))` rather
-  than `storage::state_dir()`; three old host tests
+  fallbacks (`adoptSyncOutcome` is on this branch already, `dce19aef`).
+  Use `headless::session_file(state_dir, raw_id)` for the path (the draft's
+  `session_file()` used `storage::state_dir()`, which is why its fixture's
+  scope was not found); the create route's `desktop_down` → headless shape
+  in `create_tab` / `create_headless` is the pattern; three old host tests
   (`renaming_a_tab_needs_the_desktop_bridge…`, `moving_a_tab…`,
   `closing_a_tab…`) still assert the pre-H3 503 contract and need the new
   one (200 + `desktop_available: false`).
+- `adoptSyncOutcome` should also *add* a tab created elsewhere (a phone
+  create while a window is open reaches it today only at the next hydrate;
+  the window's `workspace:patch` listener only hears Tauri-side syncs, so a
+  sidecar create needs either a poll of `workspace_snapshot` or the sidecar
+  poking the window over the desktop socket).
 - Calendar/todo writes from the sidecar are safe now (`commands::calendar::*_at`
   are path-based and CAS); the mobile action → record mapping lives in
   `MobileBridgeHost.tsx` (`calendarMutate`, `todoMutate`) and would need a
