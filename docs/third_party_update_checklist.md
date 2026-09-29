@@ -166,7 +166,12 @@ Claude's `/fast` — different thing.
   greps those keys with `sed`, so a renamed key breaks resume silently.
   Verified against Claude Code 2.1.282 (2026-09-25, live: a `/clear`'s
   SessionStart carried `session_id` + `source: clear`, a Stop carried
-  `permission_mode`, and a `/clear` fires no Stop event); the turn events
+  `permission_mode`, and a `/clear` fires no Stop event); re-checked against
+  2.1.284 (2026-09-29, live: the tab records of a 2.1.284 session show
+  `source: clear` / `startup`, `session_id` and `permission_mode` parsed off
+  its payloads — and that a `claude -p` run from a Bash tool in another cwd
+  passed the nested-startup guard and took the tab's record over; the guard
+  now looks for the tab's transcript in every project folder); the turn events
   against 2.1.272 by reading the binary's strings, not live.
 - Session logs: `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`; `--resume` is
   emitted only when that file exists.
@@ -182,14 +187,17 @@ Claude's `/fast` — different thing.
   `<command-name>…<command-args>` reads as `/name args`, `<bash-input>` as
   `! cmd`. A new wrapper tag shows up as a prompt until it is added here.
 - `/usage` in print mode returns a JSON envelope with `result` (panel text),
-  `is_error`, `num_turns: 0` (re-checked live against 2.1.282, 2026-09-25). The
+  `is_error`, `num_turns: 0` (re-checked live against 2.1.284, 2026-09-29). The
   panel text is parsed by `shared/usageReport.ts` for the phone's bars, the
   prompt chart's reset lines and auto-continue (five-hour / weekly windows,
   per-model lines) — a re-layout may cost figures. `resolveResetAt` places the
   reset phrase in time: 2.1.272 prints `resets Sep 15, 10:30pm (Europe/Berlin)`
   (a year only when it is not the current one, the zone always; 2.1.282 drops
   the minutes on the hour, `resets Sep 25, 1pm`) where earlier
-  builds printed `resets 6:20pm` / `resets Mon 9am`. A shape it does not know
+  builds printed `resets 6:20pm` / `resets Mon 9am`. 2.1.284 appends a
+  "What's contributing to your limits usage?" section (`Last 24h · N
+  requests · N sessions`, `Top subagents: general-purpose 39%, …`); a meter
+  needs its percentage to *lead* the value, so those shares stay notes. A shape it does not know
   resolves to nothing, which silently empties the chart's reset lines and
   leaves auto-continue unable to arm.
 - Model short names `opus | sonnet | haiku | fable` for the `/model` chips.

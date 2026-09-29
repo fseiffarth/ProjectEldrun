@@ -1806,7 +1806,10 @@ fn container_hook_script_path() -> PathBuf {
 /// fresh id with `--session-id` dropped, so the record stayed on a launch id
 /// that never wrote a file and the phone read an empty conversation; a CLI
 /// nested under the tab is started by a session that has been prompted, whose
-/// transcript exists beside the new one — and only
+/// transcript exists — in *some* project folder: looking only beside the new
+/// transcript let a `claude -p` run from another cwd (the agent's Bash tool
+/// after a `cd`) take the record over, since its transcript lands in that
+/// cwd's folder, not the tab's (2.1.284, 2026-09-29) — and only
 /// with Claude's own transcript for it (`…/<session_id>.jsonl`): a Codex run
 /// from the tab's shell fires the same `clear` start after its own `/clear`,
 /// with a null `transcript_path` or a `rollout-…` one, and took the Claude
@@ -1867,12 +1870,12 @@ fn posix_hook_script_body(live_dir: &str) -> String {
          \x20        clear|resume) ;;\n\
          \x20        # Claude relaunches itself (switching its renderer, updating) and,\n\
          \x20        # while its session has no transcript yet, comes back under a fresh\n\
-         \x20        # id with a plain start. The tab's own session is then the one whose\n\
-         \x20        # transcript is missing beside the new one; a CLI nested under the\n\
-         \x20        # tab was started by a session that has been prompted, whose file\n\
-         \x20        # is there.\n\
+         \x20        # id with a plain start. The tab's own session is then the one with\n\
+         \x20        # no transcript in any project folder; a CLI nested under the tab\n\
+         \x20        # was started by a session that has been prompted, whose file is\n\
+         \x20        # there — in the tab's cwd folder, not the nested run's own.\n\
          \x20        startup) [ \"$ELDRUN_TAB_AGENT\" = claude ] && [ -n \"$tpath\" ] || exit 0\n\
-         \x20          [ -f \"${{tpath%/*}}/${{cur:-$ELDRUN_TAB_UID}}.jsonl\" ] && exit 0 ;;\n\
+         \x20          for t in \"${{tpath%/*/*}}\"/*/\"${{cur:-$ELDRUN_TAB_UID}}.jsonl\"; do [ -f \"$t\" ] && exit 0; done ;;\n\
          \x20        *) exit 0 ;;\n\
          \x20      esac\n\
          \x20    fi ;;\n\
@@ -1973,13 +1976,13 @@ fn hook_script_body(live_dir: &str) -> String {
          \x20 if ($src -eq 'startup') {{\r\n\
          \x20   # Claude relaunches itself (switching its renderer, updating) and, while\r\n\
          \x20   # its session has no transcript yet, comes back under a fresh id with a\r\n\
-         \x20   # plain start: the tab's own session is the one whose transcript is\r\n\
-         \x20   # missing beside the new one (see the POSIX twin).\r\n\
+         \x20   # plain start: the tab's own session is the one with no transcript in\r\n\
+         \x20   # any project folder (see the POSIX twin).\r\n\
          \x20   if (($env:ELDRUN_TAB_AGENT -ne 'claude') -or (-not $mt.Success)) {{ exit 0 }}\r\n\
          \x20   $ref = $cur\r\n\
          \x20   if ($ref -eq '') {{ $ref = $uid }}\r\n\
          \x20   $tdir = Split-Path ($mt.Groups[1].Value -replace '\\\\\\\\', '\\') -Parent\r\n\
-         \x20   if (Test-Path (Join-Path $tdir ($ref + '.jsonl'))) {{ exit 0 }}\r\n\
+         \x20   if (Test-Path -Path (Join-Path (Split-Path $tdir -Parent) ('*\\' + $ref + '.jsonl'))) {{ exit 0 }}\r\n\
          \x20 }} elseif (($src -ne 'clear') -and ($src -ne 'resume')) {{ exit 0 }}\r\n\
          }}\r\n\
          if ($env:ELDRUN_TAB_AGENT -eq 'claude' -and $env:ELDRUN_PROJECT_DIR -and $event -eq 'SessionStart') {{ Write-Output 'To put a file in front of the user on their phone, run `eldrun-send <file>` (local and container tabs).' }}\r\n\
@@ -3013,6 +3016,13 @@ mod tests {
         // start under another id is a CLI nested under the tab: refused.
         std::fs::write(path(fresh), "{}").unwrap();
         let (rec, _) = run_hook(&script, &live, uid, claude, true, &start(again, &own(again)));
+        assert_eq!(rec.as_deref(), Some(fresh));
+        // …also when it runs from another cwd: its transcript lands in that
+        // cwd's project folder, where the tab's own is not.
+        let elsewhere = tmp.join("projects").join("-tmp");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let away = format!("\"{}\"", elsewhere.join(format!("{again}.jsonl")).display());
+        let (rec, _) = run_hook(&script, &live, uid, claude, true, &start(again, &away));
         assert_eq!(rec.as_deref(), Some(fresh));
         // …as it is without the agent marker, whatever the transcripts say.
         std::fs::remove_file(path(fresh)).unwrap();
