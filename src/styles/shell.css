@@ -156,7 +156,7 @@ select option {
 }
 
 /* The head of the bar reads left-to-right as one evenly spaced run — grip ·
-   clock · hairline · ⬡ scope chip — and the spacing is what makes it read as
+   clock · hairline · logo scope chip — and the spacing is what makes it read as
    one: each item carries its own 10px of inset (the clock button's padding,
    the box chip's), so the visible
    gap between any two neighbours is the sum of the two facing insets and is the

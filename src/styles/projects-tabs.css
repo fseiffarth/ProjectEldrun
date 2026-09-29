@@ -378,12 +378,16 @@
   white-space: nowrap;
 }
 
+/* The Eldrun logo — the same mark the drag grip wears at the bar's left edge —
+   standing for "all projects / the boxes" while the chip names no scope. */
 .box-chip-icon {
-  font-size: 12px;
-  color: var(--accent);
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  color: var(--top-frame-text);
 }
 
-/* The mark the chip wears instead of the hexagon when it names the root scope: the
+/* The mark the chip wears instead of the logo when it names the root scope: the
    app's own spark, the glyph its pinned pill carried before it folded in here,
    at 18px and without the pill's one-per-launch intro flourish (the chip
    re-mounts its star on every trip back to root, and a logo that replays its

@@ -10,11 +10,12 @@ import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { boxColor } from "../../lib/theme/boxColor";
 import { useT } from "../../lib/i18n";
 import { StarIcon } from "../layout/StarIcon";
+import { LogoIcon } from "../layout/LogoIcon";
 import { ScopeSetStatusBars } from "./PillStatusBars";
 import { MenuShortcut } from "../common/MenuShortcut";
 import { UntestedTag } from "../common/UntestedTag";
 import { BoxColorPicker } from "./BoxColorPicker";
-import { BoxSwatch, CheckboxIcon, HexagonIcon, SquareIcon } from "../common/icons/Icon";
+import { BoxSwatch, CheckboxIcon, SquareIcon } from "../common/icons/Icon";
 
 /** This chip's entry in the shared header hover-menu id (stores/headerHoverMenu). */
 const SCOPE_MENU_ID = "box-scope-chip";
@@ -289,7 +290,7 @@ export function BoxScopeChip({
           {naming === "root" ? (
             <StarIcon className="box-chip-star" />
           ) : (
-            <HexagonIcon className="box-chip-icon" />
+            <LogoIcon className="box-chip-icon" />
           )}
           {chipLabel() && <span className="box-chip-label">{chipLabel()}</span>}
           {/* How many boxes have no pill on the row — whatever the chip is
