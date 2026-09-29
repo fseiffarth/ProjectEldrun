@@ -158,7 +158,7 @@ export function isEditableTarget(target: EventTarget | null): boolean {
  * sees them and the mode works FROM a focused terminal — the point is that the
  * hands never leave the keyboard. While active every key is swallowed. The
  * mode is a hierarchy (`SteeringLevel`): projects → subwindows → tabs, ↓ in and
- * ↑ out (E S D F double the arrows by default), opening on projects; Space,
+ * ↑ out (E S D F double the arrows by default), opening on the tabs; Space,
  * Escape or Enter leave it. Plus a region cursor (`lib/shortcuts/steeringRegion`) for the
  * side panel, the header apps and a pane's + menu.
  */
@@ -493,6 +493,10 @@ export function useKeyboard({ onTogglePanels, onSidePanel }: KeyboardOptions) {
         e.stopPropagation();
         if (steering.active) exitSteering();
         else {
+          // The mode opens on the tabs, so a subwindow has to hold the focus.
+          const tabs = useTabsStore.getState();
+          const first = allGroups(tabs.layout)[0]?.id;
+          if (!tabs.focusedGroupId && first) tabs.focusGroup(first);
           steering.enter();
         }
         return;

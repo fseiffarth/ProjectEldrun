@@ -3,8 +3,8 @@ import { useProjectsStore } from "./projects";
 
 /**
  * Where in the window steering is pointing. The mode is a small hierarchy the
- * arrows walk: ↓ goes one level in, ↑ one level out. It opens on projects so
- * the numbered project stations are available as soon as steering starts.
+ * arrows walk: ↓ goes one level in, ↑ one level out. It opens on the tabs of
+ * the current project — switching tabs is what it is mostly for.
  *
  *   projects — ←/→ switch the project (the station ring), ↓ into its windows
  *   panes    — ←/→ step the subwindows (the tabs, when there is only one)
@@ -29,8 +29,8 @@ export type SteeringBaseLevel = Exclude<SteeringLevel, "region">;
  * relaunch never starts steering. While `active`, `useKeyboard` swallows every
  * key in a capture-phase listener (nothing may leak to the terminal
  * underneath), `FocusFrameOverlay` shows the subwindow badges, the project
- * pills wear their station numbers, and the bottom legend renders the current
- * level's keys from `STEERING_KEYS`.
+ * pills wear their station numbers on the projects level, and the bottom legend
+ * renders the current level's keys from `STEERING_KEYS`.
  *
  * `useKeyboard` mutates this imperatively via `getState()`; the overlays
  * subscribe reactively.
@@ -43,7 +43,7 @@ interface KeyboardSteeringState {
   region: SteeringRegion | null;
   /** The level Escape returns to from a region. */
   regionReturn: SteeringBaseLevel;
-  /** Enter the mode on the numbered project stations. */
+  /** Enter the mode on the current project's tabs. */
   enter: () => void;
   exit: () => void;
   setLevel: (level: SteeringBaseLevel) => void;
@@ -54,11 +54,11 @@ interface KeyboardSteeringState {
 
 export const useKeyboardSteeringStore = create<KeyboardSteeringState>((set, get) => ({
   active: false,
-  level: "projects",
+  level: "tabs",
   region: null,
-  regionReturn: "projects",
-  enter: () => set({ active: true, level: "projects", region: null }),
-  exit: () => set({ active: false, level: "projects", region: null }),
+  regionReturn: "tabs",
+  enter: () => set({ active: true, level: "tabs", region: null }),
+  exit: () => set({ active: false, level: "tabs", region: null }),
   setLevel: (level) => set({ level, region: null }),
   enterRegion: (region) => {
     const { level, regionReturn } = get();

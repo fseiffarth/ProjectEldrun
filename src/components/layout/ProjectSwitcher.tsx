@@ -145,14 +145,15 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
     // was not copied into that signature.
   }, [projects]);
 
-  // Keyboard steering mode: while active, every pill wears its station number
+  // On steering's projects level, every pill wears its station number
   // (the digit that jumps there — 1 is the root pill). Numbered from the SAME
   // ring the digit handler and cycleProject walk (projectStations), so badge
-  // and jump can never disagree; only the first nine stations get a digit. A
-  // box slice hides some ring members — their digits still jump, just unbadged.
-  const steeringActive = useKeyboardSteeringStore((s) => s.active);
+  // and jump can never disagree. On tabs and panes, digits open agent tabs,
+  // so project station badges must disappear. Only the first nine stations
+  // get a digit. A box slice hides some ring members — their digits still jump.
+  const steeringOnProjects = useKeyboardSteeringStore((s) => s.active && s.level === "projects");
   const stationById = useMemo(() => {
-    if (!steeringActive) return null;
+    if (!steeringOnProjects) return null;
     const m = new Map<string, number>();
     projectStations().forEach((id, i) => {
       if (id && i < 9) m.set(id, i + 1);
@@ -161,7 +162,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
     // `projects` re-mints the map when the strip changes; projectStations reads
     // the store imperatively, which the linter cannot see.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [steeringActive, projects]);
+  }, [steeringOnProjects, projects]);
 
   // Per-pill git "dirty" dots: poll every active local project's git state on a
   // shared interval (one loop for all pills, deduped by project id) and store
@@ -550,7 +551,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
             onSelectRoot={selectRoot}
             // Steering station 1 is the ring's root (`null`) head, which
             // `stationById` cannot carry precisely because it has no id.
-            rootStation={steeringActive ? 1 : undefined}
+            rootStation={steeringOnProjects ? 1 : undefined}
           />
           {/* Hairline between the fixed leading segment (★ · ⬡) and the
               scrolling project strip, so the two zones read as two zones. */}

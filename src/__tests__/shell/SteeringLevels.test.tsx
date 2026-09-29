@@ -1,6 +1,6 @@
 /**
  * Keyboard steering as a hierarchy: projects → subwindows → tabs (↓ in, ↑ out,
- * E S D F doubling the arrows), opened on projects by Shift+Space and left by
+ * E S D F doubling the arrows), opened on the tabs by Shift+Space and left by
  * Space / Escape / Enter, the new-tab keys inside a pane, the status jumps, the per-level
  * legend table (`steeringKeysFor`) and the region cursor that walks the side
  * panel, the header apps and a pane's + menu.
@@ -99,11 +99,15 @@ afterEach(() => {
 });
 
 describe("steering levels", () => {
-  it("starts on projects and moves down to subwindows and tabs", () => {
+  it("starts on the tabs, climbs to the projects and goes back down", () => {
     const { a, b } = twoPanes();
     render(<Harness />);
     press({ key: " ", shiftKey: true });
-    expect(steering()).toMatchObject({ active: true, level: "projects" });
+    expect(steering()).toMatchObject({ active: true, level: "tabs" });
+    press({ key: "ArrowUp" });
+    expect(steering().level).toBe("panes");
+    press({ key: "ArrowUp" });
+    expect(steering().level).toBe("projects");
 
     press({ key: "ArrowDown" });
     expect(steering().level).toBe("panes");
@@ -120,11 +124,6 @@ describe("steering levels", () => {
     press({ key: "ArrowRight" });
     expect(useTabsStore.getState().activeKey).not.toBe(before);
     expect(useTabsStore.getState().focusedGroupId).toBe(a);
-    press({ key: "ArrowUp" });
-    expect(steering().level).toBe("panes");
-    press({ key: "ArrowUp" });
-    expect(steering().level).toBe("projects");
-
     press({ key: "Escape" });
     expect(steering().active).toBe(false);
   });
@@ -133,8 +132,6 @@ describe("steering levels", () => {
     const { a, b } = twoPanes();
     render(<Harness />);
     press({ key: " ", shiftKey: true });
-    press({ key: "d" });
-    press({ key: "d" });
     const group = allGroups(useTabsStore.getState().layout).find((g) => g.id === a)!;
     const before = group.activeKey;
     press({ key: "f" });
@@ -173,7 +170,6 @@ describe("steering levels", () => {
     store.addTab({ label: "t2", cmd: "bash", cwd: "/p", kind: "shell" });
     render(<Harness />);
     press({ key: " ", shiftKey: true });
-    press({ key: "ArrowDown" });
     const start = useTabsStore.getState().activeKey;
     press({ key: "ArrowRight" });
     expect(useTabsStore.getState().activeKey).not.toBe(start);
@@ -193,18 +189,15 @@ describe("steering levels", () => {
     window.addEventListener(NEW_TAB_SHORTCUT_EVENT, onRequest);
     try {
       press({ key: " ", shiftKey: true });
-      press({ key: "ArrowDown" });
       press({ key: "n" });
       expect(requests[requests.length - 1]?.request).toEqual({ kind: "shell" });
       expect(steering().active).toBe(false);
 
       press({ key: " ", shiftKey: true });
-      press({ key: "ArrowDown" });
       press({ key: "2" });
       expect(requests[requests.length - 1]?.request).toEqual({ kind: "agent", slot: 1 });
 
       press({ key: " ", shiftKey: true });
-      press({ key: "ArrowDown" });
       press({ key: "+" });
       expect(requests[requests.length - 1]?.request).toEqual({ kind: "menu" });
       expect(steering()).toMatchObject({ active: true, level: "region", region: "addTab" });
@@ -234,8 +227,6 @@ describe("steering levels", () => {
       expect(steering().active).toBe(false);
       press({ key: "k", ctrlKey: true });
       expect(steering().active).toBe(true);
-      press({ key: "ArrowDown" });
-      press({ key: "ArrowDown" });
 
       // F lost its "right"; L has it. N does nothing any more, Y opens a shell.
       const group = allGroups(useTabsStore.getState().layout).find((g) => g.id === a)!;
@@ -256,7 +247,6 @@ describe("steering levels", () => {
       expect(steering().active).toBe(false);
 
       press({ key: "k", ctrlKey: true });
-      press({ key: "ArrowDown" });
       press({ key: "y" });
       expect(requests[requests.length - 1]?.request).toEqual({ kind: "shell" });
     } finally {
@@ -273,6 +263,7 @@ describe("steering levels", () => {
       projects: [{ id: "x", name: "x", status: "active", position: 0, local_file: "/x/project.json" }],
     });
     press({ key: " ", shiftKey: true });
+    press({ key: "ArrowUp" });
     press({ key: "2" });
     expect(setActive).toHaveBeenCalledWith("x");
     expect(steering()).toMatchObject({ active: true, level: "projects" });
@@ -303,9 +294,9 @@ describe("steering levels", () => {
     render(<SteeringLegend />);
     expect(root.dataset.steer).toBeUndefined();
     act(() => steering().enter());
+    expect(root.dataset.steer).toBe("tabs");
+    act(() => steering().setLevel("projects"));
     expect(root.dataset.steer).toBe("projects");
-    act(() => steering().setLevel("panes"));
-    expect(root.dataset.steer).toBe("panes");
     act(() => steering().setLevel("tabs"));
     expect(root.dataset.steer).toBe("tabs");
     act(() => steering().enterRegion("side"));
