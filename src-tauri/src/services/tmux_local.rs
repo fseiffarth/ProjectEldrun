@@ -588,18 +588,31 @@ pub fn wrap_pty_options_local(opts: &mut PtyOptions) {
     let Some(session) = opts.tmux_session.clone() else {
         return;
     };
+    let args = local_tmux_argv(&session, opts, false);
+    opts.cmd = "tmux".to_string();
+    opts.args = args;
+}
+
+/// The `tmux` argv that starts (or, with `-A`, re-attaches) `session` running
+/// `opts`'s command: [`wrap_pty_options_local`]'s argv, and with `detached`
+/// the same with `-d` right after `-A` — a session started by no terminal
+/// (the Mobile sidecar's headless spawn, [`spawn_detached_with`]), which the
+/// window later attaches to through the ordinary wrap. Past
+/// [`TMUX_ARGV_BUDGET`] the command moves into a [`launcher_script`] either
+/// way.
+pub fn local_tmux_argv(session: &str, opts: &PtyOptions, detached: bool) -> Vec<String> {
     let session_env = tmux_supports_session_env();
-    let mut args = local_tmux_args_with(&session, &opts.cmd, &opts.args, &opts.env, session_env);
+    let mut args = local_tmux_args_with(session, &opts.cmd, &opts.args, &opts.env, session_env);
     if !opts.cmd.is_empty() && argv_bytes(&args) > TMUX_ARGV_BUDGET {
         // Past the client's message limit, tmux would exit with `command too
         // long` and the tab with `[process exited]`. Move the command into a
         // script and hand tmux its path instead.
         let script = launcher_script(&opts.cmd, &opts.args, &opts.env, session_env);
-        match write_launcher(&session, &script) {
+        match write_launcher(session, &script) {
             Ok(path) => {
                 let line = launcher_line(&path.to_string_lossy(), &opts.env, session_env);
                 args = local_tmux_args_for(
-                    &session,
+                    session,
                     Some(&line),
                     &opts.env,
                     session_env,
@@ -613,8 +626,59 @@ pub fn wrap_pty_options_local(opts: &mut PtyOptions) {
             }
         }
     }
-    opts.cmd = "tmux".to_string();
-    opts.args = args;
+    if detached {
+        if let Some(at) = args.iter().position(|a| a == "-A") {
+            args.insert(at + 1, "-d".into());
+        }
+    }
+    args
+}
+
+/// Start `opts`'s command in a **detached** local tmux session named by
+/// `opts.tmux_session`, with no PTY and no window (headless owner plan, H1b:
+/// the sidecar's spawn). The client gets what the PTY's `build_command` gives
+/// one — the tab's `cwd`, `TERM`, `COLORTERM`, Eldrun's PATH, then `opts.env`
+/// — so the session's environment is what an attached spawn's would be; the
+/// per-tab secrets reach the session through the client environment and
+/// `update-environment`, never the argv (#864). `socket` names a private tmux
+/// server (`-L`), for tests only: production passes `None` and shares the
+/// default server with the window's spawns. `opts` must already be prepared
+/// (`launch_prep::prepare`) and must not have been tmux-wrapped.
+#[cfg(unix)]
+pub fn spawn_detached_with(opts: &PtyOptions, socket: Option<&str>) -> Result<(), String> {
+    let Some(session) = opts.tmux_session.as_deref() else {
+        return Err(format!("terminal: tab '{}' has no tmux session to start", opts.id));
+    };
+    if !tmux_available() {
+        return Err("terminal: tmux is not installed".to_string());
+    }
+    let args = local_tmux_argv(session, opts, true);
+    let mut cmd = crate::paths::command_no_window("tmux");
+    if let Some(socket) = socket {
+        cmd.args(["-L", socket, "-f", "/dev/null"]);
+    }
+    cmd.args(&args);
+    if !opts.cwd.is_empty() {
+        cmd.current_dir(&opts.cwd);
+    }
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+    if let Some(path) = crate::paths::effective_path() {
+        cmd.env("PATH", path);
+    }
+    for (k, v) in &opts.env {
+        cmd.env(k, v);
+    }
+    cmd.stdin(std::process::Stdio::null());
+    let out = cmd
+        .output()
+        .map_err(|e| format!("terminal: could not run tmux for '{session}': {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        Err(format!("terminal: tmux refused to start '{session}': {err}"))
+    }
 }
 
 /// Where a session's [`launcher_script`] lives:
@@ -1044,5 +1108,88 @@ mod tests {
         };
         wrap_pty_options_local(&mut opts);
         assert_eq!(opts.cmd, "bash");
+    }
+
+    fn detached_fixture(session: &str, cwd: &str) -> PtyOptions {
+        PtyOptions {
+            id: format!("headless:{session}"),
+            cmd: "sleep".into(),
+            args: vec!["30".into()],
+            env: env_of(&[("ELDRUN_TAB_UID", "u-detached")]),
+            cwd: cwd.into(),
+            cols: 80,
+            rows: 24,
+            local_only: false,
+            sandbox: false,
+            agent: false,
+            project_id: Some("p".into()),
+            remote_host_id: None,
+            tmux_session: Some(session.into()),
+            tmux_attach: None,
+            host_bound_uid: None,
+            schedule_target_id: None,
+            host_session: false,
+        }
+    }
+
+    #[test]
+    fn the_detached_argv_is_the_attached_one_plus_d() {
+        let opts = detached_fixture("eldrun-p--shell-x", "/p");
+        let attached = local_tmux_argv("eldrun-p--shell-x", &opts, false);
+        let detached = local_tmux_argv("eldrun-p--shell-x", &opts, true);
+        let at = attached.iter().position(|a| a == "-A").unwrap();
+        let mut expected = attached.clone();
+        expected.insert(at + 1, "-d".into());
+        assert_eq!(detached, expected);
+        assert!(!attached.contains(&"-d".to_string()));
+    }
+
+    #[test]
+    fn a_spawn_without_a_session_name_is_refused() {
+        let mut opts = detached_fixture("eldrun-p--shell-x", "/p");
+        opts.tmux_session = None;
+        assert!(spawn_detached_with(&opts, Some("eldrun-test-unused")).is_err());
+    }
+
+    /// Live check on a private socket (skipped without tmux): the headless
+    /// spawn creates a session the server finds, with the tab's environment
+    /// inside it, and nothing attached.
+    #[cfg(unix)]
+    #[test]
+    fn a_detached_spawn_creates_a_session_the_server_finds() {
+        if !tmux_available() {
+            return;
+        }
+        let socket = format!("eldrun-test-h1b-{}", std::process::id());
+        let session = "eldrun-p--shell-detached";
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("env.txt");
+        let mut opts = detached_fixture(session, &dir.path().to_string_lossy());
+        opts.cmd = "sh".into();
+        opts.args = vec!["-c".into(), format!("env > '{}'; sleep 30", out.display())];
+        let tmux = |args: &[&str]| {
+            std::process::Command::new("tmux")
+                .args(["-L", &socket, "-f", "/dev/null"])
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        let spawned = spawn_detached_with(&opts, Some(&socket));
+        let has = tmux(&["has-session", "-t", &format!("={session}")]);
+        let listed = tmux(&["ls", "-F", "#{session_name}\t#{session_attached}"]);
+        let mut seen = String::new();
+        for _ in 0..50 {
+            seen = std::fs::read_to_string(&out).unwrap_or_default();
+            if seen.contains("ELDRUN_TAB_UID") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let _ = tmux(&["kill-server"]);
+        spawned.unwrap();
+        assert!(has.status.success(), "{}", String::from_utf8_lossy(&has.stderr));
+        let listed = String::from_utf8_lossy(&listed.stdout).into_owned();
+        assert!(listed.lines().any(|l| l == format!("{session}\t0")), "{listed}");
+        assert!(seen.contains("ELDRUN_TAB_UID=u-detached"), "{seen}");
     }
 }
