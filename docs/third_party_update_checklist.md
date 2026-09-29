@@ -424,13 +424,14 @@ silently — re-check the path on update.
 
 Copilot's fenced sign-in (`services/copilot_auth.rs`) depends on its config
 layout: a `/login` with `storeTokenPlaintext` on writes the token to
-`~/.copilot/config.json` under `copilotTokens` (0.0.x: `copilot_tokens`), keyed
+`~/.copilot/config.json` under `authTokens` (earlier 1.0.88 runtimes:
+`copilotTokens`; 0.0.x: `copilot_tokens`), keyed
 `"<host>:<login>"`, beside `lastLoggedInUser`; Copilot reads
 `COPILOT_GITHUB_TOKEN` before any stored login. Checked against 1.0.88. If a
 release moves the token, fenced tabs go back to asking for a login each time
 (nothing breaks). Check with `strings` on
 `~/.cache/copilot/pkg/linux-x64/<ver>/prebuilds/linux-x64/runtime.node | grep
--E 'copilotTokens|storeTokenPlaintext'` and
+-E 'authTokens|storeTokenPlaintext'` and
 `cargo test --manifest-path src-tauri/Cargo.toml copilot_auth`.
 
 **OpenCode's minimal interface** is read by the phone since 2026-09-18

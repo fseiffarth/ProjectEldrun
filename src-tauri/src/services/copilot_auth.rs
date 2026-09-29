@@ -32,8 +32,9 @@
 //! **Layout** checked against Copilot CLI 0.0.393 (JS bundle: `copilot_tokens`
 //! keyed `"<host>:<login>"`, `store_token_plaintext`, `last_logged_in_user`) and
 //! 1.0.88 (native runtime: the camelCase `copilotTokens`, `storeTokenPlaintext`,
-//! `lastLoggedInUser`). Both spellings are read. If a release moves the token,
-//! nothing breaks: the tab asks for a login again, as it did before this.
+//! `lastLoggedInUser`; later 1.0.88 runtimes renamed the token map
+//! `authTokens`). Every spelling is read. If a release moves the token, nothing
+//! breaks: the tab asks for a login again, as it did before this.
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
 use std::collections::{HashMap, HashSet};
@@ -56,7 +57,7 @@ const USER_TOKEN_ENVS: &[&str] = &[TOKEN_ENV, "GH_TOKEN", "GITHUB_TOKEN"];
 /// the locked-keyring handling every read here needs.
 const ACCOUNT: &str = "agent-token:copilot";
 const POLL: Duration = Duration::from_secs(3);
-const TOKEN_KEYS: &[&str] = &["copilotTokens", "copilot_tokens"];
+const TOKEN_KEYS: &[&str] = &["authTokens", "copilotTokens", "copilot_tokens"];
 const LAST_USER_KEYS: &[&str] = &["lastLoggedInUser", "last_logged_in_user"];
 const PLAINTEXT_SETTING: &str = "storeTokenPlaintext";
 
@@ -156,11 +157,6 @@ fn token_shape_ok(token: &str) -> bool {
     rest.is_some_and(|r| {
         (16..=400).contains(&r.len()) && r.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
     })
-}
-
-/// Whether the parsed config holds any stored token field at all.
-fn has_token_fields(config: &Value) -> bool {
-    TOKEN_KEYS.iter().any(|k| config.get(k).is_some())
 }
 
 /// The token the config's last signed-in user logged in with, else the first
@@ -270,7 +266,10 @@ async fn github_login(token: &str) -> Result<Option<String>, String> {
 
 /// One config file: adopt its token if the rule allows, then delete every
 /// token from it. A keyring write that fails (a locked keyring) keeps the file
-/// as it is, so the next pass can try again rather than lose the login.
+/// as it is, so the next pass can try again rather than lose the login. A file
+/// whose tokens are none of the shapes Copilot accepts is left alone too: the
+/// token may be one a newer Copilot mints, and stripping it would sign that
+/// scope out with nothing kept in its place.
 /// Returns whether the file was settled (and needs no retry).
 fn process_config(file: &HomeFile) -> bool {
     let Some(text) = file.read().and_then(|bytes| String::from_utf8(bytes).ok()) else {
@@ -279,26 +278,24 @@ fn process_config(file: &HomeFile) -> bool {
     let Some((header, config)) = parse_jsonc(&text) else {
         return true;
     };
-    if !has_token_fields(&config) {
+    let Some(found) = preferred_token(&config) else {
         return true;
-    }
-    if let Some(found) = preferred_token(&config) {
-        let stored = stored_token();
-        let refused = signed_out().lock().unwrap_or_else(|e| e.into_inner()).clone();
-        let adopt = should_adopt(stored.as_deref(), &found, &refused, |s| {
-            tauri::async_runtime::block_on(github_login(s)).ok().map(|login| login.is_some())
-        });
-        if adopt {
-            if let Err(e) = crate::services::remote_credentials::set(ACCOUNT, Some(&found)) {
-                eprintln!("copilot_auth: keep sign-in: {e}");
-                return false;
-            }
-        } else if stored.as_deref() != Some(found.as_str()) {
-            eprintln!(
-                "copilot_auth: {} holds a different Copilot sign-in; kept the stored one",
-                file.path().display()
-            );
+    };
+    let stored = stored_token();
+    let refused = signed_out().lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let adopt = should_adopt(stored.as_deref(), &found, &refused, |s| {
+        tauri::async_runtime::block_on(github_login(s)).ok().map(|login| login.is_some())
+    });
+    if adopt {
+        if let Err(e) = crate::services::remote_credentials::set(ACCOUNT, Some(&found)) {
+            eprintln!("copilot_auth: keep sign-in: {e}");
+            return false;
         }
+    } else if stored.as_deref() != Some(found.as_str()) {
+        eprintln!(
+            "copilot_auth: {} holds a different Copilot sign-in; kept the stored one",
+            file.path().display()
+        );
     }
     if let Err(e) = strip_tokens(file, &header, config) {
         eprintln!("copilot_auth: clear {}: {e}", file.path().display());
@@ -433,7 +430,12 @@ mod tests {
         assert_eq!(preferred_token(&snake).as_deref(), Some(TOKEN_A));
         let junk = serde_json::json!({"copilotTokens": {"x": "ghp_classicclassicclassic"}}); // privacy-check: ok — fake test token
         assert_eq!(preferred_token(&junk), None);
-        assert!(has_token_fields(&junk));
+        // Later 1.0.88 runtimes: `authTokens`.
+        let renamed = serde_json::json!({
+            "authTokens": {"https://github.com:alice": TOKEN_A},
+            "lastLoggedInUser": {"host": "https://github.com", "login": "alice"}
+        });
+        assert_eq!(preferred_token(&renamed).as_deref(), Some(TOKEN_A));
     }
 
     #[test]
@@ -486,6 +488,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
         let config = serde_json::json!({
+            "authTokens": {"https://github.com:alice": TOKEN_A},
             "copilotTokens": {"https://github.com:alice": TOKEN_A},
             "copilot_tokens": {"https://github.com:alice": TOKEN_A},
             "loggedInUsers": [{"host": "https://github.com", "login": "alice"}],
@@ -501,6 +504,15 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         }
+    }
+
+    #[test]
+    fn a_token_of_an_unknown_shape_is_left_where_copilot_put_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = "{\n  \"authTokens\": {\"https://github.com:alice\": \"xyz_notashapewetake\"}\n}\n";
+        std::fs::write(dir.path().join("config.json"), text).unwrap();
+        assert!(process_config(&HomeFile::open(dir.path(), "config.json").unwrap()));
+        assert_eq!(std::fs::read_to_string(dir.path().join("config.json")).unwrap(), text);
     }
 
     #[test]
