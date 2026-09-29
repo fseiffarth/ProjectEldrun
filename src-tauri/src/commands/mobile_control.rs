@@ -765,14 +765,30 @@ async fn enable_host_service(target: &Path, _config: &HostConfig) -> Result<(), 
 /// deliberately left as the Settings toggle set it — it is the user's stated
 /// choice, and the next launch's [`start_host_on_launch`] starts the host
 /// whether or not the login did.
+///
+/// The one exception is the user's own: with "Keep running when Eldrun is
+/// closed" on (`stay_after_quit`), the host is left up, because since the
+/// headless owner (`docs/headless_owner_plan.md`) it is no longer a listener
+/// with nothing behind it — it answers the phone, starts tabs, and fires
+/// scheduled prompts and reminders with no window.
 pub async fn stop_host_for_exit() {
+    let config = HostConfig::load(&storage::state_dir());
+    if config.as_ref().is_ok_and(stays_after_quit) {
+        return;
+    }
     // A missing socket answers immediately (ENOENT / connection refused);
     // only a live-but-wedged host costs the admin timeouts.
     let shutdown = mobile_admin(AdminRequest::Shutdown).await;
-    if HostConfig::load(&storage::state_dir()).is_err() {
+    if config.is_err() {
         return;
     }
     stop_installed_host(shutdown.is_ok()).await;
+}
+
+/// Whether a quit leaves the Mobile host running. Only an enabled, loadable
+/// configuration gets here; unset is off.
+fn stays_after_quit(config: &HostConfig) -> bool {
+    config.host.stay_after_quit == Some(true)
 }
 
 /// What a launch does with the Mobile host.
@@ -1445,5 +1461,28 @@ mod prune_tests {
     fn prune_is_a_no_op_when_the_store_does_not_exist_yet() {
         let temp = tempfile::tempdir().expect("temp directory");
         prune_old_versions(&temp.path().join("nope"), "0.1.58");
+    }
+}
+
+#[cfg(test)]
+mod stay_after_quit_tests {
+    use super::{stays_after_quit, HostConfig};
+
+    fn config(host: &str) -> HostConfig {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let settings = format!(
+            r#"{{"eldrun_mobile_host":{{"enabled":true,"serve_origin":"https://desk.example.ts.net"{host}}}}}"#
+        );
+        std::fs::write(temp.path().join("settings.json"), settings).expect("settings");
+        HostConfig::load(temp.path()).expect("config")
+    }
+
+    /// A quit stops the host unless the user switched it to stay; an older
+    /// settings file without the key keeps the old behaviour.
+    #[test]
+    fn a_quit_leaves_the_host_up_only_when_the_user_asked() {
+        assert!(!stays_after_quit(&config("")));
+        assert!(!stays_after_quit(&config(r#","stay_after_quit":false"#)));
+        assert!(stays_after_quit(&config(r#","stay_after_quit":true"#)));
     }
 }

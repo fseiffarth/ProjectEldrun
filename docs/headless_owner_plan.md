@@ -271,6 +271,12 @@ its port lands a schedule needs a connected client (stated in the UI).
 After each port, the desktop's React store switches from owning that slice to
 subscribing to it, and `MobileBridgeHost.tsx` shrinks by that handler.
 
+**Quit keeps the owner (user, 2026-09-29).** A clean quit used to stop the
+Mobile sidecar as well (`stop_host_for_exit`), which left nothing to own
+anything with the window gone. Settings → Mobile → "Keep running when Eldrun
+is closed" (`eldrun_mobile_host.stay_after_quit`, default off) makes the quit
+leave it running; open tabs are still reaped as before.
+
 **Exit, live:** with the desktop window closed, the phone lists tabs, starts
 an agent, and sees a scheduled prompt fire. Two desktop windows open at once
 fire every schedule exactly once. `MobileBridgeHost.tsx` answers nothing the

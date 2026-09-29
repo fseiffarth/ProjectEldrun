@@ -260,7 +260,7 @@ export function MobileSettings() {
    * read by the desktop bridge alone — the sidecar never sees mail settings.
    * They ride on the stored host settings untouched otherwise, so flipping one
    * never re-verifies Serve or restarts the host. */
-  const setMailGate = async (gate: "mail_read" | "mail_actions" | "mail_reply" | "root_access" | "project_files", on: boolean) => {
+  const setMailGate = async (gate: "mail_read" | "mail_actions" | "mail_reply" | "root_access" | "project_files" | "stay_after_quit", on: boolean) => {
     setError(null);
     try {
       await updateSettings({
@@ -304,6 +304,7 @@ export function MobileSettings() {
           mail_reply: stored?.mail_reply,
           root_access: stored?.root_access,
           project_files: stored?.project_files,
+          stay_after_quit: stored?.stay_after_quit,
         },
       });
       await invoke("mobile_host_apply", { enabled });
@@ -383,6 +384,7 @@ export function MobileSettings() {
           mail_reply: stored?.mail_reply,
           root_access: stored?.root_access,
           project_files: stored?.project_files,
+          stay_after_quit: stored?.stay_after_quit,
         },
       });
     } catch (reason) {
@@ -432,6 +434,7 @@ export function MobileSettings() {
           mail_reply: stored?.mail_reply,
           root_access: stored?.root_access,
           project_files: stored?.project_files,
+          stay_after_quit: stored?.stay_after_quit,
         },
       });
       await invoke("mobile_host_apply", { enabled: false });
@@ -604,6 +607,15 @@ export function MobileSettings() {
       </p>
       {refreshError && <ErrorNote className="project-dialog-error" error={refreshError} />}
       {error && <ErrorNote className="project-dialog-error" error={error} />}
+
+      <div className="settings-subheader">{t("mobile.stayAfterQuitHeader")}</div>
+      <ToggleRow
+        label={<>{t("mobile.stayAfterQuit")} <UntestedTag id="mobile.stayAfterQuit" /></>}
+        checked={stored?.stay_after_quit ?? false}
+        disabled={busy}
+        onChange={(event) => void setMailGate("stay_after_quit", event.target.checked)}
+      />
+      <p className="settings-help">{t("mobile.stayAfterQuitHelp")}</p>
 
       <div className="settings-subheader">{t("mobile.mailWrites")}</div>
       <ToggleRow

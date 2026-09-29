@@ -65,6 +65,12 @@ pub struct EldrunMobileHostSettings {
     /// (`mobile_control::files::files_open`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_files: Option<bool>,
+    /// Does the Mobile host keep running when Eldrun quits, so the phone,
+    /// scheduled prompts and calendar reminders go on with no window
+    /// (`docs/headless_owner_plan.md`)? Default off: a quit stops it. Read by
+    /// the quit path (`commands::mobile_control::stop_host_for_exit`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stay_after_quit: Option<bool>,
 }
 
 /// Cloud completion authority lives in Eldrun's settings, never project.json.

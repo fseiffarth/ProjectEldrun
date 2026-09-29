@@ -157,6 +157,9 @@ export interface Settings {
     /** A paired phone may browse and read (never change) its Mobile projects'
      * files. Unset is off; read by the sidecar per request. */
     project_files?: boolean;
+    /** Quitting Eldrun leaves the Mobile host running (headless owner). Unset
+     * is off; read by the quit path. */
+    stay_after_quit?: boolean;
   };
   /** Show Eldrun Mobile's host-connection control in the desktop header. This
    * defaults to on when Mobile itself is enabled; an explicit false hides it. */

@@ -382,6 +382,7 @@ export const UNTESTED = {
   "mobile.mailActions": { area: "mobile", what: "MobileSettings · Mark read and star from the phone" },
   "mobile.mailRead": { area: "mobile", what: "MobileSettings · Read mail on the phone" },
   "mobile.mailReply": { area: "mobile", what: "MobileSettings · Reply from the phone" },
+  "mobile.stayAfterQuit": { area: "mobile", what: "MobileSettings · Keep running when Eldrun is closed (default off): a quit leaves the Mobile host up so the phone, schedules and reminders go on with no window" },
   "mobile.projectFiles": { area: "mobile", what: "MobileSettings · Project files on the phone (host-wide switch, default off; the sidecar reads it per request)" },
   "mobile.files.browse": { area: "mobile", what: "ProjectFiles · left drawer, opened by a left→right swipe on the project screen, left edge included, or from the left third of a tab's Focus view (right→left or a tap beside it closes): walk the project's folders read-only by sealed token, open a picture/text in the outbox viewer (Save, Share, step through a folder's pictures), a PDF in the browser" },
   "mobile.rootAccess": { area: "mobile", what: "MobileSettings · Root console on the phone (switch, review gate, pending count on the phone's row)" },

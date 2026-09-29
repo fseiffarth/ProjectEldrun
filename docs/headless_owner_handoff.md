@@ -257,7 +257,9 @@ the desktop away; covers step 6's readings too) and `setDefaultApp.patch`
 carries no pill.
 
 **Manual checks owed (the plan's H2 exit; Mobile must be enabled so the
-sidecar runs — `systemctl --user status eldrun-mobile-host`):**
+sidecar runs — `systemctl --user status eldrun-mobile-host` — and Settings →
+Mobile → "Keep running when Eldrun is closed" on, or a clean quit stops the
+sidecar too):**
 1. *Closed window.* In a project open a Claude tab, add a one-time schedule
    (Agents ▸ the tab's ⏰) five minutes ahead with a prefix `/clear`, then
    quit Eldrun cleanly (the window's ×; this reaps the tmux sessions, which
@@ -286,8 +288,8 @@ sidecar runs — `systemctl --user status eldrun-mobile-host`):**
    instead, the popup + toast + push come once and the journal is silent.
 
 **Manual checks owed (the plan's H1 exit):** quit Eldrun cleanly (the
-window's ×; this also reaps every `eldrun-*` session — so start the Mobile
-sidecar first or leave it running as its systemd unit); on the phone open a
+window's ×; this also reaps every `eldrun-*` session — with "Keep running
+when Eldrun is closed" on, the Mobile sidecar stays up); on the phone open a
 Mobile-enabled project, press ＋, start Claude; the row should appear within
 ~2 s with the tmux name hidden and its screen unavailable; relaunch Eldrun,
 open the project: the new Claude tab is there and attached to the running
@@ -701,7 +703,9 @@ usage panel). In order, if the user wants more:
 
 **Manual checks owed (the plan's H3 exit).** Mobile enabled so the sidecar
 runs (`systemctl --user status eldrun-mobile-host`); quit Eldrun cleanly
-(the window's ×, which reaps every `eldrun-*` session) — the sidecar stays.
+(the window's ×, which reaps every `eldrun-*` session) — the sidecar stays
+only with Settings → Mobile → "Keep running when Eldrun is closed" on
+(`stay_after_quit`, default off; otherwise `stop_host_for_exit` stops it).
 On the phone, in a Mobile-enabled project:
 1. The project lists its tabs (rows without a screen: the sessions were
    reaped) and the notice reads "Desktop unavailable — the Mobile host

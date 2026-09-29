@@ -35,6 +35,9 @@ pub struct MobileHostSettings {
     pub port: u16,
     #[serde(default)]
     pub serve_origin: Option<String>,
+    /// Keep running when Eldrun quits (Settings → Mobile, default off).
+    #[serde(default)]
+    pub stay_after_quit: Option<bool>,
 }
 
 fn default_name() -> String {
@@ -51,6 +54,7 @@ impl Default for MobileHostSettings {
             display_name: default_name(),
             port: default_port(),
             serve_origin: None,
+            stay_after_quit: None,
         }
     }
 }
