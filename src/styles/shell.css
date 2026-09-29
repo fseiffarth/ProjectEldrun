@@ -210,15 +210,6 @@ select option {
   height: 30px;
   flex: none;
   color: var(--top-frame-text);
-  background: linear-gradient(135deg, #e7b369, var(--accent) 72%, #5abbe6);
-  clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
-}
-.app-drag-grip-mark::before {
-  content: "";
-  position: absolute;
-  inset: 1px;
-  background: var(--top-frame-bg);
-  clip-path: inherit;
 }
 .app-drag-grip-mark svg {
   position: relative;

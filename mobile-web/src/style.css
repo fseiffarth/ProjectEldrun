@@ -125,7 +125,6 @@ nav button,.keys button { flex:1; }
    name that wraps grows downward from that line instead of dropping below it. */
 .tab-card-head .tab-card-main { align-items:flex-start; }
 .tab-card-head .tab-card-main .tab-card-title > strong { line-height:28px; }
-.tab-card-head .tab-card-main > .card-trailing { align-self:flex-start; min-height:28px; }
 /* The model is a quiet button: it still opens the picker, but the session name
    and live state carry the stronger visual weight. */
 .tab-card-main .tab-card-model { position:relative; z-index:1; display:inline-block; flex:0 1 auto; max-width:100%; margin:0; padding:5px 8px; border:1px solid #414861; border-radius:8px; background:#2b3145; color:#b6bdd8; font-size:.72rem; font-weight:600; line-height:16px; text-align:left; text-transform:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -157,12 +156,6 @@ small .git-mark::before { content:"·"; margin:0 1px 0 5px; color:#9aa0b4; font-
 .project-git { margin:-4px 0 12px; font-size:.86rem; }
 .tab-card-foot { display:flex; align-items:center; gap:8px; min-height:56px; padding:8px 14px 9px 10px; border-top:1px solid #303549; }
 .tab-card-when { min-width:0; flex:1 1 auto; color:#a9b0c6; font-size:.78rem; line-height:1.3; }
-/* The state and the ›, on the foot's right end. The foot's own right padding is
-   the gap to the card's edge, so the cluster keeps the ✕'s column without
-   sitting under it. */
-.tab-card-foot .card-trailing { margin-left:auto; color:#9498aa; font-size:1.25rem; }
-/* No schedule summary: the foot is only the ›, so it gives up its rule and height. */
-.tab-card-foot.bare { min-height:0; padding:0 14px 6px 10px; border-top:0; }
 .tab-card .agent-status { padding:5px 9px; border-radius:999px; font-size:.72rem; line-height:1; white-space:nowrap; }
 /* The ✕ and ◷ retain separate, comfortable touch targets. */
 .tab-card-icon { position:relative; z-index:1; flex:0 0 auto; display:grid; place-items:center; width:40px; height:40px; padding:0; border:0; border-radius:11px; background:transparent; color:#a3aac0; font-size:1rem; line-height:1; }
@@ -250,8 +243,7 @@ small { color:#9498aa; }
 .home-brand-copy { display:grid; gap:2px; min-width:0; }
 .home-brand strong { font-size:1.05rem; letter-spacing:.01em; white-space:nowrap; }
 .home-brand-copy small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-variant-numeric:tabular-nums; }
-.home-logo-frame { position:relative; display:grid; place-items:center; width:50px; height:47px; flex:0 0 auto; background:linear-gradient(135deg,#e7b369,#8b7df4 60%,#5abbe6); clip-path:polygon(25% 0,75% 0,100% 50%,75% 100%,25% 100%,0 50%); }
-.home-logo-frame::before { content:""; position:absolute; inset:1px; background:#1c1e30; clip-path:inherit; }
+.home-logo-frame { position:relative; display:grid; place-items:center; width:50px; height:47px; flex:0 0 auto; }
 .home-logo { position:relative; width:35px; height:35px; color:#f0efff; }
 .home-header > .lamp { flex:0 0 auto; }
 .home-project-card { border-color:#3b4055; border-radius:14px; background:linear-gradient(115deg,rgba(54,49,85,.42),rgba(28,31,43,.96) 38%); }
@@ -273,7 +265,6 @@ small { color:#9498aa; }
 .mobile-tab { flex:1; display:grid; justify-items:center; gap:3px; padding:7px 4px; border:0; border-radius:10px; background:transparent; color:#9498aa; font-size:.72rem; line-height:1.1; }
 .mobile-tab span { display:grid; place-items:center; width:35px; height:31px; font-size:1.2rem; line-height:1.15; }
 .mobile-tab.active { background:rgba(108,92,231,.18); color:#d7cffd; }
-.mobile-tab.active span { background:linear-gradient(135deg,rgba(231,179,105,.28),rgba(124,108,255,.45) 60%,rgba(90,187,230,.3)); clip-path:polygon(25% 0,75% 0,100% 50%,75% 100%,25% 100%,0 50%); }
 .tabbed > .screen { padding-bottom:calc(76px + max(24px,env(safe-area-inset-bottom))); }
 .projects-row { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:17px; }
 .projects-row h1 { font-size:1.2rem; }
