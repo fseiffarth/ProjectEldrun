@@ -962,6 +962,28 @@ pub enum DesktopRequest {
         tmux_session: String,
         message: String,
     },
+    /// The phone's composer sent `message` while this agent tab was at work.
+    /// Instead of the words going into the CLI's own queue, the desktop holds
+    /// them as a send-now schedule — delivered at the tab's next safe idle
+    /// point, like the desktop's own Send now — so the phone can still edit
+    /// them until then. Answered with `Held` and the rule's id.
+    HoldPrompt {
+        request_id: String,
+        project_id: String,
+        tmux_session: String,
+        message: String,
+    },
+    /// Rewrite a prompt `HoldPrompt` holds. Refused with `held_gone` once the
+    /// scheduler delivered it (or it is no longer this tab's), `held_busy`
+    /// while a delivery of it is under way — an edit never re-creates a rule
+    /// the agent already has.
+    EditHeldPrompt {
+        request_id: String,
+        project_id: String,
+        tmux_session: String,
+        held_id: String,
+        message: String,
+    },
     /// Take back the last `/clear` of this agent tab: the desktop types the
     /// CLI's resume of the conversation that clear ended into the tab
     /// (`agent_tab_undo_clear`). The session id stays on the desktop; the
@@ -1053,6 +1075,8 @@ impl DesktopRequest {
             | Self::TabSeen { request_id, .. }
             | Self::TabInput { request_id, .. }
             | Self::TabPrompt { request_id, .. }
+            | Self::HoldPrompt { request_id, .. }
+            | Self::EditHeldPrompt { request_id, .. }
             | Self::UndoClear { request_id, .. }
             | Self::AgentStatus { request_id, .. }
             | Self::AgentTranscript { request_id, .. }
@@ -1427,6 +1451,11 @@ pub enum DesktopResponse {
     /// Carries nothing: the phone never waits on either, and the sidecar only
     /// needs to know the desktop took the report.
     Seen,
+    /// A prompt the desktop holds for an agent tab (`HoldPrompt`,
+    /// `EditHeldPrompt`): the id the phone edits it by.
+    Held {
+        held_id: String,
+    },
     DesktopImages {
         images: Vec<crate::services::desktop_images::DesktopImage>,
     },
@@ -1771,6 +1800,36 @@ mod tests {
         let restored: DesktopRequest =
             serde_json::from_value(json).expect("deserialize prompt report");
         assert!(matches!(restored, DesktopRequest::TabPrompt { .. }));
+    }
+
+    #[test]
+    fn held_prompts_carry_the_tab_pair_the_words_and_nothing_else() {
+        let request = DesktopRequest::EditHeldPrompt {
+            request_id: "request-held".into(),
+            project_id: "raw-project".into(),
+            tmux_session: "eldrun-project-0--agent-123456789".into(),
+            held_id: "held-1".into(),
+            message: "fix the tests, then the docs".into(),
+        };
+        assert_eq!(request.request_id(), "request-held");
+        let json = serde_json::to_value(&request).expect("serialize held edit");
+        assert_eq!(json["type"], "edit_held_prompt");
+        assert_eq!(json["held_id"], "held-1");
+        let mut hostile = json.clone();
+        hostile["schedule_target_id"] = "must-not-cross".into();
+        assert!(serde_json::from_value::<DesktopRequest>(hostile).is_err());
+        let hold = serde_json::to_value(DesktopRequest::HoldPrompt {
+            request_id: "request-hold".into(),
+            project_id: "raw-project".into(),
+            tmux_session: "raw-tmux".into(),
+            message: "and the lint".into(),
+        })
+        .expect("serialize hold");
+        assert_eq!(hold["type"], "hold_prompt");
+        let answer = serde_json::to_value(DesktopResponse::Held { held_id: "held-1".into() })
+            .expect("serialize held answer");
+        assert_eq!(answer["status"], "held");
+        assert_eq!(answer["held_id"], "held-1");
     }
 
     #[test]
