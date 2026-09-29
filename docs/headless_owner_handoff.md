@@ -1,8 +1,9 @@
-# Headless owner — handoff (H1 + H1b + H2)
+# Headless owner — handoff (H1 + H1b + H2 + H3)
 
 *Written 2026-09-29 by the H1 agent, extended the same day by the first H1b
-agent (stopped early: usage limit), closed by the second H1b agent, and
-extended by the H2 agent (the timers). Plan:
+agent (stopped early: usage limit), closed by the second H1b agent,
+extended by the H2 agent (the timers) and closed by the H3 agent (the
+remaining phone requests). Plan:
 [`headless_owner_plan.md`](headless_owner_plan.md).
 Worktree: `.claude/worktrees/agent-a48b863224fa9d19d`, branch
 `worktree-agent-a48b863224fa9d19d` (based on `develop` at `ad117b09`).
@@ -23,7 +24,10 @@ Nothing was run live; every claim below is gates + tests only.*
 | `dce35fa4` | **H1b step 7** | default apps CAS: `patch_default_apps`, `lib/defaultApps.ts`, the dialog and Settings → File types patch one entry. |
 | `0d706b6b` | **H2, scheduled prompts** | `services/mobile_control/scheduler.rs`: the sidecar's 15 s loop fires scheduled prompts with no window open (tmux `send-keys`/`paste-buffer` into the tab, a dead tab restarted through the H1b spawn); `agent_tasks` / `agent_prompts` transactions hold the file's `FileLock` and have path-based cores (`claim_in`, `complete_in`, `delete_in`, `record_at`, `delete_at`); `timer_lease::holder_in`; the schedule dialog's delivery note + MCP contract. |
 | `de732275` | **H2, calendar reminders** | `services/calendar_alarms.rs` (the due set + the cross-process fired record `calendar-alarms-fired.json`), `commands::calendar::calendar_alarms_claim`, the window's `alarms.ts` claims before it shows, `services/mobile_control/alarms.rs` pushes due reminders to the phone with no window (Web Push, the existing `push.rs`). `calendar_recurrence::Occurrence` carries `alarms`. |
-| `1981a679` | H3 draft | on the side branch `worktree-agent-a48b863224fa9d19d-h3-wip`, **not gate-clean**, not on this branch. See "For H3" below. Its `updatedVersion` half (`1a44acc1`) and its `adoptSyncOutcome` half (`dce19aef`) are both on this branch now; what remains there is the per-tab edit primitives and the host fallbacks. |
+| `1981a679` | H3 draft | the side branch `worktree-agent-a48b863224fa9d19d-h3-wip`; superseded — its per-tab primitives and host fallbacks were ported (rebuilt on `edit_in(path, scope, …)`, the scope's file via `headless::session_file`) in the H3 commits below. Never merge it. |
+| `2b09ba72` | **H3, the owner's answers** | `workspace::{rename,color,reorder,close,reopen}_tab_in` + `workspaceClosedTabs`; `scheduler::Runner::kill`; `headless.rs` H3 section (closed rows, reopen, activate, seen stamp, prompt record, undo, images, schedule/prompt writes, agent status); `headless_board.rs` (board + calendar writes); `agent_tasks::upsert_in`, `agent_prompts::{upsert_at,archive_at}`, `desktop_images::default_folders`; `DesktopRequest::Refresh`; every `host.rs` fallback + the H3 host tests; the three pre-H3 "needs the bridge" tests rewritten to the new contract. |
+| `aeb4009d` | **H3, the window and the phone** | `tabs.ts`: `restoreSavedTab`, `adoptSyncOutcome` adds a created-elsewhere tab, `refreshWorkspaceScope`; `MobileBridgeHost.tsx` answers `refresh`; the phone lifts the read-only notices and held controls (`mobile.headless.owner`), reopen/activate enabled headless; i18n (five dictionaries), `untested.ts` rows. |
+| the commit after `aeb4009d` | docs | this handoff, the plan's H3 status block, four file-map rows. |
 
 ## The H1 design as built
 
@@ -392,14 +396,14 @@ another save different entries within a second and both survive.
   `CalendarAlarmPush.test.ts`-style tests whose `invoke` mock answers `null`
   get "all granted" (a `null` answer is treated as no record).
 
-## Gate status (at `de732275`, the branch tip)
+## Gate status (at `aeb4009d`; the docs commit after it changes no code)
 
-- `cargo test --no-fail-fast`: **2946 lib tests** and every integration
-  binary green (2934 at `313e080b`); the wall-clock `mail_sanitize`
-  quadratic-time test failed once in a parallel run and passed alone.
+- `cargo test --no-fail-fast`: **2954 lib tests** (2953 in the parallel run plus the wall-clock one, passed alone) and every integration
+  binary green (2946 at `de732275`); the wall-clock `mail_sanitize`
+  quadratic-time test failed once in each parallel run and passed alone.
 - `cargo clippy --all-targets -- -D warnings`: clean.
-- `npm run build`: green. `npm test`: **635 files, 6457 tests** (634 files / 6455
-  tests at `313e080b`). `npm run lint`: 0 errors, 31 pre-existing warnings.
+- `npm run build`: green. `npm test`: **635 files, 6461 tests** (635 files / 6457
+  tests at `f6dfce5d`). `npm run lint`: 0 errors, 31 pre-existing warnings.
 - `git diff --check` clean; `scripts/privacy-check.sh` passed on every commit.
 
 ## H2 — the timers, as built
@@ -593,3 +597,140 @@ is not counted by the window's usage recap (`recordAuthorizedInput`).
 - (H2) Timers still window-bound: auto-continue, the warm-up cron, CalDAV
   sync (see "H2 — the timers, as built", item 4). Their move would go beside
   `scheduler.rs` / `alarms.rs` in `host::run`.
+
+## H3 — the remaining phone requests, as built
+
+All 34 `DesktopRequest` kinds now have a decision. **Every kind keeps the
+H0/H1b shape: the window is asked first and answers as before; only on
+`desktop_unavailable` (no window, or one past the sidecar's deadline) does
+the owner answer from its files, flagged `desktop_available: false`.** No
+kind went owner-first: with a window open the store is the live truth and
+its own write path (CalDAV push, the activity store, the registry's
+`pty_spawn`) runs there; the owner would only add a second writer.
+
+| Kind | With no window | Where |
+|---|---|---|
+| `Catalog` / `Activity` / `GitStates` / `Create` | H1b, unchanged; `closed` rows are now the file's `workspaceClosedTabs` | `host.rs::project` |
+| `RenameTab` / `ColorTab` / `ReorderTab` | `workspace::{rename,color,reorder}_tab_in` by tmux name, one `edit_in` each (stamps `updatedVersion`, bumps the version); answered with the catalog row as stored | `host.rs::{rename_tab,color_tab,order_tab}` → `headless_tab_edit` |
+| `CloseTab` | `workspace::close_tab_in` (the record leaves the set, tombstoned; an agent tab is recorded under `workspaceClosedTabs`, newest first, ten kept, under a 32-hex opaque id — never the session id), then `Runner::kill(tmux)` off-thread: `display-message #{pane_pid}` → `terminal::reap_child_subtree(pid, Graceful)` **before** `kill-session` (the walk must precede the leader's death) → `tmux_local::remove_launcher`. A failed kill is journalled, the close still stands (the desktop's × is the same fire-and-forget). | `host.rs::close_tab`, `scheduler::TmuxRunner::kill` |
+| `ReopenTab` | `workspace::reopen_tab_in` (newest, or by `closed_id`): the record comes back **as a new tab** — fresh id, fresh tmux name, `key` re-minted, same `sessionId` and `scheduleTargetId` — because a window whose base predates the close would read its stale snapshot as closing the old id again; `headless::resume_args` (the `RESUMABLE_AGENTS` table) sets its `args`; started through the spawn seam; a failed launch takes it back out; answered like a create (`answer_headless_created`) | `headless::reopen_tab`, `host.rs::reopen_tab` |
+| `Activate` | `headless::activate`: `storage::patch_json(projects.json)` sets `status: "active"` under the lock; a box / root has no status → `desktop_unavailable` | `host.rs::activate_project` |
+| `TabSeen` | `headless::mark_seen`: `<state_dir>/mobile-control/seen/<uid>` = epoch seconds, written on every attach/detach (window open or not); `turn_readings` turns a `done` at or before the stamp into a timing row | `host.rs::mark_tab_seen`, `headless::turn_readings` |
+| `TabInput` | nothing — the hooks' `.turn` record is what the headless readings classify by; the desktop call still goes out for an open window | `host.rs::mark_tab_input` |
+| `TabPrompt` | `headless::record_prompt` → `agent_prompts::record_at` (`result: delivered`, the tab's label / launch id / agent); `is_session_command` (the `isSessionCommand` twin) skips `/clear`-style commands; answered `recorded: false` then | `host.rs::sent_prompt` |
+| `UndoClear` | `agent_session::undo_clear_plan` (read off the process's state dir — production's is the sidecar's) then `headless::apply_undo_plan`: `Type` → `runner.probe` must see the session, then `runner.deliver` of one unbracketed submission (`/resume <id>`); `Relaunch` → `runner.kill`, the tab record's `args` set to `resume_args`, `launch(launch_options)`; `None` → `nothing_to_undo` (409); no session → `tab_not_ready` (503) | `host.rs::undo_clear_headless` |
+| `TodoMutate` | `headless_board::todo_mutate`: `taskFromInput` / `subtasksFromInput` / `toggleTaskDone` / `dropAccepted` / `provisionalRank` ported over `commands::calendar::{create,update,delete}_task_at`, `move_tasks_at`, `columns_set_at` (all `transact` = CAS on the file `rev`); opaque ids re-derived with the host key over the file (`task`, `subtask`, `calendar`, `project`); refusals: `task_not_found` (404), `invalid_task` / `invalid_column` / `column_follows_date` (400); answered with `headless::todo_board` | `host.rs::todo_mutate` |
+| `CalendarMutate` | `headless_board::calendar_mutate` over `{create,update,delete}_event_at`, `{create,update,delete}_calendar_at`; **a calendar with `caldav_account_id` (or `readonly`) is refused `calendar_unavailable`** — the window pushes to the server from the write itself (`docs/context/caldav.md`, "Push"), not by diffing the file, so an edit here would sit unpushed and be overwritten by the next sync; answered with `headless::calendar_month` | `host.rs::calendar_mutate` |
+| `ScheduleMutate` | `headless::schedule_mutate`: create = fresh uuid, no preface; update = the stored preface kept (the phone never sees it), `schedule_not_found` (404) when gone; delete = `agent_tasks::delete_in(…, false)`; all through `agent_tasks::upsert_in` (new: the `upsert` core under the file lock alone); a tab with no `scheduleTargetId` is `tab_not_found` — the owner mints no binding for a tab the window never bound; answered like `schedules` | `host.rs::schedule_mutation` |
+| `PromptMutate` | `headless::prompt_mutate`: create/update through `agent_prompts::upsert_at` (new), delete through `delete_at`; **send** = `queuePromptForTab`'s twin — finished one-time rules pruned at the cap (`schedules_to_prune_for_send`, `MAX_SCHEDULES` now `pub(crate)`), the id re-minted when a recurring rule holds it, a `Once { at: now %Y-%m-%dT%H:%M }` rule through `upsert_in`, then `agent_prompts::archive_at` (new) retires the prompt; the sidecar's own scheduler delivers it on its next tick, idle-gated as H2 does | `host.rs::prompt_mutation` |
+| `AgentStatus` | `headless::agent_status`: `state` from `turn_readings` (seen stamp honoured), `label` / `agent` / `project` from the catalog, `today` off `<state_dir>/usage_stats.json` (`UsageStats::daily_for(raw id)`, the UTC day key, `agent.prompt.<cmd>` / `agent.worked_s` / `agent.decision` / `agent.done`), `usage.supported: false, error: "desktop_unavailable"` — reading the panel runs the CLI, which the window does in the tab's agent home | `host.rs::agent_status` |
+| `LaunchOptions` | `{ worktrees: [], cloud: [], sign_in: [], local: null }` — what the owner can start is the folder, a shell or a plain agent (H1b's refusals stand) | `host.rs::launch_options` |
+| `DesktopImages` / `AttachDesktopImage` | `desktop_images::default_folders(state_dir)` (moved out of `commands/mobile_control.rs`, shared) listed without the clipboard; attach = `resolve` + `inbox::store` into the project root; `clipboard` → `desktop_unavailable` | `headless::{desktop_images,attach_desktop_image}` |
+| `Mail*` (5 kinds) | **still `desktop_unavailable`.** The mail store, its IMAP/SMTP sessions and the account secrets are the window's (keychain / Secret-Service, `mail_encryption`), and the memory note "store must not be opened by the agent path" stands: the sidecar is a second process with no unlock. Not attempted. | — |
+| `Alerts` / `AlertResolve` | **still `desktop_unavailable`.** The feed is `buildAlerts` over the window's stores (tasks + calendar + mail) with the mutes in `localStorage`; a headless twin would be a partial feed (no mail) with no mutes, which reads as "nothing is due". Not attempted. | — |
+| `Refresh` (new, sidecar → window) | after every headless write the host sends `DesktopRequest::Refresh { project_id?, slices }` fire-and-forget (`poke_window`); an open window's bridge answers `refreshSlices` (`workspace` → `refreshWorkspaceScope`, `projects` → registry load, `calendar` → store reload, `schedules` / `prompts` → `refreshLoaded`). Normally nothing hears it: the owner only wrote because no window answered. | `host.rs::poke_window`, `MobileBridgeHost.tsx::refreshSlices` |
+
+**The window learns of a tab created elsewhere** (the gap H1b left):
+`adoptSyncOutcome` now adds a held tab whose id this window does not hold,
+when `createdVersion > ` the version this window knew before the answer
+(so a tab it closed but has not persisted yet — older than its base — is
+never resurrected) and the tab is restorable; it goes through
+`restoreSavedTab` (the mapping extracted from `loadFromLayout`, so a
+phone-created tab restores exactly as a hydrate would: fresh key, shared
+id, the owner's tmux name and session id, resume args from the static
+table) into the focused group **without** changing the active tab.
+`SavedTabEntry.createdVersion` is read-only on the frontend; `toSavedTabEntry`
+never writes it. `TerminalView` mounting the new tab spawns with
+`new-session -A` and attaches to the sidecar-started session.
+
+**The phone**: `mobile.headless.readOnly` became `mobile.headless.owner`
+("shown and edited from Eldrun's files by the Mobile host; the next window
+picks the changes up") on Todo, Calendar, the schedule sheet and the prompts
+sheet, whose `disabled={offline}` holds are gone (`offline` still drives the
+note). The project screen's notice (`mobile.project.desktopUnavailable`,
+still starting "Desktop unavailable" — `MobileProjectScreen.test.tsx` and
+`MobileAgentsMode.test.tsx` match on it) says what works now and carries the
+`mobile.headless.tabs` pill; Reopen and Activate are no longer held. The ＋
+sheet is unchanged (modes, worktrees, cloud, local models and sign-in still
+wait). Mail and Alerts screens keep reading the 503 as before.
+
+**Untested rows** (`src/lib/untested.ts`): `mobile.headless.tabs` (new),
+`mobile.headless.todo` / `.calendar` / `.schedules` / `.prompts` reworded to
+the writes. The seen stamp, the refresh poke and `adoptSyncOutcome`'s add
+have no visible control and carry no pill.
+
+**Tests added**: `workspace::tests::phone_tab_operations_land_in_the_file_and_a_closed_agent_tab_reopens`;
+`scheduler::tests::a_kill_ends_the_session_and_its_process_on_a_private_socket`
+(private `-L` socket, a `sleep` pane, skipped without tmux);
+`headless_board::tests::{board_writes_follow_the_desktops_rules,calendar_writes_land_locally_and_caldav_stays_behind_the_window}`;
+`host.rs::{tab_edits_close_and_reopen_are_the_owners_with_no_window,writes_with_side_effects_are_the_owners_with_no_window,an_undo_with_no_window_types_or_relaunches,activating_a_project_with_no_window_marks_the_registry}`
+(the `Fixture` now carries a `RunnerRecorder` as the host's `runner`:
+probe / delivered / killed); the four pre-H3 host tests
+(`renaming_a_tab_needs…`, `closing_a_tab_serves…`, `moving_a_tab_names…`,
+`desktop_images_need…`, `schedule_editor_requires…`,
+`prompt_collection_requires…`, `persisted_state_is_answered…`'s write half)
+assert the new contract; `WorkspaceSync.test.ts` +2 (a created-elsewhere
+tab is added, `refreshWorkspaceScope`).
+
+**H3 parity gaps, recorded not fixed**: a headless close ends the session
+even for a `tmuxAttach` tab (the desktop's close keeps a session the tab only
+attached to — the catalog does not tell the two apart; a phone lists
+`tmuxAttach` tabs rarely); a headless reopen of an agent other than Claude
+/ Codex continues its latest conversation, as the window's reopen does; the
+seen stamp is never pruned (one small file per uid under
+`mobile-control/seen/`); `AgentStatus` has no usage panel headless; a
+`refresh` poke reaches an older window as an unknown request type (its
+bridge answers `desktop_error`, harmless); `TabInput` records nothing, so a
+hookless agent typed into from the phone with no window still shows no
+status (as before). The mail memory note (`project_mail_mcp_tools.md`)
+still applies.
+
+## For whoever continues
+
+Nothing of the plan is left unbuilt except by decision (mail, alerts, the
+usage panel). In order, if the user wants more:
+1. Live-verify the exit (below); the seen stamp and the refresh poke are the
+   two places a reading could surprise.
+2. Alerts headless as a *partial* feed only if the user accepts "tasks and
+   calendar, no mail, no mutes" spelled out on the phone.
+3. Mail headless needs the store opened by the sidecar with the secrets
+   fetched from the keychain in that process — a design decision the memory
+   note argues against; do not start it without the user.
+
+**Manual checks owed (the plan's H3 exit).** Mobile enabled so the sidecar
+runs (`systemctl --user status eldrun-mobile-host`); quit Eldrun cleanly
+(the window's ×, which reaps every `eldrun-*` session) — the sidecar stays.
+On the phone, in a Mobile-enabled project:
+1. The project lists its tabs (rows without a screen: the sessions were
+   reaped) and the notice reads "Desktop unavailable — the Mobile host
+   answers…".
+2. ＋ → Claude: the row appears within ~2 s; `tmux ls` on the desktop shows
+   one `eldrun-<project>--agent-…`.
+3. Tap the row's name → rename; the card shows the new name; the colour dot
+   → a colour; drag the grip past another card. `cat
+   ~/.local/share/eldrun/sessions/<project>/terminals.json` (or the state
+   dir Eldrun uses) shows the label, `color`, the order and a moving
+   `workspaceVersion`.
+4. Open the Claude row's session, type a prompt, send; then ◷ Collected
+   prompts → the project's Sent list (or `agent_prompts.json`'s `history`)
+   holds the row. Back on the row, Undo clear after a `/clear`: `tmux attach
+   -t =<name>` shows `/resume <id>` typed.
+5. ✕ on the Claude row: `tmux ls` no longer lists it, `ps` shows no `claude`
+   for it, and "Recently closed" on the project screen lists the tab; ↺
+   reopens it — a new `eldrun-<project>--agent-…` in `tmux ls`, the same
+   conversation resumed (its screen shows the CLI resuming).
+6. To-do board: add a card, tick it, drag it to Doing, delete it; Calendar:
+   + Event on a local calendar, edit it, delete it; an event on a
+   CalDAV-backed calendar answers "calendar unavailable".
+7. ◷ on an agent row → add a one-time schedule three minutes ahead; the
+   journal (`journalctl --user -u eldrun-mobile-host -f`) shows the
+   delivery at the minute and `tmux attach` shows the prompt submitted.
+   Collected prompts → Send now on a prompt: same, at the next idle tick.
+8. Relaunch Eldrun: the renamed / coloured / reordered tabs, the reopened
+   Claude tab (attached to its session), the card, the event and the
+   schedule's receipt are all there; the phone-created tab appears in the
+   window with the phone's changes. With the window open, repeat 3 on the
+   phone: the window follows within a second (the desktop path).
+9. Two windows open (a packaged build beside the dev one) on the same state
+   dir; on the phone with both closed but the sidecar up, create a tab;
+   open one window: the tab is there (hydrate); open the second: there too.

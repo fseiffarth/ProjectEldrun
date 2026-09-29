@@ -103,6 +103,55 @@ sync; git probing is not gated. Exit tests:
 `alarms::tests::reminders_reach_the_phone_once_with_no_window`. Handoff:
 [`headless_owner_handoff.md`](headless_owner_handoff.md).*
 
+*Status: **H3 landed** (2026-09-29, never live-verified): with no window
+open the Mobile sidecar answers every remaining `DesktopRequest` kind but
+mail and alerts, and `MobileBridgeHost.tsx` answers nothing the owner can.
+The pattern is H0/H1b's throughout — the window first, the owner's files on
+`desktop_unavailable`, every headless answer flagged `desktop_available:
+false` — so with a window open nothing changed hands. **Tab mutations**
+(`RenameTab`, `ColorTab`, `ReorderTab`, `CloseTab`, `ReopenTab`, `Activate`)
+go through `services::workspace`'s per-tab operations, each an `edit_in`
+that stamps `updatedVersion` so a window's stale copy merges; a headless
+close ends the tab's tmux session and reaps its subtree
+(`scheduler::Runner::kill`) and remembers an agent tab in the file
+(`workspaceClosedTabs`) for a reopen, which comes back as a *new* tab (fresh
+id and tmux name, same session id) started detached on its resume args; an
+activate flips the registry's `status` under the lock. **Input paths**:
+`TabPrompt` is recorded on the prompt history (`agent_prompts::record_at`),
+`TabSeen` stamps a per-uid seen file the headless readings honour (a watched
+`done` is not reported again), `UndoClear` types Claude's `/resume` through
+the tmux runner or relaunches Codex, `TabInput` needs nothing (the hooks
+record the turn). **Writes with side effects**: `TodoMutate` /
+`CalendarMutate` are the desktop's board and calendar rules ported to
+`headless_board.rs` over H0's CAS cores (a CalDAV-backed calendar is refused:
+the window pushes from the write, so an edit here would be lost);
+`ScheduleMutate` / `PromptMutate` write `agent_tasks.json` /
+`agent_prompts.json` under their file locks (`upsert_in`, `upsert_at`,
+`archive_at`), a send-now being a one-time rule the sidecar's own scheduler
+fires. **Also**: `AgentStatus` (state and today's tally off the files, no
+usage panel — reading one runs the CLI in the window's agent home),
+`LaunchOptions` (only what the owner can start), `DesktopImages` /
+`AttachDesktopImage` (the same folders, no clipboard). **Still the
+window's**: `MailOverview` / `MailFolder` / `MailMessage` / `MailMark` /
+`MailReply` (the mail store, its IMAP sessions and the keychain-held secrets
+are the window's; the memory note "store must not be opened by the agent
+path" stands) and `Alerts` / `AlertResolve` (the feed is built in the window
+— `buildAlerts` over its stores, the mutes in `localStorage`). **The open
+window** adds a tab created elsewhere at its next sync (`adoptSyncOutcome`,
+bounded by `createdVersion`) and every headless write pokes an open window
+with `DesktopRequest::Refresh` (fire-and-forget; normally nothing is there
+to hear it). **The phone** edits the board, the calendar, schedules and
+prompts with the window closed, reopens and activates; only a mode /
+worktree / cloud / local-model / sign-in launch, mail and alerts still wait
+for the window. Exit tests: `host.rs::tab_edits_close_and_reopen_are_the_owners_with_no_window`,
+`…::writes_with_side_effects_are_the_owners_with_no_window`,
+`…::an_undo_with_no_window_types_or_relaunches`,
+`…::activating_a_project_with_no_window_marks_the_registry`,
+`scheduler::tests::a_kill_ends_the_session_and_its_process_on_a_private_socket`,
+`headless_board::tests::*`, `workspace::tests::phone_tab_operations_land_in_the_file_and_a_closed_agent_tab_reopens`,
+`WorkspaceSync.test.ts`. Handoff:
+[`headless_owner_handoff.md`](headless_owner_handoff.md).*
+
 The request behind it: **the phone, schedules and alarms keep working with
 the desktop window closed, and two clients never fight over the same state.**
 The hosted plan builds on this; nothing here depends on it.
