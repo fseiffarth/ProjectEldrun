@@ -147,7 +147,13 @@ fn probe(dir: &Path, name: &str) -> Option<(fs::File, fs::Metadata, &'static str
 /// the project file browser (`files.rs`). The descriptor comes back positioned
 /// after the head; `rewind` before reading the whole of it.
 pub fn open_sniffed(path: &Path) -> Option<(fs::File, fs::Metadata, &'static str)> {
-    let (mut file, meta) = open_regular(path)?;
+    let (file, meta) = open_regular(path)?;
+    sniff_opened(file, meta)
+}
+
+/// [`open_sniffed`] for a regular file the caller already opened (the file
+/// browser opens its own, relative to a folder descriptor).
+pub fn sniff_opened(mut file: fs::File, meta: fs::Metadata) -> Option<(fs::File, fs::Metadata, &'static str)> {
     let mut head = [0u8; SNIFF_BYTES];
     let mut filled = 0;
     while filled < SNIFF_BYTES {
@@ -163,7 +169,7 @@ pub fn open_sniffed(path: &Path) -> Option<(fs::File, fs::Metadata, &'static str
 
 /// Opens a regular file without following a link at its leaf (nor blocking
 /// on a FIFO swapped in after the check).
-fn open_regular(path: &Path) -> Option<(fs::File, fs::Metadata)> {
+pub(super) fn open_regular(path: &Path) -> Option<(fs::File, fs::Metadata)> {
     // `symlink_metadata` does not follow: a link is refused as such, wherever
     // it points.
     let meta = fs::symlink_metadata(path).ok()?;

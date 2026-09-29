@@ -176,23 +176,182 @@ fn canonical_root(root: &Path) -> Result<PathBuf, FilesError> {
     Ok(canonical)
 }
 
-/// `root` + `rel`, proven to be exactly that: canonicalizing it must change
-/// nothing, so no link anywhere on the way (not just at the leaf) — and a link
-/// swapped in after the listing is caught here, per request.
-fn resolve(root: &Path, rel: &str) -> Result<PathBuf, FilesError> {
-    let root = canonical_root(root)?;
-    if !valid_rel(rel) {
-        return Err(FilesError::NotFound);
+/// A folder of the project, reached from the root one checked name at a time
+/// and never through a link.
+///
+/// On Unix it is held open: each step is an `openat(…, O_NOFOLLOW)` relative
+/// to the folder before it, and listing and opening a file start from this
+/// descriptor too. Nothing is resolved by path after a check, so a folder on
+/// the way swapped for a link mid-request changes nothing — the walk already
+/// holds the real one. Elsewhere it is the path, proven per request by
+/// canonicalizing (a swap between that proof and the open is not caught there).
+#[cfg(unix)]
+struct ProjectDir(fs::File);
+
+#[cfg(unix)]
+impl ProjectDir {
+    fn open(root: &Path, rel: &str) -> Result<Self, FilesError> {
+        let root = canonical_root(root)?;
+        if !valid_rel(rel) {
+            return Err(FilesError::NotFound);
+        }
+        let mut dir = fs::File::open(&root)
+            .ok()
+            .filter(|dir| dir.metadata().is_ok_and(|meta| meta.is_dir()))
+            .map(Self)
+            .ok_or(FilesError::Unavailable)?;
+        if !rel.is_empty() {
+            for name in rel.split('/') {
+                dir = dir.child_dir(name).ok_or(FilesError::NotFound)?;
+            }
+        }
+        Ok(dir)
     }
-    let mut expected = root.clone();
-    if !rel.is_empty() {
-        expected.extend(rel.split('/'));
+
+    /// `name` in this folder, opened without following a link at it.
+    fn open_at(&self, name: &str, directory: bool) -> Option<fs::File> {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        let name = std::ffi::CString::new(name).ok()?;
+        // Non-blocking, so a FIFO swapped in is refused below, not waited on.
+        let mut flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
+        if directory {
+            flags |= libc::O_DIRECTORY;
+        }
+        // SAFETY: a live directory descriptor and a NUL-terminated name.
+        let fd = unsafe { libc::openat(self.0.as_raw_fd(), name.as_ptr(), flags) };
+        // SAFETY: `fd` was just opened and nothing else owns it.
+        (fd >= 0).then(|| unsafe { fs::File::from_raw_fd(fd) })
     }
-    let canonical = expected.canonicalize().map_err(|_| FilesError::NotFound)?;
-    if canonical != expected || !canonical.starts_with(&root) {
-        return Err(FilesError::NotFound);
+
+    fn child_dir(&self, name: &str) -> Option<Self> {
+        self.open_at(name, true).map(Self)
     }
-    Ok(canonical)
+
+    fn child_dir_meta(&self, name: &str) -> Option<fs::Metadata> {
+        self.child_dir(name)?.0.metadata().ok()
+    }
+
+    fn open_file(&self, name: &str) -> Option<(fs::File, fs::Metadata)> {
+        let file = self.open_at(name, false)?;
+        let meta = file.metadata().ok()?;
+        meta.is_file().then_some((file, meta))
+    }
+
+    /// The folders and regular files in this folder, named, `true` for a
+    /// folder. Links and anything else are left out without being followed.
+    fn entries(&self) -> Result<Vec<(String, bool)>, FilesError> {
+        use std::os::fd::AsRawFd;
+        let os_error = || FilesError::Io(std::io::Error::last_os_error().to_string());
+        // SAFETY: `fdopendir` takes ownership of a descriptor of its own.
+        let fd = unsafe { libc::dup(self.0.as_raw_fd()) };
+        if fd < 0 {
+            return Err(os_error());
+        }
+        // SAFETY: `fd` is a directory descriptor this function owns.
+        let stream = unsafe { libc::fdopendir(fd) };
+        if stream.is_null() {
+            let error = os_error();
+            // SAFETY: `fdopendir` failed, so `fd` is still ours to close.
+            unsafe { libc::close(fd) };
+            return Err(error);
+        }
+        // SAFETY: `stream` is open; the duplicate shares this folder's offset.
+        unsafe { libc::rewinddir(stream) };
+        let mut out = Vec::new();
+        loop {
+            // SAFETY: `stream` is open, and each entry is read before the next call.
+            let entry = unsafe { libc::readdir(stream) };
+            if entry.is_null() {
+                break;
+            }
+            // SAFETY: `readdir` returned a live entry with a NUL-terminated name.
+            let (name, kind) = unsafe { (std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()), (*entry).d_type) };
+            let Ok(name) = name.to_str() else { continue };
+            let is_dir = match kind {
+                libc::DT_DIR => true,
+                libc::DT_REG => false,
+                // A filesystem that does not say: ask, still without following.
+                libc::DT_UNKNOWN => match self.kind_of(name) {
+                    Some(is_dir) => is_dir,
+                    None => continue,
+                },
+                _ => continue,
+            };
+            out.push((name.to_owned(), is_dir));
+        }
+        // SAFETY: `stream` is open and is not used again.
+        unsafe { libc::closedir(stream) };
+        Ok(out)
+    }
+
+    /// Whether `name` is a folder (`Some(true)`) or a regular file, by
+    /// `fstatat` without following a link; `None` for anything else.
+    fn kind_of(&self, name: &str) -> Option<bool> {
+        use std::os::fd::AsRawFd;
+        let c_name = std::ffi::CString::new(name).ok()?;
+        let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+        // SAFETY: a live directory descriptor, a NUL-terminated name, and room for the result.
+        let found = unsafe {
+            libc::fstatat(self.0.as_raw_fd(), c_name.as_ptr(), stat.as_mut_ptr(), libc::AT_SYMLINK_NOFOLLOW)
+        };
+        if found != 0 {
+            return None;
+        }
+        // SAFETY: `fstatat` succeeded and filled it.
+        let mode = unsafe { stat.assume_init() }.st_mode & libc::S_IFMT;
+        match mode {
+            libc::S_IFDIR => Some(true),
+            libc::S_IFREG => Some(false),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(not(unix))]
+struct ProjectDir(PathBuf);
+
+#[cfg(not(unix))]
+impl ProjectDir {
+    /// `root` + `rel`, proven to be exactly that: canonicalizing it must change
+    /// nothing, so no link anywhere on the way (not just at the leaf) — and a
+    /// link swapped in after the listing is caught here, per request.
+    fn open(root: &Path, rel: &str) -> Result<Self, FilesError> {
+        let root = canonical_root(root)?;
+        if !valid_rel(rel) {
+            return Err(FilesError::NotFound);
+        }
+        let mut expected = root.clone();
+        if !rel.is_empty() {
+            expected.extend(rel.split('/'));
+        }
+        let canonical = expected.canonicalize().map_err(|_| FilesError::NotFound)?;
+        if canonical != expected || !canonical.starts_with(&root) || !canonical.is_dir() {
+            return Err(FilesError::NotFound);
+        }
+        Ok(Self(canonical))
+    }
+
+    fn child_dir_meta(&self, name: &str) -> Option<fs::Metadata> {
+        fs::symlink_metadata(self.0.join(name)).ok().filter(fs::Metadata::is_dir)
+    }
+
+    fn open_file(&self, name: &str) -> Option<(fs::File, fs::Metadata)> {
+        outbox::open_regular(&self.0.join(name))
+    }
+
+    fn entries(&self) -> Result<Vec<(String, bool)>, FilesError> {
+        let mut out = Vec::new();
+        for entry in fs::read_dir(&self.0).map_err(|e| FilesError::Io(e.to_string()))? {
+            let Ok(entry) = entry else { continue };
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else { continue };
+            // `file_type` does not follow a link.
+            let Ok(kind) = entry.file_type() else { continue };
+            if kind.is_dir() || kind.is_file() {
+                out.push((name, kind.is_dir()));
+            }
+        }
+        Ok(out)
+    }
 }
 
 fn child(rel: &str, name: &str) -> String {
@@ -203,23 +362,13 @@ fn child(rel: &str, name: &str) -> String {
 /// the like are not listed; neither are hidden names or names the browser
 /// could not resolve again. Only the kept entries are opened to sniff a type.
 pub fn list(root: &Path, rel: &str, host_key: &[u8], raw_id: &str) -> Result<Listing, FilesError> {
-    let dir = resolve(root, rel)?;
-    if !dir.is_dir() {
-        return Err(FilesError::NotFound);
-    }
-    let mut found = Vec::new();
-    for entry in fs::read_dir(&dir).map_err(|e| FilesError::Io(e.to_string()))? {
-        let Ok(entry) = entry else { continue };
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else { continue };
-        if !valid_segment(&name) {
-            continue;
-        }
-        // `file_type` does not follow a link.
-        let Ok(kind) = entry.file_type() else { continue };
-        if kind.is_dir() || kind.is_file() {
-            found.push((kind.is_dir(), name));
-        }
-    }
+    let dir = ProjectDir::open(root, rel)?;
+    let mut found: Vec<(bool, String)> = dir
+        .entries()?
+        .into_iter()
+        .filter(|(name, _)| valid_segment(name))
+        .map(|(name, is_dir)| (is_dir, name))
+        .collect();
     found.sort_by(|(a_dir, a), (b_dir, b)| {
         b_dir.cmp(a_dir).then_with(|| a.to_lowercase().cmp(&b.to_lowercase())).then_with(|| a.cmp(b))
     });
@@ -227,16 +376,13 @@ pub fn list(root: &Path, rel: &str, host_key: &[u8], raw_id: &str) -> Result<Lis
     found.truncate(MAX_ENTRIES);
     let mut entries = Vec::with_capacity(found.len());
     for (is_dir, name) in found {
-        let path = dir.join(&name);
+        // Swapped for a link or removed since the listing: not listed.
         let (kind, size, meta) = if is_dir {
-            let Ok(meta) = fs::symlink_metadata(&path) else { continue };
-            if !meta.is_dir() {
-                continue;
-            }
+            let Some(meta) = dir.child_dir_meta(&name) else { continue };
             ("dir", 0, meta)
         } else {
-            // Swapped for a link or removed since `read_dir`: not listed.
-            let Some((_file, meta, kind)) = outbox::open_sniffed(&path) else { continue };
+            let Some((file, meta)) = dir.open_file(&name) else { continue };
+            let Some((_file, meta, kind)) = outbox::sniff_opened(file, meta) else { continue };
             (kind, meta.len(), meta)
         };
         let modified = meta.modified().map(outbox::unix_secs).unwrap_or(0);
@@ -250,11 +396,12 @@ pub fn list(root: &Path, rel: &str, host_key: &[u8], raw_id: &str) -> Result<Lis
 /// answered with its head — a long log is still worth its first pages; any
 /// other kind that large is `TooLarge`.
 pub fn read(root: &Path, rel: &str) -> Result<(Vec<u8>, &'static str), FilesError> {
-    if rel.is_empty() {
+    if rel.is_empty() || !valid_rel(rel) {
         return Err(FilesError::NotFound);
     }
-    let path = resolve(root, rel)?;
-    let Some((mut file, meta, kind)) = outbox::open_sniffed(&path) else {
+    let (parent, name) = rel.rsplit_once('/').unwrap_or(("", rel));
+    let dir = ProjectDir::open(root, parent)?;
+    let Some((mut file, meta, kind)) = dir.open_file(name).and_then(|(file, meta)| outbox::sniff_opened(file, meta)) else {
         return Err(FilesError::NotFound);
     };
     if meta.len() > MAX_OUTBOX_FILE && !kind.starts_with("text/") {
@@ -407,6 +554,31 @@ mod tests {
         fs::rename(dir.path().join("src"), dir.path().join("src-moved")).unwrap();
         std::os::unix::fs::symlink(outside.path(), dir.path().join("src")).unwrap();
         assert_eq!(list(dir.path(), &rel, KEY, "p1"), Err(FilesError::NotFound));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_swapped_for_a_link_mid_walk_never_hands_out_the_links_target() {
+        let dir = tree();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("main.rs"), "private").unwrap();
+        fs::write(outside.path().join("leak.txt"), "private").unwrap();
+
+        // The walk has reached `src` when it is swapped for a link: the rest of
+        // the request goes on from the folder it holds, not from the path.
+        let held = ProjectDir::open(dir.path(), "src").unwrap();
+        fs::rename(dir.path().join("src"), dir.path().join("src-moved")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("src")).unwrap();
+
+        let (mut file, _) = held.open_file("main.rs").unwrap();
+        let mut text = String::new();
+        file.read_to_string(&mut text).unwrap();
+        assert_eq!(text, "fn main() {}\n");
+        let names: Vec<String> = held.entries().unwrap().into_iter().map(|(name, _)| name).collect();
+        assert!(names.contains(&"deep".to_string()) && !names.contains(&"leak.txt".to_string()));
+        assert!(held.child_dir_meta("deep").is_some());
+        // And a fresh request stops at the link.
+        assert_eq!(read(dir.path(), "src/main.rs"), Err(FilesError::NotFound));
     }
 
     #[test]
