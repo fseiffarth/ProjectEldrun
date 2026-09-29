@@ -386,7 +386,7 @@ export const UNTESTED = {
   "mobile.project.reorder": { area: "mobile", what: "Project · Drag to reorder the desktop's tabs" },
   "mobile.project.git": { area: "mobile", what: "Home/Project · The desktop pill's git dot on the phone: a coloured \"not added / not committed / not pushed\" in each project row's caption, and the full sentence under the project screen's header (re-probed at most every 10 s while open)" },
   "mobile.project.modelTap": { area: "mobile", what: "Project · Tap a tab card's model to open the session with its model picker up", tested: "2026-09-23" },
-  "mobile.project.scheduledInPrompts": { area: "mobile", what: "Project · An agent card lists its upcoming scheduled prompts (◷ + desktop time) above the last prompts; the ◷ button sits right of the model; no \"No scheduled prompts\" line" },
+  "mobile.project.scheduledInPrompts": { area: "mobile", what: "Project · An agent card lists its upcoming scheduled prompts (◷ + desktop time) above the last prompts; the ◷ button sits right of the model; no \"No scheduled prompts\" line", tested: "2026-09-29" },
   "inbox.menuTitle": { area: "mobile", what: "InboxIndicator · Sent from your phone (global inbox)" },
   "mobile.home.sendToDesktop": { area: "mobile", what: "Home · Send a file to the desktop (global inbox)" },
   "mobile.setupTitle": { area: "mobile", what: "MobileSetupGuide · Set up Eldrun Mobile" },
