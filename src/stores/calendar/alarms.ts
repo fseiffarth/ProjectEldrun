@@ -19,6 +19,7 @@ import { formatStampTime } from "../../lib/calendar/calendarTime";
 import { readUse24h } from "../../lib/timeFormat";
 import { translate, useI18nStore } from "../../lib/i18n";
 import { useCalendarStore } from "./calendar";
+import { holdsTimerLease } from "../timerLease";
 
 /** How often the ticker looks for due reminders. */
 const TICK_MS = 30_000;
@@ -155,6 +156,9 @@ export const useAlarmStore = create<AlarmStore>((set, get) => ({
   },
 
   tick: async (now = new Date()) => {
+    // Another Eldrun window holds the timer lease: it fires the reminders,
+    // this one does not (headless owner plan, H2 interim).
+    if (!holdsTimerLease()) return;
     const { events, calendars, loaded } = useCalendarStore.getState();
     if (!loaded) return;
 

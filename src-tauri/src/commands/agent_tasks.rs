@@ -11,6 +11,21 @@ fn changed(app: &AppHandle) {
     let _ = app.emit(CHANGED_EVENT, ());
 }
 
+/// Take or renew the single-client timer lease for this window
+/// (`services::timer_lease`, headless owner plan H2): the timer hosts run
+/// only while it answers `held`. Called on a heartbeat.
+#[tauri::command]
+pub fn timer_lease_acquire(client_id: String) -> Result<crate::services::timer_lease::LeaseState, String> {
+    crate::services::timer_lease::acquire(&client_id)
+}
+
+/// Give the timer lease up on the way out, so another window takes over at
+/// once rather than after the TTL.
+#[tauri::command]
+pub fn timer_lease_release(client_id: String) -> Result<(), String> {
+    crate::services::timer_lease::release(&client_id)
+}
+
 #[tauri::command]
 pub fn agent_schedules_list(
     project_id: String,

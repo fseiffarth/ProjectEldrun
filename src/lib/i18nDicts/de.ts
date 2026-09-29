@@ -1445,6 +1445,7 @@ export const dict: Dict = {
   "agentSchedule.howItWorks": "So funktioniert die Zustellung",
   "agentSchedule.warning": "Wenn ein Prompt fällig wird, wartet Eldrun bis zu einer Stunde auf einen sicheren Leerlauf. Die Zustellung ersetzt ungesendeten Text im Eingabefeld dieses Agenten, auch wenn der Tab fokussiert ist.",
   "agentSchedule.openOnly": "Die Desktop-App übernimmt die Zustellung. Prompts laufen nur, solange Eldrun auf dem Desktop geöffnet ist; verpasste Termine werden vermerkt und wiederkehrende Pläne senden keinen Rückstau auf einmal.",
+  "agentSchedule.leaseElsewhere": "Ein anderes Eldrun-Fenster hält gerade die Timer: geplante Prompts, Auto-Weiter, Erinnerungen und Synchronisationen laufen dort, nicht hier. Dieses Fenster übernimmt, sobald jenes schließt.",
   "agentSchedule.nonResumable": "Dieser Agenten-Tab kann nicht fortgesetzt werden. Seine Pläne verschwinden, wenn der Tab oder Eldrun geschlossen wird.",
   "agentSchedule.saved": "Zeitpläne",
   "agentSchedule.none": "Für diesen Tab sind keine Prompts geplant.",

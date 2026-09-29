@@ -1340,6 +1340,8 @@ pub fn run() {
             // Per-tab scheduled agent prompts. Definitions and receipts live in
             // local-only agent_tasks.json; the frontend owns wall-clock delivery.
             commands::agent_tasks::agent_schedules_list,
+            commands::agent_tasks::timer_lease_acquire,
+            commands::agent_tasks::timer_lease_release,
             commands::agent_tasks::agent_schedule_upsert,
             commands::agent_tasks::agent_schedule_delete,
             commands::agent_tasks::agent_schedules_delete_target,

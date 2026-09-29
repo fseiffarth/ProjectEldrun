@@ -52,6 +52,7 @@ import { PrinterNetworkDefaultsHost } from "../printing/PrinterNetworkDefaultsHo
 import { AgentContinueHost } from "./AgentContinueHost";
 import { AgentCronHost } from "./AgentCronHost";
 import { AgentScheduleHost } from "./AgentScheduleHost";
+import { TimerLeaseHost } from "./TimerLeaseHost";
 import { CalDavConflictDialog } from "../calendar/CalDavConflictDialog";
 import { ModelsOverlayHost } from "../models/ModelsOverlay";
 import { RootOverlayHost } from "./RootOverlay";
@@ -1417,6 +1418,7 @@ export function AppShell() {
           there would only ever fire while its own settings page was being read.
           Main window only, so two windows cannot both send the morning's
           message. */}
+          <TimerLeaseHost />
           <AgentContinueHost />
           <AgentCronHost />
           <AgentScheduleHost />

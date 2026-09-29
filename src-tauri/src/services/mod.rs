@@ -148,6 +148,9 @@ pub mod tmux_local;
 // The shared tab set with a version and per-operation merge (headless owner
 // plan, H1): what `save_tab_layout`'s whole-snapshot write became.
 pub mod workspace;
+// The single-client timer lease (headless owner plan, H2, interim): one
+// window fires schedules, alarms and syncs at a time.
+pub mod timer_lease;
 pub mod usage_stats;
 // Project VMs (`docs/vm_projects_plan.md`): the third trust tier — the whole
 // project inside a hardware-accelerated QEMU guest (KVM on Linux, HVF on

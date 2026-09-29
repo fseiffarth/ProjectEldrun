@@ -1442,6 +1442,7 @@ export const dict: Dict = {
   "agentSchedule.howItWorks": "Cómo funciona la entrega",
   "agentSchedule.warning": "Cuando vence un prompt, Eldrun espera hasta una hora a que haya un punto seguro de inactividad. La entrega sustituye cualquier texto sin enviar del editor del agente, incluso si la pestaña tiene el foco.",
   "agentSchedule.openOnly": "La aplicación de escritorio gestiona la entrega. Los prompts solo se ejecutan mientras Eldrun está abierto en el escritorio; las ocasiones perdidas se registran y los programas recurrentes nunca envían de golpe un atraso.",
+  "agentSchedule.leaseElsewhere": "Otra ventana de Eldrun tiene ahora los temporizadores: los prompts programados, la continuación automática, los recordatorios y las sincronizaciones se disparan allí, no aquí. Esta ventana toma el relevo cuando aquella se cierre.",
   "agentSchedule.nonResumable": "Esta pestaña de agente no se puede reanudar. Sus programas desaparecen al cerrar la pestaña o Eldrun.",
   "agentSchedule.saved": "Programas",
   "agentSchedule.none": "No hay prompts programados para esta pestaña.",

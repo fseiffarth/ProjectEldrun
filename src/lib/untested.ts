@@ -45,6 +45,7 @@ export const UNTESTED = {
 
   // --- agents — Agent sessions, schedules and the prompt chart ------
   "agentSchedule.title": { area: "agents", what: "AgentScheduleDialog · Scheduled prompts · {tab}" },
+  "agentSchedule.leaseElsewhere": { area: "agents", what: "AgentScheduleDialog · note that another Eldrun window holds the timer lease (schedules, auto-continue, reminders, CalDAV sync fire there); the lease itself: one window per state dir fires timers, heartbeat-renewed, 30 s TTL" },
   "promptChart.heading": { area: "agents", what: "PromptChart · Prompt chart" },
   "terminal.signIn.title": { area: "agents", what: "Terminal sign-in card · open/copy an agent's login link, paste the code back; wrapped URLs click and copy whole" },
   "terminal.keySelect.title": { area: "agents", what: "Terminal keyboard select (Ctrl+Shift+X) · arrows/hjkl move, Shift/v select, V lines, Enter/y/Ctrl+C copy, Esc leaves; right-click copies a selection; a selection survives hovering an agent TUI; copies go through the backend clipboard" },

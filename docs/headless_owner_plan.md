@@ -35,7 +35,17 @@ per-client layout is split at the API (`groups`/`sessions`/`active_tab_index`
 are the client's fields the merge never reads), not into a second file;
 (5) default apps keep their whole-document save (a bare map with nowhere to
 hold a revision); (6) `Catalog`/`Activity`/`GitStates` are still the
-window's. H2 and H3 are still plan only.*
+window's.*
+
+*Status: **H2 interim landed** (2026-09-29, never live-verified): the
+single-client lease. `services::timer_lease` grants one client per state
+dir a heartbeat-renewed lease (`timer-lease.json`, 30 s TTL, released on
+the way out); the React timer hosts — scheduled prompts, auto-continue, the
+warm-up cron, calendar alarms, CalDAV sync — tick only while their window
+holds it, and the schedule dialog says so when another window does. Git
+probing is not gated (a duplicate probe costs, never fires). The port of the
+timers into the owner — "fires once with no client" — is still plan only,
+as is H3.*
 
 The request behind it: **the phone, schedules and alarms keep working with
 the desktop window closed, and two clients never fight over the same state.**

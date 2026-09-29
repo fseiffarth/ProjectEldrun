@@ -1418,6 +1418,7 @@ export const en = {
   "agentSchedule.howItWorks": "How delivery works",
   "agentSchedule.warning": "When a prompt becomes due, Eldrun waits up to one hour for a safe idle point. Delivery replaces any unsent text currently in this agent's composer, even while the tab is focused.",
   "agentSchedule.openOnly": "The desktop app owns delivery. Prompts run only while desktop Eldrun is open; missed occurrences are recorded and recurring schedules never burst-send a backlog.",
+  "agentSchedule.leaseElsewhere": "Another Eldrun window holds the timers right now: scheduled prompts, auto-continue, reminders and syncs fire there, not here. This window takes over when that one closes.",
   "agentSchedule.nonResumable": "This agent tab is not resumable. Its schedules disappear when the tab closes or when Eldrun closes.",
   "agentSchedule.saved": "Schedules",
   "agentSchedule.none": "No prompts are scheduled for this tab.",

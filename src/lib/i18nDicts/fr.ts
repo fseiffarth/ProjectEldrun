@@ -1444,6 +1444,7 @@ export const dict: Dict = {
   "agentSchedule.howItWorks": "Comment la remise fonctionne",
   "agentSchedule.warning": "Lorsqu’un prompt arrive à échéance, Eldrun attend jusqu’à une heure un point d’inactivité sûr. L’envoi remplace tout texte non envoyé dans l’éditeur de l’agent, même si l’onglet a le focus.",
   "agentSchedule.openOnly": "L’application de bureau assure l’envoi. Les prompts ne s’exécutent que lorsque Eldrun est ouvert sur le bureau ; les occurrences manquées sont consignées et les planifications récurrentes n’envoient jamais un arriéré en rafale.",
+  "agentSchedule.leaseElsewhere": "Une autre fenêtre Eldrun détient les minuteurs en ce moment : les invites planifiées, la reprise automatique, les rappels et les synchronisations se déclenchent là-bas, pas ici. Cette fenêtre prend le relais quand l’autre se ferme.",
   "agentSchedule.nonResumable": "Cet onglet d’agent ne peut pas être repris. Ses planifications disparaissent lorsque l’onglet ou Eldrun est fermé.",
   "agentSchedule.saved": "Planifications",
   "agentSchedule.none": "Aucun prompt n’est planifié pour cet onglet.",

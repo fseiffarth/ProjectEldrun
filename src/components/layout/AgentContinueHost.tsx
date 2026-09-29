@@ -8,6 +8,7 @@ import { recordScheduledDelivery } from "../../stores/agents/agentPrompts";
 import { continueKey, useAgentContinueStore } from "../../stores/agents/agentContinue";
 import { useTabsStore, type TabEntry } from "../../stores/tabs";
 import { scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agents/agentSchedules";
+import { holdsTimerLease } from "../../stores/timerLease";
 
 /**
  * Keeps an agent tab going across its own CLI's rate-limit windows.
@@ -220,6 +221,9 @@ export function AgentContinueHost() {
     };
 
     const tick = async () => {
+      // Another Eldrun window holds the timer lease: it continues the agents,
+      // this one does not (headless owner plan, H2 interim).
+      if (!holdsTimerLease()) return;
       if (disposed || running.current) return;
       running.current = true;
       try {

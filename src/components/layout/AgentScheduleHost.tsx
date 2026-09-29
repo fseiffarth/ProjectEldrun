@@ -19,6 +19,7 @@ import { agentDeliveryReady, agentDeliveryTurn, lastPtyOutputAt, noteSchedulePro
 import { recordScheduledDelivery, sendCollectedPrompt, useAgentPromptsStore } from "../../stores/agents/agentPrompts";
 import { persistScopeLayout, useAgentSchedulesStore } from "../../stores/agents/agentSchedules";
 import { useTabsStore, type TabEntry } from "../../stores/tabs";
+import { holdsTimerLease } from "../../stores/timerLease";
 
 const TICK_MS = 15_000;
 const OUTPUT_SETTLE_MS = 1_200;
@@ -290,6 +291,9 @@ export function AgentScheduleHost() {
 
     const tick = async () => {
       if (disposed || running.current) return;
+      // Another Eldrun window holds the timer lease: it delivers, this one
+      // does not (headless owner plan, H2 interim).
+      if (!holdsTimerLease()) return;
       running.current = true;
       try {
         const now = new Date();

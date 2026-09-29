@@ -32,6 +32,7 @@ import { DateTimeField } from "../common/DateTimeField";
 import { Dropdown } from "../common/Dropdown";
 import { TimeField } from "../common/TimeField";
 import { UntestedTag } from "../common/UntestedTag";
+import { useTimerLeaseStore } from "../../stores/timerLease";
 import { ErrorNote } from "../common/ErrorNote";
 
 interface Props {
@@ -65,6 +66,7 @@ function defaultOnce(): string {
 
 export function AgentScheduleDialog({ scope, tab, onClose, initialMessage, initialPromptId }: Props) {
   const t = useT();
+  const leaseHeld = useTimerLeaseStore((s) => s.held);
   const lang = useI18nStore((state) => state.lang);
   const use24h = useUse24h();
   const targetId = tab.scheduleTargetId;
@@ -284,6 +286,14 @@ export function AgentScheduleDialog({ scope, tab, onClose, initialMessage, initi
             <p>{t("agentSchedule.warning")}</p>
             <p>{t("agentSchedule.openOnly")}</p>
           </details>
+          {/* Two Eldrun windows on one state dir: only the one holding the timer
+              lease delivers (headless owner plan, H2 interim). Said here, where
+              a schedule is written, rather than discovered when it does not fire. */}
+          {!leaseHeld && (
+            <p className="agent-schedule-notice">
+              {t("agentSchedule.leaseElsewhere")} <UntestedTag id="agentSchedule.leaseElsewhere" />
+            </p>
+          )}
           {!isResumableAgentTab(tab) && (
             <div className="agent-schedule-warn">{t("agentSchedule.nonResumable")}</div>
           )}
