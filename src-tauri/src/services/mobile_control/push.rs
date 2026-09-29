@@ -305,12 +305,18 @@ fn clip(value: &str, max: usize) -> String {
 impl PushStore {
     pub fn open(control_dir: &Path) -> Result<Self, String> {
         let key_path = control_dir.join("push-vapid.key");
+        #[allow(clippy::question_mark)] // the `match` below — see there
         let vapid = if key_path.exists() {
             store::ensure_private_file(&key_path)?;
             let bytes = fs::read(&key_path).map_err(|e| format!("read push key: {e}"))?;
             SigningKey::from_slice(&bytes).map_err(|_| "push-vapid.key is invalid".to_string())?
         } else {
-            Self::write_new_key(&key_path)?
+            // A `match`, not `?`: CodeQL carries a `?`'s value on into the
+            // function's return, and the whole store then read as the key.
+            match Self::write_new_key(&key_path) {
+                Ok(key) => key,
+                Err(e) => return Err(e),
+            }
         };
         let path = control_dir.join("push.json");
         let file = if path.exists() {
@@ -791,7 +797,7 @@ mod tests {
     fn agent_notices_follow_each_phones_choice_and_carry_only_opaque_ids() {
         let dir = tempfile::tempdir().unwrap();
         let mut push = PushStore::open(dir.path()).unwrap();
-        let auth_bytes = [4u8; 16];
+        let auth_bytes = random_bytes::<16>().unwrap();
         let auth = Base64UrlUnpadded::encode_string(&auth_bytes);
         let phones: Vec<(SecretKey, AgentNotices, bool)> = vec![
             (random_secret_key().unwrap(), AgentNotices::Off, true),

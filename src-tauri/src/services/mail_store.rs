@@ -183,7 +183,13 @@ impl MailStore {
         // what strands a digest — it seals a value and leaves the key column
         // beside it untouched — and the vacuum is what stops the old cleartext
         // key from surviving in the freelist of the file that replaces it.
-        let rekeyed = store.rekey_digest_columns()? > 0;
+        // A `match`, not `?`: CodeQL carries a `?`'s value on into the
+        // function's return, and this count then read as the store's key.
+        #[allow(clippy::question_mark)]
+        let rekeyed = match store.rekey_digest_columns() {
+            Ok(count) => count > 0,
+            Err(e) => return Err(e),
+        };
         // A store that was never marked done also gets the vacuum when this
         // pass found nothing left to seal: that is the store whose previous
         // sealing pass completed and then died before its vacuum.
