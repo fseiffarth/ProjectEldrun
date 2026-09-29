@@ -605,7 +605,7 @@ pub fn adopt_untrusted_session(
         tab.extra.remove(crate::services::workspace::TAB_ID_KEY);
         tab.extra.remove(crate::services::workspace::TAB_CREATED_KEY);
     }
-    crate::services::workspace::edit_in(&state_session_path(project_id), |stored| {
+    crate::services::workspace::edit_in(&state_session_path(project_id), project_id, |stored| {
         *stored = session;
         Ok(())
     })

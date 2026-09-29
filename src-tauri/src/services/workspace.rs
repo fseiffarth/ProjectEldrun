@@ -55,8 +55,22 @@ pub const TAB_ID_KEY: &str = "id";
 /// whose base is older never knew it, so its snapshot lacking the tab is not
 /// a close.
 pub const TAB_CREATED_KEY: &str = "createdVersion";
+/// `TabEntry.extra`: the version the tab's fields last changed at. A client
+/// whose base is older than it holds a stale copy of the tab, and its
+/// snapshot does not overwrite what it never saw (a phone's rename lands
+/// through the sidecar; the desktop's next sync keeps it).
+pub const TAB_UPDATED_KEY: &str = "updatedVersion";
 /// Tombstones kept per scope; the oldest fall off.
 const MAX_TOMBSTONES: usize = 64;
+
+/// The persisted tab fields the owner mints when a created tab lacks them:
+/// the tmux session a PTY tab runs in (`TabEntry.tmuxSession`, the shape
+/// `discovery::expected_tmux` checks) and an agent tab's schedule binding
+/// (`scheduleTargetId`). Both are inert until a spawn reads them.
+const TMUX_SESSION_KEY: &str = "tmuxSession";
+const TMUX_ATTACH_KEY: &str = "tmuxAttach";
+const SCHEDULE_TARGET_KEY: &str = "scheduleTargetId";
+const KIND_KEY: &str = "kind";
 
 /// The version a session carries (`0` = never synced).
 pub fn version_of(session: &TerminalSession) -> u64 {
@@ -75,6 +89,56 @@ pub fn tab_id(tab: &TabEntry) -> Option<&str> {
 
 fn created_version(tab: &TabEntry) -> u64 {
     tab.extra.get(TAB_CREATED_KEY).and_then(Value::as_u64).unwrap_or(0)
+}
+
+fn updated_version(tab: &TabEntry) -> u64 {
+    tab.extra.get(TAB_UPDATED_KEY).and_then(Value::as_u64).unwrap_or(0)
+}
+
+fn extra_str<'a>(tab: &'a TabEntry, key: &str) -> Option<&'a str> {
+    tab.extra.get(key).and_then(Value::as_str).filter(|s| !s.is_empty())
+}
+
+/// The tab's tmux session name, or the session it attaches to — how the
+/// phone names a tab (`discovery::ResolvedTab::tmux_name`).
+pub fn tmux_of(tab: &TabEntry) -> Option<&str> {
+    extra_str(tab, TMUX_SESSION_KEY).or_else(|| extra_str(tab, TMUX_ATTACH_KEY))
+}
+
+fn kind_of(tab: &TabEntry) -> &str {
+    extra_str(tab, KIND_KEY).unwrap_or("")
+}
+
+// ── Owner-side minting ──────────────────────────────────────────────────────
+
+/// Mint the tmux session name of a scope's new PTY tab:
+/// `eldrun-<scope>--<shell|agent>-<uuid>`. The same shape the desktop minted
+/// client-side (`lib/terminal/tmuxSession.ts::newTmuxSessionName`) and the one
+/// the sidecar's catalog checks (`discovery::expected_tmux`): the scope after
+/// `eldrun-`, reduced like every state-dir key, then `--`, then the kind
+/// token at the front of the uuid half, so a host shared by several projects
+/// can tell one project's sessions from another's.
+pub fn mint_tmux_session(scope: &str, kind: &str) -> String {
+    let token = if kind == "shell" { "shell" } else { "agent" };
+    format!("eldrun-{}--{token}-{}", storage::project_key(scope), crate::commands::projects::uuid_v4())
+}
+
+/// Give a freshly created tab what the owner mints for it: a tmux session
+/// name for a PTY tab (shell, agent, local-model agent) that carries none and
+/// attaches to none, and a schedule binding for an agent tab that has none.
+/// A tab of another kind, or one that already carries them, is left alone.
+fn mint_for_created(scope: &str, tab: &mut TabEntry) {
+    let kind = kind_of(tab).to_string();
+    let pty_tab = matches!(kind.as_str(), "shell" | "agent" | "local_agent");
+    if !pty_tab {
+        return;
+    }
+    if kind != "shell" && extra_str(tab, SCHEDULE_TARGET_KEY).is_none() {
+        tab.extra.insert(SCHEDULE_TARGET_KEY.to_string(), Value::String(crate::commands::projects::uuid_v4()));
+    }
+    if tmux_of(tab).is_none() {
+        tab.extra.insert(TMUX_SESSION_KEY.to_string(), Value::String(mint_tmux_session(scope, &kind)));
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -206,6 +270,7 @@ fn comparable(tab: &TabEntry) -> Value {
     let mut value = serde_json::to_value(tab).unwrap_or(Value::Null);
     if let Some(obj) = value.as_object_mut() {
         obj.remove(TAB_CREATED_KEY);
+        obj.remove(TAB_UPDATED_KEY);
     }
     value
 }
@@ -213,10 +278,13 @@ fn comparable(tab: &TabEntry) -> Value {
 /// Merge a client's snapshot onto `session` (already adopted), in memory.
 ///
 /// - A client tab whose id the set holds is **kept** with the client's
-///   fields (field edits are last-writer-wins).
+///   fields — unless the held copy changed after the client's base
+///   (`updatedVersion > base`): then the client's copy is older knowledge,
+///   not an edit, and the held one stands.
 /// - A client tab with no id, or an id the set never held, is **created** —
 ///   unless the id was closed after the client's base, in which case the
-///   close stands.
+///   close stands. A created PTY tab lacking a tmux name is given one here
+///   (`mint_for_created`).
 /// - A held tab missing from the snapshot is **closed** if the client knew it
 ///   (`createdVersion <= base`) and **kept** if it was created after the
 ///   client's base, in its place next to the neighbour it had.
@@ -224,7 +292,7 @@ fn comparable(tab: &TabEntry) -> Value {
 ///
 /// An empty snapshot without `allow_clear` is a client with nothing loaded:
 /// nothing changes.
-fn merge(session: &TerminalSession, client: &ClientSync) -> (Vec<TabEntry>, Vec<Op>, Vec<Tombstone>) {
+fn merge(scope: &str, session: &TerminalSession, client: &ClientSync) -> (Vec<TabEntry>, Vec<Op>, Vec<Tombstone>) {
     let version = version_of(session);
     let next_version = version + 1;
     let base = client.base_version;
@@ -253,7 +321,15 @@ fn merge(session: &TerminalSession, client: &ClientSync) -> (Vec<TabEntry>, Vec<
                 }
                 let held = current_by_id[id.as_str()];
                 next.extra.insert(TAB_CREATED_KEY.to_string(), Value::from(created_version(held)));
+                next.extra.insert(TAB_UPDATED_KEY.to_string(), Value::from(updated_version(held)));
                 if comparable(&next) != comparable(held) {
+                    if updated_version(held) > base {
+                        // Changed by someone after this client last looked: the
+                        // client's copy is older knowledge, not an edit.
+                        result.push(held.clone());
+                        continue;
+                    }
+                    next.extra.insert(TAB_UPDATED_KEY.to_string(), Value::from(next_version));
                     ops.push(Op::Updated { id });
                 }
                 result.push(next);
@@ -269,6 +345,8 @@ fn merge(session: &TerminalSession, client: &ClientSync) -> (Vec<TabEntry>, Vec<
                 // A client-minted id, or a tab this client re-opened: a create.
                 taken.insert(id.clone());
                 next.extra.insert(TAB_CREATED_KEY.to_string(), Value::from(next_version));
+                next.extra.insert(TAB_UPDATED_KEY.to_string(), Value::from(next_version));
+                mint_for_created(scope, &mut next);
                 stones.retain(|s| s.id != id);
                 ops.push(Op::Created { id });
                 result.push(next);
@@ -279,6 +357,8 @@ fn merge(session: &TerminalSession, client: &ClientSync) -> (Vec<TabEntry>, Vec<
                 seen.insert(id.clone());
                 next.extra.insert(TAB_ID_KEY.to_string(), Value::String(id.clone()));
                 next.extra.insert(TAB_CREATED_KEY.to_string(), Value::from(next_version));
+                next.extra.insert(TAB_UPDATED_KEY.to_string(), Value::from(next_version));
+                mint_for_created(scope, &mut next);
                 ops.push(Op::Created { id });
                 result.push(next);
             }
@@ -352,14 +432,15 @@ pub fn snapshot_in(path: &Path) -> Result<Snapshot, String> {
 
 /// Apply a client's snapshot onto the file: read, adopt, merge, write — all
 /// under the file's lock, so a second process cannot interleave. Nothing is
-/// written when nothing changed.
-pub fn sync_in(path: &Path, client: ClientSync) -> Result<SyncOutcome, String> {
+/// written when nothing changed. `scope` is the scope id the file belongs to
+/// (a project id, `box:<id>`, or `root`): what a minted tmux name carries.
+pub fn sync_in(path: &Path, scope: &str, client: ClientSync) -> Result<SyncOutcome, String> {
     let _lock = storage::FileLock::exclusive(path).map_err(|e| format!("lock {}: {e}", path.display()))?;
     let mut session = read_session(path)?;
     let adopted = adopt(&mut session);
     let version = version_of(&session);
     let stale = client.base_version < version && client.base_version > 0;
-    let (tabs, ops, stones) = merge(&session, &client);
+    let (tabs, ops, stones) = merge(scope, &session, &client);
 
     let mut next_groups = session.tab_groups.clone();
     if tabs.is_empty() {
@@ -393,37 +474,97 @@ pub fn sync_in(path: &Path, client: ClientSync) -> Result<SyncOutcome, String> {
 }
 
 /// A backend-side edit of the whole session (a path rewrite, an adoption from
-/// a project folder): applied under the lock, ids assigned to new tabs, the
-/// version bumped, tabs that vanished tombstoned. Returns what was stored.
+/// a project folder, a tab the sidecar creates): applied under the lock, ids
+/// and tmux names assigned to new tabs, the version bumped, every tab the edit
+/// changed stamped `updatedVersion` (so a client holding the old copy merges
+/// rather than overwrites), tabs that vanished tombstoned. Returns what was
+/// stored.
 pub fn edit_in(
     path: &Path,
+    scope: &str,
     edit: impl FnOnce(&mut TerminalSession) -> Result<(), String>,
 ) -> Result<TerminalSession, String> {
     let _lock = storage::FileLock::exclusive(path).map_err(|e| format!("lock {}: {e}", path.display()))?;
     let mut session = read_session(path)?;
     adopt(&mut session);
     let version = version_of(&session);
-    let before: Vec<String> = session.tab_layout.iter().filter_map(tab_id).map(str::to_string).collect();
+    let before: HashMap<String, Value> = session
+        .tab_layout
+        .iter()
+        .filter_map(|t| tab_id(t).map(|id| (id.to_string(), comparable(t))))
+        .collect();
     edit(&mut session)?;
     let mut ids: HashSet<String> = session.tab_layout.iter().filter_map(tab_id).map(str::to_string).collect();
     for tab in session.tab_layout.iter_mut() {
-        if tab_id(tab).is_none() {
-            let id = fresh_id(&ids);
-            ids.insert(id.clone());
-            tab.extra.insert(TAB_ID_KEY.to_string(), Value::String(id));
-            tab.extra.insert(TAB_CREATED_KEY.to_string(), Value::from(version + 1));
-        } else if !tab.extra.contains_key(TAB_CREATED_KEY) {
-            tab.extra.insert(TAB_CREATED_KEY.to_string(), Value::from(version + 1));
+        match tab_id(tab).map(str::to_string) {
+            None => {
+                let id = fresh_id(&ids);
+                ids.insert(id.clone());
+                tab.extra.insert(TAB_ID_KEY.to_string(), Value::String(id));
+                tab.extra.insert(TAB_CREATED_KEY.to_string(), Value::from(version + 1));
+                tab.extra.insert(TAB_UPDATED_KEY.to_string(), Value::from(version + 1));
+                mint_for_created(scope, tab);
+            }
+            Some(id) => {
+                if !tab.extra.contains_key(TAB_CREATED_KEY) {
+                    tab.extra.insert(TAB_CREATED_KEY.to_string(), Value::from(version + 1));
+                }
+                // A field the edit changed: stamped, so a client holding the
+                // old copy does not write it back.
+                if before.get(&id).is_none_or(|was| *was != comparable(tab)) {
+                    tab.extra.insert(TAB_UPDATED_KEY.to_string(), Value::from(version + 1));
+                }
+            }
         }
     }
     let mut stones = tombstones(&session);
-    for id in before.into_iter().filter(|id| !ids.contains(id)) {
-        stones.push(Tombstone { id, version: version + 1 });
+    for id in before.keys().filter(|id| !ids.contains(*id)) {
+        stones.push(Tombstone { id: id.clone(), version: version + 1 });
     }
     set_tombstones(&mut session, stones);
     set_version(&mut session, version + 1);
     write_session(path, &session)?;
     Ok(session)
+}
+
+/// What the sidecar's headless create answers with: the tab as stored, with
+/// its owner-minted `id` and tmux name, and whether it was already there — a
+/// repeat of the same request (`mobileRequestHash`) opens nothing twice.
+#[derive(Debug, Clone)]
+pub struct CreatedTab {
+    pub tab: TabEntry,
+    pub existed: bool,
+}
+
+/// Append `tab` to the scope's set (owner-side create, headless owner plan
+/// H1b): the tab gets its id, its tmux name and — for an agent — its schedule
+/// binding from the owner, and the version moves so a window that opens
+/// later merges it in rather than overwriting it. When a tab already carries
+/// `request_hash` under `mobileRequestHash`, that tab is answered instead and
+/// nothing is written: the phone retries a create until it sees the tab.
+pub fn create_tab_in(path: &Path, scope: &str, tab: TabEntry, request_hash: Option<&str>) -> Result<CreatedTab, String> {
+    // The closure runs under the lock, so the check and the append are one
+    // step; a hit aborts the edit (nothing written) and is answered below.
+    const EXISTS: &str = "\u{0}exists";
+    let mut found: Option<TabEntry> = None;
+    let stored = edit_in(path, scope, |session| {
+        if let Some(hash) = request_hash {
+            if let Some(existing) = session.tab_layout.iter().find(|t| extra_str(t, "mobileRequestHash") == Some(hash)) {
+                found = Some(existing.clone());
+                return Err(EXISTS.to_string());
+            }
+        }
+        session.tab_layout.push(tab);
+        Ok(())
+    });
+    match (stored, found) {
+        (Err(e), Some(tab)) if e == EXISTS => Ok(CreatedTab { tab, existed: true }),
+        (Err(e), _) => Err(e),
+        (Ok(stored), _) => {
+            let tab = stored.tab_layout.last().cloned().ok_or_else(|| "create: tab not stored".to_string())?;
+            Ok(CreatedTab { tab, existed: false })
+        }
+    }
 }
 
 /// Bump the version of a session held as raw JSON (the path rewrite keeps
@@ -448,7 +589,7 @@ pub fn snapshot(project_id: &str) -> Result<Snapshot, String> {
 /// (`terminal_service::store_state_session`).
 pub fn sync(project_id: &str, local_file: &str, client: ClientSync) -> Result<SyncOutcome, String> {
     let path = terminal_service::state_session_path(project_id);
-    let outcome = sync_in(&path, client)?;
+    let outcome = sync_in(&path, project_id, client)?;
     if !outcome.ops.is_empty() {
         terminal_service::after_state_session_write(project_id, local_file);
     }
@@ -461,7 +602,7 @@ pub fn edit(
     local_file: &str,
     edit: impl FnOnce(&mut TerminalSession) -> Result<(), String>,
 ) -> Result<TerminalSession, String> {
-    let session = edit_in(&terminal_service::state_session_path(project_id), edit)?;
+    let session = edit_in(&terminal_service::state_session_path(project_id), project_id, edit)?;
     terminal_service::after_state_session_write(project_id, local_file);
     Ok(session)
 }
@@ -528,14 +669,14 @@ mod tests {
     #[test]
     fn a_first_sync_creates_the_tabs_and_hands_back_their_ids() {
         let (_dir, path) = file();
-        let out = sync_in(&path, client(0, vec![tab("k1", "A"), tab("k2", "B")])).unwrap();
+        let out = sync_in(&path, "p", client(0, vec![tab("k1", "A"), tab("k2", "B")])).unwrap();
         assert_eq!(out.version, 2, "adopted (1) then written (2)");
         assert!(!out.stale);
         assert_eq!(out.tabs.iter().map(|t| t.key.as_str()).collect::<Vec<_>>(), ["k1", "k2"]);
         assert!(out.tabs.iter().all(|t| tab_id(t).is_some()));
         assert_eq!(out.ops.iter().filter(|op| matches!(op, Op::Created { .. })).count(), 2);
         // Nothing changed: nothing written, same version.
-        let same = sync_in(&path, client(out.version, out.tabs.clone())).unwrap();
+        let same = sync_in(&path, "p", client(out.version, out.tabs.clone())).unwrap();
         assert_eq!(same.version, out.version);
         assert!(same.ops.is_empty());
     }
@@ -545,14 +686,14 @@ mod tests {
     #[test]
     fn two_clients_edit_the_same_scope_and_neither_loses_the_others_tabs() {
         let (_dir, path) = file();
-        let seeded = sync_in(&path, client(0, vec![tab("a", "A"), tab("b", "B"), tab("c", "C")])).unwrap();
+        let seeded = sync_in(&path, "p", client(0, vec![tab("a", "A"), tab("b", "B"), tab("c", "C")])).unwrap();
         let base = seeded.version;
         let [a, b, c] = [&seeded.tabs[0], &seeded.tabs[1], &seeded.tabs[2]].map(|t| t.clone());
 
         // Client 1 (the desktop) renames A, closes B, opens D.
         let mut a1 = a.clone();
         a1.label = "A renamed".into();
-        let one = sync_in(&path, client(base, vec![a1.clone(), c.clone(), tab("d", "D")])).unwrap();
+        let one = sync_in(&path, "p", client(base, vec![a1.clone(), c.clone(), tab("d", "D")])).unwrap();
         assert_eq!(labels(&one.tabs), ["A renamed", "C", "D"]);
         assert!(one.ops.contains(&Op::Closed { id: tab_id(&b).unwrap().to_string() }));
 
@@ -561,7 +702,7 @@ mod tests {
         // client 1's changes.
         let mut c2 = c.clone();
         c2.extra.insert("color".into(), Value::String("blue".into()));
-        let two = sync_in(&path, client(base, vec![c2, a.clone(), b.clone(), tab("e", "E")])).unwrap();
+        let two = sync_in(&path, "p", client(base, vec![c2, a.clone(), b.clone(), tab("e", "E")])).unwrap();
         assert!(two.stale, "its base was behind");
         let final_labels = labels(&two.tabs);
         assert!(!final_labels.contains(&"B"), "B stays closed: {final_labels:?}");
@@ -573,12 +714,13 @@ mod tests {
         );
         let c_now = two.tabs.iter().find(|t| t.label == "C").unwrap();
         assert_eq!(c_now.extra["color"], "blue");
-        // Field edits are last-writer-wins: client 2 sent A's old label.
-        assert!(final_labels.contains(&"A"), "{final_labels:?}");
+        // Client 2 sent A's old label, but client 1 renamed A after client 2's
+        // base: that copy is older knowledge, and the rename stands.
+        assert!(final_labels.contains(&"A renamed"), "{final_labels:?}");
         assert_eq!(two.tabs.len(), 4);
 
         // Both clients converge on the stored set from here.
-        let three = sync_in(&path, client(two.version, two.tabs.clone())).unwrap();
+        let three = sync_in(&path, "p", client(two.version, two.tabs.clone())).unwrap();
         assert!(three.ops.is_empty());
         assert_eq!(three.version, two.version);
     }
@@ -586,16 +728,16 @@ mod tests {
     #[test]
     fn a_tab_created_after_the_clients_base_keeps_its_place() {
         let (_dir, path) = file();
-        let seeded = sync_in(&path, client(0, vec![tab("a", "A"), tab("b", "B")])).unwrap();
+        let seeded = sync_in(&path, "p", client(0, vec![tab("a", "A"), tab("b", "B")])).unwrap();
         let base = seeded.version;
         // Someone else inserts X between A and B.
         let mut with_x = seeded.tabs.clone();
         with_x.insert(1, tab("x", "X"));
-        sync_in(&path, client(base, with_x)).unwrap();
+        sync_in(&path, "p", client(base, with_x)).unwrap();
         // The first client, unaware of X, only renames B.
         let mut renamed = seeded.tabs.clone();
         renamed[1].label = "B2".into();
-        let out = sync_in(&path, client(base, renamed)).unwrap();
+        let out = sync_in(&path, "p", client(base, renamed)).unwrap();
         assert_eq!(labels(&out.tabs), ["A", "X", "B2"]);
         assert!(out.ops.contains(&Op::Updated { id: tab_id(&seeded.tabs[1]).unwrap().to_string() }));
         assert!(!out.ops.iter().any(|op| matches!(op, Op::Closed { .. })));
@@ -604,12 +746,12 @@ mod tests {
     #[test]
     fn an_empty_snapshot_only_clears_when_the_client_vouches_for_it() {
         let (_dir, path) = file();
-        let seeded = sync_in(&path, client(0, vec![tab("a", "A")])).unwrap();
+        let seeded = sync_in(&path, "p", client(0, vec![tab("a", "A")])).unwrap();
         let nothing_loaded = ClientSync { base_version: seeded.version, tabs: vec![], allow_clear: false, ..Default::default() };
-        let out = sync_in(&path, nothing_loaded).unwrap();
+        let out = sync_in(&path, "p", nothing_loaded).unwrap();
         assert_eq!(labels(&out.tabs), ["A"]);
         assert_eq!(out.version, seeded.version);
-        let out = sync_in(&path, client(seeded.version, vec![])).unwrap();
+        let out = sync_in(&path, "p", client(seeded.version, vec![])).unwrap();
         assert!(out.tabs.is_empty());
         assert_eq!(out.ops, vec![Op::Closed { id: tab_id(&seeded.tabs[0]).unwrap().to_string() }]);
         let stored = read_session(&path).unwrap();
@@ -620,14 +762,14 @@ mod tests {
     #[test]
     fn a_close_by_another_client_is_not_undone_by_a_stale_snapshot() {
         let (_dir, path) = file();
-        let seeded = sync_in(&path, client(0, vec![tab("a", "A"), tab("b", "B")])).unwrap();
+        let seeded = sync_in(&path, "p", client(0, vec![tab("a", "A"), tab("b", "B")])).unwrap();
         let base = seeded.version;
-        sync_in(&path, client(base, vec![seeded.tabs[0].clone()])).unwrap(); // closes B
+        sync_in(&path, "p", client(base, vec![seeded.tabs[0].clone()])).unwrap(); // closes B
         // A stale client that still lists B does not bring it back...
-        let out = sync_in(&path, client(base, seeded.tabs.clone())).unwrap();
+        let out = sync_in(&path, "p", client(base, seeded.tabs.clone())).unwrap();
         assert_eq!(labels(&out.tabs), ["A"]);
         // ...but a client that saw the close may deliberately re-open it.
-        let out = sync_in(&path, client(out.version, seeded.tabs.clone())).unwrap();
+        let out = sync_in(&path, "p", client(out.version, seeded.tabs.clone())).unwrap();
         assert_eq!(labels(&out.tabs), ["A", "B"]);
         assert!(out.ops.iter().any(|op| matches!(op, Op::Created { .. })));
     }
@@ -636,7 +778,7 @@ mod tests {
     fn the_whole_snapshot_save_is_refused_once_the_scope_is_owned() {
         let (_dir, path) = file();
         assert!(!is_owned(&read_session(&path).unwrap()));
-        sync_in(&path, client(0, vec![tab("a", "A")])).unwrap();
+        sync_in(&path, "p", client(0, vec![tab("a", "A")])).unwrap();
         let stored = read_session(&path).unwrap();
         assert!(is_owned(&stored));
         assert_eq!(version_of(&stored), 2);
@@ -645,8 +787,8 @@ mod tests {
     #[test]
     fn a_backend_edit_bumps_the_version_and_tombstones_what_it_dropped() {
         let (_dir, path) = file();
-        let seeded = sync_in(&path, client(0, vec![tab("a", "A"), tab("b", "B")])).unwrap();
-        let stored = edit_in(&path, |session| {
+        let seeded = sync_in(&path, "p", client(0, vec![tab("a", "A"), tab("b", "B")])).unwrap();
+        let stored = edit_in(&path, "p", |session| {
             session.tab_layout.retain(|t| t.label != "B");
             session.tab_layout.push(tab("n", "New"));
             Ok(())
@@ -659,6 +801,110 @@ mod tests {
         let mut raw = serde_json::to_value(&stored).unwrap();
         bump_raw_version(&mut raw);
         assert_eq!(raw[VERSION_KEY], seeded.version + 2);
+    }
+
+    fn pty_tab(key: &str, label: &str, tmux: &str) -> TabEntry {
+        let mut t = tab(key, label);
+        t.extra.insert("tmuxSession".to_string(), Value::String(tmux.to_string()));
+        t
+    }
+
+    /// H1b: an edit written by another writer (the sidecar, with no window
+    /// open) while a window holds an older copy survives that window's next
+    /// sync — the window's copy is older knowledge, not an edit — and the
+    /// window's own later edit wins.
+    #[test]
+    fn a_change_written_after_the_clients_base_is_kept_over_its_stale_copy() {
+        let (_dir, path) = file();
+        let seeded = sync_in(&path, "p", client(0, vec![pty_tab("a", "A", "eldrun-p--shell-1"), pty_tab("b", "B", "eldrun-p--agent-2")])).unwrap();
+        let base = seeded.version;
+        // The other writer renames and colours A and closes B.
+        edit_in(&path, "p", |session| {
+            let a = session.tab_layout.iter_mut().find(|t| tmux_of(t) == Some("eldrun-p--shell-1")).unwrap();
+            a.label = "From the phone".into();
+            a.extra.insert("color".into(), Value::String("teal".into()));
+            session.tab_layout.retain(|t| tmux_of(t) != Some("eldrun-p--agent-2"));
+            Ok(())
+        })
+        .unwrap();
+        // The window's debounced save still carries the seeded copies.
+        let out = sync_in(&path, "p", client(base, seeded.tabs.clone())).unwrap();
+        assert!(out.stale);
+        assert_eq!(labels(&out.tabs), ["From the phone"], "B stays closed, A keeps the other writer's name");
+        assert_eq!(out.tabs[0].extra["color"], "teal");
+        assert!(out.ops.is_empty(), "nothing the window sent was newer: {:?}", out.ops);
+        // Having taken the answer, the window renames A itself: that lands.
+        let mut mine = out.tabs.clone();
+        mine[0].label = "Mine".into();
+        let out = sync_in(&path, "p", client(out.version, mine)).unwrap();
+        assert_eq!(labels(&out.tabs), ["Mine"]);
+        // An edit that changed nothing about a tab leaves its stamp alone.
+        let before = updated_version(&out.tabs[0]);
+        let stored = edit_in(&path, "p", |_| Ok(())).unwrap();
+        assert_eq!(updated_version(&stored.tab_layout[0]), before);
+    }
+
+    /// H1b: the owner mints what a created PTY tab lacks — its tmux name in
+    /// the shape the sidecar's catalog checks, and an agent's schedule
+    /// binding — and leaves a name the client minted, an attach, and a pane
+    /// kind with no PTY alone.
+    #[test]
+    fn a_created_pty_tab_is_given_a_tmux_name_and_an_agent_its_schedule_binding() {
+        let (_dir, path) = file();
+        let mut agent = tab("a", "Claude");
+        agent.extra.insert("kind".into(), Value::String("agent".into()));
+        let mut local = tab("l", "Local");
+        local.extra.insert("kind".into(), Value::String("local_agent".into()));
+        let mut attach = tab("t", "Attached");
+        attach.extra.insert("tmuxAttach".into(), Value::String("train".into()));
+        let mut files = tab("f", "Files");
+        files.extra.insert("kind".into(), Value::String("files".into()));
+        let out = sync_in(&path, "box:paper", client(0, vec![tab("s", "Shell"), agent, local, attach, files, pty_tab("m", "Mine", "eldrun-box_paper--shell-mine")])).unwrap();
+        let by_label = |l: &str| out.tabs.iter().find(|t| t.label == l).unwrap().clone();
+        let shell = tmux_of(&by_label("Shell")).unwrap().to_string();
+        assert!(shell.starts_with("eldrun-box_paper--shell-"), "{shell}");
+        assert!(shell.len() > "eldrun-box_paper--shell-".len() + 8);
+        assert!(shell.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+        assert!(extra_str(&by_label("Shell"), "scheduleTargetId").is_none(), "a shell binds no schedules");
+        let agent = by_label("Claude");
+        assert!(tmux_of(&agent).unwrap().starts_with("eldrun-box_paper--agent-"));
+        assert!(extra_str(&agent, "scheduleTargetId").is_some());
+        assert!(tmux_of(&by_label("Local")).unwrap().starts_with("eldrun-box_paper--agent-"), "a local-model tab carries the agent token");
+        assert_eq!(tmux_of(&by_label("Attached")), Some("train"), "an attach is not re-minted");
+        assert!(extra_str(&by_label("Attached"), "tmuxSession").is_none());
+        assert!(tmux_of(&by_label("Files")).is_none(), "no PTY, no session");
+        assert_eq!(tmux_of(&by_label("Mine")), Some("eldrun-box_paper--shell-mine"), "the client's own name stands");
+        // A sync that changes nothing mints nothing new.
+        let again = sync_in(&path, "box:paper", client(out.version, out.tabs.clone())).unwrap();
+        assert!(again.ops.is_empty());
+        assert_eq!(tmux_of(&again.tabs[0]).unwrap(), shell);
+    }
+
+    /// H1b: the sidecar's create appends one owner-minted tab per request;
+    /// the same request again answers the tab it already opened.
+    #[test]
+    fn a_headless_create_lands_once_per_request_and_moves_the_version() {
+        let (_dir, path) = file();
+        let seeded = sync_in(&path, "p", client(0, vec![tab("a", "A")])).unwrap();
+        let mut spec = tab("", "Claude");
+        spec.extra.insert("kind".into(), Value::String("agent".into()));
+        spec.extra.insert("mobileRequestHash".into(), Value::String("req-1".into()));
+        let created = create_tab_in(&path, "p", spec.clone(), Some("req-1")).unwrap();
+        assert!(!created.existed);
+        assert!(tab_id(&created.tab).is_some());
+        assert!(tmux_of(&created.tab).unwrap().starts_with("eldrun-p--agent-"));
+        assert_eq!(created_version(&created.tab), seeded.version + 1);
+        let again = create_tab_in(&path, "p", spec, Some("req-1")).unwrap();
+        assert!(again.existed);
+        assert_eq!(tab_id(&again.tab), tab_id(&created.tab));
+        let stored = read_session(&path).unwrap();
+        assert_eq!(labels(&stored.tab_layout), ["A", "Claude"]);
+        assert_eq!(version_of(&stored), seeded.version + 1, "a repeat writes nothing");
+        // A window that hydrated before the create merges the tab in rather
+        // than overwriting it with its older set.
+        let out = sync_in(&path, "p", client(seeded.version, seeded.tabs.clone())).unwrap();
+        assert!(out.stale);
+        assert_eq!(labels(&out.tabs), ["A", "Claude"]);
     }
 
     #[test]
