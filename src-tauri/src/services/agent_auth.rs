@@ -243,7 +243,8 @@ fn adopt(cli: &str, store_dir: &Path, store: &Path, home: &Path, bytes: &[u8]) -
     };
     if let (Some(new), Some(stored)) = (&account, read_sidecar(store_dir, ACCOUNT_FILE)) {
         if *new != stored {
-            eprintln!("agent_auth: {cli}: a tab signed in as {new}, the store holds {stored}; not adopted");
+            // The accounts stay out of the log; the blocked record names them.
+            eprintln!("agent_auth: {cli}: a tab signed in as another account than the store's; not adopted");
             write_blocked(
                 store_dir,
                 &Blocked { account: Some(new.clone()), stored: Some(stored), ..Blocked::default() },

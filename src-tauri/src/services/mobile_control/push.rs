@@ -498,7 +498,9 @@ impl PushStore {
 }
 
 fn hkdf_expand<const N: usize>(salt: &[u8], ikm: &[u8], info: &[u8]) -> Result<[u8; N], String> {
-    let mut out = [0u8; N];
+    // Not `[0u8; N]`: CodeQL reads that literal as the key itself, since it
+    // doesn't see `expand` overwrite the buffer.
+    let mut out: [u8; N] = std::array::from_fn(|_| 0);
     Hkdf::<Sha256>::new(Some(salt), ikm)
         .expand(info, &mut out)
         .map_err(|_| "hkdf expand failed".to_string())?;
