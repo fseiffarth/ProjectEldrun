@@ -1930,8 +1930,9 @@ export function ProjectFilesView({
                   </button>
                 )}
                 {/* Release: only once everything is pushed and nothing is
-                    incoming, on a local project's own repo. */}
-                {!onNestedRepo && !project?.remote && gitStatus.has_remote && unpushedCommits.length === 0 && (gitStatus.behind ?? 0) === 0 && (
+                    incoming, on a local project's own repo, and not when the
+                    tip already carries a tag. */}
+                {!onNestedRepo && !project?.remote && gitStatus.has_remote && !gitStatus.head_tagged && unpushedCommits.length === 0 && (gitStatus.behind ?? 0) === 0 && (
                   <button className="git-action-btn git-action-btn--release" disabled={gitBusy} onClick={() => void handleRelease()} title={t("projectFilesView.releaseTitle")}>
                     <span className="git-btn-glyph">🏷</span><span className="git-btn-label">{t("projectFilesView.release")}</span>
                     <UntestedTag id="gitRelease" />
