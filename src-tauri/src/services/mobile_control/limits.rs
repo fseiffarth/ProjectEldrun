@@ -210,10 +210,11 @@ mod tests {
         client.abort();
     }
 
-    // The first exchange runs on the real clock: a paused clock auto-advances
-    // whenever the runtime waits on socket I/O, so the handshake deadline could
-    // fire before `hello` arrives (it did, on macOS CI). The clock is paused
-    // only once the server has answered, for the long idle.
+    // Every socket wait runs on the real clock: a paused clock auto-advances
+    // whenever the runtime waits on socket I/O, so a deadline could fire
+    // before loopback bytes arrive (the handshake one did before `hello`, the
+    // idle one before `more`, both on macOS CI). Only the long idle itself is
+    // skipped, by an explicit advance while no read is waiting.
     #[tokio::test]
     async fn answering_the_client_lifts_the_deadline() {
         use axum::serve::Listener;
@@ -223,23 +224,24 @@ mod tests {
             stream.write_all(b"hello").await.expect("write");
             let mut buffer = [0u8; 2];
             let _ = stream.read_exact(&mut buffer).await;
-            // Then idle well past the handshake window.
-            tokio::time::sleep(HANDSHAKE_TIMEOUT * 4).await;
             stream.write_all(b"more").await
         });
         let (mut stream, _) = guarded.accept().await;
         let mut buffer = [0u8; 5];
         stream.read_exact(&mut buffer).await.expect("read request");
         stream.write_all(b"ok").await.expect("respond");
+        // Idle well past the handshake window before the next read.
         tokio::time::pause();
+        tokio::time::advance(HANDSHAKE_TIMEOUT * 4).await;
+        tokio::time::resume();
         let mut rest = [0u8; 4];
         stream.read_exact(&mut rest).await.expect("still open");
         assert_eq!(&rest, b"more");
         client.await.expect("client task").expect("client write");
     }
 
-    // Same shape as the test above: real clock for the exchange, paused for
-    // the idle. A client that answered once and then held the socket open
+    // Real clock for the exchange, paused for the idle; no bytes are awaited
+    // while paused, so auto-advance can only reach the deadline. A client that answered once and then held the socket open
     // without a byte used to keep its permit until the kernel gave up on it.
     #[tokio::test]
     async fn an_answered_connection_that_falls_silent_is_closed_after_the_idle_window() {
